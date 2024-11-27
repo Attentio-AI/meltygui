@@ -1,0 +1,165 @@
+import imgui
+import colorsys
+
+
+class ImGuiStyleManager:
+    def __init__(self):
+        self.saved_colors = None
+        self.saved_style = None
+        # List of all color indices we need to save/restore
+        self.color_indices = [
+            imgui.COLOR_TEXT,
+            imgui.COLOR_TEXT_DISABLED,
+            imgui.COLOR_WINDOW_BACKGROUND,
+            imgui.COLOR_CHILD_BACKGROUND,
+            imgui.COLOR_POPUP_BACKGROUND,
+            imgui.COLOR_BORDER,
+            imgui.COLOR_BORDER_SHADOW,
+            imgui.COLOR_FRAME_BACKGROUND,
+            imgui.COLOR_FRAME_BACKGROUND_HOVERED,
+            imgui.COLOR_FRAME_BACKGROUND_ACTIVE,
+            imgui.COLOR_TITLE_BACKGROUND,
+            imgui.COLOR_TITLE_BACKGROUND_ACTIVE,
+            imgui.COLOR_TITLE_BACKGROUND_COLLAPSED,
+            imgui.COLOR_SCROLLBAR_BACKGROUND,
+            imgui.COLOR_SCROLLBAR_GRAB,
+            imgui.COLOR_SCROLLBAR_GRAB_HOVERED,
+            imgui.COLOR_SCROLLBAR_GRAB_ACTIVE,
+            imgui.COLOR_CHECK_MARK,
+            imgui.COLOR_SLIDER_GRAB,
+            imgui.COLOR_SLIDER_GRAB_ACTIVE,
+            imgui.COLOR_BUTTON,
+            imgui.COLOR_BUTTON_HOVERED,
+            imgui.COLOR_BUTTON_ACTIVE,
+            imgui.COLOR_HEADER,
+            imgui.COLOR_HEADER_HOVERED,
+            imgui.COLOR_HEADER_ACTIVE,
+            imgui.COLOR_SEPARATOR,
+            imgui.COLOR_SEPARATOR_HOVERED,
+            imgui.COLOR_SEPARATOR_ACTIVE,
+            imgui.COLOR_RESIZE_GRIP,
+            imgui.COLOR_RESIZE_GRIP_HOVERED,
+            imgui.COLOR_RESIZE_GRIP_ACTIVE,
+            imgui.COLOR_TAB,
+            imgui.COLOR_TAB_HOVERED,
+            imgui.COLOR_TAB_ACTIVE,
+            imgui.COLOR_TAB_UNFOCUSED,
+            imgui.COLOR_TAB_UNFOCUSED_ACTIVE,
+            imgui.COLOR_PLOT_LINES,
+            imgui.COLOR_PLOT_LINES_HOVERED,
+            imgui.COLOR_PLOT_HISTOGRAM,
+            imgui.COLOR_PLOT_HISTOGRAM_HOVERED,
+            imgui.COLOR_TEXT_SELECTED_BACKGROUND,
+            imgui.COLOR_DRAG_DROP_TARGET,
+            imgui.COLOR_NAV_HIGHLIGHT,
+            imgui.COLOR_NAV_WINDOWING_HIGHLIGHT,
+            imgui.COLOR_NAV_WINDOWING_DIM_BACKGROUND,
+        ]
+
+    def save_style(self):
+        """Save the current ImGui style and colors"""
+        style = imgui.get_style()
+        # Save colors using known indices
+        self.saved_colors = {i: tuple(style.colors[i]) for i in self.color_indices}
+
+        # Save other style variables
+        self.saved_style = {
+            'alpha': style.alpha,
+            'window_padding': style.window_padding,
+            'window_rounding': style.window_rounding,
+            'frame_padding': style.frame_padding,
+            'frame_rounding': style.frame_rounding,
+            'item_spacing': style.item_spacing,
+            'item_inner_spacing': style.item_inner_spacing,
+            'touch_extra_padding': style.touch_extra_padding,
+            'indent_spacing': style.indent_spacing,
+            'scrollbar_size': style.scrollbar_size,
+            'grab_min_size': style.grab_min_size
+        }
+
+    def restore_style(self):
+        """Restore the previously saved style and colors"""
+        if self.saved_colors is None or self.saved_style is None:
+            print("Warning: No style saved to restore")
+            return False
+
+        style = imgui.get_style()
+        # Restore colors
+        for i, color in self.saved_colors.items():
+            style.colors[i] = color
+
+        # Restore other style variables
+        style.alpha = self.saved_style['alpha']
+        style.window_padding = self.saved_style['window_padding']
+        style.window_rounding = self.saved_style['window_rounding']
+        style.frame_padding = self.saved_style['frame_padding']
+        style.frame_rounding = self.saved_style['frame_rounding']
+        style.item_spacing = self.saved_style['item_spacing']
+        style.item_inner_spacing = self.saved_style['item_inner_spacing']
+        style.touch_extra_padding = self.saved_style['touch_extra_padding']
+        style.indent_spacing = self.saved_style['indent_spacing']
+        style.scrollbar_size = self.saved_style['scrollbar_size']
+        style.grab_min_size = self.saved_style['grab_min_size']
+        return True
+
+    def set_imgui_tint(self, r, g, b):
+        """
+        Sets a global tint color for ImGui by adjusting all style colors based on a single RGB color.
+        Args:
+            r, g, b: RGB values between 0 and 1
+        """
+        # Save current style before applying new tint
+        self.save_style()
+
+        h, s, v = colorsys.rgb_to_hsv(r, g, b)
+        style = imgui.get_style()
+        colors = style.colors
+
+        def make_color(value, saturation_scale=1.0, alpha=1.0):
+            modified_rgb = colorsys.hsv_to_rgb(h, s * saturation_scale, value)
+            return (modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
+
+        # Set colors for different UI elements
+        colors[imgui.COLOR_TEXT] = make_color(0.95, 0.2)  # Bright white text
+        colors[imgui.COLOR_TEXT_DISABLED] = make_color(0.50, 0.2)  # Grayed out text
+
+        # Window backgrounds
+        colors[imgui.COLOR_WINDOW_BACKGROUND] = make_color(0.10, 0.3)  # Dark background
+        colors[imgui.COLOR_CHILD_BACKGROUND] = make_color(0.12, 0.3)
+        colors[imgui.COLOR_POPUP_BACKGROUND] = make_color(0.12, 0.3)
+
+        # Headers
+        colors[imgui.COLOR_HEADER] = make_color(0.35, 0.8)
+        colors[imgui.COLOR_HEADER_HOVERED] = make_color(0.45, 0.9)
+        colors[imgui.COLOR_HEADER_ACTIVE] = make_color(0.55, 1.0)
+
+        # Buttons
+        colors[imgui.COLOR_BUTTON] = make_color(0.35, 0.8)
+        colors[imgui.COLOR_BUTTON_HOVERED] = make_color(0.45, 0.9)
+        colors[imgui.COLOR_BUTTON_ACTIVE] = make_color(0.55, 1.0)
+
+        # Frame backgrounds
+        colors[imgui.COLOR_FRAME_BACKGROUND] = make_color(0.20, 0.4)
+        colors[imgui.COLOR_FRAME_BACKGROUND_HOVERED] = make_color(0.25, 0.5)
+        colors[imgui.COLOR_FRAME_BACKGROUND_ACTIVE] = make_color(0.30, 0.6)
+
+        # Tabs
+        colors[imgui.COLOR_TAB] = make_color(0.25, 0.7)
+        colors[imgui.COLOR_TAB_HOVERED] = make_color(0.35, 0.8)
+        colors[imgui.COLOR_TAB_ACTIVE] = make_color(0.40, 0.9)
+
+        # Title
+        colors[imgui.COLOR_TITLE_BACKGROUND] = make_color(0.25, 1.0)
+        colors[imgui.COLOR_TITLE_BACKGROUND_ACTIVE] = make_color(0.35, 1.0)
+        colors[imgui.COLOR_TITLE_BACKGROUND_COLLAPSED] = make_color(0.20, 0.8)
+
+        # Borders and separators
+        colors[imgui.COLOR_BORDER] = make_color(0.40, 0.7)
+        colors[imgui.COLOR_SEPARATOR] = make_color(0.40, 0.7)
+
+        # Sliders, scrollbars
+        colors[imgui.COLOR_SLIDER_GRAB] = make_color(0.50, 0.9)
+        colors[imgui.COLOR_SLIDER_GRAB_ACTIVE] = make_color(0.60, 1.0)
+        colors[imgui.COLOR_SCROLLBAR_GRAB] = make_color(0.40, 0.7)
+        colors[imgui.COLOR_SCROLLBAR_GRAB_HOVERED] = make_color(0.45, 0.8)
+        colors[imgui.COLOR_SCROLLBAR_GRAB_ACTIVE] = make_color(0.50, 0.9)
