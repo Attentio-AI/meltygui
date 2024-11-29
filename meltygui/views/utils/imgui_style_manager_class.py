@@ -143,6 +143,8 @@ class ImGuiStyleManager:
         colors[imgui.COLOR_FRAME_BACKGROUND_HOVERED] = make_color(0.25, 0.5)
         colors[imgui.COLOR_FRAME_BACKGROUND_ACTIVE] = make_color(0.30, 0.6)
 
+        colors[imgui.COLOR_CHECK_MARK] = make_color(0.90, 1.0)  # Bright mark
+        colors[imgui.COLOR_TEXT_SELECTED_BACKGROUND] = make_color(0.35, 0.8)  # Selection highlights
         # Tabs
         colors[imgui.COLOR_TAB] = make_color(0.25, 0.7)
         colors[imgui.COLOR_TAB_HOVERED] = make_color(0.35, 0.8)
