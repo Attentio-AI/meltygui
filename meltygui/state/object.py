@@ -82,7 +82,7 @@ class DictConversion:
             if self.is_primitive(value):
                 return value
 
-    def update_from_dict(self, target_view, update_dict: dict, visited: set = None, excluded=None) -> None:
+    def update_from_dict(self, update_dict: dict, visited: set = None, excluded=None) -> None:
         """
         Update object attributes recursively from a dictionary, properly handling nested objects and enums.
         """
@@ -91,44 +91,44 @@ class DictConversion:
         if is_root:
             visited = set()
 
-        obj_id = id(target_view)
+        obj_id = id(self)
         if obj_id in visited or not update_dict:
             return
         visited.add(obj_id)
 
         try:
             for key, new_value in update_dict.items():
-                if key.startswith('_') or (excluded and key in excluded):
+                if excluded and key in excluded:
                     continue
 
                 try:
-                    current_value = getattr(target_view, key, None)
+                    current_value = getattr(self, key, None)
 
                     # Handle Enums
                     if isinstance(current_value, Enum):
                         if isinstance(new_value, str):
                             # Convert string to enum value
                             enum_type = type(current_value)
-                            setattr(target_view, key, enum_type[new_value])
+                            setattr(self, key, enum_type[new_value])
                         elif isinstance(new_value, Enum):
-                            setattr(target_view, key, new_value)
+                            setattr(self, key, new_value)
                         continue
 
                     # Handle nested objects
                     if hasattr(current_value, 'update_from_dict') and isinstance(new_value, dict):
-                        current_value.update_from_dict(current_value, new_value, visited, excluded)
+                        current_value.update_from_dict(new_value, visited, excluded)
 
                     # Handle lists
                     elif isinstance(current_value, list) and isinstance(new_value, list):
-                        target_view._update_list(target_view, copy(current_value), copy(new_value), visited, excluded)
+                        self._update_list(current_value, copy(new_value), visited, excluded)
 
                     # Handle dictionaries
                     elif isinstance(current_value, dict) and isinstance(new_value, dict):
-                        target_view._update_dict(target_view, copy(current_value), copy(new_value), visited, excluded)
+                        self._update_dict(current_value, copy(new_value), visited, excluded)
 
                     # Direct update for non-container values
                     else:
-                        setattr(target_view, key, new_value)
+                        setattr(self, key, new_value)
 
                 except Exception as e:
                     print(f"Error updating {key}: {str(e)}")
@@ -137,7 +137,7 @@ class DictConversion:
             if is_root:
                 visited.clear()
 
-    def _update_list(self, target_view, current_list: list, new_list: list, visited: set, excluded=None) -> None:
+    def _update_list(self, current_list: list, new_list: list, visited: set, excluded=None) -> None:
         """Helper method to update list items recursively."""
         # Determine the length difference
         current_length = len(current_list)
@@ -159,13 +159,13 @@ class DictConversion:
 
             # Handle updatable objects
             if hasattr(current_item, 'update_from_dict') and isinstance(new_item, dict):
-                current_item.update_from_dict(current_item, new_item, visited, excluded)
+                current_item.update_from_dict(new_item, visited, excluded)
             # Handle nested lists
             elif isinstance(current_item, list) and isinstance(new_item, list):
-                target_view._update_list(target_view, current_item, new_item, visited, excluded)
+                self._update_list(current_item, new_item, visited, excluded)
             # Handle nested dicts
             elif isinstance(current_item, dict) and isinstance(new_item, dict):
-                target_view._update_dict(target_view, current_item, new_item, visited, excluded)
+                self._update_dict(current_item, new_item, visited, excluded)
             # Direct update
             else:
                 current_list[i] = new_item
@@ -191,7 +191,7 @@ class DictConversion:
                         if hasattr(new_instance, '__init__'):
                             new_instance.__init__()
                         # Then update with the dictionary values
-                        new_instance.update_from_dict(new_instance, new_item, visited, excluded)
+                        new_instance.update_from_dict(new_item, visited, excluded)
                         current_list.append(new_instance)
                     except Exception as e:
                         raise Exception(f"Failed to create new instance of {item_type.__name__}: {str(e)}")
@@ -202,10 +202,10 @@ class DictConversion:
         while len(current_list) > new_length:
             current_list.pop()
 
-    def _update_dict(self, target_view, current_dict: dict, new_dict: dict, visited: set, excluded=None) -> None:
+    def _update_dict(self, current_dict: dict, new_dict: dict, visited: set, excluded=None) -> None:
         """Helper method to update dictionary values recursively."""
         for key, new_value in new_dict.items():
-            if key.startswith('_') or (excluded and key in excluded):
+            if (excluded and key in excluded):
                 continue
 
             current_value = current_dict.get(key)
@@ -221,15 +221,15 @@ class DictConversion:
 
             # Handle updatable objects
             if hasattr(current_value, 'update_from_dict') and isinstance(new_value, dict):
-                current_value.update_from_dict(current_value, new_value, visited, excluded)
+                current_value.update_from_dict(new_value, visited, excluded)
 
             # Handle nested lists
             elif isinstance(current_value, list) and isinstance(new_value, list):
-                target_view._update_list(target_view, current_value, new_value, visited, excluded)
+                self._update_list(current_value, new_value, visited, excluded)
 
             # Handle nested dicts
             elif isinstance(current_value, dict) and isinstance(new_value, dict):
-                target_view._update_dict(target_view, current_value, new_value, visited, excluded)
+                self._update_dict(current_value, new_value, visited, excluded)
 
             # Direct update
             else:
