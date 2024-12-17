@@ -52,7 +52,7 @@ class Animator:
     def stop(self):
         """Stop the current animation."""
         self.is_animating = False
-        
+
     def animate(self, start: AnimValue, end: AnimValue, duration: float,
                 on_update: Callable[[AnimValue], None], ease_type: EaseType = EaseType.EASE_IN_OUT):
         """
