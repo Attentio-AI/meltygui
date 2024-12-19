@@ -3,7 +3,7 @@ from OpenGL.GL import *
 
 
 class GridDotsBackground:
-    def __init__(self, dot_spacing=15.0, dot_size=1.0, emphasis_size=1.2, dot_color=(0.2, 0.2, 0.2, 1.0)):
+    def __init__(self, dot_spacing=15.0, dot_size=1.0, emphasis_size=1.2, dot_color=(0.2, 0.23, 0.3, 1.0)):
         self.dot_spacing = dot_spacing
         self.dot_size = dot_size
         self.emphasis_size = emphasis_size
@@ -38,7 +38,7 @@ class GridDotsBackground:
 
             float dist = length(smallGrid - dotSpacing/2.0);
             float dot = 1.0 - smoothstep(currentDotSize - 1.0, currentDotSize, dist);
-            vec4 bg = vec4(0.1, 0.1, 0.1, 1.0);
+            vec4 bg = vec4(0.05, 0.055, 0.07, 1.0);
             
             FragColor = mix(bg, dotColor, dot);
         }

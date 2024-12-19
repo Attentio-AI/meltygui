@@ -6,6 +6,7 @@ class ImGuiStyleManager:
     def __init__(self):
         self.saved_colors = None
         self.saved_style = None
+        self.hsv = (0.0, 0.0, 0.0)
         # List of all color indices we need to save/restore
         self.color_indices = [
             imgui.COLOR_TEXT,
@@ -56,6 +57,12 @@ class ImGuiStyleManager:
             imgui.COLOR_NAV_WINDOWING_DIM_BACKGROUND,
         ]
 
+    def make_color(self, value, saturation_scale=1.0, alpha=1.0):
+        h, s, v = self.hsv
+        modified_rgb = colorsys.hsv_to_rgb(h, s * saturation_scale, value)
+        imgui_color = imgui.get_color_u32_rgba(modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
+        return imgui_color
+
     def save_style(self):
         """Save the current ImGui style and colors"""
         style = imgui.get_style()
@@ -81,6 +88,9 @@ class ImGuiStyleManager:
         """Restore the previously saved style and colors"""
         if self.saved_colors is None or self.saved_style is None:
             print("Warning: No style saved to restore")
+            # Print stack trace
+            import traceback
+            traceback.print_stack()
             return False
 
         style = imgui.get_style()
@@ -108,10 +118,8 @@ class ImGuiStyleManager:
         Args:
             r, g, b: RGB values between 0 and 1
         """
-        # Save current style before applying new tint
-        self.save_style()
-
         h, s, v = colorsys.rgb_to_hsv(r, g, b)
+        self.hsv = (h, s, v)
         style = imgui.get_style()
         colors = style.colors
 
@@ -132,6 +140,10 @@ class ImGuiStyleManager:
         colors[imgui.COLOR_HEADER] = make_color(0.35, 0.8)
         colors[imgui.COLOR_HEADER_HOVERED] = make_color(0.45, 0.9)
         colors[imgui.COLOR_HEADER_ACTIVE] = make_color(0.55, 1.0)
+
+        colors[imgui.COLOR_RESIZE_GRIP] = make_color(0.35, 0.8)
+        colors[imgui.COLOR_RESIZE_GRIP_HOVERED] = make_color(0.45, 0.9)
+        colors[imgui.COLOR_RESIZE_GRIP_ACTIVE] = make_color(0.55, 1.0)
 
         # Buttons
         colors[imgui.COLOR_BUTTON] = make_color(0.35, 0.8)
