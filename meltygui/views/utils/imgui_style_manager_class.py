@@ -6,6 +6,8 @@ class ImGuiStyleManager:
     def __init__(self):
         self.saved_colors = None
         self.saved_style = None
+        self.saved_rgb = None
+        self.current_rgb = (0.0, 0.0, 0.0)
         self.hsv = (0.0, 0.0, 0.0)
         # List of all color indices we need to save/restore
         self.color_indices = [
@@ -65,52 +67,55 @@ class ImGuiStyleManager:
 
     def save_style(self):
         """Save the current ImGui style and colors"""
-        style = imgui.get_style()
-        # Save colors using known indices
-        self.saved_colors = {i: tuple(style.colors[i]) for i in self.color_indices}
-
-        # Save other style variables
-        self.saved_style = {
-            'alpha': style.alpha,
-            'window_padding': style.window_padding,
-            'window_rounding': style.window_rounding,
-            'frame_padding': style.frame_padding,
-            'frame_rounding': style.frame_rounding,
-            'item_spacing': style.item_spacing,
-            'item_inner_spacing': style.item_inner_spacing,
-            'touch_extra_padding': style.touch_extra_padding,
-            'indent_spacing': style.indent_spacing,
-            'scrollbar_size': style.scrollbar_size,
-            'grab_min_size': style.grab_min_size
-        }
+        # style = imgui.get_style()
+        self.saved_rgb = self.current_rgb
+        # # Save colors by their indices
+        # self.saved_colors = {i: tuple(style.colors[i]) for i in self.color_indices}
+        #
+        # # Save other style variables
+        # self.saved_style = {
+        #     'alpha': style.alpha,
+        #     'window_padding': style.window_padding,
+        #     'window_rounding': style.window_rounding,
+        #     'frame_padding': style.frame_padding,
+        #     'frame_rounding': style.frame_rounding,
+        #     'item_spacing': style.item_spacing,
+        #     'item_inner_spacing': style.item_inner_spacing,
+        #     'touch_extra_padding': style.touch_extra_padding,
+        #     'indent_spacing': style.indent_spacing,
+        #     'scrollbar_size': style.scrollbar_size,
+        #     'grab_min_size': style.grab_min_size
+        # }
 
     def restore_style(self):
         """Restore the previously saved style and colors"""
-        if self.saved_colors is None or self.saved_style is None:
-            print("Warning: No style saved to restore")
-            # Print stack trace
-            import traceback
-            traceback.print_stack()
-            return False
 
-        style = imgui.get_style()
-        # Restore colors
-        for i, color in self.saved_colors.items():
-            style.colors[i] = color
-
-        # Restore other style variables
-        style.alpha = self.saved_style['alpha']
-        style.window_padding = self.saved_style['window_padding']
-        style.window_rounding = self.saved_style['window_rounding']
-        style.frame_padding = self.saved_style['frame_padding']
-        style.frame_rounding = self.saved_style['frame_rounding']
-        style.item_spacing = self.saved_style['item_spacing']
-        style.item_inner_spacing = self.saved_style['item_inner_spacing']
-        style.touch_extra_padding = self.saved_style['touch_extra_padding']
-        style.indent_spacing = self.saved_style['indent_spacing']
-        style.scrollbar_size = self.saved_style['scrollbar_size']
-        style.grab_min_size = self.saved_style['grab_min_size']
-        return True
+        self.set_imgui_tint(*self.saved_rgb)
+        # if self.saved_colors is None or self.saved_style is None:
+        #     print("Warning: No style saved to restore")
+        #     # Print stack trace
+        #     import traceback
+        #     traceback.print_stack()
+        #     return False
+        #
+        # style = imgui.get_style()
+        # # Restore colors
+        # for i, color in self.saved_colors.items():
+        #     style.colors[i] = color
+        #
+        # # Restore other style variables
+        # style.alpha = self.saved_style['alpha']
+        # style.window_padding = self.saved_style['window_padding']
+        # style.window_rounding = self.saved_style['window_rounding']
+        # style.frame_padding = self.saved_style['frame_padding']
+        # style.frame_rounding = self.saved_style['frame_rounding']
+        # style.item_spacing = self.saved_style['item_spacing']
+        # style.item_inner_spacing = self.saved_style['item_inner_spacing']
+        # style.touch_extra_padding = self.saved_style['touch_extra_padding']
+        # style.indent_spacing = self.saved_style['indent_spacing']
+        # style.scrollbar_size = self.saved_style['scrollbar_size']
+        # style.grab_min_size = self.saved_style['grab_min_size']
+        # return True
 
     def set_imgui_tint(self, r, g, b):
         """
@@ -118,6 +123,7 @@ class ImGuiStyleManager:
         Args:
             r, g, b: RGB values between 0 and 1
         """
+        self.current_rgb = (r, g, b)
         h, s, v = colorsys.rgb_to_hsv(r, g, b)
         self.hsv = (h, s, v)
         style = imgui.get_style()
