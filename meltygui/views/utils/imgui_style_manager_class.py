@@ -65,6 +65,18 @@ class ImGuiStyleManager:
         imgui_color = imgui.get_color_u32_rgba(modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
         return imgui_color
 
+    def make_color_unpacked(self, value, saturation_scale=1.0, alpha=1.0):
+        def _unpack_color(packed_color):
+            """Convert a packed u32 color to RGBA components (0-1 range)"""
+            return (
+                ((packed_color >> 0) & 0xFF) / 255.0,  # R
+                ((packed_color >> 8) & 0xFF) / 255.0,  # G
+                ((packed_color >> 16) & 0xFF) / 255.0,  # B
+                ((packed_color >> 24) & 0xFF) / 255.0  # A
+            )
+        color = self.make_color(value, saturation_scale, alpha)
+        return _unpack_color(color)
+
     def save_style(self):
         """Save the current ImGui style and colors"""
         # style = imgui.get_style()
@@ -138,14 +150,14 @@ class ImGuiStyleManager:
         colors[imgui.COLOR_TEXT_DISABLED] = make_color(0.50, 0.2)  # Grayed out text
 
         # Window backgrounds
-        colors[imgui.COLOR_WINDOW_BACKGROUND] = make_color(0.10, 0.3)  # Dark background
-        colors[imgui.COLOR_CHILD_BACKGROUND] = make_color(0.12, 0.3)
+        colors[imgui.COLOR_WINDOW_BACKGROUND] = make_color(0.12, 0.5)  # Window background
+        colors[imgui.COLOR_CHILD_BACKGROUND] = make_color(0.10, 0.3, 1.0)
         colors[imgui.COLOR_POPUP_BACKGROUND] = make_color(0.12, 0.3)
 
         # Headers
-        colors[imgui.COLOR_HEADER] = make_color(0.35, 0.8)
-        colors[imgui.COLOR_HEADER_HOVERED] = make_color(0.45, 0.9)
-        colors[imgui.COLOR_HEADER_ACTIVE] = make_color(0.55, 1.0)
+        colors[imgui.COLOR_HEADER] = make_color(0.35, 0.8, 0.0)
+        colors[imgui.COLOR_HEADER_HOVERED] = make_color(0.45, 0.9, 0.3)
+        colors[imgui.COLOR_HEADER_ACTIVE] = make_color(0.7, 1.0, 0.0)
 
         colors[imgui.COLOR_RESIZE_GRIP] = make_color(0.35, 0.8)
         colors[imgui.COLOR_RESIZE_GRIP_HOVERED] = make_color(0.45, 0.9)
@@ -169,12 +181,12 @@ class ImGuiStyleManager:
         colors[imgui.COLOR_TAB_ACTIVE] = make_color(0.40, 0.9)
 
         # Title
-        colors[imgui.COLOR_TITLE_BACKGROUND] = make_color(0.25, 1.0)
-        colors[imgui.COLOR_TITLE_BACKGROUND_ACTIVE] = make_color(0.35, 1.0)
-        colors[imgui.COLOR_TITLE_BACKGROUND_COLLAPSED] = make_color(0.20, 0.8)
+        colors[imgui.COLOR_TITLE_BACKGROUND] = make_color(0.12, 0.5)
+        colors[imgui.COLOR_TITLE_BACKGROUND_ACTIVE] = make_color(0.12, 0.5)
+        colors[imgui.COLOR_TITLE_BACKGROUND_COLLAPSED] = make_color(0.12, 0.5)
 
         # Borders and separators
-        colors[imgui.COLOR_BORDER] = make_color(0.40, 0.7)
+        colors[imgui.COLOR_BORDER] = make_color(0.4, 0.7)
         colors[imgui.COLOR_SEPARATOR] = make_color(0.40, 0.7)
 
         # Sliders, scrollbars
