@@ -4,6 +4,9 @@ from typing import Any, Dict, Set
 
 
 class DictConversion:
+
+    is_class_dict = True
+
     @classmethod
     def _is_dataclass(cls, obj: Any) -> bool:
         """Check if an object is a custom dataclass (has attributes)."""
@@ -125,6 +128,12 @@ class DictConversion:
                     # Handle dictionaries
                     elif isinstance(current_value, dict) and isinstance(new_value, dict):
                         self._update_dict(current_value, copy(new_value), visited, excluded)
+                        to_delete = []
+                        for a_key in current_value.keys():
+                            if a_key not in new_value:
+                                to_delete.append(a_key)
+                        for a_key in to_delete:
+                            del current_value[a_key]
 
                     # Direct update for non-container values
                     else:
@@ -132,6 +141,9 @@ class DictConversion:
 
                 except Exception as e:
                     print(f"Error updating {key}: {str(e)}")
+                    # Print stack trace for debugging
+                    import traceback
+                    traceback.print_exc()
         finally:
             # Clean up visited set when we're done with the root update
             if is_root:
@@ -204,11 +216,17 @@ class DictConversion:
 
     def _update_dict(self, current_dict: dict, new_dict: dict, visited: set, excluded=None) -> None:
         """Helper method to update dictionary values recursively."""
+        not_in_new_dict = set()
         for key, new_value in new_dict.items():
             if (excluded and key in excluded):
                 continue
 
             current_value = current_dict.get(key)
+            if current_value is None:
+                # Get any existing value to use as a template
+                any_key = next(iter(current_dict.keys()), None)
+                current_value = current_dict.get(any_key, None)
+
 
             # Handle Enums in dictionaries
             if isinstance(current_value, Enum):
@@ -221,7 +239,21 @@ class DictConversion:
 
             # Handle updatable objects
             if hasattr(current_value, 'update_from_dict') and isinstance(new_value, dict):
-                current_value.update_from_dict(new_value, visited, excluded)
+                item_type = None
+                try:
+                    item_type = type(current_value)
+
+                    if item_type is not None:
+                        # Create new instance without initialization
+                        new_instance = item_type.__new__(item_type)
+                        # Initialize with empty/default values
+                        if hasattr(new_instance, '__init__'):
+                            new_instance.__init__()
+                        # Then update with the dictionary values
+                        new_instance.update_from_dict(new_value, visited, excluded)
+                        current_dict[key] = new_instance
+                except Exception as e:
+                    raise Exception(f"Failed to create new instance of {item_type.__name__}: {str(e)}")
 
             # Handle nested lists
             elif isinstance(current_value, list) and isinstance(new_value, list):
@@ -234,3 +266,4 @@ class DictConversion:
             # Direct update
             else:
                 current_dict[key] = new_value
+
