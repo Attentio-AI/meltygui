@@ -9,12 +9,14 @@ from typing import Any, Dict, Set, Optional, Union, Sequence
 class DictConversion:
 
     is_class_dict = True
+    outliner_expanded = False
 
     def __init__(self):
         # Using weakref to avoid circular references
         self._parent: Optional[weakref.ReferenceType] = None
         self._parent_key: Optional[Union[str, int]] = None
         self._children: Dict[Union[str, int], 'DictConversion'] = {}
+        self.outliner_expanded = False
 
     def __new__(cls, *args, **kwargs):
         instance = super().__new__(cls)
