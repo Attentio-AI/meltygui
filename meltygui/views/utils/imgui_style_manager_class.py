@@ -156,7 +156,7 @@ class ImGuiStyleManager:
 
         # Headers
         colors[imgui.COLOR_HEADER] = make_color(0.35, 0.8, 0.0)
-        colors[imgui.COLOR_HEADER_HOVERED] = make_color(0.45, 0.9, 0.3)
+        colors[imgui.COLOR_HEADER_HOVERED] = make_color(0.45, 0.9, 0.0)
         colors[imgui.COLOR_HEADER_ACTIVE] = make_color(0.7, 1.0, 0.0)
 
         colors[imgui.COLOR_RESIZE_GRIP] = make_color(0.35, 0.8)
