@@ -282,6 +282,7 @@ class DictConversion:
         # First get the enum class
         parts = class_path.split('.')
         module = None
+
         for i in range(len(parts) - 1, 0, -1):
             try:
                 if parts[0] != 'src':
@@ -588,7 +589,7 @@ class DictConversion:
 
                     # Handle lists
                     elif isinstance(current_value, list) and isinstance(new_value, list):
-                        self._update_list(current_value, copy(new_value), visited, excluded)
+                        self._update_list(current_value, [], visited, excluded)
 
                     # Handle dictionaries
                     elif isinstance(current_value, dict) and isinstance(new_value, dict):
