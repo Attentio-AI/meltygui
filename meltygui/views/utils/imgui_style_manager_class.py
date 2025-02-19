@@ -151,7 +151,7 @@ class ImGuiStyleManager:
 
         # Window backgrounds
         colors[imgui.COLOR_WINDOW_BACKGROUND] = make_color(0.12, 0.5)  # Window background
-        colors[imgui.COLOR_CHILD_BACKGROUND] = make_color(0.10, 0.3, 1.0)
+        colors[imgui.COLOR_CHILD_BACKGROUND] = make_color(0.10, 0.3, 0.0)
         colors[imgui.COLOR_POPUP_BACKGROUND] = make_color(0.12, 0.3)
 
         # Headers
