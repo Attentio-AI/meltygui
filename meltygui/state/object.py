@@ -1,15 +1,129 @@
 import sys
 import weakref
-from copy import copy
+from copy import copy, deepcopy
 from enum import Enum
 from importlib import import_module
 from typing import Any, Dict, Set, Optional, Union, Sequence
+
+import torch
+from torch import Tensor, nn
 
 
 class DictConversion:
 
     is_class_dict = True
     outliner_expanded = False
+
+    def deepcopy_exclude(self, exclude=None, memo=None):
+        """
+        Create a deep copy of the instance with custom attribute exclusions.
+        Recursively handles DictConversion objects, collections, and primitive types.
+
+        Args:
+            exclude: List of attribute names to exclude from copying.
+            memo: Dictionary of already-copied objects to avoid infinite recursion.
+
+        Returns:
+            A new instance with deep-copied attributes except for excluded ones.
+        """
+        if memo is None:
+            memo = {}
+
+        # Check if self is already in memo to avoid infinite recursion
+        if id(self) in memo:
+            return memo[id(self)]
+
+        # Create a new instance of the same class
+        result = self.__class__.__new__(self.__class__)
+
+        # Add the new object to memo to avoid infinite recursion
+        memo[id(self)] = result
+
+        # Initialize new parent and children tracking attributes
+        result._parent = None
+        result._parent_key = None
+        result._children = {}
+
+        # Create set of attributes to exclude
+        excluded_attrs = {'_parent', '_children'}
+        if exclude:
+            excluded_attrs.update(exclude)
+
+        # Copy all attributes except excluded ones
+        for key, value in self.__dict__.items():
+            if key not in excluded_attrs:
+                # Deep copy the value with appropriate handling based on type
+                copied_value = self._deepcopy_value(value, exclude, memo)
+                setattr(result, key, copied_value)
+
+        return result
+
+    def _deepcopy_value(self, value, exclude=None, memo=None):
+        """
+        Helper method to deep copy a value based on its type.
+
+        Args:
+            value: The value to deep copy
+            exclude: List of attribute names to exclude from copying
+            memo: Dictionary of already-copied objects
+
+        Returns:
+            A deep copy of the value
+        """
+        if memo is None:
+            memo = {}
+
+        # Check if value is already in memo
+        if id(value) in memo:
+            return memo[id(value)]
+
+        # Handle None
+        if value is None:
+            return None
+
+        if isinstance(value, Tensor):
+            return value
+
+        if isinstance(value, nn.Module):
+            return value
+
+        # Handle DictConversion objects
+        if isinstance(value, DictConversion):
+            return value.deepcopy_exclude(exclude, memo)
+
+        # Handle Enums (should be copied by value, not deep copied)
+        if isinstance(value, Enum):
+            return value
+
+        # Handle lists
+        if isinstance(value, list):
+            new_list = []
+            memo[id(value)] = new_list
+            for item in value:
+                new_list.append(self._deepcopy_value(item, exclude, memo))
+            return new_list
+
+        # Handle tuples
+        if isinstance(value, tuple):
+            items = [self._deepcopy_value(item, exclude, memo) for item in value]
+            result = tuple(items)
+            memo[id(value)] = result
+            return result
+
+        # Handle dictionaries
+        if isinstance(value, dict):
+            new_dict = {}
+            memo[id(value)] = new_dict
+            for k, v in value.items():
+                # The keys are immutable, so we don't need to copy them
+                new_dict[k] = self._deepcopy_value(v, exclude, memo)
+            return new_dict
+
+        # Handle primitive types (int, float, str, bool)
+        if isinstance(value, (int, float, str, bool)):
+            return value
+
+        return deepcopy(value, memo)
 
     def __init__(self):
         # Using weakref to avoid circular references
