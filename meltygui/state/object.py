@@ -45,7 +45,8 @@ class DictConversion:
         result._children = {}
 
         # Create set of attributes to exclude
-        excluded_attrs = {'_parent', '_children'}
+        excluded_attrs = {'_parent', '_children', "tensor", "tensor_b", "tensor_c", 'buffer', 'ctx',
+                          'texture', "texture3D", "cuda_buffer", "xy_renderer", "xyz_renderer"}
         if exclude:
             excluded_attrs.update(exclude)
 
