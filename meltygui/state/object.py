@@ -441,6 +441,14 @@ class DictConversion:
 
         def update_instance(unset_value, new_value, excluded):
             # Handle Enums
+            # Handle nested objects
+            #and unset_value['type'] == "src.lsd.ui_gui.tensorview.GenPrompt"
+            if isinstance(new_value, dict) and "type" in new_value:
+                print("Found GenPrompt type")
+            if isinstance(unset_value, DictConversion) or (
+                    isinstance(new_value, tuple) and new_value[0] in instantiated_objects):
+                return instantiated_objects[new_value[0]]
+
             if isinstance(unset_value, Enum) or (isinstance(unset_value, tuple) and
                                                  len(new_value) > 2 and new_value[2] == "Enum"):
                 if isinstance(new_value, tuple):
@@ -465,10 +473,6 @@ class DictConversion:
                     # setattr(instance, key, new_value)
                     return new_value
                 return unset_value
-
-            # Handle nested objects
-            if isinstance(unset_value, DictConversion) or (isinstance(new_value, tuple) and new_value[0] in instantiated_objects):
-                return instantiated_objects[new_value[0]]
 
             # Is tuple
             elif isinstance(unset_value, tuple):
@@ -523,8 +527,12 @@ class DictConversion:
                 if key not in excluded:
                     unset_value = getattr(instance, key, None)
 
-                    parsed = update_instance(unset_value, new_value, excluded)
-                    setattr(instance, key, parsed)
+                    try:
+                        parsed = update_instance(unset_value, new_value, excluded)
+                        setattr(instance, key, parsed)
+                    except KeyError:
+                        print(f"KeyError: {key} not found in instance {instance}. Should not name attributes \"type\"")
+                        continue
 
         return root
 
