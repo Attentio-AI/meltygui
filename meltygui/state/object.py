@@ -372,11 +372,16 @@ class DictConversion:
     def instantiate_from_class_path(class_path: str):
         parts = class_path.split('.')
         module = None
+        for i in range(len(parts) - 1):
+            if parts[i] == "tensorview.app_model":
+                parts[i] = "model"
+
+
         for i in range(len(parts) - 1, 0, -1):
             try:
-                if parts[0] != 'src':
-                    parts.insert(0, 'src')
-                if parts[1] != 'lsd':
+                if parts[0] == 'src':
+                    parts.remove('src')
+                if parts[0] != 'lsd':
                     parts.insert(1, 'lsd')
                 module_path = '.'.join(parts[:i])
                 module = import_module(f"{module_path}")
@@ -398,12 +403,17 @@ class DictConversion:
         parts = class_path.split('.')
         module = None
 
+        for i in range(len(parts) - 1):
+            if parts[i] == "tensorview":
+                parts[i] = "model.app_model"
+
         for i in range(len(parts) - 1, 0, -1):
             try:
-                if parts[0] != 'src':
-                    parts.insert(0, 'src')
-                if parts[1] != 'lsd':
+                if parts[0] == 'src':
+                    parts.remove('src')
+                if parts[0] != 'lsd':
                     parts.insert(1, 'lsd')
+
                 module_path = '.'.join(parts[:i])
                 module = sys.modules.get(module_path)
                 if module is None:

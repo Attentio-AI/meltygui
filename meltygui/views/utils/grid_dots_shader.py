@@ -43,7 +43,6 @@ class GridDotsBackground:
             FragColor = mix(bg, dotColor, dot);
         }
         """
-
         self.shader = self.create_shader_program(vertex_shader, fragment_shader)
 
         vertices = np.array([
