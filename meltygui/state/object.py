@@ -1,20 +1,28 @@
+import importlib
+import inspect
+import os
+import pkgutil
 import sys
 import weakref
 from copy import copy, deepcopy
 from enum import Enum
 from importlib import import_module
-from typing import Any, Dict, Set, Optional, Union, Sequence
+from pathlib import Path
+from typing import Any, Dict, Set, Optional, Union, Sequence, List, Tuple
 
 import torch
+from gi import module
 from torch import Tensor, nn
+from transformers import PreTrainedTokenizerBase
 
 
 class DictConversion:
 
     is_class_dict = True
     outliner_expanded = False
+    class_names: Optional[Dict[str, str]] = None
 
-    def deepcopy_exclude(self, exclude=None, memo=None):
+    def deepcopy_exclude(self, exclude=None, memo=None, depth=0, do_print=False):
         """
         Create a deep copy of the instance with custom attribute exclusions.
         Recursively handles DictConversion objects, collections, and primitive types.
@@ -54,12 +62,12 @@ class DictConversion:
         for key, value in self.__dict__.items():
             if key not in excluded_attrs:
                 # Deep copy the value with appropriate handling based on type
-                copied_value = self._deepcopy_value(value, exclude, memo)
+                copied_value = self._deepcopy_value(value, exclude, memo, do_print)
                 setattr(result, key, copied_value)
 
         return result
 
-    def _deepcopy_value(self, value, exclude=None, memo=None):
+    def _deepcopy_value(self, value, exclude=None, memo=None, depth=0, do_print=False):
         """
         Helper method to deep copy a value based on its type.
 
@@ -71,8 +79,18 @@ class DictConversion:
         Returns:
             A deep copy of the value
         """
+        depth += 1
+
         if memo is None:
             memo = {}
+
+        if do_print:
+            mem_str = ""
+            for i in range(torch.cuda.device_count()):
+                mem_alloc = torch.cuda.memory_allocated(i) / 1024 ** 3
+                mem_str += f"GPU {i}: {mem_alloc:.2f} GB\n"
+
+            print(f"Depth: {depth}, Value: {value}, Type: {type(value)}, Memory: {mem_str}")
 
         # Check if value is already in memo
         if id(value) in memo:
@@ -85,12 +103,18 @@ class DictConversion:
         if isinstance(value, Tensor):
             return value
 
+        if isinstance(value, Tensor):
+            return value
+
+        if isinstance(value, PreTrainedTokenizerBase):
+            return value
+
         if isinstance(value, nn.Module):
             return value
 
         # Handle DictConversion objects
-        if isinstance(value, DictConversion):
-            return value.deepcopy_exclude(exclude, memo)
+        if isinstance(value, DictConversion) or hasattr(value, "to_dict"):
+            return value.deepcopy_exclude(exclude, memo, depth)
 
         # Handle Enums (should be copied by value, not deep copied)
         if isinstance(value, Enum):
@@ -101,12 +125,12 @@ class DictConversion:
             new_list = []
             memo[id(value)] = new_list
             for item in value:
-                new_list.append(self._deepcopy_value(item, exclude, memo))
+                new_list.append(self._deepcopy_value(item, exclude, memo, depth, do_print))
             return new_list
 
         # Handle tuples
         if isinstance(value, tuple):
-            items = [self._deepcopy_value(item, exclude, memo) for item in value]
+            items = [self._deepcopy_value(item, exclude, memo, depth, do_print) for item in value]
             result = tuple(items)
             memo[id(value)] = result
             return result
@@ -117,13 +141,17 @@ class DictConversion:
             memo[id(value)] = new_dict
             for k, v in value.items():
                 # The keys are immutable, so we don't need to copy them
-                new_dict[k] = self._deepcopy_value(v, exclude, memo)
+                new_dict[k] = self._deepcopy_value(v, exclude, memo, depth, do_print)
             return new_dict
+
+        if isinstance(value, set):
+            return deepcopy(value, memo)
 
         # Handle primitive types (int, float, str, bool)
         if isinstance(value, (int, float, str, bool)):
             return value
 
+        print(f"Should not get here: {value.__class__} {isinstance(value, DictConversion)}")
         return deepcopy(value, memo)
 
     def __init__(self):
@@ -368,44 +396,215 @@ class DictConversion:
         """Check if an object is an Enum."""
         return isinstance(obj, Enum)
 
+    import sys
+    import inspect
+
     @staticmethod
-    def instantiate_from_class_path(class_path: str):
-        parts = class_path.split('.')
-        module = None
-        for i in range(len(parts) - 1):
-            if parts[i] == "tensorview.app_model":
-                parts[i] = "model"
+    def find_all_classes(root_dir: str, package_name: str = None) -> List[Tuple[str, str]]:
+        """
+        Find all classes in a package directory structure, including nested directories and nested classes.
 
+        Args:
+            root_dir: The root directory to search in
+            package_name: Optional base package name prefix
 
-        for i in range(len(parts) - 1, 0, -1):
-            try:
-                if parts[0] == 'src':
-                    parts.remove('src')
-                if parts[0] != 'lsd':
-                    parts.insert(1, 'lsd')
-                module_path = '.'.join(parts[:i])
-                module = import_module(f"{module_path}")
-                break
-            except ImportError:
+        Returns:
+            A list of tuples (full_class_path, class_object)
+        """
+        classes = []
+        visited_modules = set()
+
+        # Normalize path and ensure it exists
+        root_dir = os.path.abspath(root_dir)
+        if not os.path.isdir(root_dir):
+            print(f"Error: {root_dir} is not a directory")
+            return classes
+
+        # Make sure the root directory is in the Python path
+        if root_dir not in sys.path:
+            sys.path.insert(0, root_dir)
+            # Also add parent directory to handle package imports
+            parent_dir = os.path.dirname(root_dir)
+            if parent_dir not in sys.path:
+                sys.path.insert(0, parent_dir)
+
+        # Walk through all Python files in the directory structure
+        for dirpath, dirnames, filenames in os.walk(root_dir):
+            # Skip __pycache__ and other hidden directories
+            dirnames[:] = [d for d in dirnames if not d.startswith('__') and not d.startswith('.')]
+
+            # Get the relative path from the root directory
+            rel_path = os.path.relpath(dirpath, root_dir)
+
+            # Convert directory path to module path
+            if rel_path == '.':
+                module_prefix = package_name or os.path.basename(root_dir)
+            else:
+                module_prefix = f"{package_name or os.path.basename(root_dir)}.{rel_path.replace(os.sep, '.')}"
+
+            # Process Python files in this directory
+            for filename in filenames:
+                if filename.endswith('.py') and not filename.startswith('__'):
+                    module_name = f"{module_prefix}.{filename[:-3]}"
+
+                    # Skip already visited modules
+                    if module_name in visited_modules:
+                        continue
+
+                    visited_modules.add(module_name)
+
+                    try:
+                        # Import the module
+                        module = importlib.import_module(module_name)
+
+                        # Find top-level classes in this module and add them
+                        for name, obj in inspect.getmembers(module, inspect.isclass):
+                            # Only include classes defined in this module (not imported)
+                            if obj.__module__ == module_name:
+                                class_path = f"{module_name}.{name}"
+                                parts = class_path.split('.')
+                                classes.append((parts[-1], class_path))
+
+                                # Now add nested classes
+                                nested_classes = DictConversion.find_nested_classes(obj, class_path)
+                                if len(nested_classes) > 0:
+                                    for nested_class_path, nested_class in nested_classes:
+                                        nested_parts = nested_class_path.split('.')
+                                        nested_key = f"{nested_parts[-2]}.{nested_parts[-1]}"
+                                        classes.append((nested_key, nested_class_path))
+
+                    except (ImportError, ModuleNotFoundError) as e:
+                        print(f"Error importing {module_name}: {e}")
+
+        return classes
+
+    @staticmethod
+    def find_nested_classes(parent_class: type, parent_path: str) -> List[Tuple[str, type]]:
+        """
+        Recursively find all nested classes within a class.
+
+        Args:
+            parent_class: The parent class to search in
+            parent_path: The full path of the parent class
+
+        Returns:
+            A list of tuples (full_class_path, class_object) for nested classes
+        """
+        nested_classes = []
+
+        # Check all attributes of the class
+        for name, obj in parent_class.__dict__.items():
+            # Skip special methods, private attributes, and non-classes
+            if name.startswith('__'):
                 continue
 
-        if module is None:
-            return None
+            if not isinstance(obj, type):
+                continue
 
-        obj = module
-        for part in parts[i:]:
-            obj = getattr(obj, part)
-        return obj()
+            # Build full path for the nested class
+            class_path = f"{parent_path}.{name}"
+            nested_classes.append((class_path, obj))
+
+            # Recursively find classes nested within this class
+            inner_classes = DictConversion.find_nested_classes(obj, class_path)
+            nested_classes.extend(inner_classes)
+
+        return nested_classes
 
     @staticmethod
-    def get_enum_value(class_path: str, value_name: str, value: Optional[int]):
+    def find_repo_root(start_path: Path | str = None) -> Path:
+        if start_path is None:
+            start_path = Path(os.path.dirname(os.path.abspath(__file__)))
+
+        current = Path(start_path).resolve()
+
+        while current != current.parent:
+            if (current / '.git').exists():
+                return current
+            current = current.parent
+
+        raise FileNotFoundError("Repository root not found")
+
+    @staticmethod
+    def instantiate_from_class_path(class_path: str, last_try=False):
+        parts = class_path.split('.')
+        module = None
+
+        try:
+            # for i in range(len(parts) - 1):
+            #     if parts[i] == "tensorview.app_model":
+            #         parts[i] = "model"
+
+            for i in range(len(parts) - 1, 0, -1):
+                try:
+                    if parts[0] == 'src':
+                        parts.remove('src')
+                    if parts[0] != 'lsd':
+                        parts.insert(1, 'lsd')
+                    module_path = '.'.join(parts[:i])
+                    module = import_module(f"{module_path}")
+                    break
+                except ImportError:
+                    continue
+
+            if module is None:
+                return None
+
+            obj = module
+            for part in parts[i:]:
+                obj = getattr(obj, part)
+            return obj()
+        except Exception as e:
+            target_class_name = parts[-1]
+            target_class_parent = parts[-2]
+            target_class_combine = f"{target_class_parent}.{target_class_name}"
+            if last_try:
+                # Print stack trace for debugging
+                import traceback
+                traceback.print_exc()
+
+                print(f"Error instantiating {class_path}: {str(e)}")
+                return None
+
+            DictConversion.initialize_class_names()
+
+            if target_class_combine in DictConversion.class_names:
+                found_class_path = DictConversion.class_names[target_class_combine]
+                return DictConversion.instantiate_from_class_path(found_class_path, last_try=True)
+            elif target_class_name in DictConversion.class_names:
+                found_class_path = DictConversion.class_names[target_class_name]
+                return DictConversion.instantiate_from_class_path(found_class_path, last_try=True)
+            else:
+                print(f"Class {target_class_name} not found in known classes.")
+
+            return None
+
+
+    @staticmethod
+    def get_enum_value(class_path: str, value_name: str, value: Optional[int], last_try=False):
         # First get the enum class
         parts = class_path.split('.')
         module = None
+        class_name = parts[-1]
+        parent_name = parts[-2]
+        combined_name = f"{parent_name}.{class_name}"
 
-        for i in range(len(parts) - 1):
-            if parts[i] == "tensorview":
-                parts[i] = "model.app_model"
+        DictConversion.initialize_class_names()
+
+        class_parent = f"{parent_name}.{class_name}"
+        if class_name == "AnchorPair":
+            print("Debugging AnchorPair")
+        if class_parent in DictConversion.class_names:
+            class_path = DictConversion.class_names[class_parent]
+            parts = class_path.split('.')
+
+        elif class_name in DictConversion.class_names:
+            class_path = DictConversion.class_names[class_name]
+            parts = class_path.split('.')
+
+        # for i in range(len(parts) - 1):
+        #     if parts[i] == "tensorview":
+        #         parts[i] = "model.app_model"
 
         for i in range(len(parts) - 1, 0, -1):
             try:
@@ -432,13 +631,41 @@ class DictConversion:
             obj = getattr(obj, part)
 
         # Get the specific enum value
-        if issubclass(obj, Enum):
-            if value is not None:
-                return obj(value)
+        try:
+            if issubclass(obj, Enum):
+                if value is not None:
+                    return obj(value)
+                else:
+                    return obj[value_name]  # This gets the enum value
             else:
-                return obj[value_name]  # This gets the enum member
-        else:
-            raise ValueError(f"{class_path} is not an Enum class")
+                raise ValueError(f"{class_path} is not an Enum class")
+        except Exception as e:
+            if last_try:
+                # Print stack trace for debugging
+                import traceback
+                traceback.print_exc()
+
+                print(f"Error getting enum value for {class_path}: {str(e)}")
+                return None
+
+            DictConversion.initialize_class_names()
+
+
+            if value_name in DictConversion.class_names:
+                found_class_path = DictConversion.class_names[value_name]
+                return DictConversion.get_enum_value(found_class_path, value_name, value, last_try=True)
+            elif combined_name in DictConversion.class_names:
+                found_class_path = DictConversion.class_names[combined_name]
+                return DictConversion.get_enum_value(found_class_path, combined_name, value, last_try=True)
+
+    @staticmethod
+    def initialize_class_names():
+        if DictConversion.class_names is None:
+            DictConversion.class_names = {}
+            root_dir = f"{DictConversion.find_repo_root()}/src/lsd"
+            class_names_list = DictConversion.find_all_classes(str(root_dir), "lsd")
+            for the_class_name, the_class_path in class_names_list:
+                DictConversion.class_names[the_class_name] = the_class_path
 
     def from_dict(self, object_dict, excluded=None):
         if excluded is None:
@@ -540,7 +767,7 @@ class DictConversion:
                     try:
                         parsed = update_instance(unset_value, new_value, excluded)
                         setattr(instance, key, parsed)
-                    except KeyError:
+                    except (KeyError, AttributeError) as e:
                         print(f"KeyError: {key} not found in instance {instance}. Should not name attributes \"type\"")
                         continue
 
