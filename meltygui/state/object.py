@@ -530,6 +530,7 @@ class DictConversion:
         parts = class_path.split('.')
         module = None
 
+        class_name = parts[-1]
         try:
             # for i in range(len(parts) - 1):
             #     if parts[i] == "tensorview.app_model":
@@ -542,7 +543,12 @@ class DictConversion:
                     if parts[0] != 'lsd':
                         parts.insert(1, 'lsd')
                     module_path = '.'.join(parts[:i])
-                    module = import_module(f"{module_path}")
+
+                    if module_path in sys.modules:
+                        module = sys.modules[module_path]
+                    else:
+                        module = importlib.import_module(module_path)
+
                     break
                 except ImportError:
                     continue
@@ -617,7 +623,7 @@ class DictConversion:
                 module = sys.modules.get(module_path)
                 if module is None:
                     # Only import if it's not already imported
-                    module = import_module(module_path)
+                    module = importlib.import_module(module_path)
                 break
             except ImportError:
                 print(f"Error importing {module_path}")
