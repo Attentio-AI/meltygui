@@ -1,0 +1,173 @@
+import torch
+
+
+def print_ascii_tensor(tensors, border=True, indices=None, spacing=2, names=None):
+    """
+    Prints an ASCII representation of one or more PyTorch tensors horizontally.
+    - Zeros are replaced with '#' symbols
+    - Single-digit numbers are shown as is
+    - Multi-digit positive numbers are shown as '+'
+    - Multi-digit negative numbers are shown as '-'
+
+    For tensors with more than 2 dimensions, this function will use the last two dimensions
+    by default, or you can specify which indices to use for higher dimensions.
+
+    Args:
+        tensors (torch.Tensor or list): A PyTorch tensor or list of tensors
+        border (bool): Whether to add an ASCII border around each tensor (default: True)
+        indices (tuple or None): Specific indices to use for dimensions beyond the last two.
+                               For a 4D tensor, this would be a tuple of 2 indices.
+        spacing (int): Number of spaces between tensors (default: 2)
+        names (list or None): Optional list of names for each tensor. If provided, must match
+                            the number of tensors. Names will be displayed above each tensor.
+
+    Example:
+        >>> x = torch.tensor([[1, 0, 0], [1, 1, 0], [1, 1, 1]])
+        >>> y = torch.tensor([[0, 0, 2], [0, 3, 2], [4, 3, 2]])
+        >>> print_ascii_tensor([x, y], names=["Identity", "Values"])
+        Identity   Values
+        +-----+    +-----+
+        | 1 # # |  | # # 2 |
+        | 1 1 # |  | # 3 2 |
+        | 1 1 1 |  | 4 3 2 |
+        +-----+    +-----+
+    """
+    # Convert single tensor to list for uniform processing
+    if isinstance(tensors, torch.Tensor):
+        tensors = [tensors]
+
+    # Validate names if provided
+    if names is not None:
+        if len(names) != len(tensors):
+            raise ValueError(f"Number of names ({len(names)}) doesn't match number of tensors ({len(tensors)})")
+
+    # Process each tensor into a list of string rows
+    all_tensor_rows = []
+    max_heights = []
+    tensor_widths = []
+
+    for tensor_idx, tensor in enumerate(tensors):
+        # Handle tensors with more than 2 dimensions
+        tensor_dim = tensor.dim()
+        if tensor_dim > 2:
+            # For tensors with more than 2 dimensions, extract the 2D slice to display
+            if indices is None:
+                # Default: use first indices for all but the last two dimensions
+                slice_indices = tuple([0] * (tensor_dim - 2))
+            else:
+                # Use provided indices
+                if len(indices) != tensor_dim - 2:
+                    raise ValueError(f"Expected {tensor_dim - 2} indices but got {len(indices)}")
+                slice_indices = indices
+
+            # Extract the 2D slice from the tensor
+            tensor_slice = tensor
+            for idx in slice_indices:
+                tensor_slice = tensor_slice[idx]
+
+            tensor = tensor_slice
+
+        # Ensure the tensor is 2D at this point
+        if tensor.dim() != 2:
+            raise ValueError("Each tensor must have at least 2 dimensions")
+
+        # Convert tensor to CPU and get its values as a numpy array
+        tensor_np = tensor.cpu().numpy()
+
+        # Convert tensor to string representation
+        rows = []
+        max_width = 0
+
+        for row in tensor_np:
+            row_str = ""
+            for val in row:
+                if val == 0:
+                    row_str += "0 "
+                else:
+                    # Convert to integer if it's a whole number
+                    if float(val).is_integer():
+                        val = int(val)
+
+                    # Display single-digit numbers as is, use symbols for multi-digit numbers
+                    if -9 <= val <= 9:
+                        row_str += f"{val} "
+                    elif val > 0:
+                        row_str += "+ "
+                    else:  # val < 0
+                        row_str += "- "
+
+            rows.append(row_str.rstrip())  # Remove trailing space
+            max_width = max(max_width, len(row_str.rstrip()))
+
+        # Add border if needed
+        tensor_rows = []
+        if border:
+            # Create top border
+            border_line = "+" + "-" * (max_width + 2) + "+"
+            tensor_rows.append(border_line)
+
+            # Add each row with side borders
+            for row in rows:
+                # Calculate padding to ensure the right border aligns perfectly
+                padding = max_width - len(row)
+                tensor_rows.append(f"| {row}{' ' * padding} |")
+
+            # Create bottom border
+            tensor_rows.append(border_line)
+        else:
+            # Use rows without border
+            tensor_rows = rows
+
+        all_tensor_rows.append(tensor_rows)
+        max_heights.append(len(tensor_rows))
+
+        # Record width of this tensor's rows
+        if len(tensor_rows) > 0:
+            tensor_widths.append(len(tensor_rows[0]))
+        else:
+            tensor_widths.append(0)
+
+    # Print tensor names if provided
+    if names is not None:
+        name_line = ""
+        for tensor_idx, name in enumerate(names):
+            # Center name over tensor width
+            tensor_width = tensor_widths[tensor_idx]
+
+            # If name is longer than tensor, truncate or allow overflow
+            if len(name) > tensor_width:
+                # Let's allow overflow for readability
+                centered_name = name
+            else:
+                # Center the name
+                padding = (tensor_width - len(name)) // 2
+                centered_name = " " * padding + name
+
+            name_line += centered_name
+
+            # Add spacing between tensors (except after the last one)
+            if tensor_idx < len(tensors) - 1:
+                name_line += " " * spacing
+
+        print(name_line)
+
+    # Find the maximum height across all tensors
+    max_height = max(max_heights)
+
+    # Print all tensors horizontally
+    for row_idx in range(max_height):
+        row_str = ""
+        for tensor_idx, tensor_rows in enumerate(all_tensor_rows):
+            # If this tensor has fewer rows than the max height, print empty space
+            if row_idx < len(tensor_rows):
+                row_str += tensor_rows[row_idx]
+            else:
+                # Add empty space for the width of this tensor's representation
+                if len(tensor_rows) > 0:  # Make sure tensor has at least one row
+                    row_str += " " * len(tensor_rows[0])
+
+            # Add spacing between tensors (except after the last one)
+            if tensor_idx < len(all_tensor_rows) - 1:
+                row_str += " " * spacing
+
+        print(row_str)
