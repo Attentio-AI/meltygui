@@ -31,6 +31,11 @@ class TrainingStatus(RelaxedEnum):
     GENERATING = "Generating"
 
 
+class HyperSearchStatus(RelaxedEnum):
+    IDLE = "Idle"
+    HYPER_SEARCH = "Hyper Search"
+    STOP_REQUESTED = "Stop Requested"
+
 class TrainingResult(RelaxedEnum):
     SUCCESS = "success"
     INTERRUPTED = "interrupted"
