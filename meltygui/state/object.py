@@ -693,7 +693,7 @@ class DictConversion:
                 return instantiated_objects[new_value[0]]
 
             if isinstance(unset_value, Enum) or (isinstance(unset_value, tuple) and
-                                                 len(new_value) > 2 and new_value[2] == "Enum"):
+                                                 (new_value is not None and len(new_value) > 2 and new_value[2] == "Enum")):
                 if isinstance(new_value, tuple):
                     # # Convert tuple to enum value
                     if isinstance(new_value[0], int):

@@ -22,13 +22,22 @@ class ViewIterateMode(RelaxedEnum):
 
 
 class TrainingStatus(RelaxedEnum):
-    IDLE = 0
-    TRAINING = 1
-    HYPER_SEARCH = 2
-    STOP_REQUESTED = 3
-    PAUSE_REQUESTED = 4
-    PAUSED = 5
-    GENERATING = 6
+    IDLE = "Idle"
+    TRAINING = "Training"
+    HYPER_SEARCH = "Hyper Search"
+    STOP_REQUESTED = "Stop Requested"
+    PAUSE_REQUESTED = "Pause Requested"
+    PAUSED = "Paused"
+    GENERATING = "Generating"
+
+
+class TrainingResult(RelaxedEnum):
+    SUCCESS = "success"
+    INTERRUPTED = "interrupted"
+    FAILURE = "failure"
+    NAN = "nan"
+    INF = "inf"
+    NONE = "none"
 
 
 class ComparisonViewMode(RelaxedEnum):
