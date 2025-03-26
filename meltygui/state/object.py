@@ -1,17 +1,14 @@
 import importlib
 import inspect
 import os
-import pkgutil
 import sys
 import weakref
 from copy import copy, deepcopy
 from enum import Enum
-from importlib import import_module
 from pathlib import Path
-from typing import Any, Dict, Set, Optional, Union, Sequence, List, Tuple
+from typing import Any, Dict, Optional, Union, List, Tuple
 
 import torch
-from gi import module
 from torch import Tensor, nn
 from transformers import PreTrainedTokenizerBase
 
@@ -21,6 +18,207 @@ class DictConversion:
     is_class_dict = True
     outliner_expanded = False
     class_names: Optional[Dict[str, str]] = None
+
+    def compute_hash(self, exclude=None, memo=None, depth=0, do_print=False):
+        """
+        Create a hash of the instance's content with custom attribute exclusions.
+        Recursively handles DictConversion objects, collections, and primitive types.
+
+        Args:
+            exclude: List of attribute names to exclude from hashing.
+            memo: Dictionary of already-processed objects to avoid infinite recursion.
+            depth: Current recursion depth for debugging.
+            do_print: Whether to print debug information.
+
+        Returns:
+            A 16-bit float value representing the instance's content.
+        """
+        import hashlib
+
+        if exclude is None:
+            exclude = set()
+
+        if memo is None:
+            memo = {}
+
+        # Check if self is already in memo to avoid infinite recursion
+        if id(self) in memo:
+            if memo[id(self)] != "processing":
+                return memo[id(self)]
+
+        # Add self to memo temporarily with a temporary value
+        # This is crucial to break recursion cycles
+        memo[id(self)] = "processing"  # Temporary value
+
+        # Create a string builder for this object
+        content_str = f"{self.__class__.__name__}:"
+
+        # Create set of attributes to exclude
+        excluded_attrs = {'outliner_expanded', 'expanded', 'hash', 'id', '_parent', '_children', "tensor", "tensor_b", "tensor_c", 'buffer', 'ctx',
+                          'texture', "texture3D", "cuda_buffer", "xy_renderer", "xyz_renderer"}
+        if exclude:
+            excluded_attrs.update(exclude)
+
+        # Add all non-excluded attributes to the string representation
+        for key, value in self.__dict__.items():
+            # Skip private attributes (starting with underscore)
+            if key.startswith('_') or key in excluded_attrs or value is None:
+                continue
+
+            # Get string representation of the value
+            value_str = self._hash_value_to_str(value, exclude, memo, depth, do_print)
+            content_str += f"{key}:{value_str};"
+
+        # Calculate hash
+        hash_result = hashlib.sha256(content_str.encode('utf-8')).hexdigest()
+
+        # Convert the hash to a 16-bit float (Float16)
+        # Take the first 4 hex chars (16 bits) and convert to integer, then normalize to float16 range
+        hash_int = int(hash_result[:4], 16)
+
+        # Float16 has 1 sign bit, 5 exponent bits, and 10 mantissa bits
+        # We'll use the range -65504 to +65504 (max range for float16)
+        float_value = (hash_int / 0xFFFF) * 65504 * 2 - 65504
+
+        # Update the memo with the final value
+        memo[id(self)] = float_value
+
+        if do_print:
+            print(
+                f"Depth: {depth}, Class: {self.__class__.__name__}, Hash: {hash_result[:8]}..., Float16: {float_value}")
+
+        self.hash = float_value
+        return float_value
+
+    def _hash_value_to_str(self, value, exclude=None, memo=None, depth=0, do_print=False):
+        """
+        Helper method to convert a value to a string representation based on its type.
+
+        Args:
+            value: The value to convert to string
+            exclude: List of attribute names to exclude from hashing
+            memo: Dictionary of already-processed objects
+            depth: Current recursion depth for debugging
+            do_print: Whether to print debug information
+
+        Returns:
+            A string representation of the value
+        """
+        depth += 1
+
+        if memo is None:
+            memo = {}
+
+        if do_print:
+            if hasattr(torch, 'cuda') and torch.cuda.is_available():
+                mem_str = ""
+                for i in range(torch.cuda.device_count()):
+                    mem_alloc = torch.cuda.memory_allocated(i) / 1024 ** 3
+                    mem_str += f"GPU {i}: {mem_alloc:.2f} GB\n"
+                print(f"Depth: {depth}, Value: {value}, Type: {type(value)}, Memory: {mem_str}")
+            else:
+                print(f"Depth: {depth}, Value: {value}, Type: {type(value)}")
+
+        # Check if value is already in memo - crucial for avoiding infinite recursion
+        if id(value) in memo:
+            return f"ref:{id(value)}"  # Return a reference indicator instead of recursing
+
+        # Handle None
+        if value is None:
+            return ""
+
+        # Handle tensors and other special objects by returning their type and shape/identity
+        if hasattr(value, "__class__") and value.__class__.__name__ == "Tensor":
+            try:
+                tensor_repr = f"Tensor:shape={list(value.shape)}:dtype={value.dtype}"
+            except:
+                tensor_repr = f"Tensor:{id(value)}"
+            memo[id(value)] = tensor_repr
+            return tensor_repr
+
+        if hasattr(value, "__class__") and "PreTrainedTokenizerBase" in str(value.__class__.__mro__):
+            tokenizer_repr = f"Tokenizer:{value.__class__.__name__}"
+            memo[id(value)] = tokenizer_repr
+            return tokenizer_repr
+
+        if hasattr(value, "__class__") and "Module" in str(value.__class__.__mro__):
+            module_repr = f"Module:{value.__class__.__name__}"
+            memo[id(value)] = module_repr
+            return module_repr
+
+        # Handle DictConversion objects - pass the depth parameter correctly
+        if hasattr(value, "compute_hash"):
+            memo[id(value)] = "processing"  # Add immediately to avoid recursion
+            result = value.compute_hash(exclude, memo, depth, do_print)
+            memo[id(value)] = result  # Update with actual result
+            return str(result)
+
+        # Handle Enums
+        if hasattr(value, "__class__") and hasattr(value.__class__,
+                                                   "__module__") and "enum" in value.__class__.__module__:
+            try:
+                enum_repr = f"Enum:{value.__class__.__name__}.{value.name}"
+            except:
+                enum_repr = f"Enum:{value.__class__.__name__}.{id(value)}"
+            memo[id(value)] = enum_repr
+            return enum_repr
+
+        # Handle lists
+        if isinstance(value, list):
+            memo[id(value)] = "list:processing"  # Add immediately to avoid recursion
+            items_str = "["
+            for item in value:
+                items_str += self._hash_value_to_str(item, exclude, memo, depth, do_print) + ","
+            items_str += "]"
+            memo[id(value)] = items_str
+            return items_str
+
+        # Handle tuples
+        if isinstance(value, tuple):
+            memo[id(value)] = "tuple:processing"  # Add immediately to avoid recursion
+            items_str = "("
+            for item in value:
+                items_str += self._hash_value_to_str(item, exclude, memo, depth, do_print) + ","
+            items_str += ")"
+            memo[id(value)] = items_str
+            return items_str
+
+        # Handle dictionaries
+        if isinstance(value, dict):
+            memo[id(value)] = "dict:processing"  # Add immediately to avoid recursion
+            items_str = "{"
+            for k, v in value.items():
+                if k.startswith('_') or k in exclude:
+                    continue
+                # Convert the key to string representation
+                key_str = str(k)
+                # Get value string representation
+                val_str = self._hash_value_to_str(v, exclude, memo, depth, do_print)
+                items_str += f"{key_str}:{val_str},"
+            items_str += "}"
+            memo[id(value)] = items_str
+            return items_str
+
+        if isinstance(value, set):
+            memo[id(value)] = "set:processing"  # Add immediately to avoid recursion
+            items_str = "{"
+            for item in value:
+                items_str += str(item) + ","
+            items_str += "}"
+            memo[id(value)] = items_str
+            return items_str
+
+        # Handle primitive types (int, float, str, bool)
+        if isinstance(value, (int, float, str, bool)):
+            result = str(value)
+            memo[id(value)] = result
+            return result
+
+        # Any other types - use their string representation
+        other_repr = f"{str(type(value).__name__)}:{id(value)}"  # Just use ID to prevent recursion
+        memo[id(value)] = other_repr
+        return other_repr
+
 
     def deepcopy_exclude(self, exclude=None, memo=None, depth=0, do_print=False):
         """
@@ -156,6 +354,7 @@ class DictConversion:
 
     def __init__(self):
         # Using weakref to avoid circular references
+        self.hash = None
         self._parent: Optional[weakref.ReferenceType] = None
         self._parent_key: Optional[Union[str, int]] = None
         self._children: Dict[Union[str, int], 'DictConversion'] = {}
@@ -164,6 +363,8 @@ class DictConversion:
     def __new__(cls, *args, **kwargs):
         instance = super().__new__(cls)
         # Initialize instance attributes
+        instance.hash = None
+
         instance._parent = None
         instance._parent_key = None
         instance._children = {}
@@ -395,9 +596,6 @@ class DictConversion:
     def _is_enum(cls, obj: Any) -> bool:
         """Check if an object is an Enum."""
         return isinstance(obj, Enum)
-
-    import sys
-    import inspect
 
     @staticmethod
     def find_all_classes(root_dir: str, package_name: str = None) -> List[Tuple[str, str]]:
