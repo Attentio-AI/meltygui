@@ -43,6 +43,11 @@ class TrainingResult(RelaxedEnum):
     NAN = "nan"
     INF = "inf"
     NONE = "none"
+    message = ""
+
+    def set_message(self, message):
+        self.message = message
+        return self
 
 
 class ComparisonViewMode(RelaxedEnum):
