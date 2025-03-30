@@ -19,6 +19,7 @@ class ViewIterateMode(RelaxedEnum):
     SINGLE = 0
     TRAINING_BEFORE_AFTER = 1
     TRAINING_STEPS = 2
+    SNAPSHOT = 3
 
 
 class TrainingStatus(RelaxedEnum):

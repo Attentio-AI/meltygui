@@ -12,6 +12,8 @@ import torch
 from torch import Tensor, nn
 from transformers import PreTrainedTokenizerBase
 
+from lsd.gl_gui.utils.load_save_util import find_repo_root
+
 
 class DictConversion:
 
@@ -262,6 +264,10 @@ class DictConversion:
                 # Deep copy the value with appropriate handling based on type
                 copied_value = self._deepcopy_value(value, exclude, memo, do_print)
                 setattr(result, key, copied_value)
+            else:
+                # For excluded attributes, just set them to None
+                setattr(result, key, None)
+
 
         return result
 
@@ -396,23 +402,27 @@ class DictConversion:
 
         # Set up parent reference if value is DictConversion
         if isinstance(value, DictConversion):
-            value._parent = weakref.ref(self)
-            value._parent_key = name
-            self._children[name] = value
+            if value is not None and value._parent is not None:
+                value._parent = weakref.ref(self)
+                value._parent_key = name
+                self._children[name] = value
         elif isinstance(value, (list, tuple)):
             # Handle lists/tuples containing DictConversion objects
             for i, item in enumerate(value):
                 if isinstance(item, DictConversion):
-                    item._parent = weakref.ref(self)
-                    item._parent_key = f"[{i}]"
-                    self._children[i] = item
+                    if item is not None and item._parent is not None:
+                        item._parent = weakref.ref(self)
+                        item._parent_key = f"[{i}]"
+                        self._children[i] = item
+
         elif isinstance(value, dict):
             # Handle dictionaries containing DictConversion objects
             for k, v in value.items():
                 if isinstance(v, DictConversion):
-                    v._parent = weakref.ref(self)
-                    v._parent_key = f"['{k}']"
-                    self._children[k] = v
+                    if v is not None and v._parent is not None:
+                        v._parent = weakref.ref(self)
+                        v._parent_key = f"['{k}']"
+                        self._children[k] = v
 
         super().__setattr__(name, value)
 
@@ -710,20 +720,6 @@ class DictConversion:
         return nested_classes
 
     @staticmethod
-    def find_repo_root(start_path: Path | str = None) -> Path:
-        if start_path is None:
-            start_path = Path(os.path.dirname(os.path.abspath(__file__)))
-
-        current = Path(start_path).resolve()
-
-        while current != current.parent:
-            if (current / '.git').exists():
-                return current
-            current = current.parent
-
-        raise FileNotFoundError("Repository root not found")
-
-    @staticmethod
     def instantiate_from_class_path(class_path: str, last_try=False):
         parts = class_path.split('.')
         module = None
@@ -866,7 +862,7 @@ class DictConversion:
     def initialize_class_names():
         if DictConversion.class_names is None:
             DictConversion.class_names = {}
-            root_dir = f"{DictConversion.find_repo_root()}/src/lsd"
+            root_dir = f"{find_repo_root()}/src/lsd"
             class_names_list = DictConversion.find_all_classes(str(root_dir), "lsd")
             for the_class_name, the_class_path in class_names_list:
                 DictConversion.class_names[the_class_name] = the_class_path
@@ -875,7 +871,6 @@ class DictConversion:
         if excluded is None:
             excluded = []
         root_id = object_dict["root"]
-        root_object = object_dict[root_id]
         object_dict.pop("root")
 
         instantiated_objects = {}
