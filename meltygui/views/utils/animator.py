@@ -3,6 +3,8 @@ import glfw
 from typing import Callable, Union, Tuple
 from enum import Enum
 
+from lsd.gl_gui.utils.render_utils import request_render
+
 
 class EaseType(Enum):
     LINEAR = 'linear'
@@ -92,4 +94,4 @@ class Animator:
         current = self._interpolate(self.start_value, self.end_value, progress)
 
         self.on_update(current)
-        glfw.post_empty_event()  # Request new frame
+        request_render()  # Request next frame
