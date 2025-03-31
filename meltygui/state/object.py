@@ -883,6 +883,8 @@ class DictConversion:
                 print("Found GenPrompt type")
             if isinstance(unset_value, DictConversion) or (
                     isinstance(new_value, tuple) and new_value[0] in instantiated_objects):
+                if new_value is None:
+                    return unset_value
                 return instantiated_objects[new_value[0]]
 
             if isinstance(unset_value, Enum) or (isinstance(unset_value, tuple) and
