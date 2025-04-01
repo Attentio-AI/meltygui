@@ -939,6 +939,9 @@ class DictConversion:
                 first_key = next(iter(unset_value.keys()), None)
                 first_value = unset_value.get(first_key, None)
 
+                if "parse_direct" in new_value:
+                    return new_value
+
                 unset_value.clear()
                 for a_key, a_value in new_value.items():
                     if first_key is not None:
@@ -1088,6 +1091,9 @@ class DictConversion:
             # Loop through the dictionary and convert each item
             inner_dict = {}
             for sub_key, sub_value in value.items():
+                if excluded and sub_key in excluded:
+                    continue
+
                 inner_dict[sub_key] = self.parse_value(inner_dict, objects, sub_key, sub_value, excluded, shallow)
             return inner_dict
         elif isinstance(value, list):

@@ -99,6 +99,9 @@ class ImGuiStyleManager:
         #     'grab_min_size': style.grab_min_size
         # }
 
+    def restore(self):
+        self.set_imgui_tint(*self.saved_rgb)
+
     def restore_style(self):
         """Restore the previously saved style and colors"""
 
@@ -128,6 +131,10 @@ class ImGuiStyleManager:
         # style.scrollbar_size = self.saved_style['scrollbar_size']
         # style.grab_min_size = self.saved_style['grab_min_size']
         # return True
+
+    def tint_gold(self):
+        self.save_style()
+        self.set_imgui_tint(0.6, 0.5, 0.3)
 
     def set_imgui_tint(self, r, g, b):
         """
