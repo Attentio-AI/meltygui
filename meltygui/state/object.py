@@ -20,6 +20,7 @@ class DictConversion:
     is_class_dict = True
     outliner_expanded = False
     class_names: Optional[Dict[str, str]] = None
+    modules_imported = set()
 
     def compute_hash(self, exclude=None, memo=None, depth=0, do_print=False):
         """
@@ -734,7 +735,7 @@ class DictConversion:
                 try:
                     if parts[0] == 'src':
                         parts.remove('src')
-                    if parts[0] != 'lsd':
+                    if parts[0] != 'lsd' and parts[0] != 'model':
                         parts.insert(1, 'lsd')
                     module_path = '.'.join(parts[:i])
 
@@ -810,7 +811,7 @@ class DictConversion:
             try:
                 if parts[0] == 'src':
                     parts.remove('src')
-                if parts[0] != 'lsd':
+                if parts[0] != 'lsd' and parts[0] != 'model':
                     parts.insert(1, 'lsd')
 
                 module_path = '.'.join(parts[:i])
@@ -859,13 +860,27 @@ class DictConversion:
                 return DictConversion.get_enum_value(found_class_path, combined_name, value, last_try=True)
 
     @staticmethod
-    def initialize_class_names():
+    def initialize_class_names(root=None, package_name=None):
+        if package_name is None:
+            package_name = "lsd"
+
+        if package_name in DictConversion.modules_imported:
+            return
+
+        DictConversion.modules_imported.add(package_name)
+
         if DictConversion.class_names is None:
             DictConversion.class_names = {}
-            root_dir = f"{find_repo_root()}/src/lsd"
-            class_names_list = DictConversion.find_all_classes(str(root_dir), "lsd")
-            for the_class_name, the_class_path in class_names_list:
-                DictConversion.class_names[the_class_name] = the_class_path
+
+        if root is not None:
+            root_folder = root
+        else:
+            root_folder = "/src/lsd"
+
+        root_dir = f"{find_repo_root()}{root_folder}"
+        class_names_list = DictConversion.find_all_classes(str(root_dir), package_name)
+        for the_class_name, the_class_path in class_names_list:
+            DictConversion.class_names[the_class_name] = the_class_path
 
     def from_dict(self, object_dict, excluded=None):
         if excluded is None:
@@ -879,6 +894,8 @@ class DictConversion:
             # Handle Enums
             # Handle nested objects
             #and unset_value['type'] == "src.lsd.ui_gui.tensorview.GenPrompt"
+            if unset_value is None and new_value is None:
+                return None
             if isinstance(new_value, dict) and "type" in new_value:
                 print("Found GenPrompt type")
             if isinstance(unset_value, DictConversion) or (

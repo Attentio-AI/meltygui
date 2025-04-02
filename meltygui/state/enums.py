@@ -27,7 +27,7 @@ class TrainingStatus(RelaxedEnum):
     TRAINING = "Training"
     HYPER_SEARCH = "Hyper Search"
     STOP_REQUESTED = "Stop Requested"
-    PAUSE_REQUESTED = "Pause Requested"
+    STOP_GEN_REQUESTED = "Pause Requested"
     PAUSED = "Paused"
     GENERATING = "Generating"
 
