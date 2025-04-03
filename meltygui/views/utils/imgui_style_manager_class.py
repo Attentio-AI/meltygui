@@ -136,6 +136,11 @@ class ImGuiStyleManager:
         self.save_style()
         self.set_imgui_tint(0.6, 0.5, 0.3)
 
+    def tint_default(self):
+        self.save_style()
+        self.set_imgui_tint(0.3, 0.6, 0.7)
+
+
     def set_imgui_tint(self, r, g, b):
         """
         Sets a global tint color for ImGui by adjusting all style colors based on a single RGB color.

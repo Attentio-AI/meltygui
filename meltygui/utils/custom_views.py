@@ -1,9 +1,13 @@
+import inspect
+import os
 import threading
 import traceback
+from collections import defaultdict
 from enum import Enum
 
 import glfw
 import imgui
+import psutil
 
 from lsd.lsd_utils import singleton
 
@@ -21,7 +25,6 @@ class LSDView:
     def __init__(self):
         self.group_stack = []
         self.style_stack = []
-
 
     def unstack_group(self):
         for group_type in reversed(self.style_stack):
@@ -50,6 +53,27 @@ class LSDView:
                 imgui.pop_style_color(1)
 
         self.group_stack.clear()
+
+
+def button(text, width=0, height=0):
+    return imgui.button(text, width=width, height=height)
+
+
+def button_red(text, width=0, height=0):
+    push_style_color(imgui.COLOR_BUTTON, 0.6, 0.2, 0.2)
+    push_style_color(imgui.COLOR_BUTTON_HOVERED, 0.6, 0.3, 0.4)
+    push_style_color(imgui.COLOR_BUTTON_ACTIVE, 1.0, 0.4, 0.4)
+    push_style_color(imgui.COLOR_TEXT, 1.0, 1.0, 1.0)
+    val = imgui.button(text, width=width, height=height)
+    pop_style_color(4)
+    return val
+
+
+
+# noinspection PyArgumentList
+def tree(text):
+    flags = imgui.TREE_NODE_DEFAULT_OPEN | imgui.TREE_NODE_COLLAPSING_HEADER
+    return imgui.tree_node(text, flags=flags)
 
 def print_stack_trace(size=None):
     # Get the current stack frame info
@@ -181,24 +205,23 @@ COLORS = {
     'EXCEPTION': '\033[38;5;203m'  # Red for exception names
 }
 
+COLORS = {
+    'HEADER': '\033[95m',
+    'BLUE': '\033[94m',
+    'CYAN': '\033[96m',
+    'GREEN': '\033[92m',
+    'YELLOW': '\033[93m',
+    'RED': '\033[91m',
+    'BOLD': '\033[1m',
+    'UNDERLINE': '\033[4m',
+    'RESET': '\033[0m'
+}
+
 import sys
 import traceback
 # Create a console for rich output
 
 def print_colored_traceback(exc_type, exc_value, exc_traceback, limit=None, file=None):
-    COLORS = {
-        'HEADER': '\033[95m',
-        'BLUE': '\033[94m',
-        'CYAN': '\033[96m',
-        'GREEN': '\033[92m',
-        'YELLOW': '\033[93m',
-        'RED': '\033[91m',
-        'BOLD': '\033[1m',
-        'UNDERLINE': '\033[4m',
-        'RESET': '\033[0m'
-    }
-
-
     """
     Print the traceback with colors to make it easier to read.
 
@@ -244,6 +267,554 @@ def print_colored_traceback(exc_type, exc_value, exc_traceback, limit=None, file
 
 import gc
 import torch
+
+
+def memory_flame_chart(scope=None, threshold_kb=1, depth=10000, width=80, color=True, aggregate_by_type=True,
+                       include_cuda=True, scan_all_objects=True, max_objects=50000000):
+    """
+    Generate a flame chart visualization of memory usage by variables.
+
+    Args:
+        scope: The scope/namespace to analyze. If None, uses the caller's globals and locals.
+        threshold_kb: Minimum size in KB to include in the chart (default: 1KB)
+        depth: Maximum depth for nested objects to traverse (default: 3)
+        width: Width of the terminal output (default: 80 characters)
+        color: Whether to use ANSI colors in output (default: True)
+        aggregate_by_type: Whether to aggregate memory usage by class type (default: True)
+        include_cuda: Whether to include CUDA memory in the chart (default: True)
+        scan_all_objects: Whether to scan all objects in memory (default: True)
+        max_objects: Maximum number of objects to scan (default: 500000)
+
+    Returns:
+        None: Prints the flame chart to stdout
+    """
+    # ANSI color codes
+    colors = {
+        'reset': '\033[0m',
+        'red': '\033[91m',
+        'yellow': '\033[93m',
+        'green': '\033[92m',
+        'blue': '\033[94m',
+        'cyan': '\033[96m',
+        'magenta': '\033[95m',
+    }
+
+    if not color:
+        # Disable colors if not wanted
+        for k in colors:
+            colors[k] = ''
+
+    # Get the namespace to analyze
+    if scope is None:
+        # Get caller's frame to access its variables
+        caller_frame = inspect.currentframe().f_back
+        global_vars = caller_frame.f_globals
+        local_vars = caller_frame.f_locals
+    else:
+        global_vars = scope
+        local_vars = {}
+
+    # Track already seen objects to avoid cycles
+    seen_ids = set()
+
+    # Store type-specific information when aggregating
+    type_sizes = defaultdict(int)
+    type_counts = defaultdict(int)
+    type_examples = {}
+
+    # Flag to detect if PyTorch is available
+    has_pytorch = False
+    try:
+        import torch
+        has_pytorch = True
+    except ImportError:
+        pass
+
+    # Flag to detect if NumPy is available
+    has_numpy = False
+    try:
+        import numpy as np
+        has_numpy = True
+    except ImportError:
+        pass
+
+    # Stores the size of each variable and its path when not aggregating
+    var_sizes = []
+    threshold_bytes = threshold_kb * 1024
+
+    # For tracking tensor memory
+    cpu_tensor_size = 0
+    numpy_array_size = 0
+
+    # Risky module patterns to avoid
+    risky_modules_patterns = [
+        r'transformers\.models\.auto',
+        r'transformers\.utils\.import_utils',
+        r'transformers\.deepspeed',
+        r'importlib\._bootstrap',
+        r'lazy_loader',
+        r'google\.protobuf',
+    ]
+
+    def is_risky_object(obj):
+        """Check if an object is from a module that might cause import or recursion issues"""
+        try:
+            if not hasattr(obj, '__class__'):
+                return False
+
+            module_name = obj.__class__.__module__
+            # Check if module name matches any risky pattern
+            if any(re.search(pattern, module_name) for pattern in risky_modules_patterns):
+                return True
+
+            # Check for specific object types
+            if hasattr(obj, '__getattr__') and not isinstance(obj, dict) and not hasattr(obj, 'items'):
+                # Objects with custom __getattr__ might trigger imports
+                return True
+
+            # Dynamic attribute objects that might trigger imports
+            risky_class_names = ['LazyLoader', 'LazyImport', 'DynamicModule', '_LazyModule']
+            if obj.__class__.__name__ in risky_class_names:
+                return True
+
+            return False
+        except:
+            # If any error occurs while checking, consider it risky
+            return True
+
+    def estimate_tensor_memory(tensor):
+        """Estimate memory used by a tensor"""
+        try:
+            if hasattr(tensor, 'element_size') and hasattr(tensor, 'nelement'):
+                return tensor.element_size() * tensor.nelement()
+            elif hasattr(tensor, 'itemsize') and hasattr(tensor, 'size'):
+                # For numpy arrays
+                return tensor.itemsize * tensor.size
+            return 0
+        except:
+            return 0
+
+    def get_size(obj, name, current_depth=0, path=""):
+        """Recursively find the size of objects and their attributes"""
+        nonlocal cpu_tensor_size, numpy_array_size
+
+        if current_depth > depth:
+            return 0
+
+        # Skip already seen objects
+        obj_id = id(obj)
+        if obj_id in seen_ids:
+            return 0
+
+        seen_ids.add(obj_id)
+
+        # Skip risky objects
+        if is_risky_object(obj):
+            # Just estimate the basic size without recursion
+            try:
+                obj_size = sys.getsizeof(obj)
+
+                # Record basic type information
+                if aggregate_by_type:
+                    obj_type = obj.__class__.__name__
+                    type_sizes[obj_type] += obj_size
+                    type_counts[obj_type] += 1
+                    if obj_type not in type_examples:
+                        type_examples[obj_type] = path if path else name
+
+                return obj_size
+            except:
+                return 0
+
+        # Default object size
+        obj_size = 0
+        tensor_data_size = 0
+
+        # Special handling for PyTorch tensors
+        if has_pytorch and isinstance(obj, torch.Tensor):
+            try:
+                # Get base object size
+                obj_size = sys.getsizeof(obj)
+
+                if obj.is_cuda:
+                    # For CUDA tensors, only count the object size
+                    # Record custom size information for CUDA tensors
+                    if aggregate_by_type:
+                        cuda_type = f"torch.Tensor(CUDA)"
+                        type_sizes[cuda_type] += obj_size
+                        type_counts[cuda_type] += 1
+                        if cuda_type not in type_examples:
+                            type_examples[cuda_type] = path
+                else:
+                    # For CPU tensors, estimate memory
+                    tensor_data_size = estimate_tensor_memory(obj)
+                    obj_size += tensor_data_size
+
+                    # Track CPU tensor memory separately
+                    cpu_tensor_size += tensor_data_size
+
+                    # Record CPU tensor information
+                    if aggregate_by_type:
+                        cpu_type = f"torch.Tensor(CPU)"
+                        type_sizes[cpu_type] += obj_size
+                        type_counts[cpu_type] += 1
+                        if cpu_type not in type_examples:
+                            type_examples[cpu_type] = path
+            except:
+                obj_size = sys.getsizeof(obj)
+
+        # Special handling for NumPy arrays
+        elif has_numpy and isinstance(obj, np.ndarray):
+            try:
+                # Get base object size
+                obj_size = sys.getsizeof(obj)
+
+                # Add size of array data
+                array_data_size = estimate_tensor_memory(obj)
+                obj_size += array_data_size
+
+                # Track numpy array memory separately
+                numpy_array_size += array_data_size
+
+                # Record numpy array information
+                if aggregate_by_type:
+                    numpy_type = f"numpy.ndarray"
+                    type_sizes[numpy_type] += obj_size
+                    type_counts[numpy_type] += 1
+                    if numpy_type not in type_examples:
+                        type_examples[numpy_type] = path
+            except:
+                obj_size = sys.getsizeof(obj)
+        else:
+            try:
+                # Get the object's size for other objects
+                obj_size = sys.getsizeof(obj)
+            except Exception:
+                # Some objects don't support getsizeof
+                obj_size = 0
+
+        current_path = f"{path}.{name}" if path else name
+
+        # Record size information if aggregating
+        if aggregate_by_type:
+            if has_pytorch and isinstance(obj, torch.Tensor):
+                if obj.is_cuda:
+                    obj_type = "torch.Tensor(CUDA)"
+                else:
+                    obj_type = "torch.Tensor(CPU)"
+            elif has_numpy and isinstance(obj, np.ndarray):
+                obj_type = "numpy.ndarray"
+            else:
+                obj_type = type(obj).__name__
+
+            type_sizes[obj_type] += obj_size
+            type_counts[obj_type] += 1
+            if obj_type not in type_examples:
+                type_examples[obj_type] = current_path
+
+        # Store the size info for display if not aggregating
+        if not aggregate_by_type and obj_size >= threshold_bytes:
+            var_sizes.append((current_path, obj_size, type(obj).__name__))
+
+        # Skip recursive inspection of tensors and special types
+        if (has_pytorch and isinstance(obj, torch.Tensor)) or (has_numpy and isinstance(obj, np.ndarray)):
+            return obj_size
+
+        # For some collection types, add the size of their items
+        try:
+            if isinstance(obj, (list, tuple, set, frozenset)):
+                try:
+                    for i, item in enumerate(obj):
+                        if current_depth < depth:  # Respect depth limit
+                            item_path = f"{current_path}[{i}]"
+                            obj_size += get_size(item, f"[{i}]", current_depth + 1, current_path)
+                except:
+                    pass
+
+            elif isinstance(obj, dict):
+                try:
+                    # Safe iteration over dictionary items
+                    safe_items = list(obj.items())
+                    for k, v in safe_items:
+                        if current_depth < depth:  # Respect depth limit
+                            # Convert key to string representation
+                            try:
+                                k_str = str(k) if len(str(k)) < 20 else f"{str(k)[:17]}..."
+                            except:
+                                k_str = "?"
+                            item_path = f"{current_path}[{k_str}]"
+                            obj_size += get_size(v, f"[{k_str}]", current_depth + 1, current_path)
+                except:
+                    pass
+
+            # For custom objects, inspect attributes
+            elif hasattr(obj, '__dict__') and not isinstance(obj, type):
+                try:
+                    # For PyTorch modules, handle parameters specially
+                    if has_pytorch and hasattr(obj, 'parameters') and callable(getattr(obj, 'parameters', None)):
+                        try:
+                            for name, param in list(obj.named_parameters()):
+                                if current_depth < depth:
+                                    param_path = f"{current_path}.{name}"
+                                    obj_size += get_size(param, name, current_depth + 1, current_path)
+                        except:
+                            pass
+
+                    # Get standard attributes
+                    safe_dict = dict(obj.__dict__)
+                    for attr, value in safe_dict.items():
+                        if not attr.startswith('__') and current_depth < depth:
+                            attr_path = f"{current_path}.{attr}"
+                            obj_size += get_size(value, attr, current_depth + 1, current_path)
+                except:
+                    pass
+        except:
+            # If any exception occurs during traversal, just use the object's own size
+            pass
+
+        return obj_size
+
+    # Get total memory of this process as a comparison
+    process = psutil.Process(os.getpid())
+    total_process_memory = process.memory_info().rss
+
+    # Analyze memory usage
+    print(f"\n{colors['cyan']}===== Memory Usage Flame Chart ====={colors['reset']}")
+    print(f"Process total: {total_process_memory / (1024 * 1024):.2f} MB")
+    print(f"Threshold: {threshold_kb} KB\n")
+
+    # Process variables from both globals and locals
+    all_vars = {}
+    all_vars.update(global_vars)
+    all_vars.update(local_vars)
+
+    # Start memory analysis from explicit variables
+    print(f"{colors['blue']}Analyzing {len(all_vars)} variables in current scope...{colors['reset']}")
+    for name, obj in all_vars.items():
+        try:
+            # Skip modules, functions, and other non-data objects for direct analysis
+            if name.startswith('__') or inspect.ismodule(obj) or inspect.isfunction(obj) or inspect.isbuiltin(obj):
+                continue
+
+            get_size(obj, name)
+        except Exception as e:
+            # Skip objects that can't be inspected
+            continue
+
+    # If scanning all objects, use garbage collector to find objects not directly accessible
+    total_objects_scanned = len(seen_ids)
+    if scan_all_objects:
+        print(f"{colors['blue']}Scanning all objects in memory (this may take a while)...{colors['reset']}")
+
+        # Get all objects from garbage collector
+        gc.collect()  # Force collection to free up unreferenced objects
+
+        try:
+            all_objects = gc.get_objects()
+
+            # Skip some problematic types
+            skip_types = set([type, type(None), type(NotImplemented), type(Ellipsis)])
+            if has_pytorch:
+                try:
+                    # Skip tensor storage types
+                    import torch.storage
+                    skip_types.add(type(torch.storage.TypedStorage))
+                    skip_types.add(type(torch.storage._TypedStorage))
+                except:
+                    pass
+
+            print(f"{colors['blue']}Found {len(all_objects)} total objects. Analyzing...{colors['reset']}")
+
+            # Process a subset of objects to avoid taking too long
+            objects_to_process = min(len(all_objects), max_objects)
+            for i, obj in enumerate(all_objects[:objects_to_process]):
+                if i % 50000 == 0 and i > 0:
+                    print(f"{colors['blue']}Processed {i}/{objects_to_process} objects...{colors['reset']}")
+
+                try:
+                    # Skip if already seen
+                    if id(obj) in seen_ids:
+                        continue
+
+                    # Skip problematic types
+                    if type(obj) in skip_types:
+                        continue
+
+                    # Skip modules, functions, etc.
+                    if inspect.ismodule(obj) or inspect.isfunction(obj) or inspect.isbuiltin(obj):
+                        continue
+
+                    # Skip risky objects right away
+                    if is_risky_object(obj):
+                        # Just get a basic size estimate without traversing
+                        try:
+                            obj_size = sys.getsizeof(obj)
+
+                            # Record basic type information
+                            if aggregate_by_type:
+                                obj_type = obj.__class__.__name__
+                                type_sizes[obj_type] += obj_size
+                                type_counts[obj_type] += 1
+                                if obj_type not in type_examples:
+                                    type_examples[obj_type] = f"<{obj_type}>"
+
+                            seen_ids.add(id(obj))
+                        except:
+                            pass
+                        continue
+
+                    # Process this object - use its type name as an identifier
+                    obj_type = type(obj).__name__
+                    get_size(obj, f"<{obj_type}>")
+
+                except:
+                    # Skip problematic objects
+                    continue
+
+            total_objects_scanned = len(seen_ids)
+            print(f"{colors['blue']}Scanned {total_objects_scanned} unique objects.{colors['reset']}")
+        except Exception as e:
+            print(f"{colors['red']}Error during object scanning: {str(e)}{colors['reset']}")
+
+    # Collect CUDA memory info if available
+    cuda_mem_total = 0
+    cuda_entries = []
+    if has_pytorch and torch.cuda.is_available() and include_cuda:
+        try:
+            # Get CUDA memory stats
+            for device_idx in range(torch.cuda.device_count()):
+                cuda_mem = torch.cuda.memory_reserved(device_idx)
+                if cuda_mem > 0:
+                    cuda_name = f"CUDA:{device_idx} Memory"
+                    cuda_entries.append((cuda_name, cuda_mem, "cuda_memory"))
+                    cuda_mem_total += cuda_mem
+        except:
+            # In case of errors accessing CUDA memory info
+            pass
+
+    # Prepare the data for display
+    if aggregate_by_type:
+        # Convert type data to the same format as var_sizes
+        var_sizes = []  # Clear and rebuild with type data
+        for type_name, size in type_sizes.items():
+            if size >= threshold_bytes:
+                example = type_examples.get(type_name, "<unknown>")
+                count = type_counts[type_name]
+                display_name = f"{type_name} ({count} instances)"
+                var_sizes.append((display_name, size, example))
+
+    # Get the total accounted memory (excluding CUDA - counted separately)
+    ram_accounted = sum(size for _, size, _ in var_sizes)
+
+    # Add CUDA entries to the display list
+    if include_cuda:
+        var_sizes.extend(cuda_entries)
+
+    # Sort by size (largest first)
+    var_sizes.sort(key=lambda x: x[1], reverse=True)
+
+    # Calculate max name length for formatting
+    max_name_len = min(max((len(name) for name, _, _ in var_sizes), default=20), 50)
+
+    # Print the flame chart
+    if not var_sizes:
+        print(f"{colors['yellow']}No variables found above the threshold of {threshold_kb} KB{colors['reset']}")
+        return
+
+    # Report memory statistics
+    print(f"RAM memory accounted for: {ram_accounted / (1024 * 1024):.2f} MB " +
+          f"({ram_accounted / total_process_memory * 100:.1f}% of process total)")
+
+    if cpu_tensor_size > 0:
+        print(f"CPU tensor data: {cpu_tensor_size / (1024 * 1024):.2f} MB " +
+              f"({cpu_tensor_size / total_process_memory * 100:.1f}% of process total)")
+
+    if numpy_array_size > 0:
+        print(f"NumPy array data: {numpy_array_size / (1024 * 1024):.2f} MB " +
+              f"({numpy_array_size / total_process_memory * 100:.1f}% of process total)")
+
+    if include_cuda and cuda_mem_total > 0:
+        print(f"CUDA memory: {cuda_mem_total / (1024 * 1024):.2f} MB")
+        print(f"Total (RAM + CUDA): {(ram_accounted + cuda_mem_total) / (1024 * 1024):.2f} MB")
+
+    # For bar width calculation based on the largest object
+    max_size = max(size for _, size, _ in var_sizes)
+
+    # Print header
+    if aggregate_by_type:
+        print(
+            f"\n{colors['magenta']}{'Type (instances)':<{max_name_len}} | {'Size':>10} | {'Example':>50} | Usage{colors['reset']}")
+    else:
+        print(
+            f"\n{colors['magenta']}{'Variable':<{max_name_len}} | {'Size':>10} | {'Type':>50} | Usage{colors['reset']}")
+    print("-" * (max_name_len + 33 + width))
+
+    # Print each variable with a bar representing its size
+    for name, size, type_info in var_sizes:
+        # Format name (truncate if too long)
+        if len(name) > max_name_len:
+            name = name[:max_name_len - 3] + "..."
+
+        # Calculate the bar width
+        bar_width = int((size / max_size) * (width - 10))
+
+        # Choose color based on size and type
+        if type_info == "cuda_memory":
+            color_code = colors['blue']  # CUDA memory in blue
+        elif "torch.Tensor(CPU)" in name:
+            color_code = colors['cyan']  # CPU tensors in cyan
+        elif "numpy.ndarray" in name:
+            color_code = colors['magenta']  # NumPy arrays in magenta
+        elif size > 100 * 1024 * 1024:  # >100MB
+            color_code = colors['red']
+        elif size > 10 * 1024 * 1024:  # >10MB
+            color_code = colors['yellow']
+        else:
+            color_code = colors['green']
+
+        # Format size
+        if size > 1024 * 1024 * 1024:  # GB range
+            size_str = f"{size / (1024 * 1024 * 1024):.2f} GB"
+        elif size > 1024 * 1024:  # MB range
+            size_str = f"{size / (1024 * 1024):.2f} MB"
+        else:
+            size_str = f"{size / 1024:.2f} KB"
+
+        # Truncate type_info if it's too long
+        if len(str(type_info)) > 50:
+            type_info = str(type_info)[:46] + "..."
+
+        # Print the bar
+        bar = "█" * bar_width
+        print(f"{name:<{max_name_len}} | {size_str:>10} | {type_info:>50} | {color_code}{bar}{colors['reset']}")
+
+    # Display memory that couldn't be accounted for (for RAM only)
+    unaccounted = total_process_memory - ram_accounted
+    if unaccounted > 0:
+        print("\n" + "-" * (max_name_len + 33 + width))
+        print(f"{colors['yellow']}RAM memory not accounted for: {unaccounted / (1024 * 1024):.2f} MB " +
+              f"({unaccounted / total_process_memory * 100:.1f}% of process total){colors['reset']}")
+        print(
+            f"{colors['yellow']}This includes memory used by C extensions, memory fragmentation, and system overhead.{colors['reset']}")
+
+        # If we've scanned all objects and still missing a lot, suggest reasons
+        if scan_all_objects and unaccounted > 0.5 * total_process_memory:
+            print(f"{colors['yellow']}Possible reasons for large unaccounted memory:{colors['reset']}")
+            print(f"{colors['yellow']}1. Memory allocated in C/C++ extensions not visible to Python{colors['reset']}")
+            print(f"{colors['yellow']}2. Memory fragmentation due to many allocations/deallocations{colors['reset']}")
+            print(
+                f"{colors['yellow']}3. Tensors in modules not fully traversed due to safety measures{colors['reset']}")
+
+    # Add note about additional memory profiling
+    print(
+        f"\n{colors['blue']}Note: For a more complete memory profile, consider using specialized tools like:{colors['reset']}")
+    print(f"  - memory_profiler: pip install memory_profiler")
+    print(f"  - py-spy: pip install py-spy")
+    if has_pytorch:
+        print(f"  - pytorch_memlab: for PyTorch memory analysis")
+        print(f"  - torch.cuda.memory_summary(): for detailed CUDA memory breakdown")
+
+    print("\n")
 
 
 def cleanup_cuda_memory(verbose=True):

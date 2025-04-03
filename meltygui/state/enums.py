@@ -91,3 +91,5 @@ class MaskOperation(RelaxedEnum):
     DIVISIVE = 3
     REPLACE = 4
     ID = 5
+
+

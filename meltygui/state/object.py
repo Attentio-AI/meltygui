@@ -10,17 +10,126 @@ from typing import Any, Dict, Optional, Union, List, Tuple
 
 import torch
 from torch import Tensor, nn
-from transformers import PreTrainedTokenizerBase
+from transformers import PreTrainedTokenizerBase, LlamaTokenizerFast
 
 from lsd.gl_gui.utils.load_save_util import find_repo_root
+from lsd.lsd_utils import singleton
+
+
+@singleton
+class ClassUtility:
+
+    def __init__(self):
+        self.class_names: Optional[Dict[str, str]] = None
+        self.modules_imported = set()
+
+    def initialize_class_names(self, root=None, package_name=None):
+        if package_name is None:
+            package_name = "lsd"
+
+        if package_name in self.modules_imported:
+            return
+
+        self.modules_imported.add(package_name)
+
+        if self.class_names is None:
+            self.class_names = {}
+
+        if root is not None:
+            root_folder = root
+        else:
+            root_folder = "/src/lsd"
+
+        root_dir = f"{find_repo_root()}{root_folder}"
+        class_names_list = ClassUtility().find_all_classes(str(root_dir), package_name)
+        for the_class_name, the_class_path in class_names_list:
+            self.class_names[the_class_name] = the_class_path
+
+    @staticmethod
+    def find_all_classes(root_dir: str, package_name: str = None) -> List[Tuple[str, str]]:
+        """
+        Find all classes in a package directory structure, including nested directories and nested classes.
+
+        Args:
+            root_dir: The root directory to search in
+            package_name: Optional base package name prefix
+
+        Returns:
+            A list of tuples (full_class_path, class_object)
+        """
+        classes = []
+        visited_modules = set()
+
+        # Normalize path and ensure it exists
+        root_dir = os.path.abspath(root_dir)
+        if not os.path.isdir(root_dir):
+            print(f"Error: {root_dir} is not a directory")
+            return classes
+
+        # Make sure the root directory is in the Python path
+        if root_dir not in sys.path:
+            sys.path.insert(0, root_dir)
+            # Also add parent directory to handle package imports
+            parent_dir = os.path.dirname(root_dir)
+            if parent_dir not in sys.path:
+                sys.path.insert(0, parent_dir)
+
+        # Walk through all Python files in the directory structure
+        for dirpath, dirnames, filenames in os.walk(root_dir):
+            # Skip __pycache__ and other hidden directories
+            dirnames[:] = [d for d in dirnames if not d.startswith('__') and not d.startswith('.')]
+
+            # Get the relative path from the root directory
+            rel_path = os.path.relpath(dirpath, root_dir)
+
+            # Convert directory path to module names
+            if rel_path == '.':
+                module_prefix = package_name or os.path.basename(root_dir)
+            else:
+                module_prefix = f"{package_name or os.path.basename(root_dir)}.{rel_path.replace(os.sep, '.')}"
+
+            # Process Python files in this directory
+            for filename in filenames:
+                if filename.endswith('.py') and not filename.startswith('__'):
+                    module_name = f"{module_prefix}.{filename[:-3]}"
+
+                    # Skip already visited modules
+                    if module_name in visited_modules:
+                        continue
+
+                    visited_modules.add(module_name)
+
+                    try:
+                        # Import the module
+                        module = importlib.import_module(module_name)
+
+                        # Find top-level classes in this module and add them
+                        for name, obj in inspect.getmembers(module, inspect.isclass):
+                            # Only include classes defined in this module (not imported)
+                            if obj.__module__ == module_name:
+                                class_path = f"{module_name}.{name}"
+                                parts = class_path.split('.')
+                                classes.append((parts[-1], class_path))
+
+                                # Also find nested classes
+                                nested_classes = DictConversion.find_nested_classes(obj, class_path)
+                                if len(nested_classes) > 0:
+                                    for nested_class_path, nested_class in nested_classes:
+                                        nested_parts = nested_class_path.split('.')
+                                        nested_key = f"{nested_parts[-2]}.{nested_parts[-1]}"
+                                        classes.append((nested_key, nested_class_path))
+
+                    except (ImportError, ModuleNotFoundError) as e:
+                        print(f"Error importing {module_name}: {e}")
+
+        return classes
 
 
 class DictConversion:
 
     is_class_dict = True
     outliner_expanded = False
-    class_names: Optional[Dict[str, str]] = None
-    modules_imported = set()
+
 
     def compute_hash(self, exclude=None, memo=None, depth=0, do_print=False):
         """
@@ -254,7 +363,7 @@ class DictConversion:
         result._children = {}
 
         # Create set of attributes to exclude
-        excluded_attrs = {'_parent', '_children', "tensor", "tensor_b", "tensor_c", 'buffer', 'ctx',
+        excluded_attrs = {'class_names', '_parent', '_children', "tensor", "tensor_b", "tensor_c", 'buffer', 'ctx',
                           'texture', "texture3D", "cuda_buffer", "xy_renderer", "xyz_renderer"}
         if exclude:
             excluded_attrs.update(exclude)
@@ -309,6 +418,9 @@ class DictConversion:
             return value
 
         if isinstance(value, Tensor):
+            return value
+
+        if isinstance(value, LlamaTokenizerFast):
             return value
 
         if isinstance(value, PreTrainedTokenizerBase):
@@ -608,84 +720,7 @@ class DictConversion:
         """Check if an object is an Enum."""
         return isinstance(obj, Enum)
 
-    @staticmethod
-    def find_all_classes(root_dir: str, package_name: str = None) -> List[Tuple[str, str]]:
-        """
-        Find all classes in a package directory structure, including nested directories and nested classes.
 
-        Args:
-            root_dir: The root directory to search in
-            package_name: Optional base package name prefix
-
-        Returns:
-            A list of tuples (full_class_path, class_object)
-        """
-        classes = []
-        visited_modules = set()
-
-        # Normalize path and ensure it exists
-        root_dir = os.path.abspath(root_dir)
-        if not os.path.isdir(root_dir):
-            print(f"Error: {root_dir} is not a directory")
-            return classes
-
-        # Make sure the root directory is in the Python path
-        if root_dir not in sys.path:
-            sys.path.insert(0, root_dir)
-            # Also add parent directory to handle package imports
-            parent_dir = os.path.dirname(root_dir)
-            if parent_dir not in sys.path:
-                sys.path.insert(0, parent_dir)
-
-        # Walk through all Python files in the directory structure
-        for dirpath, dirnames, filenames in os.walk(root_dir):
-            # Skip __pycache__ and other hidden directories
-            dirnames[:] = [d for d in dirnames if not d.startswith('__') and not d.startswith('.')]
-
-            # Get the relative path from the root directory
-            rel_path = os.path.relpath(dirpath, root_dir)
-
-            # Convert directory path to module path
-            if rel_path == '.':
-                module_prefix = package_name or os.path.basename(root_dir)
-            else:
-                module_prefix = f"{package_name or os.path.basename(root_dir)}.{rel_path.replace(os.sep, '.')}"
-
-            # Process Python files in this directory
-            for filename in filenames:
-                if filename.endswith('.py') and not filename.startswith('__'):
-                    module_name = f"{module_prefix}.{filename[:-3]}"
-
-                    # Skip already visited modules
-                    if module_name in visited_modules:
-                        continue
-
-                    visited_modules.add(module_name)
-
-                    try:
-                        # Import the module
-                        module = importlib.import_module(module_name)
-
-                        # Find top-level classes in this module and add them
-                        for name, obj in inspect.getmembers(module, inspect.isclass):
-                            # Only include classes defined in this module (not imported)
-                            if obj.__module__ == module_name:
-                                class_path = f"{module_name}.{name}"
-                                parts = class_path.split('.')
-                                classes.append((parts[-1], class_path))
-
-                                # Now add nested classes
-                                nested_classes = DictConversion.find_nested_classes(obj, class_path)
-                                if len(nested_classes) > 0:
-                                    for nested_class_path, nested_class in nested_classes:
-                                        nested_parts = nested_class_path.split('.')
-                                        nested_key = f"{nested_parts[-2]}.{nested_parts[-1]}"
-                                        classes.append((nested_key, nested_class_path))
-
-                    except (ImportError, ModuleNotFoundError) as e:
-                        print(f"Error importing {module_name}: {e}")
-
-        return classes
 
     @staticmethod
     def find_nested_classes(parent_class: type, parent_path: str) -> List[Tuple[str, type]]:
@@ -767,13 +802,13 @@ class DictConversion:
                 print(f"Error instantiating {class_path}: {str(e)}")
                 return None
 
-            DictConversion.initialize_class_names()
+            ClassUtility().initialize_class_names()
 
-            if target_class_combine in DictConversion.class_names:
-                found_class_path = DictConversion.class_names[target_class_combine]
+            if target_class_combine in ClassUtility().class_names:
+                found_class_path = ClassUtility().class_names[target_class_combine]
                 return DictConversion.instantiate_from_class_path(found_class_path, last_try=True)
-            elif target_class_name in DictConversion.class_names:
-                found_class_path = DictConversion.class_names[target_class_name]
+            elif target_class_name in ClassUtility().class_names:
+                found_class_path = ClassUtility().class_names[target_class_name]
                 return DictConversion.instantiate_from_class_path(found_class_path, last_try=True)
             else:
                 print(f"Class {target_class_name} not found in known classes.")
@@ -790,17 +825,17 @@ class DictConversion:
         parent_name = parts[-2]
         combined_name = f"{parent_name}.{class_name}"
 
-        DictConversion.initialize_class_names()
+        ClassUtility().initialize_class_names()
 
         class_parent = f"{parent_name}.{class_name}"
         if class_name == "AnchorPair":
             print("Debugging AnchorPair")
-        if class_parent in DictConversion.class_names:
-            class_path = DictConversion.class_names[class_parent]
+        if class_parent in ClassUtility().class_names:
+            class_path = ClassUtility().class_names[class_parent]
             parts = class_path.split('.')
 
-        elif class_name in DictConversion.class_names:
-            class_path = DictConversion.class_names[class_name]
+        elif class_name in ClassUtility().class_names:
+            class_path = ClassUtility().class_names[class_name]
             parts = class_path.split('.')
 
         # for i in range(len(parts) - 1):
@@ -849,44 +884,23 @@ class DictConversion:
                 print(f"Error getting enum value for {class_path}: {str(e)}")
                 return None
 
-            DictConversion.initialize_class_names()
+            ClassUtility().initialize_class_names()
 
-
-            if value_name in DictConversion.class_names:
-                found_class_path = DictConversion.class_names[value_name]
+            if value_name in ClassUtility().class_names:
+                found_class_path = ClassUtility().class_names[value_name]
                 return DictConversion.get_enum_value(found_class_path, value_name, value, last_try=True)
-            elif combined_name in DictConversion.class_names:
-                found_class_path = DictConversion.class_names[combined_name]
+            elif combined_name in ClassUtility().class_names:
+                found_class_path = ClassUtility().class_names[combined_name]
                 return DictConversion.get_enum_value(found_class_path, combined_name, value, last_try=True)
 
-    @staticmethod
-    def initialize_class_names(root=None, package_name=None):
-        if package_name is None:
-            package_name = "lsd"
-
-        if package_name in DictConversion.modules_imported:
-            return
-
-        DictConversion.modules_imported.add(package_name)
-
-        if DictConversion.class_names is None:
-            DictConversion.class_names = {}
-
-        if root is not None:
-            root_folder = root
-        else:
-            root_folder = "/src/lsd"
-
-        root_dir = f"{find_repo_root()}{root_folder}"
-        class_names_list = DictConversion.find_all_classes(str(root_dir), package_name)
-        for the_class_name, the_class_path in class_names_list:
-            DictConversion.class_names[the_class_name] = the_class_path
 
     def from_dict(self, object_dict, excluded=None):
         if excluded is None:
             excluded = []
         root_id = object_dict["root"]
         object_dict.pop("root")
+        excluded.extend(["class_names", "_parent", "_parent_key", "_children", "hash",
+                         "outliner_expanded", "modules_imported", "search_results"])
 
         instantiated_objects = {}
 
