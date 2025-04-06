@@ -25,33 +25,71 @@ class LSDView:
     def __init__(self):
         self.group_stack = []
         self.style_stack = []
+        self.color_stack = []
 
     def unstack_group(self):
-        for group_type in reversed(self.style_stack):
-            if group_type == GroupType.WINDOW:
-                imgui.end()
-            elif group_type == GroupType.CHILD:
-                imgui.end_child()
-            elif group_type == GroupType.FRAME:
-                imgui.end_frame()
-            elif group_type == GroupType.STYLE:
-                imgui.pop_style_var(1)
-            elif group_type == GroupType.COLOR:
-                imgui.pop_style_color(1)
+        try:
+            for group_type in reversed(self.style_stack):
+                if group_type == GroupType.WINDOW:
+                    imgui.end()
+                elif group_type == GroupType.CHILD:
+                    imgui.end_child()
+                elif group_type == GroupType.FRAME:
+                    imgui.end_frame()
+                elif group_type == GroupType.STYLE:
+                    imgui.pop_style_var(1)
+                elif group_type == GroupType.COLOR:
+                    imgui.pop_style_color(1)
+        except Exception as e:
+            print(f"Error unstacking styles: {e}")
+            print(self.style_stack)
+            print_colored_traceback(*sys.exc_info(), limit=50)
+
+            self.style_stack.clear()
+
+        try:
+            for group_type in reversed(self.color_stack):
+                if group_type == GroupType.WINDOW:
+                    imgui.end()
+                elif group_type == GroupType.CHILD:
+                    imgui.end_child()
+                elif group_type == GroupType.FRAME:
+                    imgui.end_frame()
+                elif group_type == GroupType.STYLE:
+                    imgui.pop_style_var(1)
+                elif group_type == GroupType.COLOR:
+                    imgui.pop_style_color(1)
+        except Exception as e:
+            print(f"Error unstacking colors: {e}")
+
+            print(self.color_stack)
+            print_colored_traceback(*sys.exc_info(), limit=50)
+
+            self.color_stack.clear()
+
+        try:
+            for group_type in reversed(self.group_stack):
+                if group_type == GroupType.WINDOW:
+                    imgui.end()
+                elif group_type == GroupType.CHILD:
+                    imgui.end_child()
+                elif group_type == GroupType.FRAME:
+                    imgui.end_frame()
+                elif group_type == GroupType.STYLE:
+                    imgui.pop_style_var(1)
+                elif group_type == GroupType.COLOR:
+                    imgui.pop_style_color(1)
+        except Exception as e:
+            print(f"Error unstacking group: {e}")
+            # Print out the stack
+            print_colored_traceback(*sys.exc_info(), limit=50)
+
+            print(self.group_stack)
+
+            self.group_stack.clear()
+
+
         self.style_stack.clear()
-
-        for group_type in reversed(self.group_stack):
-            if group_type == GroupType.WINDOW:
-                imgui.end()
-            elif group_type == GroupType.CHILD:
-                imgui.end_child()
-            elif group_type == GroupType.FRAME:
-                imgui.end_frame()
-            elif group_type == GroupType.STYLE:
-                imgui.pop_style_var(1)
-            elif group_type == GroupType.COLOR:
-                imgui.pop_style_color(1)
-
         self.group_stack.clear()
 
 
@@ -67,8 +105,6 @@ def button_red(text, width=0, height=0):
     val = imgui.button(text, width=width, height=height)
     pop_style_color(4)
     return val
-
-
 
 # noinspection PyArgumentList
 def tree(text):
@@ -147,14 +183,14 @@ def end():
 
 
 def push_style_color(ImGuiCol_variable, float_r, float_g, float_b, float_a=1.):
-    LSDView().style_stack.append(GroupType.STYLE)
+    LSDView().color_stack.append(GroupType.COLOR)
     return imgui.push_style_color(ImGuiCol_variable, float_r, float_g, float_b, float_a)
 
 
 def pop_style_color(size=1):
     for _ in range(size):
-        if LSDView().style_stack[-1] == GroupType.STYLE:
-            LSDView().style_stack.pop()
+        if LSDView().color_stack[-1] == GroupType.COLOR:
+            LSDView().color_stack.pop()
             imgui.pop_style_color(1)
         else:
             print("Error: pop_style_color() called without matching push_style_color()")
@@ -223,7 +259,7 @@ import traceback
 
 def print_colored_traceback(exc_type, exc_value, exc_traceback, limit=None, file=None):
     """
-    Print the traceback with colors to make it easier to read.
+    Print the traceback with colors and clickable links that open in IntelliJ IDEA.
 
     Args:
         exc_type: Exception type
@@ -238,32 +274,46 @@ def print_colored_traceback(exc_type, exc_value, exc_traceback, limit=None, file
     # Format the traceback
     traceback_lines = traceback.format_exception(exc_type, exc_value, exc_traceback, limit=limit)
 
-    # Color and print each line
+    # Color and print each line with clickable links
     for line in traceback_lines:
         # Color the "Traceback" header
         if line.startswith("Traceback"):
             line = f"{COLORS['BOLD']}{COLORS['YELLOW']}{line}{COLORS['RESET']}"
-        # Color the "File" lines
+        # Color the "File" lines and make them clickable
         elif line.strip().startswith("File "):
             parts = line.split('"')
             if len(parts) >= 3:
-                # Color the filename
-                filename = f"{COLORS['GREEN']}{parts[1]}{COLORS['RESET']}"
-                # Color the line number
+                # Extract filename
+                filename = parts[1]
+
+                # Parse line number
                 line_parts = parts[2].split(", line ")
                 if len(line_parts) >= 2:
                     line_num_parts = line_parts[1].split(",")
                     if len(line_num_parts) >= 2:
-                        line_num = f"{COLORS['BOLD']}{COLORS['GREEN']}line {line_num_parts[0]}{COLORS['RESET']}"
+                        line_num = line_num_parts[0]
                         rest = ",".join(line_num_parts[1:])
-                        parts[2] = line_parts[0] + ", " + line_num + "," + rest
-                line = parts[0] + '"' + filename + '"' + parts[2]
+
+                        # Create IntelliJ URL
+                        abs_path = os.path.abspath(filename)
+                        intellij_url = f"idea://open?file={abs_path}&line={line_num}"
+
+                        # Create clickable link with ANSI escape codes
+                        clickable_filename = f"\033]8;;{intellij_url}\033\\{COLORS['GREEN']}{filename}{COLORS['RESET']}\033]8;;\033\\"
+
+                        # Format line number with color
+                        colored_line_num = f"{COLORS['BOLD']}{COLORS['GREEN']}line {line_num}{COLORS['RESET']}"
+
+                        # Reconstruct the line
+                        parts[1] = clickable_filename
+                        parts[2] = line_parts[0] + ", " + colored_line_num + "," + rest
+
+                line = parts[0] + '"' + parts[1] + '"' + parts[2]
         # Color the exception type and message
         elif any(exc_name in line for exc_name in ["Error:", "Exception:", "Warning:"]):
             line = f"{COLORS['BOLD']}{COLORS['RED']}{line}{COLORS['RESET']}"
 
         file.write(line)
-
 
 import gc
 import torch

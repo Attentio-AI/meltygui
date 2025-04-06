@@ -3,6 +3,7 @@ import inspect
 import os
 import sys
 import weakref
+from ast import literal_eval
 from copy import copy, deepcopy
 from enum import Enum
 from pathlib import Path
@@ -12,120 +13,51 @@ import torch
 from torch import Tensor, nn
 from transformers import PreTrainedTokenizerBase, LlamaTokenizerFast
 
-from lsd.gl_gui.utils.load_save_util import find_repo_root
-from lsd.lsd_utils import singleton
-
-
-@singleton
-class ClassUtility:
-
-    def __init__(self):
-        self.class_names: Optional[Dict[str, str]] = None
-        self.modules_imported = set()
-
-    def initialize_class_names(self, root=None, package_name=None):
-        if package_name is None:
-            package_name = "lsd"
-
-        if package_name in self.modules_imported:
-            return
-
-        self.modules_imported.add(package_name)
-
-        if self.class_names is None:
-            self.class_names = {}
-
-        if root is not None:
-            root_folder = root
-        else:
-            root_folder = "/src/lsd"
-
-        root_dir = f"{find_repo_root()}{root_folder}"
-        class_names_list = ClassUtility().find_all_classes(str(root_dir), package_name)
-        for the_class_name, the_class_path in class_names_list:
-            self.class_names[the_class_name] = the_class_path
-
-    @staticmethod
-    def find_all_classes(root_dir: str, package_name: str = None) -> List[Tuple[str, str]]:
-        """
-        Find all classes in a package directory structure, including nested directories and nested classes.
-
-        Args:
-            root_dir: The root directory to search in
-            package_name: Optional base package name prefix
-
-        Returns:
-            A list of tuples (full_class_path, class_object)
-        """
-        classes = []
-        visited_modules = set()
-
-        # Normalize path and ensure it exists
-        root_dir = os.path.abspath(root_dir)
-        if not os.path.isdir(root_dir):
-            print(f"Error: {root_dir} is not a directory")
-            return classes
-
-        # Make sure the root directory is in the Python path
-        if root_dir not in sys.path:
-            sys.path.insert(0, root_dir)
-            # Also add parent directory to handle package imports
-            parent_dir = os.path.dirname(root_dir)
-            if parent_dir not in sys.path:
-                sys.path.insert(0, parent_dir)
-
-        # Walk through all Python files in the directory structure
-        for dirpath, dirnames, filenames in os.walk(root_dir):
-            # Skip __pycache__ and other hidden directories
-            dirnames[:] = [d for d in dirnames if not d.startswith('__') and not d.startswith('.')]
-
-            # Get the relative path from the root directory
-            rel_path = os.path.relpath(dirpath, root_dir)
-
-            # Convert directory path to module names
-            if rel_path == '.':
-                module_prefix = package_name or os.path.basename(root_dir)
-            else:
-                module_prefix = f"{package_name or os.path.basename(root_dir)}.{rel_path.replace(os.sep, '.')}"
-
-            # Process Python files in this directory
-            for filename in filenames:
-                if filename.endswith('.py') and not filename.startswith('__'):
-                    module_name = f"{module_prefix}.{filename[:-3]}"
-
-                    # Skip already visited modules
-                    if module_name in visited_modules:
-                        continue
-
-                    visited_modules.add(module_name)
-
-                    try:
-                        # Import the module
-                        module = importlib.import_module(module_name)
-
-                        # Find top-level classes in this module and add them
-                        for name, obj in inspect.getmembers(module, inspect.isclass):
-                            # Only include classes defined in this module (not imported)
-                            if obj.__module__ == module_name:
-                                class_path = f"{module_name}.{name}"
-                                parts = class_path.split('.')
-                                classes.append((parts[-1], class_path))
-
-                                # Also find nested classes
-                                nested_classes = DictConversion.find_nested_classes(obj, class_path)
-                                if len(nested_classes) > 0:
-                                    for nested_class_path, nested_class in nested_classes:
-                                        nested_parts = nested_class_path.split('.')
-                                        nested_key = f"{nested_parts[-2]}.{nested_parts[-1]}"
-                                        classes.append((nested_key, nested_class_path))
-
-                    except (ImportError, ModuleNotFoundError) as e:
-                        print(f"Error importing {module_name}: {e}")
-
-        return classes
-
+from lsd.gl_gui.model.class_utill import ClassUtility
+from lsd.gl_gui.utils.render_utils import print_stack_trace
 
 class DictConversion:
+
+    def save(self, save_file: str):
+        view_dict = self.to_dict()
+        path_dir = os.path.dirname(save_file)
+        os.makedirs(path_dir, exist_ok=True)
+        with open(save_file, "w") as f:
+            f.write(str(view_dict["objects"]))
+
+    @staticmethod
+    def load(cls, path: str):
+        """
+        Load a DictConversion object from a file.
+
+        example usage: DictConversion.load(ServerModel, "/server/lsd-server.ini")
+        """
+        ClassUtility().initialize_class_names(ClassUtility().root)
+
+        # Add cls to the class names if not already present
+        # This is to ensure that the class can be found in the class_names dictionary
+        if cls.__name__ not in ClassUtility().class_names:
+            ClassUtility().class_names[cls.__name__] = cls.__module__ + "." + cls.__name__
+
+        # Create instance of the dict conversion class
+        # and load the class names from the server
+
+        # Check if the class is a subclass of DictConversion
+        if not issubclass(cls, DictConversion):
+            raise TypeError(f"{cls.__name__} is not a subclass of DictConversion")
+        instance = cls()
+
+        save_file = f'{path}'
+
+        if os.path.exists(save_file):
+            with open(save_file, "r") as f:
+                view_dict = f.read()
+                loaded_dict = literal_eval(view_dict)
+                server_model = instance.from_dict(loaded_dict)
+                return server_model
+        else:
+            print(f"Error: {save_file} does not exist")
+            return None
 
     is_class_dict = True
     outliner_expanded = False
@@ -768,10 +700,9 @@ class DictConversion:
 
             for i in range(len(parts) - 1, 0, -1):
                 try:
-                    if parts[0] == 'src':
-                        parts.remove('src')
-                    if parts[0] != 'lsd' and parts[0] != 'model':
-                        parts.insert(1, 'lsd')
+                    if parts[
+                        0] != ClassUtility().root and ClassUtility().root is not None and ClassUtility().root != "":
+                        parts.insert(0, ClassUtility().root)
                     module_path = '.'.join(parts[:i])
 
                     if module_path in sys.modules:
@@ -815,7 +746,6 @@ class DictConversion:
 
             return None
 
-
     @staticmethod
     def get_enum_value(class_path: str, value_name: str, value: Optional[int], last_try=False):
         # First get the enum class
@@ -844,10 +774,8 @@ class DictConversion:
 
         for i in range(len(parts) - 1, 0, -1):
             try:
-                if parts[0] == 'src':
-                    parts.remove('src')
-                if parts[0] != 'lsd' and parts[0] != 'model':
-                    parts.insert(1, 'lsd')
+                if parts[0] != ClassUtility().root and ClassUtility().root is not None and ClassUtility().root != "":
+                    parts.insert(0, ClassUtility().root)
 
                 module_path = '.'.join(parts[:i])
                 module = sys.modules.get(module_path)
@@ -893,21 +821,22 @@ class DictConversion:
                 found_class_path = ClassUtility().class_names[combined_name]
                 return DictConversion.get_enum_value(found_class_path, combined_name, value, last_try=True)
 
-
-    def from_dict(self, object_dict, excluded=None):
+    def from_dict(self, object_dict, excluded=None, class_root=None):
+        if class_root is not None:
+            ClassUtility().initialize_class_names(class_root)
         if excluded is None:
             excluded = []
         root_id = object_dict["root"]
         object_dict.pop("root")
         excluded.extend(["class_names", "_parent", "_parent_key", "_children", "hash",
-                         "outliner_expanded", "modules_imported", "search_results"])
+                         "outliner_expanded", "modules_imported"])
 
         instantiated_objects = {}
 
         def update_instance(unset_value, new_value, excluded):
             # Handle Enums
             # Handle nested objects
-            #and unset_value['type'] == "src.lsd.ui_gui.tensorview.GenPrompt"
+            # and unset_value['type'] == "src.gsd.glue.tensorview.GenPrompt"
             if unset_value is None and new_value is None:
                 return None
             if isinstance(new_value, dict) and "type" in new_value:
