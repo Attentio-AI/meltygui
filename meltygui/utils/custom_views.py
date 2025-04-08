@@ -107,8 +107,12 @@ def button_red(text, width=0, height=0):
     return val
 
 # noinspection PyArgumentList
-def tree(text):
-    flags = imgui.TREE_NODE_DEFAULT_OPEN | imgui.TREE_NODE_COLLAPSING_HEADER
+def tree(text, open=True):
+    if open:
+        flags = imgui.TREE_NODE_DEFAULT_OPEN | imgui.TREE_NODE_COLLAPSING_HEADER
+    else:
+        flags = imgui.TREE_NODE_COLLAPSING_HEADER
+
     return imgui.tree_node(text, flags=flags)
 
 def print_stack_trace(size=None):
@@ -893,7 +897,7 @@ def cleanup_cuda_memory(verbose=True):
     # Clear PyTorch cache
     torch.cuda.empty_cache()
 
-    # Run Python garbage collector to collect objects that are no longer referenced
+    # Run Python garbage collector to collect objects that are no longer referebnced
     gc.collect()
 
     # Force CUDA synchronization - ensures all operations are complete

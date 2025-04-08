@@ -171,3 +171,102 @@ def print_ascii_tensor(tensors, border=True, indices=None, spacing=2, names=None
                 row_str += " " * spacing
 
         print(row_str)
+
+
+def format_time(seconds):
+    """
+    Convert seconds to a human-readable time string with associated color.
+
+    Args:
+        seconds (float): Time in seconds
+
+    Returns:
+        tuple: (formatted_time_string, color_tuple)
+              where color_tuple is (r, g, b) values from 0-1
+    """
+    # Handle negative time
+    if seconds is None:
+        return "Unknown time", (1.0, 0.0, 0.0)
+
+    if seconds < 0:
+        time_str, color = format_time(-seconds)
+        return f"-{time_str}", color
+
+    # Very small time periods - golden yellow (1.0, 0.84, 0)
+    golden_yellow = (1.0, 0.84, 0.0)
+    if seconds < 1:
+        return f"0 seconds", golden_yellow
+
+    # Seconds - golden yellow (1.0, 0.84, 0)
+    if seconds < 60:
+        return f"{seconds:.0f} seconds", golden_yellow
+
+    # Minutes - warm red (0.86, 0.24, 0.2)
+    warm_red = (0.96, 0.44, 0.4)
+    minutes = seconds / 60
+    if minutes < 60:
+        return f"{minutes:.1f} minutes", warm_red
+
+    # Hours - greenish (0.29, 0.71, 0.31)
+    greenish = (0.29, 0.71, 0.31)
+    hours = minutes / 60
+    if hours < 24:
+        return f"{hours:.1f} hours", greenish
+
+    # Days - greenish (0.29, 0.71, 0.31)
+    days = hours / 24
+    if days < 7:
+        return f"{days:.1f} days", greenish
+
+    # Weeks - greenish (0.29, 0.71, 0.31)
+    weeks = days / 7
+    if weeks < 4.35:  # Approximate weeks in a month
+        return f"{weeks:.1f} weeks", greenish
+
+    # Months - greenish (0.29, 0.71, 0.31)
+    months = days / 30.44  # Average days in a month
+    if months < 12:
+        return f"{months:.1f} months", greenish
+
+    # Years - yellow orange (0.94, 0.59, 0.2)
+    yellow_orange = (0.94, 0.59, 0.2)
+    years = days / 365.25
+    if years < 10:
+        return f"{years:.1f} years", yellow_orange
+
+    # Decades - dark bluish grey (0.27, 0.35, 0.43)
+    dark_bluish_grey = (0.27, 0.35, 0.43)
+    if years < 100:
+        return f"{years:.1f} years", dark_bluish_grey
+
+    if years < 1_000:
+        return f"{years:.1f} years", dark_bluish_grey
+
+    if years < 1_000_000:
+        return f"{years / 1_000:.1f} thousand years", dark_bluish_grey
+
+    # Millions of years - dark red (0.55, 0.12, 0.12)
+    dark_red = (0.55, 0.12, 0.12)
+    if years < 1_000_000_000:
+        return f"{years / 1_000_000:.1f} million years", dark_red
+
+    # Billions of years and beyond - blue (0.12, 0.31, 0.71)
+    blue = (0.12, 0.31, 0.71)
+
+    # Use descriptive strings instead of numerical values for billion+ years
+    if years < 4.5e9:  # Age of Earth ~4.5 billion years
+        return "Age of the Earth", blue
+
+    if years < 5e9:  # Approximate time until Sun begins to expand significantly
+        return "Time until the Sun begins expanding", blue
+
+    if years < 7.6e9:  # Time until Sun engulfs Earth's orbit
+        return "Time until the Sun engulfs Earth", blue
+
+    if years < 1e14:  # Time until all stars burn out
+        return "Era of stellar extinction", blue
+
+    if years < 1e40:  # Deep time
+        return "Approaching heat death of the universe", blue
+
+    return "Beyond heat death of the universe", blue
