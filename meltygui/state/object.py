@@ -101,7 +101,9 @@ class DictConversion:
         excluded_attrs = {'outliner_expanded', 'expanded', 'hash', 'id', '_parent', '_children', "tensor", "tensor_b", "tensor_c", 'buffer', 'ctx',
                           'texture', "texture3D", "cuda_buffer", "xy_renderer", "xyz_renderer"}
         if exclude:
-            excluded_attrs.update(exclude)
+            for excl in exclude:
+                excluded_attrs.add(excl)
+
 
         # Add all non-excluded attributes to the string representation
         for key, value in self.__dict__.items():
@@ -111,7 +113,7 @@ class DictConversion:
 
             # Get string representation of the value
             value_str = self._hash_value_to_str(value, exclude, memo, depth, do_print)
-            content_str += f"{key}:{value_str};"
+            content_str += f"{value_str}"
 
         # Calculate hash
         hash_result = hashlib.sha256(content_str.encode('utf-8')).hexdigest()
@@ -165,7 +167,7 @@ class DictConversion:
 
         # Check if value is already in memo - crucial for avoiding infinite recursion
         if id(value) in memo:
-            return f"ref:{id(value)}"  # Return a reference indicator instead of recursing
+            return f"ref:{value}"  # Return a reference indicator instead of recursing
 
         # Handle None
         if value is None:
@@ -203,7 +205,7 @@ class DictConversion:
             try:
                 enum_repr = f"Enum:{value.__class__.__name__}.{value.name}"
             except:
-                enum_repr = f"Enum:{value.__class__.__name__}.{id(value)}"
+                enum_repr = f"Enum:{value.__class__.__name__}"
             memo[id(value)] = enum_repr
             return enum_repr
 
@@ -235,10 +237,9 @@ class DictConversion:
                 if k.startswith('_') or k in exclude:
                     continue
                 # Convert the key to string representation
-                key_str = str(k)
                 # Get value string representation
                 val_str = self._hash_value_to_str(v, exclude, memo, depth, do_print)
-                items_str += f"{key_str}:{val_str},"
+                items_str += f"{val_str}"
             items_str += "}"
             memo[id(value)] = items_str
             return items_str
@@ -259,7 +260,7 @@ class DictConversion:
             return result
 
         # Any other types - use their string representation
-        other_repr = f"{str(type(value).__name__)}:{id(value)}"  # Just use ID to prevent recursion
+        other_repr = f"{str(type(value).__name__)}"  # Just use type to prevent recursion
         memo[id(value)] = other_repr
         return other_repr
 
