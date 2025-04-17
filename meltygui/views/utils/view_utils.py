@@ -171,6 +171,7 @@ def print_ascii_tensor(tensors, border=True, indices=None, spacing=2, names=None
                 row_str += " " * spacing
 
         print(row_str)
+    print("\n")
 
 
 def format_time(seconds):
