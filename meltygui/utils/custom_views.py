@@ -4,11 +4,13 @@ import threading
 import traceback
 from collections import defaultdict
 from enum import Enum
+from typing import Dict
 
 import glfw
 import imgui
 import psutil
 
+from lsd.gl_gui.model.model_enums import RelaxedEnum
 from lsd.lsd_utils import singleton
 
 
@@ -91,6 +93,65 @@ class LSDView:
 
         self.style_stack.clear()
         self.group_stack.clear()
+
+def list_width(str_list):
+    max_width = 0
+    for string in str_list:
+        width = imgui.calc_text_size(string).x
+        if width > max_width:
+            max_width = width
+    return max_width
+
+def radio_buttons_enum(vis, name, selected_enum: RelaxedEnum, label_width=0, grey_out=False):
+    imgui.set_next_item_width(imgui.get_content_region_available().x)
+    selected_idx = 0
+    visible_name = name.split("##")[0]
+    changed = False
+
+    if grey_out:
+        push_style_var(imgui.STYLE_ALPHA, 0.5)
+
+    left_edge = imgui.get_cursor_pos_x()
+    margin = imgui.get_style().item_spacing.x * 2
+    if len(visible_name) > 0:
+        imgui.text(visible_name)
+        imgui.same_line()
+        if label_width > 0:
+            imgui.set_cursor_pos_x(left_edge + label_width + margin)
+
+    push_style_var(imgui.STYLE_ITEM_SPACING, (2, 5))
+    for i, option in enumerate(selected_enum.__class__):
+        pretty_name = option.name.replace("_", " ").capitalize()
+        if vis.square_radio_button(f"{pretty_name}##{name}", selected_enum.value == i):
+            selected_idx = i
+            changed = True
+        imgui.same_line()
+    imgui.new_line()
+    enum_class = selected_enum.__class__
+    selected_enum = enum_class(selected_idx)
+    pop_style_var(1)
+
+    if grey_out:
+        pop_style_var(1)
+
+    return changed, selected_enum
+
+
+def radio_buttons(vis, name, options, selected_idx):
+    imgui.set_next_item_width(imgui.get_content_region_available().x)
+    changed = vis.square_radio_button(f"{name}##loss_mode", False)
+
+    visible_name = name.split("##")[0]
+    if len(visible_name) > 0:
+        imgui.text(visible_name)
+    push_style_var(imgui.STYLE_ITEM_SPACING, (2, 5))
+    for i, option in enumerate(options):
+        if imgui.radio_button(f"{option}##{name}", selected_idx == i):
+            selected_idx = i
+            changed = True
+
+    pop_style_var(1)
+    return changed, selected_idx
 
 
 def button(text, width=0, height=0):
