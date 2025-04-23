@@ -146,7 +146,7 @@ def radio_buttons(vis, name, options, selected_idx):
         imgui.text(visible_name)
     push_style_var(imgui.STYLE_ITEM_SPACING, (2, 5))
     for i, option in enumerate(options):
-        if imgui.square_radio_button(f"{option}##{name}", selected_idx == i):
+        if vis.square_radio_button(f"{option}##{name}", selected_idx == i):
             selected_idx = i
             changed = True
 
