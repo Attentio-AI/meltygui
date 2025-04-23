@@ -10,8 +10,8 @@ import glfw
 import imgui
 import psutil
 
-from lsd.gl_gui.model.model_enums import RelaxedEnum
-from lsd.lsd_utils import singleton
+from src.lsd.gl_gui.model.model_enums import RelaxedEnum
+from src.lsd.lsd_utils import singleton
 
 
 class GroupType(Enum):

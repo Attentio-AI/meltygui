@@ -13,8 +13,8 @@ import torch
 from torch import Tensor, nn
 from transformers import PreTrainedTokenizerBase, LlamaTokenizerFast
 
-from lsd.gl_gui.model.class_utill import ClassUtility
-from lsd.gl_gui.utils.render_utils import print_stack_trace
+from src.lsd.gl_gui.model.class_utill import ClassUtility
+from src.lsd.gl_gui.utils.render_utils import print_stack_trace
 
 class DictConversion:
 
