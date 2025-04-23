@@ -149,6 +149,8 @@ def radio_buttons(vis, name, options, selected_idx):
         if vis.square_radio_button(f"{option}##{name}", selected_idx == i):
             selected_idx = i
             changed = True
+        imgui.same_line()
+    imgui.new_line()
 
     pop_style_var(1)
     return changed, selected_idx
