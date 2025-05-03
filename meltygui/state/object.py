@@ -446,6 +446,28 @@ class DictConversion:
             super().__setattr__(name, value)
             return
 
+        # Check if weak reference exists to value exists
+
+        def is_still_valid(obj):
+            """
+            Returns False if obj is a weak proxy and its reference is gone.
+            Returns True otherwise (including if obj is not a proxy at all).
+            """
+            try:
+                # Even isinstance can raise ReferenceError on dead proxies
+                if isinstance(obj, weakref.ProxyTypes):
+                    # If we get here, the proxy is still valid
+                    return True
+                # Not a proxy at all
+                return True
+            except ReferenceError:
+                # Dead proxy
+                return False
+
+        # if not is_still_valid(value):
+        #     super().__setattr__(name, value)
+        #     return
+
         # Set up parent reference if value is DictConversion
         if isinstance(value, DictConversion):
             if value is not None and value._parent is not None:
