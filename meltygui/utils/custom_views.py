@@ -344,41 +344,41 @@ def print_colored_traceback(exc_type, exc_value, exc_traceback, limit=None, file
     # Color and print each line with clickable links
     for line in traceback_lines:
         # Color the "Traceback" header
-        if line.startswith("Traceback"):
-            line = f"{COLORS['BOLD']}{COLORS['YELLOW']}{line}{COLORS['RESET']}"
-        # Color the "File" lines and make them clickable
-        elif line.strip().startswith("File "):
-            parts = line.split('"')
-            if len(parts) >= 3:
-                # Extract filename
-                filename = parts[1]
-
-                # Parse line number
-                line_parts = parts[2].split(", line ")
-                if len(line_parts) >= 2:
-                    line_num_parts = line_parts[1].split(",")
-                    if len(line_num_parts) >= 2:
-                        line_num = line_num_parts[0]
-                        rest = ",".join(line_num_parts[1:])
-
-                        # Create IntelliJ URL
-                        abs_path = os.path.abspath(filename)
-                        intellij_url = f"idea://open?file={abs_path}&line={line_num}"
-
-                        # Create clickable link with ANSI escape codes
-                        clickable_filename = f"\033]8;;{intellij_url}\033\\{COLORS['GREEN']}{filename}{COLORS['RESET']}\033]8;;\033\\"
-
-                        # Format line number with color
-                        colored_line_num = f"{COLORS['BOLD']}{COLORS['GREEN']}line {line_num}{COLORS['RESET']}"
-
-                        # Reconstruct the line
-                        parts[1] = clickable_filename
-                        parts[2] = line_parts[0] + ", " + colored_line_num + "," + rest
-
-                line = parts[0] + '"' + parts[1] + '"' + parts[2]
-        # Color the exception type and message
-        elif any(exc_name in line for exc_name in ["Error:", "Exception:", "Warning:"]):
-            line = f"{COLORS['BOLD']}{COLORS['RED']}{line}{COLORS['RESET']}"
+        # if line.startswith("Traceback"):
+        line = f"{COLORS['BOLD']}{COLORS['YELLOW']}{line}{COLORS['RESET']}"
+        # # Color the "File" lines and make them clickable
+        # elif line.strip().startswith("File "):
+        #     parts = line.split('"')
+        #     if len(parts) >= 3:
+        #         # Extract filename
+        #         filename = parts[1]
+        #
+        #         # Parse line number
+        #         line_parts = parts[2].split(", line ")
+        #         if len(line_parts) >= 2:
+        #             line_num_parts = line_parts[1].split(",")
+        #             if len(line_num_parts) >= 2:
+        #                 line_num = line_num_parts[0]
+        #                 rest = ",".join(line_num_parts[1:])
+        #
+        #                 # Create IntelliJ URL
+        #                 relative_path = os.path.abspath(filename)
+        #                 intellij_url = f"{line}"
+        #
+        #                 # Create clickable link with ANSI escape codes
+        #                 clickable_filename = f"\033]8;{intellij_url}\033\\{COLORS['GREEN']}{filename}{COLORS['RESET']}\033]8;;\033\\"
+        #
+        #                 # Format line number with color
+        #                 colored_line_num = f"{COLORS['BOLD']}{COLORS['GREEN']}line {line_num}{COLORS['RESET']}"
+        #
+        #                 # Reconstruct the line
+        #                 parts[1] = clickable_filename
+        #                 parts[2] = line_parts[0] + ", " + colored_line_num + "," + rest
+        #
+        #                 line = parts[0] + '"' + parts[1] + '"' + parts[2]
+        # # Color the exception type and message
+        # elif any(exc_name in line for exc_name in ["Error:", "Exception:", "Warning:"]):
+        #     line = f"{COLORS['BOLD']}{COLORS['RED']}{line}{COLORS['RESET']}"
 
         file.write(line)
 
