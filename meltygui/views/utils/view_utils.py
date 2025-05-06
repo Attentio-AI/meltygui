@@ -1,6 +1,70 @@
 import torch
 
 
+import os
+import pwd
+import subprocess
+import getpass
+
+def create_models_folder(password_callback=None, subfolder="latent-descent"):
+    """
+    Creates a folder at /models and a subfolder inside it, both owned by the current user in Linux.
+
+    Args:
+        password_callback (callable, optional): A function that returns the sudo password.
+            If None, will use getpass to prompt the user.
+        subfolder (str, optional): Name of the subfolder to create inside /models.
+            Defaults to "sub".
+
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    # Check if both directories already exist
+    if os.path.exists('/models') and os.path.exists(f'/models/{subfolder}'):
+        return True
+
+    try:
+        # Get current username
+        current_user = pwd.getpwuid(os.getuid()).pw_name
+
+        # Get password using the callback or default to getpass
+        if password_callback is None:
+            password = getpass.getpass("Enter sudo password: ")
+        else:
+            password = password_callback()
+
+        # Create the commands to run
+        commands = [
+            ["mkdir", "-p", f"/models/{subfolder}"],  # -p will create parent dir if needed
+            ["chown", f"{current_user}:{current_user}", "/models"],
+            ["chown", f"{current_user}:{current_user}", f"/models/{subfolder}"],
+            ["chmod", "755", "/models"],
+            ["chmod", "755", f"/models/{subfolder}"]
+        ]
+
+        # Run each command with sudo using the provided password
+        for cmd in commands:
+            process = subprocess.Popen(
+                ["sudo", "-S"] + cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True
+            )
+            stdout, stderr = process.communicate(input=password + "\n")
+
+            if process.returncode != 0:
+                print(f"Command failed: sudo {' '.join(cmd)}")
+                print(f"Error: {stderr}")
+                return False
+
+        print(f"Successfully created /models directory and /{subfolder} subdirectory owned by {current_user}")
+        return True
+
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        return False
+
 def print_ascii_tensor(tensors, border=True, indices=None, spacing=2, names=None):
     """
     Prints an ASCII representation of one or more PyTorch tensors horizontally.
