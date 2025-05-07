@@ -324,6 +324,9 @@ import sys
 import traceback
 # Create a console for rich output
 
+def stack_trace():
+    print_colored_traceback(*sys.exc_info(), limit=50)
+
 def print_colored_traceback(exc_type, exc_value, exc_traceback, limit=None, file=None):
     """
     Print the traceback with colors and clickable links that open in IntelliJ IDEA.
