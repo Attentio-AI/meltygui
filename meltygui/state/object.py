@@ -14,6 +14,7 @@ from torch import Tensor, nn
 from transformers import PreTrainedTokenizerBase, LlamaTokenizerFast
 
 from src.lsd.gl_gui.model.class_utill import ClassUtility
+from src.lsd.gl_gui.model.global_undo_redo_manager import TrackedList, TrackedDict, TrackedSet, GlobalUndoRedoManager
 from src.lsd.gl_gui.utils.render_utils import print_stack_trace
 
 class DictConversion:
@@ -411,10 +412,15 @@ class DictConversion:
         self._parent_key: Optional[Union[str, int]] = None
         self._children: Dict[Union[str, int], 'DictConversion'] = {}
         self.outliner_expanded = False
+        self._history_manager = GlobalUndoRedoManager.get_instance()
+        self._exclude_attrs = {'_history_manager', '_exclude_attrs', '_parameters',
+                               '_buffers', '_modules', 'training'}
+
 
     def __new__(cls, *args, **kwargs):
         instance = super().__new__(cls)
         # Initialize instance attributes
+        instance._history_manager = GlobalUndoRedoManager.get_instance()
         instance.hash = None
 
         instance._parent = None
@@ -440,59 +446,118 @@ class DictConversion:
         return ''.join(reversed([comp if comp.startswith('[') else f'.{comp}'
                                  for comp in path_components])).lstrip('.')
 
+    def _wrap_container(self, value, attr_name):
+        """Wrap container types with tracked versions."""
+        if isinstance(value, list):
+            return TrackedList(self, attr_name, value)
+        elif isinstance(value, dict):
+            return TrackedDict(self, attr_name, value)
+        elif isinstance(value, set):
+            return TrackedSet(self, attr_name, value)
+        return value
+
     def __setattr__(self, name: str, value: Any) -> None:
         # Handle special internal attributes normally
         if name.startswith('_'):
             super().__setattr__(name, value)
             return
 
-        # Check if weak reference exists to value exists
+        # Skip history tracking if disabled or for special attributes
+        if self._history_manager.disabled:
+            super().__setattr__(name, value)
+            return
 
-        def is_still_valid(obj):
-            """
-            Returns False if obj is a weak proxy and its reference is gone.
-            Returns True otherwise (including if obj is not a proxy at all).
-            """
-            try:
-                # Even isinstance can raise ReferenceError on dead proxies
-                if isinstance(obj, weakref.ProxyTypes):
-                    # If we get here, the proxy is still valid
-                    return True
-                # Not a proxy at all
-                return True
-            except ReferenceError:
-                # Dead proxy
-                return False
-
-        # if not is_still_valid(value):
+        # Check if weak reference is still valid
+        # Uncomment if needed
+        # if weak self.is_still_valid(value):
         #     super().__setattr__(name, value)
         #     return
 
-        # Set up parent reference if value is DictConversion
-        if isinstance(value, DictConversion):
-            if value is not None and value._parent is not None:
-                value._parent = weakref.ref(self)
-                value._parent_key = name
-                self._children[name] = value
-        elif isinstance(value, (list, tuple)):
-            # Handle lists/tuples containing DictConversion objects
-            for i, item in enumerate(value):
-                if isinstance(item, DictConversion):
-                    if item is not None and item._parent is not None:
+        try:
+            # Get old value if it exists for history tracking
+            old_value = None
+            if hasattr(self, name):
+                old_value = getattr(self, name)
+
+                # Skip if value isn't changing
+                if old_value is value:
+                    return
+
+                # Deep copy for non-primitive types
+                if isinstance(old_value, (dict, list, set)) or isinstance(old_value, DictConversion):
+                    old_value = deepcopy(old_value)
+
+            # Wrap container types for tracking
+            wrapped_value = self._wrap_container(value, name)
+
+            # Set up parent reference if value is DictConversion
+            if isinstance(wrapped_value, DictConversion):
+                wrapped_value._parent = weakref.ref(self)
+                wrapped_value._parent_key = name
+                self._children[name] = wrapped_value
+
+                # Ensure nested DictConversion objects use the same history manager
+                wrapped_value._history_manager = self._history_manager
+
+            elif isinstance(wrapped_value, (list, tuple)):
+                # Handle lists/tuples of DictConversion objects
+                for i, item in enumerate(wrapped_value):
+                    if isinstance(item, DictConversion):
                         item._parent = weakref.ref(self)
-                        item._parent_key = f"[{i}]"
-                        self._children[i] = item
+                        item._parent_key = f"{name}[{i}]"
+                        self._children[f"{name}[{i}]"] = item
 
-        elif isinstance(value, dict):
-            # Handle dictionaries containing DictConversion objects
-            for k, v in value.items():
-                if isinstance(v, DictConversion):
-                    if v is not None and v._parent is not None:
+                        # Ensure they use the same history manager
+                        item._history_manager = self._history_manager
+
+            elif isinstance(wrapped_value, dict):
+                # Handle dictionaries containing DictConversion objects
+                for k, v in wrapped_value.items():
+                    if isinstance(v, DictConversion):
                         v._parent = weakref.ref(self)
-                        v._parent_key = f"['{k}']"
-                        self._children[k] = v
+                        v._parent_key = f"{name}['{k}']"
+                        self._children[f"{name}['{k}']"] = v
 
-        super().__setattr__(name, value)
+                        # Ensure they use the same history manager
+                        v._history_manager = self._history_manager
+
+            # Make the actual change
+            super().__setattr__(name, wrapped_value)
+
+            # Record the change if it's not a tracked container itself
+            # (tracked containers record their own changes)
+            if not any(isinstance(wrapped_value, t) for t in (TrackedList, TrackedDict, TrackedSet)):
+                if hasattr(self, '_history_manager'):
+                    self._history_manager.record_change(
+                        self,
+                        name,
+                        old_value,
+                        deepcopy(wrapped_value) if isinstance(wrapped_value, (dict, list, set, DictConversion)) else wrapped_value
+                    )
+
+        except Exception as e:
+            # If something goes wrong, still apply the change
+            super().__setattr__(name, value)
+            raise e
+
+
+    # Global undo/redo methods that delegate to the global manager
+    def undo(self):
+        """Undo the last change across all tracked objects."""
+        return self._history_manager.undo()
+
+    def redo(self):
+        """Redo the last undone change across all tracked objects."""
+        return self._history_manager.redo()
+
+    def can_undo(self):
+        """Check if there are changes to undo."""
+        return self._history_manager.can_undo()
+
+    def can_redo(self):
+        """Check if there are changes to redo."""
+        return self._history_manager.can_redo()
+
 
     def __getitem__(self, key: Union[str, int]) -> Any:
         # First check if this key is directly in __dict__

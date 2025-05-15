@@ -6,6 +6,36 @@ import pwd
 import subprocess
 import getpass
 
+def format_name(self, input_str):
+    """
+    Convert various string formats to properly capitalized space-separated string.
+    Examples:
+        test_string -> Test String
+        testString -> Test String
+        TestString -> Test String
+        test-string -> Test String
+    """
+    # First replace any hyphens with underscores for consistent handling
+    input_str = input_str.replace('-', '_')
+
+    # Split on underscores if they exist
+    if '_' in input_str:
+        words = input_str.split('_')
+    else:
+        # Handle camelCase by adding space before capital letters
+        words = []
+        current_word = input_str[0]
+        for char in input_str[1:]:
+            if char.isupper():
+                words.append(current_word)
+                current_word = char
+            else:
+                current_word += char
+        words.append(current_word)
+
+    # Capitalize each word and join with spaces
+    return ' '.join(word.capitalize() for word in words)
+
 def create_models_folder(password_callback=None, subfolder="latent-descent"):
     """
     Creates a folder at /models and a subfolder inside it, both owned by the current user in Linux.
