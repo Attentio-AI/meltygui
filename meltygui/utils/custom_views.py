@@ -139,7 +139,7 @@ def radio_buttons_enum(vis, name, selected_enum: RelaxedEnum, label_width=0, gre
 
 def radio_buttons(vis, name, options, selected_idx):
     imgui.set_next_item_width(imgui.get_content_region_available().x)
-    changed = vis.square_radio_button(f"{name}##loss_mode", False)
+    changed = False
 
     visible_name = name.split("##")[0]
     if len(visible_name) > 0:
@@ -154,6 +154,25 @@ def radio_buttons(vis, name, options, selected_idx):
 
     pop_style_var(1)
     return changed, selected_idx
+
+
+def radio_buttons_str(vis, name, options, selected_str):
+    imgui.set_next_item_width(imgui.get_content_region_available().x)
+    changed = False
+
+    visible_name = name.split("##")[0]
+    if len(visible_name) > 0:
+        imgui.text(visible_name)
+    push_style_var(imgui.STYLE_ITEM_SPACING, (2, 5))
+    for i, option in enumerate(options):
+        if vis.square_radio_button(f"{option}##{name}{i}", selected_str == option):
+            selected_str = option
+            changed = True
+            print(f"Selected: {selected_str}")
+        imgui.same_line()
+    imgui.new_line()
+    pop_style_var(1)
+    return changed, selected_str
 
 
 def button(text, width=0, height=0):
