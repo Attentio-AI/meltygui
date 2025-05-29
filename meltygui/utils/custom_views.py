@@ -190,6 +190,7 @@ def button_red(text, width=0, height=0):
 
 # noinspection PyArgumentList
 def tree(text, open=True):
+    ## Returns 'true' if the node is drawn
     if open:
         flags = imgui.TREE_NODE_DEFAULT_OPEN | imgui.TREE_NODE_COLLAPSING_HEADER
     else:
