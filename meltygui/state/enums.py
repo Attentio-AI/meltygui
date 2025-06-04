@@ -22,6 +22,7 @@ class ViewIterateMode(RelaxedEnum):
     SNAPSHOT = 3
 
 
+
 class TrainingStatus(RelaxedEnum):
     IDLE = "Idle"
     TRAINING = "Training"
