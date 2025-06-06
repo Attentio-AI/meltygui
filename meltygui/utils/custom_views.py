@@ -127,7 +127,7 @@ def radio_buttons_enum(vis, name, selected_enum: RelaxedEnum, label_width=0, gre
         if label_width > 0:
             imgui.set_cursor_pos_x(left_edge + label_width + margin)
 
-    push_style_var(imgui.STYLE_ITEM_SPACING, (2, 5))
+    push_style_var(imgui.STYLE_ITEM_SPACING, (2, 4))
     for i, option in enumerate(selected_enum.__class__):
         pretty_name = option.name.replace("_", " ").capitalize()
         if vis.square_radio_button(f"{pretty_name}##{name.split('##')[1]}", selected_enum.value == i):
@@ -1020,6 +1020,71 @@ def memory_flame_chart(scope=None, threshold_kb=1, depth=10000, width=80, color=
         print(f"  - torch.cuda.memory_summary(): for detailed CUDA memory breakdown")
 
     print("\n")
+
+
+def object_combo(label, current_object, objects, width=None):
+    """
+    Custom implementation of imgui.combo with the same signature.
+
+    Args:
+        label (str): The label for the combo box
+        current_item (int): The index of the currently selected item
+        items (list): List of strings containing the items
+        height_in_items (int, optional): Number of items to display in the dropdown. Defaults to -1 (auto).
+
+    Returns:
+        tuple: (changed, new_current_item)
+    """
+    # Remember the initial current_item to detect changes
+    changed = False
+
+    visible_label = label.split("##")[0]
+    if current_object is None and len(objects) > 0:
+        current_model = list(objects.values())[0]
+
+    # Begin the combo widget
+    LSDView().style_manager.save_style()
+
+    # vis.style_manager.set_imgui_tint(*sub_layers[current_item].tint)
+    if current_object is None:
+        if len(objects) == 0:
+            imgui.text(f"No {visible_label} available")
+            return False, None
+
+        # Get first object from dict
+        current_object = list(objects.values())[0]
+        changed = True
+
+    if width is not None:
+        imgui.set_next_item_width(width)
+
+    if current_object is not None:
+        name = current_object.name
+    else:
+        name = "Unset"
+
+    if imgui.begin_combo(f"##{label}", name, imgui.COMBO_HEIGHT_LARGEST):
+        # Loop through each item in the list
+        for i, (name, object) in enumerate(objects.items()):
+            # Check if this item is selected
+            is_selected = (object == current_object)
+
+            # Create a selectable item for each item
+            if imgui.selectable(f"{object.name}##{object.id}", is_selected)[0]:
+                # Update current item if user selects a different one
+                current_object = object
+                changed = True
+
+            # Set the initial focus when opening the combo (scrolling + keyboard navigation focus)
+            if is_selected:
+                imgui.set_item_default_focus()
+
+        # End the combo widget
+        imgui.end_combo()
+    # vis.style_manager.restore_style()
+
+    # Return whether the selection changed and the (possibly new) current item
+    return changed, current_object
 
 
 def cleanup_cuda_memory(verbose=True):
