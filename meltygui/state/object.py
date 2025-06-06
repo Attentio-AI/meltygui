@@ -1076,11 +1076,18 @@ class DictConversion:
             shallow_parse = self.to_dict(excluded=excluded, objects=objects, shallow=True, use_references=False)
             shallow_parse["is_root"] = is_root
             # Class path
+            if hasattr(self, 'id'):
+                object_id = self.id
+            else:
+                object_id = id(self)
+
             classtype = DictConversion.get_full_class_path(self)
             shallow_parse["type"] = classtype
             if is_root:
-                objects["root"] = id(self)
-            objects[id(self)] = shallow_parse
+                objects["root"] = object_id
+
+
+            objects[object_id] = shallow_parse
 
         # Get all attributes that don't start with '_'
         for key, value in self.__dict__.items():
@@ -1155,7 +1162,10 @@ class DictConversion:
         elif hasattr(value, 'to_dict'):
             if shallow:
                 classtype = DictConversion.get_full_class_path(value)
-                results = (id(value), classtype)
+                if hasattr(value, 'id'):
+                    results = (value.id, classtype)
+                else:
+                    results = (id(value), classtype)
             else:
                 results = value.to_dict(excluded=excluded, objects=objects, shallow=False, use_references=False)
             return results
