@@ -101,7 +101,8 @@ class DictConversion:
 
         # Create set of attributes to exclude
         excluded_attrs = {'outliner_expanded', 'expanded', 'hash', '_parent', '_children', "tensor", "tensor_b", "tensor_c", 'buffer', 'ctx',
-                          'texture', "texture3D", "cuda_buffer", "xy_renderer", "xyz_renderer"}
+                          'texture', "texture3D", "cuda_buffer", "xy_renderer", "xyz_renderer",
+                          'previous_mouse_x', 'previous_mouse_y', 'last_mouse_x', 'last_mouse_y'}
         if exclude:
             for excl in exclude:
                 excluded_attrs.add(excl)
