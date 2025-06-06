@@ -15,7 +15,7 @@ from transformers import PreTrainedTokenizerBase, LlamaTokenizerFast
 
 from src.lsd.gl_gui.model.class_utill import ClassUtility
 from src.lsd.gl_gui.model.global_undo_redo_manager import TrackedList, TrackedDict, TrackedSet, GlobalUndoRedoManager
-from src.lsd.gl_gui.utils.render_utils import print_stack_trace
+from src.lsd.gl_gui.utils.custom_views import print_stack_trace
 
 class DictConversion:
 

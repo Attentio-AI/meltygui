@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple
 
-from src.lsd.gl_gui.utils.render_utils import print_stack_trace
+from src.lsd.gl_gui.utils.custom_views import print_stack_trace
 
 
 def find_repo_root(start_path: Path | str = None) -> Path:

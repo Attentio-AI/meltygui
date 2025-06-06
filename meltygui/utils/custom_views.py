@@ -28,6 +28,14 @@ class LSDView:
         self.group_stack = []
         self.style_stack = []
         self.color_stack = []
+        self.style_manager = None
+
+    def set_style_manager(self, style_manager):
+        """
+        Set the style manager for this view.
+        :param style_manager: The style manager to set.
+        """
+        self.style_manager = style_manager
 
     def unstack_group(self):
         try:
@@ -122,7 +130,7 @@ def radio_buttons_enum(vis, name, selected_enum: RelaxedEnum, label_width=0, gre
     push_style_var(imgui.STYLE_ITEM_SPACING, (2, 5))
     for i, option in enumerate(selected_enum.__class__):
         pretty_name = option.name.replace("_", " ").capitalize()
-        if vis.square_radio_button(f"{pretty_name}##{name}", selected_enum.value == i):
+        if vis.square_radio_button(f"{pretty_name}##{name.split('##')[1]}", selected_enum.value == i):
             selected_idx = i
             changed = True
         imgui.same_line()
@@ -178,6 +186,63 @@ def radio_buttons_str(vis, name, options, selected_str):
 def button(text, width=0, height=0):
     return imgui.button(text, width=width, height=height)
 
+
+def delete_button(text, width=0, height=0, white_text=True):
+    push_style_var(imgui.STYLE_FRAME_BORDERSIZE, 2)
+
+    if LSDView().style_manager is not None:
+        if white_text:
+            r, g, b, a = LSDView().style_manager.make_color_rgb(0.5, 0.0, 0.0)
+            push_style_color(imgui.COLOR_BUTTON, r, g, b)
+
+            r, g, b, a = LSDView().style_manager.make_color_rgb(0.55, 0.0, 0.0, saturation_scale=1.0)
+            push_style_color(imgui.COLOR_BORDER, r, g, b)
+
+            r, g, b, a = LSDView().style_manager.make_color_rgb(0.75, 0.0, 0.0, saturation_scale=1.0)
+            push_style_color(imgui.COLOR_BUTTON_HOVERED, r, g, b)
+
+            r, g, b, a = LSDView().style_manager.make_color_rgb(0.9, 0.0, 0.0, saturation_scale=1.0)
+            push_style_color(imgui.COLOR_BUTTON_ACTIVE, r, g, b)
+
+        else:
+            r, g, b, a = LSDView().style_manager.make_color_rgb(1.0, 1.0, 1.0, saturation_scale=1.0)
+            push_style_color(imgui.COLOR_BUTTON, r, g, b)
+
+            r, g, b, a = LSDView().style_manager.make_color_rgb(0.55, 0.0, 0.0, saturation_scale=1.0)
+            push_style_color(imgui.COLOR_BORDER, r, g, b)
+
+            r, g, b, a = LSDView().style_manager.make_color_rgb(0.75, 0.0, 0.0, saturation_scale=1.0)
+            push_style_color(imgui.COLOR_BUTTON_HOVERED, r, g, b)
+
+            r, g, b, a = LSDView().style_manager.make_color_rgb(0.9, 0.0, 0.0, saturation_scale=1.0)
+            push_style_color(imgui.COLOR_BUTTON_ACTIVE, r, g, b)
+
+            r, g, b, a = LSDView().style_manager.make_color_rgb(1.0, 0.1, 0.1, saturation_scale=1.0)
+            push_style_color(imgui.COLOR_TEXT, r, g, b)
+
+
+    else:
+        push_style_color(imgui.COLOR_BUTTON, 0.5, 0.2, 0.2)
+        push_style_color(imgui.COLOR_BUTTON, 0.55, 0.2, 0.2)
+        push_style_color(imgui.COLOR_BUTTON_HOVERED, 0.9, 0.3, 0.3)
+        push_style_color(imgui.COLOR_BUTTON_ACTIVE, 1.0, 0.4, 0.4)
+
+    original_cursor_pos = imgui.get_cursor_pos()
+    offset_width = width
+
+    if text.split("##")[0] == "":
+        val = imgui.button(f"\uf1f8{text}", width=width, height=height)
+    else:
+        val = imgui.button(f"\uf1f8 {text}", width=width, height=height)
+
+    if white_text:
+        pop_style_color(4)
+    else:
+        pop_style_color(5)
+
+    pop_style_var(1)
+
+    return val
 
 def button_red(text, width=0, height=0):
     push_style_color(imgui.COLOR_BUTTON, 0.6, 0.2, 0.2)

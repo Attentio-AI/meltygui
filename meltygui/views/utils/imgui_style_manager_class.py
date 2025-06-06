@@ -65,6 +65,35 @@ class ImGuiStyleManager:
         imgui_color = imgui.get_color_u32_rgba(modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
         return imgui_color
 
+    def make_color_rgb(self, r, g, b, saturation_scale=1.0, alpha=1.0, factor=0.3):
+        """
+        Create an ImGui color from RGB values with optional saturation and alpha adjustments.
+        Args:
+            r, g, b: RGB values between 0 and 1
+            saturation_scale: Scale for saturation (default is 1.0)
+            alpha: Alpha value (default is 1.0)
+        Returns:
+            Packed u32 color value
+        """
+
+        def mix(r1, g1, b1, r2, g2, b2, alpha):
+            """Mix two colors with alpha blending"""
+            return (
+                r1 * (1 - alpha) + r2 * alpha,
+                g1 * (1 - alpha) + g2 * alpha,
+                b1 * (1 - alpha) + b2 * alpha
+            )
+
+        hn, sn, vn = colorsys.rgb_to_hsv(r, g, b)
+        h, s, v = self.hsv
+
+        modified_rgb = colorsys.hsv_to_rgb(h, 0.4, 0.5)
+
+        # Apply alpha blending with the original color
+        modified_rgb = mix(r, g, b, modified_rgb[0], modified_rgb[1], modified_rgb[2], factor)
+
+        return modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha
+
     def make_color_unpacked(self, value, saturation_scale=1.0, alpha=1.0):
         def _unpack_color(packed_color):
             """Convert a packed u32 color to RGBA components (0-1 range)"""
@@ -81,6 +110,8 @@ class ImGuiStyleManager:
         """Save the current ImGui style and colors"""
         # style = imgui.get_style()
         self.saved_rgb = self.current_rgb
+
+        return self.saved_rgb
         # # Save colors by their indices
         # self.saved_colors = {i: tuple(style.colors[i]) for i in self.color_indices}
         #
@@ -99,13 +130,19 @@ class ImGuiStyleManager:
         #     'grab_min_size': style.grab_min_size
         # }
 
-    def restore(self):
-        self.set_imgui_tint(*self.saved_rgb)
+    def restore(self, saved_rgb=None):
+        if saved_rgb is not None:
+            self.set_imgui_tint(*saved_rgb)
+        else:
+            self.set_imgui_tint(*self.saved_rgb)
 
-    def restore_style(self):
+    def restore_style(self, saved_rgb=None):
         """Restore the previously saved style and colors"""
 
-        self.set_imgui_tint(*self.saved_rgb)
+        if saved_rgb is not None:
+            self.set_imgui_tint(*saved_rgb)
+        else:
+            self.set_imgui_tint(*self.saved_rgb)
         # if self.saved_colors is None or self.saved_style is None:
         #     print("Warning: No style saved to restore")
         #     # Print stack trace
