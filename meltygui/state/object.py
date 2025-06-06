@@ -2,6 +2,7 @@ import importlib
 import inspect
 import os
 import sys
+import uuid
 import weakref
 from ast import literal_eval
 from copy import copy, deepcopy
@@ -407,6 +408,7 @@ class DictConversion:
 
     def __init__(self):
         # Using weakref to avoid circular references
+        self.id = str(uuid.uuid4())
         self.hash = None
         self._parent: Optional[weakref.ReferenceType] = None
         self._parent_key: Optional[Union[str, int]] = None
