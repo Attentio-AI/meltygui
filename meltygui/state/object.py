@@ -99,7 +99,7 @@ class DictConversion:
         content_str = f"{self.__class__.__name__}:"
 
         # Create set of attributes to exclude
-        excluded_attrs = {'outliner_expanded', 'expanded', 'hash', 'id', '_parent', '_children', "tensor", "tensor_b", "tensor_c", 'buffer', 'ctx',
+        excluded_attrs = {'outliner_expanded', 'expanded', 'hash', '_parent', '_children', "tensor", "tensor_b", "tensor_c", 'buffer', 'ctx',
                           'texture', "texture3D", "cuda_buffer", "xy_renderer", "xyz_renderer"}
         if exclude:
             for excl in exclude:
