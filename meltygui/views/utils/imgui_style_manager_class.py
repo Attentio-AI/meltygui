@@ -178,6 +178,14 @@ class ImGuiStyleManager:
         self.set_imgui_tint(0.3, 0.6, 0.7)
 
 
+    def get_tint(self):
+        """
+        Returns the current tint color as an RGB tuple.
+        Returns:
+            Tuple of (r, g, b) values in the range [0.0, 1.0]
+        """
+        return self.current_rgb
+
     def set_imgui_tint(self, r, g, b):
         """
         Sets a global tint color for ImGui by adjusting all style colors based on a single RGB color.

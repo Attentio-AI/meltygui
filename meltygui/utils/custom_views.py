@@ -110,6 +110,30 @@ def list_width(str_list):
             max_width = width
     return max_width
 
+def background(color, width=0, height=0):
+    """
+    Draws a background rectangle with the specified color.
+    :param color: The color to fill the rectangle with.
+    :param width: The width of the rectangle. If 0, uses the available width.
+    :param height: The height of the rectangle. If 0, uses the available height.
+    """
+    # Store position to restore later
+    cursor_pos = imgui.get_cursor_pos()
+
+    if width <= 0:
+        width = imgui.get_content_region_available().x
+    if height <= 0:
+        height = imgui.get_content_region_available().y
+
+    push_style_color(imgui.COLOR_WINDOW_BACKGROUND, *color)
+    begin_child("background", width, height, border=False, flags=imgui.WINDOW_NO_SCROLLBAR)
+    end_child()
+    pop_style_color(1)
+
+    # Restore cursor position
+    imgui.set_cursor_pos(cursor_pos)
+
+
 def radio_buttons_enum(vis, name, selected_enum: RelaxedEnum, label_width=0, grey_out=False):
     imgui.set_next_item_width(imgui.get_content_region_available().x)
     selected_idx = 0
@@ -1065,19 +1089,30 @@ def object_combo(label, current_object, objects, width=None):
 
     if imgui.begin_combo(f"##{label}", name, imgui.COMBO_HEIGHT_LARGEST):
         # Loop through each item in the list
+        current_tint = LSDView().style_manager.get_tint()
         for i, (name, object) in enumerate(objects.items()):
             # Check if this item is selected
             is_selected = (object == current_object)
+            if hasattr(object, 'tint') and object.tint is not None:
+                LSDView().style_manager.set_imgui_tint(*object.tint)
+                text_color = LSDView().style_manager.make_color_unpacked(value=0.7, saturation_scale=1.0)
+                push_style_color(imgui.COLOR_TEXT, *text_color)
+            # Create a selectable item for each option
 
-            # Create a selectable item for each item
             if imgui.selectable(f"{object.name}##{object.id}", is_selected)[0]:
                 # Update current item if user selects a different one
                 current_object = object
                 changed = True
 
+            if hasattr(object, 'tint') and object.tint is not None:
+                pop_style_color()
+
             # Set the initial focus when opening the combo (scrolling + keyboard navigation focus)
             if is_selected:
                 imgui.set_item_default_focus()
+
+         # Restore the tint after each selectable
+        LSDView().style_manager.set_imgui_tint(*current_tint)
 
         # End the combo widget
         imgui.end_combo()
