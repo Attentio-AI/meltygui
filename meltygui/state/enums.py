@@ -41,6 +41,7 @@ class HyperSearchStatus(RelaxedEnum):
 class TrainingResult(RelaxedEnum):
     SUCCESS = "success"
     INTERRUPTED = "interrupted"
+    RELOAD = "reload"
     FAILURE = "failure"
     NAN = "nan"
     INF = "inf"
