@@ -37,6 +37,15 @@ class LSDView:
         """
         self.style_manager = style_manager
 
+    def clear_unstack(self):
+        """
+        Clear the current style and group stacks.
+        This is used to reset the view state.
+        """
+        self.style_stack.clear()
+        self.color_stack.clear()
+        self.group_stack.clear()
+
     def unstack_group(self):
         try:
             for group_type in reversed(self.style_stack):
@@ -56,6 +65,7 @@ class LSDView:
             print_colored_traceback(*sys.exc_info(), limit=50)
 
             self.style_stack.clear()
+            raise e
 
         try:
             for group_type in reversed(self.color_stack):
@@ -76,6 +86,7 @@ class LSDView:
             print_colored_traceback(*sys.exc_info(), limit=50)
 
             self.color_stack.clear()
+            raise e
 
         try:
             for group_type in reversed(self.group_stack):
@@ -97,6 +108,8 @@ class LSDView:
             print(self.group_stack)
 
             self.group_stack.clear()
+            # Raise
+            raise e
 
 
         self.style_stack.clear()
@@ -456,6 +469,7 @@ COLORS = {
     'CYAN': '\033[96m',
     'GREEN': '\033[92m',
     'YELLOW': '\033[93m',
+    'PURPLE': '\033[95m',
     'RED': '\033[91m',
     'BOLD': '\033[1m',
     'UNDERLINE': '\033[4m',
@@ -469,7 +483,7 @@ import traceback
 def stack_trace():
     print_colored_traceback(*sys.exc_info(), limit=50)
 
-def print_colored_traceback(exc_type, exc_value, exc_traceback, limit=None, file=None):
+def print_colored_traceback(exc_type, exc_value, exc_traceback, limit=None, file=None, color=None):
     """
     Print the traceback with colors and clickable links that open in IntelliJ IDEA.
 
@@ -483,6 +497,8 @@ def print_colored_traceback(exc_type, exc_value, exc_traceback, limit=None, file
     if file is None:
         file = sys.stdout
 
+    if color is None:
+        color = "YELLOW"
     # Format the traceback
     traceback_lines = traceback.format_exception(exc_type, exc_value, exc_traceback, limit=limit)
 
@@ -490,7 +506,7 @@ def print_colored_traceback(exc_type, exc_value, exc_traceback, limit=None, file
     for line in traceback_lines:
         # Color the "Traceback" header
         # if line.startswith("Traceback"):
-        line = f"{COLORS['BOLD']}{COLORS['YELLOW']}{line}{COLORS['RESET']}"
+        line = f"{COLORS['BOLD']}{COLORS[color]}{line}{COLORS['RESET']}"
         # # Color the "File" lines and make them clickable
         # elif line.strip().startswith("File "):
         #     parts = line.split('"')
