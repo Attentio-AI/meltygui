@@ -211,6 +211,39 @@ def button(text, width=0, height=0):
     return imgui.button(text, width=width, height=height)
 
 
+def text_wrapped(text, wrap_width=None):
+    """
+    Alternative using internal text functions if available.
+    """
+    import imgui.internal as imgui_internal
+
+    # Get the current window
+    start_pos = imgui.get_cursor_screen_pos()
+
+    # Render the text
+    imgui.text_wrapped(text)
+
+    # Try to access the last rendered position
+    # Some Python bindings expose these methods:
+    try:
+        # Get the draw list that was just used
+        draw_list = imgui.get_window_draw_list()
+
+        # The last vertex position might tell us where the text ended
+        # This is very implementation-specific
+        vtx_buffer = draw_list.vtx_buffer
+        if vtx_buffer:
+            # Last vertex might be the bottom-right of the last character
+            last_vtx = vtx_buffer[-1]
+            return (last_vtx.pos.x, last_vtx.pos.y)
+    except:
+        pass
+
+    # Fallback to item rect
+    rect_max = imgui.get_item_rect_max()
+    return (rect_max[0], rect_max[1] - imgui.get_text_line_height())
+
+
 def delete_button(text, width=0, height=0, white_text=True):
     push_style_var(imgui.STYLE_FRAME_BORDERSIZE, 2)
 
