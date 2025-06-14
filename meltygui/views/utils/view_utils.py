@@ -267,6 +267,26 @@ def print_ascii_tensor(tensors, border=True, indices=None, spacing=2, names=None
         print(row_str)
     print("\n")
 
+def split_string_by_token(tokenizer, text):
+        if tokenizer is None:
+            return text
+
+        encoding = tokenizer(text, return_tensors="pt", return_attention_mask=True,
+                             add_special_tokens=False)
+        input_ids = encoding['input_ids']
+        # iterate over input ids
+        sequence_length = input_ids.shape[1]
+        batch_size = input_ids.shape[0]
+        batches = []
+        for b in range(batch_size):
+            decoded_tokens = []
+            for s in range(sequence_length):
+                token = input_ids[b, s]
+                token_text = tokenizer.decode(token)
+                decoded_tokens.append(token_text)
+            batches.append(decoded_tokens)
+        return batches
+
 
 def format_time(seconds):
     """
