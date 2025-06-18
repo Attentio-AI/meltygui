@@ -1171,7 +1171,7 @@ def object_combo(label, current_object, objects, width=None):
     return changed, current_object
 
 
-def cleanup_cuda_memory(verbose=True):
+def cleanup_cuda_memory(verbose=False, vis=None):
     """
     Clean up unreferenced CUDA memory that might not be automatically released by PyTorch.
 
@@ -1182,9 +1182,28 @@ def cleanup_cuda_memory(verbose=True):
     tuple: (initial_allocated, final_allocated, freed_memory) in MB
     """
     # Check if CUDA is available
+    print_stack_trace(1)
+
     if not torch.cuda.is_available():
         print("CUDA is not available")
         return (0, 0, 0)
+
+    if vis is not None:
+        for view in vis.root.tensor_views.values():
+            parent = view
+            subview = parent.sub()
+            if view.tensor is not None:
+                del view.tensor
+                view.tensor = None
+            if view.tensor_b is not None:
+                del view.tensor_b
+                view.tensor_b = None
+            if view.tensor_c is not None:
+                del view.tensor_c
+                view.tensor_c = None
+            torch.cuda.empty_cache()
+
+        vis.root.selected_views = {}
 
     # Get initial memory usage
     initial_allocated = torch.cuda.memory_allocated() / (1024 * 1024)  # Convert to MB
@@ -1194,17 +1213,6 @@ def cleanup_cuda_memory(verbose=True):
         print(f"Initial CUDA memory allocated: {initial_allocated:.2f} MB")
         print(f"Initial CUDA memory reserved: {initial_reserved:.2f} MB")
 
-    # Clear PyTorch cache
-    torch.cuda.empty_cache()
-
-    # Run Python garbage collector to collect objects that are no longer referebnced
-    gc.collect()
-
-    # Force CUDA synchronization - ensures all operations are complete
-    torch.cuda.synchronize()
-
-    # Empty cache again after collecting garbage
-    torch.cuda.empty_cache()
 
     # Get final memory usage
     final_allocated = torch.cuda.memory_allocated() / (1024 * 1024)  # Convert to MB
@@ -1221,6 +1229,20 @@ def cleanup_cuda_memory(verbose=True):
             print(
                 f"Note: {final_reserved - final_allocated:.2f} MB is still reserved by PyTorch but not allocated to tensors")
             print("This memory can be used by PyTorch without additional GPU memory allocation")
+
+    torch.cuda.empty_cache()
+
+    # Clear PyTorch cache
+    torch.cuda.empty_cache()
+
+    # Run Python garbage collector to collect objects that are no longer referefnced
+    gc.collect()
+
+    # Force CUDA synchronization - ensures all operations are complete
+    torch.cuda.synchronize()
+
+    # Clear cache again after collecting garbage
+    torch.cuda.empty_cache()
 
     return (initial_allocated, final_allocated, freed_memory)
 

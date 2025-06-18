@@ -980,11 +980,10 @@ class DictConversion:
                 for i, item in enumerate(new_value):
                     if isinstance(item, DictConversion) or (
                             isinstance(item, tuple) and item[0] in instantiated_objects):
-                        if hasattr(instantiated_objects[item[0]], "sub_view_name"):
-                            print(instantiated_objects[item[0]].sub_view_name)
-                            if instantiated_objects[item[0]].sub_view_name == "Rope 2":
-                                print("Debugging Rope 2")
-                            pass
+                        # if hasattr(instantiated_objects[item[0]], "sub_view_name"):
+                            # print(instantiated_objects[item[0]].sub_view_name)
+                            # if instantiated_objects[item[0]].sub_view_name == "Rope 2":
+                            #     print("Debugging Rope 2")
 
                         if type_ref is not None:
                             new_item = update_instance(item, item, excluded)
