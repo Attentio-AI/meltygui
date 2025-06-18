@@ -978,11 +978,25 @@ class DictConversion:
                     type_ref = None
                 unset_value.clear()
                 for i, item in enumerate(new_value):
-                    if type_ref is not None:
-                        new_item = update_instance(item, item, excluded)
+                    if isinstance(item, DictConversion) or (
+                            isinstance(item, tuple) and item[0] in instantiated_objects):
+                        if hasattr(instantiated_objects[item[0]], "sub_view_name"):
+                            print(instantiated_objects[item[0]].sub_view_name)
+                            if instantiated_objects[item[0]].sub_view_name == "Rope 2":
+                                print("Debugging Rope 2")
+                            pass
+
+                        if type_ref is not None:
+                            new_item = update_instance(item, item, excluded)
+                        else:
+                            new_item = update_instance(item, item, excluded)
+                        unset_value.append(new_item)
                     else:
-                        new_item = update_instance(item, item, excluded)
-                    unset_value.append(new_item)
+                        if type_ref is not None:
+                            new_item = update_instance(item, item, excluded)
+                        else:
+                            new_item = update_instance(item, item, excluded)
+                        unset_value.append(new_item)
                 return unset_value
 
             # Handle dictionaries
