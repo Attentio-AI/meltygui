@@ -62,7 +62,7 @@ class DictConversion:
             return None
 
     is_class_dict = True
-    outliner_expanded = False
+    outliner_expanded_h = False
 
 
     def compute_hash(self, exclude=None, memo=None, depth=0, do_print=False):
@@ -100,7 +100,7 @@ class DictConversion:
         content_str = f"{self.__class__.__name__}:"
 
         # Create set of attributes to exclude
-        excluded_attrs = {'outliner_expanded', 'expanded', 'hash', '_parent', '_children', "tensor", "tensor_b", "tensor_c", 'buffer', 'ctx',
+        excluded_attrs = {'outliner_expanded_h', 'expanded', 'hash', '_parent', '_children', "tensor", "tensor_b", "tensor_c", 'buffer', 'ctx',
                           'texture', "texture3D", "cuda_buffer", "xy_renderer", "xyz_renderer",
                           'previous_mouse_x', 'previous_mouse_y', 'last_mouse_x', 'last_mouse_y'}
         if exclude:
@@ -414,7 +414,7 @@ class DictConversion:
         self._parent: Optional[weakref.ReferenceType] = None
         self._parent_key: Optional[Union[str, int]] = None
         self._children: Dict[Union[str, int], 'DictConversion'] = {}
-        self.outliner_expanded = False
+        self.outliner_expanded_h = False
         self._history_manager = GlobalUndoRedoManager.get_instance()
         self._exclude_attrs = {'_history_manager', '_exclude_attrs', '_parameters',
                                '_buffers', '_modules', 'training'}
@@ -646,13 +646,13 @@ class DictConversion:
                 try:
                     current = current[int(idx) if idx.isdigit() else idx]
                 except (TypeError, ValueError, KeyError, IndexError) as e:
-                    raise TypeError(f"Could not access '{part}' in path '{path}': {str(e)}")
+                    return None
             else:
                 # Handle attribute access
                 try:
                     current = getattr(current, part)
                 except AttributeError as e:
-                    raise AttributeError(f"Could not access '{part}' in path '{path}': {str(e)}")
+                    return None
 
         return current
 
@@ -920,7 +920,7 @@ class DictConversion:
         root_id = object_dict["root"]
         object_dict.pop("root")
         excluded.extend(["class_names", "_parent", "_parent_key", "_children", "hash",
-                         "outliner_expanded", "modules_imported"])
+                         "outliner_expanded_h", "modules_imported"])
 
         instantiated_objects = {}
 
@@ -1183,7 +1183,10 @@ class DictConversion:
                 else:
                     results = (id(value), classtype)
             else:
-                results = value.to_dict(excluded=excluded, objects=objects, shallow=False, use_references=False)
+                if value.id not in objects:
+                    results = value.to_dict(excluded=excluded, objects=objects, shallow=False, use_references=False)
+                else:
+                    results = None
             return results
         # Handle basic types
         # elif not isinstance(value, DictConversion):

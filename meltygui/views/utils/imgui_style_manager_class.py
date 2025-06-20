@@ -94,6 +94,20 @@ class ImGuiStyleManager:
 
         return modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha
 
+    def make(self, value, saturation_scale=1.0, alpha=1.0):
+        def _unpack_color(packed_color):
+            """Convert a packed u32 color to RGBA components (0-1 range)"""
+            return (
+                ((packed_color >> 0) & 0xFF) / 255.0,  # R
+                ((packed_color >> 8) & 0xFF) / 255.0,  # G
+                ((packed_color >> 16) & 0xFF) / 255.0,  # B
+                ((packed_color >> 24) & 0xFF) / 255.0  # A
+            )
+
+        color = self.make_color(value, saturation_scale, alpha)
+        unpacked = _unpack_color(color)
+        return (unpacked[0], unpacked[1], unpacked[2])
+
     def make_color_unpacked(self, value, saturation_scale=1.0, alpha=1.0):
         def _unpack_color(packed_color):
             """Convert a packed u32 color to RGBA components (0-1 range)"""
@@ -186,7 +200,7 @@ class ImGuiStyleManager:
         """
         return self.current_rgb
 
-    def set_imgui_tint(self, r, g, b):
+    def set_imgui_tint(self, r, g, b, a=1.0):
         """
         Sets a global tint color for ImGui by adjusting all style colors based on a single RGB color.
         Args:

@@ -324,13 +324,15 @@ def button_red(text, width=0, height=0):
     return val
 
 # noinspection PyArgumentList
-def tree(text, open=True):
+def tree(text, open=True, width=0, height=0):
     ## Returns 'true' if the node is drawn
     if open:
-        flags = imgui.TREE_NODE_DEFAULT_OPEN | imgui.TREE_NODE_COLLAPSING_HEADER
+        flags = imgui.TREE_NODE_DEFAULT_OPEN | imgui.TREE_NODE_COLLAPSING_HEADER | imgui.TREE_NODE_ALLOW_ITEM_OVERLAP
     else:
-        flags = imgui.TREE_NODE_COLLAPSING_HEADER
+        flags = imgui.TREE_NODE_COLLAPSING_HEADER | imgui.TREE_NODE_ALLOW_ITEM_OVERLAP
 
+    if width > 0:
+        imgui.set_next_item_width(width)
     return imgui.tree_node(text, flags=flags)
 
 def print_stack_trace(size=None):
