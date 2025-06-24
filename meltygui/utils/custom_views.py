@@ -29,6 +29,7 @@ class LSDView:
         self.style_stack = []
         self.color_stack = []
         self.style_manager = None
+        self.obj_types = set()
 
     def set_style_manager(self, style_manager):
         """

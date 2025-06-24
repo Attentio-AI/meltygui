@@ -20,12 +20,37 @@ from src.lsd.gl_gui.utils.custom_views import print_stack_trace
 
 class DictConversion:
 
+    def __init__(self):
+        # Using weakref to avoid circular references
+        self.id = str(uuid.uuid4())
+        self.hash = None
+        self._parent: Optional[weakref.ReferenceType] = None
+        self._parent_key: Optional[Union[str, int]] = None
+        self._children: Dict[Union[str, int], 'DictConversion'] = {}
+        self.outliner_expanded_h = False
+        self._history_manager = GlobalUndoRedoManager.get_instance()
+        self._exclude_attrs = {'_history_manager', '_exclude_attrs', '_parameters',
+                               '_buffers', '_modules', 'training'}
+        self._obj_path = None
+
+        self.view_settings = {}
+
     def save(self, save_file: str):
         view_dict = self.to_dict()
         path_dir = os.path.dirname(save_file)
         os.makedirs(path_dir, exist_ok=True)
         with open(save_file, "w") as f:
             f.write(str(view_dict["objects"]))
+
+    def on_load(self, root):
+        pass
+
+    def __eq__(self, other):
+        class_name = self.__class__.__name__
+        other_class_name = other.__class__.__name__
+        if class_name == other_class_name:
+            return True
+        return super().__eq__(other)
 
     @staticmethod
     def load(cls, path: str):
@@ -407,17 +432,7 @@ class DictConversion:
         # print(f"Should't get here: {value.__class__} {isinstance(value, DictConversion)}")
         return deepcopy(value, memo)
 
-    def __init__(self):
-        # Using weakref to avoid circular references
-        self.id = str(uuid.uuid4())
-        self.hash = None
-        self._parent: Optional[weakref.ReferenceType] = None
-        self._parent_key: Optional[Union[str, int]] = None
-        self._children: Dict[Union[str, int], 'DictConversion'] = {}
-        self.outliner_expanded_h = False
-        self._history_manager = GlobalUndoRedoManager.get_instance()
-        self._exclude_attrs = {'_history_manager', '_exclude_attrs', '_parameters',
-                               '_buffers', '_modules', 'training'}
+
 
 
     def __new__(cls, *args, **kwargs):
@@ -431,10 +446,22 @@ class DictConversion:
         instance._children = {}
         return instance
 
+    def get_attrib_path(self, attrib_name) -> str:
+        """
+        Returns the path to this object by walking up the parent chain.
+        """
+        new_path = self.get_path()
+
+        attrib_path = f"{new_path}.{attrib_name}" if new_path else attrib_name
+        return attrib_path
+
     def get_path(self) -> str:
         """
         Returns the path to this object by walking up the parent chain.
         """
+        if self._obj_path is not None and self._obj_path != "":
+            return self._obj_path
+
         path_components = []
         current = self
 
@@ -446,8 +473,12 @@ class DictConversion:
             path_components.append(current._parent_key)
             current = parent
 
-        return ''.join(reversed([comp if comp.startswith('[') else f'.{comp}'
+        computed_path = ''.join(reversed([comp if comp.startswith('[') else f'.{comp}'
                                  for comp in path_components])).lstrip('.')
+
+        self._obj_path = computed_path
+
+        return computed_path
 
     def _wrap_container(self, value, attr_name):
         """Wrap container types with tracked versions."""
@@ -466,9 +497,9 @@ class DictConversion:
             return
 
         # Skip history tracking if disabled or for special attributes
-        if self._history_manager.disabled:
-            super().__setattr__(name, value)
-            return
+        # if self._history_manager.disabled:
+        #     super().__setattr__(name, value)
+        #     return
 
         # Check if weak reference is still valid
         # Uncomment if needed
@@ -478,29 +509,36 @@ class DictConversion:
 
         try:
             # Get old value if it exists for history tracking
-            old_value = None
-            if hasattr(self, name):
-                old_value = getattr(self, name)
+            if not self._history_manager.disabled:
+                old_value = None
+                if hasattr(self, name):
+                    old_value = getattr(self, name)
 
-                # Skip if value isn't changing
-                if old_value is value:
-                    return
+                    # Skip if value isn't changing
+                    if old_value is value:
+                        return
 
-                # Deep copy for non-primitive types
-                if isinstance(old_value, (dict, list, set)) or isinstance(old_value, DictConversion):
-                    old_value = deepcopy(old_value)
+                    # Deep copy for non-primitive types
+                    if isinstance(old_value, (dict, list, set)) or isinstance(old_value, DictConversion):
+                        old_value = deepcopy(old_value)
 
-            # Wrap container types for tracking
-            wrapped_value = self._wrap_container(value, name)
+                # Wrap container types for tracking
+
+                wrapped_value = self._wrap_container(value, name)
+            else:
+                wrapped_value = value
 
             # Set up parent reference if value is DictConversion
             if isinstance(wrapped_value, DictConversion):
                 wrapped_value._parent = weakref.ref(self)
                 wrapped_value._parent_key = name
+                if self._children is None:
+                    self._children = {}
                 self._children[name] = wrapped_value
 
-                # Ensure nested DictConversion objects use the same history manager
-                wrapped_value._history_manager = self._history_manager
+                if not self._history_manager.disabled:
+                    # Ensure nested DictConversion objects use the same history manager
+                    wrapped_value._history_manager = self._history_manager
 
             elif isinstance(wrapped_value, (list, tuple)):
                 # Handle lists/tuples of DictConversion objects
@@ -508,35 +546,43 @@ class DictConversion:
                     if isinstance(item, DictConversion):
                         item._parent = weakref.ref(self)
                         item._parent_key = f"{name}[{i}]"
+                        if self._children is None:
+                            self._children = {}
                         self._children[f"{name}[{i}]"] = item
 
-                        # Ensure they use the same history manager
-                        item._history_manager = self._history_manager
+                        if not self._history_manager.disabled:
+
+                            # Ensure they use the same history manager
+                            item._history_manager = self._history_manager
 
             elif isinstance(wrapped_value, dict):
                 # Handle dictionaries containing DictConversion objects
                 for k, v in wrapped_value.items():
                     if isinstance(v, DictConversion):
                         v._parent = weakref.ref(self)
-                        v._parent_key = f"{name}['{k}']"
-                        self._children[f"{name}['{k}']"] = v
+                        v._parent_key = f"{name}['{v.id}']"
+                        if self._children is None:
+                            self._children = {}
+                        self._children[f"{name}['{v.id}']"] = v
 
-                        # Ensure they use the same history manager
-                        v._history_manager = self._history_manager
+                        if not self._history_manager.disabled:
+                            # Ensure they use the same history manager
+                            v._history_manager = self._history_manager
 
             # Make the actual change
             super().__setattr__(name, wrapped_value)
 
-            # Record the change if it's not a tracked container itself
-            # (tracked containers record their own changes)
-            if not any(isinstance(wrapped_value, t) for t in (TrackedList, TrackedDict, TrackedSet)):
-                if hasattr(self, '_history_manager'):
-                    self._history_manager.record_change(
-                        self,
-                        name,
-                        old_value,
-                        deepcopy(wrapped_value) if isinstance(wrapped_value, (dict, list, set, DictConversion)) else wrapped_value
-                    )
+            if not self._history_manager.disabled:
+                # Record the change if it's not a tracked container itself
+                # (tracked containers record their own changes)
+                if not any(isinstance(wrapped_value, t) for t in (TrackedList, TrackedDict, TrackedSet)):
+                    if hasattr(self, '_history_manager'):
+                        self._history_manager.record_change(
+                            self,
+                            name,
+                            old_value,
+                            deepcopy(wrapped_value) if isinstance(wrapped_value, (dict, list, set, DictConversion)) else wrapped_value
+                        )
 
         except Exception as e:
             # If something goes wrong, still apply the change
@@ -1039,6 +1085,9 @@ class DictConversion:
                         print(f"KeyError: {key} not found in instance {instance}. Should not name attributes \"type\"")
                         continue
 
+        for obj_instance in instantiated_objects.values():
+            if hasattr(obj_instance, 'on_load') and callable(obj_instance.on_load):
+                obj_instance.on_load(root)
         return root
 
     @staticmethod
