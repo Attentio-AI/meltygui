@@ -305,7 +305,7 @@ class DictConversion:
         Returns:
             A new instance with deep-copied attributes except for excluded ones.
         """
-        if memo is None:
+        if memo is None or isinstance(memo, int):
             memo = {}
 
         # Check if self is already in memo to avoid infinite recursion
@@ -319,25 +319,26 @@ class DictConversion:
         memo[id(self)] = result
 
         # Initialize new parent and children tracking attributes
-        result._parent = None
-        result._parent_key = None
-        result._children = {}
+        if result is not None:
+            result._parent = None
+            result._parent_key = None
+            result._children = {}
 
-        # Create set of attributes to exclude
-        excluded_attrs = {'class_names', '_parent', '_children', "tensor", "tensor_b", "tensor_c", 'buffer', 'ctx',
-                          'texture', "texture3D", "cuda_buffer", "xy_renderer", "xyz_renderer"}
-        if exclude:
-            excluded_attrs.update(exclude)
+            # Create set of attributes to exclude
+            excluded_attrs = {'class_names', '_parent', '_children', "tensor", "tensor_b", "tensor_c", 'buffer', 'ctx',
+                              'texture', "texture3D", "cuda_buffer", "xy_renderer", "xyz_renderer"}
+            if exclude:
+                excluded_attrs.update(exclude)
 
-        # Copy all attributes except excluded ones
-        for key, value in self.__dict__.items():
-            if key not in excluded_attrs:
-                # Deep copy the value with appropriate handling based on type
-                copied_value = self._deepcopy_value(value, exclude, memo, do_print)
-                setattr(result, key, copied_value)
-            else:
-                # For excluded attributes, just set them to None
-                setattr(result, key, None)
+            # Copy all attributes except excluded ones
+            for key, value in self.__dict__.items():
+                if key not in excluded_attrs:
+                    # Deep copy the value with appropriate handling based on type
+                    copied_value = self._deepcopy_value(value, exclude, memo, do_print)
+                    setattr(result, key, copied_value)
+                else:
+                    # For excluded attributes, just set them to None
+                    setattr(result, key, None)
 
 
         return result

@@ -59,6 +59,20 @@ class ImGuiStyleManager:
             imgui.COLOR_NAV_WINDOWING_DIM_BACKGROUND,
         ]
 
+    def make_custom(self, r, g, b, value, saturation_scale=1.0, alpha=1.0):
+        h, s, v = colorsys.rgb_to_hsv(r, g, b)
+        modified_rgb = colorsys.hsv_to_rgb(h, s * saturation_scale, value)
+        imgui_color = imgui.get_color_u32_rgba(modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
+
+        def _unpack_color(packed_color):
+            """Convert a packed u32 color to RGBA components (0-1 range)"""
+            return (
+                ((packed_color >> 0) & 0xFF) / 255.0,  # R
+                ((packed_color >> 8) & 0xFF) / 255.0,  # G
+                ((packed_color >> 16) & 0xFF) / 255.0,  # B
+            )
+        return _unpack_color(imgui_color)
+
     def make_color(self, value, saturation_scale=1.0, alpha=1.0):
         h, s, v = self.hsv
         modified_rgb = colorsys.hsv_to_rgb(h, s * saturation_scale, value)
