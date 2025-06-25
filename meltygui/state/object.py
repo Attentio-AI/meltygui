@@ -292,6 +292,15 @@ class DictConversion:
         memo[id(value)] = other_repr
         return other_repr
 
+    def deepcopy(self):
+        """
+        Create a deep copy of the instance, excluding certain attributes.
+        Recursively handles DictConversion objects, collections, and primitive types.
+
+        Returns:
+            A new instance with deep-copied attributes.
+        """
+        return self.deepcopy_exclude(exclude=None, memo=None, depth=0, do_print=False)
 
     def deepcopy_exclude(self, exclude=None, memo=None, depth=0, do_print=False):
         """
@@ -1081,7 +1090,8 @@ class DictConversion:
 
                     try:
                         parsed = update_instance(unset_value, new_value, excluded)
-                        setattr(instance, key, parsed)
+                        if hasattr(instance, key):
+                            setattr(instance, key, parsed)
                     except (KeyError, AttributeError) as e:
                         print(f"KeyError: {key} not found in instance {instance}. Should not name attributes \"type\"")
                         continue
@@ -1281,9 +1291,11 @@ class DictConversion:
                         if isinstance(new_value, str):
                             # Convert string to enum value
                             enum_type = type(current_value)
-                            setattr(self, key, enum_type[new_value])
+                            if hasattr(self, key):
+                                setattr(self, key, enum_type[new_value])
                         elif isinstance(new_value, Enum):
-                            setattr(self, key, new_value)
+                            if hasattr(self, key):
+                                setattr(self, key, new_value)
                         continue
 
                     # Handle nested objects
@@ -1306,7 +1318,8 @@ class DictConversion:
 
                     # Direct update for non-container types
                     else:
-                        setattr(self, key, new_value)
+                        if hasattr(self, key):
+                            setattr(self, key, new_value)
 
                 except Exception as e:
                     print(f"Error updating {key}: {str(e)}")
@@ -1345,9 +1358,11 @@ class DictConversion:
                         if isinstance(new_value, str):
                             # Convert string to enum value
                             enum_type = type(current_value)
-                            setattr(self, key, enum_type[new_value])
+                            if hasattr(self, key):
+                                setattr(self, key, enum_type[new_value])
                         elif isinstance(new_value, Enum):
-                            setattr(self, key, new_value)
+                            if hasattr(self, key):
+                                setattr(self, key, new_value)
                         continue
 
                     # Handle nested objects
@@ -1370,7 +1385,8 @@ class DictConversion:
 
                     # Direct update for non-container values
                     else:
-                        setattr(self, key, new_value)
+                        if hasattr(self, key):
+                            setattr(self, key, new_value)
 
                 except Exception as e:
                     print(f"Error updating {key}: {str(e)}")
