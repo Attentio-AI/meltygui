@@ -1202,7 +1202,16 @@ class DictConversion:
             return None
         # Handle enums
         if isinstance(value, tuple):
-            return value
+            new_list = []
+            for item in value:
+                if self.is_primitive(item):
+                    new_list.append(item)
+                else:
+                    print(f"dangerous tuple item found {value} {key} {type(item)}")
+                    # Escape to string
+                    new_list.append("Parse Failure")
+            to_tuple = tuple(new_list)
+            return to_tuple
         elif isinstance(value, Enum):
             classtype = DictConversion.get_full_class_path(value)
             results = (value.name, classtype, "Enum", value.value)
