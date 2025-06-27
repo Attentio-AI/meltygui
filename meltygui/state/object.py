@@ -329,9 +329,10 @@ class DictConversion:
 
         # Initialize new parent and children tracking attributes
         if result is not None:
-            result._parent = None
-            result._parent_key = None
-            result._children = {}
+            if hasattr(result, '_parent'):
+                result._parent = None
+                result._parent_key = None
+                result._children = {}
 
             # Create set of attributes to exclude
             excluded_attrs = {'class_names', '_parent', '_children', "tensor", "tensor_b", "tensor_c", 'buffer', 'ctx',
@@ -340,14 +341,15 @@ class DictConversion:
                 excluded_attrs.update(exclude)
 
             # Copy all attributes except excluded ones
-            for key, value in self.__dict__.items():
-                if key not in excluded_attrs:
-                    # Deep copy the value with appropriate handling based on type
-                    copied_value = self._deepcopy_value(value, exclude, memo, do_print)
-                    setattr(result, key, copied_value)
-                else:
-                    # For excluded attributes, just set them to None
-                    setattr(result, key, None)
+            if hasattr(self, '__dict__'):
+                for key, value in self.__dict__.items():
+                    if key not in excluded_attrs:
+                        # Deep copy the value with appropriate handling based on type
+                        copied_value = self._deepcopy_value(value, exclude, memo, do_print)
+                        setattr(result, key, copied_value)
+                    else:
+                        # For excluded attributes, just set them to None
+                        setattr(result, key, None)
 
 
         return result
