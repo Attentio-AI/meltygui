@@ -332,6 +332,7 @@ def tree(text, open=True, width=0, height=0):
     else:
         flags = imgui.TREE_NODE_COLLAPSING_HEADER | imgui.TREE_NODE_ALLOW_ITEM_OVERLAP
 
+    imgui.set_next_item_open(open)
     if width > 0:
         imgui.set_next_item_width(width)
     return imgui.tree_node(text, flags=flags)
