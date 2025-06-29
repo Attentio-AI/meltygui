@@ -10,6 +10,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, Optional, Union, List, Tuple
 
+import imgui
 import torch
 from torch import Tensor, nn
 from transformers import PreTrainedTokenizerBase, LlamaTokenizerFast
@@ -17,6 +18,8 @@ from transformers import PreTrainedTokenizerBase, LlamaTokenizerFast
 from src.lsd.gl_gui.model.class_utill import ClassUtility
 from src.lsd.gl_gui.model.global_undo_redo_manager import TrackedList, TrackedDict, TrackedSet, GlobalUndoRedoManager
 from src.lsd.gl_gui.utils.custom_views import print_stack_trace
+from src.lsd.gl_gui.view.app_view_utils import should_exclude
+
 
 class DictConversion:
 
@@ -32,7 +35,7 @@ class DictConversion:
         self._exclude_attrs = {'_history_manager', '_exclude_attrs', '_parameters',
                                '_buffers', '_modules', 'training'}
         self._obj_path = None
-
+        self.label_indent = 0
         self.view_settings = {}
 
     def save(self, save_file: str):
@@ -41,9 +44,6 @@ class DictConversion:
         os.makedirs(path_dir, exist_ok=True)
         with open(save_file, "w") as f:
             f.write(str(view_dict["objects"]))
-
-    def on_load(self, root):
-        pass
 
     def __eq__(self, other):
         class_name = self.__class__.__name__
@@ -970,6 +970,14 @@ class DictConversion:
                 found_class_path = ClassUtility().class_names[combined_name]
                 return DictConversion.get_enum_value(found_class_path, combined_name, value, last_try=True)
 
+    def has_valid_attr(self, obj, attr_name: str) -> bool:
+        """
+        Checks if the attribute exists and is not None.
+        """
+        exception_list = ["expanded", "content_size", "content_pos"]
+        return hasattr(obj, attr_name) or attr_name in exception_list
+
+
     def from_dict(self, object_dict, excluded=None, class_root=None):
         if class_root is not None:
             ClassUtility().initialize_class_names(class_root)
@@ -1092,7 +1100,7 @@ class DictConversion:
 
                     try:
                         parsed = update_instance(unset_value, new_value, excluded)
-                        if hasattr(instance, key):
+                        if self.has_valid_attr(instance, key):
                             setattr(instance, key, parsed)
                     except (KeyError, AttributeError) as e:
                         print(f"KeyError: {key} not found in instance {instance}. Should not name attributes \"type\"")
@@ -1102,6 +1110,26 @@ class DictConversion:
             if hasattr(obj_instance, 'on_load') and callable(obj_instance.on_load):
                 obj_instance.on_load(root)
         return root
+
+
+    def on_load(self, root):
+        """
+        Method to be called after the object is loaded from a dictionary.
+        Can be overridden in subclasses to perform additional initialization.
+        """
+        # Loop over attribs
+        self.label_indent = 0
+        for key, value in self.__dict__.items():
+            if should_exclude(key):
+                continue
+
+            if hasattr(value, 'name'):
+                # Measure the text width
+                name_width = imgui.calc_text_size(value.name).x
+            else:
+                name_width = imgui.calc_text_size(key).x
+
+            self.label_indent = max(self.label_indent, name_width)
 
     @staticmethod
     def get_full_class_path(obj):
@@ -1293,10 +1321,10 @@ class DictConversion:
                         if isinstance(new_value, str):
                             # Convert string to enum value
                             enum_type = type(current_value)
-                            if hasattr(self, key):
+                            if self.has_valid_attr(self, key):
                                 setattr(self, key, enum_type[new_value])
                         elif isinstance(new_value, Enum):
-                            if hasattr(self, key):
+                            if self.has_valid_attr(self, key):
                                 setattr(self, key, new_value)
                         continue
 
@@ -1320,7 +1348,7 @@ class DictConversion:
 
                     # Direct update for non-container types
                     else:
-                        if hasattr(self, key):
+                        if self.has_valid_attr(self, key):
                             setattr(self, key, new_value)
 
                 except Exception as e:
@@ -1360,10 +1388,10 @@ class DictConversion:
                         if isinstance(new_value, str):
                             # Convert string to enum value
                             enum_type = type(current_value)
-                            if hasattr(self, key):
+                            if self.has_valid_attr(self, key):
                                 setattr(self, key, enum_type[new_value])
                         elif isinstance(new_value, Enum):
-                            if hasattr(self, key):
+                            if self.has_valid_attr(self, key):
                                 setattr(self, key, new_value)
                         continue
 
@@ -1387,7 +1415,7 @@ class DictConversion:
 
                     # Direct update for non-container values
                     else:
-                        if hasattr(self, key):
+                        if self.has_valid_attr(self, key):
                             setattr(self, key, new_value)
 
                 except Exception as e:
