@@ -37,6 +37,7 @@ class DictConversion:
         self._obj_path = None
         self.label_indent = 0
         self.view_settings = {}
+        self.tint = (1.0, 1.0, 1.0, 1.0)  # Default white tint
 
     def save(self, save_file: str):
         view_dict = self.to_dict()
