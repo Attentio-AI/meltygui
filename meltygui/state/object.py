@@ -36,6 +36,7 @@ class DictConversion:
                                '_buffers', '_modules', 'training'}
         self._obj_path = None
         self.label_indent = 0
+        self.child_dict_expanded = {}
         self.view_settings = {}
         self.tint = (1.0, 1.0, 1.0, 1.0)  # Default white tint
 

@@ -8,5 +8,6 @@ def should_exclude(name):
                                                                                                'expanded',
                                                                                                'content_size',
                                                                                                'content_pos', 'visible',
-                                                                                               'enabled', 'label_indent']
+                                                                                               'enabled', 'label_indent',
+                                                                                               'child_dict_expanded']
     return exclude
