@@ -980,7 +980,7 @@ class DictConversion:
         return hasattr(obj, attr_name) or attr_name in exception_list
 
 
-    def from_dict(self, object_dict, excluded=None, class_root=None):
+    def from_dict(self, object_dict, excluded=None, class_root=None, vis=None):
         if class_root is not None:
             ClassUtility().initialize_class_names(class_root)
         if excluded is None:
@@ -1110,11 +1110,14 @@ class DictConversion:
 
         for obj_instance in instantiated_objects.values():
             if hasattr(obj_instance, 'on_load') and callable(obj_instance.on_load):
-                obj_instance.on_load(root)
+                if vis is None:
+                    obj_instance.on_load(root=root)
+                else:
+                    obj_instance.on_load(vis=vis, root=root)
         return root
 
 
-    def on_load(self, root):
+    def on_load(self, vis, root):
         """
         Method to be called after the object is loaded from a dictionary.
         Can be overridden in subclasses to perform additional initialization.
