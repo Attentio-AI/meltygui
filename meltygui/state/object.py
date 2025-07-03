@@ -1111,7 +1111,7 @@ class DictConversion:
         for obj_instance in instantiated_objects.values():
             if hasattr(obj_instance, 'on_load') and callable(obj_instance.on_load):
                 if vis is None:
-                    obj_instance.on_load(root=root)
+                    obj_instance.on_load(vis=None, root=root)
                 else:
                     obj_instance.on_load(vis=vis, root=root)
         return root
