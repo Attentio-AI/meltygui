@@ -1,6 +1,7 @@
 
 
 def should_exclude(name):
+
     exclude = name.startswith('_') or name.endswith('_h') or name.startswith('p_') or name in ['id', 'name', 'tint',
                                                                                                'hash', 'type',
                                                                                                'is_root',

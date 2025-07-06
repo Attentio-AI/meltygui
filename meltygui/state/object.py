@@ -22,6 +22,201 @@ from src.lsd.gl_gui.view.app_view_utils import should_exclude
 
 
 class DictConversion:
+    def from_dict(self, object_dict, excluded=None, class_root=None, vis=None):
+
+        def update_instance(unset_value, new_value, excluded):
+            # Handle Enums
+            # Handle nested objects
+            # and unset_value['type'] == "src.lsd.gl_gui.tensorview.GenPrompt"
+            if unset_value is None and new_value is None:
+                return None
+
+            if isinstance(unset_value, DictConversion) or (
+                    isinstance(new_value, tuple) and new_value[0] in instantiated_objects):
+                if new_value is None:
+                    return unset_value
+                return instantiated_objects[new_value[0]]
+
+            if isinstance(unset_value, Enum) or (isinstance(unset_value, tuple) and
+                                                 (new_value is not None and len(new_value) > 2 and new_value[
+                                                     2] == "Enum")):
+                if isinstance(new_value, tuple):
+                    # # Convert tuple to enum value
+                    if isinstance(new_value[0], int):
+                        return unset_value
+                    if len(new_value) > 3:
+                        enum_obj = DictConversion.get_enum_value(new_value[1], new_value[0], new_value[3])
+                    else:
+                        enum_obj = DictConversion.get_enum_value(new_value[1], new_value[0], None)
+                    # enum_type = type(enum_obj)
+                    # setattr(instance, key, enum_type[new_value[0]])
+                    return enum_obj
+                    # return None
+
+                if isinstance(new_value, str):
+                    # Convert string to enum value
+                    enum_type = type(unset_value)
+                    # setattr(instance, key, enum_type[new_value])
+                    return enum_type[new_value]
+                elif isinstance(new_value, Enum):
+                    # setattr(instance, key, new_value)
+                    return new_value
+                return unset_value
+
+            # Is tuple
+            elif isinstance(unset_value, tuple):
+                if unset_value[0] in instantiated_objects:
+                    return instantiated_objects[unset_value[0]]
+                else:
+                    return new_value
+
+            # Handle lists
+            elif isinstance(unset_value, list) and isinstance(new_value, list):
+                if len(unset_value) > 0:
+                    type_ref = unset_value[0]
+                else:
+                    type_ref = None
+                unset_value.clear()
+                for i, item in enumerate(new_value):
+                    if isinstance(item, DictConversion) or (
+                            isinstance(item, tuple) and item[0] in instantiated_objects):
+                        # if hasattr(instantiated_objects[item[0]], "sub_view_name"):
+                        # print(instantiated_objects[item[0]].sub_view_name)
+                        # if instantiated_objects[item[0]].sub_view_name == "Rope 2":
+                        #     print("Debugging Rope 2")
+
+                        if type_ref is not None:
+                            new_item = update_instance(item, item, excluded)
+                        else:
+                            new_item = update_instance(item, item, excluded)
+                        unset_value.append(new_item)
+                    else:
+                        if type_ref is not None:
+                            new_item = update_instance(item, item, excluded)
+                        else:
+                            new_item = update_instance(item, item, excluded)
+                        unset_value.append(new_item)
+                return unset_value
+
+            # Handle dictionaries
+            elif isinstance(unset_value, dict) and isinstance(new_value, dict):
+                first_key = next(iter(unset_value.keys()), None)
+                first_value = unset_value.get(first_key, None)
+
+                if "parse_direct" in new_value:
+                    return new_value
+
+                unset_value.clear()
+                for a_key, a_value in new_value.items():
+                    # if first_key is not None:
+                    #     unset_value[a_key] = update_instance(first_value, a_value, excluded)
+                    # else:
+                    if isinstance(a_value, dict):
+                        first_value = deepcopy(a_value)
+                    else:
+                        first_value = a_value
+
+                    nested_parse = update_instance(first_value, a_value, excluded)
+                    unset_value[a_key] = nested_parse
+
+                return unset_value
+            # Direct update for non-container types
+            else:
+                return new_value
+
+        if class_root is not None:
+            ClassUtility().initialize_class_names(class_root)
+        if excluded is None:
+            excluded = []
+        root_id = object_dict["root"]
+        object_dict.pop("root")
+        excluded.extend(["class_names", "_parent", "_parent_key", "_children", "hash",
+                         "outliner_expanded_h", "modules_imported"])
+
+        instantiated_objects = {}
+
+        for okey, ovalue in object_dict.items():
+            if excluded is None or okey not in excluded:
+                class_path = object_dict[okey]["type"]
+                instance = DictConversion.instantiate_from_class_path(class_path)
+                instantiated_objects[okey] = instance
+
+        root = instantiated_objects[root_id]
+        for okey, ovalue in object_dict.items():
+            instance = instantiated_objects[okey]
+            if okey == '8d90f44f-63c4-4a0f-8ef1-467d05a0e11c':
+                pass
+            for key, new_value in ovalue.items():
+                if key not in excluded:
+                    unset_value = getattr(instance, key, None)
+
+                    try:
+                        parsed = update_instance(unset_value, new_value, excluded)
+                        if self.has_valid_attr(instance, key):
+                            setattr(instance, key, parsed)
+                    except (KeyError, AttributeError) as e:
+                        print(f"KeyError: {key} not found in instance {instance}. Should not name attributes \"type\"")
+                        continue
+
+        for obj_instance in instantiated_objects.values():
+            if hasattr(obj_instance, 'on_load') and callable(obj_instance.on_load):
+                if vis is None:
+                    obj_instance.on_load(vis=None, root=root)
+                else:
+                    obj_instance.on_load(vis=vis, root=root)
+        return root
+
+    def to_dict(self, excluded=None, objects=None, shallow=False, use_references=False) -> Dict:
+        """
+        Generic method to convert any class instance to a dictionary.
+        Handles nested objects, enums, and basic types.
+        """
+        if hasattr(self, 'excluded'):
+            if excluded is None:
+                excluded = self.excluded
+            else:
+                excluded = excluded.union(self.excluded)
+        result = {}
+        is_root = False
+        if objects is None:
+            objects = {}
+            is_root = True
+
+        if not shallow:
+            shallow_parse = self.to_dict(excluded=excluded, objects=objects, shallow=True, use_references=False)
+            shallow_parse["is_root"] = is_root
+            # Class path
+            if hasattr(self, 'id'):
+                object_id = self.id
+            else:
+                object_id = id(self)
+
+            classtype = DictConversion.get_full_class_path(self)
+            shallow_parse["type"] = classtype
+            if is_root:
+                objects["root"] = object_id
+
+            objects[object_id] = shallow_parse
+
+        # Get all attributes that don't start with '_'
+        for key, value in self.__dict__.items():
+            if key.startswith('_') or (excluded and key in excluded):
+                continue
+
+            if not shallow:
+                parsed = self.parse_value(result, objects, key, value, excluded)
+                result[key] = parsed
+            else:
+                shallow_parse = self.parse_value(result, objects, key, value, excluded, shallow=True)
+                result[key] = shallow_parse
+
+        if is_root:
+            result["objects"] = objects
+
+        if use_references:
+            return objects
+
+        return result
 
     def __init__(self):
         # Using weakref to avoid circular references
@@ -980,141 +1175,6 @@ class DictConversion:
         return hasattr(obj, attr_name) or attr_name in exception_list
 
 
-    def from_dict(self, object_dict, excluded=None, class_root=None, vis=None):
-        if class_root is not None:
-            ClassUtility().initialize_class_names(class_root)
-        if excluded is None:
-            excluded = []
-        root_id = object_dict["root"]
-        object_dict.pop("root")
-        excluded.extend(["class_names", "_parent", "_parent_key", "_children", "hash",
-                         "outliner_expanded_h", "modules_imported"])
-
-        instantiated_objects = {}
-
-        def update_instance(unset_value, new_value, excluded):
-            # Handle Enums
-            # Handle nested objects
-            # and unset_value['type'] == "src.gsd.glue.tensorview.GenPrompt"
-            if unset_value is None and new_value is None:
-                return None
-            if isinstance(new_value, dict) and "type" in new_value:
-                print("Found GenPrompt type")
-            if isinstance(unset_value, DictConversion) or (
-                    isinstance(new_value, tuple) and new_value[0] in instantiated_objects):
-                if new_value is None:
-                    return unset_value
-                return instantiated_objects[new_value[0]]
-
-            if isinstance(unset_value, Enum) or (isinstance(unset_value, tuple) and
-                                                 (new_value is not None and len(new_value) > 2 and new_value[2] == "Enum")):
-                if isinstance(new_value, tuple):
-                    # # Convert tuple to enum value
-                    if isinstance(new_value[0], int):
-                        return unset_value
-                    if len(new_value) > 3:
-                        enum_obj = DictConversion.get_enum_value(new_value[1], new_value[0], new_value[3])
-                    else:
-                        enum_obj = DictConversion.get_enum_value(new_value[1], new_value[0], None)
-                    # enum_type = type(enum_value)
-                    # setattr(instance, key, enum_type[new_value[0]])
-                    return enum_obj
-                    # return None
-
-                if isinstance(new_value, str):
-                    # Convert string to enum value
-                    enum_type = type(unset_value)
-                    # setattr(instance, key, enum_type[new_value])
-                    return enum_type[new_value]
-                elif isinstance(new_value, Enum):
-                    # setattr(instance, key, new_value)
-                    return new_value
-                return unset_value
-
-            # Is tuple
-            elif isinstance(unset_value, tuple):
-                if unset_value[0] in instantiated_objects:
-                    return instantiated_objects[unset_value[0]]
-                else:
-                    return new_value
-
-            # Handle lists
-            elif isinstance(unset_value, list) and isinstance(new_value, list):
-                if len(unset_value) > 0:
-                    type_ref = unset_value[0]
-                else:
-                    type_ref = None
-                unset_value.clear()
-                for i, item in enumerate(new_value):
-                    if isinstance(item, DictConversion) or (
-                            isinstance(item, tuple) and item[0] in instantiated_objects):
-                        # if hasattr(instantiated_objects[item[0]], "sub_view_name"):
-                            # print(instantiated_objects[item[0]].sub_view_name)
-                            # if instantiated_objects[item[0]].sub_view_name == "Rope 2":
-                            #     print("Debugging Rope 2")
-
-                        if type_ref is not None:
-                            new_item = update_instance(item, item, excluded)
-                        else:
-                            new_item = update_instance(item, item, excluded)
-                        unset_value.append(new_item)
-                    else:
-                        if type_ref is not None:
-                            new_item = update_instance(item, item, excluded)
-                        else:
-                            new_item = update_instance(item, item, excluded)
-                        unset_value.append(new_item)
-                return unset_value
-
-            # Handle dictionaries
-            elif isinstance(unset_value, dict) and isinstance(new_value, dict):
-                first_key = next(iter(unset_value.keys()), None)
-                first_value = unset_value.get(first_key, None)
-
-                if "parse_direct" in new_value:
-                    return new_value
-
-                unset_value.clear()
-                for a_key, a_value in new_value.items():
-                    if first_key is not None:
-                        unset_value[a_key] = update_instance(first_value, a_value, excluded)
-                    else:
-                        unset_value[a_key] = update_instance(a_value, a_value, excluded)
-
-                return unset_value
-            # Direct update for non-container types
-            else:
-                return new_value
-
-        for okey, ovalue in object_dict.items():
-            if excluded is None or okey not in excluded:
-                class_path = object_dict[okey]["type"]
-                instance = DictConversion.instantiate_from_class_path(class_path)
-                instantiated_objects[okey] = instance
-
-        root = instantiated_objects[root_id]
-        for okey, ovalue in object_dict.items():
-            instance = instantiated_objects[okey]
-
-            for key, new_value in ovalue.items():
-                if key not in excluded:
-                    unset_value = getattr(instance, key, None)
-
-                    try:
-                        parsed = update_instance(unset_value, new_value, excluded)
-                        if self.has_valid_attr(instance, key):
-                            setattr(instance, key, parsed)
-                    except (KeyError, AttributeError) as e:
-                        print(f"KeyError: {key} not found in instance {instance}. Should not name attributes \"type\"")
-                        continue
-
-        for obj_instance in instantiated_objects.values():
-            if hasattr(obj_instance, 'on_load') and callable(obj_instance.on_load):
-                if vis is None:
-                    obj_instance.on_load(vis=None, root=root)
-                else:
-                    obj_instance.on_load(vis=vis, root=root)
-        return root
 
 
     def on_load(self, vis, root):
@@ -1166,59 +1226,6 @@ class DictConversion:
         # class_path = '.'.join([module] + class_parts[::-1])
         # return class_path
 
-
-    def to_dict(self, excluded=None, objects=None, shallow=False, use_references=False) -> Dict:
-        """
-        Generic method to convert any class instance to a dictionary.
-        Handles nested objects, enums, and basic types.
-        """
-        if hasattr(self, 'excluded'):
-            if excluded is None:
-                excluded = self.excluded
-            else:
-                excluded = excluded.union(self.excluded)
-        result = {}
-        is_root = False
-        if objects is None:
-            objects = {}
-            is_root = True
-
-        if not shallow:
-            shallow_parse = self.to_dict(excluded=excluded, objects=objects, shallow=True, use_references=False)
-            shallow_parse["is_root"] = is_root
-            # Class path
-            if hasattr(self, 'id'):
-                object_id = self.id
-            else:
-                object_id = id(self)
-
-            classtype = DictConversion.get_full_class_path(self)
-            shallow_parse["type"] = classtype
-            if is_root:
-                objects["root"] = object_id
-
-
-            objects[object_id] = shallow_parse
-
-        # Get all attributes that don't start with '_'
-        for key, value in self.__dict__.items():
-            if key.startswith('_') or (excluded and key in excluded):
-                continue
-
-            if not shallow:
-                parsed = self.parse_value(result, objects, key, value, excluded)
-                result[key] = parsed
-            else:
-                shallow_parse = self.parse_value(result, objects, key, value, excluded, shallow=True)
-                result[key] = shallow_parse
-
-        if is_root:
-            result["objects"] = objects
-
-        if use_references:
-            return objects
-
-        return result
 
     def is_primitive(self, value: Any) -> bool:
         """Check if a value is a primitive type."""
