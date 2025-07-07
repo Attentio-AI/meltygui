@@ -237,7 +237,7 @@ class ImGuiStyleManager:
         # Window backgrounds
         colors[imgui.COLOR_WINDOW_BACKGROUND] = make_color(0.12, 0.5)  # Window background
         colors[imgui.COLOR_CHILD_BACKGROUND] = make_color(0.10, 0.3, 0.0)
-        colors[imgui.COLOR_POPUP_BACKGROUND] = make_color(0.12, 0.3)
+        colors[imgui.COLOR_POPUP_BACKGROUND] = make_color(0.9, 0.3)
 
         # Headers
         colors[imgui.COLOR_HEADER] = make_color(0.35, 0.8, 0.0)
@@ -271,7 +271,7 @@ class ImGuiStyleManager:
         colors[imgui.COLOR_TITLE_BACKGROUND_COLLAPSED] = make_color(0.12, 0.5)
 
         # Borders and separators
-        colors[imgui.COLOR_BORDER] = make_color(0.4, 0.7)
+        colors[imgui.COLOR_BORDER] = make_color(0.3, 0.7)
         colors[imgui.COLOR_SEPARATOR] = make_color(0.40, 0.7)
 
         # Sliders, scrollbars

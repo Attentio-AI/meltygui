@@ -22,6 +22,26 @@ from src.lsd.gl_gui.view.app_view_utils import should_exclude
 
 
 class DictConversion:
+    def __init__(self):
+        # Using weak references to avoid circular references
+        self.id = str(uuid.uuid4())
+        self.hash = None
+        self._parent: Optional[weakref.ReferenceType] = None
+        self._parent_key: Optional[Union[str, int]] = None
+        self._children: Dict[Union[str, int], 'DictConversion'] = {}
+        self.outliner_expanded_h = False
+        self._history_manager = GlobalUndoRedoManager.get_instance()
+        self._exclude_attrs = {'_history_manager', '_exclude_attrs', '_parameters',
+                               '_buffers', '_modules', 'training'}
+        self._obj_path = None
+        self.label_indent = 0
+        self.child_dict_expanded = {}
+        self.view_settings = {}
+        self._attr_size = {}
+        self.expanded = True
+        self.tint = (1.0, 1.0, 1.0, 1.0)  # Default white tint
+
+
     def from_dict(self, object_dict, excluded=None, class_root=None, vis=None):
 
         def update_instance(unset_value, new_value, excluded):
@@ -218,22 +238,6 @@ class DictConversion:
 
         return result
 
-    def __init__(self):
-        # Using weakref to avoid circular references
-        self.id = str(uuid.uuid4())
-        self.hash = None
-        self._parent: Optional[weakref.ReferenceType] = None
-        self._parent_key: Optional[Union[str, int]] = None
-        self._children: Dict[Union[str, int], 'DictConversion'] = {}
-        self.outliner_expanded_h = False
-        self._history_manager = GlobalUndoRedoManager.get_instance()
-        self._exclude_attrs = {'_history_manager', '_exclude_attrs', '_parameters',
-                               '_buffers', '_modules', 'training'}
-        self._obj_path = None
-        self.label_indent = 0
-        self.child_dict_expanded = {}
-        self.view_settings = {}
-        self.tint = (1.0, 1.0, 1.0, 1.0)  # Default white tint
 
     def save(self, save_file: str):
         view_dict = self.to_dict()
