@@ -241,7 +241,7 @@ class ImGuiStyleManager:
         # Window backgrounds
         colors[imgui.COLOR_WINDOW_BACKGROUND] = make_color(0.01, 0.7)  # Main background
         colors[imgui.COLOR_CHILD_BACKGROUND] = make_color(0.01, 0.3, 0.0)
-        colors[imgui.COLOR_POPUP_BACKGROUND] = make_color(0.9, 0.3)
+        colors[imgui.COLOR_POPUP_BACKGROUND] = make_color(0.01, 0.3)
         colors[imgui.COLOR_BORDER] = make_color(0.34, 0.9)
 
         # Title
