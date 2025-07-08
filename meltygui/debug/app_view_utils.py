@@ -11,5 +11,7 @@ def should_exclude(name):
                                                                                                'content_pos', 'visible',
                                                                                                'enabled', 'label_indent',
                                                                                                'child_dict_expanded',
-                                                                                               'selected_object']
+                                                                                               'selected_object',
+                                                                                               'super_types',
+                                                                                               'all_view_functions']
     return exclude
