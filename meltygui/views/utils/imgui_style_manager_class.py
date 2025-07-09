@@ -264,7 +264,7 @@ class ImGuiStyleManager:
         colors[imgui.COLOR_BUTTON_ACTIVE] = make_color(0.55, 1.0)
 
         # Frame backgrounds
-        colors[imgui.COLOR_FRAME_BACKGROUND] = make_color(0.20, 0.4)
+        colors[imgui.COLOR_FRAME_BACKGROUND] = make_color(0.15, 0.9)
         colors[imgui.COLOR_FRAME_BACKGROUND_HOVERED] = make_color(0.25, 0.5)
         colors[imgui.COLOR_FRAME_BACKGROUND_ACTIVE] = make_color(0.30, 0.6)
 
