@@ -37,6 +37,7 @@ class DictConversion:
         self.label_indent = 0
         self.child_dict_expanded = {}
         self.view_settings = {}
+        self.child_settings = {}
         self._attr_size = {}
         self._path_updated = False
         self.expanded = True
