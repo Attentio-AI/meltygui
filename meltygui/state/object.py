@@ -38,6 +38,7 @@ class DictConversion:
         self.child_dict_expanded = {}
         self.view_settings = {}
         self._attr_size = {}
+        self._attr_pos = {}
         self._path_updated = False
         self.expanded = True
         self.tint = (1.0, 1.0, 1.0, 1.0)  # Default white tint
