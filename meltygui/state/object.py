@@ -24,7 +24,7 @@ from src.lsd.gl_gui.view.app_view_utils import should_exclude
 class DictConversion:
     def __init__(self):
         # Using weak references to avoid circular references
-        self.id = str(uuid.uuid4())
+        self.id = str(uuid.uuid1())
         self.hash = None
         self._parent: Optional[weakref.ReferenceType] = None
         self._parent_key: Optional[Union[str, int]] = None
@@ -35,8 +35,6 @@ class DictConversion:
                                '_buffers', '_modules', 'training'}
         self._obj_path = None
         self.label_indent = 0
-        self.child_dict_expanded = {}
-        self.view_settings = {}
         self._attr_size = {}
         self._attr_pos = {}
         self._path_updated = False
