@@ -12,5 +12,8 @@ def should_exclude(name):
                                                                                                'enabled', 'label_indent',
                                                                                                'child_dict_expanded',
                                                                                                'selected_object',
-                                                                                               'child_settings']
+                                                                                               'child_settings',
+                                                                                               'parent',
+                                                                                               'attr_name',
+                                                                                               'value_type']
     return exclude
