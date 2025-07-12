@@ -39,7 +39,7 @@ class DictConversion:
         self._attr_pos = {}
         self._path_updated = False
         self.expanded = True
-        self.tint = (1.0, 1.0, 1.0, 1.0)  # Default white tint
+        self.tint = (0, 0, 0)  # Default black tint
 
 
     def from_dict(self, object_dict, excluded=None, class_root=None, vis=None):
