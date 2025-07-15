@@ -38,6 +38,7 @@ class DictConversion:
         self._attr_size = {}
         self._attr_pos = {}
         self._path_updated = False
+        self._settings = None
         self.expanded = True
         self.tint = (0, 0, 0)  # Default black tint
 
@@ -537,7 +538,7 @@ class DictConversion:
 
             # Create set of attributes to exclude
             excluded_attrs = {'class_names', '_parent', '_children', "tensor", "tensor_b", "tensor_c", 'buffer', 'ctx',
-                              'texture', "texture3D", "cuda_buffer", "xy_renderer", "xyz_renderer"}
+                              'texture', "texture3D", "cuda_buffer", "xy_renderer", "xyz_renderer", "parents"}
             if exclude:
                 excluded_attrs.update(exclude)
 
