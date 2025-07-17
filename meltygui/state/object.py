@@ -17,14 +17,14 @@ from transformers import PreTrainedTokenizerBase, LlamaTokenizerFast
 
 from src.lsd.gl_gui.model.class_utill import ClassUtility
 from src.lsd.gl_gui.model.global_undo_redo_manager import TrackedList, TrackedDict, TrackedSet, GlobalUndoRedoManager
-from src.lsd.gl_gui.utils.custom_views import print_stack_trace
+from src.lsd.gl_gui.utils.custom_views import print_stack_trace, generate_id
 from src.lsd.gl_gui.view.app_view_utils import should_exclude
 
 
 class DictConversion:
     def __init__(self):
         # Using weak references to avoid circular references
-        self.id = str(uuid.uuid1())
+        self.id = generate_id()
         self.hash = None
         self._parent: Optional[weakref.ReferenceType] = None
         self._parent_key: Optional[Union[str, int]] = None
@@ -39,9 +39,19 @@ class DictConversion:
         self._attr_pos = {}
         self._path_updated = False
         self._settings = None
+        self.attr_settings = {}
         self.expanded = True
         self.tint = (0, 0, 0)  # Default black tint
 
+
+    def get_settings(self, attr_name=None):
+        if attr_name is not None:
+            if attr_name in self.attr_settings:
+                return self.attr_settings[attr_name]
+        else:
+            return self._settings
+
+        return None
 
     def from_dict(self, object_dict, excluded=None, class_root=None, vis=None):
 
@@ -208,9 +218,10 @@ class DictConversion:
             shallow_parse["is_root"] = is_root
             # Class path
             if hasattr(self, 'id'):
+                self.id = self.id[0:8]
                 object_id = self.id
             else:
-                object_id = id(self)
+                object_id = id(self)[0:8]
 
             classtype = DictConversion.get_full_class_path(self)
             shallow_parse["type"] = classtype
@@ -538,7 +549,7 @@ class DictConversion:
 
             # Create set of attributes to exclude
             excluded_attrs = {'class_names', '_parent', '_children', "tensor", "tensor_b", "tensor_c", 'buffer', 'ctx',
-                              'texture', "texture3D", "cuda_buffer", "xy_renderer", "xyz_renderer", "parents"}
+                              'texture', "texture3D", "cuda_buffer", "xy_renderer", "xyz_renderer", "parents", 'attr_settings'}
             if exclude:
                 excluded_attrs.update(exclude)
 
@@ -1295,9 +1306,10 @@ class DictConversion:
             if shallow:
                 classtype = DictConversion.get_full_class_path(value)
                 if hasattr(value, 'id'):
+                    value.id = value.id[0:8]
                     results = (value.id, classtype)
                 else:
-                    results = (id(value), classtype)
+                    results = (id(value)[0:8], classtype)
             else:
                 if value.id not in objects:
                     results = value.to_dict(excluded=excluded, objects=objects, shallow=False, use_references=False)
