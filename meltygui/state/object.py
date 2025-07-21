@@ -505,7 +505,7 @@ class DictConversion:
         memo[id(value)] = other_repr
         return other_repr
 
-    def deepcopy(self):
+    def deepcopy(self, do_print=False, max_depth=20):
         """
         Create a deep copy of the instance, excluding certain attributes.
         Recursively handles DictConversion objects, collections, and primitive types.
@@ -513,9 +513,9 @@ class DictConversion:
         Returns:
             A new instance with deep-copied attributes.
         """
-        return self.deepcopy_exclude(exclude=None, memo=None, depth=0, do_print=False)
+        return self.deepcopy_exclude(exclude=None, memo=None, depth=0, do_print=do_print, max_depth=max_depth)
 
-    def deepcopy_exclude(self, exclude=None, memo=None, depth=0, do_print=False):
+    def deepcopy_exclude(self, exclude=None, memo=None, depth=0, do_print=False, max_depth=30):
         """
         Create a deep copy of the instance with custom attribute exclusions.
         Recursively handles DictConversion objects, collections, and primitive types.
@@ -540,6 +540,9 @@ class DictConversion:
         # Add the new object to memo to avoid infinite recursion
         memo[id(self)] = result
 
+        if depth > max_depth:
+            return self
+
         # Initialize new parent and children tracking attributes
         if result is not None:
             if hasattr(result, '_parent'):
@@ -549,7 +552,9 @@ class DictConversion:
 
             # Create set of attributes to exclude
             excluded_attrs = {'class_names', '_parent', '_children', "tensor", "tensor_b", "tensor_c", 'buffer', 'ctx',
-                              'texture', "texture3D", "cuda_buffer", "xy_renderer", "xyz_renderer", "parents", 'attr_settings'}
+                              'texture', "texture3D", "cuda_buffer", "xy_renderer", "xyz_renderer", "parents", 'attr_settings',
+                              'input_value', 'parent', 'value_type', 'settings', '_settings', '_children', '_history_manager', 'selected',
+                              'selected_object', 'default_value', '_view_parent', '_attr_size', '_attr_pos'}
             if exclude:
                 excluded_attrs.update(exclude)
 
@@ -558,16 +563,18 @@ class DictConversion:
                 for key, value in self.__dict__.items():
                     if key not in excluded_attrs:
                         # Deep copy the value with appropriate handling based on type
-                        copied_value = self._deepcopy_value(value, exclude, memo, do_print)
+                        if do_print:
+                            print(f"Copying attribute: {key}, Value: {value}, Type: {type(value)}")
+                        copied_value = self._deepcopy_value(value, exclude=exclude, memo=memo, do_print=do_print, depth=depth, max_depth=max_depth)
                         setattr(result, key, copied_value)
                     else:
                         # For excluded attributes, just set them to None
-                        setattr(result, key, None)
+                        setattr(result, key, value)
 
 
         return result
 
-    def _deepcopy_value(self, value, exclude=None, memo=None, depth=0, do_print=False):
+    def _deepcopy_value(self, value, exclude=None, memo=None, depth=0, do_print=False, max_depth=30):
         """
         Helper method to deep copy a value based on its type.
 
@@ -579,12 +586,14 @@ class DictConversion:
         Returns:
             A deep copy of the value
         """
-        depth += 1
-
         if memo is None:
             memo = {}
 
+        if depth > max_depth:
+            return value
+
         if do_print:
+            print(f"Depth: {depth}, Value: {value}, Type: {type(value)}")
             mem_str = ""
             for i in range(torch.cuda.device_count()):
                 mem_alloc = torch.cuda.memory_allocated(i) / 1024 ** 3
@@ -616,8 +625,13 @@ class DictConversion:
             return value
 
         # Handle DictConversion objects
-        if isinstance(value, DictConversion) or hasattr(value, "to_dict"):
-            return value.deepcopy_exclude(exclude, memo, depth)
+        if isinstance(value, DictConversion):
+            if do_print:
+                print(f"Deep copying DictConversion object: {value.__class__.__name__}, {value.name}")
+            return value.deepcopy_exclude(exclude=exclude, memo=memo, depth=depth+1, do_print=do_print, max_depth=max_depth)
+
+        if value.__class__.__name__ == "ObjectRef":
+            return value
 
         # Handle Enums (should be copied by value, not deep copied)
         if isinstance(value, Enum):
@@ -628,12 +642,14 @@ class DictConversion:
             new_list = []
             memo[id(value)] = new_list
             for item in value:
-                new_list.append(self._deepcopy_value(item, exclude, memo, depth, do_print))
+                new_list.append(self._deepcopy_value(item, exclude=exclude, memo=memo, depth=depth, do_print=do_print,
+                                                     max_depth=max_depth))
             return new_list
 
         # Handle tuples
         if isinstance(value, tuple):
-            items = [self._deepcopy_value(item, exclude, memo, depth, do_print) for item in value]
+            items = [self._deepcopy_value(item, exclude=exclude, memo=memo, depth=depth, do_print=do_print,
+                                          max_depth=max_depth) for item in value]
             result = tuple(items)
             memo[id(value)] = result
             return result
@@ -644,7 +660,8 @@ class DictConversion:
             memo[id(value)] = new_dict
             for k, v in value.items():
                 # The keys are immutable, so we don't need to copy them
-                new_dict[k] = self._deepcopy_value(v, exclude, memo, depth, do_print)
+                new_dict[k] = self._deepcopy_value(v, exclude=exclude, memo=memo, depth=depth, do_print=do_print,
+                                                   max_depth=max_depth)
             return new_dict
 
         if isinstance(value, set):
@@ -734,7 +751,7 @@ class DictConversion:
 
         try:
             # Get old value if it exists for history tracking
-            if not self._history_manager.disabled:
+            if self._history_manager is not None and not self._history_manager.disabled:
                 old_value = None
                 if hasattr(self, name):
                     old_value = getattr(self, name)
@@ -761,7 +778,7 @@ class DictConversion:
                     self._children = {}
                 self._children[name] = wrapped_value
 
-                if not self._history_manager.disabled:
+                if self._history_manager is not None and not self._history_manager.disabled:
                     # Ensure nested DictConversion objects use the same history manager
                     wrapped_value._history_manager = self._history_manager
 
@@ -775,7 +792,7 @@ class DictConversion:
                             self._children = {}
                         self._children[f"{name}[{i}]"] = item
 
-                        if not self._history_manager.disabled:
+                        if self._history_manager is not None and not self._history_manager.disabled:
 
                             # Ensure they use the same history manager
                             item._history_manager = self._history_manager
@@ -790,14 +807,14 @@ class DictConversion:
                             self._children = {}
                         self._children[f"{name}['{v.id}']"] = v
 
-                        if not self._history_manager.disabled:
+                        if self._history_manager is not None and not self._history_manager.disabled:
                             # Ensure they use the same history manager
                             v._history_manager = self._history_manager
 
             # Make the actual change
             super().__setattr__(name, wrapped_value)
 
-            if not self._history_manager.disabled:
+            if self._history_manager is not None and not self._history_manager.disabled:
                 # Record the change if it's not a tracked container itself
                 # (tracked containers record their own changes)
                 if not any(isinstance(wrapped_value, t) for t in (TrackedList, TrackedDict, TrackedSet)):
