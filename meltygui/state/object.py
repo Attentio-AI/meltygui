@@ -39,10 +39,10 @@ class DictConversion:
         self._attr_pos = {}
         self._path_updated = False
         self._settings = None
+        self.name = ""
         self.attr_settings = {}
         self.expanded = True
         self.tint = (0, 0, 0)  # Default black tint
-
 
     def get_settings(self, attr_name=None):
         if attr_name is not None:
