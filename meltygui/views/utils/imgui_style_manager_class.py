@@ -80,7 +80,7 @@ class ImGuiStyleManager:
 
     def make_color(self, value, saturation_scale=1.0, alpha=1.0):
         h, s, v = self.hsv
-        value = (v * 0.5) + value
+        value = (v * self.root.global_style.secondary_value) + value
 
         modified_rgb = colorsys.hsv_to_rgb(h, s * saturation_scale, value)
         imgui_color = imgui.get_color_u32_rgba(modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
@@ -238,26 +238,29 @@ class ImGuiStyleManager:
         colors = style.colors
 
         def make_color(value, saturation_scale=1.0, alpha=1.0):
-            value = (v * 0.05) + value
+            value = (v * self.root.global_style.base_value) + value
 
             modified_rgb = colorsys.hsv_to_rgb(h, s * saturation_scale, value)
             return (modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
 
-        tint_const = self.root.global_style.tint_constants
+        glb_cst = self.root.global_style.main_constants
         # Set colors for different UI elements
-        colors[imgui.COLOR_TEXT] = make_color(0.95, 0.2)  # Bright white text
+        bg_const = glb_cst["widget"]["text"]["value"]
+
+        colors[imgui.COLOR_TEXT] = make_color(glb_cst["widget"]["text"]["value"],
+                                              glb_cst["widget"]["text"]["saturation"])  # Nearly white text
         colors[imgui.COLOR_TEXT_DISABLED] = make_color(0.50, 0.2)  # Grayed out text
 
         # Window backgrounds
-        bg_const = tint_const["window"]["background"]
+        bg_const = glb_cst["window"]["background"]
         window_bg_value = bg_const["value"]
         window_bg_sat = bg_const["saturation"]
 
-        border_const = tint_const["window"]["border"]
+        border_const = glb_cst["window"]["border"]
         window_border_value = border_const["value"]
         window_border_sat = border_const["saturation"]
 
-        child_bg_const = tint_const["window"]["child_bg"]
+        child_bg_const = glb_cst["window"]["child_bg"]
         child_bg_value = bg_const["value"]
         child_bg_sat = bg_const["saturation"]
 

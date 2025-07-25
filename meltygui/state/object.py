@@ -138,6 +138,7 @@ class DictConversion:
                 if "parse_direct" in new_value:
                     return new_value
 
+                from_src = deepcopy(unset_value)
                 unset_value.clear()
                 for a_key, a_value in new_value.items():
                     # if first_key is not None:
@@ -150,6 +151,21 @@ class DictConversion:
 
                     nested_parse = update_instance(first_value, a_value, excluded)
                     unset_value[a_key] = nested_parse
+
+                # for a_key, a_value in from_src.items():
+                #
+                #     if a_key not in unset_value:
+                #         print(f"Warning: key {a_key} not found in new_value, using from_src value: {a_value}")
+                    # # if first_key is not None:
+                    # #     unset_value[a_key] = update_instance(first_value, a_value, excluded)
+                    # # else:
+                    # if isinstance(a_value, dict):
+                    #     first_value = deepcopy(a_value)
+                    # else:
+                    #     first_value = a_value
+
+                    # nested_parse = update_instance(first_value, a_value, excluded)
+                    # unset_value[a_key] = nested_parse
 
                 return unset_value
             # Direct update for non-container types
