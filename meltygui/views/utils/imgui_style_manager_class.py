@@ -9,6 +9,8 @@ class ImGuiStyleManager:
         self.saved_rgb = None
         self.current_rgb = (0.0, 0.0, 0.0)
         self.hsv = (0.0, 0.0, 0.0)
+        self.root = None
+
         # List of all color indices we need to save/restore
         self.color_indices = [
             imgui.COLOR_TEXT,
@@ -58,6 +60,9 @@ class ImGuiStyleManager:
             imgui.COLOR_NAV_WINDOWING_HIGHLIGHT,
             imgui.COLOR_NAV_WINDOWING_DIM_BACKGROUND,
         ]
+
+    def set_root(self, root):
+        self.root = root
 
     def make_custom(self, r, g, b, value, saturation_scale=1.0, alpha=1.0):
         h, s, v = colorsys.rgb_to_hsv(r, g, b)
@@ -222,6 +227,10 @@ class ImGuiStyleManager:
         Args:
             r, g, b: RGB values between 0 and 1
         """
+
+        if self.root is None:
+            return
+
         self.current_rgb = (r, g, b)
         h, s, v = colorsys.rgb_to_hsv(r, g, b)
         self.hsv = (h, s, v)
@@ -229,20 +238,34 @@ class ImGuiStyleManager:
         colors = style.colors
 
         def make_color(value, saturation_scale=1.0, alpha=1.0):
-            value = (v * 0.5) + value
+            value = (v * 0.05) + value
 
             modified_rgb = colorsys.hsv_to_rgb(h, s * saturation_scale, value)
             return (modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
 
+        tint_const = self.root.global_style.tint_constants
         # Set colors for different UI elements
         colors[imgui.COLOR_TEXT] = make_color(0.95, 0.2)  # Bright white text
         colors[imgui.COLOR_TEXT_DISABLED] = make_color(0.50, 0.2)  # Grayed out text
 
         # Window backgrounds
-        colors[imgui.COLOR_WINDOW_BACKGROUND] = make_color(0.01, 0.7)  # Main background
+        bg_const = tint_const["window"]["background"]
+        window_bg_value = bg_const["value"]
+        window_bg_sat = bg_const["saturation"]
+
+        border_const = tint_const["window"]["border"]
+        window_border_value = border_const["value"]
+        window_border_sat = border_const["saturation"]
+
+        child_bg_const = tint_const["window"]["child_bg"]
+        child_bg_value = bg_const["value"]
+        child_bg_sat = bg_const["saturation"]
+
+
+        colors[imgui.COLOR_WINDOW_BACKGROUND] = make_color(window_bg_value, window_bg_sat)  # Dark background
         colors[imgui.COLOR_CHILD_BACKGROUND] = make_color(0.01, 0.3, 0.0)
         colors[imgui.COLOR_POPUP_BACKGROUND] = make_color(0.01, 0.3)
-        colors[imgui.COLOR_BORDER] = make_color(0.34, 0.9)
+        colors[imgui.COLOR_BORDER] = make_color(window_border_value, window_border_sat)
 
         # Title
         colors[imgui.COLOR_TITLE_BACKGROUND] = make_color(0.01, 0.7)
