@@ -237,78 +237,69 @@ class ImGuiStyleManager:
         style = imgui.get_style()
         colors = style.colors
 
-        def make_color(value, saturation_scale=1.0, alpha=1.0):
+        def make_color(input, alpha=1.0):
+            value = input["value"]
+            saturation_scale = input["saturation"]
             value = (v * self.root.global_style.base_value) + value
+            alpha = input["alpha"]
 
             modified_rgb = colorsys.hsv_to_rgb(h, s * saturation_scale, value)
             return (modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
+        # def make_color(value, saturation_scale=1.0, alpha=1.0):
+        #     value = (v * self.root.global_style.base_value) + value
+        #
+        #     modified_rgb = colorsys.hsv_to_rgb(h, s * saturation_scale, value)
+        #     return (modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
 
-        glb_cst = self.root.global_style.main_constants
-        # Set colors for different UI elements
-        bg_const = glb_cst["widget"]["text"]["value"]
+        glb_cst = self.root.global_style.main_const
 
-        colors[imgui.COLOR_TEXT] = make_color(glb_cst["widget"]["text"]["value"],
-                                              glb_cst["widget"]["text"]["saturation"])  # Nearly white text
-        colors[imgui.COLOR_TEXT_DISABLED] = make_color(0.50, 0.2)  # Grayed out text
+        colors[imgui.COLOR_TEXT] = make_color(glb_cst["widget"]["text"])  # Nearly white text
+        colors[imgui.COLOR_TEXT_DISABLED] = make_color(glb_cst["widget"]["text_disabled"])  # Grayed out text
 
-        # Window backgrounds
-        bg_const = glb_cst["window"]["background"]
-        window_bg_value = bg_const["value"]
-        window_bg_sat = bg_const["saturation"]
-
-        border_const = glb_cst["window"]["border"]
-        window_border_value = border_const["value"]
-        window_border_sat = border_const["saturation"]
-
-        child_bg_const = glb_cst["window"]["child_bg"]
-        child_bg_value = bg_const["value"]
-        child_bg_sat = bg_const["saturation"]
-
-
-        colors[imgui.COLOR_WINDOW_BACKGROUND] = make_color(window_bg_value, window_bg_sat)  # Dark background
-        colors[imgui.COLOR_CHILD_BACKGROUND] = make_color(0.01, 0.3, 0.0)
-        colors[imgui.COLOR_POPUP_BACKGROUND] = make_color(0.01, 0.3)
-        colors[imgui.COLOR_BORDER] = make_color(window_border_value, window_border_sat)
+        colors[imgui.COLOR_WINDOW_BACKGROUND] = make_color(glb_cst["window"]["background"])  # Dark background
+        colors[imgui.COLOR_CHILD_BACKGROUND] = make_color(glb_cst["window"]["child_bg"])
+        colors[imgui.COLOR_POPUP_BACKGROUND] = make_color(glb_cst["window"]["popup_bg"])
+        colors[imgui.COLOR_BORDER] = make_color(glb_cst["window"]["border"])
 
         # Title
-        colors[imgui.COLOR_TITLE_BACKGROUND] = make_color(0.01, 0.7)
-        colors[imgui.COLOR_TITLE_BACKGROUND_ACTIVE] = make_color(0.01, 0.7)
-        colors[imgui.COLOR_TITLE_BACKGROUND_COLLAPSED] = make_color(0.12, 0.5)
+        colors[imgui.COLOR_TITLE_BACKGROUND] = make_color(glb_cst["window"]["title_bg"])
+        colors[imgui.COLOR_TITLE_BACKGROUND_ACTIVE] = make_color(glb_cst["window"]["title_bg_active"])
+        colors[imgui.COLOR_TITLE_BACKGROUND_COLLAPSED] = make_color(glb_cst["window"]["title_bg_collapsed"])
 
         # Headers
-        colors[imgui.COLOR_HEADER] = make_color(0.01, 0.9, 0.0)
-        colors[imgui.COLOR_HEADER_HOVERED] = make_color(0.45, 0.9, 0.0)
-        colors[imgui.COLOR_HEADER_ACTIVE] = make_color(0.7, 1.0, 0.0)
+        colors[imgui.COLOR_HEADER] = make_color(glb_cst["window"]["header"])
+        colors[imgui.COLOR_HEADER_HOVERED] = make_color(glb_cst["window"]["header_hovered"])
+        colors[imgui.COLOR_HEADER_ACTIVE] = make_color(glb_cst["window"]["header_active"])
 
-        colors[imgui.COLOR_RESIZE_GRIP] = make_color(0.35, 0.8)
-        colors[imgui.COLOR_RESIZE_GRIP_HOVERED] = make_color(0.45, 0.9)
-        colors[imgui.COLOR_RESIZE_GRIP_ACTIVE] = make_color(0.55, 1.0)
+        colors[imgui.COLOR_RESIZE_GRIP] = make_color(glb_cst["widget"]["resize_grip"])
+        colors[imgui.COLOR_RESIZE_GRIP_HOVERED] = make_color(glb_cst["widget"]["resize_hovered"])
+        colors[imgui.COLOR_RESIZE_GRIP_ACTIVE] = make_color(glb_cst["widget"]["resize_active"])
 
         # Buttons
-        colors[imgui.COLOR_BUTTON] = make_color(0.35, 0.8)
-        colors[imgui.COLOR_BUTTON_HOVERED] = make_color(0.45, 0.9)
-        colors[imgui.COLOR_BUTTON_ACTIVE] = make_color(0.55, 1.0)
+        colors[imgui.COLOR_BUTTON] = make_color(glb_cst["widget"]["button"])
+        colors[imgui.COLOR_BUTTON_HOVERED] = make_color(glb_cst["widget"]["button_hovered"])
+        colors[imgui.COLOR_BUTTON_ACTIVE] = make_color(glb_cst["widget"]["button_active"])
 
         # Frame backgrounds
-        colors[imgui.COLOR_FRAME_BACKGROUND] = make_color(0.15, 0.9)
-        colors[imgui.COLOR_FRAME_BACKGROUND_HOVERED] = make_color(0.25, 0.5)
-        colors[imgui.COLOR_FRAME_BACKGROUND_ACTIVE] = make_color(0.30, 0.6)
+        colors[imgui.COLOR_FRAME_BACKGROUND] = make_color(glb_cst["frame"]["frame_bg"])
+        colors[imgui.COLOR_FRAME_BACKGROUND_HOVERED] = make_color(glb_cst["frame"]["frame_hovered"])
+        colors[imgui.COLOR_FRAME_BACKGROUND_ACTIVE] = make_color(glb_cst["frame"]["frame_active"])
 
-        colors[imgui.COLOR_CHECK_MARK] = make_color(0.90, 1.0)  # Bright mark
-        colors[imgui.COLOR_TEXT_SELECTED_BACKGROUND] = make_color(0.35, 0.8)  # Selection highlights
+        colors[imgui.COLOR_CHECK_MARK] = make_color(glb_cst["widget"]["check_mark"])
+        colors[imgui.COLOR_TEXT_SELECTED_BACKGROUND] = make_color(glb_cst["widget"]["text_selected_bg"])
         # Tabs
-        colors[imgui.COLOR_TAB] = make_color(0.25, 0.7)
-        colors[imgui.COLOR_TAB_HOVERED] = make_color(0.35, 0.8)
-        colors[imgui.COLOR_TAB_ACTIVE] = make_color(0.40, 0.9)
+        colors[imgui.COLOR_TAB] = make_color(glb_cst["tab"]["tab"])
+        colors[imgui.COLOR_TAB_HOVERED] = make_color(glb_cst["tab"]["tab_hovered"])
+        colors[imgui.COLOR_TAB_ACTIVE] = make_color(glb_cst["tab"]["tab_active"])
 
 
 
         # Borders and separators
-        colors[imgui.COLOR_SEPARATOR] = make_color(0.40, 0.7)
+        colors[imgui.COLOR_SEPARATOR] = make_color(glb_cst["frame"]["separator"])
 
         # Sliders, scrollbars
-        colors[imgui.COLOR_SLIDER_GRAB] = make_color(0.50, 0.9)
-        colors[imgui.COLOR_SLIDER_GRAB_ACTIVE] = make_color(0.60, 1.0)
-        colors[imgui.COLOR_SCROLLBAR_GRAB] = make_color(0.40, 0.7)
-        colors[imgui.COLOR_SCROLLBAR_GRAB_HOVERED] = make_color(0.45, 0.8)
-        colors[imgui.COLOR_SCROLLBAR_GRAB_ACTIVE] = make_color(0.50, 0.9)
+        colors[imgui.COLOR_SLIDER_GRAB] = make_color(glb_cst["widget"]["slider_grab"])
+        colors[imgui.COLOR_SLIDER_GRAB_ACTIVE] = make_color(glb_cst["widget"]["slider_grab_active"])
+        colors[imgui.COLOR_SCROLLBAR_GRAB] = make_color(glb_cst["widget"]["scrollbar_grab"])
+        colors[imgui.COLOR_SCROLLBAR_GRAB_HOVERED] = make_color(glb_cst["widget"]["scrollbar_grab_hovered"])
+        colors[imgui.COLOR_SCROLLBAR_GRAB_ACTIVE] = make_color(glb_cst["widget"]["scrollbar_grab_active"])

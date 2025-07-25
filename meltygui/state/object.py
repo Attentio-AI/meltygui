@@ -154,7 +154,7 @@ class DictConversion:
 
                 # for a_key, a_value in from_src.items():
                 #
-                #     if a_key not in unset_value:
+                #     if a_key not in new_value:
                 #         print(f"Warning: key {a_key} not found in new_value, using from_src value: {a_value}")
                     # # if first_key is not None:
                     # #     unset_value[a_key] = update_instance(first_value, a_value, excluded)
@@ -163,7 +163,7 @@ class DictConversion:
                     #     first_value = deepcopy(a_value)
                     # else:
                     #     first_value = a_value
-
+                    #
                     # nested_parse = update_instance(first_value, a_value, excluded)
                     # unset_value[a_key] = nested_parse
 
