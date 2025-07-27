@@ -141,9 +141,6 @@ class DictConversion:
                 from_src = deepcopy(unset_value)
                 unset_value.clear()
                 for a_key, a_value in new_value.items():
-                    # if first_key is not None:
-                    #     unset_value[a_key] = update_instance(first_value, a_value, excluded)
-                    # else:
                     if isinstance(a_value, dict):
                         first_value = deepcopy(a_value)
                     else:

@@ -3,11 +3,14 @@ from OpenGL.GL import *
 
 
 class GridDotsBackground:
-    def __init__(self, dot_spacing=15.0, dot_size=1.0, emphasis_size=1.2, dot_color=(0.2, 0.23, 0.3, 1.0)):
+    def __init__(self, dot_spacing=15.0, dot_size=1.0, emphasis_size=1.2, dot_color=(0.2, 0.23, 0.3, 1.0),
+                 bg_color=(0.05, 0.055, 0.07, 1.0)):
         self.dot_spacing = dot_spacing
         self.dot_size = dot_size
         self.emphasis_size = emphasis_size
         self.dot_color = dot_color
+        self.bg_color = bg_color
+        self.root = None
 
         vertex_shader = """
         #version 330 core
@@ -26,6 +29,7 @@ class GridDotsBackground:
         uniform float dotSize;
         uniform float emphasisSize;
         uniform vec4 dotColor;
+        uniform vec4 bgColor;
 
         void main() {
             vec2 pos = gl_FragCoord.xy;
@@ -40,7 +44,7 @@ class GridDotsBackground:
             float dot = 1.0 - smoothstep(currentDotSize - 1.0, currentDotSize, dist);
             vec4 bg = vec4(0.05, 0.055, 0.07, 1.0);
             
-            FragColor = mix(bg, dotColor, dot);
+            FragColor = mix(bgColor, dotColor, dot);
         }
         """
         self.shader = self.create_shader_program(vertex_shader, fragment_shader)
@@ -60,6 +64,9 @@ class GridDotsBackground:
         glBufferData(GL_ARRAY_BUFFER, vertices.nbytes, vertices, GL_STATIC_DRAW)
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, None)
         glEnableVertexAttribArray(0)
+
+    def set_root(self, root):
+        self.root = root
 
     def create_shader_program(self, vertex_src, fragment_src):
         vertex_shader = glCreateShader(GL_VERTEX_SHADER)
@@ -81,12 +88,29 @@ class GridDotsBackground:
         return program
 
     def render(self, width, height):
-        glUseProgram(self.shader)
-        glUniform2f(glGetUniformLocation(self.shader, "resolution"), width, height)
-        glUniform1f(glGetUniformLocation(self.shader, "dotSpacing"), self.dot_spacing)
-        glUniform1f(glGetUniformLocation(self.shader, "dotSize"), self.dot_size)
-        glUniform1f(glGetUniformLocation(self.shader, "emphasisSize"), self.emphasis_size)
-        glUniform4f(glGetUniformLocation(self.shader, "dotColor"), *self.dot_color)
+        if self.root is not None:
+            bg_settings = self.root.global_style.background_settings
+            glUseProgram(self.shader)
+            glUniform2f(glGetUniformLocation(self.shader, "resolution"), width, height)
+            glUniform1f(glGetUniformLocation(self.shader, "dotSpacing"), bg_settings.dot_spacing)
+            glUniform1f(glGetUniformLocation(self.shader, "dotSize"), bg_settings.dot_size)
+            glUniform1f(glGetUniformLocation(self.shader, "emphasisSize"), bg_settings.emphasis_size)
+            glUniform4f(glGetUniformLocation(self.shader, "dotColor"), *bg_settings.dot_color)
+            glUniform4f(glGetUniformLocation(self.shader, "bgColor"), *bg_settings.bg_color)
 
-        glBindVertexArray(self.vao)
-        glDrawArrays(GL_TRIANGLE_FAN, 0, 4)
+            glBindVertexArray(self.vao)
+            glDrawArrays(GL_TRIANGLE_FAN, 0, 4)
+        else:
+
+            glUseProgram(self.shader)
+            glUniform2f(glGetUniformLocation(self.shader, "resolution"), width, height)
+            glUniform1f(glGetUniformLocation(self.shader, "dotSpacing"), self.dot_spacing)
+            glUniform1f(glGetUniformLocation(self.shader, "dotSize"), self.dot_size)
+            glUniform1f(glGetUniformLocation(self.shader, "emphasisSize"), self.emphasis_size)
+            glUniform4f(glGetUniformLocation(self.shader, "dotColor"), *self.dot_color)
+            glUniform4f(glGetUniformLocation(self.shader, "bgColor"), *self.bg_color)
+
+            #    vec4 bgColor = vec4(0.05, 0.055, 0.07, 1.0);
+
+            glBindVertexArray(self.vao)
+            glDrawArrays(GL_TRIANGLE_FAN, 0, 4)
