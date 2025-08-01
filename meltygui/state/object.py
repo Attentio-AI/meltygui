@@ -230,6 +230,9 @@ class DictConversion:
         if not shallow:
             shallow_parse = self.to_dict(excluded=excluded, objects=objects, shallow=True, use_references=False)
             shallow_parse["is_root"] = is_root
+            from src.lsd.gl_gui.model.dynamic_obj import DynamicObj
+            if isinstance(self, DynamicObj):
+                pass
             # Class path
             if hasattr(self, 'id'):
                 self.id = self.id[0:8]
@@ -246,6 +249,7 @@ class DictConversion:
 
         # Get all attributes that don't start with '_'
         for key, value in self.__dict__.items():
+
             if key.startswith('_') or (excluded and key in excluded):
                 continue
 
@@ -1289,9 +1293,9 @@ class DictConversion:
         Checks if the attribute exists and is not None.
         """
         exception_list = ["expanded", "content_size", "content_pos"]
-        return hasattr(obj, attr_name) or attr_name in exception_list
 
-
+        from src.lsd.gl_gui.model.dynamic_obj import DynamicObj
+        return hasattr(obj, attr_name) or attr_name in exception_list or isinstance(obj, DynamicObj)
 
 
     def on_load(self, vis, root):
