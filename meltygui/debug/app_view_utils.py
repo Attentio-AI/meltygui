@@ -18,5 +18,6 @@ def should_exclude(name):
                                                                                                'value_type',
                                                                                                'parents',
                                                                                                'child_collapsed',
-                                                                                               'attr_settings']
+                                                                                               'attr_settings',
+                                                                                               'root']
     return exclude

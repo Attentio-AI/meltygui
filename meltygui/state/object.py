@@ -958,6 +958,76 @@ class DictConversion:
 
         return current
 
+    def set(self, path: str, value: Any) -> None:
+        """
+        Sets a value using a path string.
+        Example paths: "attr1.attr2", "attr1[0]", "attr1['key']"
+        """
+        if not path:
+            raise ValueError("Path cannot be empty")
+
+        # Split path into components while preserving nested structure
+        parts = []
+        current_part = ''
+        brackets = 0
+
+        for char in path:
+            if char == '[':
+                brackets += 1
+                if brackets == 1 and current_part:
+                    parts.append(current_part)
+                    current_part = '['
+                else:
+                    current_part += char
+            elif char == ']':
+                brackets -= 1
+                current_part += char
+                if brackets == 0:
+                    parts.append(current_part)
+                    current_part = ''
+            elif char == '.' and brackets == 0:
+                if current_part:
+                    parts.append(current_part)
+                current_part = ''
+            else:
+                current_part += char
+
+        if current_part:
+            parts.append(current_part)
+
+        # Navigate to the parent of the target
+        current = self
+        for i, part in enumerate(parts[:-1]):
+            if part.startswith('['):
+                # Handle array/dict access
+                idx = part[1:-1].strip("'\"")  # Remove quotes if present
+                try:
+                    current = current[int(idx) if idx.isdigit() else idx]
+                except (TypeError, ValueError, KeyError, IndexError):
+                    raise AttributeError(f"Cannot access {part} in path {path}")
+            else:
+                # Handle attribute access
+                try:
+                    current = getattr(current, part)
+                except AttributeError:
+                    raise AttributeError(f"Cannot access attribute {part} in path {path}")
+
+        # Set the final value
+        final_part = parts[-1]
+        if final_part.startswith('['):
+            # Handle array/dict assignment
+            idx = final_part[1:-1].strip("'\"")  # Remove quotes if present
+            try:
+                current[int(idx) if idx.isdigit() else idx] = value
+            except (TypeError, ValueError, KeyError, IndexError) as e:
+                raise AttributeError(f"Cannot set {final_part} in path {path}: {e}")
+        else:
+            # Handle attribute assignment
+            try:
+                setattr(current, final_part, value)
+            except AttributeError as e:
+                raise AttributeError(f"Cannot set attribute {final_part} in path {path}: {e}")
+
     def get_path_of_attribute(self, attr_value: Any) -> str:
         """
         Returns the path to find an attribute value within the nested structure.
