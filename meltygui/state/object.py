@@ -238,7 +238,7 @@ class DictConversion:
                 self.id = self.id[0:8]
                 object_id = self.id
             else:
-                object_id = id(self)[0:8]
+                object_id = id(self)
 
             classtype = DictConversion.get_full_class_path(self)
             shallow_parse["type"] = classtype
@@ -1414,7 +1414,7 @@ class DictConversion:
                     value.id = value.id[0:8]
                     results = (value.id, classtype)
                 else:
-                    results = (id(value)[0:8], classtype)
+                    results = (id(value), classtype)
             else:
                 if value.id not in objects:
                     results = value.to_dict(excluded=excluded, objects=objects, shallow=False, use_references=False)
