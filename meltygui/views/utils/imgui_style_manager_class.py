@@ -120,8 +120,6 @@ class ImGuiStyleManager:
 
         value = input["value"]
 
-
-
         saturation_scale = input["saturation"]
         value = (v * self.root.global_style.base_value) + value
         if 'max_value' in input:
