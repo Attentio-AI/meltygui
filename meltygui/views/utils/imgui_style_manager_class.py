@@ -115,6 +115,22 @@ class ImGuiStyleManager:
 
         return modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha
 
+    def make_color_style(self, input, alpha=1.0):
+        h, s, v = self.hsv
+
+        value = input["value"]
+
+
+
+        saturation_scale = input["saturation"]
+        value = (v * self.root.global_style.base_value) + value
+        if 'max_value' in input:
+            value = min(value, input["max_value"])
+        alpha = input["alpha"]
+
+        modified_rgb = colorsys.hsv_to_rgb(h, s * saturation_scale, value)
+        return (modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
+
     def make(self, value, saturation_scale=1.0, alpha=1.0):
         def _unpack_color(packed_color):
             """Convert a packed u32 color to RGBA components (0-1 range)"""
