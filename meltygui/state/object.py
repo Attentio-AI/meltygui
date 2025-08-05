@@ -1292,7 +1292,7 @@ class DictConversion:
         """
         Checks if the attribute exists and is not None.
         """
-        exception_list = ["expanded", "content_size", "content_pos"]
+        exception_list = ["content_size", "content_pos"]
 
         from src.lsd.gl_gui.model.dynamic_obj import DynamicObj
         return hasattr(obj, attr_name) or attr_name in exception_list or isinstance(obj, DynamicObj)
@@ -1306,7 +1306,7 @@ class DictConversion:
         # Loop over attribs
         self.label_indent = 0
         for key, value in self.__dict__.items():
-            if should_exclude(key):
+            if should_exclude(key, root=root):
                 continue
 
             if hasattr(value, 'name'):
@@ -1407,7 +1407,7 @@ class DictConversion:
                 )
             return inner_list
         # Handle nested objects with to_dict method
-        elif hasattr(value, 'to_dict'):
+        elif hasattr(value, 'to_dict') and isinstance(value, DictConversion):
             if shallow:
                 classtype = DictConversion.get_full_class_path(value)
                 if hasattr(value, 'id'):

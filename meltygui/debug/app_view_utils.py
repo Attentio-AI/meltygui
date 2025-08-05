@@ -1,23 +1,8 @@
 
 
-def should_exclude(name):
+def should_exclude(name, root=None):
 
-    exclude = name.startswith('_') or name.endswith('_h') or name.startswith('p_') or name in ['id', 'name', 'tint',
-                                                                                               'hash', 'type',
-                                                                                               'is_root',
-                                                                                               'view_settings',
-                                                                                               'expanded',
-                                                                                               'content_size',
-                                                                                               'content_pos', 'visible',
-                                                                                               'enabled', 'label_indent',
-                                                                                               'child_dict_expanded',
-                                                                                               'selected_object',
-                                                                                               'child_settings',
-                                                                                               'parent',
-                                                                                               'attr_name',
-                                                                                               'value_type',
-                                                                                               'parents',
-                                                                                               'child_collapsed',
-                                                                                               'attr_settings',
-                                                                                               'root']
+    global_exclude = root.global_style.excluded_names
+
+    exclude = name.startswith('_') or name.endswith('_h') or name in global_exclude or name.startswith('p_')
     return exclude
