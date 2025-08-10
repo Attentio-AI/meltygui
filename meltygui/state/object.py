@@ -1,5 +1,6 @@
 import importlib
 import inspect
+import multiprocessing
 import os
 import sys
 import uuid
@@ -55,160 +56,132 @@ class DictConversion:
         return None
 
     def from_dict(self, object_dict, excluded=None, class_root=None, vis=None):
+        # ---- fast refs
+        DictConv = DictConversion
+        EnumType = Enum
 
-        def update_instance(unset_value, new_value, excluded):
-            # Handle Enums
-            # Handle nested objects
-            # and unset_value['type'] == "src.lsd.gl_gui.tensorview.GenPrompt"
-            if unset_value is None and new_value is None:
-                return None
-
-            if isinstance(unset_value, DictConversion) or (
-                    isinstance(new_value, tuple) and new_value[0] in instantiated_objects):
-                if new_value is None:
-                    return unset_value
-                return instantiated_objects[new_value[0]]
-
-            if isinstance(unset_value, Enum) or (isinstance(unset_value, tuple) and
-                                                 (new_value is not None and len(new_value) > 2 and new_value[
-                                                     2] == "Enum")):
-                if isinstance(new_value, tuple):
-                    # # Convert tuple to enum value
-                    if isinstance(new_value[0], int):
-                        return unset_value
-                    if len(new_value) > 3:
-                        enum_obj = DictConversion.get_enum_value(new_value[1], new_value[0], new_value[3])
-                    else:
-                        enum_obj = DictConversion.get_enum_value(new_value[1], new_value[0], None)
-                    # enum_type = type(enum_obj)
-                    # setattr(instance, key, enum_type[new_value[0]])
-                    return enum_obj
-                    # return None
-
-                if isinstance(new_value, str):
-                    # Convert string to enum value
-                    enum_type = type(unset_value)
-                    # setattr(instance, key, enum_type[new_value])
-                    return enum_type[new_value]
-                elif isinstance(new_value, Enum):
-                    # setattr(instance, key, new_value)
-                    return new_value
-                return unset_value
-
-            # Is tuple
-            elif isinstance(unset_value, tuple):
-                if unset_value[0] in instantiated_objects:
-                    return instantiated_objects[unset_value[0]]
-                else:
-                    return new_value
-
-            # Handle lists
-            elif isinstance(unset_value, list) and isinstance(new_value, list):
-                if len(unset_value) > 0:
-                    type_ref = unset_value[0]
-                else:
-                    type_ref = None
-                unset_value.clear()
-                for i, item in enumerate(new_value):
-                    if isinstance(item, DictConversion) or (
-                            isinstance(item, tuple) and item[0] in instantiated_objects):
-                        # if hasattr(instantiated_objects[item[0]], "sub_view_name"):
-                        # print(instantiated_objects[item[0]].sub_view_name)
-                        # if instantiated_objects[item[0]].sub_view_name == "Rope 2":
-                        #     print("Debugging Rope 2")
-
-                        if type_ref is not None:
-                            new_item = update_instance(item, item, excluded)
-                        else:
-                            new_item = update_instance(item, item, excluded)
-                        unset_value.append(new_item)
-                    else:
-                        if type_ref is not None:
-                            new_item = update_instance(item, item, excluded)
-                        else:
-                            new_item = update_instance(item, item, excluded)
-                        unset_value.append(new_item)
-                return unset_value
-
-            # Handle dictionaries
-            elif isinstance(unset_value, dict) and isinstance(new_value, dict):
-                first_key = next(iter(unset_value.keys()), None)
-                first_value = unset_value.get(first_key, None)
-
-                if "parse_direct" in new_value:
-                    return new_value
-
-                from_src = deepcopy(unset_value)
-                unset_value.clear()
-                for a_key, a_value in new_value.items():
-                    if isinstance(a_value, dict):
-                        first_value = deepcopy(a_value)
-                    else:
-                        first_value = a_value
-
-                    nested_parse = update_instance(first_value, a_value, excluded)
-                    unset_value[a_key] = nested_parse
-
-                # for a_key, a_value in from_src.items():
-                #
-                #     if a_key not in new_value:
-                #         print(f"Warning: key {a_key} not found in new_value, using from_src value: {a_value}")
-                    # # if first_key is not None:
-                    # #     unset_value[a_key] = update_instance(first_value, a_value, excluded)
-                    # # else:
-                    # if isinstance(a_value, dict):
-                    #     first_value = deepcopy(a_value)
-                    # else:
-                    #     first_value = a_value
-                    #
-                    # nested_parse = update_instance(first_value, a_value, excluded)
-                    # unset_value[a_key] = nested_parse
-
-                return unset_value
-            # Direct update for non-container types
-            else:
-                return new_value
+        # ---- fast membership
+        base_excluded = {
+            "class_names", "_parent", "_parent_key", "_children", "hash",
+            "outliner_expanded_h", "modules_imported"
+        }
+        if excluded is None:
+            excluded_set = set(base_excluded)
+        else:
+            # keep the user's exclusions but make O(1) lookups
+            excluded_set = set(excluded)
+            excluded_set |= base_excluded
 
         if class_root is not None:
             ClassUtility().initialize_class_names(class_root)
-        if excluded is None:
-            excluded = []
-        root_id = object_dict["root"]
-        object_dict.pop("root")
-        excluded.extend(["class_names", "_parent", "_parent_key", "_children", "hash",
-                         "outliner_expanded_h", "modules_imported"])
+
+        # We read root without mutating the huge input dict
+        root_id = object_dict.get("root")
 
         instantiated_objects = {}
 
+        # ---------- pass 1: instantiate all objects (so cross-refs resolve)
         for okey, ovalue in object_dict.items():
-            if excluded is None or okey not in excluded:
-                class_path = object_dict[okey]["type"]
-                instance = DictConversion.instantiate_from_class_path(class_path)
-                instantiated_objects[okey] = instance
+            if okey == "root":
+                continue
+            class_path = ovalue["type"]
+            instance = DictConv.instantiate_from_class_path(class_path)
+            instantiated_objects[okey] = instance
 
-        root = instantiated_objects[root_id]
+        # ---------- parser (no deepcopies of user input)
+        def update_instance(unset_value, new_value, _excluded_unused):
+            # fast outs
+            if unset_value is None and new_value is None:
+                return None
+
+            # object id refs: tuple where first element is in instantiated map
+            if isinstance(new_value, tuple) and new_value and new_value[0] in instantiated_objects:
+                return instantiated_objects[new_value[0]]
+
+            # Enums
+            if isinstance(unset_value, EnumType) or (
+                    isinstance(new_value, tuple) and len(new_value) > 2 and new_value[2] == "Enum"
+            ):
+                if isinstance(new_value, tuple):
+                    # (name_or_value, enum_type_name, "Enum", optional_module)
+                    name_or_val = new_value[0]
+                    enum_type_name = new_value[1]
+                    mod = new_value[3] if len(new_value) > 3 else None
+                    if isinstance(name_or_val, int):
+                        # old path: int indicates "leave unset_value as-is"
+                        return unset_value
+                    return DictConv.get_enum_value(enum_type_name, name_or_val, mod)
+                if isinstance(new_value, str):
+                    return type(unset_value)[new_value]
+                if isinstance(new_value, EnumType):
+                    return new_value
+                return unset_value
+
+            # Tuple passthrough (non-ref)
+            if isinstance(unset_value, tuple):
+                # if tuple was a latent ref, it was handled above
+                return new_value
+
+            # Lists
+            if isinstance(unset_value, list) and isinstance(new_value, list):
+                unset_value.clear()
+                for item in new_value:
+                    # Avoid mutating the input by creating a fresh container as an "unset" prototype
+                    if isinstance(item, dict):
+                        proto = {}
+                    elif isinstance(item, list):
+                        proto = []
+                    else:
+                        proto = None
+                    unset_value.append(update_instance(proto, item, _excluded_unused))
+                return unset_value
+
+            # Dicts
+            if isinstance(unset_value, dict) and isinstance(new_value, dict):
+                if "parse_direct" in new_value:
+                    return new_value
+                unset_value.clear()
+                for a_key, a_value in new_value.items():
+                    if isinstance(a_value, dict):
+                        proto = {}
+                    elif isinstance(a_value, list):
+                        proto = []
+                    else:
+                        proto = None
+                    unset_value[a_key] = update_instance(proto, a_value, _excluded_unused)
+                return unset_value
+
+            # Scalars / everything else
+            return new_value
+
+        # ---------- pass 2: materialize fields
         for okey, ovalue in object_dict.items():
+            if okey == "root":
+                continue
             instance = instantiated_objects[okey]
-            if okey == '8d90f44f-63c4-4a0f-8ef1-467d05a0e11c':
-                pass
             for key, new_value in ovalue.items():
-                if key not in excluded:
-                    unset_value = getattr(instance, key, None)
+                if key in excluded_set:
+                    continue
+                unset_value = getattr(instance, key, None)
+                try:
+                    parsed = update_instance(unset_value, new_value, excluded_set)
+                    if self.has_valid_attr(instance, key):
+                        setattr(instance, key, parsed)
+                except (KeyError, AttributeError):
+                    # Keep the original behavior and message
+                    print(
+                        f"KeyError: {key} not found in instance {instance}. "
+                        f"Should not name attributes \"type\""
+                    )
+                    continue
 
-                    try:
-                        parsed = update_instance(unset_value, new_value, excluded)
-                        if self.has_valid_attr(instance, key):
-                            setattr(instance, key, parsed)
-                    except (KeyError, AttributeError) as e:
-                        print(f"KeyError: {key} not found in instance {instance}. Should not name attributes \"type\"")
-                        continue
-
+        # Run callbacks
+        root = instantiated_objects[root_id] if root_id in instantiated_objects else None
         for obj_instance in instantiated_objects.values():
-            if hasattr(obj_instance, 'on_load') and callable(obj_instance.on_load):
-                if vis is None:
-                    obj_instance.on_load(vis=None, root=root)
-                else:
-                    obj_instance.on_load(vis=vis, root=root)
+            cb = getattr(obj_instance, "on_load", None)
+            if callable(cb):
+                cb(vis=vis, root=root)
+
         return root
 
     def to_dict(self, excluded=None, objects=None, shallow=False, use_references=False) -> Dict:
@@ -572,7 +545,7 @@ class DictConversion:
             excluded_attrs = {'class_names', '_parent', '_children', "tensor", "tensor_b", "tensor_c", 'buffer', 'ctx',
                               'texture', "texture3D", "cuda_buffer", "xy_renderer", "xyz_renderer", "parents", 'attr_settings',
                               'input_value', 'parent', 'value_type', 'settings', '_settings', '_children', '_history_manager', 'selected',
-                              'selected_object', 'default_value', '_view_parent', '_attr_size', '_attr_pos'}
+                              'selected_object', 'default_value', '_view_parent', '_attr_size', '_attr_pos', '_job_queue', '_result_queue'}
             if exclude:
                 excluded_attrs.update(exclude)
 
