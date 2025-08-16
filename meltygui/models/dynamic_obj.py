@@ -9,6 +9,7 @@ class DynamicObj(DictConversion):
         super().__init__()
         self.driver = None
         self._root = None
+        self.not_real = set()
 
         # Store driver using super().__setattr__ to avoid recursion
         super().__setattr__('driver', driver_dict if driver_dict is not None else {})
@@ -55,6 +56,18 @@ class DynamicObj(DictConversion):
             for key in driver:
                 if key not in real_dict:
                     setattr(self, key, None)
+                    self.not_real.add(key)
+
+            to_remove = set()
+            for key in self.not_real:
+                # Indicates that the attribute was removed
+                if key not in driver:
+                    to_remove.add(key)
+
+            for key in to_remove:
+                self.not_real.remove(key)
+                if key in real_dict:
+                    real_dict.pop(key)
 
 
         # Only called when attribute doesn't exist
