@@ -1300,7 +1300,7 @@ class DictConversion:
         # Combine module with qualname
         return f"{module}.{qualname}"
         # cls = obj.__class__
-        # module = cls.__module__
+        # module = cls.__module__ or 
         #
         # # Get the full class path by walking through any nested classes
         # try:
