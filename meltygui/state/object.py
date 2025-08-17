@@ -41,15 +41,16 @@ class DictConversion:
         self._path_updated = False
         self._settings = None
         self.name = ""
-        self.attr_settings = {}
+        self._attr_settings = {}
         self.expanded = True
         self.tint = (0, 0, 0)  # Default black tint
-        self.child_collapsed = set()
+        # self.child_collapsed = set()
+        self.child_expanded = set()
 
     def get_settings(self, attr_name=None):
         if attr_name is not None:
-            if attr_name in self.attr_settings:
-                return self.attr_settings[attr_name]
+            if attr_name in self._attr_settings:
+                return self._attr_settings[attr_name]
         else:
             return self._settings
 

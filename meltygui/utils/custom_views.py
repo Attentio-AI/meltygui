@@ -368,7 +368,6 @@ def request_render():
     _needs_render.set()
     glfw.post_empty_event()
 
-
 def does_need_render():
     return _needs_render.is_set()
 
@@ -404,6 +403,7 @@ def end_child():
 
 
 def begin(str_label, closable=False, flags=0):
+
     LSDView().group_stack.append(GroupType.WINDOW)
     return imgui.begin(str_label, closable, flags)
 
