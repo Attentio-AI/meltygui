@@ -45,7 +45,7 @@ class DictConversion:
         self.expanded = True
         self.tint = (0, 0, 0)  # Default black tint
         # self.child_collapsed = set()
-        self.child_expanded = set()
+        self.child_collapsed = set()
 
     def get_settings(self, attr_name=None):
         if attr_name is not None:
