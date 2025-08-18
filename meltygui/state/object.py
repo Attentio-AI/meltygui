@@ -31,7 +31,7 @@ class DictConversion:
         self._parent_key: Optional[Union[str, int]] = None
         self._children: Dict[Union[str, int], 'DictConversion'] = {}
         self.outliner_expanded_h = False
-        self._history_manager = GlobalUndoRedoManager.get_instance()
+        # self._history_manager = GlobalUndoRedoManager.get_instance()
         self._exclude_attrs = {'_history_manager', '_exclude_attrs', '_parameters',
                                '_buffers', '_modules', 'training'}
         self._obj_path = None
