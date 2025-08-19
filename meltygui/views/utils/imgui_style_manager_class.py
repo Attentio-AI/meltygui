@@ -126,6 +126,18 @@ class ImGuiStyleManager:
         color = self.make_color_style(input, alpha)
         return imgui.get_color_u32_rgba(color[0], color[1], color[2], alpha)
 
+    def make_color_style_value_imgui(self, input, alpha=1.0, value=0.0):
+        """
+        Create an ImGui color from a dictionary input with saturation and alpha adjustments.
+        Args:
+            input: Dictionary containing 'value', 'saturation', 'alpha', and optional 'max_value'
+        Returns:
+            Packed u32 color value
+        """
+        color = self.make_color_style_value(input, alpha, value=value)
+        return imgui.get_color_u32_rgba(color[0], color[1], color[2], alpha)
+
+
     def make_color_style_rgb(self, r, g, b, input,factor=0.6):
         """
         Create an ImGui color from RGB values with optional saturation and alpha adjustments.
@@ -160,6 +172,20 @@ class ImGuiStyleManager:
         modified_rgb = mix(r, g, b, modified_rgb[0], modified_rgb[1], modified_rgb[2], factor)
 
         return modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha
+
+    def make_color_style_value(self, input, alpha=1.0, value=0.5):
+        h, s, v = self.hsv
+
+        value = input["value"] + value
+
+        saturation_scale = input["saturation"]
+        value = (v * self.root.global_style.base_value) + value
+        if 'max_value' in input:
+            value = min(value, input["max_value"])
+        alpha = input["alpha"]
+
+        modified_rgb = colorsys.hsv_to_rgb(h, s * saturation_scale, value)
+        return (modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
 
     def make_color_style(self, input, alpha=1.0):
         h, s, v = self.hsv
