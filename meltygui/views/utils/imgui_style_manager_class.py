@@ -126,6 +126,41 @@ class ImGuiStyleManager:
         color = self.make_color_style(input, alpha)
         return imgui.get_color_u32_rgba(color[0], color[1], color[2], alpha)
 
+    def make_color_style_rgb(self, r, g, b, input,factor=0.6):
+        """
+        Create an ImGui color from RGB values with optional saturation and alpha adjustments.
+        Args:
+            r, g, b: RGB values between 0 and 1
+            saturation_scale: Scale for saturation (default is 1.0)
+            alpha: Alpha value (default is 1.0)
+        Returns:
+            Packed u32 color value
+        """
+        h, s, v = self.hsv
+
+        value = input["value"]
+
+        saturation_scale = input["saturation"]
+        value = (v * self.root.global_style.base_value) + value
+        if 'max_value' in input:
+            value = min(value, input["max_value"])
+        alpha = input["alpha"]
+
+        modified_rgb = colorsys.hsv_to_rgb(h, s * saturation_scale, value)
+
+        def mix(r1, g1, b1, r2, g2, b2, alpha):
+            """Mix two colors with alpha blending"""
+            return (
+                r1 * (1 - alpha) + r2 * alpha,
+                g1 * (1 - alpha) + g2 * alpha,
+                b1 * (1 - alpha) + b2 * alpha
+            )
+
+        # Apply alpha blending with the original color
+        modified_rgb = mix(r, g, b, modified_rgb[0], modified_rgb[1], modified_rgb[2], factor)
+
+        return modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha
+
     def make_color_style(self, input, alpha=1.0):
         h, s, v = self.hsv
 

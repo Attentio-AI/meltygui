@@ -31,6 +31,7 @@ class LSDView:
         self.color_stack = []
         self.style_manager = None
         self.obj_types = set()
+        self.vis = None
 
     def set_style_manager(self, style_manager):
         """
@@ -38,6 +39,13 @@ class LSDView:
         :param style_manager: The style manager to set.
         """
         self.style_manager = style_manager
+
+    def set_vis(self, vis):
+        """
+        Set the visualizer for this view.
+        :param vis: The visualizer to set.
+        """
+        self.vis = vis
 
     def clear_unstack(self):
         """
