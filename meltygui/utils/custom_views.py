@@ -35,7 +35,7 @@ class LSDView:
 
     def is_key_pressed(self, key=glfw.KEY_ESCAPE):
         if key not in self.vis.tracked_keys:
-            self.vis.tracked_keys.add(key)
+            self.vis.tracked_keys.append(key)
             self.vis.first_frame_keys.add(key)
 
         if glfw.get_key(self.vis.window, key) == glfw.PRESS:

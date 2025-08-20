@@ -38,7 +38,7 @@ class DictConversion:
         self.label_indent = 0
         self._attr_size = {}
         self._attr_pos = {}
-        self._path_updated = False
+        self._path_updated = None
         self._settings = None
         self.name = ""
         self._attr_settings = {}
