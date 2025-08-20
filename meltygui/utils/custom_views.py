@@ -33,6 +33,20 @@ class LSDView:
         self.obj_types = set()
         self.vis = None
 
+    def is_key_pressed(self, key=glfw.KEY_ESCAPE):
+        if key not in self.vis.tracked_keys:
+            self.vis.tracked_keys.add(key)
+            self.vis.first_frame_keys.add(key)
+
+        if glfw.get_key(self.vis.window, key) == glfw.PRESS:
+            if key in self.vis.first_frame_keys:
+                return True
+        return False
+
+    def is_key_release(self, key=glfw.KEY_ESCAPE):
+        return (glfw.get_key(self.vis.window, key) == glfw.RELEASE and
+                key in self.vis.last_frame_keys)
+
     def set_style_manager(self, style_manager):
         """
         Set the style manager for this view.
@@ -353,7 +367,12 @@ def tree(text, open=True, width=0, height=0):
     imgui.set_next_item_open(open)
     if width > 0:
         imgui.set_next_item_width(width)
-    return imgui.tree_node(text, flags=flags)
+
+    imgui.push_style_color(imgui.COLOR_HEADER_HOVERED, 0,0,0,0)
+    opened = imgui.tree_node(text, flags=flags)
+    imgui.pop_style_color(1)
+
+    return opened
 
 def print_stack_trace(size=None):
     # Get the current stack frame info
