@@ -5,6 +5,7 @@ import traceback
 import uuid
 from collections import defaultdict
 from enum import Enum
+from traceback import _parse_value_tb
 from typing import Dict
 
 import glfw
@@ -89,7 +90,7 @@ class LSDView:
             print_colored_traceback(*sys.exc_info(), limit=50)
 
             self.style_stack.clear()
-            raise e
+            raise
 
         try:
             for group_type in reversed(self.color_stack):
@@ -110,7 +111,7 @@ class LSDView:
             print_colored_traceback(*sys.exc_info(), limit=50)
 
             self.color_stack.clear()
-            raise e
+            raise
 
         try:
             for group_type in reversed(self.group_stack):
@@ -133,7 +134,7 @@ class LSDView:
 
             self.group_stack.clear()
             # Raise
-            raise e
+            raise
 
         self.style_stack.clear()
         self.group_stack.clear()
@@ -374,19 +375,6 @@ def tree(text, open=True, width=0, height=0):
 
     return opened
 
-def print_stack_trace(size=None):
-    # Get the current stack frame info
-    stack = traceback.extract_stack()
-
-    # Format and print the stack trace (excluding this function call)
-    if size is None:
-        formatted_stack = traceback.format_list(stack[:-1])
-    else:
-        formatted_stack = traceback.format_list(stack[-size:-1])
-
-    for frame in formatted_stack:
-        print(frame, end='')  # end='' to avoid extra newlines
-
 
 _needs_render = threading.Event()
 
@@ -524,6 +512,22 @@ import traceback
 def stack_trace():
     print_colored_traceback(*sys.exc_info(), limit=50)
 
+
+def print_stack_trace(size=None):
+    # Get the current stack frame information
+    stack = traceback.extract_stack()
+
+    # Format and print the stack trace (excluding this function call)
+    if size is None:
+        formatted_stack = traceback.format_list(stack[:-1])
+    else:
+        formatted_stack = traceback.format_list(stack[-size:-1])
+
+    for frame in formatted_stack:
+        print(frame, end='')  # end='' to avoid extra newlines
+
+
+
 def print_colored_traceback(exc_type, exc_value, exc_traceback, limit=None, file=None, color=None):
     """
     Print the traceback with colors and clickable links that open in IntelliJ IDEA.
@@ -539,50 +543,88 @@ def print_colored_traceback(exc_type, exc_value, exc_traceback, limit=None, file
         file = sys.stdout
 
     if color is None:
-        color = "YELLOW"
+        color = "CYAN"
     # Format the traceback
-    traceback_lines = traceback.format_exception(exc_type, exc_value, exc_traceback, limit=limit)
 
-    # Color and print each line with clickable links
+    def extract_vars(exc_traceback):
+        """
+        Extract the stack trace from the traceback object.
+        """
+        attr_names = []
+        configs = []
+        while exc_traceback.tb_next is not None:
+            frame = exc_traceback.tb_frame
+            locals = frame.f_locals
+            attr_name = locals.get('attr_name', "")
+            config = locals.get('config', None)
+            attr_names.append(attr_name)
+            configs.append(config)
+            exc_traceback = exc_traceback.tb_next
+
+        return attr_names, configs
+
+    exp_vars, configs = extract_vars(exc_traceback)
+    stack = traceback.extract_stack(exc_traceback.tb_frame)
+
+    value, tb = _parse_value_tb(exc_type, exc_value, exc_traceback)
+    te = traceback.TracebackException(type(value), value, tb, limit=limit, compact=True)
+    exception_stack = te.stack
+
+    for idx, frame in enumerate(stack[:-1]):
+        line_number = frame.lineno
+        filename = frame.filename.removeprefix("/home/lukas/Desktop/latent-descent/")
+        line = frame.line
+        function_name = frame.name
+        green = COLORS['GREEN']
+        blue = COLORS['BLUE']
+        yellow = COLORS['YELLOW']
+
+        print(f"{yellow}File \"{filename}\", line {line_number}{COLORS['RESET']}{COLORS['BOLD']}{blue} {function_name}{COLORS['RESET']}")
+        print(f"     {yellow}{line}{COLORS['RESET']}")
+
+    yellow = COLORS['YELLOW']
+    red = COLORS['RED']
+    print(f"{yellow}-------- Error Caught -------{COLORS['RESET']}")
+
+    for idx, frame in enumerate(exception_stack):
+        line_number = frame.lineno
+        filename = frame.filename.removeprefix("/home/lukas/Desktop/latent-descent/")
+        line = frame.line
+        function_name = frame.name
+        green = COLORS['GREEN']
+        blue = COLORS['BLUE']
+        attr_name = exp_vars[idx] if idx < len(exp_vars) else ""
+        config = configs[idx] if idx < len(configs) else None
+        datatype = config.datatype.name if config is not None and hasattr(config, 'datatype') else None
+        input_value = config.input_value if config is not None and hasattr(config, 'input_value') else None
+
+        print(
+            f"{yellow}File \"{filename}\", line {line_number}{COLORS['RESET']}{COLORS['BOLD']}{blue} {function_name}{COLORS['RESET']} {green}{attr_name}{COLORS['RESET']}")
+        # if attr_name is not None:
+        #     print(f"     {yellow}attr_name{COLORS['RESET']} {COLORS['BOLD']}{green}{attr_name}{COLORS['RESET']}")
+        # if input_value is not None:
+        #     print(f"     {yellow}input_value{COLORS['RESET']} {COLORS['BOLD']}{yellow}{input_value}{COLORS['RESET']}")
+        # if datatype is not None:
+        #     print(f"     {yellow}datatype.name{COLORS['RESET']} {COLORS['BOLD']}{yellow}{datatype}{COLORS['RESET']}")
+
+        if idx == len(exception_stack) - 1:
+            print(f"     {COLORS['BOLD']}{red}{line}{COLORS['RESET']}")
+        else:
+            print(f"     {yellow}{line}{COLORS['RESET']}")
+
+    traceback_lines = traceback.format_exception_only(exc_value)
     for line in traceback_lines:
-        # Color the "Traceback" header
-        # if line.startswith("Traceback"):
-        line = f"{COLORS['BOLD']}{COLORS[color]}{line}{COLORS['RESET']}"
-        # # Color the "File" lines and make them clickable
-        # elif line.strip().startswith("File "):
-        #     parts = line.split('"')
-        #     if len(parts) >= 3:
-        #         # Extract filename
-        #         filename = parts[1]
-        #
-        #         # Parse line number
-        #         line_parts = parts[2].split(", line ")
-        #         if len(line_parts) >= 2:
-        #             line_num_parts = line_parts[1].split(",")
-        #             if len(line_num_parts) >= 2:
-        #                 line_num = line_num_parts[0]
-        #                 rest = ",".join(line_num_parts[1:])
-        #
-        #                 # Create IntelliJ URL
-        #                 relative_path = os.path.abspath(filename)
-        #                 intellij_url = f"{line}"
-        #
-        #                 # Create clickable link with ANSI escape codes
-        #                 clickable_filename = f"\033]8;{intellij_url}\033\\{COLORS['GREEN']}{filename}{COLORS['RESET']}\033]8;;\033\\"
-        #
-        #                 # Format line number with color
-        #                 colored_line_num = f"{COLORS['BOLD']}{COLORS['GREEN']}line {line_num}{COLORS['RESET']}"
-        #
-        #                 # Reconstruct the line
-        #                 parts[1] = clickable_filename
-        #                 parts[2] = line_parts[0] + ", " + colored_line_num + "," + rest
-        #
-        #                 line = parts[0] + '"' + parts[1] + '"' + parts[2]
-        # # Color the exception type and message
-        # elif any(exc_name in line for exc_name in ["Error:", "Exception:", "Warning:"]):
-        #     line = f"{COLORS['BOLD']}{COLORS['RED']}{line}{COLORS['RESET']}"
-
+        line = f"{yellow}{line}{COLORS['RESET']}"
         file.write(line)
+
+    if file is None:
+        file = sys.stdout
+    #
+    # traceback_lines = traceback.format_exception(exc_type, exc_value, exc_traceback, limit=limit)
+    #
+    # for line in traceback_lines:
+    #     line = f"{COLORS['BOLD']}{COLORS[color]}{line}{COLORS['RESET']}"
+    #     file.write(line)
 
 import gc
 import torch

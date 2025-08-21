@@ -242,6 +242,18 @@ class DictConversion:
 
         return result
 
+    def reset(self):
+
+        # Get type of the current instance
+        instance_type = type(self)
+        # Create a new instance of the same type
+        new_instance = instance_type()
+        # Copy attributes from the current instance to the new instance
+        for key, value in self.__dict__.items():
+            if key.startswith('_') or key == 'id':
+                continue
+            setattr(self, key, new_instance.__dict__.get(key, None))
+
 
     def save(self, save_file: str):
         view_dict = self.to_dict()
@@ -821,7 +833,7 @@ class DictConversion:
         except Exception as e:
             # If something goes wrong, still apply the change
             super().__setattr__(name, value)
-            raise e
+            raise
 
 
     # Global undo/redo methods that delegate to the global manager
