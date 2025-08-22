@@ -2,6 +2,7 @@ import importlib
 import inspect
 import multiprocessing
 import os
+import re
 import sys
 import uuid
 import weakref
@@ -21,6 +22,9 @@ from src.lsd.gl_gui.model.global_undo_redo_manager import TrackedList, TrackedDi
 from src.lsd.gl_gui.utils.custom_views import print_stack_trace, generate_id
 from src.lsd.gl_gui.view.app_view_utils import should_exclude
 
+_SEGMENT_RE = re.compile(
+    r'(?:[^.\[]+|\[[^\]]*\])+')  # matches a segment like: attr, attr[0], attr["a.b"][1], [0], ...
+_BRACKET_RE = re.compile(r'\[([^\]]*)\]')  # extracts inner text of each [...] in a segment
 
 class DictConversion:
     def __init__(self):
@@ -897,54 +901,70 @@ class DictConversion:
         """
         Retrieves a value using a path string.
         Example paths: "attr1.attr2", "attr1[0]", "attr1['key']"
+        Splits on '.' outside brackets and then resolves bracket chains per segment.
         """
+        # Precompiled patterns (compiled once at function def time)
+
+        _missing = object()
+
+        # Be defensive: convert string (avoid getattr TypeError on non-str input)
+        if not isinstance(path, str):
+            try:
+                path = path.decode() if isinstance(path, (bytes, bytearray)) else str(path)
+            except Exception:
+                return None
+
         current = self
         if not path:
             return current
 
-        # Split path into components, preserving nested structure
-        parts = []
-        current_part = ''
-        brackets = 0
+        # Iterate by segments (no Python char-by-char loop)
+        for m in _SEGMENT_RE.finditer(path):
+            segment = m.group(0)
+            name_end = segment.find('[')
+            if name_end == -1:
+                name = segment.strip()
+                brackets_inner = []
+            else:
+                name = segment[:name_end].strip()
+                brackets_inner = [b.group(1).strip() for b in _BRACKET_RE.finditer(segment)]
 
-        for char in path:
-            if char == '[':
-                brackets += 1
-                if brackets == 1 and current_part:
-                    parts.append(current_part)
-                    current_part = '['
+            # Attribute access (if any)
+            if name:
+                val = getattr(current, name, _missing)
+                if val is _missing:
+                    return None
+                current = val
+
+            # Resolve any bracketed chains in order
+            for inner in brackets_inner:
+                # Strip matching quotes if present
+                if len(inner) >= 2 and inner[0] in ("'", '"') and inner[-1] == inner[0]:
+                    key = inner[1:-1]
                 else:
-                    current_part += char
-            elif char == ']':
-                brackets -= 1
-                current_part += char
-                if brackets == 0:
-                    parts.append(current_part)
-                    current_part = ''
-            elif char == '.' and brackets == 0:
-                if current_part:
-                    parts.append(current_part)
-                current_part = ''
-            else:
-                current_part += char
+                    key = int(inner) if inner.isdigit() else inner  # from original: only digit-only becomes int
 
-        if current_part:
-            parts.append(current_part)
+                if isinstance(current, (list, tuple)):
+                    if isinstance(key, int) and -len(current) <= key < len(current):
+                        current = current[key]
+                    else:
+                        return None
+                elif isinstance(current, dict):
+                    if key in current:
+                        current = current[key]
+                    else:
+                        return None
+                else:
+                    # Fallback for mapping/array-likes (e.g., some objects)
+                    try:
+                        current = current[key]
+                    except (TypeError, KeyError, IndexError):
+                        return None
 
-        for part in parts:
-            if part.startswith('['):
-                # Handle array/dict access
-                idx = part[1:-1].strip("'\"")  # Remove quotes if present
-                try:
-                    current = current[int(idx) if idx.isdigit() else idx]
-                except (TypeError, ValueError, KeyError, IndexError) as e:
-                    return None
-            else:
-                # Handle attribute access
-                try:
-                    current = getattr(current, part)
-                except AttributeError as e:
-                    return None
+        # If the path had only dots or was malformed (e.g., "a..b"), nothing matched:
+        # In that case, try to short-circuit to None to mirror "invalid key => None".
+        if current is self and not _SEGMENT_RE.search(path):
+            return None
 
         return current
 

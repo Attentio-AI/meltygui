@@ -595,8 +595,6 @@ def print_colored_traceback(exc_type, exc_value, exc_traceback, limit=None, file
         blue = COLORS['BLUE']
         attr_name = exp_vars[idx] if idx < len(exp_vars) else ""
         config = configs[idx] if idx < len(configs) else None
-        datatype = config.datatype.name if config is not None and hasattr(config, 'datatype') else None
-        input_value = config.input_value if config is not None and hasattr(config, 'input_value') else None
 
         print(
             f"{yellow}File \"{filename}\", line {line_number}{COLORS['RESET']}{COLORS['BOLD']}{blue} {function_name}{COLORS['RESET']} {green}{attr_name}{COLORS['RESET']}")
