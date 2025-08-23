@@ -173,12 +173,15 @@ class ImGuiStyleManager:
 
         return modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha
 
-    def make_color_style_value(self, input, alpha=1.0, value=0.5):
+    def make_color_style_value(self, input, alpha=1.0, value=0.5, saturation=None):
         h, s, v = self.hsv
 
         value = input["value"] + value
 
-        saturation_scale = input["saturation"]
+        if saturation is not None:
+            saturation_scale = saturation
+        else:
+            saturation_scale = input["saturation"]
         value = (v * self.root.global_style.base_value) + value
         if 'max_value' in input:
             value = min(value, input["max_value"])
