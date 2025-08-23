@@ -513,15 +513,15 @@ def stack_trace():
     print_colored_traceback(*sys.exc_info(), limit=50)
 
 
-def print_stack_trace(size=None):
+def print_stack_trace(size=None, skip=-1):
     # Get the current stack frame information
     stack = traceback.extract_stack()
 
     # Format and print the stack trace (excluding this function call)
     if size is None:
-        formatted_stack = traceback.format_list(stack[:-1])
+        formatted_stack = traceback.format_list(stack[:skip])
     else:
-        formatted_stack = traceback.format_list(stack[-size:-1])
+        formatted_stack = traceback.format_list(stack[-size:skip])
 
     for frame in formatted_stack:
         print(frame, end='')  # end='' to avoid extra newlines
