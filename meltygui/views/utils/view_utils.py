@@ -6,6 +6,7 @@ import pwd
 import subprocess
 import getpass
 
+
 def format_name(self, input_str):
     """
     Convert various string formats to properly capitalized space-separated string.
@@ -385,3 +386,5 @@ def format_time(seconds):
         return "Approaching heat death of the universe", blue
 
     return "Beyond heat death of the universe", blue
+
+

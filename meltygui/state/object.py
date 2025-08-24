@@ -1303,7 +1303,7 @@ class DictConversion:
         from src.lsd.gl_gui.model.dynamic_obj import DynamicObj
         from src.lsd.gl_gui.model.app_model import GlobalStyle
         from src.lsd.gl_gui.model.app_model import Style
-        from src.lsd.gl_gui.model.app_model import ViewConstants
+        from src.lsd.gl_gui.model.core_model.core_model import ViewConstants
         return (hasattr(obj, attr_name) or attr_name in exception_list or
                 isinstance(obj, (DynamicObj, ViewConstants, GlobalStyle, Style)))
 

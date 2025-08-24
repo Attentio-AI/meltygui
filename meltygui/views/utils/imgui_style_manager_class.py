@@ -126,7 +126,7 @@ class ImGuiStyleManager:
         color = self.make_color_style(input, alpha)
         return imgui.get_color_u32_rgba(color[0], color[1], color[2], alpha)
 
-    def make_color_style_value_imgui(self, input, alpha=1.0, value=0.0):
+    def make_color_style_value_imgui(self, input, saturation=None, alpha=1.0, value=0.0):
         """
         Create an ImGui color from a dictionary input with saturation and alpha adjustments.
         Args:
@@ -134,7 +134,7 @@ class ImGuiStyleManager:
         Returns:
             Packed u32 color value
         """
-        color = self.make_color_style_value(input, alpha, value=value)
+        color = self.make_color_style_value(input, alpha, saturation=saturation, value=value)
         return imgui.get_color_u32_rgba(color[0], color[1], color[2], alpha)
 
 
