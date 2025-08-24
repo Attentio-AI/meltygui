@@ -35,6 +35,10 @@ class LSDView:
         self.vis = None
 
     def is_key_pressed(self, key=glfw.KEY_ESCAPE):
+        if imgui.is_any_item_focused() or imgui.is_any_item_active():
+            # If any item is focused or active, we don't want to capture key presses
+            return False
+
         if key not in self.vis.tracked_keys:
             self.vis.tracked_keys.append(key)
             self.vis.first_frame_keys.add(key)
