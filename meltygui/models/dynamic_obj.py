@@ -1,5 +1,5 @@
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.utils.custom_views import generate_id
+from src.lsd.gl_gui.utils.custom_views import generate_id, LSDView
 
 
 class DynamicObj(DictConversion):
@@ -21,8 +21,16 @@ class DynamicObj(DictConversion):
 
         # Only called when attribute doesn't exist
         # Check if it's a driver key
-        driver = self._root.get(self.driver)
-
+        if self._root is not None:
+            driver = self._root.get(self.driver)
+        else:
+            real_dict = object.__getattribute__(self, '__dict__')
+            if name not in real_dict:
+                # Create the attribute with None value
+                raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+            else:
+                return real_dict[name]
+        # Todo: dynamic add
         if hasattr(self, 'driver') and name in driver:
             real_dict = object.__getattribute__(self, '__dict__')
             if name not in real_dict:
