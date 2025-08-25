@@ -1,10 +1,12 @@
 import inspect
+import sys
 
 import imgui
 
-from src.lsd.gl_gui.model.core_model.core_model import Metadata, BasePref
+from src.lsd.gl_gui.model.core_model.core_model import Metadata, BasePref, SettingsScope
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.utils.custom_views import LSDView, print_stack_trace, push_style_color, pop_style_color
+from src.lsd.gl_gui.utils.custom_views import LSDView, print_stack_trace, push_style_color, pop_style_color, \
+    print_colored_traceback
 
 
 def set_cursor_pos_y(pos_y):
