@@ -216,8 +216,6 @@ def get_pref(input_value, config, renderer=None, new_settings=False):
         if renderer is not None:
             base_pref.renderer = renderer
 
-        print(f"get_pref() {parent_datatype_name} {attr_name}")
-
         settings_type = base_pref.renderer.settings_datatype.selected_object
         if settings_type is None or settings_type._type is None:
             new_settings_type = vis.root.datatypes._name_to_class.get("AnySettings", None)
