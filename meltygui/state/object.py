@@ -103,7 +103,7 @@ class DictConversion:
         print(f"instantiate all objects took {elapsed:.4f} seconds")
 
         # ---------- parser (no deepcopies of user input)
-        def update_instance(unset_value, new_value, _excluded_unused, excluded):
+        def update_instance(unset_value, new_value, _excluded_unused):
             # fast outs
             if unset_value is None and new_value is None:
                 return None
@@ -147,7 +147,7 @@ class DictConversion:
                         proto = []
                     else:
                         proto = None
-                    unset_value.append(update_instance(proto, item, _excluded_unused, excluded))
+                    unset_value.append(update_instance(proto, item, _excluded_unused))
                 return unset_value
 
             # Dicts
@@ -156,15 +156,13 @@ class DictConversion:
                     return new_value
                 unset_value.clear()
                 for a_key, a_value in new_value.items():
-                    if a_key in excluded:
-                        continue
                     if isinstance(a_value, dict):
                         proto = {}
                     elif isinstance(a_value, list):
                         proto = []
                     else:
                         proto = None
-                    unset_value[a_key] = update_instance(proto, a_value, _excluded_unused, excluded)
+                    unset_value[a_key] = update_instance(proto, a_value, _excluded_unused)
                 return unset_value
 
             # Scalars / everything else
@@ -181,7 +179,7 @@ class DictConversion:
                     continue
                 unset_value = getattr(instance, key, None)
                 try:
-                    parsed = update_instance(unset_value, new_value, excluded_set, excluded)
+                    parsed = update_instance(unset_value, new_value, excluded_set)
                     if self.has_valid_attr(instance, key):
                         setattr(instance, key, parsed)
                 except (KeyError, AttributeError):
@@ -251,7 +249,7 @@ class DictConversion:
         # Get all attributes that don't start with '_'
         for key, value in self.__dict__.items():
 
-            if key.startswith('_') or (key in excluded):
+            if key.startswith('_') or (excluded and key in excluded):
                 continue
             #
             # if hasattr(value, 'unused_obj') and value.unused_obj:
@@ -1204,29 +1202,25 @@ class DictConversion:
 
         class_name = parts[-1]
         try:
-            lower = '.'.join(class_path.split('.')[:-1])
-            if class_path in ClassUtility().initialized_modules:
-                module = ClassUtility().initialized_modules[class_path]
-            else:
-                # for i in range(len(parts) - 1):
-                #     if parts[i] == "tensorview.app_model":
-                #         parts[i] = "model"
+            # for i in range(len(parts) - 1):
+            #     if parts[i] == "tensorview.app_model":
+            #         parts[i] = "model"
 
-                for i in range(len(parts) - 2, 0, -1):
-                    try:
-                        if parts[0] != ClassUtility().root and ClassUtility().root is not None and ClassUtility().root != "":
-                            parts.insert(0, ClassUtility().root)
-                        module_path = '.'.join(parts[:i])
+            for i in range(len(parts) - 1, 0, -1):
+                try:
+                    if parts[
+                        0] != ClassUtility().root and ClassUtility().root is not None and ClassUtility().root != "":
+                        parts.insert(0, ClassUtility().root)
+                    module_path = '.'.join(parts[:i])
 
-                        if module_path in sys.modules:
-                            module = sys.modules[module_path]
-                        else:
-                            module = importlib.import_module(module_path)
-                            ClassUtility().initialized_modules[class_path] = module
+                    if module_path in sys.modules:
+                        module = sys.modules[module_path]
+                    else:
+                        module = importlib.import_module(module_path)
 
-                        break
-                    except ImportError:
-                        continue
+                    break
+                except ImportError:
+                    continue
 
             if module is None:
                 return None
@@ -1345,15 +1339,8 @@ class DictConversion:
         from src.lsd.gl_gui.model.app_model import GlobalStyle
         from src.lsd.gl_gui.model.app_model import Style
         from src.lsd.gl_gui.model.core_model.core_model import ViewConstants
-        valid = (hasattr(obj, attr_name) or attr_name in exception_list or
+        return (hasattr(obj, attr_name) or attr_name in exception_list or
                 isinstance(obj, (DynamicObj, ViewConstants, GlobalStyle, Style)))
-
-        if valid and attr_name != "state" and attr_name != 'view_state' and attr_name != 'all_settings':
-            return True
-        else:
-            return False
-
-
 
 
     def on_load(self, vis, root):
@@ -1363,7 +1350,6 @@ class DictConversion:
         """
         # Loop over attribs
         self.label_indent = 0
-
         for key, value in self.__dict__.items():
             if should_exclude(key, root=root):
                 continue
@@ -1429,8 +1415,6 @@ class DictConversion:
         return not self.is_primitive(value)
 
     def parse_value(self, result, objects, key, value, excluded, shallow=False):
-        if key in excluded:
-            return None
         # Handle None
         if value is None:
             return None
@@ -1451,16 +1435,18 @@ class DictConversion:
             results = (value.name, classtype, "Enum", value.value)
             return results
         # Handle lists
-        elif isinstance(value, dict):
-            if key in excluded:
-                return None
+        elif isinstance(value, Dict):
             # Loop through the dictionary and convert each item
             inner_dict = {}
             for sub_key, sub_value in value.items():
-                if sub_key in excluded:
+                if excluded and sub_key in excluded:
                     continue
 
                 inner_dict[sub_key] = self.parse_value(inner_dict, objects, sub_key, sub_value, excluded, shallow)
+                if hasattr(inner_dict[sub_key], 'id') and inner_dict[sub_key].id is not None:
+                    if inner_dict[sub_key].id in sub_key and inner_dict[sub_key].id != sub_key:
+                        print(f"Warning: Key '{sub_key}' contains id '{inner_dict[sub_key].id}' {inner_dict[sub_key].__class__.__name__} but does not match exactly.")
+
             return inner_dict
         elif isinstance(value, list):
             inner_list = []
@@ -1471,15 +1457,13 @@ class DictConversion:
             return inner_list
         # Handle nested objects with to_dict method
         elif hasattr(value, 'to_dict') and isinstance(value, DictConversion):
-            if key in excluded:
-                return None
             if shallow:
                 classtype = DictConversion.get_full_class_path(value)
                 if hasattr(value, 'id'):
                     value.id = value.id[0:8]
-                    results = (value.id, "")
+                    results = (value.id, classtype)
                 else:
-                    results = (id(value), "")
+                    results = (id(value), classtype)
             else:
                 if value.id not in objects:
                     results = value.to_dict(excluded=excluded, objects=objects, shallow=False, use_references=False)
