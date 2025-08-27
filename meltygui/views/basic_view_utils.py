@@ -106,7 +106,7 @@ def validate(expected_type=None, input_value=None, config=None, expected_setting
         config.vis = LSDView().vis
         config.datatype = actual_type_melty
         config.attr_name = f"unnamed_{actual_type_melty.name}"
-        config.settings, _ = get_pref(input_value, config)
+        # config.settings, _ = get_pref(input_value, config)
         caller_function_name = inspect.currentframe().f_back.f_code.co_name
         config.unique = f"{caller_function_name}##{config.attr_name}{actual_type_melty.name}"
 
@@ -210,6 +210,7 @@ def get_pref(input_value, config, renderer=None, new_settings=False):
             base_pref.renderer = list(melty_datatype.func_mapping.values())[0].selected_object
             base_pref.attr_name = attr_name
             base_pref.input_value = input_value
+            print(f"Created new BasePref at theme.view_prefs[\"{parent_datatype_name}\"][\"{attr_name}\"]")
         else:
             base_pref = theme.view_prefs[f"{parent_datatype_name}"][f"{attr_name}"]
 
@@ -231,11 +232,16 @@ def get_pref(input_value, config, renderer=None, new_settings=False):
                 copy_attributes(old_settings, base_pref.settings)
         else:
             if base_pref.settings is None:
+                print(f"Info: No existing settings for {attr_name}, creating new {settings_type._type.__name__}.")
                 if base_pref.renderer.default_setting is None:
+                    print(
+                        f"Warning: Renderer {base_pref.renderer.name} has no default setting. Created empty {settings_type._type.__name__}.")
+
                     base_pref.settings = settings_type._type()
                     base_pref.renderer.default_setting = settings_type._type()
                 else:
-                    base_pref.settings = base_pref.renderer.default_setting
+                    print(f"Info: Using default settings from renderer {base_pref.renderer.name} for {attr_name}.")
+                    base_pref.settings = base_pref.renderer.default_setting.deepcopy(max_depth=0)
 
             if not isinstance(base_pref.settings, settings_type._type):
                 # Change the type to updated, but keep the old settings
@@ -271,6 +277,7 @@ def get_pref(input_value, config, renderer=None, new_settings=False):
         try:
             if config.parent is not None and config.parent._settings is not None and hasattr(config.parent._settings, 'child_view_function'):
                 if config.parent._settings.child_view_function is not None:
+                    print("Setting child view function settings...")
                     child_function = config.parent._settings.child_view_function
                     settings_type = child_function.settings_datatype.selected_object
 
@@ -283,6 +290,7 @@ def get_pref(input_value, config, renderer=None, new_settings=False):
                     base_pref.settings = config.parent._settings.child_settings
 
                     base_pref.settings._base_pref = base_pref
+
         except Exception as e:
             print(f"Error setting child view function settings: {str(e)}")
 

@@ -18,6 +18,7 @@ from torch import Tensor, nn
 from transformers import PreTrainedTokenizerBase, LlamaTokenizerFast
 
 from src.lsd.gl_gui.model.class_utill import ClassUtility
+from src.lsd.gl_gui.model.core_model.core_enums import ViewMode
 from src.lsd.gl_gui.model.global_undo_redo_manager import TrackedList, TrackedDict, TrackedSet, GlobalUndoRedoManager
 from src.lsd.gl_gui.utils.custom_views import print_stack_trace, generate_id
 from src.lsd.gl_gui.view.app_view_utils import should_exclude
@@ -50,6 +51,7 @@ class DictConversion:
         self.tint = (0, 0, 0)  # Default black tint
         # self.child_collapsed = set()
         self.child_collapsed = set()
+
 
     def get_settings(self, attr_name=None):
         if attr_name is not None:
@@ -1690,3 +1692,11 @@ class DictConversion:
             else:
                 current_dict[key] = new_value
 
+
+class WindowSettings(DictConversion):
+
+    def __init__(self):
+        super().__init__()
+        self.position = (100, 100)  # (x, y)
+        self.size = (800, 600)      # (width, height)
+        self.auto_resize = False
