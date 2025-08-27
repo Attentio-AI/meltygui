@@ -81,6 +81,7 @@ class ClassUtility:
         self.class_names: Optional[Dict[str, str]] = None
         self.modules_imported = set()
         self.root = None
+        self.initialized_modules = {}
 
     def initialize_class_names(self, root=None):
         if self.root is not None:
