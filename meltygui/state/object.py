@@ -558,7 +558,8 @@ class DictConversion:
         """
         return self.deepcopy_exclude(exclude=None, memo=None, depth=0, do_print=do_print, max_depth=max_depth)
 
-    def deepcopy_exclude(self, exclude=None, memo=None, depth=0, do_print=False, max_depth=30):
+
+    def deepcopy_exclude(self, exclude=None, include=None, memo=None, depth=0, do_print=False, max_depth=30):
         """
         Create a deep copy of the instance with custom attribute exclusions.
         Recursively handles DictConversion objects, collections, and primitive types.
@@ -604,25 +605,35 @@ class DictConversion:
             # Copy all attributes except excluded ones
             if hasattr(self, '__dict__'):
                 for key, value in self.__dict__.items():
-                    if key not in excluded_attrs:
-                        # Deep copy the value with appropriate handling based on type
-                        if do_print:
-                            print(f"Copying attribute: {key}, Value: {value}, Type: {type(value)}")
-                        copied_value = self._deepcopy_value(value, exclude=exclude, memo=memo, do_print=do_print, depth=depth, max_depth=max_depth)
-                        setattr(result, key, copied_value)
+                    if include is not None:
+                        if key in include:
+                            # Deep copy the value with appropriate handling based on type
+                            if do_print:
+                                print(f"Copying attribute: {key}, Value: {value}, Type: {type(value)}")
+                            copied_value = self._deepcopy_value(value, exclude=exclude, memo=memo, do_print=do_print, depth=depth, max_depth=max_depth)
+                            setattr(result, key, copied_value)
+                        else:
+                            setattr(result, key, value)
                     else:
-                        # For excluded attributes, just set them to None
-                        setattr(result, key, value)
+                        if key not in excluded_attrs:
+                            # Deep copy the value with appropriate handling based on type
+                            if do_print:
+                                print(f"Copying attribute: {key}, Value: {value}, Type: {type(value)}")
+                            copied_value = self._deepcopy_value(value, exclude=exclude, memo=memo, do_print=do_print, depth=depth, max_depth=max_depth)
+                            setattr(result, key, copied_value)
+                        else:
+                            # For excluded attributes, just set them to None
+                            setattr(result, key, value)
 
 
         return result
 
-    def _deepcopy_value(self, value, exclude=None, memo=None, depth=0, do_print=False, max_depth=30):
+    def _deepcopy_value(self, input_value, exclude=None, memo=None, depth=0, do_print=False, max_depth=30):
         """
         Helper method to deep copy a value based on its type.
 
         Args:
-            value: The value to deep copy
+            input_value: The value to deep copy
             exclude: List of attribute names to exclude from copying
             memo: Dictionary of already-copied objects
 
@@ -633,89 +644,95 @@ class DictConversion:
             memo = {}
 
         if depth > max_depth:
-            return value
+            return input_value
 
         if do_print:
-            print(f"Depth: {depth}, Value: {value}, Type: {type(value)}")
+            print(f"Depth: {depth}, Value: {input_value}, Type: {type(input_value)}")
             mem_str = ""
             for i in range(torch.cuda.device_count()):
                 mem_alloc = torch.cuda.memory_allocated(i) / 1024 ** 3
                 mem_str += f"GPU {i}: {mem_alloc:.2f} GB\n"
 
-            print(f"Depth: {depth}, Value: {value}, Type: {type(value)}, Memory: {mem_str}")
+            print(f"Depth: {depth}, Value: {input_value}, Type: {type(input_value)}, Memory: {mem_str}")
 
         # Check if value is already in memo
-        if id(value) in memo:
-            return memo[id(value)]
+        if id(input_value) in memo:
+            return memo[id(input_value)]
 
         # Handle None
-        if value is None:
+        if input_value is None:
             return None
 
-        if isinstance(value, Tensor):
-            return value
+        if isinstance(input_value, Tensor):
+            return input_value
 
-        if isinstance(value, Tensor):
-            return value
+        if isinstance(input_value, Tensor):
+            return input_value
 
-        if isinstance(value, LlamaTokenizerFast):
-            return value
+        if isinstance(input_value, LlamaTokenizerFast):
+            return input_value
 
-        if isinstance(value, PreTrainedTokenizerBase):
-            return value
+        if isinstance(input_value, PreTrainedTokenizerBase):
+            return input_value
 
-        if isinstance(value, nn.Module):
-            return value
+        if isinstance(input_value, nn.Module):
+            return input_value
 
         # Handle DictConversion objects
-        if isinstance(value, DictConversion):
-            if do_print:
-                print(f"Deep copying DictConversion object: {value.__class__.__name__}, {value.name}")
-            return value.deepcopy_exclude(exclude=exclude, memo=memo, depth=depth+1, do_print=do_print, max_depth=max_depth)
+        if hasattr(input_value, "deepcopy_exclude") and callable(getattr(input_value, "deepcopy_exclude")):
+            if not isinstance(input_value, (DictConversion, type)):
+                print(f"Warning: Encountered non-DictConversion with deepcopy_exclude method: {input_value.__class__.__name__}")
 
-        if value.__class__.__name__ == "ObjectRef":
-            return value
+        if isinstance(input_value, DictConversion):
+            return input_value.deepcopy_exclude(exclude=exclude, memo=memo, depth=depth + 1, do_print=do_print, max_depth=max_depth)
+
+        if input_value.__class__.__name__ == "ObjectRef":
+            return input_value
 
         # Handle Enums (should be copied by value, not deep copied)
-        if isinstance(value, Enum):
-            return value
+        if isinstance(input_value, Enum):
+            return input_value
 
         # Handle lists
-        if isinstance(value, list):
+        if isinstance(input_value, list):
             new_list = []
-            memo[id(value)] = new_list
-            for item in value:
+            memo[id(input_value)] = new_list
+            for item in input_value:
                 new_list.append(self._deepcopy_value(item, exclude=exclude, memo=memo, depth=depth, do_print=do_print,
                                                      max_depth=max_depth))
             return new_list
 
         # Handle tuples
-        if isinstance(value, tuple):
+        if isinstance(input_value, tuple):
             items = [self._deepcopy_value(item, exclude=exclude, memo=memo, depth=depth, do_print=do_print,
-                                          max_depth=max_depth) for item in value]
+                                          max_depth=max_depth) for item in input_value]
             result = tuple(items)
-            memo[id(value)] = result
+            memo[id(input_value)] = result
             return result
 
         # Handle dictionaries
-        if isinstance(value, dict):
+        if isinstance(input_value, dict):
             new_dict = {}
-            memo[id(value)] = new_dict
-            for k, v in value.items():
+            memo[id(input_value)] = new_dict
+            for k, v in input_value.items():
                 # The keys are immutable, so we don't need to copy them
                 new_dict[k] = self._deepcopy_value(v, exclude=exclude, memo=memo, depth=depth, do_print=do_print,
                                                    max_depth=max_depth)
             return new_dict
 
-        if isinstance(value, set):
-            return deepcopy(value, memo)
+        if isinstance(input_value, set):
+           new_set = set()
+           for item in input_value:
+                new_set.add(self._deepcopy_value(item, exclude=exclude, memo=memo, depth=depth, do_print=do_print,
+                                                    max_depth=max_depth))
 
         # Handle primitive types (int, float, str, bool)
-        if isinstance(value, (int, float, str, bool)):
-            return value
+        if isinstance(input_value, (int, float, str, bool)):
+            return input_value
 
         # print(f"Should't get here: {value.__class__} {isinstance(value, DictConversion)}")
-        return deepcopy(value, memo)
+
+        return input_value
 
 
 
@@ -1198,61 +1215,72 @@ class DictConversion:
     @staticmethod
     def instantiate_from_class_path(class_path: str, last_try=False):
         parts = class_path.split('.')
-        module = None
 
         class_name = parts[-1]
-        try:
-            # for i in range(len(parts) - 1):
-            #     if parts[i] == "tensorview.app_model":
-            #         parts[i] = "model"
+        # module_name = ".".join(parts[:-1])
+        # module = importlib.import_module(module_name)
+        # if module is None:
+        #     return None
+        #
+        # if class_name not in vars(module):
+        #     return None
+        module = None
+        i = 0
+        for i in range(len(parts) - 1, 0, -1):
+            try:
+                if parts[0] != ClassUtility().root and ClassUtility().root is not None and ClassUtility().root != "":
+                    parts.insert(0, ClassUtility().root)
+                module_path = '.'.join(parts[:i])
 
-            for i in range(len(parts) - 1, 0, -1):
-                try:
-                    if parts[
-                        0] != ClassUtility().root and ClassUtility().root is not None and ClassUtility().root != "":
-                        parts.insert(0, ClassUtility().root)
-                    module_path = '.'.join(parts[:i])
+                if module_path in sys.modules:
+                    module = sys.modules[module_path]
+                else:
+                    module = importlib.import_module(module_path)
+                break
+            except ImportError:
+                continue
 
-                    if module_path in sys.modules:
-                        module = sys.modules[module_path]
-                    else:
-                        module = importlib.import_module(module_path)
-
-                    break
-                except ImportError:
-                    continue
-
-            if module is None:
-                return None
-
-            obj = module
-            for part in parts[i:]:
-                obj = getattr(obj, part)
-            return obj()
-        except Exception as e:
-            target_class_name = parts[-1]
-            target_class_parent = parts[-2]
-            target_class_combine = f"{target_class_parent}.{target_class_name}"
-            if last_try:
-                # Print stack trace for debugging
-                import traceback
-                traceback.print_exc()
-
-                print(f"Error instantiating {class_path}: {str(e)}")
-                return None
-
-            ClassUtility().initialize_class_names()
-
-            if target_class_combine in ClassUtility().class_names:
-                found_class_path = ClassUtility().class_names[target_class_combine]
-                return DictConversion.instantiate_from_class_path(found_class_path, last_try=True)
-            elif target_class_name in ClassUtility().class_names:
-                found_class_path = ClassUtility().class_names[target_class_name]
-                return DictConversion.instantiate_from_class_path(found_class_path, last_try=True)
-            else:
-                print(f"Class {target_class_name} not found in known classes.")
-
+        if module is None:
             return None
+
+        obj = module
+        for part in parts[i:]:
+            obj = getattr(obj, part)
+        # members = inspect.getmembers(module, inspect.isclass)
+
+        if not inspect.isclass(obj):
+            print(f"{class_path} is not a class")
+            return None
+
+        if obj.__name__ == "LoraCollection":
+            print("Debugging LoraCollection")
+
+        return obj()
+
+    # except Exception as e:
+    #     target_class_name = parts[-1]
+    #     target_class_parent = parts[-2]
+    #     target_class_combine = f"{target_class_parent}.{target_class_name}"
+    #     if last_try:
+    #         # Print stack trace for debugging
+    #         import traceback
+    #         traceback.print_exc()
+    #
+    #         print(f"Error instantiating {class_path}: {str(e)}")
+    #         return None
+
+        # ClassUtility().initialize_class_names()
+        #
+        # if target_class_combine in ClassUtility().class_names:
+        #     found_class_path = ClassUtility().class_names[target_class_combine]
+        #     return DictConversion.instantiate_from_class_path(found_class_path, last_try=True)
+        # elif target_class_name in ClassUtility().class_names:
+        #     found_class_path = ClassUtility().class_names[target_class_name]
+        #     return DictConversion.instantiate_from_class_path(found_class_path, last_try=True)
+        # else:
+        #     print(f"Class {target_class_name} not found in known classes.")
+
+        # return None
 
     @staticmethod
     def get_enum_value(class_path: str, value_name: str, value: Optional[int], last_try=False):

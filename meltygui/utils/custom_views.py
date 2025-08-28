@@ -532,7 +532,7 @@ def print_stack_trace(size=None, skip=-1):
 
 
 
-def print_colored_traceback(exc_type, exc_value, exc_traceback, limit=None, file=None, color=None):
+def print_colored_traceback(exc_type=None, exc_value=None, exc_traceback=None, limit=None, file=None, color=None):
     """
     Print the traceback with colors and clickable links that open in IntelliJ IDEA.
 
@@ -543,6 +543,9 @@ def print_colored_traceback(exc_type, exc_value, exc_traceback, limit=None, file
         limit: Maximum number of stack frames to show
         file: File to write the traceback to
     """
+    if exc_type == None:
+        exc_type, exc_value, exc_traceback = sys.exc_info()
+
     if file is None:
         file = sys.stdout
 
@@ -560,6 +563,18 @@ def print_colored_traceback(exc_type, exc_value, exc_traceback, limit=None, file
             frame = exc_traceback.tb_frame
             locals = frame.f_locals
             attr_name = locals.get('attr_name', "")
+            if attr_name == "":
+                if 'input_value' in locals:
+                    if hasattr(locals['input_value'], 'name'):
+                        attr_name = locals['input_value'].name
+                    else:
+                        if locals['input_value'] is not None:
+                            attr_name = locals['input_value'].__class__.__name__
+
+                else:
+                    if 'self' in locals:
+                        attr_name = f"self is {locals['self'].__class__.__name__}"
+
             config = locals.get('config', None)
             attr_names.append(attr_name)
             configs.append(config)
