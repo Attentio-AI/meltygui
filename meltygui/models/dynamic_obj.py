@@ -77,7 +77,6 @@ class DynamicObj(DictConversion):
                 if key in real_dict:
                     real_dict.pop(key)
 
-
         # Only called when attribute doesn't exist
         # Check if it's a driver key
 
