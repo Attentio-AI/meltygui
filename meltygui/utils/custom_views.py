@@ -26,6 +26,20 @@ class GroupType(Enum):
 class Root:
     vis = None
 
+    @staticmethod
+    def is_key_pressed(key=glfw.KEY_ESCAPE):
+        if imgui.is_any_item_focused() or imgui.is_any_item_active():
+            # If any item is focused or active, we don't want to capture key presses
+            return False
+
+        if key not in Root.vis.tracked_keys:
+            Root.vis.tracked_keys.append(key)
+            Root.vis.first_frame_keys.add(key)
+
+        if glfw.get_key(Root.vis.window, key) == glfw.PRESS:
+            if key in Root.vis.first_frame_keys:
+                return True
+        return False
 
 @singleton
 class LSDView:
@@ -39,19 +53,7 @@ class LSDView:
         self.obj_types = set()
         self.vis = None
 
-    def is_key_pressed(self, key=glfw.KEY_ESCAPE):
-        if imgui.is_any_item_focused() or imgui.is_any_item_active():
-            # If any item is focused or active, we don't want to capture key presses
-            return False
 
-        if key not in Root.vis.tracked_keys:
-            Root.vis.tracked_keys.append(key)
-            Root.vis.first_frame_keys.add(key)
-
-        if glfw.get_key(Root.vis.window, key) == glfw.PRESS:
-            if key in Root.vis.first_frame_keys:
-                return True
-        return False
 
     def is_key_release(self, key=glfw.KEY_ESCAPE):
         return (glfw.get_key(Root.vis.window, key) == glfw.RELEASE and
