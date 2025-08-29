@@ -23,8 +23,13 @@ class GroupType(Enum):
     STYLE = 3
     COLOR = 4
 
+class Root:
+    vis = None
+
+
 @singleton
 class LSDView:
+    vis = None
 
     def __init__(self):
         self.group_stack = []
@@ -39,18 +44,18 @@ class LSDView:
             # If any item is focused or active, we don't want to capture key presses
             return False
 
-        if key not in self.vis.tracked_keys:
-            self.vis.tracked_keys.append(key)
-            self.vis.first_frame_keys.add(key)
+        if key not in Root.vis.tracked_keys:
+            Root.vis.tracked_keys.append(key)
+            Root.vis.first_frame_keys.add(key)
 
-        if glfw.get_key(self.vis.window, key) == glfw.PRESS:
-            if key in self.vis.first_frame_keys:
+        if glfw.get_key(Root.vis.window, key) == glfw.PRESS:
+            if key in Root.vis.first_frame_keys:
                 return True
         return False
 
     def is_key_release(self, key=glfw.KEY_ESCAPE):
-        return (glfw.get_key(self.vis.window, key) == glfw.RELEASE and
-                key in self.vis.last_frame_keys)
+        return (glfw.get_key(Root.vis.window, key) == glfw.RELEASE and
+                key in Root.vis.last_frame_keys)
 
     def set_style_manager(self, style_manager):
         """

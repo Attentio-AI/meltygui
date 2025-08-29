@@ -6,14 +6,14 @@ import imgui
 from src.lsd.gl_gui.model.core_model.core_model import Metadata, BasePref, SettingsScope
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.utils.custom_views import LSDView, print_stack_trace, push_style_color, pop_style_color, \
-    print_colored_traceback
+    print_colored_traceback, Root
 
 
 def set_cursor_pos_y(pos_y):
     current_y = imgui.get_cursor_pos_y()
     imgui.set_cursor_pos_y(pos_y)
     height = imgui.get_cursor_pos_y() - current_y
-    if LSDView().vis.root.global_toggles.show_line_breaks:
+    if Root.vis.root.global_toggles.show_line_breaks:
         if draw_rect(width=5, height=None, color=(1.0, 0.0, 1.0, 0.8)):
             print_stack_trace(skip=-2)
 
@@ -22,21 +22,21 @@ def set_cursor_pos_x(pos_x):
     current_x = imgui.get_cursor_pos_x()
     imgui.set_cursor_pos_x(pos_x)
     width = imgui.get_cursor_pos_x() - current_x
-    if LSDView().vis.root.global_toggles.show_line_breaks:
+    if Root.vis.root.global_toggles.show_line_breaks:
         if draw_rect(width=5, height=None, color=(1.0, 0.0, 1.0, 0.8)):
             print_stack_trace(skip=-2)
 
 
 def set_cursor_screen_pos(pos):
     imgui.set_cursor_screen_pos(pos)
-    if LSDView().vis.root.global_toggles.show_line_breaks:
+    if Root.vis.root.global_toggles.show_line_breaks:
         if draw_rect(width=5, height=None, color=(1.0, 0.0, 1.0, 0.8)):
             print_stack_trace(skip=-2)
 
 
 def set_cursor_screen_position(pos):
     imgui.set_cursor_screen_position(pos)
-    if LSDView().vis.root.global_toggles.show_line_breaks:
+    if Root.vis.root.global_toggles.show_line_breaks:
         if draw_rect(width=5, height=None, color=(1.0, 0.0, 1.0, 0.8)):
             print_stack_trace(skip=-2)
 
@@ -44,20 +44,20 @@ def set_cursor_screen_position(pos):
 def set_cursor_pos(pos):
     current_pos = imgui.get_cursor_pos()
     imgui.set_cursor_pos(pos)
-    if LSDView().vis.root.global_toggles.show_line_breaks:
+    if Root.vis.root.global_toggles.show_line_breaks:
         if draw_rect(width=5, height=None, color=(1.0, 0.0, 1.0, 0.8)):
             print_stack_trace(skip=-2)
 
 
 def spacing():
     imgui.spacing()
-    if LSDView().vis.root.global_toggles.show_line_breaks:
+    if Root.vis.root.global_toggles.show_line_breaks:
         if draw_rect(width=3, height=None, color=(0, 0.1, 0.7, 0.8)):
             print_stack_trace(skip=-2)
 
 
 def indent(indent_size=None, attr_name=None):
-    if LSDView().vis.root.global_toggles.show_line_breaks:
+    if Root.vis.root.global_toggles.show_line_breaks:
         if draw_rect(width=3, height=None, color=(0.1, 0.1, 1.0, 0.8)):
             print_stack_trace(skip=-2)
             if attr_name is not None:
@@ -70,7 +70,7 @@ def indent(indent_size=None, attr_name=None):
 
 
 def same_line(spacing=None):
-    if LSDView().vis.root.global_toggles.show_line_breaks:
+    if Root.vis.root.global_toggles.show_line_breaks:
         if draw_rect(width=3, height=None, color=(1.0, 0.5, 0.1, 0.5)):
             print_stack_trace(skip=-2)
         if not (is_hovered(width=3, height=None) and imgui.is_mouse_down(imgui.MOUSE_BUTTON_MIDDLE)):
@@ -86,7 +86,7 @@ def same_line(spacing=None):
 
 
 def new_line():
-    if LSDView().vis.root.global_toggles.show_line_breaks:
+    if Root.vis.root.global_toggles.show_line_breaks:
         if draw_rect(width=3, height=None, color=(0.5, 0, 0, 0.5)):
             print_stack_trace(skip=-2)
         if not (is_hovered(width=3, height=None) and imgui.is_mouse_down(imgui.MOUSE_BUTTON_MIDDLE)):
@@ -96,14 +96,14 @@ def new_line():
 
 
 def validate(expected_type=None, input_value=None, config=None, expected_settings_type=None):
-    vis = LSDView().vis
+    vis = Root.vis
     valid = True
     actual_type_melty = vis.root.datatypes._name_to_class.get(type(input_value).__name__, None)
 
     if config is None:
         config = Metadata()
     if config.attr_name is None or config.unique is None:
-        config.vis = LSDView().vis
+        config.vis = Root.vis
         config.datatype = actual_type_melty
         config.attr_name = f"unnamed_{actual_type_melty.name}"
         # config.settings, _ = get_pref(input_value, config)
@@ -297,11 +297,11 @@ def get_pref(input_value, config, renderer=None, new_settings=False):
         return base_pref.settings, potential_datatype
     except Exception as e:
         return None, None
-        # global_settings = LSDView().vis.root.global_standard_settings
+        # global_settings = Root.vis.root.global_standard_settings
         # if global_settings._base_pref is None:
         #     global_settings._base_pref = BasePref()
         #     global_settings._base_pref.settings = global_settings
-        #     global_settings._base_pref.renderer = LSDView().vis.root.view_functions._name_to_func["render_object"]
+        #     global_settings._base_pref.renderer = Root.vis.root.view_functions._name_to_func["standard_object"]
         # return global_settings
 
 
