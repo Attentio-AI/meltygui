@@ -176,14 +176,17 @@ class ClassUtility:
                         continue
 
                     visited_modules.add(module_name)
-
+                    if "app_model" in module_name:
+                        pass
                     try:
                         # Import the module
                         module = importlib.import_module(module_name)
+                        # importlib.reload(module)
 
                         # Find top-level classes in this module and add them
                         for name, obj in inspect.getmembers(module, inspect.isclass):
                             # Only include classes defined in this module (not imported)
+                            # Add class
                             if obj.__module__ == module_name:
                                 class_path = f"{module_name}.{name}"
                                 parts = class_path.split('.')

@@ -1,51 +1,35 @@
 import imgui
 
-from src.lsd.gl_gui.markers.core_markers import Meta, render_func
+from src.lsd.gl_gui.model.core_markers import render_func
 
-
-def renderer(view_function):
-    return Meta(view_function=view_function)
+# Main draw function, called by the GUI framework
+def draw(vis):
+    draw_any(vis.root.lora_collection)
+    draw_any(vis.root.synth_colors)
 
 
 @render_func
 def draw_object(input_value, meta=None, draw_state=None):
-    object_dict = input_value.__dict__
-    object_type = type(input_value)
-    attr_name = meta.name
-    for key, value in object_dict.items():
-        imgui.text(f"{key}: {value}")
-
+    imgui.same_line()
+    imgui.text("Render object")
     return False, None
+
+
+def generate_class_diff(obj, updates):
+    clsname = obj.__class__.__name__
+    for field, new_val in updates.items():
+        old_val = getattr(obj, field)
+        print(f"# Diff: {clsname}.{field} changed to {new_val}")
 
 
 @render_func
 def draw_any(input_value, meta=None, draw_state=None):
-    imgui.text(meta.name)
-    imgui.same_line()
-
-    render_func = meta.view_function
-    if callable(render_func):
-        changed, value = render_func(input_value)
-        if changed:
-            return True, value
-
-    imgui.text(str(input_value))
+    imgui.text("render any")
     return False, None
 
 
 @render_func
 def draw_float(input_value, meta=None, draw_state=None):
-    # settings = validate(input_value, meta)
     changed, value = False, 0.0
-
-    # todo
-    # changed, value = imgui.drag_float(
-    #
-    # )
-
+    imgui.text("render float")
     return changed, value
-
-
-def draw_list(input_value, **meta):
-    for i, item in enumerate(input_value[0] if input_value else []):
-        imgui.text(f"{i}: {item}")

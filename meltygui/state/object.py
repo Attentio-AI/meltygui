@@ -6,7 +6,7 @@ import sys
 import time
 import weakref
 from ast import literal_eval
-from copy import copy, deepcopy
+from copy import copy
 from enum import Enum
 from typing import Any, Dict, Optional, Union, List, Tuple
 
@@ -15,7 +15,7 @@ import torch
 from torch import Tensor, nn
 from transformers import PreTrainedTokenizerBase, LlamaTokenizerFast
 
-from src.lsd.gl_gui.markers.core_markers import FieldMeta
+from src.lsd.gl_gui.model.core_markers import FieldMeta
 from src.lsd.gl_gui.model.class_utill import ClassUtility
 from src.lsd.gl_gui.model.global_undo_redo_manager import TrackedList, TrackedDict, TrackedSet, GlobalUndoRedoManager
 from src.lsd.gl_gui.utils.custom_views import generate_id
