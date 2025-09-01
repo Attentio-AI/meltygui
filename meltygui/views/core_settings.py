@@ -1,18 +1,49 @@
-from src.lsd.gl_gui.model.core_markers import Meta
+import inspect
+from functools import wraps
+from typing import Any
 
 
-def window(cls):
-    """Mark a class as a top-level ImGui window type."""
-    cls.__is_window__ = True
-    return cls
+def meta_preset(func, *o_args, **o_kwargs):
+    sig = inspect.signature(func)
+    params = sig.parameters
+    wanted_params = list(params.keys())
 
-def no_render(value, *args, **kwargs) -> Meta:
-    new_meta = Meta.get_new_defaults(value=value, *args, **kwargs)
-    new_meta.visible_in_ui = False
-    return new_meta
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        first_arg = args[0] if args else None
 
+        if 'for_type' in kwargs and not isinstance(first_arg, type):
+            def class_wrapper(cls):
+                inner_args = args[1:]
+                return wrapper(cls, *inner_args, **kwargs)
+            return class_wrapper
 
-def render_with(value, view_function, *args, **kwargs) -> Meta:
-    new_meta = Meta.get_new_defaults(value=value, *args, **kwargs)
-    new_meta.view_function = view_function
-    return new_meta
+        if isinstance(first_arg, type):
+            if 'value' in kwargs:
+                value = kwargs['value']
+            else:
+                value = None
+            for_type = kwargs.get('for_type', None)
+            kwargs.pop('for_type', None)
+            kwargs.pop('value', None)
+            args = args[1:] if len(args) > 1 else ()
+
+            retrieved_meta = func(value=value, *args, **kwargs)
+            if for_type is not None:
+                first_arg.default_meta_for = getattr(first_arg, 'default_meta_for', {})
+                first_arg.default_meta_for[for_type] = retrieved_meta
+            else:
+                first_arg.meta = retrieved_meta
+
+            return first_arg
+        else:
+            arg_idx = 0
+            # Clean up kwargs to only what the function wants
+            for wanted_param in wanted_params:
+                if wanted_param not in kwargs:
+                    kwargs[wanted_param] = args[arg_idx] if arg_idx < len(args) else None
+                arg_idx += 1
+
+            retrieved_meta = func(**kwargs)
+            return retrieved_meta
+    return wrapper

@@ -2,7 +2,7 @@ from typing import Dict
 
 from src.lsd.gl_gui.model.app_model import Lora
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.view.core_views.core_settings import window
+from src.lsd.gl_gui.view.core_views.core_presets import window
 
 
 @window

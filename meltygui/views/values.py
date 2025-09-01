@@ -1,6 +1,14 @@
 import imgui
 
-from src.lsd.gl_gui.model.core_markers import render_func
+from src.lsd.gl_gui.view.core_views.core_render import render_func
+
+
+def generate_class_diff(obj, updates):
+    clsname = obj.__class__.__name__
+    for field, new_val in updates.items():
+        old_val = getattr(obj, field)
+        print(f"# Diff: {clsname}.{field} changed to {new_val}")
+
 
 # Main draw function, called by the GUI framework
 def draw(vis):
@@ -13,13 +21,6 @@ def draw_object(input_value, meta=None, draw_state=None):
     imgui.same_line()
     imgui.text("Render object")
     return False, None
-
-
-def generate_class_diff(obj, updates):
-    clsname = obj.__class__.__name__
-    for field, new_val in updates.items():
-        old_val = getattr(obj, field)
-        print(f"# Diff: {clsname}.{field} changed to {new_val}")
 
 
 @render_func
