@@ -32,12 +32,25 @@ def draw_any(input_value, meta=None, draw_state=None):
 
 
 @render_func
-def draw_float(input_value:float, float_min=-1.0, float_max=1.0, float_speed=0.01):
+def draw_float(input_value:float, min_value=-100.0, max_value=100.0, speed=0.01):
     imgui.text("render float")
     changed, value = imgui.drag_float("##float", input_value,
-                                      change_speed=float_speed,
-                                      min_value=float_min,
-                                      max_value=float_max)
+                                      change_speed=speed,
+                                      min_value=min_value,
+                                      max_value=max_value)
+    if changed:
+        return True, value
+
+    return changed, value
+
+
+@render_func
+def draw_int(input_value: int, min_value=-100.0, max_value=100.0, speed=0.05):
+    imgui.text("render int")
+    changed, value = imgui.drag_int("##int", input_value,
+                                      change_speed=speed,
+                                      min_value=min_value,
+                                      max_value=max_value)
     if changed:
         return True, value
 

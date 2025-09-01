@@ -94,11 +94,15 @@ class FieldMeta(type):
         return obj
 
 
-    def get_field_meta(cls, field_name):
+    def get_child_meta(cls, field_name, value=None):
+        child_meta = getattr(cls, f"{field_name}_meta", None)
+        if child_meta is None:
+            if hasattr(cls, 'default_meta_for'):
+                child_meta = cls.default_meta_for.get(type(value), None)
+        if child_meta is None:
+            child_meta = Meta.get_default()
         """Get Meta object for a given field, or default."""
-        return getattr(cls, f"{field_name}_meta", Meta.get_default())
-
-
+        return child_meta
 
 
 # disabled = Marker(disabled=True)

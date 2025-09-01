@@ -218,8 +218,10 @@ def render_func(func):
                     if (k.startswith("__") and k.endswith("__")) or k.startswith("_"):
                         continue
                     try:
-                        child_meta = type(input_value).get_field_meta(field_name=k) if (
-                            hasattr(type(input_value), "get_field_meta")) else Meta.get_default()
+                        parent_type = type(input_value)
+                        child_meta = parent_type.get_child_meta(field_name=k, value=v) if (
+                            hasattr(parent_type, "get_child_meta")) else Meta.get_default()
+
                         if child_meta is not None:
                             kwargs['meta'] = child_meta
 
