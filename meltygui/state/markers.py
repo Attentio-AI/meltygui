@@ -43,9 +43,10 @@ class FieldMeta(type):
 
             # marker line
             if isinstance(value, Meta):
-                field_defaults[key] = value.value
+                value.name = key
+                field_defaults[key] = value.default_value
                 field_meta[key] = value
-                new_namespace[key] = value.value
+                new_namespace[key] = value.default_value
                 new_namespace[f"{key}_meta"] = value
             else:
                 # Plain value still becomes a field

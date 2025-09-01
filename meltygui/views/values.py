@@ -30,7 +30,13 @@ def draw_any(input_value, meta=None, draw_state=None):
 
 
 @render_func
-def draw_float(input_value, meta=None, draw_state=None):
-    changed, value = False, 0.0
+def draw_float(input_value:float, float_min=-1.0, float_max=1.0, float_speed=0.01):
     imgui.text("render float")
+    changed, value = imgui.drag_float("##float", input_value,
+                                      change_speed=float_speed,
+                                      min_value=float_min,
+                                      max_value=float_max)
+    if changed:
+        return True, value
+
     return changed, value

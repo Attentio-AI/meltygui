@@ -2,6 +2,7 @@ import inspect
 import sys
 import zlib
 from functools import wraps
+from typing import Any
 
 import imgui
 
@@ -34,7 +35,7 @@ def combine(h: int, s: str) -> int:
     """Order-sensitive, stable combine (FNV-style)."""
     return ((h * 16777619) ^ strhash(s)) & 0xffffffff
 
-def ui_id(meta=None, this_name=None, max_depth=10, root_function="render") -> int:
+def ui_id(meta=None, this_name=None, max_depth=10, root_function="render", suffix=None) -> int:
     """
     Generate a stable UI ID from the call stack + optional metadata.
 
@@ -62,7 +63,9 @@ def ui_id(meta=None, this_name=None, max_depth=10, root_function="render") -> in
         else:
             h = combine(h, str(meta))
 
-    return h, depth
+    unique = h if suffix is None else ((h * 16777619) ^ strhash(str(suffix))) & 0xffffffff
+
+    return unique, depth
 
 def render_func(func):
     """
@@ -72,8 +75,10 @@ def render_func(func):
     - Injects meta/viewstate only if the function signature wants them.
     - Pushes/pops ImGui ID scope automatically.
     """
+
     sig = inspect.signature(func)
     params = sig.parameters
+    param_types = [params[p].annotation for p in params]
     wanted_params = list(params.keys())
     max_depth = 10
 
@@ -85,26 +90,36 @@ def render_func(func):
         from src.lsd.gl_gui.view.core_views.core_presets import Meta
         meta = kwargs.get("meta", Meta.get_default())
         suffix = kwargs.get("suffix", None)
-        unique, depth = ui_id(meta) if meta else (0, 0)
-        unique = unique if suffix is None else ((unique * 16777619) ^ strhash(str(suffix))) & 0xffffffff
+        unique, depth = ui_id(meta, suffix=suffix) if meta else (0, 0)
+
         input_value = kwargs.get("input_value", first_arg)
         draw_state = kwargs.get("draw_state", second_arg)
         if draw_state is None:
             draw_state = get_draw_state(unique)
+        meta.draw_state = draw_state
+        meta.input_value = input_value
 
-        if attr_name == "alpha":
-            pass
+        expected_type = param_types[wanted_params.index("input_value")] if "input_value" in wanted_params else None
+        annotation_empty = expected_type is inspect.Parameter.empty
+        if not annotation_empty and expected_type is not Any:
+            if not isinstance(input_value, expected_type):
+                yellow = (1.0, 1.0, 0.0, 1.0)
+                if imgui.button(f"Fix Type##{unique}"):
+                    return True, expected_type()
+                imgui.same_line()
+                imgui.text_colored(f"Type mismatch in {func.__name__}\n"
+                                   f"Expected {expected_type.__name__}, "
+                                   f"got {type(input_value).__name__}", *yellow)
+                return False, None
+
+
         # Clean up kwargs to only what the function wants
         for wanted_param in wanted_params:
             if wanted_param not in kwargs:
                 if wanted_param == "meta":
                     kwargs[wanted_param] = meta
-                elif wanted_param == "draw_state":
-                    kwargs[wanted_param] = draw_state
-                elif wanted_param == "input_value":
-                    kwargs[wanted_param] = input_value
-                elif wanted_param == "suffix":
-                    kwargs[wanted_param] = suffix
+                elif wanted_param in vars(meta):
+                    kwargs[wanted_param] = getattr(meta, wanted_param)
                 else:
                     kwargs[wanted_param] = None
 
@@ -127,6 +142,7 @@ def render_func(func):
         if is_window:
             title = attr_name or input_value.__class__.__name__
             opened, _ = imgui.begin(f"{title}##window_{str(unique)}", True)
+
 
         imgui.text_colored(f"{attr_name}", *(0.8, 0.3, 0.5, 1.0))
         imgui.same_line()
@@ -154,8 +170,6 @@ def render_func(func):
             elif hasattr(input_value, "__dict__") and depth < max_depth:  # class or module instance
                 changed = False
                 for k, v in vars(input_value).items():
-                    if k == "alpha":
-                        pass
                     # skip private attrs, methods, etc.
                     if (k.startswith("__") and k.endswith("__")) or k.startswith("_"):
                         continue
@@ -165,10 +179,11 @@ def render_func(func):
                         if child_meta is not None:
                             kwargs['meta'] = child_meta
 
-                        item_changed, new_value = child_meta.view_function(input_value=v, meta=child_meta, suffix=k,
-                                                                           name=k)
-                        changed |= item_changed
-
+                        obj_unique, _ = ui_id(child_meta, suffix=suffix)
+                        item_changed, new_value = child_meta.view_function(input_value=v, meta=child_meta,
+                                                                           suffix=obj_unique, name=k)
+                        if item_changed:
+                            setattr(input_value, k, new_value)
                     except Exception as e:
                         print_colored_traceback()
                         pass
@@ -176,6 +191,7 @@ def render_func(func):
         else:
             imgui.push_id(str(unique))
             try:
+                imgui.text_colored(f"unique[{unique}]", *(0.5, 0.5, 0.5, 1.0))
                 # Signature not known, must be safe
                 return_value = func(**kwargs)
                 if return_value is None:

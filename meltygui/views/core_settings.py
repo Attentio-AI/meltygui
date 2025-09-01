@@ -19,16 +19,16 @@ def meta_preset(func, *o_args, **o_kwargs):
             return class_wrapper
 
         if isinstance(first_arg, type):
-            if 'value' in kwargs:
-                value = kwargs['value']
+            if 'default_value' in kwargs:
+                default_value = kwargs['default_value']
             else:
-                value = None
+                default_value = None
             for_type = kwargs.get('for_type', None)
             kwargs.pop('for_type', None)
-            kwargs.pop('value', None)
+            kwargs.pop('default_value', None)
             args = args[1:] if len(args) > 1 else ()
 
-            retrieved_meta = func(value=value, *args, **kwargs)
+            retrieved_meta = func(default_value=default_value, *args, **kwargs)
             if for_type is not None:
                 first_arg.default_meta_for = getattr(first_arg, 'default_meta_for', {})
                 first_arg.default_meta_for[for_type] = retrieved_meta
