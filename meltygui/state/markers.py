@@ -41,6 +41,7 @@ class FieldMeta(type):
                 new_namespace[key] = value
                 continue
 
+            value_annotation = namespace.get("__annotations__", {}).get(key, None)
             # marker line
             if isinstance(value, Meta):
                 value.name = key
@@ -48,6 +49,26 @@ class FieldMeta(type):
                 field_meta[key] = value
                 new_namespace[key] = value.default_value
                 new_namespace[f"{key}_meta"] = value
+            elif isinstance(value_annotation, Meta):
+                meta = value_annotation
+                meta.name = key
+                field_defaults[key] = value
+                field_meta[key] = meta
+                new_namespace[key] = value
+                new_namespace[f"{key}_meta"] = meta
+            elif callable(value_annotation):
+                try:
+                    meta = value_annotation(value)
+                    if isinstance(meta, Meta):
+                        meta.name = key
+                        field_defaults[key] = value
+                        field_meta[key] = meta
+                        new_namespace[key] = value
+                        new_namespace[f"{key}_meta"] = meta
+                except Exception as e:
+                    print(f"Error creating Meta for field {key} with annotation {value_annotation}: {e}")
+                    field_defaults[key] = value
+                    new_namespace[key] = value
             else:
                 # Plain value still becomes a field
                 field_defaults[key] = value

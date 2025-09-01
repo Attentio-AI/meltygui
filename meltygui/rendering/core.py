@@ -110,6 +110,10 @@ def render_func(func):
     sig = inspect.signature(func)
     params = sig.parameters
     param_types = [params[p].annotation for p in params]
+    name_to_param_type = {}
+    for idx, param_name in enumerate(params):
+        name_to_param_type[param_name] = param_types[idx]
+
     wanted_params = list(params.keys())
     max_depth = 10
 
@@ -123,7 +127,6 @@ def render_func(func):
         meta = kwargs.get("meta", Meta.get_new_defaults(default_value=input_value))
         suffix = kwargs.get("suffix", None)
         unique, depth = ui_id(meta, suffix=suffix) if meta else (0, 0)
-
 
         draw_state = kwargs.get("draw_state", second_arg)
         if draw_state is None:
@@ -150,13 +153,19 @@ def render_func(func):
 
         # Clean up kwargs to only what the function wants
         for wanted_param in wanted_params:
+            expected_type = name_to_param_type.get(wanted_param, None)
+            annotation_empty = expected_type is inspect.Parameter.empty
+            found_param = None
             if wanted_param not in kwargs:
                 if wanted_param == "meta":
-                    kwargs[wanted_param] = meta
+                    found_param = meta
                 elif wanted_param in vars(meta):
-                    kwargs[wanted_param] = getattr(meta, wanted_param)
-                else:
-                    kwargs[wanted_param] = None
+                    found_param = getattr(meta, wanted_param)
+            if expected_type is not None and expected_type is not Any and not annotation_empty:
+                if found_param is not None and not isinstance(found_param, expected_type):
+                    found_param = None
+            if found_param is not None:
+                kwargs[wanted_param] = found_param
 
         to_delete = []
         for to_provide in kwargs.keys():
