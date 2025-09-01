@@ -20,7 +20,6 @@ class DrawState:
 
 _draw_state_registry = {}
 
-
 def get_draw_state(unique: int) -> DrawState:
     """Get or create a ViewState object for a widget ID."""
     if unique not in _draw_state_registry:
@@ -59,13 +58,45 @@ def ui_id(meta=None, this_name=None, max_depth=10, root_function="render", suffi
 
     if meta is not None:
         if hasattr(meta, "name"):
-            h = combine(h, f"{meta.name}:{meta.type}")
+            h = combine(h, f"{meta.name}:{meta.datatype}")
         else:
-            h = combine(h, str(meta))
+            h = combine(h, str(meta.datatype))
 
     unique = h if suffix is None else ((h * 16777619) ^ strhash(str(suffix))) & 0xffffffff
 
     return unique, depth
+
+id_stack = []
+stack_holder = {}
+def push_id(unique_id):
+    global id_stack
+    imgui.push_id(str(unique_id))
+    id_stack.append(unique_id)
+
+def pop_id():
+    global id_stack
+    imgui.pop_id()
+    id_stack.pop()
+
+def tmp_undo_stack(undo_point_id):
+    """Context manager to temporarily clear the ID stack."""
+    global id_stack
+    global stack_holder
+    stack_holder[undo_point_id] = id_stack[:]
+    for _ in stack_holder[undo_point_id]:
+        imgui.pop_id()
+    id_stack = []
+
+def redo_stack(undo_point_id):
+    """Restore the ID stack to a previously saved state."""
+    global id_stack
+    global stack_holder
+    if undo_point_id in stack_holder:
+        saved_stack = stack_holder.pop(undo_point_id)
+        for uid in saved_stack:
+            imgui.push_id(str(uid))
+        id_stack = saved_stack
+
 
 def render_func(func):
     """
@@ -85,19 +116,23 @@ def render_func(func):
     @wraps(func)
     def wrapper(*args, **kwargs):
         first_arg = args[0] if args else None
+        input_value = kwargs.get("input_value", first_arg)
         second_arg = args[1] if len(args) > 1 else None
         attr_name = kwargs.get("name", "")
         from src.lsd.gl_gui.view.core_views.core_presets import Meta
-        meta = kwargs.get("meta", Meta.get_default())
+        meta = kwargs.get("meta", Meta.get_new_defaults(default_value=input_value))
         suffix = kwargs.get("suffix", None)
         unique, depth = ui_id(meta, suffix=suffix) if meta else (0, 0)
 
-        input_value = kwargs.get("input_value", first_arg)
+
         draw_state = kwargs.get("draw_state", second_arg)
         if draw_state is None:
             draw_state = get_draw_state(unique)
         meta.draw_state = draw_state
         meta.input_value = input_value
+
+        for kwarg in kwargs:
+            setattr(meta, kwarg, kwargs[kwarg])
 
         expected_type = param_types[wanted_params.index("input_value")] if "input_value" in wanted_params else None
         annotation_empty = expected_type is inspect.Parameter.empty
@@ -137,12 +172,7 @@ def render_func(func):
         if class_meta is not None:
             is_window = class_meta.is_window
         else:
-            is_window = False
-
-        if is_window:
-            title = attr_name or input_value.__class__.__name__
-            opened, _ = imgui.begin(f"{title}##window_{str(unique)}", True)
-
+            is_window = meta.is_window
 
         imgui.text_colored(f"{attr_name}", *(0.8, 0.3, 0.5, 1.0))
         imgui.same_line()
@@ -153,6 +183,11 @@ def render_func(func):
         changed, new_value = False, None
         is_collection = isinstance(input_value, (dict, list, tuple, set)) or (
                 hasattr(input_value, "__dict__") and depth < max_depth)
+        if is_window:
+            tmp_undo_stack(unique)
+            title = attr_name or input_value.__class__.__name__
+            opened, _ = imgui.begin(f"{title}##window_{str(unique)}", True)
+
         if is_collection:
             imgui.indent(indent_size)
             # Handle collections
@@ -189,25 +224,27 @@ def render_func(func):
                         pass
             imgui.unindent(indent_size)
         else:
-            imgui.push_id(str(unique))
+            return_value = None
+            push_id(unique)
             try:
                 imgui.text_colored(f"unique[{unique}]", *(0.5, 0.5, 0.5, 1.0))
                 # Signature not known, must be safe
                 return_value = func(**kwargs)
-                if return_value is None:
-                    return False, None
-                elif isinstance(return_value, tuple) and len(return_value) == 2:
-                    return return_value
-                else:
-                    imgui.text("Unsupported return from render_func")
-                    return False, None
             except Exception as e:
                 print_colored_traceback()
             finally:
-                imgui.pop_id()
+                pop_id()
+                if return_value is None:
+                    changed, new_value = False, None
+                elif isinstance(return_value, tuple) and len(return_value) == 2:
+                    changed, new_value = return_value
+                else:
+                    imgui.text("Unsupported return from render_func")
+                    changed, new_value = False, None
 
         if is_window:
             imgui.end()
+            redo_stack(unique)
 
         return changed, new_value
 

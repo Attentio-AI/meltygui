@@ -13,7 +13,9 @@ def generate_class_diff(obj, updates):
 # Main draw function, called by the GUI framework
 def draw(vis):
     draw_any(vis.root.lora_collection)
-    draw_any(vis.root.synth_colors)
+    draw_any(vis.root.synth_colors, is_window=False)
+    #
+    draw_any("hello there", is_window=True)
 
 
 @render_func
