@@ -1,7 +1,10 @@
 
 from typing import Any
 
+from src.lsd.gl_gui.utils.custom_views import Root
 from src.lsd.gl_gui.view.core_views.core_presets import Meta
+
+annotation_mode = False
 
 
 class Val:
@@ -15,6 +18,7 @@ def _is_field_candidate(v) -> bool:
 
 
 class FieldMeta(type):
+
     @classmethod
     def __prepare__(mcls, name, bases):
         # any mapping works; order is guaranteed in modern Python
@@ -100,7 +104,13 @@ class FieldMeta(type):
             if hasattr(cls, 'default_meta_for'):
                 child_meta = cls.default_meta_for.get(type(value), None)
         if child_meta is None:
-            child_meta = Meta.get_default()
+            if hasattr(type(value), 'meta'):
+                child_meta = type(value).meta
+        if child_meta is None:
+            view_function = Root.type_defaults.get(type(value), None)
+            child_meta = Meta.get_new_defaults(value=value)
+            if view_function is not None:
+                child_meta.view_function = view_function
         """Get Meta object for a given field, or default."""
         return child_meta
 

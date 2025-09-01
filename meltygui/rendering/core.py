@@ -6,7 +6,8 @@ from typing import Any
 
 import imgui
 
-from src.lsd.gl_gui.utils.custom_views import print_colored_traceback
+from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, Root
+
 
 class DrawState:
     """Holds per-widget runtime state (expand/collapse, etc.)."""
@@ -34,7 +35,7 @@ def combine(h: int, s: str) -> int:
     """Order-sensitive, stable combine (FNV-style)."""
     return ((h * 16777619) ^ strhash(s)) & 0xffffffff
 
-def ui_id(meta=None, this_name=None, max_depth=10, root_function="render", suffix=None) -> int:
+def ui_id(meta=None, this_name=None, max_depth=20, root_function="render", suffix=None) -> int:
     """
     Generate a stable UI ID from the call stack + optional metadata.
 
@@ -45,6 +46,7 @@ def ui_id(meta=None, this_name=None, max_depth=10, root_function="render", suffi
     frame = sys._getframe(1)  # skip ui_id itself
     depth = 0
     func_name = ""
+    annotation_mode = True
     while frame and depth < max_depth and func_name != root_function:
         code = frame.f_code
         func_name = code.co_name
@@ -56,6 +58,9 @@ def ui_id(meta=None, this_name=None, max_depth=10, root_function="render", suffi
         frame = frame.f_back
         depth += 1
 
+        if func_name == root_function:
+            annotation_mode = False
+
     if meta is not None:
         if hasattr(meta, "name"):
             h = combine(h, f"{meta.name}:{meta.datatype}")
@@ -64,7 +69,7 @@ def ui_id(meta=None, this_name=None, max_depth=10, root_function="render", suffi
 
     unique = h if suffix is None else ((h * 16777619) ^ strhash(str(suffix))) & 0xffffffff
 
-    return unique, depth
+    return unique, depth, annotation_mode
 
 id_stack = []
 stack_holder = {}
@@ -97,8 +102,7 @@ def redo_stack(undo_point_id):
             imgui.push_id(str(uid))
         id_stack = saved_stack
 
-
-def render_func(func):
+def render_func(*args, **kwargs):
     """
     Decorator for render functions.
     - Computes stable UI ID (unique) from callstack+meta.
@@ -107,6 +111,16 @@ def render_func(func):
     - Pushes/pops ImGui ID scope automatically.
     """
 
+    # Handle default type arguments to @render_func
+    first_arg = args[0] if args else None
+    if 'is_default_for' in kwargs:
+        if not callable(first_arg):
+            def class_wrapper(the_func):
+                return render_func(the_func, *args, **kwargs)
+            return class_wrapper
+    # ----- end default type argument handling -----
+    func = first_arg if callable(first_arg) else None
+
     sig = inspect.signature(func)
     params = sig.parameters
     param_types = [params[p].annotation for p in params]
@@ -114,19 +128,83 @@ def render_func(func):
     for idx, param_name in enumerate(params):
         name_to_param_type[param_name] = param_types[idx]
 
+    param_defaults = {p: params[p].default for p in params if params[p].default is not inspect.Parameter.empty}
+
     wanted_params = list(params.keys())
     max_depth = 10
 
+    # ----- Handle default type argument to @render_func -----
+    is_default_for = kwargs.get('is_default_for', None)
+    if isinstance(is_default_for, (tuple, list)):
+        for a_type in is_default_for:
+            if isinstance(a_type, type):
+                kwargs.pop('is_default_for', None)
+                retrieved_meta = render_func(*args, **kwargs, annotation_mode=True)
+                Root.type_defaults[a_type] = retrieved_meta
+    elif isinstance(is_default_for, type):
+        kwargs.pop('is_default_for', None)
+        retrieved_meta = render_func(*args, **kwargs, annotation_mode=True)
+        Root.type_defaults[is_default_for] = retrieved_meta
+
+    # ----- end default type argument handling -----
+
     @wraps(func)
     def wrapper(*args, **kwargs):
+
         first_arg = args[0] if args else None
         input_value = kwargs.get("input_value", first_arg)
         second_arg = args[1] if len(args) > 1 else None
         attr_name = kwargs.get("name", "")
         from src.lsd.gl_gui.view.core_views.core_presets import Meta
-        meta = kwargs.get("meta", Meta.get_new_defaults(default_value=input_value))
+        meta = kwargs.get("meta", None)
+        if meta is None:
+            # Use class meta as default if available
+            if hasattr(type(input_value), "meta"):
+                meta = getattr(type(input_value), "meta")
+            else:
+                meta = Meta.get_new_defaults(default_value=input_value)
+
         suffix = kwargs.get("suffix", None)
-        unique, depth = ui_id(meta, suffix=suffix) if meta else (0, 0)
+        unique, depth, annotation_mode = ui_id(meta, suffix=suffix) if meta else (0, 0)
+
+        from src.lsd.gl_gui.view.core_views.core_presets import Meta
+
+        if 'annotation_mode' in kwargs or annotation_mode:
+            # Class decoration mode, no args
+            if 'for_type' in kwargs and not isinstance(first_arg, type):
+                def class_wrapper(cls):
+                    inner_args = args[1:]
+                    return wrapper(cls, *inner_args, **kwargs)
+                return class_wrapper
+
+            # Class decoration mode, ie. @render_as_float
+            if isinstance(first_arg, type):
+                for_type = kwargs.get('for_type', None)
+                kwargs.pop('for_type', None)
+                kwargs.pop('default_value', None)
+                args = args[1:] if len(args) > 1 else ()
+
+                new_meta = Meta(param_defaults)
+                for k, v in param_defaults.items():
+                    if k in kwargs:
+                        setattr(new_meta, k, kwargs[k])
+                new_meta.view_function = wrapper
+
+                if for_type is not None:
+                    first_arg.default_meta_for = getattr(first_arg, 'default_meta_for', {})
+                    first_arg.default_meta_for[for_type] = new_meta
+                else:
+                    first_arg.meta = new_meta
+
+                return first_arg
+
+            # View function was used as annotation, ie. some_param: render_func = 0.0
+            new_meta = Meta(param_defaults)
+            for k, v in param_defaults.items():
+                if k in kwargs:
+                    setattr(new_meta, k, kwargs[k])
+            new_meta.view_function = wrapper
+            return new_meta
 
         draw_state = kwargs.get("draw_state", second_arg)
         if draw_state is None:
@@ -150,7 +228,6 @@ def render_func(func):
                                    f"got {type(input_value).__name__}", *yellow)
                 return False, None
 
-
         # Clean up kwargs to only what the function wants
         for wanted_param in wanted_params:
             expected_type = name_to_param_type.get(wanted_param, None)
@@ -159,6 +236,12 @@ def render_func(func):
             if wanted_param not in kwargs:
                 if wanted_param == "meta":
                     found_param = meta
+                elif wanted_param == "draw_state":
+                    found_param = draw_state
+                elif wanted_param == "name":
+                    found_param = attr_name
+                elif wanted_param == "unique":
+                    found_param = unique
                 elif wanted_param in vars(meta):
                     found_param = getattr(meta, wanted_param)
             if expected_type is not None and expected_type is not Any and not annotation_empty:
@@ -177,81 +260,36 @@ def render_func(func):
         if not meta.visible_in_ui:
             return False, None
 
-        class_meta = type(input_value).meta if hasattr(type(input_value), "meta") else None
-        if class_meta is not None:
-            is_window = class_meta.is_window
-        else:
-            is_window = meta.is_window
+        is_window = meta.is_window
 
-        imgui.text_colored(f"{attr_name}", *(0.8, 0.3, 0.5, 1.0))
-        imgui.same_line()
-        imgui.text_colored(f"({type(input_value).__name__})", *(0.8, 0.0, 0.5, 1.0))
-        imgui.same_line()
-        imgui.text_colored(f"({str(unique)})", *(0.8, 0.0, 0.5, 1.0))
-        indent_size = 10
-        changed, new_value = False, None
-        is_collection = isinstance(input_value, (dict, list, tuple, set)) or (
-                hasattr(input_value, "__dict__") and depth < max_depth)
         if is_window:
             tmp_undo_stack(unique)
             title = attr_name or input_value.__class__.__name__
             opened, _ = imgui.begin(f"{title}##window_{str(unique)}", True)
 
-        if is_collection:
-            imgui.indent(indent_size)
-            # Handle collections
-            if isinstance(input_value, dict):
-                changed = False
-                for k, v in input_value.items():
-                    # Derive Meta for each entry
-                    item_changed, new_value = meta.view_function(input_value=v, meta=meta, suffix=k, name=k)
-                    changed |= item_changed
-            elif isinstance(input_value, (list, tuple, set)):
-                changed = False
-                for i, v in enumerate(input_value):
-                    item_changed, new_value = meta.view_function(input_value=v, meta=meta, suffix=i, name=str(i))
-                    changed |= item_changed
-            elif hasattr(input_value, "__dict__") and depth < max_depth:  # class or module instance
-                changed = False
-                for k, v in vars(input_value).items():
-                    # skip private attrs, methods, etc.
-                    if (k.startswith("__") and k.endswith("__")) or k.startswith("_"):
-                        continue
-                    try:
-                        parent_type = type(input_value)
-                        child_meta = parent_type.get_child_meta(field_name=k, value=v) if (
-                            hasattr(parent_type, "get_child_meta")) else Meta.get_default()
+        return_value = None
+        push_id(unique)
+        try:
 
-                        if child_meta is not None:
-                            kwargs['meta'] = child_meta
+            imgui.text_colored(f"{attr_name}", *(0.8, 0.3, 0.5, 1.0))
+            imgui.same_line()
+            imgui.text_colored(f"({type(input_value).__name__})", *(0.8, 0.0, 0.5, 1.0))
+            imgui.same_line()
+            imgui.text_colored(f"({str(unique)})", *(0.8, 0.0, 0.5, 1.0))
 
-                        obj_unique, _ = ui_id(child_meta, suffix=suffix)
-                        item_changed, new_value = child_meta.view_function(input_value=v, meta=child_meta,
-                                                                           suffix=obj_unique, name=k)
-                        if item_changed:
-                            setattr(input_value, k, new_value)
-                    except Exception as e:
-                        print_colored_traceback()
-                        pass
-            imgui.unindent(indent_size)
-        else:
-            return_value = None
-            push_id(unique)
-            try:
-                imgui.text_colored(f"unique[{unique}]", *(0.5, 0.5, 0.5, 1.0))
-                # Signature not known, must be safe
-                return_value = func(**kwargs)
-            except Exception as e:
-                print_colored_traceback()
-            finally:
-                pop_id()
-                if return_value is None:
-                    changed, new_value = False, None
-                elif isinstance(return_value, tuple) and len(return_value) == 2:
-                    changed, new_value = return_value
-                else:
-                    imgui.text("Unsupported return from render_func")
-                    changed, new_value = False, None
+            # Signature not known, so be forgiving
+            return_value = func(**kwargs)
+        except Exception as e:
+            print_colored_traceback()
+        finally:
+            pop_id()
+            if return_value is None:
+                changed, new_value = False, None
+            elif isinstance(return_value, tuple) and len(return_value) == 2:
+                changed, new_value = return_value
+            else:
+                imgui.text("Unsupported return from render_func")
+                changed, new_value = False, None
 
         if is_window:
             imgui.end()

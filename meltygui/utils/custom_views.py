@@ -25,6 +25,7 @@ class GroupType(Enum):
 
 class Root:
     vis = None
+    type_defaults = {}
 
     @staticmethod
     def is_key_pressed(key=glfw.KEY_ESCAPE):
