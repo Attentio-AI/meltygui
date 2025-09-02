@@ -1,6 +1,6 @@
 import imgui
 
-from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, tree
+from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, tree, Root
 from src.lsd.gl_gui.view.core_views.core_render import render_func, tmp_undo_stack, redo_stack, push_id, pop_id, ui_id
 
 
@@ -81,7 +81,8 @@ def draw_object(input_value, draw_state=None, meta=None, name="",
             for i, v in enumerate(input_value):
                 suffix = f"{suffix}_{str(i)}"
                 obj_unique, _, _ = ui_id(meta, suffix=suffix)
-                item_changed, new_value = meta.view_function(input_value=v, meta=meta,
+                child_meta = Root.type_defaults.get(type(v), meta)
+                item_changed, new_value = child_meta.view_function(input_value=v, meta=child_meta,
                                                              suffix=obj_unique, name=str(i))
                 changed |= item_changed
         elif hasattr(input_value, "__dict__") and depth < max_depth:  # class or module instance
@@ -130,7 +131,17 @@ def draw_object(input_value, draw_state=None, meta=None, name="",
 def draw_any(input_value, *args, meta=None, **kwargs):
     return meta.view_function(input_value, *args, **kwargs)
 
-@render_func(is_default_for=(float, str))
+
+@render_func(is_default_for=(str))
+def draw_str(input_value: str, is_tree=False):
+    imgui.text("render str")
+    changed, value = imgui.input_text("##str", input_value)
+    if changed:
+        return True, value
+
+    return changed, value
+
+@render_func(is_default_for=(float))
 def draw_float(input_value:float, min_value=-100.0, max_value=100.0, speed=0.01, is_tree=False):
     imgui.text("render float")
     changed, value = imgui.drag_float("##float", input_value,
@@ -143,7 +154,7 @@ def draw_float(input_value:float, min_value=-100.0, max_value=100.0, speed=0.01,
     return changed, value
 
 
-@render_func
+@render_func(is_default_for=(int))
 def draw_int(input_value: int, min_value=-100.0, max_value=100.0, speed=0.05):
     imgui.text("render int")
     changed, value = imgui.drag_int("##int", input_value,
