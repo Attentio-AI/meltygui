@@ -164,6 +164,10 @@ def render_func(*args, **kwargs):
                 meta = getattr(type(input_value), "meta")
             else:
                 meta = Meta.get_new_defaults(default_value=input_value)
+                for wanted_param in wanted_params:
+                    if wanted_param in param_defaults:
+                        setattr(meta, wanted_param, param_defaults[wanted_param])
+
         kwargs["meta"] = meta
 
         suffix = kwargs.get("suffix", attr_name)
@@ -190,6 +194,8 @@ def render_func(*args, **kwargs):
                 for k, v in param_defaults.items():
                     if k in kwargs:
                         setattr(new_meta, k, kwargs[k])
+                    else:
+                        setattr(new_meta, k, v)
                 new_meta.view_function = wrapper
 
                 if for_type is not None:
@@ -248,9 +254,6 @@ def render_func(*args, **kwargs):
             if expected_type is not None and expected_type is not Any and not annotation_empty:
                 if found_param is not None and not isinstance(found_param, expected_type):
                     found_param = param_defaults.get(wanted_param, None)
-            if param_defaults.get(wanted_param, None):
-                found_param = param_defaults[wanted_param]
-
             elif wanted_param in vars(meta):
                 found_param = getattr(meta, wanted_param)
             if found_param is not None:
