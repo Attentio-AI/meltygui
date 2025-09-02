@@ -133,7 +133,7 @@ def draw_any(input_value, *args, meta=None, **kwargs):
 
 
 @render_func(is_default_for=(str))
-def draw_str(input_value: str, is_tree=False):
+def draw_str(input_value: str):
     imgui.text("render str")
     changed, value = imgui.input_text("##str", input_value)
     if changed:
@@ -141,8 +141,33 @@ def draw_str(input_value: str, is_tree=False):
 
     return changed, value
 
+@render_func(is_default_for=(tuple))
+def draw_tuple(input_value: tuple, is_tree=False):
+    if len(input_value) == 4:
+        color_list = list(input_value)
+        color_flags = (imgui.COLOR_EDIT_NO_INPUTS | imgui.COLOR_EDIT_NO_LABEL | imgui.COLOR_EDIT_FLOAT |
+                       imgui.COLOR_EDIT_NO_TOOLTIP)
+        changed, color = imgui.color_edit4(
+            f"##_color",
+            color_list[0], color_list[1], color_list[2], color_list[3],
+            flags=color_flags)
+        if changed:
+            input_value = (color[0], color[1], color[2], color[3])
+    else:
+        color_list = list(input_value)
+        color_flags = (imgui.COLOR_EDIT_NO_INPUTS | imgui.COLOR_EDIT_NO_LABEL |
+                       imgui.COLOR_EDIT_NO_ALPHA | imgui.COLOR_EDIT_FLOAT |
+                       imgui.COLOR_EDIT_NO_TOOLTIP)
+        changed, color = imgui.color_edit3(
+            f"##_color",
+            color_list[0], color_list[1], color_list[2],
+            flags=color_flags)
+        if changed:
+            input_value = (color[0], color[1], color[2])
+    return changed, input_value
+
 @render_func(is_default_for=(float))
-def draw_float(input_value:float, min_value=-100.0, max_value=100.0, speed=0.01, is_tree=False):
+def draw_float(input_value:float, min_value=-100.0, max_value=100.0, speed=0.01):
     imgui.text("render float")
     changed, value = imgui.drag_float("##float", input_value,
                                       change_speed=speed,

@@ -153,6 +153,8 @@ def render_func(*args, **kwargs):
         from src.lsd.gl_gui.view.core_views.core_presets import Meta
         new_meta = Meta(param_defaults)
         new_meta.view_function = render_func(*args, **kwargs, annotation_mode=True)
+        for k, v in param_defaults.items():
+            setattr(new_meta, k, v)
         for k, v in kwargs.items():
             setattr(new_meta, k, v)
         Root.type_defaults[is_default_for] = new_meta
