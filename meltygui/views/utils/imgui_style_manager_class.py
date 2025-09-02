@@ -334,11 +334,6 @@ class ImGuiStyleManager:
 
             modified_rgb = colorsys.hsv_to_rgb(h, s * saturation_scale, value)
             return (modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
-        # def make_color(value, saturation_scale=1.0, alpha=1.0):
-        #     value = (v * self.root.global_style.base_value) + value
-        #
-        #     modified_rgb = colorsys.hsv_to_rgb(h, s * saturation_scale, value)
-        #     return (modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
 
         glb_cst = self.root.global_style.main_const
 
@@ -380,8 +375,6 @@ class ImGuiStyleManager:
         colors[imgui.COLOR_TAB] = make_color(glb_cst["tab"]["tab"])
         colors[imgui.COLOR_TAB_HOVERED] = make_color(glb_cst["tab"]["tab_hovered"])
         colors[imgui.COLOR_TAB_ACTIVE] = make_color(glb_cst["tab"]["tab_active"])
-
-
 
         # Borders and separators
         colors[imgui.COLOR_SEPARATOR] = make_color(glb_cst["frame"]["separator"])

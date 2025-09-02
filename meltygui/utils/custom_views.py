@@ -1,17 +1,16 @@
 import inspect
 import os
 import threading
-import traceback
 import uuid
 from collections import defaultdict
 from enum import Enum
 from traceback import _parse_value_tb
-from typing import Dict
 
 import glfw
 import imgui
 import psutil
 
+from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.model.model_enums import RelaxedEnum
 from src.lsd.lsd_utils import singleton
 
@@ -23,24 +22,6 @@ class GroupType(Enum):
     STYLE = 3
     COLOR = 4
 
-class Root:
-    vis = None
-    type_defaults = {}
-
-    @staticmethod
-    def is_key_pressed(key=glfw.KEY_ESCAPE):
-        if imgui.is_any_item_focused() or imgui.is_any_item_active():
-            # If any item is focused or active, we don't want to capture key presses
-            return False
-
-        if key not in Root.vis.tracked_keys:
-            Root.vis.tracked_keys.append(key)
-            Root.vis.first_frame_keys.add(key)
-
-        if glfw.get_key(Root.vis.window, key) == glfw.PRESS:
-            if key in Root.vis.first_frame_keys:
-                return True
-        return False
 
 @singleton
 class LSDView:
@@ -57,8 +38,8 @@ class LSDView:
 
 
     def is_key_release(self, key=glfw.KEY_ESCAPE):
-        return (glfw.get_key(Root.vis.window, key) == glfw.RELEASE and
-                key in Root.vis.last_frame_keys)
+        return (glfw.get_key(Melty.vis.window, key) == glfw.RELEASE and
+                key in Melty.vis.last_frame_keys)
 
     def set_style_manager(self, style_manager):
         """
@@ -274,7 +255,6 @@ def text_wrapped(text, wrap_width=None):
     """
     Alternative using internal text functions if available.
     """
-    import imgui.internal as imgui_internal
 
     # Get the current window
     start_pos = imgui.get_cursor_screen_pos()
@@ -476,8 +456,6 @@ def pop_style_var(size=1):
             imgui.pop_style_var(1)
 
 
-import sys
-import traceback
 import re
 
 # ANSI color codes inspired by IntelliJ IDEA's default color scheme

@@ -7,7 +7,8 @@ from typing import Any
 
 import imgui
 
-from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, Root
+from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, LSDView
+from src.lsd.gl_gui.melty import Melty
 
 
 class DrawState:
@@ -132,7 +133,6 @@ def render_func(*args, **kwargs):
     param_defaults = {p: params[p].default for p in params if params[p].default is not inspect.Parameter.empty}
 
     wanted_params = list(params.keys())
-    max_depth = 10
 
     # ----- Handle default type argument to @render_func -----
     is_default_for = kwargs.get('is_default_for', None)
@@ -147,7 +147,7 @@ def render_func(*args, **kwargs):
                     setattr(new_meta, k, v)
                 for k, v in kwargs.items():
                     setattr(new_meta, k, v)
-                Root.type_defaults[a_type] = new_meta
+                Melty.type_defaults[a_type] = new_meta
     elif isinstance(is_default_for, type):
         kwargs.pop('is_default_for', None)
         from src.lsd.gl_gui.view.core_views.core_presets import Meta
@@ -157,12 +157,17 @@ def render_func(*args, **kwargs):
             setattr(new_meta, k, v)
         for k, v in kwargs.items():
             setattr(new_meta, k, v)
-        Root.type_defaults[is_default_for] = new_meta
+        Melty.type_defaults[is_default_for] = new_meta
 
     # ----- end default type argument handling -----
 
     @wraps(func)
     def wrapper(*args, **kwargs):
+        needed_actions = {}
+        is_root = len(Melty.unique_stack) == 0
+        if is_root:
+            Melty.action_stack = {}
+            Melty.unique_stack = []
 
         first_arg = args[0] if args else None
         input_value = kwargs.get("input_value", first_arg)
@@ -181,12 +186,10 @@ def render_func(*args, **kwargs):
                         setattr(meta, wanted_param, param_defaults[wanted_param])
 
         kwargs["meta"] = meta
-
         suffix = kwargs.get("suffix", attr_name)
         kwargs["suffix"] = suffix
         unique, depth, annotation_mode = ui_id(meta, suffix=suffix) if meta else (0, 0)
         from src.lsd.gl_gui.view.core_views.core_presets import Meta
-
         if 'annotation_mode' in kwargs or annotation_mode:
             # Class decoration mode, no args
             if 'for_type' in kwargs and not isinstance(first_arg, type):
@@ -239,23 +242,33 @@ def render_func(*args, **kwargs):
             setattr(meta, kwarg, kwargs[kwarg])
 
         expected_type = param_types[wanted_params.index("input_value")] if "input_value" in wanted_params else None
-        annotation_empty = expected_type is inspect.Parameter.empty
-        if not annotation_empty and expected_type is not Any:
-            if not isinstance(input_value, expected_type):
-                yellow = (1.0, 1.0, 0.0, 1.0)
-                if imgui.button(f"Fix Type##{unique}"):
-                    return True, expected_type()
-                imgui.same_line()
-                imgui.text_colored(f"Type mismatch in {func.__name__}\n"
-                                   f"Expected {expected_type.__name__}, "
-                                   f"got {type(input_value).__name__}", *yellow)
-                return False, None
+        annotation_empty = expected_type == inspect.Parameter.empty
+        if not annotation_empty:
+            if expected_type is not Any and isinstance(expected_type, type):
+                if not isinstance(input_value, expected_type):
+                    yellow = (1.0, 1.0, 0.0, 1.0)
+                    if imgui.button(f"Fix Type##{unique}"):
+                        return True, expected_type()
+                    imgui.same_line()
+                    imgui.text_colored(f"Type mismatch in {func.__name__}\n"
+                                       f"Expected {expected_type.__name__}, "
+                                       f"got {type(input_value).__name__}", *yellow)
+                    return False, None
 
         # Clean up kwargs to only what the function wants
         for wanted_param in wanted_params:
             expected_type = name_to_param_type.get(wanted_param, None)
             annotation_empty = expected_type is inspect.Parameter.empty
             found_param = None
+            if wanted_param in Melty.actions:
+                needed_actions[wanted_param] = Melty.actions[wanted_param]
+                triggered = Melty.triggered_actions.get(wanted_param, 0)
+                if unique == triggered:
+                    print(f"Action {wanted_param} triggered for {unique}")
+                    found_param = True
+                else:
+                    found_param = False
+
             if wanted_param not in kwargs:
                 if wanted_param == "meta":
                     found_param = meta
@@ -271,6 +284,11 @@ def render_func(*args, **kwargs):
                     found_param = param_defaults.get(wanted_param, None)
             elif wanted_param in vars(meta):
                 found_param = getattr(meta, wanted_param)
+
+            # Try global constants
+            if found_param is None and wanted_param in vars(Melty):
+                found_param = getattr(Melty, wanted_param)
+
             if found_param is not None:
                 kwargs[wanted_param] = found_param
 
@@ -278,12 +296,13 @@ def render_func(*args, **kwargs):
             return False, None
 
         return_value = None
-        from src.lsd.gl_gui.view.core_views.new_core_view import draw_header
-        is_header = func.__name__ == draw_header.__name__
-        if not is_header:
-            draw_header(**kwargs)
-
+        # from src.lsd.gl_gui.view.core_views.new_core_view import draw_header
+        # is_header = func.__name__ == draw_header.__name__
+        # if not is_header and kwargs.get("show_header", True):
+        #     draw_header(**kwargs)
+        imgui.begin_group()
         push_id(unique)
+        Melty.unique_stack.append(unique)
         try:
             clean_args = copy(kwargs)
             to_delete = []
@@ -293,13 +312,22 @@ def render_func(*args, **kwargs):
             for an_arg in to_delete:
                 clean_args.pop(an_arg)
 
-            if not kwargs.get("is_tree", True) or draw_state.expanded or kwargs.get("is_window", False) or is_header:
-                return_value = func(**clean_args)
+            from src.lsd.gl_gui.view.core_views.new_core_view import draw_with_func
+            return_value = draw_with_func(func=func, clean_args=clean_args, **kwargs)
 
         except Exception as e:
             print_colored_traceback()
         finally:
             pop_id()
+            imgui.end_group()
+
+            # Handle actions
+            for name, action in needed_actions.items():
+                if action():
+                    action_stack = Melty.action_stack.get(name, [])
+                    action_stack.append(unique)
+                    Melty.action_stack[name] = action_stack
+
             if return_value is None:
                 changed, new_value = False, None
             elif isinstance(return_value, tuple) and len(return_value) == 2:
@@ -307,6 +335,16 @@ def render_func(*args, **kwargs):
             else:
                 imgui.text("Unsupported return from render_func")
                 changed, new_value = False, None
+            Melty.unique_stack.pop()
+
+            if len(Melty.unique_stack) == 0:
+                triggered_actions = {}
+                for action in Melty.actions.keys():
+                    action_stack = Melty.action_stack.get(action, [])
+                    if len(action_stack) > 0:
+                        last = action_stack[-1]
+                        Melty.triggered_actions[action] = last
+                Melty.action_stack = {}
 
         return changed, new_value
 
