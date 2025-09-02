@@ -2,7 +2,6 @@
 from typing import Any
 
 from src.lsd.gl_gui.utils.custom_views import Root
-from src.lsd.gl_gui.view.core_views.core_presets import Meta
 
 annotation_mode = False
 
@@ -47,13 +46,13 @@ class FieldMeta(type):
 
             value_annotation = namespace.get("__annotations__", {}).get(key, None)
             # marker line
-            if isinstance(value, Meta):
+            if hasattr(value, 'is_meta'):
                 value.name = key
                 field_defaults[key] = value.default_value
                 field_meta[key] = value
                 new_namespace[key] = value.default_value
                 new_namespace[f"{key}_meta"] = value
-            elif isinstance(value_annotation, Meta):
+            elif hasattr(value_annotation, 'is_meta'):
                 meta = value_annotation
                 meta.name = key
                 field_defaults[key] = value
@@ -63,7 +62,7 @@ class FieldMeta(type):
             elif callable(value_annotation):
                 try:
                     meta = value_annotation(value)
-                    if isinstance(meta, Meta):
+                    if hasattr(meta, 'is_meta'):
                         meta.name = key
                         field_defaults[key] = value
                         field_meta[key] = meta
@@ -107,11 +106,12 @@ class FieldMeta(type):
             if hasattr(type(value), 'meta'):
                 child_meta = type(value).meta
         if child_meta is None:
-            view_function = Root.type_defaults.get(type(value), None)
+            last_default = Root.type_defaults.get(type(value), None)
+            from src.lsd.gl_gui.view.core_views.core_meta import Meta
             child_meta = Meta.get_new_defaults(value=value)
             child_meta.name = field_name
-            if view_function is not None:
-                child_meta.view_function = view_function
+            if last_default is not None:
+                child_meta = last_default
         """Get Meta object for a given field, or default."""
         return child_meta
 

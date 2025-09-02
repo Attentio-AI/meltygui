@@ -140,12 +140,22 @@ def render_func(*args, **kwargs):
         for a_type in is_default_for:
             if isinstance(a_type, type):
                 kwargs.pop('is_default_for', None)
-                retrieved_meta = render_func(*args, **kwargs, annotation_mode=True)
-                Root.type_defaults[a_type] = retrieved_meta
+                from src.lsd.gl_gui.view.core_views.core_presets import Meta
+                new_meta = Meta(param_defaults)
+                new_meta.view_function = render_func(*args, **kwargs, annotation_mode=True)
+                for k, v in param_defaults.items():
+                    setattr(new_meta, k, v)
+                for k, v in kwargs.items():
+                    setattr(new_meta, k, v)
+                Root.type_defaults[a_type] = new_meta
     elif isinstance(is_default_for, type):
         kwargs.pop('is_default_for', None)
-        retrieved_meta = render_func(*args, **kwargs, annotation_mode=True)
-        Root.type_defaults[is_default_for] = retrieved_meta
+        from src.lsd.gl_gui.view.core_views.core_presets import Meta
+        new_meta = Meta(param_defaults)
+        new_meta.view_function = render_func(*args, **kwargs, annotation_mode=True)
+        for k, v in kwargs.items():
+            setattr(new_meta, k, v)
+        Root.type_defaults[is_default_for] = new_meta
 
     # ----- end default type argument handling -----
 
@@ -192,10 +202,11 @@ def render_func(*args, **kwargs):
 
                 new_meta = Meta(param_defaults)
                 for k, v in param_defaults.items():
-                    if k in kwargs:
-                        setattr(new_meta, k, kwargs[k])
-                    else:
-                        setattr(new_meta, k, v)
+                    setattr(new_meta, k, v)
+
+                for k, v in kwargs.items():
+                    setattr(new_meta, k, v)
+
                 new_meta.view_function = wrapper
 
                 if for_type is not None:
@@ -209,8 +220,10 @@ def render_func(*args, **kwargs):
             # View function was used as annotation, ie. some_param: render_func = 0.0
             new_meta = Meta(param_defaults)
             for k, v in param_defaults.items():
-                if k in kwargs:
-                    setattr(new_meta, k, kwargs[k])
+                setattr(new_meta, k, v)
+
+            for k, v in kwargs.items():
+                setattr(new_meta, k, v)
             new_meta.view_function = wrapper
             return new_meta
 

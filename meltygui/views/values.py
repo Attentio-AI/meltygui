@@ -131,7 +131,7 @@ def draw_any(input_value, *args, meta=None, **kwargs):
     return meta.view_function(input_value, *args, **kwargs)
 
 @render_func(is_default_for=(float, str))
-def draw_float(input_value:float, min_value=-100.0, max_value=100.0, speed=0.01):
+def draw_float(input_value:float, min_value=-100.0, max_value=100.0, speed=0.01, is_tree=False):
     imgui.text("render float")
     changed, value = imgui.drag_float("##float", input_value,
                                       change_speed=speed,

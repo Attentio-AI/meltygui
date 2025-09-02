@@ -1386,6 +1386,9 @@ class DictConversion(metaclass=FieldMeta):
 
             if hasattr(value, 'name'):
                 # Measure the text width
+                if not isinstance(value.name, str):
+                    value.name = ""
+
                 name_width = imgui.calc_text_size(value.name).x
             else:
                 name_width = imgui.calc_text_size(key).x
