@@ -109,6 +109,7 @@ class FieldMeta(type):
         if child_meta is None:
             view_function = Root.type_defaults.get(type(value), None)
             child_meta = Meta.get_new_defaults(value=value)
+            child_meta.name = field_name
             if view_function is not None:
                 child_meta.view_function = view_function
         """Get Meta object for a given field, or default."""

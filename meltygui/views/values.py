@@ -1,6 +1,6 @@
 import imgui
 
-from src.lsd.gl_gui.utils.custom_views import print_colored_traceback
+from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, tree
 from src.lsd.gl_gui.view.core_views.core_render import render_func, tmp_undo_stack, redo_stack, push_id, pop_id, ui_id
 
 
@@ -18,23 +18,50 @@ def draw(vis):
     #
     draw_any("hello there", is_window=True)
 
+@render_func
+def draw_header(input_value=None, name="", unique=None, is_tree=True,
+                show_name=True, show_type=True, show_unique=True,
+                draw_state=None, is_window=False):
+
+    if is_tree:
+        draw_state.expanded = tree("##tree", draw_state.expanded)
+        imgui.same_line()
+
+    if show_name:
+        imgui.text_colored(f"{name}", *(0.8, 0.3, 0.5, 1.0))
+        imgui.same_line()
+
+    if show_type:
+        imgui.text_colored(f"({type(input_value).__name__})", *(0.8, 0.0, 0.5, 1.0))
+        imgui.same_line()
+
+    if show_unique:
+        imgui.text_colored(f"({str(unique)})", *(0.8, 0.0, 0.5, 1.0))
+
+
+    return False, None
+
 
 @render_func
-def draw_window(input_value, name="", unique=0, *args, **kwargs):
+def draw_window(input_value, is_window=True, is_tree=False, name="", unique=0, *args, **kwargs):
     unique = unique
     tmp_undo_stack(unique)
     title = name or input_value.__class__.__name__
     opened, _ = imgui.begin(f"{title}##window_{str(unique)}", True)
 
-    draw_object(input_value, *args, **kwargs)
+    draw_object(input_value,*args, **kwargs)
 
     imgui.end()
     redo_stack(unique)
 
 
 @render_func
-def draw_object(input_value, meta=None, name="", depth=0, unique=0, suffix="", indent_size=10, *args, **kwargs):
+def draw_object(input_value, draw_state=None, meta=None, name="",
+                depth=0, unique=0, suffix="", is_tree=True, indent_size=10, *args, **kwargs):
     max_depth = 10
+    # if is_tree and not draw_state.expanded:
+    #     return False, None
+
     is_collection = isinstance(input_value, (dict, list, tuple, set)) or (
             hasattr(input_value, "__dict__") and depth < max_depth)
     if is_collection:
@@ -44,12 +71,18 @@ def draw_object(input_value, meta=None, name="", depth=0, unique=0, suffix="", i
             changed = False
             for k, v in input_value.items():
                 # Derive meta for dict items
-                item_changed, new_value = meta.view_function(input_value=v, meta=meta, suffix=k, name=k)
+                suffix = f"{suffix}_{str(k)}"
+                obj_unique, _, _ = ui_id(meta, suffix=suffix)
+                item_changed, new_value = meta.view_function(input_value=v, meta=meta,
+                                                             suffix=obj_unique, name=k)
                 changed |= item_changed
         elif isinstance(input_value, (list, tuple, set)):
             changed = False
             for i, v in enumerate(input_value):
-                item_changed, new_value = meta.view_function(input_value=v, meta=meta, suffix=i, name=str(i))
+                suffix = f"{suffix}_{str(i)}"
+                obj_unique, _, _ = ui_id(meta, suffix=suffix)
+                item_changed, new_value = meta.view_function(input_value=v, meta=meta,
+                                                             suffix=obj_unique, name=str(i))
                 changed |= item_changed
         elif hasattr(input_value, "__dict__") and depth < max_depth:  # class or module instance
             for k, v in vars(input_value).items():
@@ -64,8 +97,7 @@ def draw_object(input_value, meta=None, name="", depth=0, unique=0, suffix="", i
                     if child_meta is not None:
                         kwargs['meta'] = child_meta
 
-                    suffix += f"_{k}"
-
+                    suffix = f"{suffix}_{str(k)}"
                     obj_unique, _, _ = ui_id(child_meta, suffix=suffix)
                     item_changed, new_value = child_meta.view_function(input_value=v, meta=child_meta,
                                                                        suffix=obj_unique, name=k)

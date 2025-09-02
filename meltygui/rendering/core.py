@@ -1,6 +1,7 @@
 import inspect
 import sys
 import zlib
+from copy import copy
 from functools import wraps
 from typing import Any
 
@@ -163,10 +164,11 @@ def render_func(*args, **kwargs):
                 meta = getattr(type(input_value), "meta")
             else:
                 meta = Meta.get_new_defaults(default_value=input_value)
+        kwargs["meta"] = meta
 
-        suffix = kwargs.get("suffix", None)
+        suffix = kwargs.get("suffix", attr_name)
+        kwargs["suffix"] = suffix
         unique, depth, annotation_mode = ui_id(meta, suffix=suffix) if meta else (0, 0)
-
         from src.lsd.gl_gui.view.core_views.core_presets import Meta
 
         if 'annotation_mode' in kwargs or annotation_mode:
@@ -206,11 +208,11 @@ def render_func(*args, **kwargs):
             new_meta.view_function = wrapper
             return new_meta
 
-        draw_state = kwargs.get("draw_state", second_arg)
-        if draw_state is None:
-            draw_state = get_draw_state(unique)
+        draw_state = kwargs.get("draw_state", get_draw_state(unique))
+        kwargs["draw_state"] = draw_state
         meta.draw_state = draw_state
         meta.input_value = input_value
+        kwargs["unique"] = unique
 
         for kwarg in kwargs:
             setattr(meta, kwarg, kwargs[kwarg])
@@ -242,43 +244,40 @@ def render_func(*args, **kwargs):
                     found_param = attr_name
                 elif wanted_param == "unique":
                     found_param = unique
-                elif wanted_param in vars(meta):
-                    found_param = getattr(meta, wanted_param)
+
             if expected_type is not None and expected_type is not Any and not annotation_empty:
                 if found_param is not None and not isinstance(found_param, expected_type):
-                    found_param = None
+                    found_param = param_defaults.get(wanted_param, None)
+            if param_defaults.get(wanted_param, None):
+                found_param = param_defaults[wanted_param]
+
+            elif wanted_param in vars(meta):
+                found_param = getattr(meta, wanted_param)
             if found_param is not None:
                 kwargs[wanted_param] = found_param
-
-        to_delete = []
-        for to_provide in kwargs.keys():
-            if to_provide not in wanted_params:
-                to_delete.append(to_provide)
-        for an_arg in to_delete:
-            kwargs.pop(an_arg)
 
         if not meta.visible_in_ui:
             return False, None
 
-        is_window = meta.is_window
-
-        if is_window:
-            tmp_undo_stack(unique)
-            title = attr_name or input_value.__class__.__name__
-            opened, _ = imgui.begin(f"{title}##window_{str(unique)}", True)
-
         return_value = None
+        from src.lsd.gl_gui.view.core_views.new_core_view import draw_header
+        is_header = func.__name__ == draw_header.__name__
+        if not is_header:
+            draw_header(**kwargs)
+
         push_id(unique)
         try:
+            clean_args = copy(kwargs)
+            to_delete = []
+            for to_provide in clean_args.keys():
+                if to_provide not in wanted_params:
+                    to_delete.append(to_provide)
+            for an_arg in to_delete:
+                clean_args.pop(an_arg)
 
-            imgui.text_colored(f"{attr_name}", *(0.8, 0.3, 0.5, 1.0))
-            imgui.same_line()
-            imgui.text_colored(f"({type(input_value).__name__})", *(0.8, 0.0, 0.5, 1.0))
-            imgui.same_line()
-            imgui.text_colored(f"({str(unique)})", *(0.8, 0.0, 0.5, 1.0))
+            if not kwargs.get("is_tree", True) or draw_state.expanded or kwargs.get("is_window", False) or is_header:
+                return_value = func(**clean_args)
 
-            # Signature not known, so be forgiving
-            return_value = func(**kwargs)
         except Exception as e:
             print_colored_traceback()
         finally:
@@ -290,10 +289,6 @@ def render_func(*args, **kwargs):
             else:
                 imgui.text("Unsupported return from render_func")
                 changed, new_value = False, None
-
-        if is_window:
-            imgui.end()
-            redo_stack(unique)
 
         return changed, new_value
 
