@@ -21,7 +21,18 @@ class DrawState:
         self.name = ""
         self.height = None
         self.expanded_height = None
+        self.width = None
+        self.top = None
+        self.left = None
         # add more per-widget stuff as needed
+
+    def is_hovered(self):
+        if self.left is None or self.top is None or self.width is None or self.height is None:
+            return False
+        rect = (self.left, self.top, self.width, self.height)
+        if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
+            return True
+        return False
 
 _draw_state_registry = {}
 
@@ -124,7 +135,7 @@ def render_func(*args, **kwargs):
             return class_wrapper
     # ----- end default type argument handling -----
     func = first_arg if callable(first_arg) else None
-    max_depth = 20
+    max_depth = 40
     sig = inspect.signature(func)
     params = sig.parameters
     param_types = [params[p].annotation for p in params]
@@ -330,19 +341,22 @@ def render_func(*args, **kwargs):
         except Exception as e:
             print_colored_traceback()
         finally:
+            pop_id()
+            imgui.end_group()
 
+            is_hovered = draw_state.is_hovered()
 
             # Handle actions
             for name, action in needed_actions.items():
-                if action.re_arm_condition(unique):
-                    Melty.cleared_actions.remove(name) if name in Melty.cleared_actions else None
-                    Melty.triggered_actions.pop(name, None)
-
                 if unique not in Melty.cleared_actions:
-                    if action.trigger_condition(unique):
+                    if action.trigger_condition(is_hovered, unique):
                         action_stack = Melty.action_stack.get(name, [])
                         action_stack.append(unique)
                         Melty.action_stack[name] = action_stack
+
+                if action.re_arm_condition(is_hovered, unique):
+                    Melty.cleared_actions.remove(name) if name in Melty.cleared_actions else None
+                    Melty.triggered_actions.pop(name, None)
 
             if return_value is None:
                 changed, new_value = False, None
@@ -359,7 +373,7 @@ def render_func(*args, **kwargs):
                     if len(action_stack) > 0:
                         last = action_stack[-1]
                         trigger_action_for = None
-                        if Melty.actions[action].clear_condition(last):
+                        if Melty.actions[action].clear_condition(is_hovered, last):
                             Melty.cleared_actions.add(action)
                             Melty.triggered_actions.pop(action, None)
                         if action not in Melty.cleared_actions:
@@ -372,8 +386,6 @@ def render_func(*args, **kwargs):
 
                 Melty.last_triggered_actions = copy(Melty.triggered_actions)
 
-            pop_id()
-            imgui.end_group()
 
         return changed, new_value
 

@@ -81,6 +81,11 @@ def draw_with_func(func=None, indent_size=10, max_depth=0, depth=0,
             selected_views[unique] = kwargs['input_value']
         elif action == ActionType.HOVERED:
             bg_hovered = True
+        elif action == ActionType.DRAG:
+            kwargs['on_drag'] = False
+            print(" Dragging ", unique)
+            draw_window(**kwargs)
+
 
         if unique in selected_views:
             bg_selected = True
@@ -110,6 +115,9 @@ def draw_with_func(func=None, indent_size=10, max_depth=0, depth=0,
                     width=background_width, height=background_height,
                     tint=bg_tint, hovered=bg_hovered, selected=bg_selected)
             draw_state.height = background_height
+            draw_state.width = background_width
+            draw_state.top = start_y_pos
+            draw_state.left = start_x_pos
             if draw_state.expanded:
                 draw_state.expanded_height = background_height
 
@@ -223,6 +231,8 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
         action = ActionType.CLICK
     elif on_hover:
         action = ActionType.HOVERED
+    elif on_drag:
+        action = ActionType.DRAG
 
     region_available = imgui.get_content_region_available()
     if is_tree:
@@ -265,7 +275,7 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
     return shift_click, action
 
 @render_func
-def draw_object(input_value, draw_state=None, meta=None, name="", max_depth=0, style_manager=None,
+def draw_object(input_value=None, draw_state=None, meta=None, name="", max_depth=0, style_manager=None,
                 depth=0, unique=0, suffix="", is_tree=True, indent_size=10, *args, **kwargs):
     # if is_tree and not draw_state.expanded:
     #     return False, None
