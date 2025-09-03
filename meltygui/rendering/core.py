@@ -305,6 +305,7 @@ def render_func(*args, **kwargs):
         #     draw_header(**kwargs)
         imgui.begin_group()
         push_id(unique)
+
         Melty.unique_stack.append(unique)
         try:
             clean_args = copy(kwargs)
@@ -353,8 +354,6 @@ def render_func(*args, **kwargs):
                     if len(action_stack) > 0:
                         last = action_stack[-1]
                         trigger_action_for = None
-
-
                         if Melty.actions[action].clear_condition(last):
                             Melty.cleared_actions.add(action)
                             Melty.triggered_actions.pop(action, None)

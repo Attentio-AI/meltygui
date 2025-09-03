@@ -23,15 +23,20 @@ def draw(vis):
 
 
 @render_func
-def draw_window(input_value, window_stack, is_window=True, is_tree=False, name="", unique=0, *args, **kwargs):
+def draw_window(input_value, window_stack, style_manager, is_window=True,
+                max_depth=0, is_tree=False, name="", unique=0, *args, **kwargs):
     unique = unique
     tmp_undo_stack(unique)
     title = name or input_value.__class__.__name__
+
+    if hasattr(input_value, 'tint'):
+        style_manager.set_imgui_tint(*input_value.tint)
+
     opened, _ = imgui.begin(f"{title}##window_{str(unique)}", True)
     window_stack.append(unique)
 
     draw_list = imgui.get_window_draw_list()
-    draw_list.channels_split(20)
+    draw_list.channels_split(max_depth)
 
     draw_object(input_value, *args, **kwargs)
     window_stack.pop()
@@ -59,17 +64,29 @@ def draw_with_func(func=None, indent_size=10, max_depth=0, depth=0,
 
     if not is_header and kwargs.get("show_header", True):
         draw_header(show_bg=False, **kwargs)
+        imgui.same_line(spacing=0)
+        new_line_x = imgui.get_cursor_screen_pos()[0]
+        space_available = imgui.get_content_region_available()[0]
+        current_x_pos = imgui.get_cursor_screen_pos()[0]
+        space_savings = current_x_pos - new_line_x
+        cutoff = 100
+        if space_available < cutoff:
+            imgui.new_line()
+        else:
+            imgui.same_line()
 
     return_value = None
     if not kwargs.get("is_tree", True) or draw_state.expanded or kwargs.get("is_window", False) or is_header:
         return_value = func(**clean_args)
 
     end_y_pos = imgui.get_cursor_screen_pos()[1]
+    background_height = end_y_pos - start_y_pos - 2
+    padding = imgui.get_style().frame_padding.y
+    background_height = max(imgui.get_text_line_height() + padding, background_height)
 
     if inside_window:
         if kwargs.get("show_bg", True):
             draw_list.channels_set_current(max(0, min(max_depth - 2, depth - 2)))
-            background_height = end_y_pos - start_y_pos - 2
             background_width = width
             draw_bg(left=start_x_pos, top=start_y_pos, width=background_width, height=background_height)
 
@@ -111,7 +128,8 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0, show_header=False, show
     # rounding
     rounding = min(current_indent_px(), rounding)
 
-    depth_factor = global_style.get_global_constant("depth_factor", default=1.0, folder="bg_styles")
+
+    depth_factor = global_style.get_global_constant("depth_factor", default=1.0, folder="bg_styles") * 0.7
     depth_offset = global_style.get_global_constant("depth_offset", default=0.0, folder="bg_styles")
     dynamic_value = max(0, (float(depth + depth_offset) * depth_factor))
     bg_style = {
@@ -123,7 +141,7 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0, show_header=False, show
     bg_style = global_style.get_global_constant("bg_style", default=bg_style, folder="bg_styles")
     outline_saturation = global_style.get_global_constant("outline_saturation", default=0.5, folder="bg_styles")
 
-    outline_offset = global_style.get_global_constant("outline_offset", default=0.0, folder="bg_styles")
+    outline_offset = global_style.get_global_constant("outline_offset", default=0.0, folder="bg_styles") + 0.1
     outline_factor = global_style.get_global_constant("outline_factor", default=1.0, folder="bg_styles")
 
     outline_color = (style_manager.
@@ -139,10 +157,27 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0, show_header=False, show
 
 @render_func
 def draw_header(input_value=None, name="", unique=None, is_tree=True,
-                show_name=True, show_type=True, show_unique=True,
+                show_name=True, show_type=False, show_unique=False,
                 draw_state=None, is_window=False, on_click=False,
                 on_right_click=False, show_bg=False,
-                on_drag=False, on_drag_released=False):
+                on_drag=False, on_drag_released=False, style_manager=None,
+                global_style=None, depth=0):
+
+    value_factor = global_style.get_global_constant("depth_factor", default=1.0, folder="bg_styles")
+    value_offset = global_style.get_global_constant("depth_offset", default=0.0, folder="bg_styles")
+
+    depth_factor = global_style.get_global_constant("depth_factor", default=1.0, folder="bg_styles")
+    depth_offset = global_style.get_global_constant("depth_offset", default=0.0, folder="bg_styles") + 0.2
+    dynamic_value = max(0, (float(depth + depth_offset) * depth_factor))
+    bg_style = global_style.get_global_constant("bg_style", default=None, folder="bg_styles")
+    saturation = -0.5
+    # Make header slightly brighter
+
+    saturation = bg_style['saturation'] + saturation
+    name_color = (style_manager.
+                  make_color_style_value(input=bg_style, saturation=saturation,
+                                         value=max(0, dynamic_value * value_factor + value_offset)))
+
 
     # if on_click:
     #     print("left click " + name)
@@ -156,17 +191,19 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
     #     print(f"stopped dragging {name}")
     if is_tree:
         draw_state.expanded = tree("##tree", draw_state.expanded)
-        imgui.same_line()
+    else:
+        imgui.bullet()
 
     if show_name:
-        imgui.text_colored(f"{name}", *(0.8, 0.3, 0.5, 1.0))
         imgui.same_line()
+        imgui.text_colored(f"{name}", *name_color)
 
     if show_type:
-        imgui.text_colored(f"({type(input_value).__name__})", *(0.8, 0.0, 0.5, 1.0))
         imgui.same_line()
+        imgui.text_colored(f"({type(input_value).__name__})", *(0.8, 0.0, 0.5, 1.0))
 
     if show_unique:
+        imgui.same_line()
         imgui.text_colored(f"({str(unique)})", *(0.8, 0.0, 0.5, 1.0))
 
     return False, None
@@ -247,7 +284,6 @@ def draw_any(input_value, *args, meta=None, **kwargs):
 
 @render_func(is_default_for=(str))
 def draw_str(input_value: str):
-    imgui.text("render str")
     changed, value = imgui.input_text("##str", input_value)
     if changed:
         return True, value
@@ -281,7 +317,6 @@ def draw_tuple(input_value: tuple, is_tree=False):
 
 @render_func(is_default_for=(float))
 def draw_float(input_value:float, min_value=-100.0, max_value=100.0, speed=0.01):
-    imgui.text("render float")
     changed, value = imgui.drag_float("##float", input_value,
                                       change_speed=speed,
                                       min_value=min_value,
@@ -294,7 +329,6 @@ def draw_float(input_value:float, min_value=-100.0, max_value=100.0, speed=0.01)
 
 @render_func(is_default_for=(int))
 def draw_int(input_value: int, min_value=-100.0, max_value=100.0, speed=0.05):
-    imgui.text("render int")
     changed, value = imgui.drag_int("##int", input_value,
                                       change_speed=speed,
                                       min_value=min_value,
