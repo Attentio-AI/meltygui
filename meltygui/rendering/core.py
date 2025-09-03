@@ -50,7 +50,7 @@ def combine(h: int, s: str) -> int:
     """Order-sensitive, stable combine (FNV-style)."""
     return ((h * 16777619) ^ strhash(s)) & 0xffffffff
 
-def ui_id(meta=None, this_name=None, max_depth=20, root_function="render", suffix=None) -> int:
+def ui_id(meta=None, this_name=None, root_function="render", suffix=None) -> int:
     """
     Generate a stable UI ID from the call stack + optional metadata.
 
@@ -62,7 +62,7 @@ def ui_id(meta=None, this_name=None, max_depth=20, root_function="render", suffi
     depth = 0
     func_name = ""
     annotation_mode = True
-    while frame and depth < max_depth and func_name != root_function:
+    while frame and depth < Melty.max_depth and func_name != root_function:
         code = frame.f_code
         func_name = code.co_name
         cls_name = ""
@@ -117,7 +117,101 @@ def redo_stack(undo_point_id):
             imgui.push_id(str(uid))
         id_stack = saved_stack
 
+def renderer_wrapper(*o_args, **o_kwargs):
+    first_arg = o_args[0] if o_args else None
+    if not callable(first_arg):
+        def class_wrapper(the_func):
+            return renderer_wrapper(the_func, *o_args, **o_kwargs)
+        return class_wrapper
+
+    r_func = o_args[0] if o_args else None
+
+    @wraps(r_func)
+    def wrapper(*args, **kwargs):
+        first_arg = args[0] if args else None
+        if not callable(first_arg):
+            def class_wrapper(the_func):
+                return wrapper(the_func, *args, **kwargs)
+            return class_wrapper
+
+        if 'inner_func' in kwargs:
+            inner_func = kwargs.pop('inner_func', None)
+        else:
+            inner_func = r_func
+
+        func = first_arg if callable(first_arg) else None
+        # use the specified wrapper if r_func
+        wrap_sig = inspect.signature(inner_func)
+        sig = inspect.signature(func)
+        params = sig.parameters
+        wrap_params = wrap_sig.parameters
+
+        param_types = [params[p].annotation for p in params]
+        wrap_param_types = [wrap_params[p].annotation for p in wrap_params]
+        name_to_param_type = {}
+        for idx, param_name in enumerate(params):
+            name_to_param_type[param_name] = param_types[idx]
+
+        wrap_name_to_param_type = {}
+        for idx, param_name in enumerate(wrap_params):
+            wrap_name_to_param_type[param_name] = wrap_param_types[idx]
+
+        param_defaults = {p: params[p].default for p in params if params[p].default is not inspect.Parameter.empty}
+        wrap_defaults = {p: wrap_params[p].default for p in wrap_params if wrap_params[p].default is not inspect.Parameter.empty}
+
+        params = params | wrap_params
+        param_types = param_types + wrap_param_types
+        name_to_param_type = name_to_param_type | wrap_name_to_param_type
+        param_defaults = param_defaults | wrap_defaults
+
+        wanted_params = list(params.keys())
+
+        is_default_for = kwargs.get('is_default_for', None)
+        if isinstance(is_default_for, (tuple, list)):
+            for a_type in is_default_for:
+                if isinstance(a_type, type):
+                    kwargs.pop('is_default_for', None)
+                    from src.lsd.gl_gui.view.core_views.core_presets import Meta
+                    new_meta = Meta(param_defaults)
+                    new_meta.view_function = wrapper(*args, **kwargs, annotation_mode=True)
+                    for k, v in param_defaults.items():
+                        setattr(new_meta, k, v)
+                    for k, v in kwargs.items():
+                        setattr(new_meta, k, v)
+                    Melty.type_defaults[a_type] = new_meta
+        elif isinstance(is_default_for, type):
+            kwargs.pop('is_default_for', None)
+            from src.lsd.gl_gui.view.core_views.core_presets import Meta
+            new_meta = Meta(param_defaults)
+            new_meta.view_function = wrapper(*args, **kwargs, annotation_mode=True)
+            for k, v in param_defaults.items():
+                setattr(new_meta, k, v)
+            for k, v in kwargs.items():
+                setattr(new_meta, k, v)
+            Melty.type_defaults[is_default_for] = new_meta
+        try:
+
+
+            return r_func(func, param_types=param_types, wanted_params=wanted_params,
+                          param_defaults=param_defaults, name_to_param_type=name_to_param_type,
+                          **o_kwargs)
+        except Exception as e:
+            print_colored_traceback()
+            return False, None
+    #
+    # do_wrap = o_kwargs.pop('wraps', None)
+    # if callable(do_wrap):
+    #     wrapper = do_wrap(wrapper, **o_kwargs)
+    return wrapper
+
+@renderer_wrapper
 def render_func(*args, **kwargs):
+    func = args[0] if args else None
+    param_types = kwargs.get("param_types", None)
+    wanted_params = kwargs.get("wanted_params", None)
+    param_defaults = kwargs.get("param_defaults", None)
+    name_to_param_type = kwargs.get("name_to_param_type", None)
+
     """
     Decorator for render functions.
     - Computes stable UI ID (unique) from callstack+meta.
@@ -125,63 +219,16 @@ def render_func(*args, **kwargs):
     - Injects meta/viewstate only if the function signature wants them.
     - Pushes/pops ImGui ID scope automatically.
     """
-
-    # Handle default type arguments to @render_func
-    first_arg = args[0] if args else None
-    if 'is_default_for' in kwargs:
-        if not callable(first_arg):
-            def class_wrapper(the_func):
-                return render_func(the_func, *args, **kwargs)
-            return class_wrapper
-    # ----- end default type argument handling -----
-    func = first_arg if callable(first_arg) else None
-    max_depth = 40
-    sig = inspect.signature(func)
-    params = sig.parameters
-    param_types = [params[p].annotation for p in params]
-    name_to_param_type = {}
-    for idx, param_name in enumerate(params):
-        name_to_param_type[param_name] = param_types[idx]
-
-    param_defaults = {p: params[p].default for p in params if params[p].default is not inspect.Parameter.empty}
-
-    wanted_params = list(params.keys())
-
-    # ----- Handle default type argument to @render_func -----
-    is_default_for = kwargs.get('is_default_for', None)
-    if isinstance(is_default_for, (tuple, list)):
-        for a_type in is_default_for:
-            if isinstance(a_type, type):
-                kwargs.pop('is_default_for', None)
-                from src.lsd.gl_gui.view.core_views.core_presets import Meta
-                new_meta = Meta(param_defaults)
-                new_meta.view_function = render_func(*args, **kwargs, annotation_mode=True)
-                for k, v in param_defaults.items():
-                    setattr(new_meta, k, v)
-                for k, v in kwargs.items():
-                    setattr(new_meta, k, v)
-                Melty.type_defaults[a_type] = new_meta
-    elif isinstance(is_default_for, type):
-        kwargs.pop('is_default_for', None)
-        from src.lsd.gl_gui.view.core_views.core_presets import Meta
-        new_meta = Meta(param_defaults)
-        new_meta.view_function = render_func(*args, **kwargs, annotation_mode=True)
-        for k, v in param_defaults.items():
-            setattr(new_meta, k, v)
-        for k, v in kwargs.items():
-            setattr(new_meta, k, v)
-        Melty.type_defaults[is_default_for] = new_meta
-
-    # ----- end default type argument handling -----
-
     @wraps(func)
     def wrapper(*args, **kwargs):
+        if kwargs.get("bypass", False):
+            return func(*args, **kwargs)
+
         needed_actions = {}
         is_root = len(Melty.unique_stack) == 0
         if is_root:
             Melty.action_stack = {}
             Melty.unique_stack = []
-
 
         first_arg = args[0] if args else None
         input_value = kwargs.get("input_value", first_arg)
@@ -202,7 +249,8 @@ def render_func(*args, **kwargs):
         kwargs["meta"] = meta
         suffix = kwargs.get("suffix", attr_name)
         kwargs["suffix"] = suffix
-        unique, depth, annotation_mode = ui_id(meta, max_depth=max_depth, suffix=suffix) if meta else (0, 0)
+        unique, depth, annotation_mode = ui_id(meta
+                                               , suffix=suffix) if meta else (0, 0)
         from src.lsd.gl_gui.view.core_views.core_presets import Meta
         if 'annotation_mode' in kwargs or annotation_mode:
             # Class decoration mode, no args
@@ -252,7 +300,6 @@ def render_func(*args, **kwargs):
         meta.input_value = input_value
         kwargs["unique"] = unique
         kwargs["depth"] = depth
-        kwargs["max_depth"] = max_depth
         for kwarg in kwargs:
             setattr(meta, kwarg, kwargs[kwarg])
 
@@ -275,12 +322,19 @@ def render_func(*args, **kwargs):
             expected_type = name_to_param_type.get(wanted_param, None)
             annotation_empty = expected_type is inspect.Parameter.empty
             found_param = None
-            if wanted_param in Melty.actions:
-                needed_actions[wanted_param] = Melty.actions[wanted_param]
+
+            if "on_action" in wanted_params:
+                # All actions needed
+                for name, action in Melty.actions.items():
+                    needed_actions[name] = action
+            else:
+                # Only the actions that are passed to the view function
+                if wanted_param in Melty.actions:
+                    needed_actions[wanted_param] = Melty.actions[wanted_param]
 
             if wanted_param in Melty.triggered_actions:
-                triggered = Melty.triggered_actions.get(wanted_param, 0)
-                if unique == triggered:
+                action_user = Melty.triggered_actions.get(wanted_param, 0)
+                if unique == action_user:
                     found_param = True
                 else:
                     found_param = False
@@ -294,6 +348,11 @@ def render_func(*args, **kwargs):
                     found_param = attr_name
                 elif wanted_param == "unique":
                     found_param = unique
+                elif wanted_param == "on_action":
+                    for name, action_user in Melty.triggered_actions.items():
+                        if action_user == unique:
+                            found_param = name
+                            break
 
             if expected_type is not None and expected_type is not Any and not annotation_empty:
                 if found_param is not None and not isinstance(found_param, expected_type):
@@ -329,14 +388,13 @@ def render_func(*args, **kwargs):
             for an_arg in to_delete:
                 clean_args.pop(an_arg)
 
-            from src.lsd.gl_gui.view.core_views.new_core_view import draw_with_func
-
             for km, vm in vars(Melty).items():
                 if not km.startswith("_"):
                     if km not in kwargs:
                         kwargs[km] = vm
             kwargs['depth'] = depth
-            return_value = draw_with_func(func=func, clean_args=clean_args, **kwargs)
+            func(**clean_args)
+            # return_value = draw_with_func(func=func, clean_args=clean_args, **kwargs)
 
         except Exception as e:
             print_colored_traceback()

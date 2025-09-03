@@ -28,6 +28,7 @@ class ActionType(Enum):
     NONE = 'none'
 
 class Melty:
+    max_depth = 40
     actions = {
         'on_hover': Action(trigger_condition=lambda is_hovered, unique: is_hovered,
                            clear_condition=lambda is_hovered, unique: not is_hovered,
@@ -35,7 +36,7 @@ class Melty:
         'on_click': Action(trigger_condition= lambda is_hovered, unique: is_hovered and imgui.is_mouse_down(0) and not Melty.shift_key(),
                             clear_condition= lambda is_hovered, unique: 'on_click' in Melty.triggered_actions,
                            re_arm_condition= lambda is_hovered, unique: not imgui.is_mouse_down(0)),
-        'shift_click': Action(trigger_condition=lambda is_hovered, unique: is_hovered and imgui.is_mouse_down(0) and
+        'on_shift_click': Action(trigger_condition=lambda is_hovered, unique: is_hovered and imgui.is_mouse_down(0) and
                                                                Melty.shift_key(),
                            clear_condition=lambda is_hovered, unique: 'shift_click' in Melty.triggered_actions,
                            re_arm_condition=lambda is_hovered, unique: not imgui.is_mouse_down(0)),
