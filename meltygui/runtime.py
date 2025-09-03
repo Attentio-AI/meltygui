@@ -1,3 +1,5 @@
+from enum import Enum
+
 import glfw
 import imgui
 
@@ -18,13 +20,24 @@ def drag_released(unique):
                      unique == Melty.triggered_actions.get('on_drag', None))
     return drag_released
 
+class ActionType(Enum):
+    CLICK = 'click'
+    SHIFT_CLICK = 'shift_click'
+    HOVERED = 'hovered'
+    NONE = 'none'
+
 class Melty:
-
-
     actions = {
-        'on_click': Action(trigger_condition= lambda unique: imgui.is_item_hovered() and imgui.is_mouse_down(0),
+        'on_hover': Action(trigger_condition=lambda unique: imgui.is_item_hovered(),
+                           clear_condition=lambda unique: not imgui.is_any_item_hovered(),
+                           re_arm_condition=lambda unique: not imgui.is_any_item_hovered()),
+        'on_click': Action(trigger_condition= lambda unique: imgui.is_item_hovered() and imgui.is_mouse_down(0) and not Melty.shift_key(),
                             clear_condition= lambda unique: 'on_click' in Melty.triggered_actions,
                            re_arm_condition= lambda unique: not imgui.is_mouse_down(0)),
+        'shift_click': Action(trigger_condition=lambda unique: imgui.is_item_hovered() and imgui.is_mouse_down(0) and
+                                                               Melty.shift_key(),
+                           clear_condition=lambda unique: 'shift_click' in Melty.triggered_actions,
+                           re_arm_condition=lambda unique: not imgui.is_mouse_down(0)),
         'on_right_click': Action(trigger_condition=lambda unique: imgui.is_item_hovered() and imgui.is_mouse_down(1),
                            clear_condition=lambda unique: unique == Melty.last_triggered_actions.get('on_right_click',
                                                                                                      None),
@@ -48,8 +61,7 @@ class Melty:
                                    re_arm_condition=lambda unique: not imgui.is_mouse_down(
                                        0) and unique == Melty.last_triggered_actions.get('on_drag_released', None)),
 
-        'on_left_click': lambda unique : imgui.is_item_hovered() and imgui.is_mouse_clicked(0),
-        'on_hover': lambda unique: imgui.is_item_hovered()
+
     }
 
     action_stack = {}
@@ -62,6 +74,13 @@ class Melty:
     type_defaults = {}
     unique_stack = []
     window_stack = []
+
+    selected_views = {}
+
+    @staticmethod
+    def shift_key():
+        return (glfw.get_key(Melty.vis.window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS or
+                glfw.get_key(Melty.vis.window, glfw.KEY_RIGHT_SHIFT) == glfw.PRESS)
 
     @staticmethod
     def init(**kwargs):

@@ -319,7 +319,11 @@ def render_func(*args, **kwargs):
                 clean_args.pop(an_arg)
 
             from src.lsd.gl_gui.view.core_views.new_core_view import draw_with_func
-            kwargs['window_stack'] = kwargs.get("window_stack", getattr(Melty, 'window_stack', []))
+
+            for km, vm in vars(Melty).items():
+                if not km.startswith("_"):
+                    if km not in kwargs:
+                        kwargs[km] = vm
             kwargs['depth'] = depth
             return_value = draw_with_func(func=func, clean_args=clean_args, **kwargs)
 

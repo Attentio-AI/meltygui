@@ -353,7 +353,8 @@ def button_red(text, width=0, height=0):
 def tree(text, open=True, width=0, height=0):
     ## Returns 'true' if the node is drawn
     if open:
-        flags = imgui.TREE_NODE_DEFAULT_OPEN | imgui.TREE_NODE_COLLAPSING_HEADER | imgui.TREE_NODE_ALLOW_ITEM_OVERLAP
+        flags = (imgui.TREE_NODE_DEFAULT_OPEN |
+                 imgui.TREE_NODE_COLLAPSING_HEADER | imgui.TREE_NODE_ALLOW_ITEM_OVERLAP)
     else:
         flags = imgui.TREE_NODE_COLLAPSING_HEADER | imgui.TREE_NODE_ALLOW_ITEM_OVERLAP
 

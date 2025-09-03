@@ -1,7 +1,7 @@
 import imgui
 
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, tree
-from src.lsd.gl_gui.melty import Melty
+from src.lsd.gl_gui.melty import Melty, ActionType
 from src.lsd.gl_gui.view.core_views.core_render import render_func, tmp_undo_stack, redo_stack, push_id, pop_id, ui_id
 
 
@@ -29,6 +29,7 @@ def draw_window(input_value, window_stack, style_manager, is_window=True,
     tmp_undo_stack(unique)
     title = name or input_value.__class__.__name__
 
+    previous_tint = style_manager.get_tint()
     if hasattr(input_value, 'tint'):
         style_manager.set_imgui_tint(*input_value.tint)
 
@@ -43,11 +44,16 @@ def draw_window(input_value, window_stack, style_manager, is_window=True,
 
     draw_list.channels_merge()
     imgui.end()
+
+    if hasattr(input_value, 'tint'):
+        style_manager.set_imgui_tint(*previous_tint)
+
     redo_stack(unique)
 
 
 def draw_with_func(func=None, indent_size=10, max_depth=0, depth=0,
-                   window_stack=None, clean_args=None, **kwargs):
+                   window_stack=None, unique=0, style_manager=None,
+                   selected_views=None, clean_args=None, **kwargs):
     # draw_list.channels_set_current(1)
 
     draw_list = imgui.get_window_draw_list()
@@ -62,16 +68,27 @@ def draw_with_func(func=None, indent_size=10, max_depth=0, depth=0,
     start_y_pos = imgui.get_cursor_screen_pos()[1]
     width = imgui.get_content_region_available()[0]
     cutoff = 100
-    header_width = 0
 
+    bg_tint = None
+    bg_selected = False
+    bg_hovered = False
     if not is_header and kwargs.get("show_header", True):
-        draw_header(show_bg=False, **kwargs)
+        changed, action = draw_header(show_bg=False, **kwargs)
+        if action == ActionType.SHIFT_CLICK:
+            selected_views[unique] = kwargs['input_value']
+        elif action == ActionType.CLICK:
+            selected_views.clear()
+            selected_views[unique] = kwargs['input_value']
+        elif action == ActionType.HOVERED:
+            bg_hovered = True
+
+        if unique in selected_views:
+            bg_selected = True
         rect_size = imgui.get_item_rect_size()
         header_width = rect_size[0]
-        print(f"Header width: {header_width}")
 
         space_available = imgui.get_content_region_available()[0] - header_width
-        if draw_state.expanded_height is None or draw_state.expanded_height < 200:
+        if draw_state.expanded_height is None or draw_state.expanded_height < 70:
             if space_available > cutoff:
                 imgui.same_line()
 
@@ -89,7 +106,9 @@ def draw_with_func(func=None, indent_size=10, max_depth=0, depth=0,
         if kwargs.get("show_bg", True):
             draw_list.channels_set_current(max(0, min(max_depth - 2, depth - 2)))
             background_width = width
-            draw_bg(left=start_x_pos, top=start_y_pos, width=background_width, height=background_height)
+            draw_bg(left=start_x_pos, top=start_y_pos,
+                    width=background_width, height=background_height,
+                    tint=bg_tint, hovered=bg_hovered, selected=bg_selected)
             draw_state.height = background_height
             if draw_state.expanded:
                 draw_state.expanded_height = background_height
@@ -104,7 +123,9 @@ def draw_with_func(func=None, indent_size=10, max_depth=0, depth=0,
 
 @render_func
 def draw_bg(left=0, top=0, width=20, height=20, depth=0, show_header=False, show_bg=False,
-            global_style=None, global_toggles=None, style_manager=None):
+            global_style=None, global_toggles=None,
+            style_manager=None, unique=0, selected_views=None, tint=None, selected=False,
+            hovered=False):
     # Render background
     def current_indent_px():
         sx = imgui.get_cursor_start_pos()
@@ -132,7 +153,6 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0, show_header=False, show
     # rounding
     rounding = min(current_indent_px(), rounding)
 
-
     depth_factor = global_style.get_global_constant("depth_factor", default=1.0, folder="bg_styles") * 0.7
     depth_offset = global_style.get_global_constant("depth_offset", default=0.0, folder="bg_styles")
     dynamic_value = max(0, (float(depth + depth_offset) * depth_factor))
@@ -142,6 +162,13 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0, show_header=False, show
         "alpha": 1.0,
         'max_value': 1.0
     }
+    hovered_offset = 0.0
+    if selected:
+        hovered_offset = 0.1
+    elif hovered:
+        hovered_offset = 0.02
+
+
     bg_style = global_style.get_global_constant("bg_style", default=bg_style, folder="bg_styles")
     outline_saturation = global_style.get_global_constant("outline_saturation", default=0.5, folder="bg_styles")
 
@@ -151,11 +178,17 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0, show_header=False, show
     outline_color = (style_manager.
                      make_color_style_value_imgui(input=bg_style, saturation=outline_saturation,
                                                   value=max(0, dynamic_value * outline_factor + outline_offset)))
+    # if tint is not None:
+    #     outline_color = imgui.get_color_u32_rgba(*tint)
 
     imgui.get_window_draw_list().add_rect(*rect_outline, col=outline_color, rounding=rounding, thickness=2.0)
     bg_color = (style_manager.
-                make_color_style_value(input=bg_style, value=max(0, dynamic_value)))
+                make_color_style_value(input=bg_style, value=max(0, dynamic_value) + hovered_offset))
     imgui_bg_color = imgui.get_color_u32_rgba(bg_color[0], bg_color[1], bg_color[2], 1.0)
+
+    if tint is not None:
+        imgui_bg_color = imgui.get_color_u32_rgba(*tint)
+
     imgui.get_window_draw_list().add_rect_filled(*rect, col=imgui_bg_color, rounding=rounding)
 
 
@@ -163,9 +196,10 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0, show_header=False, show
 def draw_header(input_value=None, name="", unique=None, is_tree=True,
                 show_name=True, show_type=False, show_unique=False,
                 draw_state=None, is_window=False, on_click=False,
-                on_right_click=False, show_bg=False,
+                on_hover=False,
+                on_right_click=False, show_bg=False, selected_views=None,
                 on_drag=False, on_drag_released=False, style_manager=None,
-                global_style=None, depth=0):
+                global_style=None, depth=0, shift_click=False):
 
     value_factor = global_style.get_global_constant("depth_factor", default=1.0, folder="bg_styles")
     value_offset = global_style.get_global_constant("depth_offset", default=0.0, folder="bg_styles")
@@ -175,6 +209,7 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
     dynamic_value = max(0, (float(depth + depth_offset) * depth_factor))
     bg_style = global_style.get_global_constant("bg_style", default=None, folder="bg_styles")
     saturation = -0.5
+    action = ActionType.NONE
     # Make header slightly brighter
 
     saturation = bg_style['saturation'] + saturation
@@ -182,23 +217,25 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
                   make_color_style_value(input=bg_style, saturation=saturation,
                                          value=max(0, dynamic_value * value_factor + value_offset)))
 
-    # if on_click:
-    #     print("left click " + name)
-    # if on_right_click:
-    #     print("right click " + name)
-    #
-    # if on_drag:
-    #     print(f"dragging {name}")
-    #
-    # if on_drag_released:
-    #     print(f"stopped dragging {name}")
+    if shift_click:
+        action = ActionType.SHIFT_CLICK
+    elif on_click:
+        action = ActionType.CLICK
+    elif on_hover:
+        action = ActionType.HOVERED
+
+    region_available = imgui.get_content_region_available()
     if is_tree:
-        draw_state.expanded = tree("##tree", draw_state.expanded)
+        draw_state.expanded = tree("##tree", draw_state.expanded, width=30)
         imgui.same_line()
+    cursor_start = imgui.get_cursor_pos()
 
     if show_name and name != "":
+        imgui.align_text_to_frame_padding()
         imgui.text_colored(f"{name}", *name_color)
         imgui.same_line()
+
+    name_end = imgui.get_cursor_pos()
 
     if show_type:
         imgui.text_colored(f"({type(input_value).__name__})", *(0.8, 0.0, 0.5, 1.0))
@@ -208,14 +245,31 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
         imgui.text_colored(f"({str(unique)})", *(0.8, 0.0, 0.5, 1.0))
         imgui.same_line()
 
+    if show_name:
+        imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
+        imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
+        imgui.same_line()
+        imgui.set_item_allow_overlap()
+        imgui.set_cursor_pos_x(cursor_start[0])
+        imgui.set_cursor_pos_y(cursor_start[1] + imgui.get_style().frame_padding.y)
+        button_width = max(5, name_end[0] - cursor_start[0])
+        button_height = imgui.get_text_line_height() + imgui.get_style().frame_padding.y
+        imgui.set_item_allow_overlap()
+        if imgui.invisible_button(f"##block_tree", width=button_width,
+                                  height=button_height):
+            pass
+        imgui.same_line()
+        imgui.set_item_allow_overlap()
+        imgui.pop_style_var(2)
 
-    return False, None
+    return shift_click, action
 
 @render_func
-def draw_object(input_value, draw_state=None, meta=None, name="", max_depth=0,
+def draw_object(input_value, draw_state=None, meta=None, name="", max_depth=0, style_manager=None,
                 depth=0, unique=0, suffix="", is_tree=True, indent_size=10, *args, **kwargs):
     # if is_tree and not draw_state.expanded:
     #     return False, None
+
 
     is_collection = isinstance(input_value, (dict, list, tuple, set)) or (
             hasattr(input_value, "__dict__") and depth < max_depth)
@@ -224,12 +278,17 @@ def draw_object(input_value, draw_state=None, meta=None, name="", max_depth=0,
         if isinstance(input_value, dict):
             changed = False
             for k, v in input_value.items():
+                previous_tint = style_manager.get_tint()
+                if hasattr(v, 'tint'):
+                    style_manager.set_imgui_tint(*v.tint)
                 # Derive meta for dict items
                 suffix = f"{suffix}_{str(k)}"
                 obj_unique, _, _ = ui_id(meta, max_depth=max_depth, suffix=suffix)
                 item_changed, new_value = meta.view_function(input_value=v, meta=meta,
                                                              suffix=obj_unique, name=k)
                 changed |= item_changed
+                if hasattr(v, 'tint'):
+                    style_manager.set_imgui_tint(*previous_tint)
         elif isinstance(input_value, (list, tuple, set)):
             changed = False
             for i, v in enumerate(input_value):
