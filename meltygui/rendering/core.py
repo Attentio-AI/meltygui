@@ -122,7 +122,7 @@ def render_func(*args, **kwargs):
             return class_wrapper
     # ----- end default type argument handling -----
     func = first_arg if callable(first_arg) else None
-
+    max_depth = 20
     sig = inspect.signature(func)
     params = sig.parameters
     param_types = [params[p].annotation for p in params]
@@ -169,6 +169,7 @@ def render_func(*args, **kwargs):
             Melty.action_stack = {}
             Melty.unique_stack = []
 
+
         first_arg = args[0] if args else None
         input_value = kwargs.get("input_value", first_arg)
         second_arg = args[1] if len(args) > 1 else None
@@ -188,7 +189,7 @@ def render_func(*args, **kwargs):
         kwargs["meta"] = meta
         suffix = kwargs.get("suffix", attr_name)
         kwargs["suffix"] = suffix
-        unique, depth, annotation_mode = ui_id(meta, suffix=suffix) if meta else (0, 0)
+        unique, depth, annotation_mode = ui_id(meta, max_depth=max_depth, suffix=suffix) if meta else (0, 0)
         from src.lsd.gl_gui.view.core_views.core_presets import Meta
         if 'annotation_mode' in kwargs or annotation_mode:
             # Class decoration mode, no args
@@ -237,7 +238,8 @@ def render_func(*args, **kwargs):
         meta.draw_state = draw_state
         meta.input_value = input_value
         kwargs["unique"] = unique
-
+        kwargs["depth"] = depth
+        kwargs["max_depth"] = max_depth
         for kwarg in kwargs:
             setattr(meta, kwarg, kwargs[kwarg])
 
@@ -314,6 +316,8 @@ def render_func(*args, **kwargs):
                 clean_args.pop(an_arg)
 
             from src.lsd.gl_gui.view.core_views.new_core_view import draw_with_func
+            kwargs['window_stack'] = kwargs.get("window_stack", getattr(Melty, 'window_stack', []))
+            kwargs['depth'] = depth
             return_value = draw_with_func(func=func, clean_args=clean_args, **kwargs)
 
         except Exception as e:

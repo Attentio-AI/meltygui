@@ -41,6 +41,12 @@ class Melty:
                                                                     Melty.last_triggered_actions['on_drag'] == unique,
                           clear_condition=lambda unique:  not imgui.is_mouse_down(0) and unique == Melty.last_triggered_actions.get('on_drag_released', None),
                           re_arm_condition=lambda unique: not imgui.is_mouse_down(0) and unique == Melty.last_triggered_actions.get('on_drag_released', None)),
+        'any_drag_released': Action(trigger_condition=lambda unique: 'on_drag' in Melty.last_triggered_actions and
+                                                                    'on_drag' not in Melty.triggered_actions,
+                                   clear_condition=lambda unique: not imgui.is_mouse_down(
+                                       0) and unique == Melty.last_triggered_actions.get('on_drag_released', None),
+                                   re_arm_condition=lambda unique: not imgui.is_mouse_down(
+                                       0) and unique == Melty.last_triggered_actions.get('on_drag_released', None)),
 
         'on_left_click': lambda unique : imgui.is_item_hovered() and imgui.is_mouse_clicked(0),
         'on_hover': lambda unique: imgui.is_item_hovered()
@@ -55,6 +61,7 @@ class Melty:
     vis = None
     type_defaults = {}
     unique_stack = []
+    window_stack = []
 
     @staticmethod
     def init(**kwargs):

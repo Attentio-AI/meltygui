@@ -12,125 +12,148 @@ def generate_class_diff(obj, updates):
         print(f"# Diff: {clsname}.{field} changed to {new_val}")
 
 
+
+
 # Main draw function, called by the GUI framework
 def draw(vis):
     draw_window(vis.root.lora_collection)
-    draw_any(vis.root.synth_colors, is_window=False)
-    #
-    draw_any("hello there", is_window=True)
+    # draw_any(vis.root.synth_collection, is_window=False)
+    # #
+    # draw_any("hello there", is_window=True)
 
 
-# Render background
-# if config is None:
-#     root_window = get_root_window()
-#     parent = get_parent()
-#     depth = get_depth()
-# else:
-#     root_window = config.root_window
-#     parent = config.parent
-#     depth = config.depth
-#
-#     if not config.is_visible():
-#         return
-#
-# if config is None:
-#     an_object_unique = unique
-# else:
-#     an_object_unique = config.unique
-#
-# size_is_set = parent is not None and root_window is not None and an_object_unique in root_window._attr_size
-#
-# if config is not None:
-#     rounding = config.get_global_constant("rounding", default=0.0, folder="bg_styles")
-# else:
-#     rounding = get_global_constant("rounding", default=0.0, folder="bg_styles")
-#
-# # Draw rect
-# window_width = imgui.get_content_region_available().x
-# padding = imgui.get_style().window_padding[0]
-# left = imgui.get_cursor_screen_pos()[0] - padding
-# top = imgui.get_cursor_screen_pos()[1] - rounding - 2
-# right = window_width + padding + padding + 2 + rounding
-#
-# # an_object_unique = f"{unique}"
-# attr_size = (0, 0)
-# if size_is_set:
-#     attr_size = root_window._attr_size[an_object_unique]
-# line_height = imgui.get_text_line_height() + padding
-# bottom = attr_size[1] + header_height
-#
-# rect = (left, top, right, bottom)
-# # Outline
-# rounding = min(current_indent_px(), rounding)
-#
-# depth_factor = get_global_constant("depth_factor", default=1.0, folder="bg_styles")
-# depth_offset = get_global_constant("depth_offset", default=0.0, folder="bg_styles")
-# dynamic_value = max(0, (float(depth - depth_offset) * depth_factor))
-# bg_style = {
-#     "value": 0.01,
-#     "saturation": 1.0,
-#     "alpha": 1.0,
-#     'max_value': 1.0
-# }
-# bg_style = get_global_constant("bg_style", default=bg_style, folder="bg_styles")
-# outline_saturation = get_global_constant("outline_saturation", default=0.5, folder="bg_styles")
-#
-# outline_offset = get_global_constant("outline_offset", default=0.0, folder="bg_styles")
-# outline_factor = get_global_constant("outline_factor", default=1.0, folder="bg_styles")
-#
-# outline_color = (LSDView().style_manager.
-#                  make_color_style_value_imgui(input=bg_style, saturation=outline_saturation,
-#                                                value=max(0, dynamic_value * outline_factor + outline_offset)))
-#
-# imgui.get_window_draw_list().add_rect(rect[0] - 2,
-#                                       rect[1] - 2,
-#                                       rect[0] + rect[2] + 5,
-#                                       rect[1] + rect[3] + 1,
-#                                       col=outline_color, rounding=rounding, thickness=2.0)
-# bg_color = (LSDView().style_manager.
-#             make_color_style_value(input=bg_style, value=max(0, dynamic_value)))
-# imgui_bg_color = imgui.get_color_u32_rgba(bg_color[0], bg_color[1], bg_color[2], 1.0)
-# if config is not None:
-#     config.bg_color = bg_color
-#     config.parent_bg_color = bg_color
-# imgui.get_window_draw_list().add_rect_filled(rect[0] - 1,
-#                                              rect[1] - 1,
-#                                              rect[0] + rect[2] + 1,
-#                                              rect[1] + rect[3] - 1,
-#                                              col=imgui_bg_color, rounding=rounding)
+@render_func
+def draw_window(input_value, window_stack, is_window=True, is_tree=False, name="", unique=0, *args, **kwargs):
+    unique = unique
+    tmp_undo_stack(unique)
+    title = name or input_value.__class__.__name__
+    opened, _ = imgui.begin(f"{title}##window_{str(unique)}", True)
+    window_stack.append(unique)
 
-def draw_with_func(func=None, clean_args=None, **kwargs):
+    draw_list = imgui.get_window_draw_list()
+    draw_list.channels_split(20)
+
+    draw_object(input_value, *args, **kwargs)
+    window_stack.pop()
+
+    draw_list.channels_merge()
+    imgui.end()
+    redo_stack(unique)
+
+
+def draw_with_func(func=None, indent_size=10, max_depth=0, depth=0,
+                   window_stack=None, clean_args=None, **kwargs):
+    # draw_list.channels_set_current(1)
+    draw_list = imgui.get_window_draw_list()
+    inside_window = len(window_stack) > 0
+    if inside_window and kwargs.get("show_bg", True):
+        draw_list.channels_set_current(depth - 1)
+
+    imgui.indent(indent_size)
+
     draw_state = kwargs.get("draw_state", None)
     is_header = func.__name__ == draw_header.__name__
+    start_x_pos = imgui.get_cursor_screen_pos()[0]
+    start_y_pos = imgui.get_cursor_screen_pos()[1]
+    width = imgui.get_content_region_available()[0]
+
     if not is_header and kwargs.get("show_header", True):
-        draw_header(**kwargs)
+        draw_header(show_bg=False, **kwargs)
 
     return_value = None
     if not kwargs.get("is_tree", True) or draw_state.expanded or kwargs.get("is_window", False) or is_header:
         return_value = func(**clean_args)
 
+    end_y_pos = imgui.get_cursor_screen_pos()[1]
+
+    if inside_window:
+        if kwargs.get("show_bg", True):
+            draw_list.channels_set_current(max(0, min(max_depth - 2, depth - 2)))
+            background_height = end_y_pos - start_y_pos - 2
+            background_width = width
+            draw_bg(left=start_x_pos, top=start_y_pos, width=background_width, height=background_height)
+
+    imgui.unindent(indent_size)
+
+    if inside_window:
+        draw_list.channels_set_current(max_depth - 1)
+
     return return_value
+
+
+@render_func
+def draw_bg(left=0, top=0, width=20, height=20, depth=0, show_header=False, show_bg=False,
+            global_style=None, global_toggles=None, style_manager=None):
+    # Render background
+    def current_indent_px():
+        sx = imgui.get_cursor_start_pos()
+        cx = imgui.get_cursor_pos()
+        start_x = sx[0]
+        cur_x = cx[0]
+        return cur_x - start_x - 1
+
+    # float_style = global_styles.get_global_constant(constant_name="bg_style", default_type=Style, folder="bg_styles")
+    # float_style.apply(global_styles=global_styles, style_manager=style_manager, depth=depth)
+    #
+    rounding = global_style.get_global_constant("rounding", default=0.0, folder="bg_styles")
+
+    # Draw rect
+    if left == 0:
+        left = imgui.get_cursor_screen_pos()[0]
+
+    if top == 0:
+        top = imgui.get_cursor_screen_pos()[1]
+    right =  left + width + rounding
+    bottom =  top + height + rounding
+
+    rect = (left, top, right, bottom)
+    rect_outline = (left - 1, top - 1, right + 1, bottom + 1)
+    # rounding
+    rounding = min(current_indent_px(), rounding)
+
+    depth_factor = global_style.get_global_constant("depth_factor", default=1.0, folder="bg_styles")
+    depth_offset = global_style.get_global_constant("depth_offset", default=0.0, folder="bg_styles")
+    dynamic_value = max(0, (float(depth + depth_offset) * depth_factor))
+    bg_style = {
+        "value": 0.01,
+        "saturation": 1.0,
+        "alpha": 1.0,
+        'max_value': 1.0
+    }
+    bg_style = global_style.get_global_constant("bg_style", default=bg_style, folder="bg_styles")
+    outline_saturation = global_style.get_global_constant("outline_saturation", default=0.5, folder="bg_styles")
+
+    outline_offset = global_style.get_global_constant("outline_offset", default=0.0, folder="bg_styles")
+    outline_factor = global_style.get_global_constant("outline_factor", default=1.0, folder="bg_styles")
+
+    outline_color = (style_manager.
+                     make_color_style_value_imgui(input=bg_style, saturation=outline_saturation,
+                                                  value=max(0, dynamic_value * outline_factor + outline_offset)))
+
+    imgui.get_window_draw_list().add_rect(*rect_outline, col=outline_color, rounding=rounding, thickness=2.0)
+    bg_color = (style_manager.
+                make_color_style_value(input=bg_style, value=max(0, dynamic_value)))
+    imgui_bg_color = imgui.get_color_u32_rgba(bg_color[0], bg_color[1], bg_color[2], 1.0)
+    imgui.get_window_draw_list().add_rect_filled(*rect, col=imgui_bg_color, rounding=rounding)
 
 
 @render_func
 def draw_header(input_value=None, name="", unique=None, is_tree=True,
                 show_name=True, show_type=True, show_unique=True,
                 draw_state=None, is_window=False, on_click=False,
-                on_right_click=False,
+                on_right_click=False, show_bg=False,
                 on_drag=False, on_drag_released=False):
 
-    if on_click:
-        print("Left click " + name)
-    if on_right_click:
-        print("Right click " + name)
-
-    if on_drag:
-        print(f"dragging {name}")
-
-    if on_drag_released:
-        print(f"stopped dragging {name}")
-
-    draw_bg(width=0, height=20)
+    # if on_click:
+    #     print("left click " + name)
+    # if on_right_click:
+    #     print("right click " + name)
+    #
+    # if on_drag:
+    #     print(f"dragging {name}")
+    #
+    # if on_drag_released:
+    #     print(f"stopped dragging {name}")
     if is_tree:
         draw_state.expanded = tree("##tree", draw_state.expanded)
         imgui.same_line()
@@ -148,45 +171,22 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
 
     return False, None
 
-
 @render_func
-def draw_bg(width=0, height=20, show_header=False,
-            global_styles=None, global_toggles=None):
-    pass
-
-
-
-@render_func
-def draw_window(input_value, is_window=True, is_tree=False, name="", unique=0, *args, **kwargs):
-    unique = unique
-    tmp_undo_stack(unique)
-    title = name or input_value.__class__.__name__
-    opened, _ = imgui.begin(f"{title}##window_{str(unique)}", True)
-
-    draw_object(input_value,*args, **kwargs)
-
-    imgui.end()
-    redo_stack(unique)
-
-
-@render_func
-def draw_object(input_value, draw_state=None, meta=None, name="",
+def draw_object(input_value, draw_state=None, meta=None, name="", max_depth=0,
                 depth=0, unique=0, suffix="", is_tree=True, indent_size=10, *args, **kwargs):
-    max_depth = 10
     # if is_tree and not draw_state.expanded:
     #     return False, None
 
     is_collection = isinstance(input_value, (dict, list, tuple, set)) or (
             hasattr(input_value, "__dict__") and depth < max_depth)
     if is_collection:
-        imgui.indent(indent_size)
         # Handle collections
         if isinstance(input_value, dict):
             changed = False
             for k, v in input_value.items():
                 # Derive meta for dict items
                 suffix = f"{suffix}_{str(k)}"
-                obj_unique, _, _ = ui_id(meta, suffix=suffix)
+                obj_unique, _, _ = ui_id(meta, max_depth=max_depth, suffix=suffix)
                 item_changed, new_value = meta.view_function(input_value=v, meta=meta,
                                                              suffix=obj_unique, name=k)
                 changed |= item_changed
@@ -194,7 +194,7 @@ def draw_object(input_value, draw_state=None, meta=None, name="",
             changed = False
             for i, v in enumerate(input_value):
                 suffix = f"{suffix}_{str(i)}"
-                obj_unique, _, _ = ui_id(meta, suffix=suffix)
+                obj_unique, _, _ = ui_id(meta, max_depth=max_depth, suffix=suffix)
                 child_meta = Melty.type_defaults.get(type(v), meta)
                 item_changed, new_value = child_meta.view_function(input_value=v, meta=child_meta,
                                                              suffix=obj_unique, name=str(i))
@@ -213,7 +213,7 @@ def draw_object(input_value, draw_state=None, meta=None, name="",
                         kwargs['meta'] = child_meta
 
                     suffix = f"{suffix}_{str(k)}"
-                    obj_unique, _, _ = ui_id(child_meta, suffix=suffix)
+                    obj_unique, _, _ = ui_id(child_meta, max_depth=max_depth, suffix=suffix)
                     item_changed, new_value = child_meta.view_function(input_value=v, meta=child_meta,
                                                                        suffix=obj_unique, name=k)
                     if item_changed:
@@ -221,7 +221,6 @@ def draw_object(input_value, draw_state=None, meta=None, name="",
                 except Exception as e:
                     print_colored_traceback()
                     pass
-        imgui.unindent(indent_size)
     else:
         return_value = None
         push_id(unique)
