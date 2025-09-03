@@ -49,11 +49,11 @@ def draw_window(input_value, window_stack, style_manager, is_window=True,
 def draw_with_func(func=None, indent_size=10, max_depth=0, depth=0,
                    window_stack=None, clean_args=None, **kwargs):
     # draw_list.channels_set_current(1)
+
     draw_list = imgui.get_window_draw_list()
     inside_window = len(window_stack) > 0
     if inside_window and kwargs.get("show_bg", True):
         draw_list.channels_set_current(depth - 1)
-
     imgui.indent(indent_size)
 
     draw_state = kwargs.get("draw_state", None)
@@ -61,21 +61,18 @@ def draw_with_func(func=None, indent_size=10, max_depth=0, depth=0,
     start_x_pos = imgui.get_cursor_screen_pos()[0]
     start_y_pos = imgui.get_cursor_screen_pos()[1]
     width = imgui.get_content_region_available()[0]
+    cutoff = 100
+    header_width = 0
 
     if not is_header and kwargs.get("show_header", True):
         draw_header(show_bg=False, **kwargs)
-        imgui.same_line(spacing=0)
-        new_line_x = imgui.get_cursor_screen_pos()[0]
-        space_available = imgui.get_content_region_available()[0]
-        current_x_pos = imgui.get_cursor_screen_pos()[0]
-        space_savings = current_x_pos - new_line_x
-        cutoff = 100
-        if draw_state.expanded_height is not None and draw_state.expanded_height > 100:
-            imgui.new_line()
-        else:
-            if space_available < cutoff:
-                imgui.new_line()
-            else:
+        rect_size = imgui.get_item_rect_size()
+        header_width = rect_size[0]
+        print(f"Header width: {header_width}")
+
+        space_available = imgui.get_content_region_available()[0] - header_width
+        if draw_state.expanded_height is None or draw_state.expanded_height < 200:
+            if space_available > cutoff:
                 imgui.same_line()
 
     return_value = None
@@ -84,6 +81,7 @@ def draw_with_func(func=None, indent_size=10, max_depth=0, depth=0,
 
     end_y_pos = imgui.get_cursor_screen_pos()[1]
     background_height = end_y_pos - start_y_pos - 2
+
     padding = imgui.get_style().frame_padding.y
     background_height = max(imgui.get_text_line_height() + padding, background_height)
 
@@ -184,7 +182,6 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
                   make_color_style_value(input=bg_style, saturation=saturation,
                                          value=max(0, dynamic_value * value_factor + value_offset)))
 
-
     # if on_click:
     #     print("left click " + name)
     # if on_right_click:
@@ -197,20 +194,20 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
     #     print(f"stopped dragging {name}")
     if is_tree:
         draw_state.expanded = tree("##tree", draw_state.expanded)
-    else:
-        imgui.dummy(14, imgui.get_text_line_height_with_spacing())
-
-    if show_name:
         imgui.same_line()
+
+    if show_name and name != "":
         imgui.text_colored(f"{name}", *name_color)
+        imgui.same_line()
 
     if show_type:
-        imgui.same_line()
         imgui.text_colored(f"({type(input_value).__name__})", *(0.8, 0.0, 0.5, 1.0))
+        imgui.same_line()
 
     if show_unique:
-        imgui.same_line()
         imgui.text_colored(f"({str(unique)})", *(0.8, 0.0, 0.5, 1.0))
+        imgui.same_line()
+
 
     return False, None
 
