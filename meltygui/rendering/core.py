@@ -190,11 +190,19 @@ def renderer_wrapper(*o_args, **o_kwargs):
                 setattr(new_meta, k, v)
             Melty.type_defaults[is_default_for] = new_meta
         try:
+            wrap_func = None
+            if 'wraps' in o_kwargs:
+                wrap_func = o_kwargs.pop('wraps', None)
+                func = wrap_func(func, **kwargs)
 
-
-            return r_func(func, param_types=param_types, wanted_params=wanted_params,
+            out_func = r_func(func, param_types=param_types, wanted_params=wanted_params,
                           param_defaults=param_defaults, name_to_param_type=name_to_param_type,
                           **o_kwargs)
+
+            if wrap_func is not None:
+                out_func = wrap_func(out_func, inner_func=func, **o_kwargs)
+
+            return out_func
         except Exception as e:
             print_colored_traceback()
             return False, None
@@ -393,7 +401,7 @@ def render_func(*args, **kwargs):
                     if km not in kwargs:
                         kwargs[km] = vm
             kwargs['depth'] = depth
-            func(**clean_args)
+            return_value = func(**clean_args)
             # return_value = draw_with_func(func=func, clean_args=clean_args, **kwargs)
 
         except Exception as e:

@@ -68,18 +68,14 @@ def draw_window(input_value, window_stack=None, style_manager=None,
     core_draw_window(window_func=draw_object, input_value=input_value, window_stack=window_stack,
                      style_manager=style_manager, name=name, unique=unique, args=args, kwargs=kwargs)
 
-@renderer_wrapper
+@renderer_wrapper(wraps=render_func)
 def render_with_foo(func, *args, **kwargs):
-    func = render_func(func, **kwargs)
 
     def wrapper(window_stack=None, *args, **kwargs):
         imgui.text("Some wrapper")
+        return func(skfs=False, *args, **kwargs)
 
-        return func(*args, **kwargs)
-
-    meat_func = render_func(wrapper, inner_func=func, **kwargs)
-
-    return meat_func
+    return wrapper
 
 
 @render_func
