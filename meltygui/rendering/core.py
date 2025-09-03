@@ -19,6 +19,8 @@ class DrawState:
         self.expanded = True
         self.value_cache = None
         self.name = ""
+        self.height = None
+        self.expanded_height = None
         # add more per-widget stuff as needed
 
 _draw_state_registry = {}

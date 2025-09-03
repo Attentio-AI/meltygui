@@ -70,10 +70,13 @@ def draw_with_func(func=None, indent_size=10, max_depth=0, depth=0,
         current_x_pos = imgui.get_cursor_screen_pos()[0]
         space_savings = current_x_pos - new_line_x
         cutoff = 100
-        if space_available < cutoff:
+        if draw_state.expanded_height is not None and draw_state.expanded_height > 100:
             imgui.new_line()
         else:
-            imgui.same_line()
+            if space_available < cutoff:
+                imgui.new_line()
+            else:
+                imgui.same_line()
 
     return_value = None
     if not kwargs.get("is_tree", True) or draw_state.expanded or kwargs.get("is_window", False) or is_header:
@@ -89,6 +92,9 @@ def draw_with_func(func=None, indent_size=10, max_depth=0, depth=0,
             draw_list.channels_set_current(max(0, min(max_depth - 2, depth - 2)))
             background_width = width
             draw_bg(left=start_x_pos, top=start_y_pos, width=background_width, height=background_height)
+            draw_state.height = background_height
+            if draw_state.expanded:
+                draw_state.expanded_height = background_height
 
     imgui.unindent(indent_size)
 
@@ -192,7 +198,7 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
     if is_tree:
         draw_state.expanded = tree("##tree", draw_state.expanded)
     else:
-        imgui.bullet()
+        imgui.dummy(14, imgui.get_text_line_height_with_spacing())
 
     if show_name:
         imgui.same_line()
