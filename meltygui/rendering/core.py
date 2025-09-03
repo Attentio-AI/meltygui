@@ -7,7 +7,7 @@ from typing import Any
 
 import imgui
 
-from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, LSDView
+from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, LSDView, request_render
 from src.lsd.gl_gui.melty import Melty
 
 
@@ -262,9 +262,10 @@ def render_func(*args, **kwargs):
             found_param = None
             if wanted_param in Melty.actions:
                 needed_actions[wanted_param] = Melty.actions[wanted_param]
+
+            if wanted_param in Melty.triggered_actions:
                 triggered = Melty.triggered_actions.get(wanted_param, 0)
                 if unique == triggered:
-                    print(f"Action {wanted_param} triggered for {unique}")
                     found_param = True
                 else:
                     found_param = False
@@ -323,10 +324,15 @@ def render_func(*args, **kwargs):
 
             # Handle actions
             for name, action in needed_actions.items():
-                if action():
-                    action_stack = Melty.action_stack.get(name, [])
-                    action_stack.append(unique)
-                    Melty.action_stack[name] = action_stack
+                if action.re_arm_condition(unique):
+                    Melty.cleared_actions.remove(name) if name in Melty.cleared_actions else None
+                    Melty.triggered_actions.pop(name, None)
+
+                if unique not in Melty.cleared_actions:
+                    if action.trigger_condition(unique):
+                        action_stack = Melty.action_stack.get(name, [])
+                        action_stack.append(unique)
+                        Melty.action_stack[name] = action_stack
 
             if return_value is None:
                 changed, new_value = False, None
@@ -338,13 +344,25 @@ def render_func(*args, **kwargs):
             Melty.unique_stack.pop()
 
             if len(Melty.unique_stack) == 0:
-                triggered_actions = {}
                 for action in Melty.actions.keys():
                     action_stack = Melty.action_stack.get(action, [])
                     if len(action_stack) > 0:
                         last = action_stack[-1]
-                        Melty.triggered_actions[action] = last
+                        trigger_action_for = None
+
+
+                        if Melty.actions[action].clear_condition(last):
+                            Melty.cleared_actions.add(action)
+                            Melty.triggered_actions.pop(action, None)
+                        if action not in Melty.cleared_actions:
+                            trigger_action_for = last
+                        if trigger_action_for is not None:
+                            Melty.triggered_actions[action] = last
+                            request_render()
+
                 Melty.action_stack = {}
+
+                Melty.last_triggered_actions = copy(Melty.triggered_actions)
 
         return changed, new_value
 

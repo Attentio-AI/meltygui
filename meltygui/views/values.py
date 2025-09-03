@@ -115,10 +115,21 @@ def draw_with_func(func=None, clean_args=None, **kwargs):
 @render_func
 def draw_header(input_value=None, name="", unique=None, is_tree=True,
                 show_name=True, show_type=True, show_unique=True,
-                draw_state=None, is_window=False, on_click=False):
+                draw_state=None, is_window=False, on_click=False,
+                on_right_click=False,
+                on_drag=False, on_drag_released=False):
 
     if on_click:
-        print(name)
+        print("Left click " + name)
+    if on_right_click:
+        print("Right click " + name)
+
+    if on_drag:
+        print(f"dragging {name}")
+
+    if on_drag_released:
+        print(f"stopped dragging {name}")
+
     draw_bg(width=0, height=20)
     if is_tree:
         draw_state.expanded = tree("##tree", draw_state.expanded)
