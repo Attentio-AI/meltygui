@@ -330,8 +330,7 @@ def render_func(*args, **kwargs):
         except Exception as e:
             print_colored_traceback()
         finally:
-            pop_id()
-            imgui.end_group()
+
 
             # Handle actions
             for name, action in needed_actions.items():
@@ -372,6 +371,9 @@ def render_func(*args, **kwargs):
                 Melty.action_stack = {}
 
                 Melty.last_triggered_actions = copy(Melty.triggered_actions)
+
+            pop_id()
+            imgui.end_group()
 
         return changed, new_value
 

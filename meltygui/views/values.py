@@ -245,7 +245,7 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
         imgui.text_colored(f"({str(unique)})", *(0.8, 0.0, 0.5, 1.0))
         imgui.same_line()
 
-    if show_name:
+    if show_name and name != "":
         imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
         imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
         imgui.same_line()
