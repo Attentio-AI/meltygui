@@ -33,6 +33,8 @@ class MouseAction:
 
 class Melty:
     max_depth = 40
+    annotation_mode = True
+    depth = 0
 
     @staticmethod
     def check_event(unique, mouse_btn, event_type):
@@ -75,6 +77,7 @@ class Melty:
     def init(**kwargs):
         for key, value in kwargs.items():
             setattr(Melty, key, value)
+        Melty.annotation_mode = False
 
     @staticmethod
     def is_key_pressed(key=glfw.KEY_ESCAPE):

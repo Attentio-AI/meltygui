@@ -84,33 +84,23 @@ def ui_id(meta=None, this_name=None, root_function="render", suffix=None) -> int
     - max_depth: limit to avoid walking the whole interpreter stack
     """
     h = 0
-    frame = sys._getframe(1)  # skip ui_id itself
-    depth = 0
-    func_name = ""
-    annotation_mode = True
-    while frame and depth < Melty.max_depth and func_name != root_function:
-        code = frame.f_code
-        func_name = code.co_name
-        cls_name = ""
-        if "self" in frame.f_locals:
-            cls_name = frame.f_locals["self"].__class__.__name__
-        scope = f"{cls_name}.{func_name}" if cls_name else func_name
-        h = combine(h, scope)
-        frame = frame.f_back
-        depth += 1
-
-        if func_name == root_function:
-            annotation_mode = False
+    frame = sys._getframe(2)  # skip ui_id itself
+    code = frame.f_code
+    func_name = code.co_name
+    cls_name = ""
+    if "self" in frame.f_locals:
+        cls_name = frame.f_locals["self"].__class__.__name__
+    scope = f"{cls_name}.{func_name}" if cls_name else func_name
+    h = combine(h, scope)
 
     if meta is not None:
         if hasattr(meta, "name"):
             h = combine(h, f"{meta.name}:{meta.datatype}")
         else:
             h = combine(h, str(meta.datatype))
-
     unique = h if suffix is None else ((h * 16777619) ^ strhash(str(suffix))) & 0xffffffff
 
-    return unique, depth, annotation_mode
+    return unique, Melty.depth
 
 id_stack = []
 stack_holder = {}
@@ -171,6 +161,7 @@ def render_wrapper(*o_args, **o_kwargs):
         # use the specified wrapper if r_func
         wrap_sig = inspect.signature(inner_func)
         sig = inspect.signature(func)
+        print(f"inspect")
         params = sig.parameters
         wrap_params = wrap_sig.parameters
 
@@ -185,6 +176,7 @@ def render_wrapper(*o_args, **o_kwargs):
             wrap_name_to_param_type[param_name] = wrap_param_types[idx]
 
         param_defaults = {p: params[p].default for p in params if params[p].default is not inspect.Parameter.empty}
+        print(f"inspect")
         wrap_defaults = {p: wrap_params[p].default for p in wrap_params if wrap_params[p].default is not inspect.Parameter.empty}
 
         params = params | wrap_params
@@ -201,7 +193,7 @@ def render_wrapper(*o_args, **o_kwargs):
                     kwargs.pop('is_default_for', None)
                     from src.lsd.gl_gui.view.core_views.core_presets import Meta
                     new_meta = Meta(param_defaults)
-                    new_meta.view_function = wrapper(*args, **kwargs, annotation_mode=True)
+                    new_meta.view_function = wrapper(*args, **kwargs)
                     for k, v in param_defaults.items():
                         setattr(new_meta, k, v)
                     for k, v in kwargs.items():
@@ -211,7 +203,7 @@ def render_wrapper(*o_args, **o_kwargs):
             kwargs.pop('is_default_for', None)
             from src.lsd.gl_gui.view.core_views.core_presets import Meta
             new_meta = Meta(param_defaults)
-            new_meta.view_function = wrapper(*args, **kwargs, annotation_mode=True)
+            new_meta.view_function = wrapper(*args, **kwargs)
             for k, v in param_defaults.items():
                 setattr(new_meta, k, v)
             for k, v in kwargs.items():
@@ -249,9 +241,8 @@ def render_wrapper(*o_args, **o_kwargs):
 def annotation_track(*args, wrapper, **kwargs):
     first_arg = args[0] if args else None
     param_defaults = kwargs.get('param_defaults', None)
-    unique, depth, annotation_mode = ui_id(None, suffix=None)
     from src.lsd.gl_gui.view.core_views.core_presets import Meta
-    if 'annotation_mode' in kwargs or annotation_mode:
+    if Melty.annotation_mode:
         # Class decoration mode, with args
         if 'for_type' in kwargs and not isinstance(first_arg, type):
             def class_wrapper(cls):
@@ -342,7 +333,7 @@ def render_func(*args, **o_kwargs):
         kwargs["meta"] = meta
         suffix = kwargs.get("suffix", attr_name)
         kwargs["suffix"] = suffix
-        unique, depth, annotation_mode = ui_id(meta, suffix=suffix) if meta else (0, 0)
+        unique, depth = ui_id(meta, suffix=suffix) if meta else (0, 0)
 
         draw_state = get_draw_state(unique)
         meta.draw_state = draw_state
@@ -355,6 +346,7 @@ def render_func(*args, **o_kwargs):
 
         expected_type = param_types[wanted_params.index("input_value")] if "input_value" in wanted_params else None
         annotation_empty = expected_type == inspect.Parameter.empty
+
         if not annotation_empty:
             if expected_type is not Any and isinstance(expected_type, type):
                 if not isinstance(input_value, expected_type):
@@ -385,8 +377,6 @@ def render_func(*args, **o_kwargs):
                 elif wanted_param == "on_action":
                     if unique in Melty.triggered_actions:
                         found_param = Melty.triggered_actions.get(unique)
-
-
 
             if expected_type is not None and expected_type is not Any and not annotation_empty:
                 if found_param is not None and not isinstance(found_param, expected_type):
@@ -422,6 +412,7 @@ def render_func(*args, **o_kwargs):
 
         imgui.begin_group()
         push_id(unique)
+        Melty.depth = Melty.depth + 1
 
         if 'next_kwargs' in wanted_params:
             kwargs['next_kwargs'] = kwargs
@@ -449,6 +440,7 @@ def render_func(*args, **o_kwargs):
             # Needs to go after mouse down check
             pop_id()
             imgui.end_group()
+            Melty.depth = Melty.depth - 1
 
             # Leave view
             Melty.unique_stack.pop()

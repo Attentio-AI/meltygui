@@ -375,7 +375,7 @@ def draw_collection(input_value=None, depth=0, style_manager=None,
                 style_manager.set_imgui_tint(*v.tint)
             # Derive meta for dict entry
             suffix = f"{suffix}_{str(k)}"
-            obj_unique, _, _ = ui_id(meta, suffix=suffix)
+            obj_unique, _, = ui_id(meta, suffix=suffix)
             view_function = meta.view_function if meta and meta.view_function else draw_object
             item_changed, value = view_function(input_value=v, meta=meta,
                                                     suffix=obj_unique, name=k)
@@ -386,7 +386,7 @@ def draw_collection(input_value=None, depth=0, style_manager=None,
         changed = False
         for i, v in enumerate(input_value):
             suffix = f"{suffix}_{str(i)}"
-            obj_unique, _, _ = ui_id(meta, suffix=suffix)
+            obj_unique, _, = ui_id(meta, suffix=suffix)
             child_meta = Melty.type_defaults.get(type(v), meta)
             item_changed, new_value = child_meta.view_function(input_value=v, meta=child_meta,
                                                                suffix=obj_unique, name=str(i))
@@ -405,7 +405,7 @@ def draw_collection(input_value=None, depth=0, style_manager=None,
                 if child_meta is not None:
                     kwargs['meta'] = child_meta
                 suffix = f"{suffix}_{str(k)}"
-                obj_unique, _, _ = ui_id(child_meta, suffix=suffix)
+                obj_unique, _, = ui_id(child_meta, suffix=suffix)
                 view_function = child_meta.view_function
                 item_changed, new_value = view_function(input_value=v, meta=child_meta,
                                                         suffix=obj_unique, name=k)

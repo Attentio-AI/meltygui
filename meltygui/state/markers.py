@@ -3,8 +3,6 @@ from typing import Any
 
 from src.lsd.gl_gui.melty import Melty
 
-annotation_mode = False
-
 
 class Val:
     def __init__(self, option:Any):
