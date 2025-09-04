@@ -1,4 +1,5 @@
 import inspect
+import math
 import sys
 import zlib
 from copy import copy
@@ -8,8 +9,19 @@ from typing import Any
 import imgui
 
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, LSDView, request_render
-from src.lsd.gl_gui.melty import Melty
+from src.lsd.gl_gui.melty import Melty, ActionType
 
+
+class MouseState:
+    def __init__(self):
+        self.mouse_up = False
+        self.mouse_down = False
+        self.drag_released = False
+        self.hovered = False
+        self.clicked = False
+        self.dragged = False
+        self.mouse_down_pos = (0, 0)
+        self.drag_delta = (0, 0)
 
 class DrawState:
     """Holds per-widget runtime state (expand/collapse, etc.)."""
@@ -24,6 +36,20 @@ class DrawState:
         self.width = None
         self.top = None
         self.left = None
+
+        self.track_mouse = False
+
+        self.mouse_btn_state = {0: MouseState(),
+                                1: MouseState(),
+                                2: MouseState()}
+        self.mouse_up = False
+        self.mouse_down = False
+        self.drag_released = False
+        self.hovered = False
+        self.clicked = False
+        self.dragged = False
+        self.mouse_down_pos = (0, 0)
+        self.drag_delta = (0, 0)
         # add more per-widget stuff as needed
 
     def is_hovered(self):
@@ -293,10 +319,8 @@ def render_func(*args, **o_kwargs):
         if annotation is not None:
             return annotation
 
-        needed_actions = {}
         is_root = len(Melty.unique_stack) == 0
         if is_root:
-            Melty.action_stack = {}
             Melty.unique_stack = []
 
         first_arg = args[0] if args else None
@@ -349,22 +373,6 @@ def render_func(*args, **o_kwargs):
             annotation_empty = expected_type is inspect.Parameter.empty
             found_param = None
 
-            if "on_action" in wanted_params:
-                # All actions needed
-                for name, action in Melty.actions.items():
-                    needed_actions[name] = action
-            else:
-                # Only the actions that are passed to the view function
-                if wanted_param in Melty.actions:
-                    needed_actions[wanted_param] = Melty.actions[wanted_param]
-
-            if wanted_param in Melty.triggered_actions:
-                action_user = Melty.triggered_actions.get(wanted_param, 0)
-                if unique == action_user:
-                    found_param = True
-                else:
-                    found_param = False
-
             if wanted_param not in kwargs:
                 if wanted_param == "meta":
                     found_param = meta
@@ -375,16 +383,23 @@ def render_func(*args, **o_kwargs):
                 elif wanted_param == "unique":
                     found_param = unique
                 elif wanted_param == "on_action":
-                    for name, action_user in Melty.triggered_actions.items():
-                        if action_user == unique:
-                            found_param = name
-                            break
+                    if unique in Melty.triggered_actions:
+                        found_param = Melty.triggered_actions.get(unique)
+
+
 
             if expected_type is not None and expected_type is not Any and not annotation_empty:
                 if found_param is not None and not isinstance(found_param, expected_type):
                     found_param = param_defaults.get(wanted_param, None)
             elif wanted_param in vars(meta):
                 found_param = getattr(meta, wanted_param)
+
+            if wanted_param == "on_click":
+                found_param = Melty.check_event(unique, 0, ActionType.CLICK)
+            elif wanted_param == "on_drag":
+                found_param = Melty.check_event(unique, 0, ActionType.DRAG)
+            elif wanted_param == "on_drag_up":
+                found_param = Melty.check_event(unique, 0, ActionType.DRAG_UP)
 
             # Try global constants
             if found_param is None and wanted_param in vars(Melty):
@@ -401,6 +416,10 @@ def render_func(*args, **o_kwargs):
         # is_header = func.__name__ == draw_header.__name__
         # if not is_header and kwargs.get("show_header", True):
         #     draw_header(**kwargs)
+        start_x_pos = imgui.get_cursor_screen_pos()[0]
+        start_y_pos = imgui.get_cursor_screen_pos()[1]
+        width = imgui.get_content_region_available()[0]
+
         imgui.begin_group()
         push_id(unique)
 
@@ -423,27 +442,82 @@ def render_func(*args, **o_kwargs):
                         kwargs[km] = vm
             kwargs['depth'] = depth
             return_value = func(**clean_args)
-            # return_value = draw_with_func(func=func, clean_args=clean_args, **kwargs)
-
         except Exception as e:
             print_colored_traceback()
         finally:
+
+            was_mouse_down = draw_state.mouse_down
+            draw_state.clicked = False
+            # Needs to go after mouse down check
+
+            if draw_state.drag_released:
+                draw_state.drag_released = False
+                Melty.dragged_item = None
+            # Leave view
+            Melty.unique_stack.pop()
+
+            Melty.triggered_actions.pop(unique, None)
+
+            for m_btn in [0,1,2]:
+                btn_state = draw_state.mouse_btn_state[m_btn]
+                if btn_state.drag_released:
+                    btn_state.drag_released = False
+                if draw_state.hovered and not imgui.is_item_hovered():
+                    if imgui.is_mouse_down(m_btn) and btn_state.mouse_up:
+                        if not btn_state.mouse_down:
+                            btn_state.mouse_down_pos = imgui.get_mouse_pos()
+                        btn_state.mouse_down = True
+                        Melty.mark_event(unique, m_btn, ActionType.DOWN)
+                    if not imgui.is_mouse_down(m_btn):
+                        btn_state.mouse_up = True
+                else:
+                    btn_state.mouse_up = False
+                if was_mouse_down and not imgui.is_mouse_down(m_btn):
+                    btn_state.clicked = True
+                    Melty.mark_event(unique, m_btn, ActionType.CLICK)
+
+                if not imgui.is_mouse_down(m_btn):
+                    btn_state.mouse_down = False
+                    if btn_state.dragged:
+                        btn_state.drag_released = True
+                        Melty.mark_event(unique, m_btn, ActionType.DRAG_UP)
+
+                    btn_state.dragged = False
+
+                if btn_state.mouse_down:
+                    current_mouse_pos = imgui.get_mouse_pos()
+                    distance = math.sqrt((current_mouse_pos[0] - btn_state.mouse_down_pos[0]) ** 2 +
+                                            (current_mouse_pos[1] - btn_state.mouse_down_pos[1]) ** 2)
+                    btn_state.drag_delta = (current_mouse_pos[0] - btn_state.mouse_down_pos[0],
+                                             current_mouse_pos[1] - btn_state.mouse_down_pos[1])
+                    if abs(distance) > 2:
+                        btn_state.dragged = True
+                        Melty.mark_event(unique, m_btn, ActionType.DRAG)
+
+
+            end_y_pos = imgui.get_cursor_screen_pos()[1]
+            height = end_y_pos - start_y_pos - 2
+            # draw_state.height = height
+            # draw_state.width = width
+            # draw_state.top = start_y_pos
+            # draw_state.left = start_x_pos
+            is_hovered = draw_state.is_hovered()
+            draw_state.hovered = False
+            if is_hovered:
+                Melty.hover_stack.append(unique)
             pop_id()
             imgui.end_group()
 
-            is_hovered = draw_state.is_hovered() and not imgui.is_any_item_active() or imgui.is_any_item_hovered()
+            hovered_draw_state = None
+            # Root view
+            if len(Melty.unique_stack) == 0:
+                if len(Melty.hover_stack) > 0:
+                    last = Melty.hover_stack[0]
+                    hovered_draw_state = _draw_state_registry.get(last, None)
+                    if hovered_draw_state is not None:
+                        hovered_draw_state.hovered = True
 
-            # Handle actions
-            for name, action in needed_actions.items():
-                if unique not in Melty.cleared_actions:
-                    if action.trigger_condition(is_hovered, unique):
-                        action_stack = Melty.action_stack.get(name, [])
-                        action_stack.append(unique)
-                        Melty.action_stack[name] = action_stack
-
-                if action.re_arm_condition(is_hovered, unique):
-                    Melty.cleared_actions.remove(name) if name in Melty.cleared_actions else None
-                    Melty.triggered_actions.pop(name, None)
+                Melty.hover_stack = []
 
             if return_value is None:
                 changed, new_value = False, None
@@ -452,27 +526,6 @@ def render_func(*args, **o_kwargs):
             else:
                 imgui.text("Unsupported return from render_func")
                 changed, new_value = False, None
-            Melty.unique_stack.pop()
-
-            if len(Melty.unique_stack) == 0:
-                for action in Melty.actions.keys():
-                    action_stack = Melty.action_stack.get(action, [])
-                    if len(action_stack) > 0:
-                        last = action_stack[-1]
-                        trigger_action_for = None
-                        if Melty.actions[action].clear_condition(is_hovered, last):
-                            Melty.cleared_actions.add(action)
-                            Melty.triggered_actions.pop(action, None)
-                        if action not in Melty.cleared_actions:
-                            trigger_action_for = last
-                        if trigger_action_for is not None:
-                            Melty.triggered_actions[action] = last
-                            request_render()
-
-                Melty.action_stack = {}
-
-                Melty.last_triggered_actions = copy(Melty.triggered_actions)
-
 
         return changed, new_value
 

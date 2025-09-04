@@ -20,6 +20,7 @@ from src.lsd.gl_gui.model.class_utill import ClassUtility
 from src.lsd.gl_gui.model.global_undo_redo_manager import TrackedList, TrackedDict, TrackedSet, GlobalUndoRedoManager
 from src.lsd.gl_gui.utils.custom_views import generate_id
 from src.lsd.gl_gui.view.app_view_utils import should_exclude
+from src.lsd.gl_gui.view.core_views.core_presets import no_render
 
 _SEGMENT_RE = re.compile(
     r'(?:[^.\[]+|\[[^\]]*\])+')  # matches a segment like: attr, attr[0], attr["a.b"][1], [0], ...
@@ -30,6 +31,9 @@ class DictConversion(metaclass=FieldMeta):
         # Using weak references to avoid circular references
         self.__post_init__()
 
+    child_collapsed: no_render = set()
+    outliner_expanded_h: no_render = False
+    hash : no_render = None
     def __post_init__(self):
         self.id = generate_id()
         self.hash = None

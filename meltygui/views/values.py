@@ -1,4 +1,5 @@
 from functools import wraps
+from types import NoneType
 
 import imgui
 
@@ -81,7 +82,7 @@ def render_with_foo(func, *args, **kwargs):
 @render_wrapper(wraps=render_func)
 def with_simple_header(func, *args, **o_kwargs):
     def wrapper(input_value=None, indent_size=10, depth=0, draw_state=None,
-                window_stack=None, is_tree=True, is_window=False,
+                window_stack=None, on_drag_up=False, on_drag=False, is_tree=True, is_window=False, on_action=None,
                 show_header=True, show_bg=True, unique=0, name="", style_manager=None,
                 selected_views=None, next_kwargs=None, **kwargs):
         annotation = annotation_track(*args, wrapper=wrapper, **o_kwargs)
@@ -90,23 +91,29 @@ def with_simple_header(func, *args, **o_kwargs):
             pass
         imgui.indent(indent_size)
         cutoff = 100
+        start_x_pos = imgui.get_cursor_screen_pos()[0]
+        start_y_pos = imgui.get_cursor_screen_pos()[1]
+        width = imgui.get_content_region_max()[0]
+
+        if on_drag_up:
+            print(f"drag {name}")
 
         if show_header:
             next_kwargs['is_tree'] = False
             changed, action = draw_header(**next_kwargs)
-            if action == "on_shift_click":
-                selected_views[unique] = input_value
-            elif action == "on_click":
-                selected_views.clear()
-                selected_views[unique] = input_value
-            elif action == "on_hover":
-                bg_hovered = True
-            elif action == "on_drag":
-                window_ags = kwargs.copy()
-                core_draw_window(window_func=func, input_value=input_value,
-                                 window_stack=window_stack,
-                                 style_manager=style_manager, name=name,
-                                 unique=unique, args=(), kwargs=window_ags)
+            # if action == "on_shift_click":
+            #     selected_views[unique] = input_value
+            # elif action == "on_click":
+            #     selected_views.clear()
+            #     selected_views[unique] = input_value
+            # elif action == "on_hover":
+            #     bg_hovered = True
+            # elif action == "on_drag":
+            #     window_ags = kwargs.copy()
+            #     core_draw_window(window_func=func, input_value=input_value,
+            #                      window_stack=window_stack,
+            #                      style_manager=style_manager, name=name,
+            #                      unique=unique, args=(), kwargs=window_ags)
 
             rect_size = imgui.get_item_rect_size()
             header_width = rect_size[0]
@@ -117,6 +124,12 @@ def with_simple_header(func, *args, **o_kwargs):
                     imgui.same_line()
 
         return_value = func(**next_kwargs)
+        end_y_pos = imgui.get_cursor_screen_pos()[1]
+        height = end_y_pos - start_y_pos - 2
+        draw_state.height = height
+        draw_state.width = width
+        draw_state.top = start_y_pos
+        draw_state.left = start_x_pos
 
         imgui.unindent(indent_size)
 
@@ -130,7 +143,7 @@ def with_header(func, *args, **o_kwargs):
     def wrapper(input_value=None, indent_size=10, depth=0, draw_state=None,
                 window_stack=None, is_tree=True, is_window=False,
                 show_header=True, show_bg=True, unique=0, name="", style_manager=None,
-                selected_views=None, next_kwargs=None, **kwargs):
+                selected_views=None, on_drag=False, next_kwargs=None, **kwargs):
         annotation = annotation_track(*args, wrapper=wrapper, **o_kwargs)
         if annotation is not None: return annotation
 
@@ -157,9 +170,11 @@ def with_header(func, *args, **o_kwargs):
             elif action == "on_click":
                 selected_views.clear()
                 selected_views[unique] = input_value
-            elif action == "on_hover":
-                bg_hovered = True
-            elif action == "on_drag":
+
+                if on_drag:
+                    bg_hovered = True
+
+
                 window_ags = kwargs.copy()
                 core_draw_window(window_func=func, input_value=input_value,
                                  window_stack=window_stack,
@@ -185,23 +200,23 @@ def with_header(func, *args, **o_kwargs):
 
         padding = imgui.get_style().frame_padding.y
         background_height = max(imgui.get_text_line_height() + padding, background_height)
-
+        background_width = width
+        draw_state.height = background_height
+        draw_state.width = background_width
+        draw_state.top = start_y_pos
+        draw_state.left = start_x_pos
         if inside_window:
             if show_bg:
                 draw_list.channels_set_current(max(0, min(Melty.max_depth - 2, depth - 2)))
-                background_width = width
+                bg_hovered = on_drag
                 draw_bg(left=start_x_pos, top=start_y_pos,
                         width=background_width, height=background_height,
                         tint=bg_tint, hovered=bg_hovered, selected=bg_selected)
-                draw_state.height = background_height
-                draw_state.width = background_width
-                draw_state.top = start_y_pos
-                draw_state.left = start_x_pos
+
                 if draw_state.expanded:
                     draw_state.expanded_height = background_height
 
         imgui.unindent(indent_size)
-
         if inside_window:
             draw_list.channels_set_current(Melty.max_depth - 1)
 
@@ -254,7 +269,7 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0, show_header=False, show
     if selected:
         hovered_offset = 0.1
     elif hovered:
-        hovered_offset = 0.02
+        hovered_offset = 0.3
 
 
     bg_style = global_style.get_global_constant("bg_style", default=bg_style, folder="bg_styles")
@@ -297,8 +312,10 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
     dynamic_value = max(0, (float(depth + depth_offset) * depth_factor))
     bg_style = global_style.get_global_constant("bg_style", default=None, folder="bg_styles")
     saturation = -0.5
-    action = ActionType.NONE
     # Make header slightly brighter
+
+    if on_drag:
+        print(f"drag header {name}")
 
     saturation = bg_style['saturation'] + saturation
     name_color = (style_manager.
@@ -410,7 +427,8 @@ def draw_object(input_value=None, draw_state=None, meta=None, name="", style_man
             hasattr(input_value, "__dict__") and depth < Melty.max_depth)
     if is_collection:
         # Handle collections
-        changed, new_value = draw_collection(input_value=input_value, name=name, suffix=suffix, **kwargs)
+        changed, new_value = draw_collection(input_value=input_value,
+                                             name=name, suffix=suffix, **kwargs)
     else:
         return_value = None
         push_id(unique)
@@ -433,6 +451,23 @@ def draw_object(input_value=None, draw_state=None, meta=None, name="", style_man
 @render_func
 def draw_any(input_value, *args, meta=None, **kwargs):
     return meta.view_function(input_value, *args, **kwargs)
+
+
+@with_simple_header(is_default_for=(NoneType))
+def draw_none(input_value: NoneType):
+    imgui.align_text_to_frame_padding()
+    imgui.text("None")
+
+    return False, None
+
+
+@with_simple_header(is_default_for=(bool))
+def draw_bool(input_value: bool):
+    changed, is_checked = imgui.checkbox("##bool", input_value)
+    if changed:
+        return True, is_checked
+
+    return False, None
 
 
 @with_simple_header(is_default_for=(str))

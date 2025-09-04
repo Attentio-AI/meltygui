@@ -21,63 +21,50 @@ def drag_released(unique):
     return drag_released
 
 class ActionType(Enum):
-    CLICK = 'click'
-    SHIFT_CLICK = 'shift_click'
-    HOVERED = 'hovered'
-    DRAG = 'drag'
-    NONE = 'none'
+    CLICK = 'on_click'
+    DOWN = 'on_mouse_down'
+    DRAG = 'on_drag'
+    DRAG_UP = 'on_drag_up'
+
+class MouseAction:
+    def __init__(self, action_type: ActionType, button=0):
+        self.action_type = action_type
+        self.button = button
 
 class Melty:
     max_depth = 40
-    actions = {
-        'on_hover': Action(trigger_condition=lambda is_hovered, unique: is_hovered,
-                           clear_condition=lambda is_hovered, unique: not is_hovered,
-                           re_arm_condition=lambda is_hovered, unique: not is_hovered),
-        'on_click': Action(trigger_condition= lambda is_hovered, unique: is_hovered and imgui.is_mouse_down(0) and not Melty.shift_key(),
-                            clear_condition= lambda is_hovered, unique: 'on_click' in Melty.triggered_actions,
-                           re_arm_condition= lambda is_hovered, unique: not imgui.is_mouse_down(0)),
-        'on_shift_click': Action(trigger_condition=lambda is_hovered, unique: is_hovered and imgui.is_mouse_down(0) and
-                                                               Melty.shift_key(),
-                           clear_condition=lambda is_hovered, unique: 'shift_click' in Melty.triggered_actions,
-                           re_arm_condition=lambda is_hovered, unique: not imgui.is_mouse_down(0)),
-        'on_right_click': Action(trigger_condition=lambda is_hovered, unique: is_hovered and imgui.is_mouse_down(1),
-                           clear_condition=lambda is_hovered, unique: not imgui.is_mouse_down(0),
-                           re_arm_condition=lambda is_hovered, unique: not imgui.is_mouse_down(1)),
-        'on_middle_click': Action(trigger_condition=lambda is_hovered, unique: is_hovered and imgui.is_mouse_down(2),
-                                 clear_condition=lambda is_hovered, unique: 'on_right_click' in Melty.triggered_actions,
-                                 re_arm_condition=lambda is_hovered, unique: not imgui.is_mouse_down(2)),
-        'on_drag': Action(trigger_condition=lambda is_hovered, unique: is_hovered and imgui.is_mouse_down(0) and
-                          'on_drag' not in Melty.triggered_actions,
-                           clear_condition=lambda is_hovered, unique: not imgui.is_mouse_down(0),
-                           re_arm_condition=lambda is_hovered, unique: not imgui.is_mouse_down(0)),
 
-        'on_drag_released': Action(trigger_condition=lambda is_hovered, unique: 'on_drag' in Melty.last_triggered_actions and
-                                                                    'on_drag' not in Melty.triggered_actions and
-                                                                    Melty.last_triggered_actions['on_drag'] == unique,
-                          clear_condition=lambda is_hovered, unique:  not imgui.is_mouse_down(0) and unique == Melty.last_triggered_actions.get('on_drag_released', None),
-                          re_arm_condition=lambda is_hovered, unique: not imgui.is_mouse_down(0) and unique == Melty.last_triggered_actions.get('on_drag_released', None)),
-        'any_drag_released': Action(trigger_condition=lambda is_hovered, unique: 'on_drag' in Melty.last_triggered_actions and
-                                                                    'on_drag' not in Melty.triggered_actions,
-                                   clear_condition=lambda is_hovered, unique: not imgui.is_mouse_down(
-                                       0) and is_hovered == Melty.last_triggered_actions.get('on_drag_released', None),
-                                   re_arm_condition=lambda is_hovered, unique: not imgui.is_mouse_down(
-                                       0) and is_hovered == Melty.last_triggered_actions.get('on_drag_released', None)),
+    @staticmethod
+    def check_event(unique, mouse_btn, event_type):
+        if unique in Melty.triggered_actions:
+            action = Melty.triggered_actions[unique]
+            if action.action_type == event_type and action.button == mouse_btn:
+                return True
+        return False
 
 
-    }
+    @staticmethod
+    def mark_event(unique, mouse_btn, event_type: ActionType):
+        Melty.triggered_actions[unique] = MouseAction(event_type, mouse_btn)
 
-    action_stack = {}
-    prior_action_stack = {}
+    @staticmethod
+    def shift_down():
+        return (glfw.get_key(Melty.vis.window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS or
+                     glfw.get_key(Melty.vis.window, glfw.KEY_RIGHT_SHIFT) == glfw.PRESS)
+
+    last_frame_actions = {}
+    tracked_views = set()
+
+    hover_stack = []
+    # One for each mouse button
     triggered_actions = {}
-    last_triggered_actions = {}
-    cleared_actions = set()
+    dragged_item = None
+    selected_views = {}
 
     vis = None
     type_defaults = {}
     unique_stack = []
     window_stack = []
-
-    selected_views = {}
 
     @staticmethod
     def shift_key():
