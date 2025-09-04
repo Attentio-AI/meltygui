@@ -446,13 +446,10 @@ def render_func(*args, **o_kwargs):
             print_colored_traceback()
         finally:
 
-            was_mouse_down = draw_state.mouse_down
-            draw_state.clicked = False
             # Needs to go after mouse down check
+            pop_id()
+            imgui.end_group()
 
-            if draw_state.drag_released:
-                draw_state.drag_released = False
-                Melty.dragged_item = None
             # Leave view
             Melty.unique_stack.pop()
 
@@ -460,9 +457,17 @@ def render_func(*args, **o_kwargs):
 
             for m_btn in [0,1,2]:
                 btn_state = draw_state.mouse_btn_state[m_btn]
+
                 if btn_state.drag_released:
                     btn_state.drag_released = False
-                if draw_state.hovered and not imgui.is_item_hovered():
+                    Melty.dragged_item = None
+
+                was_mouse_down = btn_state.mouse_down
+                btn_state.clicked = False
+
+                if btn_state.drag_released:
+                    btn_state.drag_released = False
+                if draw_state.hovered and imgui.is_window_hovered():
                     if imgui.is_mouse_down(m_btn) and btn_state.mouse_up:
                         if not btn_state.mouse_down:
                             btn_state.mouse_down_pos = imgui.get_mouse_pos()
@@ -505,8 +510,7 @@ def render_func(*args, **o_kwargs):
             draw_state.hovered = False
             if is_hovered:
                 Melty.hover_stack.append(unique)
-            pop_id()
-            imgui.end_group()
+
 
             hovered_draw_state = None
             # Root view
