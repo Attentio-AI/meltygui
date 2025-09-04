@@ -82,10 +82,9 @@ def render_with_foo(func, *args, **kwargs):
 
 @render_wrapper(wraps=render_func)
 def with_simple_header(func, *args, **o_kwargs):
-    def wrapper(input_value=None, indent_size=10, depth=0, draw_state=None,
-                window_stack=None, on_drag_up=False, on_drag=False, is_tree=True, is_window=False, on_action=None,
-                show_header=True, show_bg=True, unique=0, name="", style_manager=None,
-                selected_views=None, next_kwargs=None, **kwargs):
+    def wrapper(input_value=None, indent_size=10, draw_state=None,
+                window_stack=None, on_drag_up=False, on_hover=False,
+                show_header=True, name="", next_kwargs=None, **kwargs):
         annotation = annotation_track(*args, wrapper=wrapper, **o_kwargs)
         if annotation is not None: return annotation
         if window_stack is None:
@@ -101,6 +100,7 @@ def with_simple_header(func, *args, **o_kwargs):
 
         if show_header:
             next_kwargs['is_tree'] = False
+            next_kwargs['highlight'] = on_hover
             changed, action = draw_header(**next_kwargs)
             # if action == "on_shift_click":
             #     selected_views[unique] = input_value
@@ -144,7 +144,7 @@ def with_header(func, *args, **o_kwargs):
     def wrapper(input_value=None, indent_size=10, depth=0, draw_state=None,
                 window_stack=None, is_tree=True, is_window=False,
                 show_header=True, show_bg=True, unique=0, name="", style_manager=None,
-                selected_views=None, on_drag=False, next_kwargs=None, **kwargs):
+                selected_views=None, on_drag=False, on_hover=False, next_kwargs=None, **kwargs):
         annotation = annotation_track(*args, wrapper=wrapper, **o_kwargs)
         if annotation is not None: return annotation
 
@@ -165,6 +165,7 @@ def with_header(func, *args, **o_kwargs):
         bg_selected = False
         bg_hovered = False
         if show_header:
+            next_kwargs['highlight'] = on_hover
             changed, action = draw_header(**next_kwargs)
             if action == "on_shift_click":
                 selected_views[unique] = input_value
@@ -226,9 +227,9 @@ def with_header(func, *args, **o_kwargs):
     return wrapper
 
 @render_func
-def draw_bg(left=0, top=0, width=20, height=20, depth=0, show_header=False, show_bg=False,
-            global_style=None, global_toggles=None,
-            style_manager=None, unique=0, selected_views=None, tint=None, selected=False,
+def draw_bg(left=0, top=0, width=20, height=20, depth=0,
+            global_style=None,
+            style_manager=None, tint=None, selected=False,
             hovered=False):
     # Render background
     def current_indent_px():
@@ -300,7 +301,7 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0, show_header=False, show
 def draw_header(input_value=None, name="", unique=None, is_tree=True,
                 show_name=True, show_type=False, show_unique=False,
                 draw_state=None, is_window=False, on_click=False,
-                on_hover=False,
+                on_hover=False, highlight=False,
                 on_right_click=False, show_bg=False, selected_views=None,
                 on_drag=False, on_drag_released=False, on_action=None, style_manager=None,
                 global_style=None, global_toggles=None, depth=0, shift_click=False):
@@ -313,15 +314,19 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
     dynamic_value = max(0, (float(depth + depth_offset) * depth_factor))
     bg_style = global_style.get_global_constant("bg_style", default=None, folder="bg_styles")
     saturation = -0.5
+    hover_offset = 0.0
     # Make header slightly brighter
 
     if on_drag:
         print(f"drag header {name}")
 
-    saturation = bg_style['saturation'] + saturation
+    if highlight:
+        hover_offset = 0.2
+
+    saturation = bg_style['saturation'] + saturation - hover_offset
     name_color = (style_manager.
                   make_color_style_value(input=bg_style, saturation=saturation,
-                                         value=max(0, dynamic_value * value_factor + value_offset)))
+                                         value=max(0, dynamic_value * value_factor + value_offset + hover_offset)))
 
     region_available = imgui.get_content_region_available()
     if is_tree:
@@ -345,19 +350,21 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
         imgui.same_line()
 
     if show_name and name != "":
-        imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
-        imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
-        imgui.same_line()
+
+        imgui.same_line(spacing=0)
         imgui.set_item_allow_overlap()
         imgui.set_cursor_pos_x(cursor_start[0])
-        imgui.set_cursor_pos_y(cursor_start[1] + imgui.get_style().frame_padding.y)
         button_width = max(5, name_end[0] - cursor_start[0])
-        button_height = imgui.get_text_line_height() + imgui.get_style().frame_padding.y
+        button_height = imgui.get_text_line_height() + imgui.get_style().frame_padding.y * 2
         imgui.set_item_allow_overlap()
+        imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
+        imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (0, 3))
+
         if imgui.invisible_button(f"##block_tree", width=button_width,
                                   height=button_height):
             pass
-        imgui.same_line()
+        imgui.set_item_allow_overlap()
+        imgui.same_line(spacing=0)
         imgui.set_item_allow_overlap()
         imgui.pop_style_var(2)
 

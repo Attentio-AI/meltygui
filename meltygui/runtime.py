@@ -25,6 +25,7 @@ class ActionType(Enum):
     DOWN = 'on_mouse_down'
     DRAG = 'on_drag'
     DRAG_UP = 'on_drag_up'
+    HOVERED = 'on_hover'
 
 class MouseAction:
     def __init__(self, action_type: ActionType, button=0):

@@ -59,7 +59,7 @@ class DrawState:
     def is_hovered(self):
         if self.left is None or self.top is None or self.width is None or self.height is None:
             return False
-        rect = (self.left, self.top, self.width, self.height)
+        rect = (self.left, self.top - 5, self.width, self.height + 10)
         if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
             return True
         return False
@@ -293,7 +293,6 @@ def render_func(*args, **o_kwargs):
     func = args[0] if args else None
     param_types = o_kwargs.get("param_types", None)
     wanted_params = o_kwargs.get("wanted_params", None)
-    wanted_params_inner = o_kwargs.get("wanted_params_inner", None)
     param_defaults = o_kwargs.get("param_defaults", None)
     name_to_param_type = o_kwargs.get("name_to_param_type", None)
 
@@ -321,7 +320,6 @@ def render_func(*args, **o_kwargs):
 
         first_arg = args[0] if args else None
         input_value = kwargs.get("input_value", first_arg)
-        second_arg = args[1] if len(args) > 1 else None
         attr_name = kwargs.get("name", "")
         from src.lsd.gl_gui.view.core_views.core_presets import Meta
         meta = kwargs.get("meta", None)
@@ -396,6 +394,12 @@ def render_func(*args, **o_kwargs):
             elif wanted_param == "on_drag_up":
                 found_param = Melty.check_event(unique, 0, ActionType.DRAG_UP)
 
+            if wanted_param == "on_hover":
+                found_param = Melty.check_event(unique, 0, ActionType.HOVERED)
+
+            if found_param == True and wanted_param == "on_hover":
+                pass
+
             # Try global constants
             if found_param is None and wanted_param in vars(Melty):
                 found_param = getattr(Melty, wanted_param)
@@ -411,9 +415,7 @@ def render_func(*args, **o_kwargs):
         # is_header = func.__name__ == draw_header.__name__
         # if not is_header and kwargs.get("show_header", True):
         #     draw_header(**kwargs)
-        start_x_pos = imgui.get_cursor_screen_pos()[0]
         start_y_pos = imgui.get_cursor_screen_pos()[1]
-        width = imgui.get_content_region_available()[0]
 
         imgui.begin_group()
         push_id(unique)
@@ -441,12 +443,10 @@ def render_func(*args, **o_kwargs):
         except Exception as e:
             print_colored_traceback()
         finally:
-
             # Needs to go after mouse down check
             pop_id()
             imgui.end_group()
             Melty.depth = Melty.depth - 1
-
             # Leave view
             Melty.unique_stack.pop()
 
@@ -496,13 +496,10 @@ def render_func(*args, **o_kwargs):
                         btn_state.dragged = True
                         Melty.mark_event(unique, m_btn, ActionType.DRAG)
 
+            if draw_state.hovered and imgui.is_window_hovered():
+                if unique not in Melty.triggered_actions:
+                    Melty.mark_event(unique, 0, ActionType.HOVERED)
 
-            end_y_pos = imgui.get_cursor_screen_pos()[1]
-            height = end_y_pos - start_y_pos - 2
-            # draw_state.height = height
-            # draw_state.width = width
-            # draw_state.top = start_y_pos
-            # draw_state.left = start_x_pos
             is_hovered = draw_state.is_hovered()
             draw_state.hovered = False
             if is_hovered:
@@ -517,7 +514,6 @@ def render_func(*args, **o_kwargs):
                     hovered_draw_state = _draw_state_registry.get(last, None)
                     if hovered_draw_state is not None:
                         hovered_draw_state.hovered = True
-
                 Melty.hover_stack = []
 
             if return_value is None:
