@@ -3,8 +3,9 @@ from types import NoneType
 
 import imgui
 
+from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, tree
-from src.lsd.gl_gui.melty import Melty, ActionType
+from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.view.core_views.core_render import render_func, tmp_undo_stack, redo_stack, push_id, pop_id, ui_id, \
     render_wrapper, annotation_track
 
@@ -302,7 +303,7 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
                 on_hover=False,
                 on_right_click=False, show_bg=False, selected_views=None,
                 on_drag=False, on_drag_released=False, on_action=None, style_manager=None,
-                global_style=None, depth=0, shift_click=False):
+                global_style=None, global_toggles=None, depth=0, shift_click=False):
 
     value_factor = global_style.get_global_constant("depth_factor", default=1.0, folder="bg_styles")
     value_offset = global_style.get_global_constant("depth_offset", default=0.0, folder="bg_styles")
@@ -360,7 +361,45 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
         imgui.set_item_allow_overlap()
         imgui.pop_style_var(2)
 
+    do_profile = global_toggles.profiler == ProfileMode.ON
+    if do_profile:
+        profile_time = draw_state.render_time
+        render_profiler_time(input_value=profile_time, brief=True,
+                             style_manager=style_manager, global_style=global_style)
+
+
     return False, on_action
+
+def render_profiler_time(input_value=None, brief=False, style_manager=None,
+                         global_style=None):
+    """
+    Renders the time taken for a specific operation in the profiler.
+    """
+    in_ms = input_value * 1000.0
+    if brief:
+        if in_ms >= 0.99:
+            formatted_value = f"{(in_ms):.1f}ms"
+        else:
+            formatted_value = f"{(in_ms):.2f}ms"
+        if formatted_value.startswith("0."):
+            formatted_value = formatted_value[1:]
+    else:
+        formatted_value = f"{in_ms:.2f} ms"
+    golden_yellow = (2.0, 0.5, 0)
+    dynamic_saturation_factor = global_style.profiler["object_attr"][
+        "dynamic_saturation_factor"]
+    dynamic_saturation_offset = global_style.profiler["object_attr"][
+        "dynamic_saturation_offset"]
+    saturation = global_style.profiler["object_attr"]["saturation"]
+    value = global_style.profiler["object_attr"]["value"]
+    dynamic_sat = (float(in_ms + dynamic_saturation_offset) * dynamic_saturation_factor)
+    text_tint = style_manager.make_color_rgb(*golden_yellow, factor=1.0 - dynamic_sat,
+                                                       value=min(1.0, max(0, value + dynamic_sat * 0.5)),
+                                                       alpha=1.0,
+                                                       saturation_scale=max(0, saturation - dynamic_sat))[:3]
+    imgui.text_colored(f"{formatted_value}", *text_tint)
+    return False, input_value
+
 
 @with_header
 def draw_collection(input_value=None, depth=0, style_manager=None,

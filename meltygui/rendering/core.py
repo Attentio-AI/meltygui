@@ -1,6 +1,7 @@
 import inspect
 import math
 import sys
+import time
 import zlib
 from copy import copy
 from functools import wraps
@@ -8,7 +9,7 @@ from typing import Any
 
 import imgui
 
-from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, LSDView, request_render
+from src.lsd.gl_gui.utils.custom_views import print_colored_traceback
 from src.lsd.gl_gui.melty import Melty, ActionType
 
 
@@ -50,6 +51,9 @@ class DrawState:
         self.dragged = False
         self.mouse_down_pos = (0, 0)
         self.drag_delta = (0, 0)
+
+        # Profiling
+        self.render_time = 0.0
         # add more per-widget stuff as needed
 
     def is_hovered(self):
@@ -302,6 +306,7 @@ def render_func(*args, **o_kwargs):
     """
     @wraps(func)
     def wrapper(*args, **kwargs):
+        start_time = time.time()
         if kwargs.get("bypass", False):
             return func(*args, **kwargs)
 
@@ -522,6 +527,9 @@ def render_func(*args, **o_kwargs):
             else:
                 imgui.text("Unsupported return from render_func")
                 changed, new_value = False, None
+
+            end_time = time.time()
+            draw_state.render_time = end_time - start_time
 
         return changed, new_value
 
