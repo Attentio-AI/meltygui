@@ -44,6 +44,9 @@ class FieldMeta(type):
                 new_namespace[key] = value
                 continue
 
+            if key == "alpha":
+                pass
+
             value_annotation = namespace.get("__annotations__", {}).get(key, None)
             # marker line
             if hasattr(value, 'is_meta'):

@@ -195,7 +195,7 @@ def render_wrapper(*o_args, **o_kwargs):
             wrap_func = None
             if 'wraps' in o_kwargs:
                 wrap_func = o_kwargs.get('wraps', None)
-                func = wrap_func(func, **kwargs)
+                func = wrap_func(func, param_defaults=param_defaults, **kwargs)
 
             out_func = r_func(func, param_types=param_types, wanted_params=wanted_params,
                               wanted_params_inner=wrap_defaults,
@@ -288,6 +288,7 @@ def render_func(*args, **o_kwargs):
         if kwargs.get("bypass", False):
             return func(*args, **kwargs)
 
+        o_kwargs.update(kwargs)
         annotation = annotation_track(*args, wrapper=wrapper, **o_kwargs)
         if annotation is not None:
             return annotation

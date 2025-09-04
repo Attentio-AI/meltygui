@@ -77,6 +77,54 @@ def render_with_foo(func, *args, **kwargs):
 
     return wrapper
 
+
+@render_wrapper(wraps=render_func)
+def with_simple_header(func, *args, **o_kwargs):
+    def wrapper(input_value=None, indent_size=10, depth=0, draw_state=None,
+                window_stack=None, is_tree=True, is_window=False,
+                show_header=True, show_bg=True, unique=0, name="", style_manager=None,
+                selected_views=None, next_kwargs=None, **kwargs):
+        annotation = annotation_track(*args, wrapper=wrapper, **o_kwargs)
+        if annotation is not None: return annotation
+        if window_stack is None:
+            pass
+        imgui.indent(indent_size)
+        cutoff = 100
+
+        if show_header:
+            next_kwargs['is_tree'] = False
+            changed, action = draw_header(**next_kwargs)
+            if action == "on_shift_click":
+                selected_views[unique] = input_value
+            elif action == "on_click":
+                selected_views.clear()
+                selected_views[unique] = input_value
+            elif action == "on_hover":
+                bg_hovered = True
+            elif action == "on_drag":
+                window_ags = kwargs.copy()
+                core_draw_window(window_func=func, input_value=input_value,
+                                 window_stack=window_stack,
+                                 style_manager=style_manager, name=name,
+                                 unique=unique, args=(), kwargs=window_ags)
+
+            rect_size = imgui.get_item_rect_size()
+            header_width = rect_size[0]
+
+            space_available = imgui.get_content_region_available()[0] - header_width
+            if draw_state.expanded_height is None or draw_state.expanded_height < 70:
+                if space_available > cutoff:
+                    imgui.same_line()
+
+        return_value = func(**next_kwargs)
+
+        imgui.unindent(indent_size)
+
+        return return_value
+
+    return wrapper
+
+
 @render_wrapper(wraps=render_func)
 def with_header(func, *args, **o_kwargs):
     def wrapper(input_value=None, indent_size=10, depth=0, draw_state=None,
@@ -104,7 +152,6 @@ def with_header(func, *args, **o_kwargs):
         bg_hovered = False
         if show_header:
             changed, action = draw_header(**next_kwargs)
-
             if action == "on_shift_click":
                 selected_views[unique] = input_value
             elif action == "on_click":
@@ -113,8 +160,6 @@ def with_header(func, *args, **o_kwargs):
             elif action == "on_hover":
                 bg_hovered = True
             elif action == "on_drag":
-                show_header = False
-
                 window_ags = kwargs.copy()
                 core_draw_window(window_func=func, input_value=input_value,
                                  window_stack=window_stack,
@@ -237,7 +282,7 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0, show_header=False, show
 
 @render_func
 def draw_header(input_value=None, name="", unique=None, is_tree=True,
-                show_name=True, show_type=False, show_unique=True,
+                show_name=True, show_type=False, show_unique=False,
                 draw_state=None, is_window=False, on_click=False,
                 on_hover=False,
                 on_right_click=False, show_bg=False, selected_views=None,
@@ -301,6 +346,62 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
     return False, on_action
 
 @with_header
+def draw_collection(input_value=None, depth=0, style_manager=None,
+                    meta=None, suffix="", *args, **kwargs):
+    changed, value = False, input_value
+    # Handle collections
+    if isinstance(input_value, dict):
+        changed = False
+        for k, v in input_value.items():
+            previous_tint = style_manager.get_tint()
+            if hasattr(v, 'tint'):
+                style_manager.set_imgui_tint(*v.tint)
+            # Derive meta for dict entry
+            suffix = f"{suffix}_{str(k)}"
+            obj_unique, _, _ = ui_id(meta, suffix=suffix)
+            view_function = meta.view_function if meta and meta.view_function else draw_object
+            item_changed, value = view_function(input_value=v, meta=meta,
+                                                    suffix=obj_unique, name=k)
+            changed |= item_changed
+            if hasattr(v, 'tint'):
+                style_manager.set_imgui_tint(*previous_tint)
+    elif isinstance(input_value, (list, tuple, set)):
+        changed = False
+        for i, v in enumerate(input_value):
+            suffix = f"{suffix}_{str(i)}"
+            obj_unique, _, _ = ui_id(meta, suffix=suffix)
+            child_meta = Melty.type_defaults.get(type(v), meta)
+            item_changed, new_value = child_meta.view_function(input_value=v, meta=child_meta,
+                                                               suffix=obj_unique, name=str(i))
+            changed |= item_changed
+    elif hasattr(input_value, "__dict__") and depth < Melty.max_depth:  # class or module instance
+        for k, v in vars(input_value).items():
+            # skip private attrs, methods, etc.
+            if k == "alpha":
+                pass
+            if (k.startswith("__") and k.endswith("__")) or k.startswith("_"):
+                continue
+            try:
+                parent_type = type(input_value)
+                child_meta = parent_type.get_child_meta(field_name=k, value=v) if (
+                    hasattr(parent_type, "get_child_meta")) else meta
+                if child_meta is not None:
+                    kwargs['meta'] = child_meta
+                suffix = f"{suffix}_{str(k)}"
+                obj_unique, _, _ = ui_id(child_meta, suffix=suffix)
+                view_function = child_meta.view_function
+                item_changed, new_value = view_function(input_value=v, meta=child_meta,
+                                                        suffix=obj_unique, name=k)
+                if item_changed:
+                    setattr(input_value, k, new_value)
+            except Exception as e:
+                print_colored_traceback()
+                pass
+
+    return changed, value
+
+
+@render_func
 def draw_object(input_value=None, draw_state=None, meta=None, name="", style_manager=None,
                 depth=0, unique=0, suffix="", is_tree=True, indent_size=10, *args, **kwargs):
     # if is_tree and not draw_state.expanded:
@@ -309,58 +410,12 @@ def draw_object(input_value=None, draw_state=None, meta=None, name="", style_man
             hasattr(input_value, "__dict__") and depth < Melty.max_depth)
     if is_collection:
         # Handle collections
-        if isinstance(input_value, dict):
-            changed = False
-            for k, v in input_value.items():
-                previous_tint = style_manager.get_tint()
-                if hasattr(v, 'tint'):
-                    style_manager.set_imgui_tint(*v.tint)
-                # Derive meta for dict items
-                suffix = f"{suffix}_{str(k)}"
-                obj_unique, _, _ = ui_id(meta, suffix=suffix)
-                view_function = meta.view_function if meta and meta.view_function else draw_object
-                item_changed, new_value = view_function(input_value=v, meta=meta,
-                                                             suffix=obj_unique, name=k)
-                changed |= item_changed
-                if hasattr(v, 'tint'):
-                    style_manager.set_imgui_tint(*previous_tint)
-        elif isinstance(input_value, (list, tuple, set)):
-            changed = False
-            for i, v in enumerate(input_value):
-                suffix = f"{suffix}_{str(i)}"
-                obj_unique, _, _ = ui_id(meta, suffix=suffix)
-                child_meta = Melty.type_defaults.get(type(v), meta)
-                item_changed, new_value = child_meta.view_function(input_value=v, meta=child_meta,
-                                                             suffix=obj_unique, name=str(i))
-                changed |= item_changed
-        elif hasattr(input_value, "__dict__") and depth < Melty.max_depth:  # class or module instance
-            for k, v in vars(input_value).items():
-                # skip private attrs, methods, etc.
-                if (k.startswith("__") and k.endswith("__")) or k.startswith("_"):
-                    continue
-                try:
-                    parent_type = type(input_value)
-                    child_meta = parent_type.get_child_meta(field_name=k, value=v) if (
-                        hasattr(parent_type, "get_child_meta")) else meta
-
-                    if child_meta is not None:
-                        kwargs['meta'] = child_meta
-
-                    suffix = f"{suffix}_{str(k)}"
-                    obj_unique, _, _ = ui_id(child_meta, suffix=suffix)
-                    view_function = child_meta.view_function
-                    item_changed, new_value = view_function(input_value=v, meta=child_meta,
-                                                                         suffix=obj_unique, name=k)
-                    if item_changed:
-                        setattr(input_value, k, new_value)
-                except Exception as e:
-                    print_colored_traceback()
-                    pass
+        changed, new_value = draw_collection(input_value=input_value, name=name, suffix=suffix, **kwargs)
     else:
         return_value = None
         push_id(unique)
         try:
-            imgui.text("Render object")
+            imgui.text(f"Render object {name}")
         except Exception as e:
             print_colored_traceback()
         finally:
@@ -372,7 +427,7 @@ def draw_object(input_value=None, draw_state=None, meta=None, name="", style_man
             else:
                 imgui.text("Unsupported return from render_func")
                 changed, new_value = False, None
-    return False, None
+    return changed, new_value
 
 
 @render_func
@@ -380,7 +435,7 @@ def draw_any(input_value, *args, meta=None, **kwargs):
     return meta.view_function(input_value, *args, **kwargs)
 
 
-@render_func(is_default_for=(str))
+@with_simple_header(is_default_for=(str))
 def draw_str(input_value: str):
     changed, value = imgui.input_text("##str", input_value)
     if changed:
@@ -388,7 +443,7 @@ def draw_str(input_value: str):
 
     return changed, value
 
-@render_func(is_default_for=(tuple))
+@with_simple_header(is_default_for=(tuple))
 def draw_tuple(input_value: tuple, is_tree=False):
     if len(input_value) == 4:
         color_list = list(input_value)
@@ -413,7 +468,7 @@ def draw_tuple(input_value: tuple, is_tree=False):
             input_value = (color[0], color[1], color[2])
     return changed, input_value
 
-@render_func(is_default_for=(float))
+@with_simple_header(is_default_for=float)
 def draw_float(input_value:float, min_value=-100.0, max_value=100.0, speed=0.01):
     changed, value = imgui.drag_float("##float", input_value,
                                       change_speed=speed,
@@ -425,7 +480,7 @@ def draw_float(input_value:float, min_value=-100.0, max_value=100.0, speed=0.01)
     return changed, value
 
 
-@render_func(is_default_for=(int), wraps=render_func)
+@with_simple_header(is_default_for=(int), wraps=render_func)
 def draw_int(input_value: int, min_value=-100.0, max_value=100.0, speed=0.05):
     changed, value = imgui.drag_int("##int", input_value,
                                       change_speed=speed,
