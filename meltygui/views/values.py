@@ -5,7 +5,7 @@ import imgui
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, tree
 from src.lsd.gl_gui.melty import Melty, ActionType
 from src.lsd.gl_gui.view.core_views.core_render import render_func, tmp_undo_stack, redo_stack, push_id, pop_id, ui_id, \
-    renderer_wrapper
+    render_wrapper, annotation_track
 
 
 def generate_class_diff(obj, updates):
@@ -68,7 +68,7 @@ def draw_window(input_value, window_stack=None, style_manager=None,
     core_draw_window(window_func=draw_object, input_value=input_value, window_stack=window_stack,
                      style_manager=style_manager, name=name, unique=unique, args=args, kwargs=kwargs)
 
-@renderer_wrapper(wraps=render_func)
+@render_wrapper(wraps=render_func)
 def render_with_foo(func, *args, **kwargs):
 
     def wrapper(window_stack=None, *args, **kwargs):
@@ -77,6 +77,94 @@ def render_with_foo(func, *args, **kwargs):
 
     return wrapper
 
+@render_wrapper(wraps=render_func)
+def with_header(func, *args, **o_kwargs):
+    def wrapper(input_value=None, indent_size=10, depth=0, draw_state=None,
+                window_stack=None, is_tree=True, is_window=False,
+                show_header=True, show_bg=True, unique=0, name="", style_manager=None,
+                selected_views=None, next_kwargs=None, **kwargs):
+        annotation = annotation_track(*args, wrapper=wrapper, **o_kwargs)
+        if annotation is not None: return annotation
+
+        draw_list = imgui.get_window_draw_list()
+        if window_stack is None:
+            pass
+        inside_window = len(window_stack) > 0
+        if inside_window and show_bg:
+            draw_list.channels_set_current(depth - 1)
+        imgui.indent(indent_size)
+
+        start_x_pos = imgui.get_cursor_screen_pos()[0]
+        start_y_pos = imgui.get_cursor_screen_pos()[1]
+        width = imgui.get_content_region_available()[0]
+        cutoff = 100
+
+        bg_tint = None
+        bg_selected = False
+        bg_hovered = False
+        if show_header:
+            changed, action = draw_header(**next_kwargs)
+            if action == "on_shift_click":
+                selected_views[unique] = input_value
+            elif action == "on_click":
+                selected_views.clear()
+                selected_views[unique] = input_value
+            elif action == "on_hover":
+                bg_hovered = True
+            elif action == "on_drag":
+                show_header = False
+
+                window_ags = kwargs.copy()
+                core_draw_window(window_func=func, input_value=input_value,
+                                 window_stack=window_stack,
+                                 style_manager=style_manager, name=name,
+                                 unique=unique, args=(), kwargs=window_ags)
+
+            if unique in selected_views:
+                bg_selected = True
+            rect_size = imgui.get_item_rect_size()
+            header_width = rect_size[0]
+
+            space_available = imgui.get_content_region_available()[0] - header_width
+            if draw_state.expanded_height is None or draw_state.expanded_height < 70:
+                if space_available > cutoff:
+                    imgui.same_line()
+
+        return_value = None
+        if not is_tree or draw_state.expanded or is_window or show_header:
+            return_value = func(**next_kwargs)
+
+        end_y_pos = imgui.get_cursor_screen_pos()[1]
+        background_height = end_y_pos - start_y_pos - 2
+
+        padding = imgui.get_style().frame_padding.y
+        background_height = max(imgui.get_text_line_height() + padding, background_height)
+
+        if inside_window:
+            if show_bg:
+                draw_list.channels_set_current(max(0, min(Melty.max_depth - 2, depth - 2)))
+                background_width = width
+                draw_bg(left=start_x_pos, top=start_y_pos,
+                        width=background_width, height=background_height,
+                        tint=bg_tint, hovered=bg_hovered, selected=bg_selected)
+                draw_state.height = background_height
+                draw_state.width = background_width
+                draw_state.top = start_y_pos
+                draw_state.left = start_x_pos
+                if draw_state.expanded:
+                    draw_state.expanded_height = background_height
+
+        imgui.unindent(indent_size)
+
+        if inside_window:
+            draw_list.channels_set_current(Melty.max_depth - 1)
+
+        return return_value
+
+    return wrapper
+
+def draw_with(func, wrapped_in):
+    return render_func(wrapped_in(func))
 
 @render_func
 def render_with_header(func=None, indent_size=10, depth=0,
@@ -233,7 +321,7 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0, show_header=False, show
 
 @render_func
 def draw_header(input_value=None, name="", unique=None, is_tree=True,
-                show_name=True, show_type=False, show_unique=False,
+                show_name=True, show_type=False, show_unique=True,
                 draw_state=None, is_window=False, on_click=False,
                 on_hover=False,
                 on_right_click=False, show_bg=False, selected_views=None,
@@ -296,13 +384,11 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
 
     return False, on_action
 
-@render_func
+@with_header
 def draw_object(input_value=None, draw_state=None, meta=None, name="", style_manager=None,
                 depth=0, unique=0, suffix="", is_tree=True, indent_size=10, *args, **kwargs):
     # if is_tree and not draw_state.expanded:
     #     return False, None
-
-
     is_collection = isinstance(input_value, (dict, list, tuple, set)) or (
             hasattr(input_value, "__dict__") and depth < Melty.max_depth)
     if is_collection:
@@ -316,7 +402,8 @@ def draw_object(input_value=None, draw_state=None, meta=None, name="", style_man
                 # Derive meta for dict items
                 suffix = f"{suffix}_{str(k)}"
                 obj_unique, _, _ = ui_id(meta, suffix=suffix)
-                item_changed, new_value = meta.view_function(input_value=v, meta=meta,
+                view_function = meta.view_function if meta and meta.view_function else draw_object
+                item_changed, new_value = view_function(input_value=v, meta=meta,
                                                              suffix=obj_unique, name=k)
                 changed |= item_changed
                 if hasattr(v, 'tint'):
@@ -345,8 +432,9 @@ def draw_object(input_value=None, draw_state=None, meta=None, name="", style_man
 
                     suffix = f"{suffix}_{str(k)}"
                     obj_unique, _, _ = ui_id(child_meta, suffix=suffix)
-                    item_changed, new_value = child_meta.view_function(input_value=v, meta=child_meta,
-                                                                       suffix=obj_unique, name=k)
+                    view_function = child_meta.view_function
+                    item_changed, new_value = view_function(input_value=v, meta=child_meta,
+                                                                         suffix=obj_unique, name=k)
                     if item_changed:
                         setattr(input_value, k, new_value)
                 except Exception as e:
@@ -376,7 +464,7 @@ def draw_any(input_value, *args, meta=None, **kwargs):
     return meta.view_function(input_value, *args, **kwargs)
 
 
-@render_with_foo(is_default_for=(str))
+@render_func(is_default_for=(str))
 def draw_str(input_value: str):
     changed, value = imgui.input_text("##str", input_value)
     if changed:
@@ -421,7 +509,7 @@ def draw_float(input_value:float, min_value=-100.0, max_value=100.0, speed=0.01)
     return changed, value
 
 
-@render_func(is_default_for=(int))
+@render_func(is_default_for=(int), wraps=render_func)
 def draw_int(input_value: int, min_value=-100.0, max_value=100.0, speed=0.05):
     changed, value = imgui.drag_int("##int", input_value,
                                       change_speed=speed,

@@ -117,11 +117,12 @@ def redo_stack(undo_point_id):
             imgui.push_id(str(uid))
         id_stack = saved_stack
 
-def renderer_wrapper(*o_args, **o_kwargs):
+
+def render_wrapper(*o_args, **o_kwargs):
     first_arg = o_args[0] if o_args else None
     if not callable(first_arg):
         def class_wrapper(the_func):
-            return renderer_wrapper(the_func, *o_args, **o_kwargs)
+            return render_wrapper(the_func, *o_args, **o_kwargs)
         return class_wrapper
 
     r_func = o_args[0] if o_args else None
@@ -135,9 +136,10 @@ def renderer_wrapper(*o_args, **o_kwargs):
             return class_wrapper
 
         if 'inner_func' in kwargs:
-            inner_func = kwargs.pop('inner_func', None)
+            inner_func = kwargs.get('inner_func', None)
         else:
             inner_func = r_func
+
 
         func = first_arg if callable(first_arg) else None
         # use the specified wrapper if r_func
@@ -192,15 +194,16 @@ def renderer_wrapper(*o_args, **o_kwargs):
         try:
             wrap_func = None
             if 'wraps' in o_kwargs:
-                wrap_func = o_kwargs.pop('wraps', None)
+                wrap_func = o_kwargs.get('wraps', None)
                 func = wrap_func(func, **kwargs)
 
             out_func = r_func(func, param_types=param_types, wanted_params=wanted_params,
+                              wanted_params_inner=wrap_defaults,
                           param_defaults=param_defaults, name_to_param_type=name_to_param_type,
                           **o_kwargs)
 
             if wrap_func is not None:
-                out_func = wrap_func(out_func, inner_func=func, **o_kwargs)
+                out_func = wrap_func(out_func, inner_func=r_func, **o_kwargs)
 
             return out_func
         except Exception as e:
@@ -209,16 +212,69 @@ def renderer_wrapper(*o_args, **o_kwargs):
     #
     # do_wrap = o_kwargs.pop('wraps', None)
     # if callable(do_wrap):
-    #     wrapper = do_wrap(wrapper, **o_kwargs)
+    # #     wrapper = do_wrap(wrapper, **o_kwargs)
+    # wrap_func = None
+    # if 'wraps' in o_kwargs:
+    #     wrap_func = o_kwargs.pop('wraps', None)
+    #     wrapper = wrap_func(inner_func, **o_kwargs)
+
     return wrapper
 
-@renderer_wrapper
-def render_func(*args, **kwargs):
+def annotation_track(*args, wrapper, **kwargs):
+    first_arg = args[0] if args else None
+    param_defaults = kwargs.get('param_defaults', None)
+    unique, depth, annotation_mode = ui_id(None, suffix=None)
+    from src.lsd.gl_gui.view.core_views.core_presets import Meta
+    if 'annotation_mode' in kwargs or annotation_mode:
+        # Class decoration mode, with args
+        if 'for_type' in kwargs and not isinstance(first_arg, type):
+            def class_wrapper(cls):
+                inner_args = args[1:]
+                return wrapper(cls, *inner_args, **kwargs)
+
+            return class_wrapper
+
+        # Class decoration mode, ie. @render_as_float
+        if isinstance(first_arg, type):
+            for_type = kwargs.get('for_type', None)
+            kwargs.pop('for_type', None)
+            kwargs.pop('default_value', None)
+            args = args[1:] if len(args) > 1 else ()
+
+            new_meta = Meta(param_defaults)
+            for k, v in param_defaults.items():
+                setattr(new_meta, k, v)
+
+            for k, v in kwargs.items():
+                setattr(new_meta, k, v)
+            new_meta.view_function = wrapper
+            if for_type is not None:
+                first_arg.default_meta_for = getattr(first_arg, 'default_meta_for', {})
+                first_arg.default_meta_for[for_type] = new_meta
+            else:
+                first_arg.meta = new_meta
+
+            return first_arg
+
+        # View function was used as annotation, ie. some_param: render_float = 0.0
+        new_meta = Meta(param_defaults)
+        for k, v in param_defaults.items():
+            setattr(new_meta, k, v)
+
+        for k, v in kwargs.items():
+            setattr(new_meta, k, v)
+        new_meta.view_function = wrapper
+        return new_meta
+    return None
+
+@render_wrapper
+def render_func(*args, **o_kwargs):
     func = args[0] if args else None
-    param_types = kwargs.get("param_types", None)
-    wanted_params = kwargs.get("wanted_params", None)
-    param_defaults = kwargs.get("param_defaults", None)
-    name_to_param_type = kwargs.get("name_to_param_type", None)
+    param_types = o_kwargs.get("param_types", None)
+    wanted_params = o_kwargs.get("wanted_params", None)
+    wanted_params_inner = o_kwargs.get("wanted_params_inner", None)
+    param_defaults = o_kwargs.get("param_defaults", None)
+    name_to_param_type = o_kwargs.get("name_to_param_type", None)
 
     """
     Decorator for render functions.
@@ -231,6 +287,10 @@ def render_func(*args, **kwargs):
     def wrapper(*args, **kwargs):
         if kwargs.get("bypass", False):
             return func(*args, **kwargs)
+
+        annotation = annotation_track(*args, wrapper=wrapper, **o_kwargs)
+        if annotation is not None:
+            return annotation
 
         needed_actions = {}
         is_root = len(Melty.unique_stack) == 0
@@ -259,48 +319,6 @@ def render_func(*args, **kwargs):
         kwargs["suffix"] = suffix
         unique, depth, annotation_mode = ui_id(meta
                                                , suffix=suffix) if meta else (0, 0)
-        from src.lsd.gl_gui.view.core_views.core_presets import Meta
-        if 'annotation_mode' in kwargs or annotation_mode:
-            # Class decoration mode, no args
-            if 'for_type' in kwargs and not isinstance(first_arg, type):
-                def class_wrapper(cls):
-                    inner_args = args[1:]
-                    return wrapper(cls, *inner_args, **kwargs)
-                return class_wrapper
-
-            # Class decoration mode, ie. @render_as_float
-            if isinstance(first_arg, type):
-                for_type = kwargs.get('for_type', None)
-                kwargs.pop('for_type', None)
-                kwargs.pop('default_value', None)
-                args = args[1:] if len(args) > 1 else ()
-
-                new_meta = Meta(param_defaults)
-                for k, v in param_defaults.items():
-                    setattr(new_meta, k, v)
-
-                for k, v in kwargs.items():
-                    setattr(new_meta, k, v)
-
-                new_meta.view_function = wrapper
-
-                if for_type is not None:
-                    first_arg.default_meta_for = getattr(first_arg, 'default_meta_for', {})
-                    first_arg.default_meta_for[for_type] = new_meta
-                else:
-                    first_arg.meta = new_meta
-
-                return first_arg
-
-            # View function was used as annotation, ie. some_param: render_func = 0.0
-            new_meta = Meta(param_defaults)
-            for k, v in param_defaults.items():
-                setattr(new_meta, k, v)
-
-            for k, v in kwargs.items():
-                setattr(new_meta, k, v)
-            new_meta.view_function = wrapper
-            return new_meta
 
         draw_state = kwargs.get("draw_state", get_draw_state(unique))
         kwargs["draw_state"] = draw_state
@@ -308,6 +326,7 @@ def render_func(*args, **kwargs):
         meta.input_value = input_value
         kwargs["unique"] = unique
         kwargs["depth"] = depth
+
         for kwarg in kwargs:
             setattr(meta, kwarg, kwargs[kwarg])
 
@@ -386,6 +405,9 @@ def render_func(*args, **kwargs):
         imgui.begin_group()
         push_id(unique)
 
+        if 'next_kwargs' in wanted_params:
+            kwargs['next_kwargs'] = kwargs
+
         Melty.unique_stack.append(unique)
         try:
             clean_args = copy(kwargs)
@@ -410,7 +432,7 @@ def render_func(*args, **kwargs):
             pop_id()
             imgui.end_group()
 
-            is_hovered = draw_state.is_hovered()
+            is_hovered = draw_state.is_hovered() and not imgui.is_any_item_active() or imgui.is_any_item_hovered()
 
             # Handle actions
             for name, action in needed_actions.items():
