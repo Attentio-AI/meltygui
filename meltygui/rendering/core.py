@@ -317,11 +317,9 @@ def render_func(*args, **o_kwargs):
         kwargs["meta"] = meta
         suffix = kwargs.get("suffix", attr_name)
         kwargs["suffix"] = suffix
-        unique, depth, annotation_mode = ui_id(meta
-                                               , suffix=suffix) if meta else (0, 0)
+        unique, depth, annotation_mode = ui_id(meta, suffix=suffix) if meta else (0, 0)
 
-        draw_state = kwargs.get("draw_state", get_draw_state(unique))
-        kwargs["draw_state"] = draw_state
+        draw_state = get_draw_state(unique)
         meta.draw_state = draw_state
         meta.input_value = input_value
         kwargs["unique"] = unique
