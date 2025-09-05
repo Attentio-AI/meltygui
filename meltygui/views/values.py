@@ -177,11 +177,17 @@ def with_simple_header(func, *args, **o_kwargs):
 def draw_drop_target(draw_state, on_drag, do_flow, depth,
                      unique, style_manager):
     # ----------------- top spacing -----------
-    drop_window_size = 30.0
+    falloff = 50.0 # higher is gentler
+    drop_gap = 7.0
     mouse_pos = imgui.get_mouse_pos()
-    cursor_y_screen = imgui.get_cursor_screen_pos()[1] + 10.0
-    distance_to_mouse = abs(mouse_pos[1] - cursor_y_screen) - 10.0
-    bell_curve = max(0.0, min(1.0, 1.0 - (distance_to_mouse / drop_window_size)))
+    dragged_top = Melty.dragged_item.top if Melty.dragged_item is not None else 0
+    cursor_top = imgui.get_cursor_screen_pos()[1]
+
+    cursor_y_screen = imgui.get_cursor_screen_pos()[1]
+    static_offset = 3
+    distance_to_mouse = abs(mouse_pos[1] - cursor_y_screen -
+                            Melty.initial_drag_offset[1] - (drop_gap) + static_offset)
+    bell_curve = max(0.0, min(1.0, 1.0 - (distance_to_mouse / falloff)))
 
     window_size = imgui.get_window_size()
     window_pos = imgui.get_window_position()
@@ -190,14 +196,13 @@ def draw_drop_target(draw_state, on_drag, do_flow, depth,
                    window_pos[1] + window_size[1])
     mouse_over_window = imgui.is_mouse_hovering_rect(*window_rect)
     if Melty.drag_in_progress and do_flow and not on_drag and mouse_over_window:
-        flow_spacing = 5.0 * bell_curve
+        flow_spacing = drop_gap * bell_curve
     else:
         flow_spacing = 0.0
-    #
-    # if do_flow:
-    #     imgui.set_cursor_pos_y(imgui.get_cursor_pos()[1] + flow_spacing)
-    # else:
-    #     imgui.set_cursor_pos_y(imgui.get_cursor_pos()[1])
+    if do_flow:
+        imgui.set_cursor_pos_y(imgui.get_cursor_pos()[1] + flow_spacing)
+    else:
+        imgui.set_cursor_pos_y(imgui.get_cursor_pos()[1])
 
     draw_list = imgui.get_window_draw_list()
     if Melty.inside_window():
@@ -206,6 +211,8 @@ def draw_drop_target(draw_state, on_drag, do_flow, depth,
     line_width = imgui.get_style().frame_padding.y * 2.0
     color = style_manager.make_color_rgb(*(1.0, 1.0, 1.0), factor=1.0,
                                          value=1.0, alpha=1.0, saturation_scale=0.3)
+
+    cursor_bottom = imgui.get_cursor_screen_pos()[1]
     # ------------------ end spacing -----------
 
     if Melty.drag_in_progress and not on_drag and do_flow:
@@ -213,25 +220,25 @@ def draw_drop_target(draw_state, on_drag, do_flow, depth,
             if Melty.inside_window():
                 draw_list.channels_set_current(min(depth + 1, Melty.max_depth - 1))
 
-            if distance_to_mouse < Melty.target_distance:
-                Melty.drag_drop_target = unique
+            if distance_to_mouse < Melty.nearest_drop_distance:
+                Melty.nearest_drop_distance = distance_to_mouse
+                Melty.nearest_drop_target = draw_state.unique
 
-            if Melty.drag_drop_target == unique:
-                Melty.target_distance = distance_to_mouse
-                if distance_to_mouse > Melty.max_distance or not mouse_over_window:
-                    Melty.drag_drop_target = None
-                    Melty.target_distance = Melty.max_distance
+            active_drop = (Melty.drag_drop_target == draw_state.unique)
 
-            active_drop = (Melty.drag_drop_target == unique)
 
-            opacity = 1.0 if active_drop else 0.3
-            offset = flow_spacing * 0.5
+            opacity = 1.0 if active_drop else 0.1
             color = style_manager.make_color_rgb(*(1.0, 1.0, 1.0), factor=1.0,
-                                                 value=1.0, alpha=opacity, saturation_scale=0.3)
-            draw_list.add_line(draw_state.left, draw_state.top - 2 - offset,
-                               draw_state.left + draw_state.width,
-                               draw_state.top - 2 - offset,
-                               col=imgui.get_color_u32_rgba(*color), thickness=3)
+                                                 value=1.0, alpha=opacity, saturation_scale=0.7)
+            draw_list.add_rect_filled(draw_state.left, cursor_top,
+                                    draw_state.left + draw_state.width,
+                                    cursor_bottom,
+                                    col=imgui.get_color_u32_rgba(*color), rounding=2.0)
+            #
+            # draw_list.add_line(draw_state.left, draw_state.top - 2 - offset,
+            #                    draw_state.left + draw_state.width,
+            #                    draw_state.top - 2 - offset,
+            #                    col=imgui.get_color_u32_rgba(*color), thickness=3)
 
 
 @render_wrapper(wraps=render_func)
@@ -244,10 +251,6 @@ def with_header(func, *args, **o_kwargs):
         if annotation is not None: return annotation
         inside_window = len(window_stack) > 0
         draw_list = imgui.get_window_draw_list()
-
-        # ----------------- top spacing -----------
-        draw_drop_target(do_flow=do_flow, on_drag=on_drag, *next_kwargs)
-        # ------------------ end spacing -----------
 
         if window_stack is None:
             pass
@@ -354,6 +357,11 @@ def with_header(func, *args, **o_kwargs):
 
                 if draw_state.expanded:
                     draw_state.expanded_height = end_y_pos - start_y_pos
+
+            # ----------------- top spacing -----------
+            draw_drop_target(do_flow=do_flow, on_drag=on_drag, unique=unique,
+                             draw_state=draw_state, *next_kwargs)
+            # ------------------ end spacing -----------
 
             # if draw_state.height is not None:
             #     current_cursor = imgui.get_cursor_screen_pos()

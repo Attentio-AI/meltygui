@@ -80,6 +80,12 @@ class Melty:
     dragged_item = None
     selected_views = {}
     drag_in_progress = False
+    initial_drag_offset = (0,0)
+
+    nearest_drop_target = None
+    nearest_drop_distance = None
+
+
 
     max_distance = 200
     drag_drop_target = None

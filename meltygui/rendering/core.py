@@ -319,6 +319,8 @@ def render_func(*args, **o_kwargs):
         is_root = len(Melty.unique_stack) == 0
         if is_root:
             Melty.unique_stack = []
+            Melty.nearest_drop_distance = Melty.max_distance
+            Melty.nearest_drop_target = None
 
         first_arg = args[0] if args else None
         input_value = kwargs.get("input_value", first_arg)
@@ -481,8 +483,12 @@ def render_func(*args, **o_kwargs):
                 if draw_state.hovered and imgui.is_window_hovered():
                     if imgui.is_mouse_down(m_btn) and btn_state.mouse_up:
                         if not btn_state.mouse_down:
+                            current_mouse_pos = imgui.get_mouse_pos()
                             btn_state.mouse_down_pos = imgui.get_mouse_pos()
                             btn_state.initial_screen_pos = (draw_state.left, draw_state.top)
+                            Melty.initial_drag_offset = (current_mouse_pos[0] - draw_state.left,
+                                                         current_mouse_pos[1] - draw_state.top)
+
                         btn_state.mouse_down = True
                         Melty.mark_event(unique, m_btn, ActionType.DOWN)
                     if not imgui.is_mouse_down(m_btn):
@@ -508,9 +514,10 @@ def render_func(*args, **o_kwargs):
                     btn_state.drag_delta = (current_mouse_pos[0] - btn_state.mouse_down_pos[0],
                                              current_mouse_pos[1] - btn_state.mouse_down_pos[1])
 
-                    if abs(distance) >= 0:
+                    if abs(distance) >= 2:
                         btn_state.dragged = True
                         Melty.drag_in_progress = True
+                        Melty.dragged_item = draw_state
                         Melty.mark_event(unique, m_btn, ActionType.DRAG)
 
             if draw_state.hovered and imgui.is_window_hovered():
@@ -534,6 +541,8 @@ def render_func(*args, **o_kwargs):
                     if hovered_draw_state is not None:
                         hovered_draw_state.hovered = True
                 Melty.hover_stack = []
+
+                Melty.drag_drop_target = Melty.nearest_drop_target
 
 
             if return_value is None:
