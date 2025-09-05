@@ -196,9 +196,12 @@ def with_header(func, *args, **o_kwargs):
         bg_hovered = False
         if show_header:
             next_kwargs['highlight'] = on_hover
+            if on_drag:
+                next_kwargs['opacity'] = 0.0
             changed, action = draw_header(**next_kwargs)
 
             if on_drag:
+                next_kwargs['opacity'] = 1.0
                 next_kwargs['on_drag'] = False
                 start_pos_x = draw_state.left
                 start_pos_y = draw_state.top
@@ -229,10 +232,11 @@ def with_header(func, *args, **o_kwargs):
         if not is_tree or draw_state.expanded or is_window:
             if not on_drag:
                 return_value = func(**next_kwargs)
-            else:
-                imgui.same_line(spacing=0)
-                imgui.dummy(draw_state.width,
-                            draw_state.height - padding - 1)
+
+        if on_drag:
+            imgui.same_line(spacing=0.0)
+            imgui.dummy(draw_state.width,
+                        draw_state.height - padding - 1)
 
         end_y_pos = imgui.get_cursor_screen_pos()[1]
         background_height = end_y_pos - start_y_pos - 2
@@ -246,12 +250,21 @@ def with_header(func, *args, **o_kwargs):
         if inside_window:
             if show_bg:
                 draw_list.channels_set_current(max(0, min(Melty.max_depth - 2, depth - 2)))
-                draw_bg(left=start_x_pos, top=start_y_pos,
-                        width=background_width, height=background_height,
-                        tint=bg_tint, selected=bg_selected)
+                if not on_drag:
+                    draw_bg(left=start_x_pos, top=start_y_pos,
+                            width=background_width, height=background_height,
+                            tint=bg_tint, selected=bg_selected)
+                else:
+                    shadow_color = (style_manager.make_color_rgb(*(0.0, 0.0, 0.0), factor=1.0,
+                                                 value=0.00, alpha=0.12, saturation_scale=0.3))
+                    outline_shadow = (style_manager.make_color_rgb(*(0.0, 0.0, 0.0), factor=1.0,
+                                                                 value=0.0, alpha=0.12, saturation_scale=0.3))
+                    draw_bg(left=start_x_pos + 2, top=start_y_pos + 2,
+                            width=background_width - 4, height=background_height - 4,
+                            tint=shadow_color, outline_tint=outline_shadow, selected=bg_selected)
 
                 if draw_state.expanded:
-                    draw_state.expanded_height = background_height
+                    draw_state.expanded_height = end_y_pos - start_y_pos
 
         Melty.unindent(indent_size)
         if inside_window:
@@ -263,8 +276,8 @@ def with_header(func, *args, **o_kwargs):
 
 @render_func
 def draw_bg(left=0, top=0, width=20, height=20, depth=0,
-            global_style=None,
-            style_manager=None, tint=None, selected=False,
+            global_style=None, outline=True,
+            style_manager=None, tint=None, outline_tint=None, selected=False,
             hovered=False):
     # Render background
     def current_indent_px():
@@ -321,7 +334,10 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
     # if tint is not None:
     #     outline_color = imgui.get_color_u32_rgba(*tint)
 
-    imgui.get_window_draw_list().add_rect(*rect_outline, col=outline_color, rounding=rounding, thickness=2.0)
+    if outline:
+        if outline_tint is not None:
+            outline_color = imgui.get_color_u32_rgba(*outline_tint)
+        imgui.get_window_draw_list().add_rect(*rect_outline, col=outline_color, rounding=rounding, thickness=2.0)
     bg_color = (style_manager.
                 make_color_style_value(input=bg_style, value=max(0, dynamic_value) + hovered_offset))
     imgui_bg_color = imgui.get_color_u32_rgba(bg_color[0], bg_color[1], bg_color[2], 1.0)
@@ -336,11 +352,12 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
 def draw_header(input_value=None, name="", unique=None, is_tree=True,
                 show_name=True, show_type=False, show_unique=False,
                 draw_state=None, is_window=False, on_click=False,
-                on_hover=False, highlight=False,
+                on_hover=False, highlight=False, opacity=1.0,
                 on_right_click=False, show_bg=False, selected_views=None,
                 on_drag=False, on_drag_released=False, on_action=None, style_manager=None,
                 global_style=None, global_toggles=None, depth=0, shift_click=False):
 
+    imgui.push_style_var(imgui.STYLE_ALPHA, opacity)
     value_factor = global_style.get_global_constant("depth_factor", default=1.0, folder="bg_styles")
     value_offset = global_style.get_global_constant("depth_offset", default=0.0, folder="bg_styles")
 
@@ -405,7 +422,7 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
         profile_time = draw_state.render_time
         render_profiler_time(input_value=profile_time, brief=True,
                              style_manager=style_manager, global_style=global_style)
-
+    imgui.pop_style_var(1)
 
     return False, on_action
 
