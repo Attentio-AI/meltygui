@@ -28,26 +28,56 @@ def draw(vis):
 
 
 def core_draw_window(input_value, name, unique, window_func,
-                     window_stack, style_manager, args, kwargs):
+                     window_stack, style_manager,
+                     args, kwargs, indent_size=10, width=0, height=0, pos_x=None, pos_y=None,
+                     decorations=True):
     tmp_undo_stack(unique)
     title = name or input_value.__class__.__name__
+    padding_fudge = imgui.get_style().frame_padding.y
+    padding_x = imgui.get_style().frame_padding.x
+    fudge_x = 3
+
+    if width > 0 and height > 0:
+        imgui.set_next_window_size(width, height + padding_fudge * 2)
+
+    if not decorations:
+        if pos_x is not None and pos_y is not None:
+            imgui.set_next_window_position(pos_x - Melty.current_indent - padding_x - fudge_x,
+                                           pos_y - padding_fudge)
+    else:
+        if pos_x is not None and pos_y is not None:
+            imgui.set_next_window_position(pos_x, pos_y)
 
     previous_tint = style_manager.get_tint()
     if hasattr(input_value, 'tint'):
         style_manager.set_imgui_tint(*input_value.tint)
+    closable = True
+    flags = 0
+    if not decorations:
+        closable = False
+        flags = ( imgui.WINDOW_NO_BACKGROUND | imgui.WINDOW_NO_TITLE_BAR | imgui.WINDOW_NO_RESIZE |
+                    imgui.WINDOW_NO_MOVE | imgui.WINDOW_NO_SCROLLBAR | imgui.WINDOW_NO_NAV_FOCUS |
+                    imgui.WINDOW_NO_COLLAPSE | imgui.WINDOW_NO_SAVED_SETTINGS)
+        imgui.push_style_var(imgui.STYLE_WINDOW_PADDING, (fudge_x, padding_fudge))
 
     window_title = f"{title}##window_{str(unique)}"
-    opened, _ = imgui.begin(f"{title}##window_{str(unique)}", True)
+    # Bring to front without collapse
+    opened, _ = imgui.begin(f"{title}##window_{str(unique)}", closable, flags=flags)
+    if not decorations:
+        imgui.indent(Melty.current_indent - indent_size + padding_x)
+
     if window_stack is not None:
         window_stack.append(window_title)
 
     draw_list = imgui.get_window_draw_list()
     draw_list.channels_split(Melty.max_depth)
-
     window_func(*args, **kwargs)
     if window_stack is not None:
         window_stack.pop()
 
+    if not decorations:
+        imgui.unindent(Melty.current_indent - indent_size + padding_x)
+        imgui.pop_style_var(1)
     draw_list.channels_merge()
     imgui.end()
 
@@ -89,7 +119,7 @@ def with_simple_header(func, *args, **o_kwargs):
         if annotation is not None: return annotation
         if window_stack is None:
             pass
-        imgui.indent(indent_size)
+        Melty.indent(indent_size)
         cutoff = 100
         start_x_pos = imgui.get_cursor_screen_pos()[0]
         start_y_pos = imgui.get_cursor_screen_pos()[1]
@@ -132,7 +162,7 @@ def with_simple_header(func, *args, **o_kwargs):
         draw_state.top = start_y_pos
         draw_state.left = start_x_pos
 
-        imgui.unindent(indent_size)
+        Melty.unindent(indent_size)
 
         return return_value
 
@@ -154,11 +184,11 @@ def with_header(func, *args, **o_kwargs):
         inside_window = len(window_stack) > 0
         if inside_window and show_bg:
             draw_list.channels_set_current(depth - 1)
-        imgui.indent(indent_size)
 
+        Melty.indent(indent_size)
+        width = imgui.get_content_region_available()[0]
         start_x_pos = imgui.get_cursor_screen_pos()[0]
         start_y_pos = imgui.get_cursor_screen_pos()[1]
-        width = imgui.get_content_region_available()[0]
         cutoff = 100
 
         bg_tint = None
@@ -167,21 +197,22 @@ def with_header(func, *args, **o_kwargs):
         if show_header:
             next_kwargs['highlight'] = on_hover
             changed, action = draw_header(**next_kwargs)
-            if action == "on_shift_click":
-                selected_views[unique] = input_value
-            elif action == "on_click":
-                selected_views.clear()
-                selected_views[unique] = input_value
 
-                if on_drag:
-                    bg_hovered = True
+            if on_drag:
+                next_kwargs['on_drag'] = False
+                start_pos_x = draw_state.left
+                start_pos_y = draw_state.top
+                drag_delta = draw_state.mouse_btn_state[0].drag_delta
 
+                pos_x = start_pos_x + drag_delta[0]
+                pos_y = start_pos_y + drag_delta[1]
 
-                window_ags = kwargs.copy()
-                core_draw_window(window_func=func, input_value=input_value,
+                core_draw_window(window_func=wrapper, input_value=input_value,
                                  window_stack=window_stack,
-                                 style_manager=style_manager, name=name,
-                                 unique=unique, args=(), kwargs=window_ags)
+                                 pos_x=pos_x, pos_y=pos_y,
+                                 width=imgui.get_window_size()[0], height=draw_state.height,
+                                 style_manager=style_manager, name=name, decorations=False,
+                                 unique=unique, args=(), kwargs=next_kwargs)
 
             if unique in selected_views:
                 bg_selected = True
@@ -192,33 +223,37 @@ def with_header(func, *args, **o_kwargs):
             if draw_state.expanded_height is None or draw_state.expanded_height < 70:
                 if space_available > cutoff:
                     imgui.same_line()
+        padding = imgui.get_style().frame_padding.y
 
         return_value = None
         if not is_tree or draw_state.expanded or is_window:
-            return_value = func(**next_kwargs)
+            if not on_drag:
+                return_value = func(**next_kwargs)
+            else:
+                imgui.same_line(spacing=0)
+                imgui.dummy(draw_state.width,
+                            draw_state.height - padding - 1)
 
         end_y_pos = imgui.get_cursor_screen_pos()[1]
         background_height = end_y_pos - start_y_pos - 2
 
-        padding = imgui.get_style().frame_padding.y
         background_height = max(imgui.get_text_line_height() + padding, background_height)
-        background_width = width
-        draw_state.height = background_height
+        background_width = width - 2
         draw_state.width = background_width
+        draw_state.height = end_y_pos - start_y_pos
         draw_state.top = start_y_pos
         draw_state.left = start_x_pos
         if inside_window:
             if show_bg:
                 draw_list.channels_set_current(max(0, min(Melty.max_depth - 2, depth - 2)))
-                bg_hovered = on_drag
                 draw_bg(left=start_x_pos, top=start_y_pos,
                         width=background_width, height=background_height,
-                        tint=bg_tint, hovered=bg_hovered, selected=bg_selected)
+                        tint=bg_tint, selected=bg_selected)
 
                 if draw_state.expanded:
                     draw_state.expanded_height = background_height
 
-        imgui.unindent(indent_size)
+        Melty.unindent(indent_size)
         if inside_window:
             draw_list.channels_set_current(Melty.max_depth - 1)
 
@@ -316,9 +351,6 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
     saturation = -0.5
     hover_offset = 0.0
     # Make header slightly brighter
-
-    if on_drag:
-        print(f"drag header {name}")
 
     if highlight:
         hover_offset = 0.2

@@ -36,6 +36,17 @@ class Melty:
     max_depth = 40
     annotation_mode = True
     depth = 0
+    current_indent = 0
+
+    @staticmethod
+    def indent(amount):
+        Melty.current_indent += amount
+        imgui.indent(amount)
+
+    @staticmethod
+    def unindent(amount):
+        Melty.current_indent -= amount
+        imgui.unindent(amount)
 
     @staticmethod
     def check_event(unique, mouse_btn, event_type):

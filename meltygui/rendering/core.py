@@ -49,8 +49,7 @@ class DrawState:
         self.hovered = False
         self.clicked = False
         self.dragged = False
-        self.mouse_down_pos = (0, 0)
-        self.drag_delta = (0, 0)
+        self.screen_pos = (0, 0)
 
         # Profiling
         self.render_time = 0.0
@@ -404,7 +403,7 @@ def render_func(*args, **o_kwargs):
             if found_param is None and wanted_param in vars(Melty):
                 found_param = getattr(Melty, wanted_param)
 
-            if found_param is not None:
+            if found_param is not None and wanted_param not in kwargs:
                 kwargs[wanted_param] = found_param
 
         if not meta.visible_in_ui:
@@ -492,7 +491,7 @@ def render_func(*args, **o_kwargs):
                                             (current_mouse_pos[1] - btn_state.mouse_down_pos[1]) ** 2)
                     btn_state.drag_delta = (current_mouse_pos[0] - btn_state.mouse_down_pos[0],
                                              current_mouse_pos[1] - btn_state.mouse_down_pos[1])
-                    if abs(distance) > 2:
+                    if abs(distance) >= 0:
                         btn_state.dragged = True
                         Melty.mark_event(unique, m_btn, ActionType.DRAG)
 
