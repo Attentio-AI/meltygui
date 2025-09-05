@@ -1,7 +1,6 @@
 import inspect
 import os
 import threading
-import uuid
 from collections import defaultdict
 from enum import Enum
 from traceback import _parse_value_tb
@@ -131,15 +130,6 @@ class LSDView:
 
         self.style_stack.clear()
         self.group_stack.clear()
-
-
-def generate_id():
-    """
-    Generates a unique identifier for use in ImGui elements.
-    This is useful to ensure that elements can be uniquely identified across frames.
-    :return: A unique identifier string.
-    """
-    return str(uuid.uuid4())[0:6]
 
 
 def list_width(str_list):

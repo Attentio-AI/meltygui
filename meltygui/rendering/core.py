@@ -5,12 +5,13 @@ import time
 import zlib
 from copy import copy
 from functools import wraps
+from types import NoneType
 from typing import Any
 
 import imgui
 
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback
-from src.lsd.gl_gui.melty import Melty, ActionType
+from src.lsd.gl_gui.melty import Melty, ActionType, apply_collection_action
 
 
 class MouseState:
@@ -321,6 +322,7 @@ def render_func(*args, **o_kwargs):
             Melty.unique_stack = []
             Melty.nearest_drop_distance = Melty.max_distance
             Melty.nearest_drop_target = None
+            Melty.nearest_drop_target_tag = None
 
         first_arg = args[0] if args else None
         input_value = kwargs.get("input_value", first_arg)
@@ -385,7 +387,8 @@ def render_func(*args, **o_kwargs):
                     if unique in Melty.triggered_actions:
                         found_param = Melty.triggered_actions.get(unique)
 
-            if expected_type is not None and expected_type is not Any and not annotation_empty:
+            if (expected_type is not None and expected_type is not Any and expected_type is not NoneType
+                    and not annotation_empty):
                 if found_param is not None and not isinstance(found_param, expected_type):
                     found_param = param_defaults.get(wanted_param, None)
             elif wanted_param in vars(meta):
@@ -542,8 +545,16 @@ def render_func(*args, **o_kwargs):
                         hovered_draw_state.hovered = True
                 Melty.hover_stack = []
 
-                Melty.drag_drop_target = Melty.nearest_drop_target
+                if not Melty.nearest_drop_target is None:
+                    Melty.drag_drop_target = Melty.nearest_drop_target
+                    Melty.drag_drop_target_tag = Melty.nearest_drop_target_tag
 
+                ######### apply drag & drop -----------
+                while len(Melty.actions_to_apply) > 0:
+                    action = Melty.actions_to_apply.pop(0)
+                    action.print()
+                    result = apply_collection_action(action)
+                    print(result)
 
             if return_value is None:
                 changed, new_value = False, None

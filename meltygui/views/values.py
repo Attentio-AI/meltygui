@@ -1,11 +1,12 @@
+from copy import copy
 from functools import wraps
 from types import NoneType
 
 import imgui
 
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
-from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, tree
-from src.lsd.gl_gui.melty import Melty
+from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, tree, request_render
+from src.lsd.gl_gui.melty import Melty, CollectionAction, OperationType, apply_collection_action
 from src.lsd.gl_gui.view.core_views.core_render import render_func, tmp_undo_stack, redo_stack, push_id, pop_id, ui_id, \
     render_wrapper, annotation_track
 
@@ -175,14 +176,16 @@ def with_simple_header(func, *args, **o_kwargs):
 
 @render_func
 def draw_drop_target(draw_state, on_drag, do_flow, depth,
-                     unique, style_manager):
+                     collection, key,
+                     unique, tag, style_manager):
+    if key is None:
+        return
     # ----------------- top spacing -----------
     falloff = 50.0 # higher is gentler
     drop_gap = 7.0
     mouse_pos = imgui.get_mouse_pos()
     dragged_top = Melty.dragged_item.top if Melty.dragged_item is not None else 0
     cursor_top = imgui.get_cursor_screen_pos()[1]
-
     cursor_y_screen = imgui.get_cursor_screen_pos()[1]
     static_offset = 3
     distance_to_mouse = abs(mouse_pos[1] - cursor_y_screen -
@@ -215,6 +218,11 @@ def draw_drop_target(draw_state, on_drag, do_flow, depth,
     cursor_bottom = imgui.get_cursor_screen_pos()[1]
     # ------------------ end spacing -----------
 
+    if tag == "bottom":
+        span = cursor_bottom - cursor_top
+        cursor_bottom += flow_spacing
+        cursor_top += flow_spacing
+
     if Melty.drag_in_progress and not on_drag and do_flow:
         if draw_state.height is not None:
             if Melty.inside_window():
@@ -223,16 +231,25 @@ def draw_drop_target(draw_state, on_drag, do_flow, depth,
             if distance_to_mouse < Melty.nearest_drop_distance:
                 Melty.nearest_drop_distance = distance_to_mouse
                 Melty.nearest_drop_target = draw_state.unique
+                Melty.nearest_drop_target_tag = tag
 
-            active_drop = (Melty.drag_drop_target == draw_state.unique)
+                Melty.drag_drop_action.target_unique = draw_state.unique
+                Melty.drag_drop_action.target_tag = tag
+                Melty.drag_drop_action.target_key = key
+                Melty.drag_drop_action.target_collection = collection
 
+                if Melty.drag_drop_action.target_key is None:
+                    pass
+
+            active_drop = (Melty.drag_drop_target == draw_state.unique
+                           and tag == Melty.drag_drop_target_tag)
 
             opacity = 1.0 if active_drop else 0.1
             color = style_manager.make_color_rgb(*(1.0, 1.0, 1.0), factor=1.0,
                                                  value=1.0, alpha=opacity, saturation_scale=0.7)
-            draw_list.add_rect_filled(draw_state.left, cursor_top,
+            draw_list.add_rect_filled(draw_state.left, cursor_top - 1,
                                     draw_state.left + draw_state.width,
-                                    cursor_bottom,
+                                    cursor_bottom - 1,
                                     col=imgui.get_color_u32_rgba(*color), rounding=2.0)
             #
             # draw_list.add_line(draw_state.left, draw_state.top - 2 - offset,
@@ -243,10 +260,11 @@ def draw_drop_target(draw_state, on_drag, do_flow, depth,
 
 @render_wrapper(wraps=render_func)
 def with_header(func, *args, **o_kwargs):
-    def wrapper(input_value=None, indent_size=10, depth=0, draw_state=None,
+    def wrapper(input_value=None, collection=None, key=None, indent_size=10, depth=0, draw_state=None,
                 window_stack=None, is_tree=True, is_window=False, spacing=Melty.spacing, padding=Melty.padding,
                 show_header=True, show_bg=True, unique=0, name="", style_manager=None, global_style=None,
-                selected_views=None, on_drag=False, do_flow=True, on_hover=False, next_kwargs=None, **kwargs):
+                selected_views=None, on_drag=False, on_drag_up=False, do_flow=True,
+                on_hover=False, next_kwargs=None, **kwargs):
         annotation = annotation_track(*args, wrapper=wrapper, **o_kwargs)
         if annotation is not None: return annotation
         inside_window = len(window_stack) > 0
@@ -262,6 +280,12 @@ def with_header(func, *args, **o_kwargs):
         start_x_pos = imgui.get_cursor_screen_pos()[0]
         start_y_pos = imgui.get_cursor_screen_pos()[1]
         cutoff = 100
+
+        # ----------------- top spacing -----------
+        draw_drop_target(do_flow=do_flow, on_drag=on_drag, unique=unique,
+                         collection=collection, key=key,
+                         draw_state=draw_state, *next_kwargs, tag="top")
+        # ------------------ end spacing -----------
 
         bg_tint = None
         bg_selected = False
@@ -328,6 +352,12 @@ def with_header(func, *args, **o_kwargs):
                             draw_state.height)
                 imgui.pop_style_var(2)
 
+        # ----------------- top spacing -----------
+        draw_drop_target(do_flow=do_flow, on_drag=on_drag, unique=unique,
+                         collection=collection, key=key,
+                         draw_state=draw_state, *next_kwargs, tag="bottom")
+        # ------------------ end spacing -----------
+
         end_y_pos = imgui.get_cursor_screen_pos()[1]
         background_height = end_y_pos - start_y_pos
 
@@ -358,10 +388,6 @@ def with_header(func, *args, **o_kwargs):
                 if draw_state.expanded:
                     draw_state.expanded_height = end_y_pos - start_y_pos
 
-            # ----------------- top spacing -----------
-            draw_drop_target(do_flow=do_flow, on_drag=on_drag, unique=unique,
-                             draw_state=draw_state, *next_kwargs)
-            # ------------------ end spacing -----------
 
             # if draw_state.height is not None:
             #     current_cursor = imgui.get_cursor_screen_pos()
@@ -385,9 +411,101 @@ def with_header(func, *args, **o_kwargs):
         if inside_window:
             draw_list.channels_set_current(Melty.max_depth - 1)
 
+        if on_drag_up:
+            Melty.drag_in_progress = False
+            new_action = copy(Melty.drag_drop_action)
+            new_action.operation = OperationType.MOVE
+            new_action.source_key = key
+            new_action.source_unique = unique
+            new_action.source_collection = collection
+
+
+            print(f"drop {name} on {Melty.drag_drop_target} {Melty.drag_drop_target_tag}")
+            return False, new_action
+
         return return_value
 
     return wrapper
+
+
+@with_header
+def draw_collection(input_value=None, depth=0, style_manager=None,
+                    meta=None, suffix="", do_flow=True, on_drag=False,
+                    collection=None,
+                    unique=0, draw_state=None, next_kwargs=None, *args, **kwargs):
+    changed, value = False, input_value
+
+    # Handle collections
+    if isinstance(input_value, dict):
+        changed = False
+        change_op = None
+        for k, v in input_value.items():
+            previous_tint = style_manager.get_tint()
+            if hasattr(v, 'tint'):
+                style_manager.set_imgui_tint(*v.tint)
+            # Derive meta for dict entry
+            suffix = f"{suffix}_{str(k)}"
+            obj_unique, _, = ui_id(meta, suffix=suffix)
+            view_function = meta.view_function if meta and meta.view_function else draw_object
+            item_changed, value = view_function(input_value=v, meta=meta, key=k,
+                                                collection=input_value,
+                                                suffix=obj_unique, name=k)
+            if isinstance(value, CollectionAction):
+                Melty.to_apply(value)
+
+            changed |= item_changed
+            if hasattr(v, 'tint'):
+                style_manager.set_imgui_tint(*previous_tint)
+
+
+    elif isinstance(input_value, (list, tuple, set)):
+        changed = False
+        change_op = None
+        for i, v in enumerate(input_value):
+            suffix = f"{suffix}_{str(i)}"
+            obj_unique, _, = ui_id(meta, suffix=suffix)
+            child_meta = Melty.type_defaults.get(type(v), meta)
+            item_changed, value = child_meta.view_function(input_value=v, key=i, meta=child_meta,
+                                                               collection=input_value,
+                                                               suffix=obj_unique, name=str(i))
+            if isinstance(value, CollectionAction):
+                Melty.to_apply(value)
+
+            changed |= item_changed
+
+
+    elif hasattr(input_value, "__dict__") and depth < Melty.max_depth:  # class or module instance
+        change_op = None
+
+        for k, v in vars(input_value).items():
+            # skip private attrs, methods, etc.
+            if k == "alpha":
+                pass
+            if (k.startswith("__") and k.endswith("__")) or k.startswith("_"):
+                continue
+            try:
+                parent_type = type(input_value)
+                child_meta = parent_type.get_child_meta(field_name=k, value=v) if (
+                    hasattr(parent_type, "get_child_meta")) else meta
+                if child_meta is not None:
+                    kwargs['meta'] = child_meta
+                suffix = f"{suffix}_{str(k)}"
+                obj_unique, _, = ui_id(child_meta, suffix=suffix)
+                view_function = child_meta.view_function
+                item_changed, value = view_function(input_value=v, key=k, meta=child_meta,
+                                                        collection=input_value,
+                                                        suffix=obj_unique, name=k)
+                if isinstance(value, CollectionAction):
+                    Melty.to_apply(value)
+                if item_changed:
+                    setattr(input_value, k, value)
+
+            except Exception as e:
+                print_colored_traceback()
+                pass
+
+    return changed, value
+
 
 @render_func
 def draw_bg(left=0, top=0, width=20, height=20, depth=0,
@@ -568,73 +686,18 @@ def render_profiler_time(input_value=None, brief=False, style_manager=None,
     return False, input_value
 
 
-@with_header
-def draw_collection(input_value=None, depth=0, style_manager=None,
-                    meta=None, suffix="", *args, **kwargs):
-    changed, value = False, input_value
-    # Handle collections
-    if isinstance(input_value, dict):
-        changed = False
-        for k, v in input_value.items():
-            previous_tint = style_manager.get_tint()
-            if hasattr(v, 'tint'):
-                style_manager.set_imgui_tint(*v.tint)
-            # Derive meta for dict entry
-            suffix = f"{suffix}_{str(k)}"
-            obj_unique, _, = ui_id(meta, suffix=suffix)
-            view_function = meta.view_function if meta and meta.view_function else draw_object
-            item_changed, value = view_function(input_value=v, meta=meta,
-                                                    suffix=obj_unique, name=k)
-            changed |= item_changed
-            if hasattr(v, 'tint'):
-                style_manager.set_imgui_tint(*previous_tint)
-    elif isinstance(input_value, (list, tuple, set)):
-        changed = False
-        for i, v in enumerate(input_value):
-            suffix = f"{suffix}_{str(i)}"
-            obj_unique, _, = ui_id(meta, suffix=suffix)
-            child_meta = Melty.type_defaults.get(type(v), meta)
-            item_changed, new_value = child_meta.view_function(input_value=v, meta=child_meta,
-                                                               suffix=obj_unique, name=str(i))
-            changed |= item_changed
-    elif hasattr(input_value, "__dict__") and depth < Melty.max_depth:  # class or module instance
-        for k, v in vars(input_value).items():
-            # skip private attrs, methods, etc.
-            if k == "alpha":
-                pass
-            if (k.startswith("__") and k.endswith("__")) or k.startswith("_"):
-                continue
-            try:
-                parent_type = type(input_value)
-                child_meta = parent_type.get_child_meta(field_name=k, value=v) if (
-                    hasattr(parent_type, "get_child_meta")) else meta
-                if child_meta is not None:
-                    kwargs['meta'] = child_meta
-                suffix = f"{suffix}_{str(k)}"
-                obj_unique, _, = ui_id(child_meta, suffix=suffix)
-                view_function = child_meta.view_function
-                item_changed, new_value = view_function(input_value=v, meta=child_meta,
-                                                        suffix=obj_unique, name=k)
-                if item_changed:
-                    setattr(input_value, k, new_value)
-            except Exception as e:
-                print_colored_traceback()
-                pass
-
-    return changed, value
-
 
 @render_func
 def draw_object(input_value=None, draw_state=None, meta=None, name="", style_manager=None,
-                depth=0, unique=0, suffix="", is_tree=True, indent_size=10, *args, **kwargs):
+                depth=0, unique=0, suffix="", collection=None, key=None, is_tree=True, indent_size=10, *args, **kwargs):
     # if is_tree and not draw_state.expanded:
     #     return False, None
     is_collection = isinstance(input_value, (dict, list, tuple, set)) or (
             hasattr(input_value, "__dict__") and depth < Melty.max_depth)
     if is_collection:
         # Handle collections
-        changed, new_value = draw_collection(input_value=input_value,
-                                             name=name, suffix=suffix, **kwargs)
+        changed, new_value = draw_collection(input_value=input_value, collection=collection,
+                                             name=name, key=key, suffix=suffix, **kwargs)
     else:
         return_value = None
         push_id(unique)

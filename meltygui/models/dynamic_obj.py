@@ -1,5 +1,6 @@
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.utils.custom_views import generate_id, LSDView
+from src.lsd.gl_gui.utils.custom_views import LSDView
+from src.lsd.gl_gui.model.core_model.core_enums import generate_id
 
 
 class DynamicObj(DictConversion):
