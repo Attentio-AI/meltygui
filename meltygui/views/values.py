@@ -177,14 +177,37 @@ def with_header(func, *args, **o_kwargs):
     def wrapper(input_value=None, indent_size=10, depth=0, draw_state=None,
                 window_stack=None, is_tree=True, is_window=False,
                 show_header=True, show_bg=True, unique=0, name="", style_manager=None,
-                selected_views=None, on_drag=False, on_hover=False, next_kwargs=None, **kwargs):
+                selected_views=None, on_drag=False, do_flow=True, on_hover=False, next_kwargs=None, **kwargs):
         annotation = annotation_track(*args, wrapper=wrapper, **o_kwargs)
         if annotation is not None: return annotation
-
+        inside_window = len(window_stack) > 0
         draw_list = imgui.get_window_draw_list()
+
+        # ----------------- top spacing -----------
+        drop_window_size = 20.0
+        mouse_pos = imgui.get_mouse_pos()
+        cursor_y_screen = imgui.get_cursor_screen_pos()[1] + drop_window_size + 1
+        distance_to_mouse = abs(mouse_pos[1] - cursor_y_screen)
+        bell_curve = max(0.0, min(1.0, 1.0 - (distance_to_mouse / drop_window_size)))
+
+        if Melty.drag_in_progress and do_flow and not on_drag:
+            flow_spacing = 5.0 * bell_curve
+        else:
+            flow_spacing = 0.0
+        if do_flow:
+            imgui.set_cursor_pos_y(imgui.get_cursor_pos()[1] + flow_spacing)
+        else:
+            imgui.set_cursor_pos_y(imgui.get_cursor_pos()[1])
+        if inside_window:
+            draw_list.channels_set_current(depth + 2)
+
+        line_width = imgui.get_style().frame_padding.y * 2.0
+        color = style_manager.make_color_rgb(*(1.0, 1.0, 1.0), factor=1.0,
+                                             value=1.0, alpha=1.0, saturation_scale=0.3)
+        # ------------------ end spacing -----------
+
         if window_stack is None:
             pass
-        inside_window = len(window_stack) > 0
         if inside_window and show_bg:
             draw_list.channels_set_current(depth - 1)
 
@@ -206,6 +229,7 @@ def with_header(func, *args, **o_kwargs):
             if on_drag:
                 next_kwargs['opacity'] = 1.0
                 next_kwargs['on_drag'] = False
+                next_kwargs['do_flow'] = False
                 mouse_pos = imgui.get_mouse_pos()
                 start_pos_x = draw_state.mouse_btn_state[0].initial_screen_pos[0]
                 start_pos_y = draw_state.mouse_btn_state[0].initial_screen_pos[1]
@@ -290,6 +314,25 @@ def with_header(func, *args, **o_kwargs):
 
                 imgui.pop_style_var(2)
                 imgui.set_cursor_screen_pos(current_cursor)
+
+        if Melty.drag_in_progress and not on_drag and do_flow:
+            if draw_state.height is not None:
+                if inside_window and show_bg:
+                    draw_list.channels_set_current(min(depth + 1, Melty.max_depth - 1))
+
+                if distance_to_mouse < 20:
+                    active_drop = True
+                else:
+                    active_drop = False
+
+                opacity = 1.0 if active_drop else 0.3
+                offset = flow_spacing * 0.5
+                color = style_manager.make_color_rgb(*(1.0, 1.0, 1.0), factor=1.0,
+                                                     value=1.0, alpha=opacity, saturation_scale=0.3)
+                draw_list.add_line(draw_state.left, draw_state.top - 2 - offset,
+                                   draw_state.left + draw_state.width,
+                                   draw_state.top - 2 - offset,
+                                   col=imgui.get_color_u32_rgba(*color), thickness=3)
 
         Melty.unindent(indent_size)
         if inside_window:

@@ -496,6 +496,7 @@ def render_func(*args, **o_kwargs):
 
                     if abs(distance) >= 0:
                         btn_state.dragged = True
+                        Melty.drag_in_progress = True
                         Melty.mark_event(unique, m_btn, ActionType.DRAG)
 
             if draw_state.hovered and imgui.is_window_hovered():
@@ -507,6 +508,8 @@ def render_func(*args, **o_kwargs):
             if is_hovered:
                 Melty.hover_stack.append(unique)
 
+            if not imgui.is_mouse_down(0):
+                Melty.drag_in_progress = False
 
             hovered_draw_state = None
             # Root view

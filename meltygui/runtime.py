@@ -74,6 +74,7 @@ class Melty:
     triggered_actions = {}
     dragged_item = None
     selected_views = {}
+    drag_in_progress = False
 
     vis = None
     type_defaults = {}
