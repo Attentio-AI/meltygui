@@ -33,7 +33,7 @@ def core_draw_window(input_value, name, unique, window_func,
                      decorations=True, focus=False):
     tmp_undo_stack(unique)
     title = name or input_value.__class__.__name__
-    padding_fudge = imgui.get_style().frame_padding.y
+    padding_fudge = imgui.get_style().frame_padding.y + 2
     padding_x = imgui.get_style().frame_padding.x
     fudge_x = 3
 
@@ -41,12 +41,12 @@ def core_draw_window(input_value, name, unique, window_func,
         imgui.set_next_window_focus()
 
     if width > 0 and height > 0:
-        imgui.set_next_window_size(width, height + padding_fudge * 2)
+        imgui.set_next_window_size(width, height + padding_fudge * 4)
 
     if not decorations:
         if pos_x is not None and pos_y is not None:
             imgui.set_next_window_position(pos_x - Melty.current_indent - padding_x - fudge_x,
-                                           pos_y - padding_fudge)
+                                           pos_y - padding_fudge - 2)
     else:
         if pos_x is not None and pos_y is not None:
             imgui.set_next_window_position(pos_x, pos_y)
@@ -67,6 +67,7 @@ def core_draw_window(input_value, name, unique, window_func,
     # Bring to front without collapse
     opened, _ = imgui.begin(f"{title}##window_{str(unique)}", closable, flags=flags)
     if not decorations:
+        imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + 2)
         imgui.indent(Melty.current_indent - indent_size + padding_x)
 
     if window_stack is not None:
@@ -172,11 +173,72 @@ def with_simple_header(func, *args, **o_kwargs):
     return wrapper
 
 
+@render_func
+def draw_drop_target(draw_state, on_drag, do_flow, depth,
+                     unique, style_manager):
+    # ----------------- top spacing -----------
+    drop_window_size = 30.0
+    mouse_pos = imgui.get_mouse_pos()
+    cursor_y_screen = imgui.get_cursor_screen_pos()[1] + 10.0
+    distance_to_mouse = abs(mouse_pos[1] - cursor_y_screen) - 10.0
+    bell_curve = max(0.0, min(1.0, 1.0 - (distance_to_mouse / drop_window_size)))
+
+    window_size = imgui.get_window_size()
+    window_pos = imgui.get_window_position()
+    window_rect = (window_pos[0], window_pos[1],
+                   window_pos[0] + window_size[0],
+                   window_pos[1] + window_size[1])
+    mouse_over_window = imgui.is_mouse_hovering_rect(*window_rect)
+    if Melty.drag_in_progress and do_flow and not on_drag and mouse_over_window:
+        flow_spacing = 5.0 * bell_curve
+    else:
+        flow_spacing = 0.0
+    #
+    # if do_flow:
+    #     imgui.set_cursor_pos_y(imgui.get_cursor_pos()[1] + flow_spacing)
+    # else:
+    #     imgui.set_cursor_pos_y(imgui.get_cursor_pos()[1])
+
+    draw_list = imgui.get_window_draw_list()
+    if Melty.inside_window():
+        draw_list.channels_set_current(depth + 2)
+
+    line_width = imgui.get_style().frame_padding.y * 2.0
+    color = style_manager.make_color_rgb(*(1.0, 1.0, 1.0), factor=1.0,
+                                         value=1.0, alpha=1.0, saturation_scale=0.3)
+    # ------------------ end spacing -----------
+
+    if Melty.drag_in_progress and not on_drag and do_flow:
+        if draw_state.height is not None:
+            if Melty.inside_window():
+                draw_list.channels_set_current(min(depth + 1, Melty.max_depth - 1))
+
+            if distance_to_mouse < Melty.target_distance:
+                Melty.drag_drop_target = unique
+
+            if Melty.drag_drop_target == unique:
+                Melty.target_distance = distance_to_mouse
+                if distance_to_mouse > Melty.max_distance or not mouse_over_window:
+                    Melty.drag_drop_target = None
+                    Melty.target_distance = Melty.max_distance
+
+            active_drop = (Melty.drag_drop_target == unique)
+
+            opacity = 1.0 if active_drop else 0.3
+            offset = flow_spacing * 0.5
+            color = style_manager.make_color_rgb(*(1.0, 1.0, 1.0), factor=1.0,
+                                                 value=1.0, alpha=opacity, saturation_scale=0.3)
+            draw_list.add_line(draw_state.left, draw_state.top - 2 - offset,
+                               draw_state.left + draw_state.width,
+                               draw_state.top - 2 - offset,
+                               col=imgui.get_color_u32_rgba(*color), thickness=3)
+
+
 @render_wrapper(wraps=render_func)
 def with_header(func, *args, **o_kwargs):
     def wrapper(input_value=None, indent_size=10, depth=0, draw_state=None,
-                window_stack=None, is_tree=True, is_window=False,
-                show_header=True, show_bg=True, unique=0, name="", style_manager=None,
+                window_stack=None, is_tree=True, is_window=False, spacing=Melty.spacing, padding=Melty.padding,
+                show_header=True, show_bg=True, unique=0, name="", style_manager=None, global_style=None,
                 selected_views=None, on_drag=False, do_flow=True, on_hover=False, next_kwargs=None, **kwargs):
         annotation = annotation_track(*args, wrapper=wrapper, **o_kwargs)
         if annotation is not None: return annotation
@@ -184,32 +246,7 @@ def with_header(func, *args, **o_kwargs):
         draw_list = imgui.get_window_draw_list()
 
         # ----------------- top spacing -----------
-        drop_window_size = 30.0
-        mouse_pos = imgui.get_mouse_pos()
-        cursor_y_screen = imgui.get_cursor_screen_pos()[1] + 10.0
-        distance_to_mouse = abs(mouse_pos[1] - cursor_y_screen) - 10.0
-        bell_curve = max(0.0, min(1.0, 1.0 - (distance_to_mouse / drop_window_size)))
-
-        window_size = imgui.get_window_size()
-        window_pos = imgui.get_window_position()
-        window_rect = (window_pos[0], window_pos[1],
-                          window_pos[0] + window_size[0],
-                          window_pos[1] + window_size[1])
-        mouse_over_window = imgui.is_mouse_hovering_rect(*window_rect)
-        if Melty.drag_in_progress and do_flow and not on_drag and mouse_over_window:
-            flow_spacing = 5.0 * bell_curve
-        else:
-            flow_spacing = 0.0
-        if do_flow:
-            imgui.set_cursor_pos_y(imgui.get_cursor_pos()[1] + flow_spacing)
-        else:
-            imgui.set_cursor_pos_y(imgui.get_cursor_pos()[1])
-        if inside_window:
-            draw_list.channels_set_current(depth + 2)
-
-        line_width = imgui.get_style().frame_padding.y * 2.0
-        color = style_manager.make_color_rgb(*(1.0, 1.0, 1.0), factor=1.0,
-                                             value=1.0, alpha=1.0, saturation_scale=0.3)
+        draw_drop_target(do_flow=do_flow, on_drag=on_drag, *next_kwargs)
         # ------------------ end spacing -----------
 
         if window_stack is None:
@@ -230,8 +267,11 @@ def with_header(func, *args, **o_kwargs):
             next_kwargs['highlight'] = on_hover
             if on_drag:
                 next_kwargs['opacity'] = 0.0
-            changed, action = draw_header(**next_kwargs)
-
+            next_kwargs.pop('spacing', None)
+            next_kwargs.pop('padding', None)
+            changed, action = draw_header(spacing=(spacing[0], Melty.spacing[1]),
+                                          padding=(padding[0], Melty.padding[1] + 1),
+                                          **next_kwargs)
             if on_drag:
                 next_kwargs['opacity'] = 1.0
                 next_kwargs['on_drag'] = False
@@ -263,24 +303,32 @@ def with_header(func, *args, **o_kwargs):
 
             space_available = imgui.get_content_region_available()[0] - header_width
             if draw_state.expanded_height is None or draw_state.expanded_height < 70:
-                if space_available > cutoff:
+                if space_available > cutoff and draw_state.expanded:
                     imgui.same_line()
-        padding = imgui.get_style().frame_padding.y
 
         return_value = None
         if not is_tree or draw_state.expanded or is_window:
             if not on_drag:
-                return_value = func(**next_kwargs)
+                next_kwargs.pop('spacing', None)
+                next_kwargs.pop('padding', None)
+                imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + 2)
+                return_value = func(spacing=(spacing[0], Melty.spacing[1]),
+                                    padding=(padding[0], Melty.padding[1]),
+                                    **next_kwargs)
+            if on_drag:
+                imgui.same_line(spacing=0.0)
 
-        if on_drag:
-            imgui.same_line(spacing=0.0)
-            imgui.dummy(draw_state.width,
-                        draw_state.height - padding - 1)
+            if on_drag:
+                imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
+                imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
+                imgui.dummy(draw_state.width,
+                            draw_state.height)
+                imgui.pop_style_var(2)
 
         end_y_pos = imgui.get_cursor_screen_pos()[1]
-        background_height = end_y_pos - start_y_pos - 2
+        background_height = end_y_pos - start_y_pos
 
-        background_height = max(imgui.get_text_line_height() + padding, background_height)
+        background_height = background_height
         background_width = width - 2
         draw_state.width = background_width
         draw_state.height = end_y_pos - start_y_pos
@@ -290,63 +338,40 @@ def with_header(func, *args, **o_kwargs):
             if show_bg:
                 draw_list.channels_set_current(max(0, min(Melty.max_depth - 2, depth - 2)))
                 if not on_drag:
-                    draw_bg(left=start_x_pos, top=start_y_pos,
-                            width=background_width, height=background_height,
-                            tint=bg_tint, selected=bg_selected)
+                    draw_bg(bypass=True, left=start_x_pos, top=start_y_pos + Melty.spacing[1] / 2.0,
+                            width=background_width, height=background_height - Melty.spacing[1] / 2.0 - 4,
+                            tint=bg_tint, depth=depth, selected=bg_selected, global_style=global_style,
+                            style_manager=style_manager)
                 else:
                     shadow_color = (style_manager.make_color_rgb(*(0.0, 0.0, 0.0), factor=1.0,
                                                  value=0.00, alpha=0.12, saturation_scale=0.3))
                     outline_shadow = (style_manager.make_color_rgb(*(0.0, 0.0, 0.0), factor=1.0,
                                                                  value=0.0, alpha=0.12, saturation_scale=0.3))
-                    draw_bg(left=start_x_pos + 2, top=start_y_pos + 2,
-                            width=background_width - 4, height=background_height - 4,
+                    draw_bg(bypass=True, left=start_x_pos + 2, top=start_y_pos, global_style=global_style,
+                            style_manager=style_manager, depth=depth,
+                            width=background_width - 4, height=background_height - 2,
                             tint=shadow_color, outline_tint=outline_shadow, selected=bg_selected)
 
                 if draw_state.expanded:
                     draw_state.expanded_height = end_y_pos - start_y_pos
 
-            if draw_state.height is not None:
-                current_cursor = imgui.get_cursor_screen_pos()
-                imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
-                imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
-                tree_offset = indent_size
-                imgui.set_cursor_screen_position((draw_state.left - tree_offset, draw_state.top - tree_offset))
-                imgui.invisible_button(f"##block_tree", width=max(1, draw_state.width),
-                                       height=tree_offset)
-                imgui.set_item_allow_overlap()
-
-                imgui.set_cursor_screen_position((draw_state.left - tree_offset, draw_state.top))
-                imgui.invisible_button(f"##block_tree", width=tree_offset,
-                             height=max(1, draw_state.height))
-                imgui.set_item_allow_overlap()
-
-                imgui.pop_style_var(2)
-                imgui.set_cursor_screen_pos(current_cursor)
-
-        if Melty.drag_in_progress and not on_drag and do_flow:
-            if draw_state.height is not None:
-                if inside_window and show_bg:
-                    draw_list.channels_set_current(min(depth + 1, Melty.max_depth - 1))
-
-                if distance_to_mouse < Melty.target_distance:
-                    Melty.drag_drop_target = unique
-
-                if Melty.drag_drop_target == unique:
-                    Melty.target_distance = distance_to_mouse
-                    if distance_to_mouse > Melty.max_distance or not mouse_over_window:
-                        Melty.drag_drop_target = None
-                        Melty.target_distance = Melty.max_distance
-
-                active_drop = (Melty.drag_drop_target == unique)
-
-                opacity = 1.0 if active_drop else 0.3
-                offset = flow_spacing * 0.5
-                color = style_manager.make_color_rgb(*(1.0, 1.0, 1.0), factor=1.0,
-                                                     value=1.0, alpha=opacity, saturation_scale=0.3)
-                draw_list.add_line(draw_state.left, draw_state.top - 2 - offset,
-                                   draw_state.left + draw_state.width,
-                                   draw_state.top - 2 - offset,
-                                   col=imgui.get_color_u32_rgba(*color), thickness=3)
+            # if draw_state.height is not None:
+            #     current_cursor = imgui.get_cursor_screen_pos()
+            #     imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
+            #     imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
+            #     tree_offset = indent_size
+            #     imgui.set_cursor_screen_position((draw_state.left - tree_offset, draw_state.top - tree_offset))
+            #     imgui.invisible_button(f"##block_tree", width=max(1, draw_state.width),
+            #                            height=tree_offset)
+            #     imgui.set_item_allow_overlap()
+            #
+            #     imgui.set_cursor_screen_position((draw_state.left - tree_offset, draw_state.top))
+            #     imgui.invisible_button(f"##block_tree", width=tree_offset,
+            #                            height=max(1, draw_state.height))
+            #     imgui.set_item_allow_overlap()
+            #
+            #     imgui.pop_style_var(2)
+            #     imgui.set_cursor_screen_pos(current_cursor)
 
         Melty.unindent(indent_size)
         if inside_window:
@@ -363,11 +388,7 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
             hovered=False):
     # Render background
     def current_indent_px():
-        sx = imgui.get_cursor_start_pos()
-        cx = imgui.get_cursor_pos()
-        start_x = sx[0]
-        cur_x = cx[0]
-        return cur_x - start_x - 1
+        return Melty.current_indent
 
     # float_style = global_styles.get_global_constant(constant_name="bg_style", default_type=Style, folder="bg_styles")
     # float_style.apply(global_styles=global_styles, style_manager=style_manager, depth=depth)
@@ -655,7 +676,7 @@ def draw_str(input_value: str):
 
     return changed, value
 
-@with_header(is_default_for=(tuple))
+@with_simple_header(is_default_for=(tuple))
 def draw_tuple(input_value: tuple, is_tree=False):
     if len(input_value) == 4:
         color_list = list(input_value)
@@ -692,7 +713,7 @@ def draw_float(input_value:float, min_value=-100.0, max_value=100.0, speed=0.01)
     return changed, value
 
 
-@with_header(is_default_for=(int), wraps=render_func)
+@with_simple_header(is_default_for=(int), wraps=render_func)
 def draw_int(input_value: int, min_value=-100.0, max_value=100.0, speed=0.05):
     changed, value = imgui.drag_int("##int", input_value,
                                       change_speed=speed,

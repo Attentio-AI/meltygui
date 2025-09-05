@@ -56,6 +56,9 @@ class Melty:
                 return True
         return False
 
+    @staticmethod
+    def inside_window():
+        return len(Melty.window_stack) > 0
 
     @staticmethod
     def mark_event(unique, mouse_btn, event_type: ActionType):
@@ -66,6 +69,8 @@ class Melty:
         return (glfw.get_key(Melty.vis.window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS or
                      glfw.get_key(Melty.vis.window, glfw.KEY_RIGHT_SHIFT) == glfw.PRESS)
 
+    spacing = (4,3)
+    padding = (4,3)
     last_frame_actions = {}
     tracked_views = set()
 

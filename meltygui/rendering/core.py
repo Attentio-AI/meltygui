@@ -29,6 +29,7 @@ class DrawState:
     """Holds per-widget runtime state (expand/collapse, etc.)."""
 
     def __init__(self, unique: int):
+
         self.unique = unique  # stable UI ID
         self.expanded = True
         self.value_cache = None
@@ -307,6 +308,7 @@ def render_func(*args, **o_kwargs):
     def wrapper(*args, **kwargs):
         start_time = time.time()
         if kwargs.get("bypass", False):
+            kwargs.pop("bypass", None)
             return func(*args, **kwargs)
 
         o_kwargs.update(kwargs)
@@ -344,8 +346,8 @@ def render_func(*args, **o_kwargs):
         kwargs["unique"] = unique
         kwargs["depth"] = depth
 
-        for kwarg in kwargs:
-            setattr(meta, kwarg, kwargs[kwarg])
+        # for kwarg in kwargs:
+        #     setattr(meta, kwarg, kwargs[kwarg])
 
         expected_type = param_types[wanted_params.index("input_value")] if "input_value" in wanted_params else None
         annotation_empty = expected_type == inspect.Parameter.empty
@@ -393,12 +395,8 @@ def render_func(*args, **o_kwargs):
                 found_param = Melty.check_event(unique, 0, ActionType.DRAG)
             elif wanted_param == "on_drag_up":
                 found_param = Melty.check_event(unique, 0, ActionType.DRAG_UP)
-
-            if wanted_param == "on_hover":
+            elif wanted_param == "on_hover":
                 found_param = Melty.check_event(unique, 0, ActionType.HOVERED)
-
-            if found_param == True and wanted_param == "on_hover":
-                pass
 
             # Try global constants
             if found_param is None and wanted_param in vars(Melty):
@@ -406,6 +404,11 @@ def render_func(*args, **o_kwargs):
 
             if found_param is not None and wanted_param not in kwargs:
                 kwargs[wanted_param] = found_param
+
+            if (wanted_param not in kwargs and wanted_param and
+                    wanted_param != 'o_args' and wanted_param != 'o_kwargs' and
+                    wanted_param != 'args' and wanted_param != 'kwargs'):
+                kwargs[wanted_param] = param_defaults.get(wanted_param, None)
 
         if not meta.visible_in_ui:
             return False, None
@@ -439,13 +442,24 @@ def render_func(*args, **o_kwargs):
                     if km not in kwargs:
                         kwargs[km] = vm
             kwargs['depth'] = depth
+
+            spacing = kwargs.get('spacing', Melty.spacing)
+            padding = kwargs.get('padding', Melty.padding)
+
+            imgui.push_style_var(imgui.STYLE_ITEM_SPACING, spacing)
+            imgui.push_style_var(imgui.STYLE_FRAME_PADDING, padding)
             return_value = func(**clean_args)
+            imgui.pop_style_var(2)
         except Exception as e:
             print_colored_traceback()
         finally:
             # Needs to go after mouse down check
+            imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
+            imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
             pop_id()
             imgui.end_group()
+            imgui.pop_style_var(2)
+
             Melty.depth = Melty.depth - 1
             # Leave view
             Melty.unique_stack.pop()
