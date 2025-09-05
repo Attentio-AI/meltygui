@@ -30,12 +30,15 @@ def draw(vis):
 def core_draw_window(input_value, name, unique, window_func,
                      window_stack, style_manager,
                      args, kwargs, indent_size=10, width=0, height=0, pos_x=None, pos_y=None,
-                     decorations=True):
+                     decorations=True, focus=False):
     tmp_undo_stack(unique)
     title = name or input_value.__class__.__name__
     padding_fudge = imgui.get_style().frame_padding.y
     padding_x = imgui.get_style().frame_padding.x
     fudge_x = 3
+
+    if focus:
+        imgui.set_next_window_focus()
 
     if width > 0 and height > 0:
         imgui.set_next_window_size(width, height + padding_fudge * 2)
@@ -203,9 +206,12 @@ def with_header(func, *args, **o_kwargs):
             if on_drag:
                 next_kwargs['opacity'] = 1.0
                 next_kwargs['on_drag'] = False
-                start_pos_x = draw_state.left
-                start_pos_y = draw_state.top
-                drag_delta = draw_state.mouse_btn_state[0].drag_delta
+                mouse_pos = imgui.get_mouse_pos()
+                start_pos_x = draw_state.mouse_btn_state[0].initial_screen_pos[0]
+                start_pos_y = draw_state.mouse_btn_state[0].initial_screen_pos[1]
+                mouse_down_x = draw_state.mouse_btn_state[0].mouse_down_pos[0]
+                mouse_down_y = draw_state.mouse_btn_state[0].mouse_down_pos[1]
+                drag_delta = (mouse_pos[0] - mouse_down_x, mouse_pos[1] - mouse_down_y)
 
                 pos_x = start_pos_x + drag_delta[0]
                 pos_y = start_pos_y + drag_delta[1]
@@ -215,6 +221,7 @@ def with_header(func, *args, **o_kwargs):
                                  pos_x=pos_x, pos_y=pos_y,
                                  width=imgui.get_window_size()[0], height=draw_state.height,
                                  style_manager=style_manager, name=name, decorations=False,
+                                 focus=True,
                                  unique=unique, args=(), kwargs=next_kwargs)
 
             if unique in selected_views:
@@ -265,6 +272,24 @@ def with_header(func, *args, **o_kwargs):
 
                 if draw_state.expanded:
                     draw_state.expanded_height = end_y_pos - start_y_pos
+
+            if draw_state.height is not None:
+                current_cursor = imgui.get_cursor_screen_pos()
+                imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
+                imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
+                tree_offset = indent_size
+                imgui.set_cursor_screen_position((draw_state.left - tree_offset, draw_state.top - tree_offset))
+                imgui.invisible_button(f"##block_tree", width=draw_state.width,
+                                       height=tree_offset)
+                imgui.set_item_allow_overlap()
+
+                imgui.set_cursor_screen_position((draw_state.left - tree_offset, draw_state.top))
+                imgui.invisible_button(f"##block_tree", width=tree_offset,
+                             height=draw_state.height)
+                imgui.set_item_allow_overlap()
+
+                imgui.pop_style_var(2)
+                imgui.set_cursor_screen_pos(current_cursor)
 
         Melty.unindent(indent_size)
         if inside_window:
@@ -379,7 +404,7 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
 
     region_available = imgui.get_content_region_available()
     if is_tree:
-        draw_state.expanded = tree("##tree", draw_state.expanded, width=30)
+        draw_state.expanded = tree("##tree", draw_state.expanded, width=50)
         imgui.same_line()
     cursor_start = imgui.get_cursor_pos()
 

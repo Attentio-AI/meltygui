@@ -22,6 +22,7 @@ class MouseState:
         self.clicked = False
         self.dragged = False
         self.mouse_down_pos = (0, 0)
+        self.initial_screen_pos = (0, 0)
         self.drag_delta = (0, 0)
 
 class DrawState:
@@ -467,6 +468,7 @@ def render_func(*args, **o_kwargs):
                     if imgui.is_mouse_down(m_btn) and btn_state.mouse_up:
                         if not btn_state.mouse_down:
                             btn_state.mouse_down_pos = imgui.get_mouse_pos()
+                            btn_state.initial_screen_pos = (draw_state.left, draw_state.top)
                         btn_state.mouse_down = True
                         Melty.mark_event(unique, m_btn, ActionType.DOWN)
                     if not imgui.is_mouse_down(m_btn):
@@ -491,6 +493,7 @@ def render_func(*args, **o_kwargs):
                                             (current_mouse_pos[1] - btn_state.mouse_down_pos[1]) ** 2)
                     btn_state.drag_delta = (current_mouse_pos[0] - btn_state.mouse_down_pos[0],
                                              current_mouse_pos[1] - btn_state.mouse_down_pos[1])
+
                     if abs(distance) >= 0:
                         btn_state.dragged = True
                         Melty.mark_event(unique, m_btn, ActionType.DRAG)
@@ -514,6 +517,7 @@ def render_func(*args, **o_kwargs):
                     if hovered_draw_state is not None:
                         hovered_draw_state.hovered = True
                 Melty.hover_stack = []
+
 
             if return_value is None:
                 changed, new_value = False, None
