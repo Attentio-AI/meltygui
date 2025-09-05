@@ -184,13 +184,19 @@ def with_header(func, *args, **o_kwargs):
         draw_list = imgui.get_window_draw_list()
 
         # ----------------- top spacing -----------
-        drop_window_size = 20.0
+        drop_window_size = 30.0
         mouse_pos = imgui.get_mouse_pos()
-        cursor_y_screen = imgui.get_cursor_screen_pos()[1] + drop_window_size + 1
+        cursor_y_screen = imgui.get_cursor_screen_pos()[1] + 10.0
         distance_to_mouse = abs(mouse_pos[1] - cursor_y_screen)
         bell_curve = max(0.0, min(1.0, 1.0 - (distance_to_mouse / drop_window_size)))
 
-        if Melty.drag_in_progress and do_flow and not on_drag:
+        window_size = imgui.get_window_size()
+        window_pos = imgui.get_window_position()
+        window_rect = (window_pos[0], window_pos[1],
+                          window_pos[0] + window_size[0],
+                          window_pos[1] + window_size[1])
+        mouse_over_window = imgui.is_mouse_hovering_rect(*window_rect)
+        if Melty.drag_in_progress and do_flow and not on_drag and mouse_over_window:
             flow_spacing = 5.0 * bell_curve
         else:
             flow_spacing = 0.0
