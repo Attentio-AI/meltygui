@@ -253,6 +253,8 @@ def with_header(func, *args, **o_kwargs):
                                  style_manager=style_manager, name=name, decorations=False,
                                  focus=True,
                                  unique=unique, args=(), kwargs=next_kwargs)
+            else:
+                next_kwargs['do_flow'] = True
 
             if unique in selected_views:
                 bg_selected = True
@@ -309,13 +311,13 @@ def with_header(func, *args, **o_kwargs):
                 imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
                 tree_offset = indent_size
                 imgui.set_cursor_screen_position((draw_state.left - tree_offset, draw_state.top - tree_offset))
-                imgui.invisible_button(f"##block_tree", width=draw_state.width,
+                imgui.invisible_button(f"##block_tree", width=max(1, draw_state.width),
                                        height=tree_offset)
                 imgui.set_item_allow_overlap()
 
                 imgui.set_cursor_screen_position((draw_state.left - tree_offset, draw_state.top))
                 imgui.invisible_button(f"##block_tree", width=tree_offset,
-                             height=draw_state.height)
+                             height=max(1, draw_state.height))
                 imgui.set_item_allow_overlap()
 
                 imgui.pop_style_var(2)
@@ -628,7 +630,7 @@ def draw_any(input_value, *args, meta=None, **kwargs):
     return meta.view_function(input_value, *args, **kwargs)
 
 
-@with_simple_header(is_default_for=(NoneType))
+@with_header(is_default_for=(NoneType))
 def draw_none(input_value: NoneType):
     imgui.align_text_to_frame_padding()
     imgui.text("None")
@@ -636,7 +638,7 @@ def draw_none(input_value: NoneType):
     return False, None
 
 
-@with_simple_header(is_default_for=(bool))
+@with_header(is_default_for=(bool))
 def draw_bool(input_value: bool):
     changed, is_checked = imgui.checkbox("##bool", input_value)
     if changed:
@@ -645,7 +647,7 @@ def draw_bool(input_value: bool):
     return False, None
 
 
-@with_simple_header(is_default_for=(str))
+@with_header(is_default_for=(str))
 def draw_str(input_value: str):
     changed, value = imgui.input_text("##str", input_value)
     if changed:
@@ -653,7 +655,7 @@ def draw_str(input_value: str):
 
     return changed, value
 
-@with_simple_header(is_default_for=(tuple))
+@with_header(is_default_for=(tuple))
 def draw_tuple(input_value: tuple, is_tree=False):
     if len(input_value) == 4:
         color_list = list(input_value)
@@ -678,7 +680,7 @@ def draw_tuple(input_value: tuple, is_tree=False):
             input_value = (color[0], color[1], color[2])
     return changed, input_value
 
-@with_simple_header(is_default_for=float)
+@with_header(is_default_for=float)
 def draw_float(input_value:float, min_value=-100.0, max_value=100.0, speed=0.01):
     changed, value = imgui.drag_float("##float", input_value,
                                       change_speed=speed,
@@ -690,7 +692,7 @@ def draw_float(input_value:float, min_value=-100.0, max_value=100.0, speed=0.01)
     return changed, value
 
 
-@with_simple_header(is_default_for=(int), wraps=render_func)
+@with_header(is_default_for=(int), wraps=render_func)
 def draw_int(input_value: int, min_value=-100.0, max_value=100.0, speed=0.05):
     changed, value = imgui.drag_int("##int", input_value,
                                       change_speed=speed,
