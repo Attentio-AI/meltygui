@@ -76,6 +76,10 @@ class Melty:
     selected_views = {}
     drag_in_progress = False
 
+    max_distance = 200
+    drag_drop_target = None
+    target_distance = max_distance
+
     vis = None
     type_defaults = {}
     unique_stack = []

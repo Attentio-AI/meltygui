@@ -187,7 +187,7 @@ def with_header(func, *args, **o_kwargs):
         drop_window_size = 30.0
         mouse_pos = imgui.get_mouse_pos()
         cursor_y_screen = imgui.get_cursor_screen_pos()[1] + 10.0
-        distance_to_mouse = abs(mouse_pos[1] - cursor_y_screen)
+        distance_to_mouse = abs(mouse_pos[1] - cursor_y_screen) - 10.0
         bell_curve = max(0.0, min(1.0, 1.0 - (distance_to_mouse / drop_window_size)))
 
         window_size = imgui.get_window_size()
@@ -326,10 +326,16 @@ def with_header(func, *args, **o_kwargs):
                 if inside_window and show_bg:
                     draw_list.channels_set_current(min(depth + 1, Melty.max_depth - 1))
 
-                if distance_to_mouse < 20:
-                    active_drop = True
-                else:
-                    active_drop = False
+                if distance_to_mouse < Melty.target_distance:
+                    Melty.drag_drop_target = unique
+
+                if Melty.drag_drop_target == unique:
+                    Melty.target_distance = distance_to_mouse
+                    if distance_to_mouse > Melty.max_distance or not mouse_over_window:
+                        Melty.drag_drop_target = None
+                        Melty.target_distance = Melty.max_distance
+
+                active_drop = (Melty.drag_drop_target == unique)
 
                 opacity = 1.0 if active_drop else 0.3
                 offset = flow_spacing * 0.5
