@@ -307,7 +307,6 @@ def render_func(*args, **o_kwargs):
             melty.nearest_drop_distance = melty.max_distance
             melty.nearest_drop_target = None
             melty.nearest_drop_target_tag = None
-            request_render()
         else:
             melty = get_melty_state(Melty.unique_stack[0])
 
@@ -521,9 +520,7 @@ def render_func(*args, **o_kwargs):
                 ######### apply drag & drop -----------
                 while len(melty.actions_to_apply) > 0:
                     action = melty.actions_to_apply.pop(0)
-                    action.print()
                     result = apply_collection_action(action)
-                    print(result)
                     request_render()
 
                 melty.actions_to_apply = []
