@@ -420,6 +420,7 @@ class Melty:
         return (glfw.get_key(Melty.vis.window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS or
                      glfw.get_key(Melty.vis.window, glfw.KEY_RIGHT_SHIFT) == glfw.PRESS)
 
+    save_draw_state_for = 1
     spacing = (4,3)
     padding = (4,3)
     last_frame_actions = {}

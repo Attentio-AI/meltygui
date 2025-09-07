@@ -20,7 +20,6 @@ from src.lsd.gl_gui.model.class_utill import ClassUtility
 from src.lsd.gl_gui.model.global_undo_redo_manager import TrackedList, TrackedDict, TrackedSet, GlobalUndoRedoManager
 from src.lsd.gl_gui.model.core_model.core_enums import generate_id
 from src.lsd.gl_gui.view.app_view_utils import should_exclude
-from src.lsd.gl_gui.view.core_views.core_presets import no_render
 
 _SEGMENT_RE = re.compile(
     r'(?:[^.\[]+|\[[^\]]*\])+')  # matches a segment like: attr, attr[0], attr["a.b"][1], [0], ...
@@ -31,9 +30,9 @@ class DictConversion(metaclass=FieldMeta):
         # Using weak references to avoid circular references
         self.__post_init__()
 
-    child_collapsed: no_render = set()
-    outliner_expanded_h: no_render = False
-    hash : no_render = None
+    child_collapsed = set()
+    outliner_expanded_h = False
+    hash = None
     def __post_init__(self):
         self.id = generate_id()
         self.hash = None
@@ -218,7 +217,7 @@ class DictConversion(metaclass=FieldMeta):
 
         return root
 
-    def to_dict(self, excluded=None, objects=None, shallow=False, use_references=False) -> Dict:
+    def to_dict(self, excluded=None, objects=None, shallow=False, use_references=False):
         """
         Generic method to convert any class instance to a dictionary.
         Handles nested objects, enums, and basic types.
@@ -240,6 +239,13 @@ class DictConversion(metaclass=FieldMeta):
             from src.lsd.gl_gui.model.dynamic_obj import DynamicObj
             if isinstance(self, DynamicObj):
                 pass
+
+            if 'delete_countdown' in shallow_parse:
+                if shallow_parse['delete_countdown'] <= 0:
+                    print(f"Skipping object with delete_countdown for id: {self.id}")
+                    return None
+                shallow_parse['delete_countdown'] = shallow_parse['delete_countdown'] - 1
+
             # Class path
             if hasattr(self, 'id'):
                 self.id = self.id[0:8]
@@ -252,7 +258,8 @@ class DictConversion(metaclass=FieldMeta):
             if is_root:
                 objects["root"] = object_id
 
-            objects[object_id] = shallow_parse
+            if shallow_parse is not None:
+                objects[object_id] = shallow_parse
 
         # Get all attributes that don't start with '_'
         for key, value in self.__dict__.items():
@@ -263,7 +270,6 @@ class DictConversion(metaclass=FieldMeta):
             # if hasattr(value, 'unused_obj') and value.unused_obj:
             #     print(f"Skipping unused object for key: {key}")
             #     continue
-
             if not shallow:
                 parsed = self.parse_value(result, objects, key, value, excluded)
                 result[key] = parsed
@@ -274,15 +280,6 @@ class DictConversion(metaclass=FieldMeta):
 
         if is_root:
             result["objects"] = objects
-            #
-            # to_delete = []
-            # for obj_id, object in objects.items():
-            #     if "unused_obj" in object:
-            #         if object["unused_obj"]:
-            #             to_delete.append(obj_id)
-            # for del_id in to_delete:
-            #     print(f"Deleting unused object {del_id} of type {objects[del_id]['type']}")
-            #     del objects[del_id]
 
         if use_references:
             return objects
@@ -1480,6 +1477,7 @@ class DictConversion(metaclass=FieldMeta):
                     continue
 
                 inner_dict[sub_key] = self.parse_value(inner_dict, objects, sub_key, sub_value, excluded, shallow)
+
                 if hasattr(inner_dict[sub_key], 'id') and inner_dict[sub_key].id is not None:
                     if inner_dict[sub_key].id in sub_key and inner_dict[sub_key].id != sub_key:
                         print(f"Warning: Key '{sub_key}' contains id '{inner_dict[sub_key].id}' {inner_dict[sub_key].__class__.__name__} but does not match exactly.")

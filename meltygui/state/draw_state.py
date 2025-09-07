@@ -1,20 +1,9 @@
 from typing import Dict
 
-from src.lsd.gl_gui.model.app_model import Lora
+import imgui
+
+from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.view.core_views.core_presets import window
-
-
-@window
-class NewLoraCollection(DictConversion):
-    def __init__(self):
-        super().__init__()
-        self.name: str = "Lora Collection"
-        self.test_path = "batch_gen_collection.batch_gens"
-
-        self.loras: Dict[str, Lora] = {}
-        self._collection_type = Lora
-        self.tint = (0.2, 0.26, 0.34)
 
 
 class SynthColors(DictConversion):
@@ -37,3 +26,59 @@ class SynthColors(DictConversion):
 #         self.parent_module = None
 #         self.adapter = None
 #         self.target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
+class MouseState(DictConversion):
+    def __init__(self):
+        super().__init__()
+        self.mouse_up = False
+        self.mouse_down = False
+        self.drag_released = False
+        self.hovered = False
+        self.clicked = False
+        self.dragged = False
+        self.mouse_down_pos = (0, 0)
+        self.initial_screen_pos = (0, 0)
+        self.drag_delta = (0, 0)
+
+
+class DrawState(DictConversion):
+    """Holds per-widget runtime state (expand/collapse, etc.)."""
+
+    def __init__(self):
+        super().__init__()
+
+        self.unique = 0  # stable UI identifier
+        self.expanded = True
+        self.value_cache = None
+        self.name = ""
+        self.height = None
+        self.expanded_height = None
+        self.width = None
+        self.top = None
+        self.left = None
+
+        self.track_mouse = False
+
+        self.mouse_btn_state = {0: MouseState(),
+                                1: MouseState(),
+                                2: MouseState()}
+        self.mouse_up = False
+        self.mouse_down = False
+        self.drag_released = False
+        self.hovered = False
+        self.clicked = False
+        self.dragged = False
+        self.screen_pos = (0, 0)
+
+        self.delete_countdown = Melty.save_draw_state_for
+
+        # Profiling
+        self.render_time = 0.0
+        # add more per-widget state as needed
+
+    def is_hovered(self):
+        if self.left is None or self.top is None or self.width is None or self.height is None:
+            return False
+        rect = (self.left, self.top - 5, self.width, self.height + 10)
+        if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
+            return True
+        return False

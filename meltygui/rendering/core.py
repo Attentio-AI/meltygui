@@ -10,69 +10,20 @@ from typing import Any
 
 import imgui
 
+from src.lsd.gl_gui.model.core_model.new_core_model import DrawState
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, request_render
 from src.lsd.gl_gui.melty import Melty, ActionType, apply_collection_action
 
 
-class MouseState:
-    def __init__(self):
-        self.mouse_up = False
-        self.mouse_down = False
-        self.drag_released = False
-        self.hovered = False
-        self.clicked = False
-        self.dragged = False
-        self.mouse_down_pos = (0, 0)
-        self.initial_screen_pos = (0, 0)
-        self.drag_delta = (0, 0)
-
-class DrawState:
-    """Holds per-widget runtime state (expand/collapse, etc.)."""
-
-    def __init__(self, unique: int):
-
-        self.unique = unique  # stable UI ID
-        self.expanded = True
-        self.value_cache = None
-        self.name = ""
-        self.height = None
-        self.expanded_height = None
-        self.width = None
-        self.top = None
-        self.left = None
-
-        self.track_mouse = False
-
-        self.mouse_btn_state = {0: MouseState(),
-                                1: MouseState(),
-                                2: MouseState()}
-        self.mouse_up = False
-        self.mouse_down = False
-        self.drag_released = False
-        self.hovered = False
-        self.clicked = False
-        self.dragged = False
-        self.screen_pos = (0, 0)
-
-        # Profiling
-        self.render_time = 0.0
-        # add more per-widget stuff as needed
-
-    def is_hovered(self):
-        if self.left is None or self.top is None or self.width is None or self.height is None:
-            return False
-        rect = (self.left, self.top - 5, self.width, self.height + 10)
-        if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
-            return True
-        return False
-
-_draw_state_registry = {}
 
 def get_draw_state(unique: int) -> DrawState:
     """Get or create a ViewState object for a widget ID."""
-    if unique not in _draw_state_registry:
-        _draw_state_registry[unique] = DrawState(unique)
-    return _draw_state_registry[unique]
+    if unique not in Melty.vis.root.draw_state_registry or Melty.vis.root.draw_state_registry[unique] is None:
+        Melty.vis.root.draw_state_registry[unique] = DrawState()
+        Melty.vis.root.draw_state_registry[unique].unique = unique
+
+    Melty.vis.root.draw_state_registry[unique].delete_countdown = Melty.save_draw_state_for
+    return Melty.vis.root.draw_state_registry[unique]
 
 def strhash(s: str) -> int:
     """Stable 32-bit hash of a string."""
@@ -167,7 +118,6 @@ def render_wrapper(*o_args, **o_kwargs):
         # use the specified wrapper if r_func
         wrap_sig = inspect.signature(inner_func)
         sig = inspect.signature(func)
-        print(f"inspect")
         params = sig.parameters
         wrap_params = wrap_sig.parameters
 
@@ -182,7 +132,6 @@ def render_wrapper(*o_args, **o_kwargs):
             wrap_name_to_param_type[param_name] = wrap_param_types[idx]
 
         param_defaults = {p: params[p].default for p in params if params[p].default is not inspect.Parameter.empty}
-        print(f"inspect")
         wrap_defaults = {p: wrap_params[p].default for p in wrap_params if wrap_params[p].default is not inspect.Parameter.empty}
 
         params = params | wrap_params
@@ -540,7 +489,7 @@ def render_func(*args, **o_kwargs):
             if len(Melty.unique_stack) == 0:
                 if len(Melty.hover_stack) > 0:
                     last = Melty.hover_stack[0]
-                    hovered_draw_state = _draw_state_registry.get(last, None)
+                    hovered_draw_state = Melty.vis.root.draw_state_registry.get(last, None)
                     if hovered_draw_state is not None:
                         hovered_draw_state.hovered = True
                 Melty.hover_stack = []
