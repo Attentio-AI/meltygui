@@ -40,7 +40,7 @@ def combine(h: int, s: str) -> int:
     """Order-sensitive, stable combine (FNV-style)."""
     return ((h * 16777619) ^ strhash(s)) & 0xffffffff
 
-def ui_id(meta=None, this_name=None, root_function="render", suffix=None) -> int:
+def ui_id(name=None, datatype=None, meta=None, this_name=None, root_function="render", suffix=None) -> int:
     """
     Generate a stable UI ID from the call stack + optional metadata.
 
@@ -57,14 +57,17 @@ def ui_id(meta=None, this_name=None, root_function="render", suffix=None) -> int
     scope = f"{cls_name}.{func_name}" if cls_name else func_name
     h = combine(h, scope)
 
-    if meta is not None:
+    name = name if name is not None else getattr(meta, "name", None)
+    datatype = datatype if datatype is not None else getattr(meta, "datatype", None)
+
+    if name is not None:
         if hasattr(meta, "name"):
-            h = combine(h, f"{meta.name}:{meta.datatype}")
+            h = combine(h, f"{name}:{datatype}")
         else:
-            h = combine(h, str(meta.datatype))
+            h = combine(h, str(datatype))
     unique = h if suffix is None else ((h * 16777619) ^ strhash(str(suffix))) & 0xffffffff
 
-    return unique, Melty.depth
+    return unique
 
 id_stack = []
 stack_holder = {}
@@ -147,6 +150,8 @@ def render_wrapper(*o_args, **o_kwargs):
         param_defaults = param_defaults | wrap_defaults
 
         wanted_params = list(params.keys())
+        wanted_params.remove("args") if "args" in wanted_params else None
+        wanted_params.remove("o_kwargs") if "o_kwargs" in wanted_params else None
 
         is_default_for = kwargs.get('is_default_for', None)
         if isinstance(is_default_for, (tuple, list)):
@@ -154,7 +159,7 @@ def render_wrapper(*o_args, **o_kwargs):
                 if isinstance(a_type, type):
                     kwargs.pop('is_default_for', None)
                     from src.lsd.gl_gui.view.core_views.core_presets import Meta
-                    new_meta = Meta(param_defaults)
+                    new_meta = Meta()
                     new_meta.view_function = wrapper(*args, **kwargs)
                     for k, v in param_defaults.items():
                         setattr(new_meta, k, v)
@@ -164,7 +169,7 @@ def render_wrapper(*o_args, **o_kwargs):
         elif isinstance(is_default_for, type):
             kwargs.pop('is_default_for', None)
             from src.lsd.gl_gui.view.core_views.core_presets import Meta
-            new_meta = Meta(param_defaults)
+            new_meta = Meta()
             new_meta.view_function = wrapper(*args, **kwargs)
             for k, v in param_defaults.items():
                 setattr(new_meta, k, v)
@@ -220,7 +225,7 @@ def annotation_track(*args, wrapper, **kwargs):
             kwargs.pop('default_value', None)
             args = args[1:] if len(args) > 1 else ()
 
-            new_meta = Meta(param_defaults)
+            new_meta = Meta()
             for k, v in param_defaults.items():
                 setattr(new_meta, k, v)
 
@@ -235,10 +240,10 @@ def annotation_track(*args, wrapper, **kwargs):
 
             return first_arg
 
-        # View function was used as annotation, ie. some_param: render_float = 0.0
-        new_meta = Meta(param_defaults)
-        for k, v in param_defaults.items():
-            setattr(new_meta, k, v)
+        # # View function was used as annotation, ie. some_param: as_float = 0.0
+        new_meta = Meta()
+        # for k, v in param_defaults.items():
+        #     setattr(new_meta, k, v)
 
         for k, v in kwargs.items():
             setattr(new_meta, k, v)
@@ -272,33 +277,18 @@ def render_func(*args, **o_kwargs):
         annotation = annotation_track(*args, wrapper=wrapper, **o_kwargs)
         if annotation is not None:
             return annotation
+        return_value = None
 
         first_arg = args[0] if args else None
         input_value = kwargs.get("input_value", first_arg)
-        attr_name = kwargs.get("name", "")
+        name = kwargs.get("name", "")
         from src.lsd.gl_gui.view.core_views.core_presets import Meta
-        meta = kwargs.get("meta", None)
-        if meta is None:
-            # Use class meta as default if available
-            if hasattr(type(input_value), "meta"):
-                meta = getattr(type(input_value), "meta")
-            else:
-                meta = Meta.get_new_defaults(default_value=input_value)
-                for wanted_param in wanted_params:
-                    if wanted_param in param_defaults:
-                        setattr(meta, wanted_param, param_defaults[wanted_param])
 
-        kwargs["meta"] = meta
-        suffix = kwargs.get("suffix", attr_name)
-        kwargs["suffix"] = suffix
-        unique, depth = ui_id(meta, suffix=suffix) if meta else (0, 0)
-
+        suffix = kwargs.get("suffix", name)
+        unique = ui_id(name=name, datatype=type(input_value), suffix=suffix)
+        imgui.begin_group()
+        push_id(unique)
         draw_state = get_draw_state(unique)
-        meta.draw_state = draw_state
-        meta.input_value = input_value
-        kwargs["unique"] = unique
-        kwargs["depth"] = depth
-
 
         is_root = len(Melty.unique_stack) == 0
         if is_root:
@@ -310,114 +300,110 @@ def render_func(*args, **o_kwargs):
         else:
             melty = get_melty_state(Melty.unique_stack[0])
 
-        # for kwarg in kwargs:
-        #     setattr(meta, kwarg, kwargs[kwarg])
-
-        expected_type = param_types[wanted_params.index("input_value")] if "input_value" in wanted_params else None
-        annotation_empty = expected_type == inspect.Parameter.empty
-
-        if not annotation_empty:
-            if expected_type is not Any and isinstance(expected_type, type):
-                if not isinstance(input_value, expected_type):
-                    yellow = (1.0, 1.0, 0.0, 1.0)
-                    if imgui.button(f"Fix Type##{unique}"):
-                        return True, expected_type()
-                    imgui.same_line()
-                    imgui.text_colored(f"Type mismatch in {func.__name__}\n"
-                                       f"Expected {expected_type.__name__}, "
-                                       f"got {type(input_value).__name__}", *yellow)
-                    return False, None
-
-        # Clean up kwargs to only what the function wants
-        for wanted_param in wanted_params:
-            expected_type = name_to_param_type.get(wanted_param, None)
-            annotation_empty = expected_type is inspect.Parameter.empty
-            found_param = None
-
-
-            if wanted_param not in kwargs:
-                if wanted_param == "meta":
-                    found_param = meta
-                elif wanted_param == "draw_state":
-                    found_param = draw_state
-                elif wanted_param == "name":
-                    found_param = attr_name
-                elif wanted_param == "unique":
-                    found_param = unique
-                elif wanted_param == "unique":
-                    found_param = unique
-                elif wanted_param == "on_action":
-                    if unique in melty.triggered_actions:
-                        found_param = melty.triggered_actions.get(unique)
-
-            if (expected_type is not None and expected_type is not Any and expected_type is not NoneType
-                    and not annotation_empty):
-                if found_param is not None and not isinstance(found_param, expected_type):
-                    found_param = param_defaults.get(wanted_param, None)
-            elif wanted_param in vars(meta):
-                found_param = getattr(meta, wanted_param)
-
-            if wanted_param == "on_click":
-                found_param = melty.check_event(unique, 0, ActionType.CLICK)
-            elif wanted_param == "on_drag":
-                found_param = melty.check_event(unique, 0, ActionType.DRAG)
-            elif wanted_param == "on_drag_up":
-                found_param = melty.check_event(unique, 0, ActionType.DRAG_UP)
-            elif wanted_param == "on_hover":
-                found_param = melty.check_event(unique, 0, ActionType.HOVERED)
-
-            # Try global constants
-            if found_param is None and wanted_param in vars(Melty):
-                found_param = getattr(Melty, wanted_param)
-
-            if wanted_param == "melty":
-                found_param = melty
-
-            if found_param is not None and wanted_param not in kwargs:
-                kwargs[wanted_param] = found_param
-
-            if (wanted_param not in kwargs and wanted_param and
-                    wanted_param != 'o_args' and wanted_param != 'o_kwargs' and
-                    wanted_param != 'args' and wanted_param != 'kwargs'):
-                kwargs[wanted_param] = param_defaults.get(wanted_param, None)
-
-        if not meta.visible_in_ui:
-            return False, None
-
-        return_value = None
-
-        imgui.begin_group()
-        push_id(unique)
         Melty.depth = Melty.depth + 1
-
-        if 'next_kwargs' in wanted_params:
-            kwargs['next_kwargs'] = kwargs
-
         Melty.unique_stack.append(unique)
-        try:
-            clean_args = copy(kwargs)
-            to_delete = []
-            for to_provide in clean_args.keys():
-                if to_provide not in wanted_params:
-                    to_delete.append(to_provide)
-            for an_arg in to_delete:
-                clean_args.pop(an_arg)
 
-            for km, vm in vars(Melty).items():
-                if not km.startswith("_"):
-                    if km not in kwargs:
-                        kwargs[km] = vm
-            kwargs['depth'] = depth
+        try:
+            expected_type = param_types[wanted_params.index("input_value")] if "input_value" in wanted_params else None
+            annotation_empty = expected_type == inspect.Parameter.empty
+
+            if not annotation_empty:
+                if expected_type is not Any and isinstance(expected_type, type):
+                    if not isinstance(input_value, expected_type):
+                        yellow = (1.0, 1.0, 0.0, 1.0)
+                        if imgui.button(f"Fix Type##{unique}"):
+                            return True, expected_type()
+                        imgui.same_line()
+                        imgui.text_colored(f"Type mismatch in {func.__name__}\n"
+                                           f"Expected {expected_type.__name__}, "
+                                           f"got {type(input_value).__name__}", *yellow)
+                        return False, None
+            if name == "alpha":
+                pass
+
+            meta = kwargs.get("meta", None)
+            if meta is None:
+                # Use type meta as default if available
+                if hasattr(type(input_value), "meta"):
+                    meta = getattr(type(input_value), "meta")
+                else:
+                    meta = Meta.get_new_defaults(default_value=input_value)
+
+            if name is not None and name != "":
+                meta.name = name
+
+            for k, v in vars(meta).items():
+                if v is not None:
+                    kwargs[k] = v
+
+            def set_default(key, default_value):
+                if key in vars(meta) and vars(meta)[key] is not None:
+                    default_value = vars(meta)[key]
+                if default_value is None:
+                    default_value = param_defaults.get(key, default_value)
+                kwargs.setdefault(key, default_value)
+
+            if not meta.visible_in_ui:
+                return False, None
+
+            kwargs.update(vars(Melty).items())
+
+            set_default("input_value", input_value)
+            set_default("draw_state", draw_state)
+            set_default("name", name)
+            set_default("melty", melty)
+            set_default("depth", Melty.depth)
+            set_default("unique", unique)
+            set_default("suffix", suffix)
+            set_default("window_stack", Melty.window_stack)
+
+            set_default("on_click", melty.check_event(unique, 0, ActionType.CLICK))
+            set_default("on_drag", melty.check_event(unique, 0, ActionType.DRAG))
+            set_default("on_drag_up", melty.check_event(unique, 0, ActionType.DRAG_UP))
+            set_default("on_hover", melty.check_event(unique, 0, ActionType.HOVERED))
+            set_default("on_action", melty.triggered_actions.get(unique, None))
+
+            kwargs.setdefault('meta', meta)
+
+            if name is 'tint':
+                pass
+
+            for param in wanted_params:
+                if param not in kwargs and param != "kwargs" and param != 'args' and param != 'o_kwargs' and param != 'next_kwargs':
+                    set_default(param, None)
+
+            set_default("next_kwargs", kwargs)
+
+            if type(input_value).__name__ == "LoraCollection":
+                pass
+
+            if 'kwargs' in wanted_params:
+                clean_args = copy(kwargs)
+                kwargs.update(vars(Melty).items())
+            else:
+                clean_args = copy(kwargs)
+                to_delete = []
+                for to_provide in clean_args.keys():
+                    if to_provide not in wanted_params:
+                        to_delete.append(to_provide)
+                for an_arg in to_delete:
+                    clean_args.pop(an_arg)
+
+                for km, vm in vars(Melty).items():
+                    if not km.startswith("_"):
+                        if km not in kwargs:
+                            kwargs[km] = vm
 
             spacing = kwargs.get('spacing', Melty.spacing)
             padding = kwargs.get('padding', Melty.padding)
+
 
             imgui.push_style_var(imgui.STYLE_ITEM_SPACING, spacing)
             imgui.push_style_var(imgui.STYLE_FRAME_PADDING, padding)
             return_value = func(**clean_args)
             imgui.pop_style_var(2)
         except Exception as e:
-            print_colored_traceback()
+            print_colored_traceback(*sys.exc_info())
         finally:
             # Needs to go after mouse down check
             imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))

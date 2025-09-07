@@ -6,15 +6,13 @@ class Meta:
 
     def __init__(self, *args, **kwargs):
         super().__init__()
-        self.input_value = None
-        self.draw_state = None
         self.visible_in_ui = True
         from src.lsd.gl_gui.view.core_views.new_core_view import draw_object
         self.view_function = draw_object
         self.default_value = None
         self.datatype = Any
-        self.is_window = False
         self.is_meta = True
+
         self.__dict__.update(kwargs)
 
     @classmethod
