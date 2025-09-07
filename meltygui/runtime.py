@@ -258,9 +258,11 @@ def apply_collection_action(action: CollectionAction):
         if kind == "list->list":
             s_idx = plan["s_idx"]
             insert_at = max(0, min(plan["insert_at"], len(dst)))
+            print(f"insert at {insert_at} from {s_idx}")
             item = src[s_idx]
 
             if is_move and same_collection:
+                print("same-list move")
                 popped = src.pop(s_idx)
                 try:
                     dst.insert(insert_at, popped)

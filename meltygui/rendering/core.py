@@ -10,7 +10,7 @@ from typing import Any
 
 import imgui
 
-from src.lsd.gl_gui.utils.custom_views import print_colored_traceback
+from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, request_render
 from src.lsd.gl_gui.melty import Melty, ActionType, apply_collection_action
 
 
@@ -517,7 +517,7 @@ def render_func(*args, **o_kwargs):
                     btn_state.drag_delta = (current_mouse_pos[0] - btn_state.mouse_down_pos[0],
                                              current_mouse_pos[1] - btn_state.mouse_down_pos[1])
 
-                    if abs(distance) >= 2:
+                    if abs(distance) >= 2 or btn_state.dragged:
                         btn_state.dragged = True
                         Melty.drag_in_progress = True
                         Melty.dragged_item = draw_state
@@ -555,6 +555,9 @@ def render_func(*args, **o_kwargs):
                     action.print()
                     result = apply_collection_action(action)
                     print(result)
+                    request_render()
+
+                Melty.actions_to_apply = []
 
             if return_value is None:
                 changed, new_value = False, None

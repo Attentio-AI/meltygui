@@ -181,7 +181,7 @@ def draw_drop_target(draw_state, on_drag, do_flow, depth,
     if key is None:
         return
     # ----------------- top spacing -----------
-    falloff = 50.0 # higher is gentler
+    falloff = 25.0 # Higher = gentler
     drop_gap = 7.0
     mouse_pos = imgui.get_mouse_pos()
     dragged_top = Melty.dragged_item.top if Melty.dragged_item is not None else 0
@@ -412,6 +412,7 @@ def with_header(func, *args, **o_kwargs):
             draw_list.channels_set_current(Melty.max_depth - 1)
 
         if on_drag_up:
+            print(f"DROP {name}")
             Melty.drag_in_progress = False
             new_action = copy(Melty.drag_drop_action)
             new_action.operation = OperationType.MOVE
@@ -444,7 +445,7 @@ def draw_collection(input_value=None, depth=0, style_manager=None,
             if hasattr(v, 'tint'):
                 style_manager.set_imgui_tint(*v.tint)
             # Derive meta for dict entry
-            suffix = f"{suffix}_{str(k)}"
+            suffix = f"{str(k)}"
             obj_unique, _, = ui_id(meta, suffix=suffix)
             view_function = meta.view_function if meta and meta.view_function else draw_object
             item_changed, value = view_function(input_value=v, meta=meta, key=k,
@@ -452,6 +453,8 @@ def draw_collection(input_value=None, depth=0, style_manager=None,
                                                 suffix=obj_unique, name=k)
             if isinstance(value, CollectionAction):
                 Melty.to_apply(value)
+                value = None
+                changed = False
 
             changed |= item_changed
             if hasattr(v, 'tint'):
@@ -462,16 +465,21 @@ def draw_collection(input_value=None, depth=0, style_manager=None,
         changed = False
         change_op = None
         for i, v in enumerate(input_value):
-            suffix = f"{suffix}_{str(i)}"
+            if hasattr(input_value, 'id'):
+                suffix = f"{input_value.id}"
+            else:
+                suffix = f"{suffix}_{str(i)}"
             obj_unique, _, = ui_id(meta, suffix=suffix)
             child_meta = Melty.type_defaults.get(type(v), meta)
             item_changed, value = child_meta.view_function(input_value=v, key=i, meta=child_meta,
                                                                collection=input_value,
                                                                suffix=obj_unique, name=str(i))
+            changed |= item_changed
+
             if isinstance(value, CollectionAction):
                 Melty.to_apply(value)
-
-            changed |= item_changed
+                value = None
+                changed = False
 
 
     elif hasattr(input_value, "__dict__") and depth < Melty.max_depth:  # class or module instance
@@ -497,6 +505,8 @@ def draw_collection(input_value=None, depth=0, style_manager=None,
                                                         suffix=obj_unique, name=k)
                 if isinstance(value, CollectionAction):
                     Melty.to_apply(value)
+                    value = None
+                    changed = False
                 if item_changed:
                     setattr(input_value, k, value)
 
@@ -623,8 +633,8 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
         imgui.text_colored(f"({type(input_value).__name__})", *(0.8, 0.0, 0.5, 1.0))
         imgui.same_line()
 
-    if show_unique:
-        imgui.text_colored(f"({str(unique)})", *(0.8, 0.0, 0.5, 1.0))
+    if show_unique or global_toggles.force_show_datatype:
+        imgui.text_colored(f"({str(unique)[-3:]})", *(0.4, 0.6, 0.9, 1.0))
         imgui.same_line()
 
     if show_name and name != "":
