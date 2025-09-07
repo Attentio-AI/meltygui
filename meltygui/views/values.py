@@ -176,7 +176,7 @@ def with_simple_header(func, *args, **o_kwargs):
 
 @render_func
 def draw_drop_target(draw_state, on_drag, do_flow, depth,
-                     collection, key,
+                     collection, key, melty,
                      unique, tag, style_manager):
     if key is None:
         return
@@ -184,12 +184,12 @@ def draw_drop_target(draw_state, on_drag, do_flow, depth,
     falloff = 25.0 # Higher = gentler
     drop_gap = 7.0
     mouse_pos = imgui.get_mouse_pos()
-    dragged_top = Melty.dragged_item.top if Melty.dragged_item is not None else 0
+    dragged_top = melty.dragged_item.top if melty.dragged_item is not None else 0
     cursor_top = imgui.get_cursor_screen_pos()[1]
     cursor_y_screen = imgui.get_cursor_screen_pos()[1]
     static_offset = 3
     distance_to_mouse = abs(mouse_pos[1] - cursor_y_screen -
-                            Melty.initial_drag_offset[1] - (drop_gap) + static_offset)
+                            melty.initial_drag_offset[1] - (drop_gap) + static_offset)
     bell_curve = max(0.0, min(1.0, 1.0 - (distance_to_mouse / falloff)))
 
     window_size = imgui.get_window_size()
@@ -198,7 +198,7 @@ def draw_drop_target(draw_state, on_drag, do_flow, depth,
                    window_pos[0] + window_size[0],
                    window_pos[1] + window_size[1])
     mouse_over_window = imgui.is_mouse_hovering_rect(*window_rect)
-    if Melty.drag_in_progress and do_flow and not on_drag and mouse_over_window:
+    if melty.drag_in_progress and do_flow and not on_drag and mouse_over_window:
         flow_spacing = drop_gap * bell_curve
     else:
         flow_spacing = 0.0
@@ -223,26 +223,26 @@ def draw_drop_target(draw_state, on_drag, do_flow, depth,
         cursor_bottom += flow_spacing
         cursor_top += flow_spacing
 
-    if Melty.drag_in_progress and not on_drag and do_flow:
+    if melty.drag_in_progress and not on_drag and do_flow:
         if draw_state.height is not None:
             if Melty.inside_window():
                 draw_list.channels_set_current(min(depth + 1, Melty.max_depth - 1))
 
-            if distance_to_mouse < Melty.nearest_drop_distance:
-                Melty.nearest_drop_distance = distance_to_mouse
-                Melty.nearest_drop_target = draw_state.unique
-                Melty.nearest_drop_target_tag = tag
+            if distance_to_mouse < melty.nearest_drop_distance:
+                melty.nearest_drop_distance = distance_to_mouse
+                melty.nearest_drop_target = draw_state.unique
+                melty.nearest_drop_target_tag = tag
 
-                Melty.drag_drop_action.target_unique = draw_state.unique
-                Melty.drag_drop_action.target_tag = tag
-                Melty.drag_drop_action.target_key = key
-                Melty.drag_drop_action.target_collection = collection
+                melty.drag_drop_action.target_unique = draw_state.unique
+                melty.drag_drop_action.target_tag = tag
+                melty.drag_drop_action.target_key = key
+                melty.drag_drop_action.target_collection = collection
 
-                if Melty.drag_drop_action.target_key is None:
+                if melty.drag_drop_action.target_key is None:
                     pass
 
-            active_drop = (Melty.drag_drop_target == draw_state.unique
-                           and tag == Melty.drag_drop_target_tag)
+            active_drop = (melty.drag_drop_target == draw_state.unique
+                           and tag == melty.drag_drop_target_tag)
 
             opacity = 1.0 if active_drop else 0.1
             color = style_manager.make_color_rgb(*(1.0, 1.0, 1.0), factor=1.0,
@@ -263,7 +263,7 @@ def with_header(func, *args, **o_kwargs):
     def wrapper(input_value=None, collection=None, key=None, indent_size=10, depth=0, draw_state=None,
                 window_stack=None, is_tree=True, is_window=False, spacing=Melty.spacing, padding=Melty.padding,
                 show_header=True, show_bg=True, unique=0, name="", style_manager=None, global_style=None,
-                selected_views=None, on_drag=False, on_drag_up=False, do_flow=True,
+                selected_views=None, on_drag=False, on_drag_up=False, do_flow=True, melty=None,
                 on_hover=False, next_kwargs=None, **kwargs):
         annotation = annotation_track(*args, wrapper=wrapper, **o_kwargs)
         if annotation is not None: return annotation
@@ -323,8 +323,6 @@ def with_header(func, *args, **o_kwargs):
             else:
                 next_kwargs['do_flow'] = True
 
-            if unique in selected_views:
-                bg_selected = True
             rect_size = imgui.get_item_rect_size()
             header_width = rect_size[0]
 
@@ -413,15 +411,15 @@ def with_header(func, *args, **o_kwargs):
 
         if on_drag_up:
             print(f"DROP {name}")
-            Melty.drag_in_progress = False
-            new_action = copy(Melty.drag_drop_action)
+            melty.drag_in_progress = False
+            new_action = copy(melty.drag_drop_action)
             new_action.operation = OperationType.MOVE
             new_action.source_key = key
             new_action.source_unique = unique
             new_action.source_collection = collection
 
 
-            print(f"drop {name} on {Melty.drag_drop_target} {Melty.drag_drop_target_tag}")
+            print(f"drop {name} on {melty.drag_drop_target} {melty.drag_drop_target_tag}")
             return False, new_action
 
         return return_value
@@ -432,7 +430,7 @@ def with_header(func, *args, **o_kwargs):
 @with_header
 def draw_collection(input_value=None, depth=0, style_manager=None,
                     meta=None, suffix="", do_flow=True, on_drag=False,
-                    collection=None,
+                    collection=None, melty=None,
                     unique=0, draw_state=None, next_kwargs=None, *args, **kwargs):
     changed, value = False, input_value
 
@@ -452,7 +450,7 @@ def draw_collection(input_value=None, depth=0, style_manager=None,
                                                 collection=input_value,
                                                 suffix=obj_unique, name=k)
             if isinstance(value, CollectionAction):
-                Melty.to_apply(value)
+                melty.to_apply(value)
                 value = None
                 changed = False
 
@@ -477,7 +475,7 @@ def draw_collection(input_value=None, depth=0, style_manager=None,
             changed |= item_changed
 
             if isinstance(value, CollectionAction):
-                Melty.to_apply(value)
+                melty.to_apply(value)
                 value = None
                 changed = False
 
@@ -504,7 +502,7 @@ def draw_collection(input_value=None, depth=0, style_manager=None,
                                                         collection=input_value,
                                                         suffix=obj_unique, name=k)
                 if isinstance(value, CollectionAction):
-                    Melty.to_apply(value)
+                    melty.to_apply(value)
                     value = None
                     changed = False
                 if item_changed:

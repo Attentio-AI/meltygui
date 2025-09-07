@@ -378,6 +378,42 @@ def apply_collection_action(action: CollectionAction):
 
     return None
 
+class MeltyState:
+    def __init__(self):
+        self.hover_stack = []
+        self.triggered_actions = {}
+        self.dragged_item = None
+        self.max_distance = 200
+
+        self.selected_views = {}
+        self.drag_in_progress = False
+
+        self.initial_drag_offset = (0, 0)
+        self.nearest_drop_target = None
+        self.nearest_drop_target_tag = None
+        self.nearest_drop_distance = self.max_distance
+
+        self.drag_drop_target = None
+        self.drag_drop_target_tag = None
+        self.drag_target_key = None
+        self.drag_target_collection = None
+        self.drag_drop_action = CollectionAction()
+
+        self.target_distance = self.max_distance
+
+        self.actions_to_apply = []
+
+    def check_event(self, unique, mouse_btn, event_type):
+        if unique in self.triggered_actions:
+            action = self.triggered_actions[unique]
+            if action.action_type == event_type and action.button == mouse_btn:
+                return True
+        return False
+    def mark_event(self, unique, mouse_btn, event_type: ActionType):
+        self.triggered_actions[unique] = MouseAction(event_type, mouse_btn)
+
+    def to_apply(self, action: CollectionAction):
+        self.actions_to_apply.append(action)
 
 class Melty:
     max_depth = 40
@@ -396,24 +432,8 @@ class Melty:
         imgui.unindent(amount)
 
     @staticmethod
-    def check_event(unique, mouse_btn, event_type):
-        if unique in Melty.triggered_actions:
-            action = Melty.triggered_actions[unique]
-            if action.action_type == event_type and action.button == mouse_btn:
-                return True
-        return False
-
-    @staticmethod
     def inside_window():
         return len(Melty.window_stack) > 0
-
-    @staticmethod
-    def mark_event(unique, mouse_btn, event_type: ActionType):
-        Melty.triggered_actions[unique] = MouseAction(event_type, mouse_btn)
-
-    @staticmethod
-    def to_apply(action: CollectionAction):
-        Melty.actions_to_apply.append(action)
 
     @staticmethod
     def shift_down():
@@ -423,32 +443,6 @@ class Melty:
     save_draw_state_for = 1
     spacing = (4,3)
     padding = (4,3)
-    last_frame_actions = {}
-    tracked_views = set()
-
-    hover_stack = []
-    # One for each mouse button
-    triggered_actions = {}
-    dragged_item = None
-
-    selected_views = {}
-    drag_in_progress = False
-    initial_drag_offset = (0,0)
-
-    nearest_drop_target = None
-    nearest_drop_target_tag = None
-    nearest_drop_distance = None
-
-    max_distance = 200
-    drag_drop_target = None
-    drag_drop_target_tag = None
-    drag_target_key = None
-    drag_target_collection = None
-    drag_drop_action = CollectionAction()
-
-    target_distance = max_distance
-
-    actions_to_apply = []
 
     vis = None
     type_defaults = {}
