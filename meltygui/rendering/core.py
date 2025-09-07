@@ -13,6 +13,7 @@ import imgui
 from src.lsd.gl_gui.model.core_model.new_core_model import DrawState
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, request_render
 from src.lsd.gl_gui.melty import Melty, ActionType, apply_collection_action, MeltyState
+from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
 
 melty_state_registry = {}
 def get_melty_state(unique: int):
@@ -313,7 +314,7 @@ def render_func(*args, **o_kwargs):
                         yellow = (1.0, 1.0, 0.0, 1.0)
                         if imgui.button(f"Fix Type##{unique}"):
                             return True, expected_type()
-                        imgui.same_line()
+                        same_line()
                         imgui.text_colored(f"Type mismatch in {func.__name__}\n"
                                            f"Expected {expected_type.__name__}, "
                                            f"got {type(input_value).__name__}", *yellow)

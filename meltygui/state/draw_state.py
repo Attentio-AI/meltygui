@@ -55,6 +55,7 @@ class DrawState(DictConversion):
         self.width = None
         self.top = None
         self.left = None
+        self.search_text = ""
 
         self.track_mouse = False
 

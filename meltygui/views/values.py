@@ -240,6 +240,8 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
                 next_kwargs['opacity'] = 0.0
             next_kwargs.pop('spacing', None)
             next_kwargs.pop('padding', None)
+
+            # --------------------- HEADER -----------------
             changed, action = draw_header(spacing=(spacing[0], Melty.spacing[1]),
                                           padding=(padding[0], Melty.padding[1] + 1),
                                           **next_kwargs)
@@ -273,7 +275,9 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
             space_available = imgui.get_content_region_available()[0] - header_width
             if draw_state.expanded_height is None or draw_state.expanded_height < 70 or on_same_line:
                 if (space_available > cutoff and draw_state.expanded) or on_same_line:
-                    imgui.same_line()
+                    same_line()
+
+
 
         return_value = None
         if not is_tree or draw_state.expanded or is_window:
@@ -285,7 +289,7 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
                                     padding=(padding[0], Melty.padding[1]),
                                     **next_kwargs)
             if on_drag:
-                imgui.same_line(spacing=0.0)
+                same_line(spacing=0.0)
 
             if on_drag:
                 imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
@@ -366,7 +370,7 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
 
 @render_wrapper(wraps=render_func)
 def with_header_minimal(func, *args, **o_kwargs):
-    def wrapper(is_tree=False, show_bg=False, on_drag=False, next_kwargs=None, **kwargs):
+    def wrapper(is_tree=False, show_search=False, show_bg=False, on_drag=False, next_kwargs=None, **kwargs):
         annotation = annotation_track(*args, wrapper=wrapper, **o_kwargs)
         if annotation is not None: return annotation
 
@@ -379,7 +383,7 @@ def with_header_minimal(func, *args, **o_kwargs):
 
 @render_wrapper(wraps=render_func)
 def with_header(func, *args, **o_kwargs):
-    def wrapper(next_kwargs=None, on_drag=False, **kwargs):
+    def wrapper(show_search=True, on_drag=False, next_kwargs=None, **kwargs):
         annotation = annotation_track(*args, wrapper=wrapper, **o_kwargs)
         if annotation is not None: return annotation
 
@@ -389,124 +393,122 @@ def with_header(func, *args, **o_kwargs):
 
     return wrapper
 
+def seperator(height):
+    imgui.dummy(0, height / 2)
+    imgui.separator()
+    imgui.dummy(0, height / 2)
+
 
 @with_header
-def draw_collection(input_value=None, depth=0, style_manager=None,
-                    meta=None, suffix="", melty=None, **kwargs):
-    changed, value = False, input_value
+def draw_collection(input_value, draw_state, depth, style_manager,
+                    meta, suffix, melty, show_search=True,
+                    show_instance_vars=True, **kwargs):
+    """
+    Universal collection renderer
+    """
+    changed = False
+    base_suffix = suffix  # keep original arg intact
 
-    # Handle collections
-    if isinstance(input_value, dict):
-        changed = False
-        for k, v in input_value.items():
-            previous_tint = style_manager.get_tint()
-            if hasattr(v, 'tint'):
-                style_manager.set_imgui_tint(*v.tint)
-            # Derive meta for dict entry
-            suffix = f"{str(k)}"
-            obj_unique = ui_id(meta, suffix=suffix)
-            view_function = meta.view_function if meta and meta.view_function else draw_object
-            item_changed, value = view_function(input_value=v, meta=meta, key=k,
-                                                collection=input_value,
-                                                suffix=str(obj_unique), name=k)
-            if isinstance(value, CollectionAction):
-                melty.to_apply(value)
-                value = None
-                changed = False
+    # ----- SIMPLE NORMALIZATION (lowercase; remove spaces, '_' and '-') -----
+    _TRANS = str.maketrans("", "", " _-")
+    def norm_string(s) -> str:
+        if s is None:
+            return ""
+        try:
+            s = str(s)
+        except Exception:
+            s = ""
+        return s.lower().translate(_TRANS)
 
-            changed |= item_changed
-            if hasattr(v, 'tint'):
-                style_manager.set_imgui_tint(*previous_tint)
+    search_token = norm_string(draw_state.search_text) if show_search else ""
 
-        if len(input_value) > 0:
-            imgui.dummy(0, Melty.end_collection_spacing)
+    # --- configure per collection type ---
+    if isinstance(input_value, (dict, list, tuple, set)):
+        use_tint = True
+        use_child_meta = False
+        apply_change = False
+        parent_type = None
+        collection = list(input_value.items()) if (
+            isinstance(input_value, dict)) else list(enumerate(input_value))
 
-    elif isinstance(input_value, (list, tuple, set)):
-        changed = False
-        for i, v in enumerate(input_value):
-            if hasattr(input_value, 'id'):
-                suffix = f"{input_value.id}"
-            else:
-                suffix = f"{suffix}_{str(i)}"
-            obj_unique = ui_id(meta, suffix=suffix)
-            child_meta = Melty.type_defaults.get(type(v), meta)
-            item_changed, value = child_meta.view_function(input_value=v, key=i, meta=child_meta,
-                                                               collection=input_value,
-                                                               suffix=obj_unique, name=str(i))
-            changed |= item_changed
+    elif hasattr(input_value, "__dict__") and depth < Melty.max_depth:
+        use_tint = False
+        use_child_meta = True
+        apply_change = True
+        parent_type = type(input_value)
+        class_dict = parent_type.__dict__  # O(1) lookup
+        class_backed, extras = [], []
+        for k, inst_val in input_value.__dict__.items():
+            (class_backed if k in class_dict else extras).append((k, inst_val))
+        collection = class_backed[:]
+        if show_instance_vars and extras:
+            collection.append((None, None))  # separator sentinel
+            collection.extend(extras)
+    else:
+        return False, input_value
 
-            if isinstance(value, CollectionAction):
-                melty.to_apply(value)
-                value = None
-                changed = False
-        if len(input_value) > 0:
-            imgui.dummy(0, Melty.end_collection_spacing)
+    # --- unified loop ---
+    drew_any = False
+    for idx, (key, item) in enumerate(collection):
+        # visual separator (object extras)
+        if key is None and item is None:
+            seperator(Melty.spacing[1])
+            continue
 
+        # apply global filter for all types
+        key_str = str(key)
+        if (key_str.startswith("__") and key_str.endswith("__")) or key_str.startswith("_"):
+            continue
 
-    elif hasattr(input_value, "__dict__") and depth < Melty.max_depth:  # class or module instance
-        collection_type = type(input_value)
-        # Loop over class variables
-        for k, v in vars(collection_type).items():
-            # skip private attrs, methods, etc.
-            if (k.startswith("__") and k.endswith("__")) or k.startswith("_"):
+        # ----- SEARCH CHECK (keys + item.name if present) -----
+        if search_token:
+            name_field = getattr(item, "name", None) or getattr(item, "__name__", "")
+            if ((search_token not in norm_string(key_str)) and
+                    (search_token not in norm_string(name_field))):
                 continue
-            try:
-              if k in input_value.__dict__:
-                  if k == "alpha":
-                      pass
-                  parent_type = type(input_value)
-                  child_meta = parent_type.get_child_meta(field_name=k, value=v) if (
-                      hasattr(parent_type, "get_child_meta")) else meta
-                  if child_meta is not None:
-                      kwargs['meta'] = child_meta
-                  suffix = f"{suffix}_{str(k)}"
-                  obj_unique = ui_id(child_meta, suffix=suffix)
-                  view_function = child_meta.view_function
-                  value = input_value.__dict__[k]
-                  item_changed, value = view_function(input_value=value, key=k, meta=child_meta,
-                                                      collection=input_value,
-                                                      suffix=obj_unique, name=k)
-                  if isinstance(value, CollectionAction):
-                      melty.to_apply(value)
-                      value = None
-                      changed = False
-                  if item_changed:
-                      setattr(input_value, k, value)
 
-            except Exception as e:
-                print_colored_traceback()
-                pass
+        # meta selection
+        if use_child_meta and parent_type is not None and hasattr(parent_type, "get_child_meta"):
+            item_meta = parent_type.get_child_meta(field_name=key, value=item)
+        else:
+            item_meta = meta
 
-        # for k, v in vars(input_value).items():
-        #     if (k.startswith("__") and k.endswith("__")) or k.startswith("_"):
-        #         continue
-        #     try:
-        #         parent_type = type(input_value)
-        #         child_meta = parent_type.get_child_meta(field_name=k, value=v) if (
-        #             hasattr(parent_type, "get_child_meta")) else meta
-        #         if child_meta is not None:
-        #             kwargs['meta'] = child_meta
-        #         suffix = f"{suffix}_{str(k)}"
-        #         obj_unique, _, = ui_id(child_meta, suffix=suffix)
-        #         view_function = child_meta.view_function
-        #         item_changed, value = view_function(input_value=v, key=k, meta=child_meta,
-        #                                                 collection=input_value,
-        #                                                 suffix=obj_unique, name=k)
-        #         if isinstance(value, CollectionAction):
-        #             melty.to_apply(value)
-        #             value = None
-        #             changed = False
-        #         if item_changed:
-        # #             setattr(input_value, k, value)
-        #
-        #     except Exception as e:
-        #         print_colored_traceback()
-        #         pass
-        if len(vars(input_value)) > 0:
-            imgui.dummy(0, Melty.end_collection_spacing)
+        # view function & identifier
+        view_fn = getattr(item_meta, "view_function", draw_object)
+        item_suffix = f"{base_suffix}_{key_str}"
+        obj_unique = ui_id(item_meta, suffix=item_suffix)
 
+        prev_tint = None
+        try:
+            if use_tint and hasattr(item, "tint"):
+                prev_tint = style_manager.get_tint()
+                style_manager.set_imgui_tint(*item.tint)
 
-    return changed, value
+            item_changed, out_val = view_fn(
+                input_value=item, key=key, meta=item_meta,
+                collection=input_value, suffix=str(obj_unique), name=key_str
+            )
+
+            if isinstance(out_val, CollectionAction):
+                melty.to_apply(out_val)
+                item_changed, out_val = False, None
+
+            if item_changed and apply_change and key is not None:
+                setattr(input_value, key, out_val)
+
+            changed |= item_changed
+            drew_any = True
+        except Exception as e:
+            print(f"Error rendering field '{key_str}' of {type(input_value).__name__}: {e}")
+            print_colored_traceback(e)
+        finally:
+            if prev_tint is not None:
+                style_manager.set_imgui_tint(*prev_tint)
+
+    if drew_any:
+        imgui.dummy(0, Melty.end_collection_spacing)
+
+    return changed, input_value
 
 
 @render_func
@@ -583,7 +585,7 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
 def draw_header(input_value=None, name="", unique=None, is_tree=True,
                 show_name=True, show_type=False, show_unique=False,
                 draw_state=None, is_window=False, on_click=False,
-                on_hover=False, highlight=False, opacity=1.0,
+                on_hover=False, highlight=False, opacity=1.0, show_search=True,
                 on_right_click=False, show_bg=False, selected_views=None,
                 on_drag=False, on_drag_released=False, on_action=None, style_manager=None,
                 global_style=None, global_toggles=None, depth=0, shift_click=False):
@@ -611,27 +613,27 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
     region_available = imgui.get_content_region_available()
     if is_tree:
         draw_state.expanded = tree("##tree", draw_state.expanded, width=50)
-        imgui.same_line()
+        same_line()
     cursor_start = imgui.get_cursor_pos()
 
     if show_name and name != "":
         imgui.align_text_to_frame_padding()
         imgui.text_colored(f"{name}", *name_color)
-        imgui.same_line()
+        same_line()
 
     name_end = imgui.get_cursor_pos()
 
     if show_type:
         imgui.text_colored(f"({type(input_value).__name__})", *(0.8, 0.0, 0.5, 1.0))
-        imgui.same_line()
+        same_line()
 
     if show_unique or global_toggles.force_show_datatype:
         imgui.text_colored(f"({str(unique)[-3:]})", *(0.4, 0.6, 0.9, 1.0))
-        imgui.same_line()
+        same_line()
 
     if show_name and name != "":
 
-        imgui.same_line(spacing=0)
+        same_line()
         imgui.set_item_allow_overlap()
         imgui.set_cursor_pos_x(cursor_start[0])
         button_width = max(5, name_end[0] - cursor_start[0])
@@ -644,9 +646,31 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
                                   height=button_height):
             pass
         imgui.set_item_allow_overlap()
-        imgui.same_line(spacing=0)
+        same_line()
         imgui.set_item_allow_overlap()
         imgui.pop_style_var(2)
+
+    if show_search:
+
+        same_line()
+        space_available = imgui.get_content_region_available()[0]
+        search_width = 40
+        imgui.dummy(space_available - search_width - 18, 0)
+        imgui.same_line()
+        imgui.set_cursor_pos_y(imgui.get_cursor_pos()[1] + 2)
+
+        search_color = (style_manager.
+                      make_color_style_value(input=bg_style, saturation=saturation,
+                                             value=max(0, dynamic_value * value_factor + value_offset - 0.5)))
+        icon = "\uf002"
+        imgui.text_colored(icon, *search_color)
+        imgui.same_line()
+        imgui.set_next_item_width(search_width)
+        search_changed, new_search = imgui.input_text("##search", draw_state.search_text, 256)
+        if search_changed:
+            draw_state.search_text = new_search
+            imgui.set_keyboard_focus_here(-1)
+            request_render()
 
     do_profile = global_toggles.profiler == ProfileMode.ON
     if do_profile:
