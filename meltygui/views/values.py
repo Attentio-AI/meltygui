@@ -123,8 +123,8 @@ def draw_drop_target(draw_state, on_drag, do_flow, depth,
     if key is None:
         return
     # ----------------- top spacing -----------
-    falloff = 25.0 # Higher = gentler
-    drop_gap = 7.0
+    falloff = 20.0 # higher is gentler
+    drop_gap = 3.0
     mouse_pos = imgui.get_mouse_pos()
     dragged_top = melty.dragged_item.top if melty.dragged_item is not None else 0
     cursor_top = imgui.get_cursor_screen_pos()[1]
@@ -222,10 +222,9 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
         start_y_pos = imgui.get_cursor_screen_pos()[1]
         cutoff = 100
 
-        if on_drag:
-            pass
-
         # ----------------- top spacing -----------
+        if on_drag:
+            do_flow = False
         draw_drop_target(do_flow=do_flow,
                          collection=collection, key=key,
                          draw_state=draw_state, *kwargs, tag="top")
@@ -276,8 +275,6 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
             if draw_state.expanded_height is None or draw_state.expanded_height < 70 or on_same_line:
                 if (space_available > cutoff and draw_state.expanded) or on_same_line:
                     same_line()
-
-
 
         return_value = None
         if not is_tree or draw_state.expanded or is_window:
@@ -370,7 +367,7 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
 
 @render_wrapper(wraps=render_func)
 def with_header_minimal(func, *args, **o_kwargs):
-    def wrapper(is_tree=False, show_search=False, show_bg=False, on_drag=False, next_kwargs=None, **kwargs):
+    def wrapper(is_tree=False, show_search=False, show_bg=False, next_kwargs=None, **kwargs):
         annotation = annotation_track(*args, wrapper=wrapper, **o_kwargs)
         if annotation is not None: return annotation
 
@@ -383,7 +380,7 @@ def with_header_minimal(func, *args, **o_kwargs):
 
 @render_wrapper(wraps=render_func)
 def with_header(func, *args, **o_kwargs):
-    def wrapper(show_search=True, on_drag=False, next_kwargs=None, **kwargs):
+    def wrapper(show_search=True, next_kwargs=None, **kwargs):
         annotation = annotation_track(*args, wrapper=wrapper, **o_kwargs)
         if annotation is not None: return annotation
 
@@ -421,13 +418,14 @@ def draw_collection(input_value, draw_state, depth, style_manager,
         return s.lower().translate(_TRANS)
 
     search_token = norm_string(draw_state.search_text) if show_search else ""
-
+    if isinstance(input_value, list):
+        pass
     # --- configure per collection type ---
     if isinstance(input_value, (dict, list, tuple, set)):
         use_tint = True
-        use_child_meta = False
+        use_child_meta = True
         apply_change = False
-        parent_type = None
+        parent_type = type(input_value)
         collection = list(input_value.items()) if (
             isinstance(input_value, dict)) else list(enumerate(input_value))
 
@@ -468,8 +466,9 @@ def draw_collection(input_value, draw_state, depth, style_manager,
                 continue
 
         # meta selection
-        if use_child_meta and parent_type is not None and hasattr(parent_type, "get_child_meta"):
-            item_meta = parent_type.get_child_meta(field_name=key, value=item)
+        if use_child_meta:
+            from src.lsd.gl_gui.view.core_views.core_meta import Meta
+            item_meta = Meta.get_child_meta(parent_type, field_name=key, value=item)
         else:
             item_meta = meta
 
@@ -586,7 +585,7 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
                 show_name=True, show_type=False, show_unique=False,
                 draw_state=None, is_window=False, on_click=False,
                 on_hover=False, highlight=False, opacity=1.0, show_search=True,
-                on_right_click=False, show_bg=False, selected_views=None,
+                on_right_click=False, show_bg=False, selected_views=None, indent_size=10,
                 on_drag=False, on_drag_released=False, on_action=None, style_manager=None,
                 global_style=None, global_toggles=None, depth=0, shift_click=False):
 
@@ -639,8 +638,6 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
         button_width = max(5, name_end[0] - cursor_start[0])
         button_height = imgui.get_text_line_height() + imgui.get_style().frame_padding.y * 2
         imgui.set_item_allow_overlap()
-        imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
-        imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (0, 3))
 
         if imgui.invisible_button(f"##block_tree", width=button_width,
                                   height=button_height):
@@ -648,10 +645,11 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
         imgui.set_item_allow_overlap()
         same_line()
         imgui.set_item_allow_overlap()
-        imgui.pop_style_var(2)
-
+    if imgui.get_cursor_pos_x() < Melty.header_indent:
+        imgui.invisible_button(f"##", width=Melty.header_indent - imgui.get_cursor_pos_x(), height=18)
+        imgui.set_item_allow_overlap()
+        same_line()
     if show_search:
-
         same_line()
         space_available = imgui.get_content_region_available()[0]
         search_width = 40
@@ -800,6 +798,7 @@ def draw_tuple(input_value: tuple, is_tree=False):
 
 @with_header_minimal(is_default_for=float)
 def draw_float(input_value:float, min_value=-100.0, max_value=100.0, speed=0.01):
+    imgui.set_next_item_width(imgui.get_content_region_available().x - imgui.get_style().frame_padding.x)
     changed, value = imgui.drag_float("##float", input_value,
                                       change_speed=speed,
                                       min_value=min_value,

@@ -398,7 +398,6 @@ def render_func(*args, **o_kwargs):
             spacing = kwargs.get('spacing', Melty.spacing)
             padding = kwargs.get('padding', Melty.padding)
 
-
             imgui.push_style_var(imgui.STYLE_ITEM_SPACING, spacing)
             imgui.push_style_var(imgui.STYLE_FRAME_PADDING, padding)
             return_value = func(**clean_args)

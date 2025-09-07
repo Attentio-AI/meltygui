@@ -444,6 +444,7 @@ class Melty:
     spacing = (3,1)
     padding = (3,2)
     end_collection_spacing = 5
+    header_indent = 150
 
     vis = None
     type_defaults = {}
