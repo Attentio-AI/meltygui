@@ -30,7 +30,6 @@ class DictConversion(metaclass=FieldMeta):
         # Using weak references to avoid circular references
         self.__post_init__()
 
-    outliner_expanded_h = False
     hash = None
     def __post_init__(self):
         self.id = generate_id()
@@ -38,7 +37,6 @@ class DictConversion(metaclass=FieldMeta):
         self._parent: Optional[weakref.ReferenceType] = None
         self._parent_key: Optional[Union[str, int]] = None
         self._children: Dict[Union[str, int], 'DictConversion'] = {}
-        self.outliner_expanded_h = False
         self._history_manager = GlobalUndoRedoManager.get_instance()
         self._exclude_attrs = {'_history_manager', '_exclude_attrs', '_parameters',
                                '_buffers', '_modules', 'training'}
@@ -249,6 +247,7 @@ class DictConversion(metaclass=FieldMeta):
 
             if key.startswith('_') or (excluded and key in excluded):
                 continue
+
             #
             # if hasattr(value, 'unused_obj') and value.unused_obj:
             #     print(f"Skipping unused object for key: {key}")
@@ -1444,6 +1443,9 @@ class DictConversion(metaclass=FieldMeta):
             inner_dict = {}
             for sub_key, sub_value in value.items():
                 if excluded and sub_key in excluded:
+                    continue
+
+                if sub_value is None:
                     continue
 
                 inner_dict[sub_key] = self.parse_value(inner_dict, objects, sub_key, sub_value, excluded, shallow)

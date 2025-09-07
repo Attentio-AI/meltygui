@@ -385,11 +385,6 @@ def render_func(*args, **o_kwargs):
             return False, None
 
         return_value = None
-        # from src.lsd.gl_gui.view.core_views.new_core_view import draw_header
-        # is_header = func.__name__ == draw_header.__name__
-        # if not is_header and kwargs.get("show_header", True):
-        #     draw_header(**kwargs)
-        start_y_pos = imgui.get_cursor_screen_pos()[1]
 
         imgui.begin_group()
         push_id(unique)
@@ -483,7 +478,7 @@ def render_func(*args, **o_kwargs):
                     btn_state.drag_delta = (current_mouse_pos[0] - btn_state.mouse_down_pos[0],
                                              current_mouse_pos[1] - btn_state.mouse_down_pos[1])
 
-                    if abs(distance) >= 2 or btn_state.dragged:
+                    if abs(distance) >= 1 or btn_state.dragged:
                         btn_state.dragged = True
                         melty.drag_in_progress = True
                         melty.dragged_item = draw_state

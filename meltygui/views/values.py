@@ -261,15 +261,12 @@ def draw_drop_target(draw_state, on_drag, do_flow, depth,
             #                    col=imgui.get_color_u32_rgba(*color), thickness=3)
 
 
-@render_wrapper(wraps=render_func)
-def with_header(func, *args, **o_kwargs):
-    def wrapper(input_value=None, collection=None, key=None, indent_size=10, depth=0, draw_state=None,
+def core_header(func, outer_func, input_value=None, collection=None, key=None, indent_size=10, depth=0, draw_state=None,
                 window_stack=None, is_tree=True, is_window=False, spacing=Melty.spacing, padding=Melty.padding,
                 show_header=True, show_bg=True, unique=0, name="", style_manager=None, global_style=None,
                 selected_views=None, on_drag=False, on_drag_up=False, do_flow=True, melty=None,
                 on_hover=False, next_kwargs=None, **kwargs):
-        annotation = annotation_track(*args, wrapper=wrapper, **o_kwargs)
-        if annotation is not None: return annotation
+
         inside_window = len(window_stack) > 0
         draw_list = imgui.get_window_draw_list()
 
@@ -316,7 +313,7 @@ def with_header(func, *args, **o_kwargs):
                 pos_x = start_pos_x + drag_delta[0]
                 pos_y = start_pos_y + drag_delta[1]
 
-                core_draw_window(window_func=wrapper, input_value=input_value,
+                core_draw_window(window_func=outer_func, input_value=input_value,
                                  window_stack=window_stack,
                                  pos_x=pos_x, pos_y=pos_y,
                                  width=imgui.get_window_size()[0], height=draw_state.height,
@@ -378,9 +375,9 @@ def with_header(func, *args, **o_kwargs):
                             style_manager=style_manager)
                 else:
                     shadow_color = (style_manager.make_color_rgb(*(0.0, 0.0, 0.0), factor=1.0,
-                                                 value=0.00, alpha=0.12, saturation_scale=0.3))
+                                                                 value=0.00, alpha=0.12, saturation_scale=0.3))
                     outline_shadow = (style_manager.make_color_rgb(*(0.0, 0.0, 0.0), factor=1.0,
-                                                                 value=0.0, alpha=0.12, saturation_scale=0.3))
+                                                                   value=0.0, alpha=0.12, saturation_scale=0.3))
                     draw_bg(bypass=True, left=start_x_pos + 2, top=start_y_pos, global_style=global_style,
                             style_manager=style_manager, depth=depth,
                             width=background_width - 4, height=background_height - 2,
@@ -388,7 +385,6 @@ def with_header(func, *args, **o_kwargs):
 
                 if draw_state.expanded:
                     draw_state.expanded_height = end_y_pos - start_y_pos
-
 
             # if draw_state.height is not None:
             #     current_cursor = imgui.get_cursor_screen_pos()
@@ -423,6 +419,38 @@ def with_header(func, *args, **o_kwargs):
 
         return return_value
 
+
+@render_wrapper(wraps=render_func)
+def with_header_minimal(func, *args, **o_kwargs):
+    def wrapper(input_value=None, collection=None, key=None, indent_size=10, depth=0, draw_state=None,
+                window_stack=None, is_tree=False, is_window=False, spacing=Melty.spacing, padding=Melty.padding,
+                show_header=True, show_bg=False, unique=0, name="", style_manager=None, global_style=None,
+                selected_views=None, on_drag=False, on_drag_up=False, do_flow=True, melty=None,
+                on_hover=False, next_kwargs=None, **kwargs):
+        annotation = annotation_track(*args, wrapper=wrapper, **o_kwargs)
+        if annotation is not None: return annotation
+
+        next_kwargs['func'] = func
+        next_kwargs['outer_func'] = wrapper
+        return core_header(**next_kwargs)
+
+    return wrapper
+
+
+@render_wrapper(wraps=render_func)
+def with_header(func, *args, **o_kwargs):
+    def wrapper(input_value=None, collection=None, key=None, indent_size=10, depth=0, draw_state=None,
+                window_stack=None, is_tree=True, is_window=False, spacing=Melty.spacing, padding=Melty.padding,
+                show_header=True, show_bg=True, unique=0, name="", style_manager=None, global_style=None,
+                selected_views=None, on_drag=False, on_drag_up=False, do_flow=True, melty=None,
+                on_hover=False, next_kwargs=None, **kwargs):
+        annotation = annotation_track(*args, wrapper=wrapper, **o_kwargs)
+        if annotation is not None: return annotation
+
+        next_kwargs['func'] = func
+        next_kwargs['outer_func'] = wrapper
+        return core_header(**next_kwargs)
+
     return wrapper
 
 
@@ -456,6 +484,8 @@ def draw_collection(input_value=None, depth=0, style_manager=None,
             if hasattr(v, 'tint'):
                 style_manager.set_imgui_tint(*previous_tint)
 
+        if len(input_value) > 0:
+            imgui.dummy(0, Melty.end_collection_spacing)
 
     elif isinstance(input_value, (list, tuple, set)):
         changed = False
@@ -475,11 +505,11 @@ def draw_collection(input_value=None, depth=0, style_manager=None,
                 melty.to_apply(value)
                 value = None
                 changed = False
+        if len(input_value) > 0:
+            imgui.dummy(0, Melty.end_collection_spacing)
 
 
     elif hasattr(input_value, "__dict__") and depth < Melty.max_depth:  # class or module instance
-        change_op = None
-
         for k, v in vars(input_value).items():
             # skip private attrs, methods, etc.
             if k == "alpha":
@@ -508,6 +538,9 @@ def draw_collection(input_value=None, depth=0, style_manager=None,
             except Exception as e:
                 print_colored_traceback()
                 pass
+        if len(vars(input_value)) > 0:
+            imgui.dummy(0, Melty.end_collection_spacing)
+
 
     return changed, value
 
@@ -727,7 +760,7 @@ def draw_any(input_value, *args, meta=None, **kwargs):
     return meta.view_function(input_value, *args, **kwargs)
 
 
-@with_header(is_default_for=(NoneType))
+@with_header_minimal(is_default_for=(NoneType))
 def draw_none(input_value: NoneType):
     imgui.align_text_to_frame_padding()
     imgui.text("None")
@@ -735,7 +768,7 @@ def draw_none(input_value: NoneType):
     return False, None
 
 
-@with_header(is_default_for=(bool))
+@with_header_minimal(is_default_for=(bool))
 def draw_bool(input_value: bool):
     changed, is_checked = imgui.checkbox("##bool", input_value)
     if changed:
@@ -744,7 +777,7 @@ def draw_bool(input_value: bool):
     return False, None
 
 
-@with_header(is_default_for=(str))
+@with_header_minimal(is_default_for=(str))
 def draw_str(input_value: str):
     changed, value = imgui.input_text("##str", input_value)
     if changed:
@@ -752,7 +785,7 @@ def draw_str(input_value: str):
 
     return changed, value
 
-@with_header(is_default_for=(tuple))
+@with_header_minimal(is_default_for=(tuple))
 def draw_tuple(input_value: tuple, is_tree=False):
     if len(input_value) == 4:
         color_list = list(input_value)
@@ -777,7 +810,7 @@ def draw_tuple(input_value: tuple, is_tree=False):
             input_value = (color[0], color[1], color[2])
     return changed, input_value
 
-@with_header(is_default_for=float)
+@with_header_minimal(is_default_for=float)
 def draw_float(input_value:float, min_value=-100.0, max_value=100.0, speed=0.01):
     changed, value = imgui.drag_float("##float", input_value,
                                       change_speed=speed,
@@ -789,7 +822,7 @@ def draw_float(input_value:float, min_value=-100.0, max_value=100.0, speed=0.01)
     return changed, value
 
 
-@with_header(is_default_for=(int), wraps=render_func)
+@with_header_minimal(is_default_for=(int), wraps=render_func)
 def draw_int(input_value: int, min_value=-100.0, max_value=100.0, speed=0.05):
     changed, value = imgui.drag_int("##int", input_value,
                                       change_speed=speed,
@@ -801,7 +834,7 @@ def draw_int(input_value: int, min_value=-100.0, max_value=100.0, speed=0.05):
     return changed, value
 
 
-@with_header(is_default_for=Enum)
+@with_header_minimal(is_default_for=Enum)
 def draw_enum(input_value:Enum, global_style=None, style_manager=None, enum_tint=(0.3, 0.3, 0.3)):
 
     unique = "enum"

@@ -14,7 +14,6 @@ class Meta:
         self.default_value = None
         self.datatype = Any
         self.is_window = False
-        self.is_tree = True
         self.is_meta = True
         self.__dict__.update(kwargs)
 

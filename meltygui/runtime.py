@@ -441,8 +441,9 @@ class Melty:
                      glfw.get_key(Melty.vis.window, glfw.KEY_RIGHT_SHIFT) == glfw.PRESS)
 
     save_draw_state_for = 1
-    spacing = (4,3)
-    padding = (4,3)
+    spacing = (3,2)
+    padding = (3,3)
+    end_collection_spacing = 5
 
     vis = None
     type_defaults = {}
