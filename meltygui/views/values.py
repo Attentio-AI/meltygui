@@ -1,12 +1,15 @@
 from copy import copy
+from enum import Enum
 from functools import wraps
 from types import NoneType
 
 import imgui
 
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
-from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, tree, request_render
+from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, tree, request_render, push_style_var, \
+    push_style_color, pop_style_color, pop_style_var
 from src.lsd.gl_gui.melty import Melty, CollectionAction, OperationType, apply_collection_action
+from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
 from src.lsd.gl_gui.view.core_views.core_render import render_func, tmp_undo_stack, redo_stack, push_id, pop_id, ui_id, \
     render_wrapper, annotation_track
 
@@ -209,7 +212,7 @@ def draw_drop_target(draw_state, on_drag, do_flow, depth,
 
     draw_list = imgui.get_window_draw_list()
     if Melty.inside_window():
-        draw_list.channels_set_current(depth + 2)
+        draw_list.channels_set_current(min(Melty.max_depth - 1, depth + 2))
 
     line_width = imgui.get_style().frame_padding.y * 2.0
     color = style_manager.make_color_rgb(*(1.0, 1.0, 1.0), factor=1.0,
@@ -273,7 +276,7 @@ def with_header(func, *args, **o_kwargs):
         if window_stack is None:
             pass
         if inside_window and show_bg:
-            draw_list.channels_set_current(depth - 1)
+            draw_list.channels_set_current(min(Melty.max_depth - 1, depth - 1))
 
         Melty.indent(indent_size)
         width = imgui.get_content_region_available()[0]
@@ -410,16 +413,12 @@ def with_header(func, *args, **o_kwargs):
             draw_list.channels_set_current(Melty.max_depth - 1)
 
         if on_drag_up:
-            print(f"DROP {name}")
             melty.drag_in_progress = False
             new_action = copy(melty.drag_drop_action)
             new_action.operation = OperationType.MOVE
             new_action.source_key = key
             new_action.source_unique = unique
             new_action.source_collection = collection
-
-
-            print(f"drop {name} on {melty.drag_drop_target} {melty.drag_drop_target_tag}")
             return False, new_action
 
         return return_value
@@ -437,7 +436,6 @@ def draw_collection(input_value=None, depth=0, style_manager=None,
     # Handle collections
     if isinstance(input_value, dict):
         changed = False
-        change_op = None
         for k, v in input_value.items():
             previous_tint = style_manager.get_tint()
             if hasattr(v, 'tint'):
@@ -461,7 +459,6 @@ def draw_collection(input_value=None, depth=0, style_manager=None,
 
     elif isinstance(input_value, (list, tuple, set)):
         changed = False
-        change_op = None
         for i, v in enumerate(input_value):
             if hasattr(input_value, 'id'):
                 suffix = f"{input_value.id}"
@@ -755,7 +752,7 @@ def draw_str(input_value: str):
 
     return changed, value
 
-@with_simple_header(is_default_for=(tuple))
+@with_header(is_default_for=(tuple))
 def draw_tuple(input_value: tuple, is_tree=False):
     if len(input_value) == 4:
         color_list = list(input_value)
@@ -792,7 +789,7 @@ def draw_float(input_value:float, min_value=-100.0, max_value=100.0, speed=0.01)
     return changed, value
 
 
-@with_simple_header(is_default_for=(int), wraps=render_func)
+@with_header(is_default_for=(int), wraps=render_func)
 def draw_int(input_value: int, min_value=-100.0, max_value=100.0, speed=0.05):
     changed, value = imgui.drag_int("##int", input_value,
                                       change_speed=speed,
@@ -802,3 +799,55 @@ def draw_int(input_value: int, min_value=-100.0, max_value=100.0, speed=0.05):
         return True, value
 
     return changed, value
+
+
+@with_header(is_default_for=Enum)
+def draw_enum(input_value:Enum, global_style=None, style_manager=None, enum_tint=(0.3, 0.3, 0.3)):
+
+    unique = "enum"
+    imgui.set_next_item_width(imgui.get_content_region_available().x)
+    selected_idx = next(enumerate(input_value.__class__))[1]
+    changed = False
+
+    push_style_var(imgui.STYLE_ITEM_SPACING, (2, 4))
+
+    for i, option in enumerate(input_value.__class__):
+        a_pretty_name = option.name.replace("_", " ").capitalize()
+
+        label = f"{a_pretty_name}##{unique}{i}"
+        active = (input_value == option)
+        radio_style = global_style.radio_button
+        if active:
+            color = style_manager.make_color_style_rgb(*enum_tint, radio_style["active_base"])
+            hover = style_manager.make_color_style_rgb(*enum_tint, radio_style["active_hover"])
+            pressed = style_manager.make_color_style_rgb(*enum_tint, radio_style["active_pressed"])
+        else:
+            color = style_manager.make_color_style_rgb(*enum_tint, radio_style["inactive_base"])
+            hover = style_manager.make_color_style_rgb(*enum_tint, radio_style["inactive_hover"])
+            pressed = style_manager.make_color_style_rgb(*enum_tint, radio_style["inactive_pressed"])
+
+        push_style_color(imgui.COLOR_BUTTON, *color)
+        push_style_color(imgui.COLOR_BUTTON_HOVERED, *hover)
+        push_style_color(imgui.COLOR_BUTTON_ACTIVE, *pressed)
+
+        clicked = imgui.button(label)
+
+        pop_style_color(1)
+        pop_style_color(1)
+        pop_style_color(1)
+
+        if clicked:
+            selected_idx = option
+            changed = True
+
+        same_line()
+    new_line()
+
+    enum_class = input_value.__class__
+    if changed:
+        selected_enum = enum_class(selected_idx)
+    else:
+        selected_enum = input_value
+    pop_style_var(1)
+
+    return changed, selected_enum

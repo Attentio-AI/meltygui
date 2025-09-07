@@ -1,4 +1,4 @@
-
+from enum import Enum
 from typing import Any
 
 from src.lsd.gl_gui.melty import Melty
@@ -107,7 +107,10 @@ class FieldMeta(type):
             if hasattr(type(value), 'meta'):
                 child_meta = type(value).meta
         if child_meta is None:
-            last_default = Melty.type_defaults.get(type(value), None)
+            if isinstance(value, Enum):
+                last_default = Melty.type_defaults.get(Enum, None)
+            else:
+                last_default = Melty.type_defaults.get(type(value), None)
             from src.lsd.gl_gui.view.core_views.core_meta import Meta
             child_meta = Meta.get_new_defaults(value=value)
             child_meta.name = field_name

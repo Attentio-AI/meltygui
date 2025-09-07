@@ -30,7 +30,6 @@ class DictConversion(metaclass=FieldMeta):
         # Using weak references to avoid circular references
         self.__post_init__()
 
-    child_collapsed = set()
     outliner_expanded_h = False
     hash = None
     def __post_init__(self):
@@ -44,27 +43,11 @@ class DictConversion(metaclass=FieldMeta):
         self._exclude_attrs = {'_history_manager', '_exclude_attrs', '_parameters',
                                '_buffers', '_modules', 'training'}
         self._obj_path = None
-        self.label_indent = 0
-        self._attr_size = {}
-        self._attr_pos = {}
         self._path_updated = None
-        self._settings = None
         self.name = ""
-        self._attr_settings = {}
-        self.expanded = True
         self.tint = (0, 0, 0)  # Default black tint
         # self.child_collapsed = set()
-        self.child_collapsed = set()
         self._history_manager = GlobalUndoRedoManager.get_instance()
-
-    def get_settings(self, attr_name=None):
-        if attr_name is not None:
-            if attr_name in self._attr_settings:
-                return self._attr_settings[attr_name]
-        else:
-            return self._settings
-
-        return None
 
     def from_dict(self, object_dict, excluded=None, class_root=None, vis=None):
         # ---- fast refs
@@ -1379,22 +1362,9 @@ class DictConversion(metaclass=FieldMeta):
         Method to be called after the object is loaded from a dictionary.
         Can be overridden in subclasses to perform additional initialization.
         """
+        pass
         # Loop over attribs
-        self.label_indent = 0
-        for key, value in self.__dict__.items():
-            if should_exclude(key, root=root):
-                continue
 
-            if hasattr(value, 'name'):
-                # Measure the text width
-                if not isinstance(value.name, str):
-                    value.name = ""
-
-                name_width = imgui.calc_text_size(value.name).x
-            else:
-                name_width = imgui.calc_text_size(key).x
-
-            self.label_indent = max(self.label_indent, name_width)
 
     @staticmethod
     def get_full_class_path(obj):
