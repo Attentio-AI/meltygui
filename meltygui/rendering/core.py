@@ -345,9 +345,9 @@ def render_func(*args, **o_kwargs):
             if name is not None and name != "":
                 meta.name = name
 
-            for k, v in vars(meta).items():
-                if v is not None:
-                    kwargs[k] = v
+            # for k, v in vars(meta).items():
+            #     if v is not None:
+            #         kwargs[k] = v
 
             def set_default(key, default_value):
                 if key in vars(meta) and vars(meta)[key] is not None:
@@ -359,7 +359,7 @@ def render_func(*args, **o_kwargs):
             if not meta.visible_in_ui:
                 return False, None
 
-            kwargs.update(vars(Melty).items())
+            kwargs.update(Melty.global_attrs)
 
             set_default("input_value", input_value)
             set_default("draw_state", draw_state)
@@ -383,8 +383,6 @@ def render_func(*args, **o_kwargs):
                             kwargs.setdefault(hk_name, True)
                         else:
                             kwargs.setdefault(hk_name, False)
-
-
             kwargs.setdefault('meta', meta)
 
             if name is 'tint':
@@ -400,8 +398,8 @@ def render_func(*args, **o_kwargs):
                 pass
 
             if 'kwargs' in wanted_params:
-                clean_args = copy(kwargs)
-                kwargs.update(vars(Melty).items())
+                clean_args = kwargs
+                kwargs.update(Melty.global_attrs)
             else:
                 clean_args = copy(kwargs)
                 to_delete = []
@@ -410,11 +408,6 @@ def render_func(*args, **o_kwargs):
                         to_delete.append(to_provide)
                 for an_arg in to_delete:
                     clean_args.pop(an_arg)
-
-                for km, vm in vars(Melty).items():
-                    if not km.startswith("_"):
-                        if km not in kwargs:
-                            kwargs[km] = vm
 
             spacing = kwargs.get('spacing', Melty.spacing)
             padding = kwargs.get('padding', Melty.padding)

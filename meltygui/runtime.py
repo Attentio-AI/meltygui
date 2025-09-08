@@ -477,6 +477,7 @@ class Melty:
     unique_stack = []
     window_stack = []
     window_hovered = False
+    global_attrs = {}
 
     @staticmethod
     def shift_key():
@@ -493,6 +494,8 @@ class Melty:
     def init(**kwargs):
         for key, value in kwargs.items():
             setattr(Melty, key, value)
+            Melty.global_attrs[key] = value
+
         Melty.annotation_mode = False
 
     @staticmethod
