@@ -6,6 +6,7 @@ from src.lsd.gl_gui.melty import Melty
 
 class Meta:
     default = None
+    draw_state = None
 
     @staticmethod
     def get_child_meta(cls, field_name, value=None):

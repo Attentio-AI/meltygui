@@ -79,6 +79,31 @@ class DrawState(DictConversion):
         self.render_time = 0.0
         # add more per-widget state as needed
 
+    def proxy_bounds(self, inner_draw_state):
+        if inner_draw_state is None or inner_draw_state.left is None:
+            return
+
+        if self.left is None:
+            self.left = inner_draw_state.left
+        else:
+            self.left = max(self.left, inner_draw_state.left)
+
+        if self.top is None:
+            self.top = inner_draw_state.top
+        else:
+            self.top = max(self.top, inner_draw_state.top)
+
+        if self.width is None:
+            self.width = inner_draw_state.width
+        else:
+            self.width = max(self.width, inner_draw_state.width)
+
+        if self.height is None:
+            self.height = inner_draw_state.height
+        else:
+            self.height = max(self.height, inner_draw_state.height)
+
+
     def is_hovered(self):
         if self.left is None or self.top is None or self.width is None or self.height is None:
             return False
@@ -95,10 +120,11 @@ class KeyMod(Enum):
 
 
 class Hotkey:
-    def __init__(self, name, key, mod=None):
+    def __init__(self, name, key, mod=None, scoped=True):
         self.name = name
         self.key = key
         self.mod = mod
+        self.scoped = scoped
 
     def mod_active(self):
         if self.mod == KeyMod.CTRL:

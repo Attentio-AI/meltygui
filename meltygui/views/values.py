@@ -12,7 +12,7 @@ from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, tree, req
 from src.lsd.gl_gui.melty import Melty, CollectionAction, OperationType, apply_collection_action
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
 from src.lsd.gl_gui.view.core_views.core_render import render_func, tmp_undo_stack, redo_stack, push_id, pop_id, ui_id, \
-    render_wrapper, annotation_track, listens_for
+    render_wrapper, annotation_track, listens_for, get_draw_state
 from src.lsd.gl_gui.model.core_model.new_core_model import KeyMod, Hotkey
 
 
@@ -74,6 +74,13 @@ def core_draw_window(input_value, name, unique, window_func,
     if not decorations:
         imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + 2)
         imgui.indent(Melty.current_indent - indent_size + padding_x)
+
+    window_size = imgui.get_window_size()
+    window_pos = imgui.get_window_position()
+    window_rect = (window_pos[0], window_pos[1],
+                   window_pos[0] + window_size[0],
+                   window_pos[1] + window_size[1])
+    Melty.window_hovered = imgui.is_mouse_hovering_rect(*window_rect)
 
     Melty.window_stack.append(window_title)
 
@@ -228,7 +235,7 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
             do_flow = False
         draw_drop_target(do_flow=do_flow,
                          collection=collection, key=key,
-                         draw_state=draw_state, *kwargs, tag="top")
+                         draw_state=draw_state, tag="top")
         # ------------------ end spacing -----------
 
         bg_tint = None
@@ -299,7 +306,7 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
         # ----------------- top spacing -----------
         draw_drop_target(do_flow=do_flow,
                          collection=collection, key=key,
-                         draw_state=draw_state, *next_kwargs, tag="bottom")
+                         draw_state=draw_state, tag="bottom")
         # ------------------ end spacing -----------
 
         end_y_pos = imgui.get_cursor_screen_pos()[1]
@@ -398,7 +405,8 @@ def seperator(height):
 
 @with_header
 def draw_collection(input_value, draw_state, depth, style_manager,
-                    meta, suffix, melty, show_search=True,
+                    meta, suffix, melty, show_search=True, on_collapse=False,
+                    on_expand=False,
                     show_instance_vars=True, **kwargs):
     """
     Universal collection renderer
@@ -458,6 +466,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
         if (key_str.startswith("__") and key_str.endswith("__")) or key_str.startswith("_"):
             continue
 
+
         # ----- SEARCH CHECK (keys + item.name if present) -----
         if search_token:
             name_field = getattr(item, "name", None) or getattr(item, "__name__", "")
@@ -477,6 +486,14 @@ def draw_collection(input_value, draw_state, depth, style_manager,
         item_suffix = f"{base_suffix}_{key_str}"
         obj_unique = ui_id(name=key_str, datatype=type(item), suffix=item_suffix)
 
+        trigger_collapse = False
+        if isinstance(input_value, dict) and on_collapse:
+            trigger_collapse = True
+
+        trigger_expand = False
+        if isinstance(input_value, dict) and on_expand:
+            trigger_expand = True
+
         prev_tint = None
         try:
             if use_tint and hasattr(item, "tint"):
@@ -484,7 +501,8 @@ def draw_collection(input_value, draw_state, depth, style_manager,
                 style_manager.set_imgui_tint(*item.tint)
 
             item_changed, out_val = view_fn(
-                input_value=item, key=key, meta=item_meta,
+                input_value=item, key=key, meta=item_meta, trigger_collapse=trigger_collapse,
+                trigger_expand=trigger_expand,
                 collection=input_value, suffix=str(obj_unique), name=key_str
             )
 
@@ -583,7 +601,7 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
 @render_func
 def draw_header(input_value=None, name="", unique=None, is_tree=True,
                 show_name=True, show_type=False, show_unique=False,
-                on_search=False, on_collapse=False,
+                on_search=False, trigger_collapse=False, trigger_expand=False,
                 draw_state=None, is_window=False, on_click=False, show_tint=True,
                 on_hover=False, highlight=False, opacity=1.0, show_search=True,
                 on_right_click=False, show_bg=False, selected_views=None, indent_size=10,
@@ -612,6 +630,11 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
 
     region_available = imgui.get_content_region_available()
     if is_tree:
+        if trigger_collapse:
+            draw_state.expanded = False
+        if trigger_expand:
+            draw_state.expanded = True
+
         draw_state.expanded = tree("##tree", draw_state.expanded, width=50)
         same_line()
     cursor_start = imgui.get_cursor_pos()
@@ -673,17 +696,14 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
         search_changed, new_search = imgui.input_text(f"##search{unique}", draw_state.search_text)
 
         if search_changed:
-            print(f"Search text changed {name} -> {new_search}")
             draw_state.search_text = new_search
             imgui.set_keyboard_focus_here(-1)
-
             request_render()
 
         if not draw_state.search_active:
             draw_state.search_text = ""
 
         if on_search:
-            print(f"Search triggered {name}")
             draw_state.search_active = True
             imgui.set_keyboard_focus_here(-1)
             request_render()
@@ -733,7 +753,8 @@ def render_profiler_time(input_value=None, brief=False, style_manager=None,
 
 @render_func
 @listens_for(Hotkey("on_search", glfw.KEY_F, KeyMod.CTRL))
-@listens_for(Hotkey("on_collapse", glfw.KEY_KP_ADD, KeyMod.CTRL))
+@listens_for(Hotkey("on_collapse", glfw.KEY_MINUS, KeyMod.CTRL, scoped=False))
+@listens_for(Hotkey("on_expand", glfw.KEY_EQUAL, KeyMod.CTRL, scoped=False))
 def draw_object(input_value=None, draw_state=None, meta=None, name="", style_manager=None,
                 depth=0, unique=0, suffix="", collection=None, key=None, is_tree=True, indent_size=10, *args, **kwargs):
     # if is_tree and not draw_state.expanded:
@@ -741,6 +762,7 @@ def draw_object(input_value=None, draw_state=None, meta=None, name="", style_man
     is_collection = isinstance(input_value, (dict, list, tuple, set)) or (
             hasattr(input_value, "__dict__") and depth < Melty.max_depth)
     if is_collection:
+
         # Handle collections
         changed, new_value = draw_collection(input_value=input_value, collection=collection,
                                              name=name, key=key, suffix=suffix, **kwargs)

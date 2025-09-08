@@ -450,6 +450,7 @@ class Melty:
     type_defaults = {}
     unique_stack = []
     window_stack = []
+    window_hovered = False
 
     @staticmethod
     def shift_key():

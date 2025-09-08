@@ -375,14 +375,13 @@ def render_func(*args, **o_kwargs):
             set_default("on_drag_up", melty.check_event(unique, 0, ActionType.DRAG_UP))
             set_default("on_hover", melty.check_event(unique, 0, ActionType.HOVERED))
             set_default("on_action", melty.triggered_actions.get(unique, None))
-
-            if draw_state.hotkey_receiver:
-                if func in Melty.hotkey_registry:
-                    hotkey_actions = Melty.hotkey_registry.get(func, {})
-                    for hk_name, hk in hotkey_actions.items():
+            if func in Melty.hotkey_registry:
+                hotkey_actions = Melty.hotkey_registry.get(func, {})
+                for hk_name, hk in hotkey_actions.items():
+                    if draw_state.hotkey_receiver or (not hk.scoped and Melty.window_hovered):
                         if hk.mod_active() and Melty.is_key_pressed(hk.key):
+                            print(f"Checking hotkey {hk_name} for {func.__name__} ({unique})")
                             kwargs.setdefault(hk_name, True)
-                            print(f"Hotkey {hk.name} triggered for {type(input_value).__name__}")
                         else:
                             kwargs.setdefault(hk_name, False)
 
@@ -438,6 +437,10 @@ def render_func(*args, **o_kwargs):
             Melty.depth = Melty.depth - 1
             # Leave view
             Melty.unique_stack.pop()
+
+            # outer_draw_state = get_draw_state(Melty.unique_stack[-1]) if len(Melty.unique_stack) > 0 else None
+            # inner_draw_state = get_draw_state(unique)
+            # outer_draw_state.proxy_bounds(inner_draw_state) if outer_draw_state is not None else None
 
             melty.triggered_actions.pop(unique, None)
 
