@@ -258,11 +258,9 @@ def apply_collection_action(action: CollectionAction):
         if kind == "list->list":
             s_idx = plan["s_idx"]
             insert_at = max(0, min(plan["insert_at"], len(dst)))
-            print(f"insert at {insert_at} from {s_idx}")
             item = src[s_idx]
 
             if is_move and same_collection:
-                print("same-list move")
                 popped = src.pop(s_idx)
                 try:
                     dst.insert(insert_at, popped)
@@ -381,6 +379,7 @@ def apply_collection_action(action: CollectionAction):
 class MeltyState:
     def __init__(self):
         self.hover_stack = []
+        self.hotkey_stack = []
         self.triggered_actions = {}
         self.dragged_item = None
         self.max_distance = 200
@@ -420,6 +419,7 @@ class Melty:
     annotation_mode = True
     depth = 0
     current_indent = 0
+    hotkey_registry = {}
 
     @staticmethod
     def indent(amount):

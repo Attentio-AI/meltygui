@@ -3,6 +3,7 @@ from enum import Enum
 from functools import wraps
 from types import NoneType
 
+import glfw
 import imgui
 
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
@@ -11,7 +12,8 @@ from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, tree, req
 from src.lsd.gl_gui.melty import Melty, CollectionAction, OperationType, apply_collection_action
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
 from src.lsd.gl_gui.view.core_views.core_render import render_func, tmp_undo_stack, redo_stack, push_id, pop_id, ui_id, \
-    render_wrapper, annotation_track
+    render_wrapper, annotation_track, listens_for
+from src.lsd.gl_gui.model.core_model.new_core_model import KeyMod, Hotkey
 
 
 def generate_class_diff(obj, updates):
@@ -21,11 +23,10 @@ def generate_class_diff(obj, updates):
         print(f"# Diff: {clsname}.{field} changed to {new_val}")
 
 
-
-
 # Main draw function, called by the GUI framework
 def draw(vis):
     draw_window(vis.root.lora_collection)
+    draw_window(Melty.hotkey_registry, name="Hotkeys", is_window=True)
     # draw_any(vis.root.synth_collection, is_window=False)
     # #
     # draw_any("hello there", is_window=True)
@@ -377,7 +378,6 @@ def with_header_minimal(func, *args, **o_kwargs):
 
     return wrapper
 
-
 @render_wrapper(wraps=render_func)
 def with_header(func, *args, **o_kwargs):
     def wrapper(show_search=True, next_kwargs=None, **kwargs):
@@ -475,7 +475,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
         # view function & identifier
         view_fn = getattr(item_meta, "view_function", draw_object)
         item_suffix = f"{base_suffix}_{key_str}"
-        obj_unique = ui_id(item_meta, suffix=item_suffix)
+        obj_unique = ui_id(name=key_str, datatype=type(item), suffix=item_suffix)
 
         prev_tint = None
         try:
@@ -583,7 +583,8 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
 @render_func
 def draw_header(input_value=None, name="", unique=None, is_tree=True,
                 show_name=True, show_type=False, show_unique=False,
-                draw_state=None, is_window=False, on_click=False,
+                on_search=False, on_collapse=False,
+                draw_state=None, is_window=False, on_click=False, show_tint=True,
                 on_hover=False, highlight=False, opacity=1.0, show_search=True,
                 on_right_click=False, show_bg=False, selected_views=None, indent_size=10,
                 on_drag=False, on_drag_released=False, on_action=None, style_manager=None,
@@ -629,30 +630,35 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
     if show_unique or global_toggles.force_show_datatype:
         imgui.text_colored(f"({str(unique)[-3:]})", *(0.4, 0.6, 0.9, 1.0))
         same_line()
-
     if show_name and name != "":
-
         same_line()
         imgui.set_item_allow_overlap()
         imgui.set_cursor_pos_x(cursor_start[0])
         button_width = max(5, name_end[0] - cursor_start[0])
         button_height = imgui.get_text_line_height() + imgui.get_style().frame_padding.y * 2
         imgui.set_item_allow_overlap()
-
         if imgui.invisible_button(f"##block_tree", width=button_width,
                                   height=button_height):
             pass
         imgui.set_item_allow_overlap()
         same_line()
-        imgui.set_item_allow_overlap()
+
+    if show_tint and hasattr(input_value, "tint"):
+        tint_changed, tint_value = draw_tuple(input_value.tint, show_header=False)
+        if tint_changed:
+            input_value.tint = tint_value
+        same_line()
+
+    # -------------- Header indent fix --------------
     if imgui.get_cursor_pos_x() < Melty.header_indent:
         imgui.invisible_button(f"##", width=Melty.header_indent - imgui.get_cursor_pos_x(), height=18)
         imgui.set_item_allow_overlap()
         same_line()
-    if show_search:
+
+    if show_search or draw_state.search_active:
         same_line()
         space_available = imgui.get_content_region_available()[0]
-        search_width = 40
+        search_width = 150 if draw_state.search_active else 20
         imgui.dummy(space_available - search_width - 18, 0)
         imgui.same_line()
         imgui.set_cursor_pos_y(imgui.get_cursor_pos()[1] + 2)
@@ -665,10 +671,23 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
         imgui.same_line()
         imgui.set_next_item_width(search_width)
         search_changed, new_search = imgui.input_text("##search", draw_state.search_text, 256)
+        draw_state.search_active = imgui.is_item_focused()
+
+        if not draw_state.search_active:
+            draw_state.search_text = ""
+
         if search_changed:
             draw_state.search_text = new_search
             imgui.set_keyboard_focus_here(-1)
             request_render()
+
+        if on_search:
+            print(f"Search triggered {name}")
+            draw_state.search_active = True
+            imgui.set_keyboard_focus_here(-1)
+
+
+
 
     do_profile = global_toggles.profiler == ProfileMode.ON
     if do_profile:
@@ -712,6 +731,8 @@ def render_profiler_time(input_value=None, brief=False, style_manager=None,
 
 
 @render_func
+@listens_for(Hotkey("on_search", glfw.KEY_F, KeyMod.CTRL))
+@listens_for(Hotkey("on_collapse", glfw.KEY_KP_ADD, KeyMod.CTRL))
 def draw_object(input_value=None, draw_state=None, meta=None, name="", style_manager=None,
                 depth=0, unique=0, suffix="", collection=None, key=None, is_tree=True, indent_size=10, *args, **kwargs):
     # if is_tree and not draw_state.expanded:

@@ -223,7 +223,7 @@ class DictConversion(metaclass=FieldMeta):
 
             if 'delete_countdown' in shallow_parse:
                 if shallow_parse['delete_countdown'] <= 0:
-                    print(f"Skipping object with delete_countdown for id: {self.id}")
+                    # print(f"Skipping object due delete_countdown. id: {self.id}")
                     return None
                 shallow_parse['delete_countdown'] = shallow_parse['delete_countdown'] - 1
 

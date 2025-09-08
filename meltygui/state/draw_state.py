@@ -1,3 +1,4 @@
+from enum import Enum
 from typing import Dict
 
 import imgui
@@ -56,6 +57,7 @@ class DrawState(DictConversion):
         self.top = None
         self.left = None
         self.search_text = ""
+        self.search_active = False
 
         self.track_mouse = False
 
@@ -66,6 +68,7 @@ class DrawState(DictConversion):
         self.mouse_down = False
         self.drag_released = False
         self.hovered = False
+        self.hotkey_receiver = False
         self.clicked = False
         self.dragged = False
         self.screen_pos = (0, 0)
@@ -83,3 +86,27 @@ class DrawState(DictConversion):
         if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
             return True
         return False
+
+
+class KeyMod(Enum):
+    CTRL = 'ctrl'
+    ALT = 'alt'
+    SHIFT = 'shift'
+
+
+class Hotkey:
+    def __init__(self, name, key, mod=None):
+        self.name = name
+        self.key = key
+        self.mod = mod
+
+    def mod_active(self):
+        if self.mod == KeyMod.CTRL:
+            return imgui.get_io().key_ctrl
+        elif self.mod == KeyMod.ALT:
+            return imgui.get_io().key_alt
+        elif self.mod == KeyMod.SHIFT:
+            return imgui.get_io().key_shift
+
+        if self.mod is None:
+            return True

@@ -5,12 +5,11 @@ import time
 import zlib
 from copy import copy
 from functools import wraps
-from types import NoneType
 from typing import Any
 
 import imgui
 
-from src.lsd.gl_gui.model.core_model.new_core_model import DrawState
+from src.lsd.gl_gui.model.core_model.new_core_model import DrawState, Hotkey
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, request_render
 from src.lsd.gl_gui.melty import Melty, ActionType, apply_collection_action, MeltyState
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
@@ -100,6 +99,19 @@ def redo_stack(undo_point_id):
         for uid in saved_stack:
             imgui.push_id(str(uid))
         id_stack = saved_stack
+
+
+# Hotkey decorator
+def listens_for(hotkey):
+    def decorator(func):
+        Melty.hotkey_registry[func] = Melty.hotkey_registry.get(func, {})
+        if isinstance(hotkey, (list, tuple)):
+            for hk in hotkey:
+                Melty.hotkey_registry[func][hk.name] = hk
+        elif isinstance(hotkey, Hotkey):
+            Melty.hotkey_registry[func][hotkey.name] = hotkey
+        return func
+    return decorator
 
 
 def render_wrapper(*o_args, **o_kwargs):
@@ -364,6 +376,17 @@ def render_func(*args, **o_kwargs):
             set_default("on_hover", melty.check_event(unique, 0, ActionType.HOVERED))
             set_default("on_action", melty.triggered_actions.get(unique, None))
 
+            if draw_state.hotkey_receiver:
+                if func in Melty.hotkey_registry:
+                    hotkey_actions = Melty.hotkey_registry.get(func, {})
+                    for hk_name, hk in hotkey_actions.items():
+                        if hk.mod_active() and Melty.is_key_pressed(hk.key):
+                            kwargs.setdefault(hk_name, True)
+                            print(f"Hotkey {hk.name} triggered for {type(input_value).__name__}")
+                        else:
+                            kwargs.setdefault(hk_name, False)
+
+
             kwargs.setdefault('meta', meta)
 
             if name is 'tint':
@@ -476,8 +499,12 @@ def render_func(*args, **o_kwargs):
 
             is_hovered = draw_state.is_hovered()
             draw_state.hovered = False
+            draw_state.hotkey_receiver = False
             if is_hovered:
                 melty.hover_stack.append(unique)
+
+            if is_hovered and func in Melty.hotkey_registry:
+                melty.hotkey_stack.append(unique)
 
             if not imgui.is_mouse_down(0):
                 melty.drag_in_progress = False
@@ -492,7 +519,15 @@ def render_func(*args, **o_kwargs):
                     hovered_draw_state = Melty.vis.root.draw_state_registry.get(last, None)
                     if hovered_draw_state is not None:
                         hovered_draw_state.hovered = True
+
+                if len(melty.hotkey_stack) > 0:
+                    last = melty.hotkey_stack[0]
+                    hovered_draw_state = Melty.vis.root.draw_state_registry.get(last, None)
+                    if hovered_draw_state is not None:
+                        hovered_draw_state.hotkey_receiver = True
+
                 melty.hover_stack = []
+                melty.hotkey_stack = []
 
                 if not melty.nearest_drop_target is None:
                     melty.drag_drop_target = melty.nearest_drop_target
