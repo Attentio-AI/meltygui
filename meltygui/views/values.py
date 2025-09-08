@@ -664,30 +664,31 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
         imgui.set_cursor_pos_y(imgui.get_cursor_pos()[1] + 2)
 
         search_color = (style_manager.
-                      make_color_style_value(input=bg_style, saturation=saturation,
-                                             value=max(0, dynamic_value * value_factor + value_offset - 0.5)))
+                      make_color_style_value(input=bg_style, saturation=1.0,
+                                             value=0.7))
         icon = "\uf002"
         imgui.text_colored(icon, *search_color)
         imgui.same_line()
         imgui.set_next_item_width(search_width)
-        search_changed, new_search = imgui.input_text("##search", draw_state.search_text, 256)
-        draw_state.search_active = imgui.is_item_focused()
+        search_changed, new_search = imgui.input_text(f"##search{unique}", draw_state.search_text)
+
+        if search_changed:
+            print(f"Search text changed {name} -> {new_search}")
+            draw_state.search_text = new_search
+            imgui.set_keyboard_focus_here(-1)
+
+            request_render()
 
         if not draw_state.search_active:
             draw_state.search_text = ""
-
-        if search_changed:
-            draw_state.search_text = new_search
-            imgui.set_keyboard_focus_here(-1)
-            request_render()
 
         if on_search:
             print(f"Search triggered {name}")
             draw_state.search_active = True
             imgui.set_keyboard_focus_here(-1)
+            request_render()
 
-
-
+        draw_state.search_active = imgui.is_item_focused()
 
     do_profile = global_toggles.profiler == ProfileMode.ON
     if do_profile:

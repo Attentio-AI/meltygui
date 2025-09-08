@@ -457,6 +457,12 @@ class Melty:
                 glfw.get_key(Melty.vis.window, glfw.KEY_RIGHT_SHIFT) == glfw.PRESS)
 
     @staticmethod
+    def ctrl_key():
+        return (glfw.get_key(Melty.vis.window, glfw.KEY_LEFT_CONTROL) == glfw.PRESS or
+                glfw.get_key(Melty.vis.window, glfw.KEY_RIGHT_CONTROL) == glfw.PRESS)
+
+
+    @staticmethod
     def init(**kwargs):
         for key, value in kwargs.items():
             setattr(Melty, key, value)
@@ -465,8 +471,9 @@ class Melty:
     @staticmethod
     def is_key_pressed(key=glfw.KEY_ESCAPE):
         if imgui.is_any_item_focused() or imgui.is_any_item_active():
+            if not Melty.ctrl_key():
             # If any item is focused or active, we don't want to capture key presses
-            return False
+                return False
 
         if key not in Melty.vis.tracked_keys:
             Melty.vis.tracked_keys.append(key)
