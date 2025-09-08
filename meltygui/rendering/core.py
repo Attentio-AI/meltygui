@@ -380,7 +380,6 @@ def render_func(*args, **o_kwargs):
                 for hk_name, hk in hotkey_actions.items():
                     if draw_state.hotkey_receiver or (not hk.scoped and Melty.window_hovered):
                         if hk.mod_active() and Melty.is_key_pressed(hk.key):
-                            print(f"Checking hotkey {hk_name} for {func.__name__} ({unique})")
                             kwargs.setdefault(hk_name, True)
                         else:
                             kwargs.setdefault(hk_name, False)
@@ -540,6 +539,8 @@ def render_func(*args, **o_kwargs):
                 while len(melty.actions_to_apply) > 0:
                     action = melty.actions_to_apply.pop(0)
                     result = apply_collection_action(action)
+
+
                     request_render()
 
                 melty.actions_to_apply = []

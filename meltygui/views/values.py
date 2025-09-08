@@ -339,23 +339,23 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
                 if draw_state.expanded:
                     draw_state.expanded_height = end_y_pos - start_y_pos
 
-            # if draw_state.height is not None:
-            #     current_cursor = imgui.get_cursor_screen_pos()
-            #     imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
-            #     imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
-            #     tree_offset = indent_size
-            #     imgui.set_cursor_screen_position((draw_state.left - tree_offset, draw_state.top - tree_offset))
-            #     imgui.invisible_button(f"##block_tree", width=max(1, draw_state.width),
-            #                            height=tree_offset)
-            #     imgui.set_item_allow_overlap()
-            #
-            #     imgui.set_cursor_screen_position((draw_state.left - tree_offset, draw_state.top))
-            #     imgui.invisible_button(f"##block_tree", width=tree_offset,
-            #                            height=max(1, draw_state.height))
-            #     imgui.set_item_allow_overlap()
-            #
-            #     imgui.pop_style_var(2)
-            #     imgui.set_cursor_screen_pos(current_cursor)
+            if draw_state.height is not None:
+                current_cursor = imgui.get_cursor_screen_pos()
+                imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
+                imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
+                tree_offset = indent_size
+                imgui.set_cursor_screen_position((draw_state.left - tree_offset, draw_state.top - tree_offset))
+                imgui.invisible_button(f"##block_tree", width=max(1, draw_state.width),
+                                       height=tree_offset)
+                imgui.set_item_allow_overlap()
+
+                imgui.set_cursor_screen_position((draw_state.left - tree_offset, draw_state.top))
+                imgui.invisible_button(f"##block_tree", width=tree_offset,
+                             height=max(1, draw_state.height))
+                imgui.set_item_allow_overlap()
+
+                imgui.pop_style_var(2)
+                imgui.set_cursor_screen_pos(current_cursor)
 
         Melty.unindent(indent_size)
         if inside_window:
@@ -433,7 +433,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
         use_tint = True
         use_child_meta = True
         apply_change = False
-        parent_type = type(input_value)
+        parent_type = input_value.__class__
         collection = list(input_value.items()) if (
             isinstance(input_value, dict)) else list(enumerate(input_value))
 
@@ -441,15 +441,10 @@ def draw_collection(input_value, draw_state, depth, style_manager,
         use_tint = False
         use_child_meta = True
         apply_change = True
-        parent_type = type(input_value)
-        class_dict = parent_type.__dict__  # O(1) lookup
-        class_backed, extras = [], []
-        for k, inst_val in input_value.__dict__.items():
-            (class_backed if k in class_dict else extras).append((k, inst_val))
-        collection = class_backed[:]
-        if show_instance_vars and extras:
-            collection.append((None, None))  # separator sentinel
-            collection.extend(extras)
+        parent_type = input_value.__class__
+        collection = dict(vars(input_value.__class__))
+        collection.update(dict(vars(input_value)))
+        collection = list(collection.items())
     else:
         return False, input_value
 
@@ -463,9 +458,9 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
         # apply global filter for all types
         key_str = str(key)
-        if (key_str.startswith("__") and key_str.endswith("__")) or key_str.startswith("_"):
+        if ((key_str.startswith("__") and key_str.endswith("__")) or
+                key_str.endswith("meta") or key_str.startswith("_")):
             continue
-
 
         # ----- SEARCH CHECK (keys + item.name if present) -----
         if search_token:
@@ -475,8 +470,8 @@ def draw_collection(input_value, draw_state, depth, style_manager,
                 continue
 
         # meta selection
-        if use_child_meta:
-            from src.lsd.gl_gui.view.core_views.core_meta import Meta
+        from src.lsd.gl_gui.view.core_views.core_meta import Meta
+        if use_child_meta and hasattr(Meta, 'get_child_meta'):
             item_meta = Meta.get_child_meta(parent_type, field_name=key, value=item)
         else:
             item_meta = meta
@@ -506,8 +501,82 @@ def draw_collection(input_value, draw_state, depth, style_manager,
                 collection=input_value, suffix=str(obj_unique), name=key_str
             )
 
+            def _owner_class(obj, name):
+                """Return the class in obj.__class__.mro() that actually defines `name`."""
+                for cls in obj.__class__.mro():
+                    if name in cls.__dict__:
+                        return cls
+                return None
+
             if isinstance(out_val, CollectionAction):
-                melty.to_apply(out_val)
+                collection_type = out_val.target_collection.__class__
+
+                # --- figure out where the target key actually lives ---
+                target_owner = _owner_class(out_val.target_collection, out_val.target_key)
+                class_move = target_owner is not None
+
+                if class_move:
+                    collection_type = target_owner  # <-- owner, not type(instance)
+                    if hasattr(out_val.target_collection, "__dict__"):
+                        out_val.target_collection = dict(vars(out_val.target_collection.__class__))
+
+                    out_val.class_move = True
+                    out_val.target_class = collection_type
+                else:
+                    if hasattr(out_val.target_collection, "__dict__"):
+                        out_val.target_collection = out_val.target_collection.__dict__
+
+                # --- same logic for the source side ---
+                source_owner = _owner_class(out_val.source_collection, out_val.source_key)
+                if source_owner is not None:
+                    if hasattr(out_val.source_collection, "__dict__"):
+                        out_val.source_collection = out_val.target_collection
+                else:
+                    if hasattr(out_val.source_collection, "__dict__"):
+                        out_val.source_collection = out_val.source_collection.__dict__
+
+
+                # perform the move - this should mutate the plain dicts you attached
+                result = melty.to_apply(out_val)
+                # print(result)
+
+                # # if we touched class attributes, rebuild the class dict in the new order
+                # if class_move:
+                #     # snapshot the desired order *before* we start deleting
+                #     ordered_items = list(out_val.target_collection.items())
+                #     val_cache = {}
+                #
+                #     # strip non-dunders from the source class
+                #     for name in [k for k in list(collection_type.__dict__.keys())
+                #                  if not (k.startswith("__") and k.endswith("__"))]:
+                #         val_cache[name] = getattr(collection_type, name)
+                #         delattr(collection_type, name)
+                #         print(f"{name}")
+                #
+                #     print("=-------")
+                #     # re-add in desired order
+                #     for name, value in ordered_items:
+                #         if (name.startswith("__") or name.startswith("_") and name.endswith("__")) or callable(value):
+                #             continue
+                #
+                #         if name in val_cache:
+                #             setattr(collection_type, name, val_cache[name])
+                #             print(f"{name}")
+                        # Optional: make __set_name__ work if you use data descriptors
+                        # if hasattr(value, "__set_name__"):
+                        #     try:
+                        #         value.__set_name__(collection_type, name)
+                        #     except AttributeError:
+                        #         pass
+                    #
+                    # for c_key, value in out_val.target_collection.items():
+                    #     if not c_key.startswith("__") and not callable(value):
+                    #         delattr(collection_type, c_key)
+                    # for c_key, value in out_val.target_collection.items():
+                    #     if not c_key.startswith("__") and not callable(value):
+                    #         print(f"# Class Move: Setting {type(out_val.target_collection).__name__}.{c_key} = {value}")
+                    #         setattr(collection_type, c_key, value)
+
                 item_changed, out_val = False, None
 
             if item_changed and apply_change and key is not None:
@@ -654,6 +723,7 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
         imgui.text_colored(f"({str(unique)[-3:]})", *(0.4, 0.6, 0.9, 1.0))
         same_line()
     if show_name and name != "":
+
         same_line()
         imgui.set_item_allow_overlap()
         imgui.set_cursor_pos_x(cursor_start[0])
@@ -674,9 +744,11 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
 
     # -------------- Header indent fix --------------
     if imgui.get_cursor_pos_x() < Melty.header_indent:
+        imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
+        imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
         imgui.invisible_button(f"##", width=Melty.header_indent - imgui.get_cursor_pos_x(), height=18)
         imgui.set_item_allow_overlap()
-        same_line()
+        imgui.pop_style_var(2)
 
     if show_search or draw_state.search_active:
         same_line()
@@ -827,7 +899,7 @@ def draw_tuple(input_value: tuple, is_tree=False):
             flags=color_flags)
         if changed:
             input_value = (color[0], color[1], color[2], color[3])
-    else:
+    elif len(input_value) == 3:
         color_list = list(input_value)
         color_flags = (imgui.COLOR_EDIT_NO_INPUTS | imgui.COLOR_EDIT_NO_LABEL |
                        imgui.COLOR_EDIT_NO_ALPHA | imgui.COLOR_EDIT_FLOAT |
@@ -838,6 +910,17 @@ def draw_tuple(input_value: tuple, is_tree=False):
             flags=color_flags)
         if changed:
             input_value = (color[0], color[1], color[2])
+    else:
+        str_value = ", ".join([str(v) for v in input_value])
+        changed, input_str = imgui.input_text("##tuple", str_value)
+        if changed:
+            try:
+                new_tuple = eval(f"({input_str},)")
+                if isinstance(new_tuple, tuple):
+                    input_value = new_tuple
+            except Exception as e:
+                print(f"Error parsing tuple: {e}")
+                pass
     return changed, input_value
 
 @with_header_minimal(is_default_for=float)

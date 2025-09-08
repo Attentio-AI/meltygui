@@ -58,6 +58,8 @@ class CollectionAction:
         self.source_collection = source_collection
 
         self.operation = operation
+        self.class_move = False
+        self.target_class = None
 
     def print(self):
         print(f"CollectionAction: op {self.operation}\n"
@@ -366,6 +368,30 @@ def apply_collection_action(action: CollectionAction):
                     except Exception:
                         pass
                     return f"Internal error removing from source list after dict insert: {e}"
+
+
+        if action.class_move:
+            # snapshot the desired order *before* we start deleting
+            ordered_items = list(action.target_collection.items())
+            collection_type = action.target_class
+            val_cache = {}
+
+            # strip alldunders from the owner class
+            for name in [k for k in list(collection_type.__dict__.keys())
+                         if not (k.startswith("__") and k.endswith("__"))]:
+                val_cache[name] = getattr(collection_type, name)
+                delattr(collection_type, name)
+                print(f"{name}")
+
+            print("=-------")
+            # re-add in desired order
+            for name, value in ordered_items:
+                if (name.startswith("__") or name.startswith("_") or name.endswith("__")):
+                    continue
+
+                if name in val_cache:
+                    setattr(collection_type, name, val_cache[name])
+                    print(f"{name}")
 
         else:
             return "Internal planning error: unknown operation kind."

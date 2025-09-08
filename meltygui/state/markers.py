@@ -22,7 +22,7 @@ class FieldMeta(type):
         return {}
 
     def __setattr__(cls, name, value):
-        print(f"Class attribute {name} set to {value!r}")
+        # print(f"Class attribute {name} set to {value!r}")
         super().__setattr__(name, value)
 
     def __new__(mcls, name, bases, namespace):
