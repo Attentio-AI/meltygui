@@ -426,31 +426,42 @@ def draw_collection(input_value, draw_state, depth, style_manager,
         return s.lower().translate(_TRANS)
 
     search_token = norm_string(draw_state.search_text) if show_search else ""
-    if isinstance(input_value, list):
-        pass
     # --- configure per collection type ---
+    ordered_driver = input_value
     if isinstance(input_value, (dict, list, tuple, set)):
         use_tint = True
         use_child_meta = True
         apply_change = False
         parent_type = input_value.__class__
-        collection = list(input_value.items()) if (
-            isinstance(input_value, dict)) else list(enumerate(input_value))
+        if isinstance(input_value, dict):
+            keys = input_value.keys()
+            collection = input_value
+        else:
+            keys = range(len(input_value))
+            collection = list(enumerate(input_value))
 
     elif hasattr(input_value, "__dict__") and depth < Melty.max_depth:
+        if hasattr(type(input_value), "__field_defaults__"):
+            type(input_value).__field_defaults__.update(input_value.__dict__)
+            keys = type(input_value).__field_defaults__.keys()
+            ordered_driver = input_value
+        else:
+            keys = input_value.__dict__.keys()
+        collection = input_value.__dict__
         use_tint = False
         use_child_meta = True
         apply_change = True
         parent_type = input_value.__class__
-        collection = dict(vars(input_value.__class__))
-        collection.update(dict(vars(input_value)))
-        collection = list(collection.items())
     else:
         return False, input_value
 
     # --- unified loop ---
     drew_any = False
-    for idx, (key, item) in enumerate(collection):
+
+    for idx, key in enumerate(keys):
+        if isinstance(collection, dict) and key not in collection:
+            continue
+        item = collection[key]
         # visual separator (object extras)
         if key is None and item is None:
             seperator(Melty.spacing[1])
@@ -498,85 +509,11 @@ def draw_collection(input_value, draw_state, depth, style_manager,
             item_changed, out_val = view_fn(
                 input_value=item, key=key, meta=item_meta, trigger_collapse=trigger_collapse,
                 trigger_expand=trigger_expand,
-                collection=input_value, suffix=str(obj_unique), name=key_str
-            )
-
-            def _owner_class(obj, name):
-                """Return the class in obj.__class__.mro() that actually defines `name`."""
-                for cls in obj.__class__.mro():
-                    if name in cls.__dict__:
-                        return cls
-                return None
+                collection=ordered_driver, suffix=str(obj_unique), name=key_str)
 
             if isinstance(out_val, CollectionAction):
-                collection_type = out_val.target_collection.__class__
-
-                # --- figure out where the target key actually lives ---
-                target_owner = _owner_class(out_val.target_collection, out_val.target_key)
-                class_move = target_owner is not None
-
-                if class_move:
-                    collection_type = target_owner  # <-- owner, not type(instance)
-                    if hasattr(out_val.target_collection, "__dict__"):
-                        out_val.target_collection = dict(vars(out_val.target_collection.__class__))
-
-                    out_val.class_move = True
-                    out_val.target_class = collection_type
-                else:
-                    if hasattr(out_val.target_collection, "__dict__"):
-                        out_val.target_collection = out_val.target_collection.__dict__
-
-                # --- same logic for the source side ---
-                source_owner = _owner_class(out_val.source_collection, out_val.source_key)
-                if source_owner is not None:
-                    if hasattr(out_val.source_collection, "__dict__"):
-                        out_val.source_collection = out_val.target_collection
-                else:
-                    if hasattr(out_val.source_collection, "__dict__"):
-                        out_val.source_collection = out_val.source_collection.__dict__
-
-
                 # perform the move - this should mutate the plain dicts you attached
                 result = melty.to_apply(out_val)
-                # print(result)
-
-                # # if we touched class attributes, rebuild the class dict in the new order
-                # if class_move:
-                #     # snapshot the desired order *before* we start deleting
-                #     ordered_items = list(out_val.target_collection.items())
-                #     val_cache = {}
-                #
-                #     # strip non-dunders from the source class
-                #     for name in [k for k in list(collection_type.__dict__.keys())
-                #                  if not (k.startswith("__") and k.endswith("__"))]:
-                #         val_cache[name] = getattr(collection_type, name)
-                #         delattr(collection_type, name)
-                #         print(f"{name}")
-                #
-                #     print("=-------")
-                #     # re-add in desired order
-                #     for name, value in ordered_items:
-                #         if (name.startswith("__") or name.startswith("_") and name.endswith("__")) or callable(value):
-                #             continue
-                #
-                #         if name in val_cache:
-                #             setattr(collection_type, name, val_cache[name])
-                #             print(f"{name}")
-                        # Optional: make __set_name__ work if you use data descriptors
-                        # if hasattr(value, "__set_name__"):
-                        #     try:
-                        #         value.__set_name__(collection_type, name)
-                        #     except AttributeError:
-                        #         pass
-                    #
-                    # for c_key, value in out_val.target_collection.items():
-                    #     if not c_key.startswith("__") and not callable(value):
-                    #         delattr(collection_type, c_key)
-                    # for c_key, value in out_val.target_collection.items():
-                    #     if not c_key.startswith("__") and not callable(value):
-                    #         print(f"# Class Move: Setting {type(out_val.target_collection).__name__}.{c_key} = {value}")
-                    #         setattr(collection_type, c_key, value)
-
                 item_changed, out_val = False, None
 
             if item_changed and apply_change and key is not None:

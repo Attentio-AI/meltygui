@@ -170,6 +170,25 @@ def apply_collection_action(action: CollectionAction):
     same_collection = (src is dst)
     plan = {"kind": None}
 
+    dst_type = type(dst)
+    if hasattr(src, '__dict__'):
+        src = src.__dict__
+    if hasattr(dst, '__dict__'):
+        dst = dst.__dict__
+
+    if hasattr(dst_type, '__field_defaults__'):
+        order = list(dst_type.__field_defaults__.keys())
+
+        old_dst = dst.copy()
+        dst.clear()
+        # reorder part
+        for k in order:
+            dst[k] = old_dst.get(k, None)
+
+        for k in old_dst.keys():
+            if k not in dst:
+                dst[k] = old_dst[k]
+
     # list -> list
     if isinstance(src, list) and isinstance(dst, list):
         s_idx = _resolve_list_index(src, action.source_key)
@@ -211,8 +230,10 @@ def apply_collection_action(action: CollectionAction):
             item = src[s_key]
             final_key = s_key
             if s_key in dst:
-                preferred = _get_existing_id(item)
-                final_key = _unique_key_for_dict(dst, preferred)
+                is_move = False
+                # preferred = _get_existing_id(item)
+                # final_key = _unique_key_for_dict(dst, preferred)
+                final_key = s_key
                 if final_key is None:
                     return "generate_id() unavailable or failed to produce a unique key for dict->dict transfer."
             plan.update(kind="dict->dict-xfer", s_key=s_key, t_key=t_key, final_key=final_key)
@@ -370,28 +391,21 @@ def apply_collection_action(action: CollectionAction):
                     return f"Internal error removing from source list after dict insert: {e}"
 
 
-        if action.class_move:
-            # snapshot the desired order *before* we start deleting
-            ordered_items = list(action.target_collection.items())
-            collection_type = action.target_class
-            val_cache = {}
+        if hasattr(dst_type, "__field_defaults__"):
+            order = list(dst.keys())
 
-            # strip alldunders from the owner class
-            for name in [k for k in list(collection_type.__dict__.keys())
-                         if not (k.startswith("__") and k.endswith("__"))]:
-                val_cache[name] = getattr(collection_type, name)
-                delattr(collection_type, name)
-                print(f"{name}")
+            old_field_defaults = dst_type.__field_defaults__.copy()
+            d = dst_type.__field_defaults__
+            d.clear()
+            # reorder part
+            for k in order:
+                d[k] = dst.get(k)
 
-            print("=-------")
-            # re-add in desired order
-            for name, value in ordered_items:
-                if (name.startswith("__") or name.startswith("_") or name.endswith("__")):
-                    continue
+            for k in dst.keys():
+                if k not in d:
+                    d[k] = dst[k]
 
-                if name in val_cache:
-                    setattr(collection_type, name, val_cache[name])
-                    print(f"{name}")
+            setattr(dst_type, "__field_defaults__", d)
 
         else:
             return "Internal planning error: unknown operation kind."
