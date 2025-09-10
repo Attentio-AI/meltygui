@@ -492,7 +492,7 @@ class Melty:
 
     save_draw_state_for = 1
     spacing = (3,1)
-    padding = (3,2)
+    padding = (3,3)
     end_collection_spacing = 5
     header_indent = 150
 
@@ -504,6 +504,21 @@ class Melty:
     global_attrs = {}
     depth_state_stack = []
     flow_spacing = 0.0
+    bg_stack = []
+    input_value_stack = [None]
+
+    @staticmethod
+    def get_bg_color(depth=None):
+        if depth is None:
+            depth = Melty.depth
+        if len(Melty.bg_stack) == 0:
+            return 0, 0, 0
+
+        # Allow for negative index from end, but clamp to available range
+        if depth < 0:
+            depth = len(Melty.bg_stack) + depth
+        depth = max(0, min(depth, len(Melty.bg_stack) - 1))
+        return Melty.bg_stack[depth][0:3]
 
     @staticmethod
     def shift_key():

@@ -64,6 +64,23 @@ class ImGuiStyleManager:
     def set_root(self, root):
         self.root = root
 
+    def make_custom_styled(self, r, g, b, input, alpha=1.0, value=0.5, saturation=None):
+        h, s, v = colorsys.rgb_to_hsv(r, g, b)
+        modified_rgb = colorsys.hsv_to_rgb(h, s * saturation, value)
+        value = input["value"] + value
+
+        if saturation is not None:
+            saturation_scale = saturation
+        else:
+            saturation_scale = input["saturation"]
+        value = (v * self.root.global_style.base_value) + value
+        if 'max_value' in input:
+            value = min(value, input["max_value"])
+        alpha = input["alpha"]
+
+        modified_rgb = colorsys.hsv_to_rgb(h, s * saturation_scale, value)
+        return (modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
+
     def make_custom(self, r, g, b, value, saturation_scale=1.0, alpha=1.0):
         h, s, v = colorsys.rgb_to_hsv(r, g, b)
         modified_rgb = colorsys.hsv_to_rgb(h, s * saturation_scale, value)

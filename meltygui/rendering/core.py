@@ -136,7 +136,6 @@ def render_wrapper(*o_args, **o_kwargs):
         else:
             inner_func = r_func
 
-
         func = first_arg if callable(first_arg) else None
         # use the specified wrapper if r_func
         wrap_sig = inspect.signature(inner_func)
@@ -308,16 +307,19 @@ def render_func(*args, **o_kwargs):
         if is_root:
             Melty.unique_stack = []
             Melty.flow_spacing = 0.0
-
             melty = get_melty_state(unique)
             melty.nearest_drop_distance = melty.max_distance
             melty.nearest_drop_target = None
             melty.nearest_drop_target_tag = None
+            Melty.bg_stack = [(0,0,0)]
         else:
             melty = get_melty_state(Melty.unique_stack[0])
 
         Melty.depth = Melty.depth + 1
         Melty.unique_stack.append(unique)
+        nested_call = input_value == Melty.input_value_stack[-1] if len(Melty.input_value_stack) > 0 else False
+        Melty.input_value_stack.append(input_value)
+
 
         try:
             expected_type = param_types[wanted_params.index("input_value")] if "input_value" in wanted_params else None
@@ -433,6 +435,8 @@ def render_func(*args, **o_kwargs):
             # Leave view
             Melty.unique_stack.pop()
 
+            Melty.input_value_stack.pop()
+
             # outer_draw_state = get_draw_state(Melty.unique_stack[-1]) if len(Melty.unique_stack) > 0 else None
             # inner_draw_state = get_draw_state(unique)
             # outer_draw_state.proxy_bounds(inner_draw_state) if outer_draw_state is not None else None
@@ -476,6 +480,7 @@ def render_func(*args, **o_kwargs):
                     if btn_state.dragged:
                         btn_state.drag_released = True
                         melty.mark_event(unique, m_btn, ActionType.DRAG_UP)
+                        melty.initial_drag_offset = None
 
                     btn_state.dragged = False
 

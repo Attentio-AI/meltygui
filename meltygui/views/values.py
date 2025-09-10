@@ -131,20 +131,19 @@ def draw_drop_target(input_value, draw_state, on_drag, do_flow, depth,
 
     if collection == input_value:
         return False, 0.0
-    if key is None:
+    if key is None or melty.initial_drag_offset is None:
         return False, 0.0
     # ----------------- top spacing -----------
     falloff = 20.0 # higher is gentler
     drop_gap = 7.0
-    drag_delta_curve = 1.0 - max(0.0, min(1.0, 1.0 - abs(imgui.get_mouse_drag_delta(0)[1] / 15.0)))
+    drag_delta_curve = 1.0 - max(0.0, min(1.0, 1.0 - abs(melty.drag_delta[1] / 15.0)))
 
     mouse_pos = imgui.get_mouse_pos()
-    dragged_top = melty.dragged_item.top if melty.dragged_item is not None else 0
     cursor_top = imgui.get_cursor_screen_pos()[1]
     cursor_y_screen = imgui.get_cursor_screen_pos()[1]
     static_offset = drop_gap
     distance_to_mouse = abs(mouse_pos[1] - cursor_y_screen -
-                            melty.initial_drag_offset[1] - (drop_gap) + static_offset)
+                            melty.initial_drag_offset[1] - drop_gap + static_offset)
     bell_curve = max(0.0, min(1.0, 1.0 - (distance_to_mouse / falloff)))
 
     window_size = imgui.get_window_size()
@@ -154,15 +153,15 @@ def draw_drop_target(input_value, draw_state, on_drag, do_flow, depth,
                    window_pos[1] + window_size[1])
     mouse_over_window = imgui.is_mouse_hovering_rect(*window_rect)
 
-
-    if (melty.drag_in_progress):
+    if melty.drag_in_progress:
         if melty.dragged_item._input_value == collection:
             return False, 0.0
 
     if melty.drag_in_progress and do_flow and not on_drag and mouse_over_window:
-        flow_spacing = drop_gap * bell_curve * (drag_delta_curve)
+        flow_spacing = drop_gap * bell_curve * drag_delta_curve
     else:
         flow_spacing = 0.0
+        drag_delta_curve = 1.0
 
     if do_flow:
         Melty.flow_spacing += int(flow_spacing)
@@ -189,7 +188,7 @@ def draw_drop_target(input_value, draw_state, on_drag, do_flow, depth,
         cursor_bottom += flow_spacing
         cursor_top += flow_spacing
 
-    if melty.drag_in_progress and not on_drag and do_flow:
+    if melty.drag_in_progress and not on_drag and do_flow and mouse_over_window:
         if draw_state.height is not None:
             active_drop = (melty.drag_drop_target == draw_state.unique
                            and tag == melty.drag_drop_target_tag)
@@ -214,16 +213,16 @@ def draw_drop_target(input_value, draw_state, on_drag, do_flow, depth,
                 if melty.drag_drop_action.target_key is None:
                     pass
 
-
             height_as_factor = 800.0
             opacity = max(0.0, min(1.0, 1.0 - (distance_to_mouse / (height_as_factor * 0.3))))
             # opacity = 1.0 if active_drop else opacity
 
-            color = style_manager.make_color_rgb(*(1.0, 1.0, 1.0), factor=1.0,
-                                                 value=1.0, alpha=opacity, saturation_scale=0.7)
-            inactive_color = style_manager.make_color_rgb(*(1.0, 1.0, 1.0), factor=1.0,
-                                                 value=0.3, alpha=opacity, saturation_scale=0.5)
+            bg_tint = Melty.get_bg_color(-1)
 
+            color = style_manager.make_color_rgb(*bg_tint, factor=0.0,
+                                                 value=1.0, alpha=opacity, saturation_scale=1.0)
+            inactive_color = style_manager.make_color_rgb(*bg_tint, factor=0.6,
+                                                 value=0.1, alpha=opacity, saturation_scale=0.5)
 
             color = color if active_drop else inactive_color
             draw_list.add_rect_filled(draw_state.left, cursor_top - 1,
@@ -239,8 +238,8 @@ def draw_drop_target(input_value, draw_state, on_drag, do_flow, depth,
     return False, flow_spacing
 
 @render_func
-def draw_header_end(global_style, unique, style_manager, show_add_delete, show_search,
-                    on_search, draw_state):
+def draw_header_end(global_style, unique, style_manager, show_search,
+                    on_search, draw_state, show_add_delete=True):
     if show_add_delete:
         same_line()
         if imgui.button(f"+##add"):
@@ -369,6 +368,10 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
                 if (space_available > cutoff and draw_state.expanded) or on_same_line:
                     same_line()
 
+        if show_bg:
+            style_manager.get_tint()
+            Melty.bg_stack.append(style_manager.get_tint())
+
         return_value = None
         if not is_tree or draw_state.expanded or is_window:
             if not on_drag:
@@ -393,6 +396,9 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
         # ----------------- end header ---------------
         draw_header_end(**next_kwargs)
 
+        if show_bg:
+            style_manager.get_tint()
+            Melty.bg_stack.pop()
         # ----------------- top spacing -----------
         _, flow_spacing = draw_drop_target(do_flow=do_flow, on_drag=on_drag,
                          collection=collection, key=key,
@@ -654,8 +660,8 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
     # rounding
     rounding = min(current_indent_px(), rounding)
 
-    depth_factor = global_style.get_global_constant("depth_factor", default=1.0, folder="bg_styles") * 0.7
-    depth_offset = global_style.get_global_constant("depth_offset", default=0.0, folder="bg_styles")
+    depth_factor = global_style.get_global_constant("depth_factor", default=1.0, folder="bg_styles") * 0.95
+    depth_offset = global_style.get_global_constant("depth_offset", default=0.0, folder="bg_styles") - 0.9
     dynamic_value = max(0, (float(depth + depth_offset) * depth_factor))
     bg_style = {
         "value": 0.01,
@@ -669,25 +675,42 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
     elif hovered:
         hovered_offset = 0.3
 
+    def mix_colors(c1, c2, fac):
+        return (c1[0] * (1 - fac) + c2[0] * fac,
+                c1[1] * (1 - fac) + c2[1] * fac,
+                c1[2] * (1 - fac) + c2[2] * fac)
 
     bg_style = global_style.get_global_constant("bg_style", default=bg_style, folder="bg_styles")
     outline_saturation = global_style.get_global_constant("outline_saturation", default=0.5, folder="bg_styles")
 
-    outline_offset = global_style.get_global_constant("outline_offset", default=0.0, folder="bg_styles") + 0.1
-    outline_factor = global_style.get_global_constant("outline_factor", default=1.0, folder="bg_styles")
+    outline_offset = global_style.get_global_constant("outline_offset", default=0.0, folder="bg_styles") - 0.2
+    outline_factor = global_style.get_global_constant("outline_factor", default=1.0, folder="bg_styles") * 1.4
+
+    bleed_factor = 0.05
+    bg_bleed = Melty.get_bg_color(-1)
+    bg_bleed = style_manager.make_custom_styled(*bg_bleed, input=bg_style,
+                                                value=0.7,
+                                                alpha=1.0, saturation=1.8)
 
     outline_color = (style_manager.
-                     make_color_style_value_imgui(input=bg_style, saturation=outline_saturation,
+                     make_color_style_value(input=bg_style, saturation=outline_saturation,
                                                   value=max(0, dynamic_value * outline_factor + outline_offset)))
+    outline_color = mix_colors(outline_color, bg_bleed, 0.01)
     # if tint is not None:
     #     outline_color = imgui.get_color_u32_rgba(*tint)
 
     if outline:
+        outline_color = imgui.get_color_u32_rgba(*outline_color, 1.0)
+
         if outline_tint is not None:
             outline_color = imgui.get_color_u32_rgba(*outline_tint)
         imgui.get_window_draw_list().add_rect(*rect_outline, col=outline_color, rounding=rounding, thickness=2.0)
     bg_color = (style_manager.
                 make_color_style_value(input=bg_style, value=max(0, dynamic_value) + hovered_offset))
+
+
+    bg_color = mix_colors(bg_color, bg_bleed, bleed_factor)
+
     imgui_bg_color = imgui.get_color_u32_rgba(bg_color[0], bg_color[1], bg_color[2], 1.0)
 
     if tint is not None:
