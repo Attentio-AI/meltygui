@@ -11,7 +11,7 @@ import imgui
 
 from src.lsd.gl_gui.model.core_model.new_core_model import DrawState, Hotkey
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, request_render
-from src.lsd.gl_gui.melty import Melty, ActionType, apply_collection_action, MeltyState
+from src.lsd.gl_gui.melty import Melty, ActionType, apply_collection_action, MeltyState, DepthState
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
 
 melty_state_registry = {}
@@ -302,10 +302,13 @@ def render_func(*args, **o_kwargs):
         imgui.begin_group()
         push_id(unique)
         draw_state = get_draw_state(unique)
+        draw_state._input_value = input_value
 
         is_root = len(Melty.unique_stack) == 0
         if is_root:
             Melty.unique_stack = []
+            Melty.flow_spacing = 0.0
+
             melty = get_melty_state(unique)
             melty.nearest_drop_distance = melty.max_distance
             melty.nearest_drop_target = None
@@ -453,6 +456,7 @@ def render_func(*args, **o_kwargs):
                         if not btn_state.mouse_down:
                             current_mouse_pos = imgui.get_mouse_pos()
                             btn_state.mouse_down_pos = imgui.get_mouse_pos()
+                            melty.mouse_down_pos = imgui.get_mouse_pos()
                             btn_state.initial_screen_pos = (draw_state.left, draw_state.top)
                             melty.initial_drag_offset = (current_mouse_pos[0] - draw_state.left,
                                                          current_mouse_pos[1] - draw_state.top)
@@ -487,6 +491,7 @@ def render_func(*args, **o_kwargs):
                         melty.drag_in_progress = True
                         melty.dragged_item = draw_state
                         melty.mark_event(unique, m_btn, ActionType.DRAG)
+                        melty.drag_delta = btn_state.drag_delta
 
             if draw_state.hovered and imgui.is_window_hovered():
                 if unique not in melty.triggered_actions:

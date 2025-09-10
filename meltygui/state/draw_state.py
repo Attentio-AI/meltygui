@@ -58,6 +58,7 @@ class DrawState(DictConversion):
         self.left = None
         self.search_text = ""
         self.search_active = False
+        self.flow_spacing = 0.0
 
         self.track_mouse = False
 
@@ -72,6 +73,8 @@ class DrawState(DictConversion):
         self.clicked = False
         self.dragged = False
         self.screen_pos = (0, 0)
+        self.drag_delta = (0, 0)
+        self._input_value = None
 
         self.delete_countdown = Melty.save_draw_state_for
 

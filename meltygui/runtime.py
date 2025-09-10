@@ -37,6 +37,8 @@ class MouseAction:
 class OperationType(Enum):
     COPY = 'copy'
     MOVE = 'move'
+    DELETE = 'delete'
+
 
 class CollectionAction:
     def __init__(self,
@@ -416,6 +418,11 @@ def apply_collection_action(action: CollectionAction):
 
     return None
 
+class DepthState:
+    def __init__(self):
+        self.flow_spacing = 0.0
+
+
 class MeltyState:
     def __init__(self):
         self.hover_stack = []
@@ -428,9 +435,12 @@ class MeltyState:
         self.drag_in_progress = False
 
         self.initial_drag_offset = (0, 0)
+        self.mouse_down_pos = (0, 0)
+        self.drag_delta = (0,0)
         self.nearest_drop_target = None
         self.nearest_drop_target_tag = None
         self.nearest_drop_distance = self.max_distance
+        self.flow_spacing = 0.0
 
         self.drag_drop_target = None
         self.drag_drop_target_tag = None
@@ -492,6 +502,8 @@ class Melty:
     window_stack = []
     window_hovered = False
     global_attrs = {}
+    depth_state_stack = []
+    flow_spacing = 0.0
 
     @staticmethod
     def shift_key():
