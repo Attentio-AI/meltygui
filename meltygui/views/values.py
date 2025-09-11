@@ -128,7 +128,7 @@ def render_with_foo(func, *args, **kwargs):
 
 @render_func
 def draw_drop_target(input_value, draw_state, on_drag, do_flow, depth,
-                     collection, key, melty, y_offset,
+                     collection, key, melty, y_offset, enable_flow,
                      unique, tag, style_manager, global_style):
     cursor_y_screen = imgui.get_cursor_screen_pos()[1]
 
@@ -139,7 +139,11 @@ def draw_drop_target(input_value, draw_state, on_drag, do_flow, depth,
         return False, 0.0
     # ----------------- top spacing -----------
     falloff = 20.0 # higher is gentler
-    drop_gap = 7.0
+    if enable_flow:
+        drop_gap = 7.0
+    else:
+        drop_gap = 0.0
+
     drag_delta_curve = 1.0 - max(0.0, min(1.0, 1.0 - abs(melty.drag_delta[1] / 15.0)))
 
     mouse_pos = imgui.get_mouse_pos()
@@ -299,7 +303,7 @@ def draw_header_end(global_style, unique, style_manager, show_search,
 def core_header(func, outer_func, input_value=None, collection=None, key=None, indent_size=10, depth=0, draw_state=None,
                 window_stack=None, is_tree=True, is_window=False, spacing=Melty.spacing, padding=Melty.padding,
                 show_header=True, show_bg=True, unique=0, name="", style_manager=None, global_style=None,
-                selected_views=None, on_drag=False, on_drag_up=False, do_flow=True, melty=None,
+                selected_views=None, on_drag=False, on_drag_up=False, do_flow=True, melty=None, enable_flow=True,
                 on_hover=False, next_kwargs=None, on_same_line=False, y_offset=0, **kwargs):
 
         if window_stack is None or len(window_stack) == 0:
@@ -318,7 +322,7 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
             do_flow = False
 
         # ----------------- top spacing -----------
-        _, flow_spacing = draw_drop_target(do_flow=True,
+        _, flow_spacing = draw_drop_target(do_flow=True, enable_flow=enable_flow,
                          collection=collection, key=key, on_drag=False,
                          draw_state=draw_state, tag="top")
         # ------------------ end spacing -----------
@@ -388,15 +392,14 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
             if not on_drag:
                 next_kwargs.pop('spacing', None)
                 next_kwargs.pop('padding', None)
-                imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + 2)
+                imgui.set_cursor_pos_y(imgui.get_cursor_pos_y())
                 return_value = func(spacing=(spacing[0], Melty.spacing[1]),
                                     padding=(padding[0], Melty.padding[1]),
                                     **next_kwargs)
-
             if on_drag:
                 same_line(spacing=0.0)
 
-            if on_drag:
+            if on_drag and enable_flow:
                 imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
                 imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
                 imgui.dummy(draw_state.width,
@@ -423,7 +426,7 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
         draw_state.top = start_y_pos
         draw_state.left = start_x_pos
         # ----------------- top spacing -----------
-        _, flow_spacing = draw_drop_target(do_flow=do_flow, on_drag=on_drag,
+        _, flow_spacing = draw_drop_target(do_flow=do_flow, on_drag=on_drag, enable_flow=enable_flow,
                                            collection=collection, key=key,
                                            draw_state=draw_state, tag="bottom")
         # ------------------ end spacing -----------
@@ -494,6 +497,7 @@ def with_header_minimal(func, *args, **o_kwargs):
         next_kwargs['func'] = func
         next_kwargs['outer_func'] = wrapper
         next_kwargs['y_offset'] = 0
+        next_kwargs['enable_flow'] = False
 
         return core_header(**next_kwargs)
 
