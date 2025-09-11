@@ -473,11 +473,16 @@ class Melty:
 
     @staticmethod
     def indent(amount):
+        if amount == 0:
+            return
+
         Melty.current_indent += amount
         imgui.indent(amount)
 
     @staticmethod
     def unindent(amount):
+        if amount == 0:
+            return
         Melty.current_indent -= amount
         imgui.unindent(amount)
 
@@ -494,6 +499,7 @@ class Melty:
     spacing = (3,1)
     padding = (3,3)
     end_collection_spacing = 5
+    collection_spacing = 2
     header_indent = 150
 
     vis = None
@@ -506,6 +512,12 @@ class Melty:
     flow_spacing = 0.0
     bg_stack = []
     input_value_stack = [None]
+
+    @staticmethod
+    def is_window_enabled():
+        if len(Melty.window_stack) == 0:
+            return True
+        return Melty.window_stack[-1][1]
 
     @staticmethod
     def get_bg_color(depth=None):

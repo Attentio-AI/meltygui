@@ -40,7 +40,6 @@ class MouseState(DictConversion):
         self.initial_screen_pos = (0, 0)
         self.drag_delta = (0, 0)
 
-
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
 
@@ -59,6 +58,7 @@ class DrawState(DictConversion):
         self.search_text = ""
         self.search_active = False
         self.flow_spacing = 0.0
+        self.enabled = True
 
         self.track_mouse = False
 

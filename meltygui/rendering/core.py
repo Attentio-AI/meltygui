@@ -290,10 +290,15 @@ def render_func(*args, **o_kwargs):
         if annotation is not None:
             return annotation
         return_value = None
+        is_root = len(Melty.unique_stack) == 0
 
         first_arg = args[0] if args else None
         input_value = kwargs.get("input_value", first_arg)
         name = kwargs.get("name", "")
+
+        if name == "" and is_root:
+            kwargs["name"] = str(len(melty_state_registry)) + "root"
+
         from src.lsd.gl_gui.view.core_views.core_presets import Meta
 
         suffix = kwargs.get("suffix", name)
@@ -303,7 +308,6 @@ def render_func(*args, **o_kwargs):
         draw_state = get_draw_state(unique)
         draw_state._input_value = input_value
 
-        is_root = len(Melty.unique_stack) == 0
         if is_root:
             Melty.unique_stack = []
             Melty.flow_spacing = 0.0
@@ -319,7 +323,6 @@ def render_func(*args, **o_kwargs):
         Melty.unique_stack.append(unique)
         nested_call = input_value == Melty.input_value_stack[-1] if len(Melty.input_value_stack) > 0 else False
         Melty.input_value_stack.append(input_value)
-
 
         try:
             expected_type = param_types[wanted_params.index("input_value")] if "input_value" in wanted_params else None
@@ -374,7 +377,6 @@ def render_func(*args, **o_kwargs):
             set_default("unique", unique)
             set_default("suffix", suffix)
             set_default("window_stack", Melty.window_stack)
-
             set_default("on_click", melty.check_event(unique, 0, ActionType.CLICK))
             set_default("on_drag", melty.check_event(unique, 0, ActionType.DRAG))
             set_default("on_drag_up", melty.check_event(unique, 0, ActionType.DRAG_UP))
@@ -443,110 +445,108 @@ def render_func(*args, **o_kwargs):
 
             melty.triggered_actions.pop(unique, None)
 
-            for m_btn in [0,1,2]:
-                btn_state = draw_state.mouse_btn_state[m_btn]
+            if Melty.is_window_enabled():
+                for m_btn in [0,1,2]:
+                    btn_state = draw_state.mouse_btn_state[m_btn]
 
-                if btn_state.drag_released:
-                    btn_state.drag_released = False
-                    melty.dragged_item = None
+                    if btn_state.drag_released:
+                        btn_state.drag_released = False
+                        melty.dragged_item = None
 
-                was_mouse_down = btn_state.mouse_down
-                btn_state.clicked = False
+                    was_mouse_down = btn_state.mouse_down
+                    btn_state.clicked = False
 
-                if btn_state.drag_released:
-                    btn_state.drag_released = False
-                if draw_state.hovered and imgui.is_window_hovered():
-                    if imgui.is_mouse_down(m_btn) and btn_state.mouse_up:
-                        if not btn_state.mouse_down:
-                            current_mouse_pos = imgui.get_mouse_pos()
-                            btn_state.mouse_down_pos = imgui.get_mouse_pos()
-                            melty.mouse_down_pos = imgui.get_mouse_pos()
-                            btn_state.initial_screen_pos = (draw_state.left, draw_state.top)
-                            melty.initial_drag_offset = (current_mouse_pos[0] - draw_state.left,
-                                                         current_mouse_pos[1] - draw_state.top)
+                    if btn_state.drag_released:
+                        btn_state.drag_released = False
+                    if draw_state.hovered and imgui.is_window_hovered():
+                        if imgui.is_mouse_down(m_btn) and btn_state.mouse_up:
+                            if not btn_state.mouse_down:
+                                current_mouse_pos = imgui.get_mouse_pos()
+                                btn_state.mouse_down_pos = imgui.get_mouse_pos()
+                                melty.mouse_down_pos = imgui.get_mouse_pos()
+                                btn_state.initial_screen_pos = (draw_state.left, draw_state.top)
+                                melty.initial_drag_offset = (current_mouse_pos[0] - draw_state.left,
+                                                             current_mouse_pos[1] - draw_state.top)
 
-                        btn_state.mouse_down = True
-                        melty.mark_event(unique, m_btn, ActionType.DOWN)
+                            btn_state.mouse_down = True
+                            melty.mark_event(unique, m_btn, ActionType.DOWN)
+                        if not imgui.is_mouse_down(m_btn):
+                            btn_state.mouse_up = True
+                    else:
+                        btn_state.mouse_up = False
+                    if was_mouse_down and not imgui.is_mouse_down(m_btn):
+                        btn_state.clicked = True
+                        melty.mark_event(unique, m_btn, ActionType.CLICK)
+
                     if not imgui.is_mouse_down(m_btn):
-                        btn_state.mouse_up = True
-                else:
-                    btn_state.mouse_up = False
-                if was_mouse_down and not imgui.is_mouse_down(m_btn):
-                    btn_state.clicked = True
-                    melty.mark_event(unique, m_btn, ActionType.CLICK)
+                        btn_state.mouse_down = False
+                        if btn_state.dragged:
+                            btn_state.drag_released = True
+                            melty.mark_event(unique, m_btn, ActionType.DRAG_UP)
+                            melty.initial_drag_offset = None
 
-                if not imgui.is_mouse_down(m_btn):
-                    btn_state.mouse_down = False
-                    if btn_state.dragged:
-                        btn_state.drag_released = True
-                        melty.mark_event(unique, m_btn, ActionType.DRAG_UP)
-                        melty.initial_drag_offset = None
+                        btn_state.dragged = False
 
-                    btn_state.dragged = False
+                    if btn_state.mouse_down:
+                        current_mouse_pos = imgui.get_mouse_pos()
+                        distance = math.sqrt((current_mouse_pos[0] - btn_state.mouse_down_pos[0]) ** 2 +
+                                                (current_mouse_pos[1] - btn_state.mouse_down_pos[1]) ** 2)
+                        btn_state.drag_delta = (current_mouse_pos[0] - btn_state.mouse_down_pos[0],
+                                                 current_mouse_pos[1] - btn_state.mouse_down_pos[1])
 
-                if btn_state.mouse_down:
-                    current_mouse_pos = imgui.get_mouse_pos()
-                    distance = math.sqrt((current_mouse_pos[0] - btn_state.mouse_down_pos[0]) ** 2 +
-                                            (current_mouse_pos[1] - btn_state.mouse_down_pos[1]) ** 2)
-                    btn_state.drag_delta = (current_mouse_pos[0] - btn_state.mouse_down_pos[0],
-                                             current_mouse_pos[1] - btn_state.mouse_down_pos[1])
+                        if abs(distance) >= 1 or btn_state.dragged:
+                            btn_state.dragged = True
+                            melty.drag_in_progress = True
+                            melty.dragged_item = draw_state
+                            melty.mark_event(unique, m_btn, ActionType.DRAG)
+                            melty.drag_delta = btn_state.drag_delta
 
-                    if abs(distance) >= 1 or btn_state.dragged:
-                        btn_state.dragged = True
-                        melty.drag_in_progress = True
-                        melty.dragged_item = draw_state
-                        melty.mark_event(unique, m_btn, ActionType.DRAG)
-                        melty.drag_delta = btn_state.drag_delta
+                if draw_state.hovered and imgui.is_window_hovered():
+                    if unique not in melty.triggered_actions:
+                        melty.mark_event(unique, 0, ActionType.HOVERED)
 
-            if draw_state.hovered and imgui.is_window_hovered():
-                if unique not in melty.triggered_actions:
-                    melty.mark_event(unique, 0, ActionType.HOVERED)
+                is_hovered = draw_state.is_hovered()
+                draw_state.hovered = False
+                draw_state.hotkey_receiver = False
+                if is_hovered:
+                    melty.hover_stack.append(unique)
 
-            is_hovered = draw_state.is_hovered()
-            draw_state.hovered = False
-            draw_state.hotkey_receiver = False
-            if is_hovered:
-                melty.hover_stack.append(unique)
+                if is_hovered and func in Melty.hotkey_registry:
+                    melty.hotkey_stack.append(unique)
 
-            if is_hovered and func in Melty.hotkey_registry:
-                melty.hotkey_stack.append(unique)
+                if not imgui.is_mouse_down(0):
+                    melty.drag_in_progress = False
 
-            if not imgui.is_mouse_down(0):
-                melty.drag_in_progress = False
+                hovered_draw_state = None
+                # Root view
+                if len(Melty.unique_stack) == 0:
+                    # Did mouse hove
 
-            hovered_draw_state = None
-            # Root view
-            if len(Melty.unique_stack) == 0:
-                # Did mouse move
+                    if len(melty.hover_stack) > 0:
+                        last = melty.hover_stack[0]
+                        hovered_draw_state = Melty.vis.root.draw_state_registry.get(last, None)
+                        if hovered_draw_state is not None:
+                            hovered_draw_state.hovered = True
 
-                if len(melty.hover_stack) > 0:
-                    last = melty.hover_stack[0]
-                    hovered_draw_state = Melty.vis.root.draw_state_registry.get(last, None)
-                    if hovered_draw_state is not None:
-                        hovered_draw_state.hovered = True
+                    if len(melty.hotkey_stack) > 0:
+                        last = melty.hotkey_stack[0]
+                        hovered_draw_state = Melty.vis.root.draw_state_registry.get(last, None)
+                        if hovered_draw_state is not None:
+                            hovered_draw_state.hotkey_receiver = True
 
-                if len(melty.hotkey_stack) > 0:
-                    last = melty.hotkey_stack[0]
-                    hovered_draw_state = Melty.vis.root.draw_state_registry.get(last, None)
-                    if hovered_draw_state is not None:
-                        hovered_draw_state.hotkey_receiver = True
+                    melty.hover_stack = []
+                    melty.hotkey_stack = []
 
-                melty.hover_stack = []
-                melty.hotkey_stack = []
+                    if not melty.nearest_drop_target is None:
+                        melty.drag_drop_target = melty.nearest_drop_target
+                        melty.drag_drop_target_tag = melty.nearest_drop_target_tag
 
-                if not melty.nearest_drop_target is None:
-                    melty.drag_drop_target = melty.nearest_drop_target
-                    melty.drag_drop_target_tag = melty.nearest_drop_target_tag
-
-                ######### apply drag & drop -----------
-                while len(melty.actions_to_apply) > 0:
-                    action = melty.actions_to_apply.pop(0)
-                    result = apply_collection_action(action)
-
-
-                    request_render()
-
-                melty.actions_to_apply = []
+                    ######## -------- Do drag & drop -----------
+                    while len(melty.actions_to_apply) > 0:
+                        action = melty.actions_to_apply.pop(0)
+                        result = apply_collection_action(action)
+                        request_render()
+                    melty.actions_to_apply = []
 
             if return_value is None:
                 changed, new_value = False, None

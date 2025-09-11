@@ -25,7 +25,7 @@ def generate_class_diff(obj, updates):
 
 # Main draw function, called by the GUI framework
 def draw(vis):
-    draw_window(vis.root.lora_collection)
+    draw_window(vis.root.lora_collection, name="Loras")
     draw_window(Melty.hotkey_registry, name="Hotkeys", is_window=True)
     # draw_any(vis.root.synth_collection, is_window=False)
     # #
@@ -33,9 +33,9 @@ def draw(vis):
 
 
 def core_draw_window(input_value, name, unique, window_func,
-                     window_stack, style_manager,
+                     window_stack, style_manager, draw_state,
                      args, kwargs, indent_size=10, width=0, height=0, pos_x=None, pos_y=None,
-                     decorations=True, focus=False):
+                     decorations=True, focus=False, enable=True):
     tmp_undo_stack(unique)
     title = name or input_value.__class__.__name__
     padding_fudge = imgui.get_style().frame_padding.y + 2
@@ -82,7 +82,7 @@ def core_draw_window(input_value, name, unique, window_func,
                    window_pos[1] + window_size[1])
     Melty.window_hovered = imgui.is_mouse_hovering_rect(*window_rect)
 
-    Melty.window_stack.append(window_title)
+    Melty.window_stack.append((window_title, enable))
 
     draw_list = imgui.get_window_draw_list()
     draw_list.channels_split(Melty.max_depth)
@@ -102,8 +102,8 @@ def core_draw_window(input_value, name, unique, window_func,
 
 @render_func
 def draw_window(input_value, window_stack=None, style_manager=None,
-                show_header=False, is_window=True,
-                is_tree=False, name="", unique=0, *args, **kwargs):
+                show_header=False, is_window=True, draw_state=None,
+                is_tree=False, show_bg=False, indent_size=0, name="", unique=0, *args, **kwargs):
     kwargs['input_value'] = input_value
     kwargs['is_window'] = is_window
     kwargs['is_tree'] = is_tree
@@ -112,7 +112,8 @@ def draw_window(input_value, window_stack=None, style_manager=None,
     kwargs['name'] = name
 
     core_draw_window(window_func=draw_object, input_value=input_value, window_stack=window_stack,
-                     style_manager=style_manager, name=name, unique=unique, args=args, kwargs=kwargs)
+                     style_manager=style_manager, name=name, draw_state=draw_state,
+                     unique=unique, args=args, kwargs=kwargs)
 
 @render_wrapper(wraps=render_func)
 def render_with_foo(func, *args, **kwargs):
@@ -129,8 +130,9 @@ def draw_drop_target(input_value, draw_state, on_drag, do_flow, depth,
                      collection, key, melty,
                      unique, tag, style_manager, global_style):
 
-    if collection == input_value:
+    if collection == input_value or not Melty.is_window_enabled():
         return False, 0.0
+
     if key is None or melty.initial_drag_offset is None:
         return False, 0.0
     # ----------------- top spacing -----------
@@ -306,7 +308,7 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
         draw_list = imgui.get_window_draw_list()
 
         if inside_window and show_bg:
-            draw_list.channels_set_current(min(Melty.max_depth - 1, depth - 1))
+            draw_list.channels_set_current(min(Melty.max_depth - 1, depth))
 
         Melty.indent(indent_size)
         width = imgui.get_content_region_available()[0]
@@ -318,8 +320,8 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
         if on_drag:
 
             do_flow = False
-        _, flow_spacing = draw_drop_target(do_flow=do_flow,
-                         collection=collection, key=key, on_drag=on_drag,
+        _, flow_spacing = draw_drop_target(do_flow=True,
+                         collection=collection, key=key, on_drag=False,
                          draw_state=draw_state, tag="top")
         # ------------------ end spacing -----------
 
@@ -338,11 +340,9 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
             next_kwargs.pop('padding', None)
 
             # --------------------- HEADER -----------------
-
             changed, action = draw_header(spacing=(spacing[0], Melty.spacing[1]),
                                           padding=(padding[0], Melty.padding[1] + 1),
                                           **next_kwargs)
-
             if on_drag:
                 next_kwargs['opacity'] = 1.0
                 next_kwargs['on_drag'] = False
@@ -358,11 +358,11 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
                 pos_y = start_pos_y + drag_delta[1]
 
                 core_draw_window(window_func=outer_func, input_value=input_value,
-                                 window_stack=window_stack,
+                                 window_stack=window_stack, draw_state=draw_state,
                                  pos_x=pos_x, pos_y=pos_y,
                                  width=imgui.get_window_size()[0], height=draw_state.height,
                                  style_manager=style_manager, name=name, decorations=False,
-                                 focus=True, unique=unique, args=(), kwargs=next_kwargs)
+                                 focus=True, unique=unique, enable=False, args=(), kwargs=next_kwargs)
             else:
                 next_kwargs['do_flow'] = True
 
@@ -448,11 +448,11 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
                 tree_offset = indent_size
                 imgui.set_cursor_screen_position((draw_state.left - tree_offset, draw_state.top - tree_offset))
                 imgui.invisible_button(f"##block_tree", width=max(1, draw_state.width),
-                                       height=tree_offset)
+                                       height=max(tree_offset,1))
                 imgui.set_item_allow_overlap()
 
                 imgui.set_cursor_screen_position((draw_state.left - tree_offset, draw_state.top))
-                imgui.invisible_button(f"##block_tree", width=tree_offset,
+                imgui.invisible_button(f"##block_tree", width=max(1, tree_offset),
                              height=max(1, draw_state.height))
                 imgui.set_item_allow_overlap()
 
@@ -560,9 +560,11 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
     # --- unified loop ---
     drew_any = False
+    collection_spacing = 0
 
     for idx, key in enumerate(keys):
         if isinstance(collection, dict) and key not in collection:
+            imgui.text(f"Key '{key}' not found in dict?")
             continue
         item = collection[key]
         # visual separator (object extras)
@@ -608,11 +610,12 @@ def draw_collection(input_value, draw_state, depth, style_manager,
             show_bg = getattr(item_meta, "show_bg", False)
             if hasattr(item, "tint") or show_bg:
                 prev_tint = style_manager.get_tint()
+                collection_spacing = Melty.collection_spacing
                 style_manager.set_imgui_tint(*item.tint)
 
             if isinstance(collection, list):
                 pass
-
+            imgui.dummy(0, collection_spacing)
 
             item_changed, out_val = view_fn(
                 input_value=item, key=key, meta=item_meta, trigger_collapse=trigger_collapse,
