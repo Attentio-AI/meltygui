@@ -76,7 +76,6 @@ class ImGuiStyleManager:
         value = (v * self.root.global_style.base_value) + value
         if 'max_value' in input:
             value = min(value, input["max_value"])
-        alpha = input["alpha"]
 
         modified_rgb = colorsys.hsv_to_rgb(h, s * saturation_scale, value)
         return (modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)

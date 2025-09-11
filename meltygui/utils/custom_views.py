@@ -536,26 +536,27 @@ def print_colored_traceback(exc_type=None, exc_value=None, exc_traceback=None, l
         """
         attr_names = []
         configs = []
-        while exc_traceback.tb_next is not None:
-            frame = exc_traceback.tb_frame
-            locals = frame.f_locals
-            attr_name = locals.get('attr_name', "")
-            if attr_name == "":
-                if 'input_value' in locals:
-                    if hasattr(locals['input_value'], 'name'):
-                        attr_name = locals['input_value'].name
+        if exc_traceback is not None:
+            while exc_traceback.tb_next is not None:
+                frame = exc_traceback.tb_frame
+                locals = frame.f_locals
+                attr_name = locals.get('attr_name', "")
+                if attr_name == "":
+                    if 'input_value' in locals:
+                        if hasattr(locals['input_value'], 'name'):
+                            attr_name = locals['input_value'].name
+                        else:
+                            if locals['input_value'] is not None:
+                                attr_name = locals['input_value'].__class__.__name__
+
                     else:
-                        if locals['input_value'] is not None:
-                            attr_name = locals['input_value'].__class__.__name__
+                        if 'self' in locals:
+                            attr_name = f"self is {locals['self'].__class__.__name__}"
 
-                else:
-                    if 'self' in locals:
-                        attr_name = f"self is {locals['self'].__class__.__name__}"
-
-            config = locals.get('config', None)
-            attr_names.append(attr_name)
-            configs.append(config)
-            exc_traceback = exc_traceback.tb_next
+                config = locals.get('config', None)
+                attr_names.append(attr_name)
+                configs.append(config)
+                exc_traceback = exc_traceback.tb_next
 
         return attr_names, configs
 

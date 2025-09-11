@@ -461,6 +461,7 @@ def render_func(*args, **o_kwargs):
                     if draw_state.hovered and imgui.is_window_hovered():
                         if imgui.is_mouse_down(m_btn) and btn_state.mouse_up:
                             if not btn_state.mouse_down:
+                                melty.total_drag_distance = 0.0
                                 current_mouse_pos = imgui.get_mouse_pos()
                                 btn_state.mouse_down_pos = imgui.get_mouse_pos()
                                 melty.mouse_down_pos = imgui.get_mouse_pos()
@@ -481,6 +482,7 @@ def render_func(*args, **o_kwargs):
                     if not imgui.is_mouse_down(m_btn):
                         btn_state.mouse_down = False
                         if btn_state.dragged:
+                            melty.total_drag_distance = 0.0
                             btn_state.drag_released = True
                             melty.mark_event(unique, m_btn, ActionType.DRAG_UP)
                             melty.initial_drag_offset = None
@@ -494,7 +496,12 @@ def render_func(*args, **o_kwargs):
                         btn_state.drag_delta = (current_mouse_pos[0] - btn_state.mouse_down_pos[0],
                                                  current_mouse_pos[1] - btn_state.mouse_down_pos[1])
 
-                        if abs(distance) >= 1 or btn_state.dragged:
+                        if melty.last_mouse_pos is not None:
+                            this_m = imgui.get_mouse_pos()
+                            last_m = melty.last_mouse_pos
+                            frame_drag_distance = math.sqrt((this_m[0] - last_m[0]) ** 2 + (this_m[1] - last_m[1]) ** 2)
+                            melty.total_drag_distance += frame_drag_distance
+                        if melty.total_drag_distance >= 1 or btn_state.dragged:
                             btn_state.dragged = True
                             melty.drag_in_progress = True
                             melty.dragged_item = draw_state
@@ -520,6 +527,7 @@ def render_func(*args, **o_kwargs):
                 hovered_draw_state = None
                 # Root view
                 if len(Melty.unique_stack) == 0:
+                    melty.last_mouse_pos = imgui.get_mouse_pos()
                     # Did mouse hove
 
                     if len(melty.hover_stack) > 0:

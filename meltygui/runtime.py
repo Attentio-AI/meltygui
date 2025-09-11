@@ -436,7 +436,10 @@ class MeltyState:
 
         self.initial_drag_offset = (0, 0)
         self.mouse_down_pos = (0, 0)
+        self.total_drag_distance = 0.0
+        self.last_mouse_pos = None
         self.drag_delta = (0,0)
+
         self.nearest_drop_target = None
         self.nearest_drop_target_tag = None
         self.nearest_drop_distance = self.max_distance
@@ -499,7 +502,7 @@ class Melty:
     spacing = (3,1)
     padding = (3,3)
     end_collection_spacing = 5
-    collection_spacing = 2
+    collection_spacing = 5
     header_indent = 150
 
     vis = None
