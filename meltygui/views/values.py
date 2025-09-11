@@ -127,7 +127,7 @@ def render_with_foo(func, *args, **kwargs):
 @render_func
 def draw_drop_target(input_value, draw_state, on_drag, do_flow, depth,
                      collection, key, melty,
-                     unique, tag, style_manager):
+                     unique, tag, style_manager, global_style):
 
     if collection == input_value:
         return False, 0.0
@@ -218,11 +218,17 @@ def draw_drop_target(input_value, draw_state, on_drag, do_flow, depth,
             # opacity = 1.0 if active_drop else opacity
 
             bg_tint = Melty.get_bg_color(-1)
+            bg_style = global_style.get_global_constant("bg_style", folder="bg_styles")
 
-            color = style_manager.make_color_rgb(*bg_tint, factor=0.0,
-                                                 value=1.0, alpha=opacity, saturation_scale=1.0)
-            inactive_color = style_manager.make_color_rgb(*bg_tint, factor=0.6,
-                                                 value=0.1, alpha=opacity, saturation_scale=0.5)
+            color = style_manager.make_custom_styled(*bg_tint, input=bg_style,
+                                                        value=1.3,
+                                                        alpha=1.0, saturation=0.8)
+
+            # color = style_manager.make_color_rgb(*bg_tint, factor=0.0,
+            #                                      value=1.0, alpha=opacity, saturation_scale=1.0)
+            inactive_color = style_manager.make_custom_styled(*bg_tint, input=bg_style,
+                                                              value=0.7,
+                                                              alpha=1.0, saturation=0.8)
 
             color = color if active_drop else inactive_color
             draw_list.add_rect_filled(draw_state.left, cursor_top - 1,
@@ -535,7 +541,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
             collection = input_value
         else:
             keys = range(len(input_value))
-            collection = list(enumerate(input_value))
+            collection = list(input_value)
 
     elif hasattr(input_value, "__dict__") and depth < Melty.max_depth:
         if hasattr(type(input_value), "__field_defaults__"):
@@ -585,7 +591,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
             item_meta = meta
 
         # view function & identifier
-        view_fn = getattr(item_meta, "view_function", draw_object)
+        view_fn = getattr(item_meta, "view_function", draw_any)
         item_suffix = f"{base_suffix}_{key_str}"
         obj_unique = ui_id(name=key_str, datatype=type(item), suffix=item_suffix)
 
@@ -599,9 +605,13 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
         prev_tint = None
         try:
-            if use_tint and hasattr(item, "tint"):
+            show_bg = getattr(item_meta, "show_bg", False)
+            if hasattr(item, "tint") or show_bg:
                 prev_tint = style_manager.get_tint()
                 style_manager.set_imgui_tint(*item.tint)
+
+            if isinstance(collection, list):
+                pass
 
 
             item_changed, out_val = view_fn(
@@ -661,7 +671,7 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
     rounding = min(current_indent_px(), rounding)
 
     depth_factor = global_style.get_global_constant("depth_factor", default=1.0, folder="bg_styles") * 0.95
-    depth_offset = global_style.get_global_constant("depth_offset", default=0.0, folder="bg_styles") - 0.9
+    depth_offset = global_style.get_global_constant("depth_offset", default=0.0, folder="bg_styles") - 1.3
     dynamic_value = max(0, (float(depth + depth_offset) * depth_factor))
     bg_style = {
         "value": 0.01,
