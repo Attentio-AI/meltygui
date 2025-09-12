@@ -37,6 +37,7 @@ class MouseAction:
 class OperationType(Enum):
     COPY = 'copy'
     MOVE = 'move'
+    ADD = 'add'
     DELETE = 'delete'
 
 
@@ -75,6 +76,65 @@ class CollectionAction:
 
 
 from enum import Enum
+
+def delete_from_collection(key, collection):
+    if isinstance(collection, list):
+        try:
+            idx = int(key)
+            if 0 <= idx < len(collection):
+                collection.pop(idx)
+                return None
+            else:
+                return f"Index {idx} out of range for list of length {len(collection)}."
+        except Exception as e:
+            return f"Error removing index {key} from list: {e}"
+    elif isinstance(collection, dict):
+        if key in collection:
+            collection.pop(key)
+            return None
+        else:
+            return f"Key {key!r} not found in dict."
+    elif hasattr(collection, '__dict__'):
+        collection = collection.__dict__
+        if key in collection:
+            collection.pop(key)
+            return None
+        else:
+            return f"Key {key!r} not found in object's __dict__."
+
+
+def add_to_collection(collection, item, preferred_key=None):
+    """
+    Add an item to a collection (list or dict).
+    If a dict and preferred_key is given, use it if unique; else generate_id() until unique.
+    Returns:
+      - None on success, or an error message (str) on failure.
+    """
+    if isinstance(collection, list):
+        collection.append(item)
+        return None
+    elif isinstance(collection, dict):
+        if hasattr(item, 'id'):
+            preferred_key = str(item.id)
+
+        key = preferred_key
+        if key is not None and key in collection:
+            key = None
+        if key is None:
+            key = generate_id()
+        collection[key] = item
+    elif hasattr(collection, '__dict__'):
+        collection = collection.__dict__
+        if hasattr(item, 'id'):
+            preferred_key = str(item.id)
+
+        key = preferred_key
+        if key is not None and key in collection:
+            key = None
+        if key is None:
+            key = generate_id()
+        collection[key] = item
+    return collection
 
 
 def apply_collection_action(action: CollectionAction):
@@ -454,6 +514,7 @@ class MeltyState:
         self.target_distance = self.max_distance
 
         self.actions_to_apply = []
+        self.items_to_delete = []
 
     def check_event(self, unique, mouse_btn, event_type):
         if unique in self.triggered_actions:
@@ -466,6 +527,9 @@ class MeltyState:
 
     def to_apply(self, action: CollectionAction):
         self.actions_to_apply.append(action)
+
+    def to_delete(self, key, collection):
+        self.items_to_delete.append((key, collection))
 
 class Melty:
     max_depth = 40
@@ -502,7 +566,7 @@ class Melty:
     spacing = (3,1)
     padding = (3,3)
     end_collection_spacing = 5
-    collection_spacing = 5
+    collection_spacing = 7
     header_indent = 150
 
     vis = None

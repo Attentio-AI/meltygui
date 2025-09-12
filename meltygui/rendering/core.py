@@ -11,7 +11,8 @@ import imgui
 
 from src.lsd.gl_gui.model.core_model.new_core_model import DrawState, Hotkey
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, request_render
-from src.lsd.gl_gui.melty import Melty, ActionType, apply_collection_action, MeltyState, DepthState
+from src.lsd.gl_gui.melty import Melty, ActionType, apply_collection_action, MeltyState, DepthState, \
+    delete_from_collection
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
 
 melty_state_registry = {}
@@ -555,6 +556,12 @@ def render_func(*args, **o_kwargs):
                         result = apply_collection_action(action)
                         request_render()
                     melty.actions_to_apply = []
+
+                    while len(melty.items_to_delete) > 0:
+                        key, collection = melty.items_to_delete.pop(0)
+                        delete_from_collection(key, collection)
+
+                        request_render()
 
             if return_value is None:
                 changed, new_value = False, None

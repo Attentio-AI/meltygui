@@ -59,6 +59,7 @@ class DrawState(DictConversion):
         self.search_active = False
         self.flow_spacing = 0.0
         self.enabled = True
+        self._end_header_size = (0,0)
 
         self.track_mouse = False
 
