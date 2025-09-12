@@ -1472,7 +1472,7 @@ class DictConversion(metaclass=FieldMeta):
                 else:
                     results = (id(value), classtype)
             else:
-                if value.id not in objects:
+                if hasattr(value, 'id') and value.id not in objects:
                     results = value.to_dict(excluded=excluded, objects=objects, shallow=False, use_references=False)
                 else:
                     results = None

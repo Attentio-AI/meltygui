@@ -59,7 +59,7 @@ def core_draw_window(input_value, name, unique, window_func,
             imgui.set_next_window_position(pos_x, pos_y)
 
     previous_tint = style_manager.get_tint()
-    if hasattr(input_value, 'tint'):
+    if hasattr(input_value, 'tint') and input_value.tint is not None:
         style_manager.set_imgui_tint(*input_value.tint)
     closable = True
     flags = 0
@@ -450,7 +450,7 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
                 imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
                 imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
                 imgui.dummy(draw_state.width,
-                            draw_state.height - y_offset - 2)
+                            draw_state.height - y_offset/2 - 1)
                 imgui.pop_style_var(2)
 
         if show_bg:
@@ -631,7 +631,6 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
     for idx, key in enumerate(keys):
         if isinstance(collection, dict) and key not in collection:
-            imgui.text(f"Key '{key}' not found in dict?")
             continue
         item = collection[key]
         # visual separator (object extras)
@@ -857,6 +856,7 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
         imgui.text_colored(f"({type(input_value).__name__})", *(0.8, 0.0, 0.5, 1.0))
         same_line()
 
+
     if show_unique or global_toggles.force_show_datatype:
         imgui.text_colored(f"({str(unique)[-3:]})", *(0.4, 0.6, 0.9, 1.0))
         same_line()
@@ -885,6 +885,7 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
         text_color = (style_manager.
                       make_color_style_value(input=bg_style, saturation=0.2,
                                              value=1.0))
+        imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + 2)
         if show_add_delete:
             imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (3, 2))
             imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (4, 2))
@@ -904,7 +905,6 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
         imgui.pop_style_var(2)
 
     same_line()
-
 
     do_profile = global_toggles.profiler == ProfileMode.ON
     if do_profile:

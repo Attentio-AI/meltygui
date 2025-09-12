@@ -115,8 +115,7 @@ def add_to_collection(collection, item, preferred_key=None):
         return None
     elif isinstance(collection, dict):
         if hasattr(item, 'id'):
-            preferred_key = str(item.id)
-
+            preferred_key = item.id
         key = preferred_key
         if key is not None and key in collection:
             key = None
