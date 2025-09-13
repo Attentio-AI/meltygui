@@ -166,29 +166,24 @@ def render_wrapper(*o_args, **o_kwargs):
         wanted_params.remove("args") if "args" in wanted_params else None
         wanted_params.remove("o_kwargs") if "o_kwargs" in wanted_params else None
 
-        is_default_for = kwargs.get('is_default_for', None)
-        if isinstance(is_default_for, (tuple, list)):
-            for a_type in is_default_for:
-                if isinstance(a_type, type):
-                    kwargs.pop('is_default_for', None)
-                    from src.lsd.gl_gui.view.core_views.core_presets import Meta
-                    new_meta = Meta()
-                    new_meta.view_function = wrapper(*args, **kwargs)
-                    for k, v in param_defaults.items():
-                        setattr(new_meta, k, v)
-                    for k, v in kwargs.items():
-                        setattr(new_meta, k, v)
-                    Melty.type_defaults[a_type] = new_meta
-        elif isinstance(is_default_for, type):
+
+        def add_default(value):
             kwargs.pop('is_default_for', None)
             from src.lsd.gl_gui.view.core_views.core_presets import Meta
             new_meta = Meta()
             new_meta.view_function = wrapper(*args, **kwargs)
-            for k, v in param_defaults.items():
-                setattr(new_meta, k, v)
-            for k, v in kwargs.items():
-                setattr(new_meta, k, v)
-            Melty.type_defaults[is_default_for] = new_meta
+            # for k, v in param_defaults.items():
+            #     setattr(new_meta, k, v)
+            # for k, v in kwargs.items():
+            #     setattr(new_meta, k, v)
+            Melty.type_defaults[value] = new_meta
+
+        is_default_for = kwargs.get('is_default_for', None)
+        if isinstance(is_default_for, (tuple, list)):
+            for a_type in is_default_for:
+                add_default(a_type)
+        elif isinstance(is_default_for, type):
+            add_default(is_default_for)
         try:
             wrap_func = None
             if 'wraps' in o_kwargs:
@@ -239,9 +234,9 @@ def annotation_track(*args, wrapper, **kwargs):
             args = args[1:] if len(args) > 1 else ()
 
             new_meta = Meta()
-            for k, v in param_defaults.items():
-                setattr(new_meta, k, v)
-
+            # for k, v in param_defaults.items():
+            #     setattr(new_meta, k, v)
+            #
             for k, v in kwargs.items():
                 setattr(new_meta, k, v)
             new_meta.view_function = wrapper
@@ -281,6 +276,8 @@ def render_func(*args, **o_kwargs):
     """
     @wraps(func)
     def wrapper(*args, **kwargs):
+        __tracebackhide__ = True
+
         start_time = time.time()
         if kwargs.get("bypass", False):
             kwargs.pop("bypass", None)
@@ -300,9 +297,19 @@ def render_func(*args, **o_kwargs):
         if name == "" and is_root:
             kwargs["name"] = str(len(melty_state_registry)) + "root"
 
+        if name == "" and not is_root:
+            key = kwargs.get("key", None)
+            key = key if key is not None else ""
+            name = str(key) + type(input_value).__name__
+
         from src.lsd.gl_gui.view.core_views.core_presets import Meta
 
-        suffix = kwargs.get("suffix", name)
+        if Melty.depth > Melty.max_depth:
+            return False, None
+
+        suffix = kwargs.get("suffix", None)
+        if suffix is None:
+            suffix = Melty.unique_stack[-1] if len(Melty.unique_stack) > 0 else name
         unique = ui_id(name=name, datatype=type(input_value), suffix=suffix)
         imgui.begin_group()
         push_id(unique)
@@ -319,6 +326,7 @@ def render_func(*args, **o_kwargs):
             Melty.bg_stack = [(0,0,0)]
         else:
             melty = get_melty_state(Melty.unique_stack[0])
+
 
         Melty.depth = Melty.depth + 1
         Melty.unique_stack.append(unique)
@@ -340,8 +348,6 @@ def render_func(*args, **o_kwargs):
                                            f"Expected {expected_type.__name__}, "
                                            f"got {type(input_value).__name__}", *yellow)
                         return False, None
-            if name == "alpha":
-                pass
 
             meta = kwargs.get("meta", None)
             if meta is None:
@@ -349,7 +355,10 @@ def render_func(*args, **o_kwargs):
                 if hasattr(type(input_value), "meta"):
                     meta = getattr(type(input_value), "meta")
                 else:
-                    meta = Meta.get_new_defaults(default_value=input_value)
+                    if hasattr(Meta, 'get_child_meta'):
+                        meta = Meta.get_child_meta(None, field_name=kwargs.get("name", ''), value=input_value)
+                    else:
+                        meta = Meta.get_new_defaults(default_value=input_value)
 
             if name is not None and name != "":
                 meta.name = name
@@ -392,15 +401,16 @@ def render_func(*args, **o_kwargs):
                         else:
                             kwargs.setdefault(hk_name, False)
             kwargs.setdefault('meta', meta)
-
-            if name is 'tint':
+            if name == "alpha":
                 pass
 
+            kwargs.update(meta.__dict__)
             for param in wanted_params:
                 if param not in kwargs and param != "kwargs" and param != 'args' and param != 'o_kwargs' and param != 'next_kwargs':
                     set_default(param, None)
 
-            set_default("next_kwargs", kwargs)
+            # set_default("next_kwargs", kwargs)
+            kwargs['next_kwargs'] = kwargs
 
             if type(input_value).__name__ == "LoraCollection":
                 pass
@@ -422,7 +432,10 @@ def render_func(*args, **o_kwargs):
 
             imgui.push_style_var(imgui.STYLE_ITEM_SPACING, spacing)
             imgui.push_style_var(imgui.STYLE_FRAME_PADDING, padding)
+
+            ########################## The render call ##########################
             return_value = func(**clean_args)
+            ######################################################################
             imgui.pop_style_var(2)
         except Exception as e:
             print_colored_traceback(*sys.exc_info())

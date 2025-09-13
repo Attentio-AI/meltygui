@@ -98,28 +98,6 @@ class FieldMeta(type):
         return obj
 
 
-    def get_child_meta(cls, field_name, value=None):
-        child_meta = getattr(cls, f"{field_name}_meta", None)
-        if child_meta is None:
-            if hasattr(cls, 'default_meta_for'):
-                child_meta = cls.default_meta_for.get(type(value), None)
-        if child_meta is None:
-            if hasattr(type(value), 'meta'):
-                child_meta = type(value).meta
-        if child_meta is None:
-            if isinstance(value, Enum):
-                last_default = Melty.type_defaults.get(Enum, None)
-            else:
-                last_default = Melty.type_defaults.get(type(value), None)
-            from src.lsd.gl_gui.view.core_views.core_meta import Meta
-            child_meta = Meta.get_new_defaults(value=value)
-            child_meta.name = field_name
-            if last_default is not None:
-                child_meta = last_default
-        """Get Meta object for a given field, or default."""
-        return child_meta
-
-
 # disabled = Marker(disabled=True)
 # colored_text = Marker(colored_text=True)
 # class Car(metaclass=FieldMeta):

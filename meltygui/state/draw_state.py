@@ -53,6 +53,7 @@ class DrawState(DictConversion):
         self.height = None
         self.expanded_height = None
         self.width = None
+        self.min_width = None
         self.top = None
         self.left = None
         self.search_text = ""
