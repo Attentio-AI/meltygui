@@ -949,7 +949,7 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
     bg_style = global_style.get_global_constant("bg_style", default=bg_style, folder="bg_styles")
     outline_saturation = global_style.get_global_constant("outline_saturation", default=0.5, folder="bg_styles")
 
-    outline_offset = global_style.get_global_constant("outline_offset", default=0.0, folder="bg_styles") - 0.2
+    outline_offset = global_style.get_global_constant("outline_offset", default=0.0, folder="bg_styles") - 0.1
     outline_factor = global_style.get_global_constant("outline_factor", default=1.0, folder="bg_styles") * 1.4
 
     bleed_factor = 0.05
