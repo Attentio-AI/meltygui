@@ -852,7 +852,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
         trigger_expand = False
         if isinstance(input_value, dict) and on_expand:
             trigger_expand = True
-        #
+
         prev_tint = None
         try:
             show_bg = getattr(item_meta, "show_bg", False)
@@ -861,7 +861,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
                 collection_spacing = Melty.collection_spacing
                 style_manager.set_imgui_tint(*item.tint)
             item_changed, out_val = draw_any(item, key=key, meta=item_meta, trigger_collapse=trigger_collapse,
-                             trigger_expand=trigger_expand,
+                             trigger_expand=trigger_expand, on_collapse=on_collapse, on_expand=on_expand,
                              collection=ordered_driver, suffix=str(obj_unique), name=key_str)
 
             if hasattr(item_meta, "tmp_draw_state"):
