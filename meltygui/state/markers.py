@@ -34,6 +34,8 @@ class FieldMeta(type):
             pass
 
         for key, value in namespace.items():
+            if key == "loras":
+                pass
             if key.startswith("__") and key.endswith("__"):
                 new_namespace[key] = value
                 continue
@@ -46,6 +48,7 @@ class FieldMeta(type):
                 pass
 
             value_annotation = namespace.get("__annotations__", {}).get(key, None)
+
             # marker line
             if hasattr(value, 'is_meta'):
                 value.name = key
@@ -60,6 +63,7 @@ class FieldMeta(type):
                 field_meta[key] = meta
                 new_namespace[key] = value
                 new_namespace[f"{key}_meta"] = meta
+                field_meta[key].field_type = type(value)
             elif callable(value_annotation):
                 try:
                     meta = value_annotation(value)
@@ -69,14 +73,24 @@ class FieldMeta(type):
                         field_meta[key] = meta
                         new_namespace[key] = value
                         new_namespace[f"{key}_meta"] = meta
+                        field_meta[key].field_type = type(value)
                 except Exception as e:
                     print(f"Error creating Meta for field {key} with annotation {value_annotation}: {e}")
                     field_defaults[key] = value
                     new_namespace[key] = value
+                    from src.lsd.gl_gui.view.core_views.core_meta import Meta
+                    field_meta[key] = Meta.get_child_meta(None, key, value)
+                    new_namespace[f"{key}_meta"] = field_meta[key]
+                    field_meta[key].field_type = value_annotation
             else:
                 # Plain value still becomes a field
                 field_defaults[key] = value
                 new_namespace[key] = value
+                from src.lsd.gl_gui.view.core_views.core_meta import Meta
+                field_meta[key] = Meta.get_child_meta(None, key, value)
+                new_namespace[f"{key}_meta"] = field_meta[key]
+                field_meta[key].field_type = value_annotation
+
 
         new_namespace["__field_defaults__"] = field_defaults
         new_namespace["__field_meta__"] = field_meta

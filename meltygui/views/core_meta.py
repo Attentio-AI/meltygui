@@ -6,6 +6,8 @@ import libcst as cst
 
 class Meta:
     default = None
+    field_type = None
+    collection_type = None
 
     @staticmethod
     def get_child_meta(cls, field_name, value=None):

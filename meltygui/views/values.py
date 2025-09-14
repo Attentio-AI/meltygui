@@ -837,6 +837,8 @@ def draw_collection(input_value, draw_state, depth, style_manager,
         else:
             item_meta = meta
 
+        item_meta.collection_type = meta.field_type
+
         # view function & identifier
         view_fn = getattr(item_meta, "view_function", draw_collection)
         if view_fn is None:
@@ -986,7 +988,7 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
 
 
 @render_func
-def draw_header(input_value=None, name="", unique=None, is_tree=True,
+def draw_header(input_value=None, name="", meta=None, unique=None, is_tree=True,
                 show_name=True, show_type=False, show_unique=False,
                 on_search=False, trigger_collapse=False, trigger_expand=False,
                 draw_state=None, is_window=False, on_click=False, show_tint=True,
@@ -1075,7 +1077,12 @@ def draw_header(input_value=None, name="", unique=None, is_tree=True,
             imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (3, 2))
             imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (4, 2))
             if imgui.button(f"\uf067##add"):
-                add_to_collection(input_value, "test")
+                # Use str as default hinted type
+                hinted_type = str
+                if meta.field_type is not None and hasattr(meta.field_type, "__args__"):
+                    if len(meta.field_type.__args__) == 2:
+                        hinted_type = meta.field_type.__args__[1]
+                add_to_collection(input_value, hinted_type())
                 on_change = True
                 return_val = input_value
             same_line()
