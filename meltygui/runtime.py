@@ -258,9 +258,11 @@ def apply_collection_action(action: CollectionAction):
                     f"as index or id (len={len(src)}).")
         t_idx = _resolve_list_index(dst, action.target_key)
         if t_idx is None:
-            return (f"Target key {action.target_key!r} not found in target list "
-                    f"as index or id (len={len(dst)}). If you intended to move into a dict, "
-                    f"pass the parent dict as target_collection and a dict key as target_key.")
+            # Insert at 0 or end if target list is empty
+            if len(dst) == 0:
+                t_idx = 0
+            else:
+                t_idx = len(dst)
 
         insert_at = _insert_pos_for_list(t_idx, tag)
         if is_move and same_collection:
@@ -276,13 +278,15 @@ def apply_collection_action(action: CollectionAction):
     elif isinstance(src, dict) and isinstance(dst, dict):
         s_key = action.source_key
         t_key = action.target_key
+
+        if t_key is None and len(dst) > 0:
+            t_key = next(iter(dst.keys()))
+
         if s_key not in src:
             return f"Source key {s_key!r} not found in source dict."
-        if t_key not in dst:
-            return f"Target anchor key {t_key!r} not found in target dict."
 
         if same_collection:
-            if s_key == t_key:
+            if s_key == t_key or t_key is None:
                 plan.update(kind="noop")  # copying/reordering on itself is a no-op
             else:
                 plan.update(kind="dict->dict-reorder", s_key=s_key, t_key=t_key)
@@ -306,8 +310,7 @@ def apply_collection_action(action: CollectionAction):
             return f"Source key {s_key!r} not found in source dict."
         t_idx = _resolve_list_index(dst, action.target_key)
         if t_idx is None:
-            return (f"Target key {action.target_key!r} not found in target list "
-                    f"as index or id (len={len(dst)}).")
+            t_idx = 0 if len(dst) == 0 else len(dst)
         insert_at = _insert_pos_for_list(t_idx, tag)
         plan.update(kind="dict->list", s_key=s_key, insert_at=insert_at)
 
@@ -318,8 +321,10 @@ def apply_collection_action(action: CollectionAction):
             return (f"Source key {action.source_key!r} not found in source list "
                     f"as index or id (len={len(src)}).")
         t_anchor = action.target_key
-        if t_anchor not in dst:
-            return f"Target anchor key {t_anchor!r} not found in target dict."
+        if t_anchor is not None and len(dst) > 0 and t_anchor not in dst:
+            t_anchor = list(dst.keys())[-1]
+        # if t_anchor not in dst:
+        #     return f"Target anchor key {t_anchor!r} not found in target dict."
 
         item = src[s_idx]
         preferred_id = _get_existing_id(item)
@@ -429,6 +434,8 @@ def apply_collection_action(action: CollectionAction):
 
             new_d = {}
             for k, v in dst.items():
+                if t_anchor is None and len(new_d) == 0:
+                    new_d[new_key] = item
                 if tag == "top" and k == t_anchor:
                     new_d[new_key] = item
                 new_d[k] = v
@@ -564,7 +571,7 @@ class Melty:
     save_draw_state_for = 1
     spacing = (3,1)
     padding = (3,3)
-    end_collection_spacing = 5
+    end_collection_spacing = 10
     collection_spacing = 7
     header_indent = 150
 
