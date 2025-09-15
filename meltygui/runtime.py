@@ -539,6 +539,7 @@ class MeltyState:
 
 class Melty:
     max_depth = 40
+    indent_size = 10
     annotation_mode = True
     depth = 0
     current_indent = 0
@@ -577,7 +578,8 @@ class Melty:
 
     vis = None
     type_defaults = {}
-    unique_stack = []
+    unique_stack = [0] * max_depth
+    size_stack = []
     window_stack = []
     window_hovered = False
     global_attrs = {}

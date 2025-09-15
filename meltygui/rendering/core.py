@@ -288,7 +288,7 @@ def render_func(*args, **o_kwargs):
         if annotation is not None:
             return annotation
         return_value = None
-        is_root = len(Melty.unique_stack) == 0
+        is_root = Melty.depth == 0
 
         first_arg = args[0] if args else None
         input_value = kwargs.get("input_value", first_arg)
@@ -309,30 +309,36 @@ def render_func(*args, **o_kwargs):
 
         suffix = kwargs.get("suffix", None)
         if suffix is None:
-            suffix = Melty.unique_stack[-1] if len(Melty.unique_stack) > 0 else name
+            suffix = Melty.unique_stack[Melty.depth] if Melty.depth < len(Melty.unique_stack) else name
         unique = ui_id(name=name, datatype=type(input_value), suffix=suffix)
         imgui.begin_group()
         push_id(unique)
-        draw_state = get_draw_state(unique)
-        draw_state._input_value = input_value
 
         if is_root:
+            unique = ui_id(name=name, datatype=type(input_value), suffix=name)
             Melty.unique_stack = []
+            Melty.size_stack = []
             Melty.flow_spacing = 0.0
             melty = get_melty_state(unique)
             melty.nearest_drop_distance = melty.max_distance
             melty.nearest_drop_target = None
             melty.nearest_drop_target_tag = None
             Melty.bg_stack = [(0,0,0)]
+            imgui.text(str(unique))
         else:
             melty = get_melty_state(Melty.unique_stack[0])
 
+        draw_state = get_draw_state(unique)
+        draw_state._input_value = input_value
 
-        Melty.depth = Melty.depth + 1
-        Melty.unique_stack.append(unique)
+        prev_size = Melty.size_stack[-1] if len(Melty.size_stack) > 0 else (0,0)
+        width = draw_state.width or 0
+        height = draw_state.height or 0
+        Melty.size_stack.append((width, height))
+
         nested_call = input_value == Melty.input_value_stack[-1] if len(Melty.input_value_stack) > 0 else False
         Melty.input_value_stack.append(input_value)
-
+        inc_depth = False
         try:
             expected_type = param_types[wanted_params.index("input_value")] if "input_value" in wanted_params else None
             annotation_empty = expected_type == inspect.Parameter.empty
@@ -383,7 +389,6 @@ def render_func(*args, **o_kwargs):
             set_default("draw_state", draw_state)
             set_default("name", name)
             set_default("melty", melty)
-            set_default("depth", Melty.depth)
             set_default("unique", unique)
             set_default("suffix", suffix)
             set_default("window_stack", Melty.window_stack)
@@ -410,6 +415,16 @@ def render_func(*args, **o_kwargs):
                     set_default(param, None)
 
             # set_default("next_kwargs", kwargs)
+
+            inc_depth = "draw_state" in wanted_params or is_root
+            if inc_depth:
+                if len(Melty.unique_stack) <= Melty.depth:
+                    Melty.unique_stack.append(unique)
+                else:
+                    Melty.unique_stack[Melty.depth] = unique
+
+                Melty.depth = Melty.depth + 1
+            kwargs['depth'] = Melty.depth
             kwargs['next_kwargs'] = kwargs
 
             if type(input_value).__name__ == "LoraCollection":
@@ -447,15 +462,53 @@ def render_func(*args, **o_kwargs):
             imgui.end_group()
             imgui.pop_style_var(2)
 
-            Melty.depth = Melty.depth - 1
-            # Leave view
-            Melty.unique_stack.pop()
+            # if draw_state.width is None:
+            if not kwargs.get("on_drag", False):
 
-            Melty.input_value_stack.pop()
+                draw_state.width = imgui.get_item_rect_size()[0] - Melty.indent_size
+                draw_state.height = imgui.get_item_rect_size()[1]
 
-            # outer_draw_state = get_draw_state(Melty.unique_stack[-1]) if len(Melty.unique_stack) > 0 else None
+            if inc_depth:
+                Melty.depth = Melty.depth - 1
+
+            # outer_draw_state = get_draw_state(Melty.unique_stack[Melty.depth - 1]) if len(Melty.unique_stack) > 0 else None
             # inner_draw_state = get_draw_state(unique)
             # outer_draw_state.proxy_bounds(inner_draw_state) if outer_draw_state is not None else None
+            inner_depth = Melty.depth - 1
+
+            # tmp_draw_state = get_draw_state(Melty.unique_stack[inner_depth]) if inner_depth < len(Melty.unique_stack) else None
+            # if draw_state.left is None and tmp_draw_state is not None and tmp_draw_state.left is not None:
+            #     draw_state.left = tmp_draw_state.left
+            #     draw_state.top = tmp_draw_state.top
+            #     draw_state.width = tmp_draw_state.width
+            #     draw_state.height = tmp_draw_state.height
+            #     draw_state._min_width = tmp_draw_state._min_width
+            #     draw_state._left_rel = tmp_draw_state._left_rel
+            #
+            # if draw_state.left is not None and tmp_draw_state is not None:
+            #     child_right_edge = tmp_draw_state.width or 0
+            #     this_right_edge = draw_state.width
+            #     overlap = child_right_edge - this_right_edge
+            #
+            #     if overlap > 0:
+            #         pass
+            #
+            #     draw_state._min_width = max(draw_state.width + overlap, draw_state._min_width or 0)
+            #     draw_state.width = max(draw_state.width, draw_state._min_width or 0)
+
+            # Leave view
+
+            Melty.input_value_stack.pop()
+            size = Melty.size_stack.pop()
+
+            # if len(Melty.size_stack) > 0:
+            #     width = max(Melty.size_stack[-1][0] or 0, size[0])
+            #     height = max(Melty.size_stack[-1][1] or 0, size[1])
+            #     Melty.size_stack[-1] = (width, height)
+            #     if draw_state._min_width is None:
+            #         draw_state._min_width = size[0]
+            #     else:
+            #         draw_state._min_width = max(draw_state._min_width, Melty.size_stack[-1][0])
 
             melty.triggered_actions.pop(unique, None)
 
@@ -540,7 +593,7 @@ def render_func(*args, **o_kwargs):
 
                 hovered_draw_state = None
                 # Root view
-                if len(Melty.unique_stack) == 0:
+                if Melty.depth == 0:
                     melty.last_mouse_pos = imgui.get_mouse_pos()
                     # Did mouse hove
 
@@ -558,6 +611,7 @@ def render_func(*args, **o_kwargs):
 
                     melty.hover_stack = []
                     melty.hotkey_stack = []
+                    melty.unique_stack = []
 
                     if not melty.nearest_drop_target is None:
                         melty.drag_drop_target = melty.nearest_drop_target
