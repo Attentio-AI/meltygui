@@ -123,6 +123,7 @@ def render_wrapper(*o_args, **o_kwargs):
         return class_wrapper
 
     r_func = o_args[0] if o_args else None
+    header_defaults = {}
 
     @wraps(r_func)
     def wrapper(*args, **kwargs):
@@ -136,6 +137,7 @@ def render_wrapper(*o_args, **o_kwargs):
             inner_func = kwargs.get('inner_func', None)
         else:
             inner_func = r_func
+
 
         func = first_arg if callable(first_arg) else None
         # use the specified wrapper if r_func
@@ -188,15 +190,18 @@ def render_wrapper(*o_args, **o_kwargs):
             wrap_func = None
             if 'wraps' in o_kwargs:
                 wrap_func = o_kwargs.get('wraps', None)
-                func = wrap_func(func, param_defaults=param_defaults, **kwargs)
+                func = wrap_func(func, header_defaults=kwargs, param_defaults=param_defaults, **kwargs)
+            if 'show_name' in o_kwargs:
+                pass
 
             out_func = r_func(func, param_types=param_types, wanted_params=wanted_params,
-                              wanted_params_inner=wrap_defaults,
+                              wanted_params_inner=wrap_defaults, header_defaults=kwargs,
                           param_defaults=param_defaults, name_to_param_type=name_to_param_type,
                           **o_kwargs)
 
             if wrap_func is not None:
-                out_func = wrap_func(out_func, inner_func=r_func, **o_kwargs)
+                o_kwargs.update(kwargs)
+                out_func = wrap_func(out_func, inner_func=r_func, **kwargs)
 
             return out_func
         except Exception as e:
@@ -264,6 +269,7 @@ def render_func(*args, **o_kwargs):
     func = args[0] if args else None
     param_types = o_kwargs.get("param_types", None)
     wanted_params = o_kwargs.get("wanted_params", None)
+    header_defaults = o_kwargs.get("header_defaults", None)
     param_defaults = o_kwargs.get("param_defaults", None)
     name_to_param_type = o_kwargs.get("name_to_param_type", None)
 
@@ -294,6 +300,12 @@ def render_func(*args, **o_kwargs):
         input_value = kwargs.get("input_value", first_arg)
         name = kwargs.get("name", "")
 
+        if 'show_name' in header_defaults:
+            pass
+
+        if header_defaults is not None:
+            kwargs.update(header_defaults)
+
         if name == "" and is_root:
             kwargs["name"] = str(len(melty_state_registry)) + "root"
 
@@ -317,7 +329,6 @@ def render_func(*args, **o_kwargs):
         if is_root:
             unique = ui_id(name=name, datatype=type(input_value), suffix=name)
             Melty.unique_stack = []
-            Melty.size_stack = []
             Melty.flow_spacing = 0.0
             melty = get_melty_state(unique)
             melty.nearest_drop_distance = melty.max_distance
@@ -325,16 +336,18 @@ def render_func(*args, **o_kwargs):
             melty.nearest_drop_target_tag = None
             Melty.bg_stack = [(0,0,0)]
             imgui.text(str(unique))
+            Melty.indent_count = 0
+            Melty.unindent_count = 0
+
         else:
             melty = get_melty_state(Melty.unique_stack[0])
 
         draw_state = get_draw_state(unique)
         draw_state._input_value = input_value
-
-        prev_size = Melty.size_stack[-1] if len(Melty.size_stack) > 0 else (0,0)
-        width = draw_state.width or 0
-        height = draw_state.height or 0
-        Melty.size_stack.append((width, height))
+        measured_max = 0
+        start_indent = Melty.current_indent
+        start_indent_count = Melty.indent_count
+        start_unindent_count = Melty.unindent_count
 
         nested_call = input_value == Melty.input_value_stack[-1] if len(Melty.input_value_stack) > 0 else False
         Melty.input_value_stack.append(input_value)
@@ -368,10 +381,6 @@ def render_func(*args, **o_kwargs):
 
             if name is not None and name != "":
                 meta.name = name
-
-            # for k, v in vars(meta).items():
-            #     if v is not None:
-            #         kwargs[k] = v
 
             def set_default(key, default_value):
                 if key in vars(meta) and vars(meta)[key] is not None:
@@ -414,8 +423,6 @@ def render_func(*args, **o_kwargs):
                 if param not in kwargs and param != "kwargs" and param != 'args' and param != 'o_kwargs' and param != 'next_kwargs':
                     set_default(param, None)
 
-            # set_default("next_kwargs", kwargs)
-
             inc_depth = "draw_state" in wanted_params or is_root
             if inc_depth:
                 if len(Melty.unique_stack) <= Melty.depth:
@@ -447,10 +454,15 @@ def render_func(*args, **o_kwargs):
 
             imgui.push_style_var(imgui.STYLE_ITEM_SPACING, spacing)
             imgui.push_style_var(imgui.STYLE_FRAME_PADDING, padding)
+            #
+            # start_indent_count = Melty.indent_count
+            # start_unindent_count = Melty.unindent_count
 
             ########################## The render call ##########################
             return_value = func(**clean_args)
             ######################################################################
+
+
             imgui.pop_style_var(2)
         except Exception as e:
             print_colored_traceback(*sys.exc_info())
@@ -460,55 +472,24 @@ def render_func(*args, **o_kwargs):
             imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
             pop_id()
             imgui.end_group()
-            imgui.pop_style_var(2)
+
+            indent_count = Melty.indent_count - start_indent_count
+            unindent_count = Melty.unindent_count - start_unindent_count
+            total_indent = indent_count - unindent_count
+            indent_size = 10 * total_indent
 
             # if draw_state.width is None:
+            imgui.pop_style_var(2)
             if not kwargs.get("on_drag", False):
-
-                draw_state.width = imgui.get_item_rect_size()[0] - Melty.indent_size
+                original_width = draw_state.width
+                draw_state.width = imgui.get_item_rect_size()[0]
                 draw_state.height = imgui.get_item_rect_size()[1]
-
+                if draw_state.width != original_width:
+                    request_render()
             if inc_depth:
                 Melty.depth = Melty.depth - 1
 
-            # outer_draw_state = get_draw_state(Melty.unique_stack[Melty.depth - 1]) if len(Melty.unique_stack) > 0 else None
-            # inner_draw_state = get_draw_state(unique)
-            # outer_draw_state.proxy_bounds(inner_draw_state) if outer_draw_state is not None else None
-            inner_depth = Melty.depth - 1
-
-            # tmp_draw_state = get_draw_state(Melty.unique_stack[inner_depth]) if inner_depth < len(Melty.unique_stack) else None
-            # if draw_state.left is None and tmp_draw_state is not None and tmp_draw_state.left is not None:
-            #     draw_state.left = tmp_draw_state.left
-            #     draw_state.top = tmp_draw_state.top
-            #     draw_state.width = tmp_draw_state.width
-            #     draw_state.height = tmp_draw_state.height
-            #     draw_state._min_width = tmp_draw_state._min_width
-            #     draw_state._left_rel = tmp_draw_state._left_rel
-            #
-            # if draw_state.left is not None and tmp_draw_state is not None:
-            #     child_right_edge = tmp_draw_state.width or 0
-            #     this_right_edge = draw_state.width
-            #     overlap = child_right_edge - this_right_edge
-            #
-            #     if overlap > 0:
-            #         pass
-            #
-            #     draw_state._min_width = max(draw_state.width + overlap, draw_state._min_width or 0)
-            #     draw_state.width = max(draw_state.width, draw_state._min_width or 0)
-
-            # Leave view
-
             Melty.input_value_stack.pop()
-            size = Melty.size_stack.pop()
-
-            # if len(Melty.size_stack) > 0:
-            #     width = max(Melty.size_stack[-1][0] or 0, size[0])
-            #     height = max(Melty.size_stack[-1][1] or 0, size[1])
-            #     Melty.size_stack[-1] = (width, height)
-            #     if draw_state._min_width is None:
-            #         draw_state._min_width = size[0]
-            #     else:
-            #         draw_state._min_width = max(draw_state._min_width, Melty.size_stack[-1][0])
 
             melty.triggered_actions.pop(unique, None)
 
@@ -529,6 +510,7 @@ def render_func(*args, **o_kwargs):
                         if imgui.is_mouse_down(m_btn) and btn_state.mouse_up:
                             if not btn_state.mouse_down:
                                 melty.total_drag_distance = 0.0
+                                melty.total_drag_frames = 0
                                 current_mouse_pos = imgui.get_mouse_pos()
                                 btn_state.mouse_down_pos = imgui.get_mouse_pos()
                                 melty.mouse_down_pos = imgui.get_mouse_pos()
@@ -550,6 +532,7 @@ def render_func(*args, **o_kwargs):
                         btn_state.mouse_down = False
                         if btn_state.dragged:
                             melty.total_drag_distance = 0.0
+                            melty.total_drag_frames = 0
                             btn_state.drag_released = True
                             melty.mark_event(unique, m_btn, ActionType.DRAG_UP)
                             melty.initial_drag_offset = None
@@ -568,6 +551,7 @@ def render_func(*args, **o_kwargs):
                             last_m = melty.last_mouse_pos
                             frame_drag_distance = math.sqrt((this_m[0] - last_m[0]) ** 2 + (this_m[1] - last_m[1]) ** 2)
                             melty.total_drag_distance += frame_drag_distance
+                            melty.total_drag_frames += 1
                         if melty.total_drag_distance >= 1 or btn_state.dragged:
                             btn_state.dragged = True
                             melty.drag_in_progress = True

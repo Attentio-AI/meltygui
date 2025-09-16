@@ -2,6 +2,7 @@ from enum import Enum
 from typing import Dict
 
 import imgui
+import libcst as cst
 
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
@@ -40,11 +41,23 @@ class MouseState(DictConversion):
         self.initial_screen_pos = (0, 0)
         self.drag_delta = (0, 0)
 
+
+class CSTDrawBits:
+    def __init__(self):
+        super().__init__()
+        self.path_key: tuple[tuple[str, int | None], ...] = ()
+        self.module_id: str = ""
+        self.root_gen: int = 0
+        self.anchor: tuple = ()
+        self.text_buf: str = ""  # generic edit buffer
+
+
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
 
     def __init__(self):
         super().__init__()
+        self.cst = None
 
         self.unique = 0  # stable UI identifier
         self.expanded = True
@@ -62,6 +75,7 @@ class DrawState(DictConversion):
         self.flow_spacing = 0.0
         self.enabled = True
         self._end_header_size = (0,0)
+        self._max_indent = 0
 
         self.track_mouse = False
 
@@ -84,6 +98,19 @@ class DrawState(DictConversion):
         # Profiling
         self.render_time = 0.0
         # add more per-widget state as needed
+
+    def init_cst_state(self, node, module_id: str):
+        self.cst = CSTDrawBits()
+        self.cst.path_key = Melty.current_path()
+        self.cst.module_id = module_id
+        self.cst.root_gen = Melty.current_gen(module_id)
+        # super light anchor for re-attachment later (customize as you like)
+        if isinstance(node, cst.Name):
+            self.cst.anchor = ("Name", node.value)
+        elif isinstance(node, cst.Attribute):
+            self.cst.anchor = ("Attr", node.attr.value)
+        else:
+            self.cst.anchor = (type(node).__name__,)
 
     def proxy_bounds(self, inner_draw_state):
         if inner_draw_state is None or inner_draw_state.left is None:

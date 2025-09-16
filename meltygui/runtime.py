@@ -2,7 +2,7 @@ from enum import Enum
 
 import glfw
 import imgui
-
+import libcst as cst
 from src.lsd.gl_gui.model.core_model.core_enums import generate_id
 
 
@@ -503,6 +503,7 @@ class MeltyState:
         self.initial_drag_offset = (0, 0)
         self.mouse_down_pos = (0, 0)
         self.total_drag_distance = 0.0
+        self.total_drag_frames = 0
         self.last_mouse_pos = None
         self.drag_delta = (0,0)
 
@@ -543,37 +544,84 @@ class Melty:
     annotation_mode = True
     depth = 0
     current_indent = 0
+    indent_count = 0
+    unindent_count = 0
+
+    max_indent = 0
     hotkey_registry = {}
 
-    @staticmethod
-    def indent(amount):
+    # LibCST tracking -----------------------------------------
+    _path_stack: list[tuple[str, int | None]] = []  # (field, idx)
+    _root_by_module: dict[str, cst.Module] = {}
+    _gen_by_module: dict[str, int] = {}
+
+    @classmethod
+    def begin_frame(cls, module_id: str, root: cst.Module):
+        cls._root_by_module[module_id] = root
+        cls._gen_by_module.setdefault(module_id, 0)
+        cls._path_stack.clear()
+
+    @classmethod
+    def current_path(cls) -> tuple[tuple[str, int | None], ...]:
+        return tuple(cls._path_stack)
+
+    @classmethod
+    def push_slot(cls, field: str, idx: int | None):
+        cls._path_stack.append((field, idx))
+
+    @classmethod
+    def pop_slot(cls):
+        cls._path_stack.pop()
+
+    @classmethod
+    def current_root(cls, module_id: str) -> cst.Module:
+        return cls._root_by_module[module_id]
+
+    @classmethod
+    def bump_gen(cls, module_id: str):
+        cls._gen_by_module[module_id] += 1
+
+    @classmethod
+    def current_gen(cls, module_id: str) -> int:
+        return cls._gen_by_module[module_id]
+
+
+
+    # LibCST tracking -----------------------------------------
+
+
+
+    @classmethod
+    def indent(cls, amount):
         if amount == 0:
             return
-
-        Melty.current_indent += amount
+        cls.indent_count += 1
+        cls.current_indent += amount
+        cls.max_indent = max(cls.max_indent, cls.current_indent)
         imgui.indent(amount)
 
-    @staticmethod
-    def unindent(amount):
+    @classmethod
+    def unindent(cls, amount):
         if amount == 0:
             return
-        Melty.current_indent -= amount
+        cls.current_indent -= amount
         imgui.unindent(amount)
+        cls.unindent_count += 1
 
-    @staticmethod
-    def inside_window():
-        return len(Melty.window_stack) > 0
+    @classmethod
+    def inside_window(cls):
+        return len(cls.window_stack) > 0
 
-    @staticmethod
-    def shift_down():
-        return (glfw.get_key(Melty.vis.window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS or
-                     glfw.get_key(Melty.vis.window, glfw.KEY_RIGHT_SHIFT) == glfw.PRESS)
+    @classmethod
+    def shift_down(cls):
+        return (glfw.get_key(cls.vis.window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS or
+                     glfw.get_key(cls.vis.window, glfw.KEY_RIGHT_SHIFT) == glfw.PRESS)
 
     save_draw_state_for = 1
     spacing = (3,1)
     padding = (3,3)
     end_collection_spacing = 10
-    collection_spacing = 7
+    collection_spacing = 10
     header_indent = 150
 
     vis = None
@@ -588,56 +636,56 @@ class Melty:
     bg_stack = []
     input_value_stack = [None]
 
-    @staticmethod
-    def is_window_enabled():
-        if len(Melty.window_stack) == 0:
+    @classmethod
+    def is_window_enabled(cls):
+        if len(cls.window_stack) == 0:
             return True
-        return Melty.window_stack[-1][1]
+        return cls.window_stack[-1][1]
 
-    @staticmethod
-    def get_bg_color(depth=None):
+    @classmethod
+    def get_bg_color(cls, depth=None):
         if depth is None:
-            depth = Melty.depth
-        if len(Melty.bg_stack) == 0:
+            depth = cls.depth
+        if len(cls.bg_stack) == 0:
             return 0, 0, 0
 
         # Allow for negative index from end, but clamp to available range
         if depth < 0:
-            depth = len(Melty.bg_stack) + depth
-        depth = max(0, min(depth, len(Melty.bg_stack) - 1))
-        return Melty.bg_stack[depth][0:3]
+            depth = len(cls.bg_stack) + depth
+        depth = max(0, min(depth, len(cls.bg_stack) - 1))
+        return cls.bg_stack[depth][0:3]
 
-    @staticmethod
-    def shift_key():
-        return (glfw.get_key(Melty.vis.window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS or
-                glfw.get_key(Melty.vis.window, glfw.KEY_RIGHT_SHIFT) == glfw.PRESS)
+    @classmethod
+    def shift_key(cls):
+        return (glfw.get_key(cls.vis.window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS or
+                glfw.get_key(cls.vis.window, glfw.KEY_RIGHT_SHIFT) == glfw.PRESS)
 
-    @staticmethod
-    def ctrl_key():
-        return (glfw.get_key(Melty.vis.window, glfw.KEY_LEFT_CONTROL) == glfw.PRESS or
-                glfw.get_key(Melty.vis.window, glfw.KEY_RIGHT_CONTROL) == glfw.PRESS)
+    @classmethod
+    def ctrl_key(cls,):
+        return (glfw.get_key(cls.vis.window, glfw.KEY_LEFT_CONTROL) == glfw.PRESS or
+                glfw.get_key(cls.vis.window, glfw.KEY_RIGHT_CONTROL) == glfw.PRESS)
 
 
-    @staticmethod
-    def init(**kwargs):
+    @classmethod
+    def init(cls, **kwargs):
         for key, value in kwargs.items():
-            setattr(Melty, key, value)
-            Melty.global_attrs[key] = value
+            setattr(cls, key, value)
+            cls.global_attrs[key] = value
 
-        Melty.annotation_mode = False
+        cls.annotation_mode = False
 
-    @staticmethod
-    def is_key_pressed(key=glfw.KEY_ESCAPE):
+    @classmethod
+    def is_key_pressed(cls, key=glfw.KEY_ESCAPE):
         if imgui.is_any_item_focused() or imgui.is_any_item_active():
-            if not Melty.ctrl_key():
+            if not cls.ctrl_key():
             # If any item is focused or active, we don't want to capture key presses
                 return False
 
-        if key not in Melty.vis.tracked_keys:
-            Melty.vis.tracked_keys.append(key)
-            Melty.vis.first_frame_keys.add(key)
+        if key not in cls.vis.tracked_keys:
+            cls.vis.tracked_keys.append(key)
+            cls.vis.first_frame_keys.add(key)
 
-        if glfw.get_key(Melty.vis.window, key) == glfw.PRESS:
-            if key in Melty.vis.first_frame_keys:
+        if glfw.get_key(cls.vis.window, key) == glfw.PRESS:
+            if key in cls.vis.first_frame_keys:
                 return True
         return False
