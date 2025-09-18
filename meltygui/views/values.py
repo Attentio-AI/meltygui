@@ -1,6 +1,9 @@
+import inspect
+import types
 from copy import copy
 from enum import Enum
 from functools import wraps
+from inspect import Parameter
 from math import sqrt
 from types import NoneType
 
@@ -16,8 +19,10 @@ from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
 from src.lsd.gl_gui.view.core_views.core_render import render_func, tmp_undo_stack, redo_stack, push_id, pop_id, ui_id, \
     render_wrapper, annotation_track, listens_for, get_draw_state
 from src.lsd.gl_gui.model.core_model.new_core_model import KeyMod, Hotkey
-
+from src.lsd.gl_gui.view.core_views.cst_proxy import *
 import libcst as cst
+
+from src.lsd.gl_gui.view.core_views.inspect_utils import get_params, set_fn_defaults
 
 
 @render_wrapper(wraps=render_func)
@@ -56,19 +61,31 @@ def with_header(func, *args, **o_kwargs):
 
     return wrapper
 
+def export_code(test, test_param_2: int = 5):
+    print("hello")
 
 # Main draw function, called by the GUI framework
 def draw(vis):
     draw_window(vis.root.lora_collection, name="Lora Root")
     draw_window(Melty.hotkey_registry, name="Hotkeys", is_window=True)
     draw_window(module, nmae="CST Module")
+    draw_window(proxy, nmae="CST Proxy")
+
+    draw_window(code_export, name="Code Export", is_window=True)
+    draw_window(export_code, name="Code Export", is_window=True)
+
+
     # draw_any(vis.root.synth_collection, is_window=False)
     # #
     # draw_any("hello there", is_window=True)
 
 source = "x = foo(val=1)\nprint(x)\n"
 module = cst.parse_module(source)
+proxy = wrap(module)
 name_edits = {}
+code_export = "Test"
+
+
 
 ######################## libCST START ##########################
 
@@ -98,14 +115,18 @@ def draw_cst_single_line(input_value: cst.SimpleStatementLine, **kwargs):
     # An Assign has one or more targets, an AssignEqual token, and a value
     draw_any(input_value.body)
 
-@cst_header(is_default_for=cst.SimpleWhitespace, show_bg=False, show_name=False)
+@cst_header(is_default_for=cst.SimpleWhitespace, show_name=False)
 def draw_cst_simple_whitespace(input_value: cst.SimpleWhitespace, **kwargs):
     # An Assign has one or more targets, an AssignEqual token, and a value
-    imgui.text_colored("SWS", *(1,1,1, 0.2))
+    imgui.same_line()
+
+    imgui.button("SWS")
+    imgui.set_item_allow_overlap()
+    imgui.same_line()
 
 
 # --- Assignments ---
-@cst_header(is_default_for=cst.Assign, show_bg=True)
+@cst_header(is_default_for=cst.Assign)
 def draw_cst_assign(input_value: cst.Assign, **kwargs):
     # An Assign has one or more targets, an AssignEqual token, and a value
     for target in input_value.targets:
@@ -115,17 +136,17 @@ def draw_cst_assign(input_value: cst.Assign, **kwargs):
 
 
 # --- Names ---
-@cst_header(is_default_for=cst.Name, show_bg=True)
+@cst_header(is_default_for=cst.Name)
 def draw_cst_name(input_value: cst.Name):
     imgui.text(f"{input_value.value}")
 
 
-@cst_header(is_default_for=cst.Expr, show_bg=True)
+@cst_header(is_default_for=cst.Expr)
 def draw_cst_expr(input_value: cst.Expr):
     # Just render the wrapped expression
     draw_any(input_value.value)
 # --- Function Calls ---
-@cst_header(is_default_for=cst.Call, show_bg=True)
+@cst_header(is_default_for=cst.Call)
 def draw_cst_call(input_value: cst.Call):
     draw_any(input_value.func)
     imgui.same_line()
@@ -133,24 +154,18 @@ def draw_cst_call(input_value: cst.Call):
     imgui.align_text_to_frame_padding()
     imgui.text("(")
     imgui.same_line()
-    for i, arg in enumerate(input_value.args):
-        draw_any(arg)
-
-        if i < len(input_value.args) - 1:
-            imgui.same_line()
-            imgui.text(",")
-            imgui.same_line()
+    draw_collection(input_value.args)
     imgui.same_line()
     imgui.align_text_to_frame_padding()
     imgui.text(")")
 
 # --- Arguments ---
-@cst_header(is_default_for=cst.Arg, show_bg=True)
-def draw_cst_arg(input_value: cst.Arg):
-    if input_value.keyword:
-        imgui.text(f"{input_value.keyword.value}=")
-        imgui.same_line()
-    draw_any(input_value.value)
+# @cst_header(is_default_for=cst.Arg, show_bg=True)
+# def draw_cst_arg(input_value: cst.Arg):
+#     if input_value.keyword:
+#         imgui.text(f"{input_value.keyword.value}=")
+#         imgui.same_line()
+#     draw_any(input_value.value)
 
 
 # --- Function Definitions ---
@@ -189,10 +204,13 @@ def draw_cst_param(input_value: cst.Param):
 
 # --- Individual Parameter ---
 @cst_header(is_default_for=cst.Integer)
-def draw_cst_int(input_value: cst.Integer, width=None):
+def draw_cst_int(input_value, width=None):
     int_str = input_value.value
     cast_str_to_int = int(int_str, 0)
-    draw_int(cast_str_to_int, show_name=False, show_add_delete=False, width=100, min_width=100)
+    changed, new_val = draw_int(cast_str_to_int, show_name=False,
+                                show_add_delete=False, width=100, min_width=100)
+    if changed:
+        input_value.value = str(new_val)
 
 ####################### libCST END ##################
 
@@ -251,7 +269,7 @@ def core_draw_window(input_value, name, unique, window_func,
     draw_list = imgui.get_window_draw_list()
     draw_list.channels_split(Melty.max_depth)
 
-    window_func(*args, **kwargs)
+    changed, new_value = window_func(*args, **kwargs)
     Melty.window_stack.pop()
     if not decorations:
         imgui.pop_style_var(1)
@@ -262,6 +280,8 @@ def core_draw_window(input_value, name, unique, window_func,
         style_manager.set_imgui_tint(*previous_tint)
 
     redo_stack(unique)
+
+    return changed, new_value
 
 
 @render_func
@@ -275,7 +295,7 @@ def draw_window(input_value, window_stack=None, style_manager=None,
     kwargs['name'] = name
     kwargs['indent_size'] = 0
 
-    type_default_meta = Melty.type_defaults.get(type(input_value), None)
+    type_default_meta = Melty.type_defaults.get(input_value.__class__, None)
     if type_default_meta is not None and hasattr(type_default_meta, 'view_function'):
         window_func = type_default_meta.view_function
     else:
@@ -807,7 +827,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
         # apply global filter for all types
         if isinstance(key, (int, float, Enum, NoneType)):
-            key_str = f"{str(key)} {type(item).__name__}"
+            key_str = f"{str(key)} {item.__class__.__name__}"
         else:
             key_str = str(key)
 
@@ -836,7 +856,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
         if view_fn is None:
             view_fn = draw_collection
         item_suffix = f"{base_suffix}_{key_str}"
-        obj_unique = ui_id(name=key_str, datatype=type(item), suffix=item_suffix)
+        obj_unique = ui_id(name=key_str, datatype=item.__class__, suffix=item_suffix)
 
         trigger_collapse = False
         if isinstance(input_value, dict) and on_collapse:
@@ -856,7 +876,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
             y_offset = Melty.collection_spacing
             item_changed, out_val = draw_any(item, indent_size=10, key=key, meta=item_meta, trigger_collapse=trigger_collapse,
                              trigger_expand=trigger_expand, y_offset=y_offset, on_collapse=on_collapse, on_expand=on_expand,
-                             collection=ordered_driver, suffix=str(obj_unique), name=key_str)
+                             collection=ordered_driver, suffix=str(obj_unique), name=key_str, show_add_delete=show_add_delete)
 
             if isinstance(out_val, CollectionAction):
                 # perform the move - this should mutate the plain dicts you attached
@@ -1018,18 +1038,20 @@ def draw_header(input_value=None, name="", meta=None, unique=None, is_tree=True,
                                          value=0.67))
 
     outline_color = (style_manager.
-                   make_color_style_value(input=bg_style, saturation=0.5, alpha=1.0,
-                                          value=0.8))
+                   make_color_style_value(input=bg_style, saturation=0.8, alpha=1.0,
+                                          value=0.9))
     if is_tree:
         if trigger_collapse:
             draw_state.expanded = False
         if trigger_expand:
             draw_state.expanded = True
 
-        imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (0,0))
-        imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0,0))
+        imgui.push_style_color(imgui.COLOR_TEXT, *outline_color)
+        imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (2,4))
+        imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0,3))
         draw_state.expanded = tree("##tree", draw_state.expanded, width=50)
         imgui.pop_style_var(2)
+        imgui.pop_style_color(1)
 
         same_line()
     cursor_start = imgui.get_cursor_pos()
@@ -1062,7 +1084,7 @@ def draw_header(input_value=None, name="", meta=None, unique=None, is_tree=True,
     name_end = imgui.get_cursor_pos()
 
     if show_type:
-        imgui.text_colored(f"({type(input_value).__name__})", *(0.8, 0.0, 0.5, 1.0))
+        imgui.text_colored(f"({input_value.__class__.__name__})", *(0.8, 0.0, 0.5, 1.0))
         same_line()
 
     if show_unique:
@@ -1276,6 +1298,58 @@ def draw_float(input_value:float, min_value=-100.0, max_value=100.0, speed=0.01)
 
     return changed, value
 
+
+@with_header_minimal(is_default_for=(Parameter), wraps=render_func)
+def draw_parameter(input_value):
+
+    parameter_default = input_value.default
+    if parameter_default is inspect.Parameter.empty:
+        imgui.same_line()
+        imgui.text("<No Default>")
+    else:
+        return draw_any(parameter_default, show_name=False, show_add_delete=False)
+
+
+@with_header(is_default_for=(types.MappingProxyType), show_add_delete=False, wraps=render_func)
+def draw_mapping_proxy(input_value):
+    # To list first, then back to mapping proxy
+    dict_values = dict(input_value)
+    changed, new_dict = draw_collection(dict_values, show_bg=False, indent_size=0, show_header=False, show_add_delete=False)
+    if changed:
+        return True, types.MappingProxyType(new_dict)
+
+    return changed, input_value
+
+
+@with_header_minimal(is_default_for=(types.FunctionType), wraps=render_func)
+def draw_function(input_value, unique):
+    signature = inspect.signature(input_value)
+    params = signature.parameters
+    changed, new_val = draw_any(params, name="Parameters", show_add_delete=False)
+    if changed:
+        set_fn_defaults(input_value, new_val)
+
+    imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (2, 4))
+    imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (8, 6))
+    imgui.push_style_var(imgui.STYLE_FRAME_ROUNDING, (6))
+
+    if imgui.button(f"{input_value.__name__}##{unique}"):
+        function_args = inspect.signature(input_value).parameters
+        kwargs = {}
+        for name, param in function_args.items():
+            if param.default is not inspect.Parameter.empty:
+                kwargs[name] = param.default
+            else:
+                kwargs[name] = None
+        try:
+            input_value(**kwargs)
+        except Exception as e:
+            print(f"Error calling function '{input_value.__name__}': {e}")
+            print_colored_traceback()
+
+    imgui.pop_style_var(3)
+
+    return changed, input_value
 
 @with_header_minimal(is_default_for=(int), wraps=render_func)
 def draw_int(input_value: int, min_value=-100.0, max_value=100.0, speed=0.05):

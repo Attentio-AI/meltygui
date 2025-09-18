@@ -299,6 +299,8 @@ def render_func(*args, **o_kwargs):
         first_arg = args[0] if args else None
         input_value = kwargs.get("input_value", first_arg)
         name = kwargs.get("name", "")
+        if type(input_value).__name__ == "CSTProxy":
+            pass
 
         if 'show_name' in header_defaults:
             pass
@@ -310,9 +312,10 @@ def render_func(*args, **o_kwargs):
             kwargs["name"] = str(len(melty_state_registry)) + "root"
 
         if name == "" and not is_root:
+
             key = kwargs.get("key", None)
             key = key if key is not None else ""
-            name = str(key) + type(input_value).__name__
+            name = str(key) + input_value.__class__.__name__
 
         from src.lsd.gl_gui.view.core_views.core_presets import Meta
 
@@ -462,168 +465,172 @@ def render_func(*args, **o_kwargs):
             return_value = func(**clean_args)
             ######################################################################
 
-
             imgui.pop_style_var(2)
         except Exception as e:
             print_colored_traceback(*sys.exc_info())
         finally:
-            # Needs to go after mouse down check
-            imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
-            imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
-            pop_id()
-            imgui.end_group()
+            def end_of_render():
+                # Needs to go after mouse event check
+                imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
+                imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
+                pop_id()
+                imgui.end_group()
 
-            indent_count = Melty.indent_count - start_indent_count
-            unindent_count = Melty.unindent_count - start_unindent_count
-            total_indent = indent_count - unindent_count
-            indent_size = 10 * total_indent
+                indent_count = Melty.indent_count - start_indent_count
+                unindent_count = Melty.unindent_count - start_unindent_count
+                total_indent = indent_count - unindent_count
+                indent_size = 10 * total_indent
 
-            # if draw_state.width is None:
-            imgui.pop_style_var(2)
-            if not kwargs.get("on_drag", False):
-                original_width = draw_state.width
-                draw_state.width = imgui.get_item_rect_size()[0]
-                draw_state.height = imgui.get_item_rect_size()[1]
-                if draw_state.width != original_width:
-                    request_render()
-            if inc_depth:
-                Melty.depth = Melty.depth - 1
+                # if draw_state.width is None:
+                imgui.pop_style_var(2)
+                if not kwargs.get("on_drag", False):
+                    original_width = draw_state.width
+                    draw_state.width = imgui.get_item_rect_size()[0]
+                    draw_state.height = imgui.get_item_rect_size()[1]
+                    if draw_state.width != original_width:
+                        request_render()
+                if inc_depth:
+                    Melty.depth = Melty.depth - 1
 
-            Melty.input_value_stack.pop()
+                Melty.input_value_stack.pop()
 
-            melty.triggered_actions.pop(unique, None)
+                melty.triggered_actions.pop(unique, None)
 
-            if Melty.is_window_enabled():
-                for m_btn in [0,1,2]:
-                    btn_state = draw_state.mouse_btn_state[m_btn]
+                if Melty.is_window_enabled():
+                    for m_btn in [0,1,2]:
+                        btn_state = draw_state.mouse_btn_state[m_btn]
 
-                    if btn_state.drag_released:
-                        btn_state.drag_released = False
-                        melty.dragged_item = None
+                        if btn_state.drag_released:
+                            btn_state.drag_released = False
+                            melty.dragged_item = None
 
-                    was_mouse_down = btn_state.mouse_down
-                    btn_state.clicked = False
+                        was_mouse_down = btn_state.mouse_down
+                        btn_state.clicked = False
 
-                    if btn_state.drag_released:
-                        btn_state.drag_released = False
-                    if draw_state.hovered and imgui.is_window_hovered():
-                        if imgui.is_mouse_down(m_btn) and btn_state.mouse_up:
-                            if not btn_state.mouse_down:
+                        if btn_state.drag_released:
+                            btn_state.drag_released = False
+                        if draw_state.hovered and imgui.is_window_hovered():
+                            if imgui.is_mouse_down(m_btn) and btn_state.mouse_up:
+                                if not btn_state.mouse_down:
+                                    melty.total_drag_distance = 0.0
+                                    melty.total_drag_frames = 0
+                                    current_mouse_pos = imgui.get_mouse_pos()
+                                    btn_state.mouse_down_pos = imgui.get_mouse_pos()
+                                    melty.mouse_down_pos = imgui.get_mouse_pos()
+                                    btn_state.initial_screen_pos = (draw_state.left, draw_state.top)
+                                    melty.initial_drag_offset = (current_mouse_pos[0] - draw_state.left,
+                                                                 current_mouse_pos[1] - draw_state.top)
+
+                                btn_state.mouse_down = True
+                                melty.mark_event(unique, m_btn, ActionType.DOWN)
+                            if not imgui.is_mouse_down(m_btn):
+                                btn_state.mouse_up = True
+                        else:
+                            btn_state.mouse_up = False
+                        if was_mouse_down and not imgui.is_mouse_down(m_btn):
+                            btn_state.clicked = True
+                            melty.mark_event(unique, m_btn, ActionType.CLICK)
+
+                        if not imgui.is_mouse_down(m_btn):
+                            btn_state.mouse_down = False
+                            if btn_state.dragged:
                                 melty.total_drag_distance = 0.0
                                 melty.total_drag_frames = 0
-                                current_mouse_pos = imgui.get_mouse_pos()
-                                btn_state.mouse_down_pos = imgui.get_mouse_pos()
-                                melty.mouse_down_pos = imgui.get_mouse_pos()
-                                btn_state.initial_screen_pos = (draw_state.left, draw_state.top)
-                                melty.initial_drag_offset = (current_mouse_pos[0] - draw_state.left,
-                                                             current_mouse_pos[1] - draw_state.top)
+                                btn_state.drag_released = True
+                                melty.mark_event(unique, m_btn, ActionType.DRAG_UP)
+                                melty.initial_drag_offset = None
 
-                            btn_state.mouse_down = True
-                            melty.mark_event(unique, m_btn, ActionType.DOWN)
-                        if not imgui.is_mouse_down(m_btn):
-                            btn_state.mouse_up = True
-                    else:
-                        btn_state.mouse_up = False
-                    if was_mouse_down and not imgui.is_mouse_down(m_btn):
-                        btn_state.clicked = True
-                        melty.mark_event(unique, m_btn, ActionType.CLICK)
+                            btn_state.dragged = False
 
-                    if not imgui.is_mouse_down(m_btn):
-                        btn_state.mouse_down = False
-                        if btn_state.dragged:
-                            melty.total_drag_distance = 0.0
-                            melty.total_drag_frames = 0
-                            btn_state.drag_released = True
-                            melty.mark_event(unique, m_btn, ActionType.DRAG_UP)
-                            melty.initial_drag_offset = None
+                        if btn_state.mouse_down:
+                            current_mouse_pos = imgui.get_mouse_pos()
+                            distance = math.sqrt((current_mouse_pos[0] - btn_state.mouse_down_pos[0]) ** 2 +
+                                                    (current_mouse_pos[1] - btn_state.mouse_down_pos[1]) ** 2)
+                            btn_state.drag_delta = (current_mouse_pos[0] - btn_state.mouse_down_pos[0],
+                                                     current_mouse_pos[1] - btn_state.mouse_down_pos[1])
 
-                        btn_state.dragged = False
+                            if melty.last_mouse_pos is not None:
+                                this_m = imgui.get_mouse_pos()
+                                last_m = melty.last_mouse_pos
+                                frame_drag_distance = math.sqrt((this_m[0] - last_m[0]) ** 2 + (this_m[1] - last_m[1]) ** 2)
+                                melty.total_drag_distance += frame_drag_distance
+                                melty.total_drag_frames += 1
+                            if melty.total_drag_distance >= 1 or btn_state.dragged:
+                                btn_state.dragged = True
+                                melty.drag_in_progress = True
+                                melty.dragged_item = draw_state
+                                melty.mark_event(unique, m_btn, ActionType.DRAG)
+                                melty.drag_delta = btn_state.drag_delta
 
-                    if btn_state.mouse_down:
-                        current_mouse_pos = imgui.get_mouse_pos()
-                        distance = math.sqrt((current_mouse_pos[0] - btn_state.mouse_down_pos[0]) ** 2 +
-                                                (current_mouse_pos[1] - btn_state.mouse_down_pos[1]) ** 2)
-                        btn_state.drag_delta = (current_mouse_pos[0] - btn_state.mouse_down_pos[0],
-                                                 current_mouse_pos[1] - btn_state.mouse_down_pos[1])
+                    if draw_state.hovered and imgui.is_window_hovered():
+                        if unique not in melty.triggered_actions:
+                            melty.mark_event(unique, 0, ActionType.HOVERED)
 
-                        if melty.last_mouse_pos is not None:
-                            this_m = imgui.get_mouse_pos()
-                            last_m = melty.last_mouse_pos
-                            frame_drag_distance = math.sqrt((this_m[0] - last_m[0]) ** 2 + (this_m[1] - last_m[1]) ** 2)
-                            melty.total_drag_distance += frame_drag_distance
-                            melty.total_drag_frames += 1
-                        if melty.total_drag_distance >= 1 or btn_state.dragged:
-                            btn_state.dragged = True
-                            melty.drag_in_progress = True
-                            melty.dragged_item = draw_state
-                            melty.mark_event(unique, m_btn, ActionType.DRAG)
-                            melty.drag_delta = btn_state.drag_delta
+                    is_hovered = draw_state.is_hovered()
+                    draw_state.hovered = False
+                    draw_state.hotkey_receiver = False
+                    if is_hovered:
+                        melty.hover_stack.append(unique)
 
-                if draw_state.hovered and imgui.is_window_hovered():
-                    if unique not in melty.triggered_actions:
-                        melty.mark_event(unique, 0, ActionType.HOVERED)
+                    if is_hovered and func in Melty.hotkey_registry:
+                        melty.hotkey_stack.append(unique)
 
-                is_hovered = draw_state.is_hovered()
-                draw_state.hovered = False
-                draw_state.hotkey_receiver = False
-                if is_hovered:
-                    melty.hover_stack.append(unique)
+                    if not imgui.is_mouse_down(0):
+                        melty.drag_in_progress = False
 
-                if is_hovered and func in Melty.hotkey_registry:
-                    melty.hotkey_stack.append(unique)
+                    hovered_draw_state = None
+                    # Root level
+                    if Melty.depth == 0:
+                        melty.last_mouse_pos = imgui.get_mouse_pos()
+                        # Did mouse move
 
-                if not imgui.is_mouse_down(0):
-                    melty.drag_in_progress = False
+                        if len(melty.hover_stack) > 0:
+                            last = melty.hover_stack[0]
+                            hovered_draw_state = Melty.vis.root.draw_state_registry.get(last, None)
+                            if hovered_draw_state is not None:
+                                hovered_draw_state.hovered = True
 
-                hovered_draw_state = None
-                # Root view
-                if Melty.depth == 0:
-                    melty.last_mouse_pos = imgui.get_mouse_pos()
-                    # Did mouse hove
+                        if len(melty.hotkey_stack) > 0:
+                            last = melty.hotkey_stack[0]
+                            hovered_draw_state = Melty.vis.root.draw_state_registry.get(last, None)
+                            if hovered_draw_state is not None:
+                                hovered_draw_state.hotkey_receiver = True
 
-                    if len(melty.hover_stack) > 0:
-                        last = melty.hover_stack[0]
-                        hovered_draw_state = Melty.vis.root.draw_state_registry.get(last, None)
-                        if hovered_draw_state is not None:
-                            hovered_draw_state.hovered = True
+                        melty.hover_stack = []
+                        melty.hotkey_stack = []
+                        melty.unique_stack = []
 
-                    if len(melty.hotkey_stack) > 0:
-                        last = melty.hotkey_stack[0]
-                        hovered_draw_state = Melty.vis.root.draw_state_registry.get(last, None)
-                        if hovered_draw_state is not None:
-                            hovered_draw_state.hotkey_receiver = True
+                        if not melty.nearest_drop_target is None:
+                            melty.drag_drop_target = melty.nearest_drop_target
+                            melty.drag_drop_target_tag = melty.nearest_drop_target_tag
 
-                    melty.hover_stack = []
-                    melty.hotkey_stack = []
-                    melty.unique_stack = []
+                        ######## -------- apply drag & drop -----------
+                        while len(melty.actions_to_apply) > 0:
+                            action = melty.actions_to_apply.pop(0)
+                            result = apply_collection_action(action)
+                            request_render()
+                        melty.actions_to_apply = []
 
-                    if not melty.nearest_drop_target is None:
-                        melty.drag_drop_target = melty.nearest_drop_target
-                        melty.drag_drop_target_tag = melty.nearest_drop_target_tag
+                        while len(melty.items_to_delete) > 0:
+                            key, collection = melty.items_to_delete.pop(0)
+                            delete_from_collection(key, collection)
 
-                    ######## -------- Do drag & drop -----------
-                    while len(melty.actions_to_apply) > 0:
-                        action = melty.actions_to_apply.pop(0)
-                        result = apply_collection_action(action)
-                        request_render()
-                    melty.actions_to_apply = []
+                            request_render()
 
-                    while len(melty.items_to_delete) > 0:
-                        key, collection = melty.items_to_delete.pop(0)
-                        delete_from_collection(key, collection)
+                if return_value is None:
+                    changed, new_value = False, None
+                elif isinstance(return_value, tuple) and len(return_value) == 2:
+                    changed, new_value = return_value
+                else:
+                    imgui.text("Unsupported return from render_func")
+                    changed, new_value = False, None
 
-                        request_render()
+                end_time = time.time()
+                draw_state.render_time = end_time - start_time
 
-            if return_value is None:
-                changed, new_value = False, None
-            elif isinstance(return_value, tuple) and len(return_value) == 2:
-                changed, new_value = return_value
-            else:
-                imgui.text("Unsupported return from render_func")
-                changed, new_value = False, None
+                return changed, new_value
 
-            end_time = time.time()
-            draw_state.render_time = end_time - start_time
+            changed, new_value = end_of_render()
 
         return changed, new_value
 
