@@ -8,6 +8,14 @@ from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 
 
+# class decoration
+
+def exclude(attr_names, **kwargs):
+    def decorator(cls):
+        setattr(cls, '__excluded_attrs__', attr_names)
+        return cls
+    return decorator
+
 class SynthColors(DictConversion):
     def __init__(self):
         super().__init__()

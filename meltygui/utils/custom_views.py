@@ -561,7 +561,10 @@ def print_colored_traceback(exc_type=None, exc_value=None, exc_traceback=None, l
         return attr_names, configs
 
     exp_vars, configs = extract_vars(exc_traceback)
-    stack = traceback.extract_stack(exc_traceback.tb_frame)
+    if exc_traceback is None:
+        stack = []
+    else:
+        stack = traceback.extract_stack(exc_traceback.tb_frame)
 
     value, tb = _parse_value_tb(exc_type, exc_value, exc_traceback)
     te = traceback.TracebackException(type(value), value, tb, limit=limit, compact=True)

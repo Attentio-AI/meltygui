@@ -39,7 +39,7 @@ def with_header_minimal(func, *args, **o_kwargs):
         next_kwargs['is_tree'] = False
         next_kwargs['min_width'] = kwargs.get('min_width', 200)
 
-        return core_header(**next_kwargs)
+        return draw_header_core(**next_kwargs)
 
     setattr(wrapper, '__name__', f"{func.__name__} --- with_header_minimal")
     return wrapper
@@ -55,36 +55,53 @@ def with_header(func, *args, **o_kwargs):
         next_kwargs['outer_func'] = wrapper
         if 'width' in kwargs:
             pass
-        return core_header(**next_kwargs)
+        return draw_header_core(**next_kwargs)
 
     setattr(wrapper, '__name__', f"{func.__name__} --- with_header ")
 
     return wrapper
 
-def export_code(test, test_param_2: int = 5):
-    print("hello")
-
-# Main draw function, called by the GUI framework
-def draw(vis):
-    draw_window(vis.root.lora_collection, name="Lora Root")
-    draw_window(Melty.hotkey_registry, name="Hotkeys", is_window=True)
-    draw_window(module, nmae="CST Module")
-    draw_window(proxy, nmae="CST Proxy")
-
-    draw_window(code_export, name="Code Export", is_window=True)
-    draw_window(export_code, name="Code Export", is_window=True)
-
-
-    # draw_any(vis.root.synth_collection, is_window=False)
-    # #
-    # draw_any("hello there", is_window=True)
 
 source = "x = foo(val=1)\nprint(x)\n"
 module = cst.parse_module(source)
 proxy = wrap(module)
 name_edits = {}
-code_export = "Test"
+code_export_str = "Test"
+# Main draw function, called by the GUI framework
+def draw(vis):
 
+    draw_window(vis.root.lora_collection, name="Lora Root")
+    draw_window(Melty.hotkey_registry, name="Hotkeys", is_window=True)
+    draw_window(module, nmae="CST Module")
+
+    global proxy
+    draw_window(proxy, nmae="CST Proxy")
+
+    global code_export_str
+    changed, code_str = draw_window(code_export_str, name="Code Export")
+    if changed:
+        print("Code changed")
+        print(code_str)
+        try:
+            code_export_str = code_str
+            new_module = cst.parse_module(code_str)
+            proxy = wrap(new_module)
+            print("Code parsed successfully")
+        except Exception as e:
+            print_colored_traceback(e)
+            print("Error parsing code")
+
+
+    draw_window(export_code, name="Code Export")
+
+    # draw_any(vis.root.synth_collection, is_window=False)
+    # #
+    # draw_any("hello there", is_window=True)
+
+def export_code(test_param_2: int = 5):
+    # print(f"hello {test_param_2}")
+    global code_export_str
+    code_export_str = proxy.node.code
 
 
 ######################## libCST START ##########################
@@ -104,7 +121,7 @@ def cst_header(func, *args, **o_kwargs):
         next_kwargs['y_offset'] = Melty.collection_spacing
         if 'width' in kwargs:
             pass
-        return core_header(**next_kwargs)
+        return draw_header_core(**next_kwargs)
 
     setattr(wrapper, '__name__', f"{func.__name__} --- with_header ")
 
@@ -405,6 +422,7 @@ def draw_drop_target(input_value, draw_state, on_drag, do_flow, depth,
                 melty.drag_drop_action.target_tag = tag
                 melty.drag_drop_action.target_key = key
                 melty.drag_drop_action.target_collection = collection
+                melty.drag_drop_action.target_draw_state = draw_state
 
                 if melty.drag_drop_action.target_key is None:
                     pass
@@ -525,11 +543,11 @@ def draw_header_end(global_style, unique, style_manager, show_search,
     draw_state._end_header_size = (end_x - start_x, imgui.get_item_rect_size()[1])
 
 
-def core_header(func, outer_func, input_value=None, collection=None, key=None, indent_size=10, depth=0, draw_state=None,
-                window_stack=None, is_tree=True, is_window=False, spacing=Melty.spacing, padding=Melty.padding,
-                show_header=True, show_bg=True, unique=0, name="", style_manager=None, global_style=None,
-                selected_views=None, on_drag=False, on_drag_up=False, do_flow=True, melty=None, enable_flow=True,
-                on_hover=False, next_kwargs=None, meta=None, on_same_line=False, y_offset=0, width=None, min_width=1, **kwargs):
+def draw_header_core(func, outer_func, input_value=None, collection=None, key=None, indent_size=10, depth=0, draw_state=None,
+                     window_stack=None, is_tree=True, is_window=False, spacing=Melty.spacing, padding=Melty.padding,
+                     show_header=True, show_bg=True, unique=0, name="", style_manager=None, global_style=None,
+                     selected_views=None, on_drag=False, on_drag_up=False, do_flow=True, melty=None, enable_flow=True,
+                     on_hover=False, next_kwargs=None, meta=None, on_same_line=False, y_offset=0, width=None, min_width=1, **kwargs):
 
         if window_stack is None or len(window_stack) == 0:
             pass
@@ -747,6 +765,8 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
             new_action.source_key = key
             new_action.source_unique = unique
             new_action.source_collection = collection
+            new_action.source_draw_state = draw_state
+
             return False, new_action
 
         return changed, return_value
@@ -761,7 +781,7 @@ def seperator(height):
 def draw_collection(input_value, draw_state, depth, style_manager,
                     meta, suffix, melty, show_search=True, on_collapse=False, on_drag_up=False, y_offset=0,
                     on_expand=False, width=None, indent_size=10, global_style=None, show_add_delete=True,
-                    show_instance_vars=True, **kwargs):
+                    show_instance_vars=True, unique=0, **kwargs):
     """
     Universal collection renderer
     """
@@ -798,10 +818,9 @@ def draw_collection(input_value, draw_state, depth, style_manager,
             collection = list(input_value)
 
     elif hasattr(input_value, "__dict__") and depth < Melty.max_depth:
-        if hasattr(type(input_value), "__field_defaults__"):
+        if hasattr(type(input_value), "__field_defaults__") and hasattr(input_value, 'to_dict'):
             type(input_value).__field_defaults__.update(input_value.__dict__)
             keys = type(input_value).__field_defaults__.keys()
-            ordered_driver = input_value
         else:
             keys = input_value.__dict__.keys()
         collection = input_value.__dict__
@@ -816,6 +835,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
     # --- unified loop ---
     drew_any = False
     collection_spacing = 0
+    all_meta = []
     for idx, key in enumerate(keys):
         if isinstance(collection, dict) and key not in collection:
             continue
@@ -825,9 +845,13 @@ def draw_collection(input_value, draw_state, depth, style_manager,
             seperator(Melty.spacing[1])
             continue
 
+        if hasattr(type(input_value), "__excluded_attrs__"):
+            if str(key) in type(input_value).__excluded_attrs__:
+                continue
+
         # apply global filter for all types
         if isinstance(key, (int, float, Enum, NoneType)):
-            key_str = f"{str(key)} {item.__class__.__name__}"
+            key_str = f"{input_value.__class__.__name__}"
         else:
             key_str = str(key)
 
@@ -856,7 +880,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
         if view_fn is None:
             view_fn = draw_collection
         item_suffix = f"{base_suffix}_{key_str}"
-        obj_unique = ui_id(name=key_str, datatype=item.__class__, suffix=item_suffix)
+        obj_unique = ui_id(datatype=item.__class__, suffix=item_suffix)
 
         trigger_collapse = False
         if isinstance(input_value, dict) and on_collapse:
@@ -874,9 +898,10 @@ def draw_collection(input_value, draw_state, depth, style_manager,
                 style_manager.set_imgui_tint(*item.tint)
 
             y_offset = Melty.collection_spacing
+            all_meta.append(item_meta)
             item_changed, out_val = draw_any(item, indent_size=10, key=key, meta=item_meta, trigger_collapse=trigger_collapse,
                              trigger_expand=trigger_expand, y_offset=y_offset, on_collapse=on_collapse, on_expand=on_expand,
-                             collection=ordered_driver, suffix=str(obj_unique), name=key_str, show_add_delete=show_add_delete)
+                             collection=ordered_driver, suffix=obj_unique, name=key_str, show_add_delete=show_add_delete)
 
             if isinstance(out_val, CollectionAction):
                 # perform the move - this should mutate the plain dicts you attached
@@ -909,9 +934,14 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
     if not drew_any:
         last_key = None
+
+    last_meta = all_meta[-1] if len(all_meta) > 0 else None
+    last_draw_state = last_meta.tmp_draw_state if last_meta is not None else draw_state
+
+    last_item = collection[last_key] if (isinstance(collection, dict) and last_key in collection) else None
     _, flow_spacing = draw_drop_target(do_flow=True, enable_flow=True, melty=melty, offset=indent_size,
                                        collection=ordered_driver, key=last_key, on_drag=False,
-                                       draw_state=draw_state, tag="bottom")
+                                       draw_state=last_draw_state, tag="bottom")
     # ------------------ end spacing -----------
 
     if drew_any:
@@ -1214,6 +1244,8 @@ def draw_any(input_value, indent_size=0, *args, **kwargs):
 
     if kwargs['global_toggles'].force_show_view_fn:
         imgui.text_colored(f"[{meta.view_function.__name__}]", 0.8, 0.5, 0.9)
+    if kwargs['global_toggles'].force_show_unique and hasattr(meta, 'unique'):
+        imgui.text_colored(f"[{meta.unique}]", 0.8, 0.5, 0.9)
 
     if kwargs['global_toggles'].force_show_datatype:
         imgui.text_colored(f"[{type(input_value).__name__}]", 0.5, 0.5, 0.5)
@@ -1240,7 +1272,11 @@ def draw_bool(input_value: bool):
 
 @with_header_minimal(is_default_for=(str))
 def draw_str(input_value: str):
-    changed, value = imgui.input_text("##str", input_value)
+
+    line_count = input_value.count('\n') + 1
+    line_height = imgui.get_text_line_height_with_spacing()
+    height = max(0, min(200, line_count * line_height + 8))
+    changed, value = imgui.input_text_multiline("##str", input_value, height=height)
     if changed:
         return True, value
 
@@ -1331,7 +1367,7 @@ def draw_function(input_value, unique):
 
     imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (2, 4))
     imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (8, 6))
-    imgui.push_style_var(imgui.STYLE_FRAME_ROUNDING, (6))
+    imgui.push_style_var(imgui.STYLE_FRAME_ROUNDING, 6)
 
     if imgui.button(f"{input_value.__name__}##{unique}"):
         function_args = inspect.signature(input_value).parameters

@@ -41,7 +41,7 @@ def combine(h: int, s: str) -> int:
     """Order-sensitive, stable combine (FNV-style)."""
     return ((h * 16777619) ^ strhash(s)) & 0xffffffff
 
-def ui_id(name=None, datatype=None, meta=None, this_name=None, root_function="render", suffix=None) -> int:
+def ui_id(datatype=None, suffix=None, idx=0) -> int:
     """
     Generate a stable UI ID from the call stack + optional metadata.
 
@@ -57,16 +57,11 @@ def ui_id(name=None, datatype=None, meta=None, this_name=None, root_function="re
         cls_name = frame.f_locals["self"].__class__.__name__
     scope = f"{cls_name}.{func_name}" if cls_name else func_name
     h = combine(h, scope)
+    datatype = datatype if datatype is not None else Any
+    h = combine(h, str(datatype))
+    suffix_int = strhash(str(suffix))
 
-    name = name if name is not None else getattr(meta, "name", None)
-    datatype = datatype if datatype is not None else getattr(meta, "datatype", None)
-
-    if name is not None:
-        if hasattr(meta, "name"):
-            h = combine(h, f"{name}:{datatype}")
-        else:
-            h = combine(h, str(datatype))
-    unique = h if suffix is None else ((h * 16777619) ^ strhash(str(suffix))) & 0xffffffff
+    unique = h if suffix is None else (((h * 16777619) ^ suffix_int) + (idx + 1))
 
     return unique
 
@@ -264,6 +259,16 @@ def annotation_track(*args, wrapper, **kwargs):
         return new_meta
     return None
 
+
+def apply_drag_and_drop(melty):
+
+    ######## -------- apply drag & drop -----------
+    while len(melty.actions_to_apply) > 0:
+        action = melty.actions_to_apply.pop(0)
+        result = apply_collection_action(action)
+        request_render()
+    melty.actions_to_apply = []
+
 @render_wrapper
 def render_func(*args, **o_kwargs):
     func = args[0] if args else None
@@ -311,10 +316,9 @@ def render_func(*args, **o_kwargs):
         if name == "" and is_root:
             kwargs["name"] = str(len(melty_state_registry)) + "root"
 
+        key = kwargs.get("key", None)
+        key = key if key is not None else ""
         if name == "" and not is_root:
-
-            key = kwargs.get("key", None)
-            key = key if key is not None else ""
             name = str(key) + input_value.__class__.__name__
 
         from src.lsd.gl_gui.view.core_views.core_presets import Meta
@@ -323,14 +327,19 @@ def render_func(*args, **o_kwargs):
             return False, None
 
         suffix = kwargs.get("suffix", None)
+        unique_key = kwargs.get("key", name)
         if suffix is None:
             suffix = Melty.unique_stack[Melty.depth] if Melty.depth < len(Melty.unique_stack) else name
-        unique = ui_id(name=name, datatype=type(input_value), suffix=suffix)
+
+        suffix = f"{suffix}_{name}"
+
+        index = key if isinstance(key, int) else 0
+        unique = ui_id(datatype=type(input_value), suffix=suffix + name, idx=index)
         imgui.begin_group()
         push_id(unique)
 
         if is_root:
-            unique = ui_id(name=name, datatype=type(input_value), suffix=name)
+            unique = ui_id(datatype=type(input_value), suffix=name)
             Melty.unique_stack = []
             Melty.flow_spacing = 0.0
             melty = get_melty_state(unique)
@@ -344,6 +353,27 @@ def render_func(*args, **o_kwargs):
 
         else:
             melty = get_melty_state(Melty.unique_stack[0])
+
+        # After you compute `new_unique` for `x` in the render loop:
+        root = Melty.vis.root
+        registry = root.draw_state_registry
+        pending = Melty.move_draw_state_pending
+
+        if pending:  # any remaps pending?
+            ds = pending.pop(id(input_value), None)  # was this object moved?
+            if ds is not None:
+                # If the draw state has its own unique, retire the old entry
+                old_u = getattr(ds, "unique", None)
+                if old_u is not None:
+                    registry.pop(old_u, None)
+                    ds.unique = unique  # keep the DS in sync
+
+                # Install under the new unique (overwrite if needed)
+                registry[unique] = ds
+
+                # Optional: clean up empty dict to avoid pointless checks later
+                if not pending:
+                    root.move_draw_state_pending = {}
 
         draw_state = get_draw_state(unique)
         draw_state._input_value = input_value
@@ -384,6 +414,8 @@ def render_func(*args, **o_kwargs):
 
             if name is not None and name != "":
                 meta.name = name
+
+            meta.unique = unique
 
             def set_default(key, default_value):
                 if key in vars(meta) and vars(meta)[key] is not None:
@@ -604,12 +636,7 @@ def render_func(*args, **o_kwargs):
                             melty.drag_drop_target = melty.nearest_drop_target
                             melty.drag_drop_target_tag = melty.nearest_drop_target_tag
 
-                        ######## -------- apply drag & drop -----------
-                        while len(melty.actions_to_apply) > 0:
-                            action = melty.actions_to_apply.pop(0)
-                            result = apply_collection_action(action)
-                            request_render()
-                        melty.actions_to_apply = []
+                        apply_drag_and_drop(melty)
 
                         while len(melty.items_to_delete) > 0:
                             key, collection = melty.items_to_delete.pop(0)
@@ -629,6 +656,7 @@ def render_func(*args, **o_kwargs):
                 draw_state.render_time = end_time - start_time
 
                 return changed, new_value
+
 
             changed, new_value = end_of_render()
 

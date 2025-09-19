@@ -55,10 +55,12 @@ class CollectionAction:
         self.target_key = target_key
         self.target_tag = target_tag
         self.target_collection = target_collection
+        self.target_draw_state = None
 
         self.source_unique = source_unique
         self.source_key = source_key
         self.source_collection = source_collection
+        self.source_draw_state = None
 
         self.operation = operation
         self.class_move = False
@@ -141,20 +143,11 @@ def apply_collection_action(action: CollectionAction):
     Returns:
         None on success, or an error message (str) on failure.
 
-    Semantics:
-      - COPY: insert the same object reference into target; source unchanged.
-      - MOVE: same insert + remove from source.
-      - 'top' = before anchor; 'bottom' = after anchor.
-
-    Supports:
-      - list <-> list  (now accepts index OR id-string anchors for lists of dicts/objects)
-      - dict <-> dict  (reorder within same dict, or transfer; cross-dict collisions rekey via obj.id or generate_id())
-      - dict <-> list  (both directions; list anchors may be index OR id string)
-
-    Behavior:
-      - Validation-first; no mutation until all checks pass.
-      - No raises; returns error strings and leaves collections untouched.
-      - Same-dict downward reorders fixed (skip original key during rebuild).
+    Notes:
+      - Uses action.source_unique / action.target_unique with resolved indices
+        to infer list-unique bases and shift neighbor draw-states accordingly.
+      - Records the moved/copied object's draw state in Melty.move_draw_state_pending
+        as { id(obj): action.source_draw_state } for the render loop to remap.
     """
 
     # ---------------- helpers (no mutation) ----------------
@@ -165,29 +158,19 @@ def apply_collection_action(action: CollectionAction):
         return t if t in ("top", "bottom") else None
 
     def _get_existing_id(obj):
-        # Use an object's "id" if available (dict["id"] or obj.id)
         if isinstance(obj, dict) and "id" in obj:
             return str(obj["id"])
         maybe = getattr(obj, "id", None)
-        if maybe is not None:
-            return str(maybe)
-        return None
+        return str(maybe) if maybe is not None else None
 
     def _resolve_list_index(lst, key_or_index):
-        """
-        Try to resolve a list anchor as:
-          1) integer index (0..len-1), or
-          2) id string matching element['id'] or element.id (first match).
-        Returns an int index, or None if not found/resolvable.
-        """
-        # Case 1: numeric index
+        # numeric index?
         try:
             idx = int(key_or_index)
             return idx if 0 <= idx < len(lst) else None
         except Exception:
             pass
-
-        # Case 2: id string
+        # id string?
         needle = str(key_or_index)
         for i, el in enumerate(lst):
             if isinstance(el, dict) and "id" in el and str(el["id"]) == needle:
@@ -198,11 +181,9 @@ def apply_collection_action(action: CollectionAction):
         return None
 
     def _insert_pos_for_list(anchor_index, tag):
-        # For validated anchor_index in [0, len-1]
         return anchor_index if tag == "top" else anchor_index + 1
 
     def _unique_key_for_dict(d: dict, preferred: str | None):
-        # Prefer provided id if unique; else use generate_id() until unique
         if preferred and preferred not in d:
             return preferred
         gen = globals().get("generate_id")
@@ -213,11 +194,59 @@ def apply_collection_action(action: CollectionAction):
             k = gen()
         return k
 
-    # ---------------- phase 1: validate and plan ----------------
-    src = action.source_collection
-    dst = action.target_collection
-    if src is None or dst is None:
+    # Draw-state of the moved/copied item itself (neighbors handled separately)
+    def _record_draw_state(obj):
+        try:
+            if obj is None or action.source_draw_state is None:
+                return
+            if not hasattr(Melty, "move_draw_state_pending") or Melty.move_draw_state_pending is None:
+                Melty.move_draw_state_pending = {}
+            Melty.move_draw_state_pending[id(obj)] = action.source_draw_state
+        except Exception:
+            pass  # never break the transform
+
+    # --- List neighbor shifting via inferred base (unique(i) = base + i) ---
+    def _infer_base(known_unique, known_index):
+        try:
+            if isinstance(known_unique, int) and isinstance(known_index, int):
+                return known_unique - known_index
+        except Exception:
+            pass
+        return None
+
+    def _shift_range_by_base(base: int | None, start_idx: int, end_idx: int, delta: int):
+        """
+        Shift draw_state_registry keys for indices [start_idx..end_idx] by `delta`,
+        using unique(i) = base + i. No-ops if base is None.
+        """
+        if base is None or delta == 0 or start_idx > end_idx:
+            return
+        registry = Melty.vis.root.draw_state_registry
+        # Stage moves to avoid collisions
+        moves = []
+        for i in range(start_idx, end_idx + 1):
+            old_u = base + i
+            ds = registry.get(old_u)
+            if ds is not None:
+                new_u = old_u + delta  # invariant: Δunique == Δindex
+                moves.append((old_u, new_u, ds))
+        # Remove then write
+        for old_u, _, _ in moves:
+            registry.pop(old_u, None)
+        for _, new_u, ds in moves:
+            if hasattr(ds, "unique"):
+                ds.unique = new_u
+            registry[new_u] = ds
+
+    # ---------------- normalize inputs ----------------
+    src_owner = action.source_collection
+    dst_owner = action.target_collection
+    if src_owner is None or dst_owner is None:
         return "Both source_collection and target_collection must be set on the action."
+
+    # Capture owner types BEFORE any __dict__ coercion (for __field_defaults__)
+    src_owner_type = type(src_owner)
+    dst_owner_type = type(dst_owner)
 
     tag = _norm_tag(action.target_tag)
     if tag is None:
@@ -228,261 +257,259 @@ def apply_collection_action(action: CollectionAction):
         return "operation must be OperationType.MOVE or OperationType.COPY."
     is_move = (op == "move")
 
-    same_collection = (src is dst)
-    plan = {"kind": None}
-
-    dst_type = type(dst)
-    if hasattr(src, '__dict__'):
+    # Work on raw containers (lists or dict views of objects)
+    src = src_owner
+    dst = dst_owner
+    if not isinstance(src, list) and hasattr(src, "__dict__"):
         src = src.__dict__
-    if hasattr(dst, '__dict__'):
+    if not isinstance(dst, list) and hasattr(dst, "__dict__"):
         dst = dst.__dict__
 
-    if hasattr(dst_type, '__field_defaults__'):
-        order = list(dst_type.__field_defaults__.keys())
+    same_collection = (src is dst)
 
-        old_dst = dst.copy()
-        dst.clear()
-        # reorder part
-        for k in order:
-            dst[k] = old_dst.get(k, None)
+    # If destination is a dict but CLASS exposes a shared __field_defaults__,
+    # reorder *dst* to match class_defaults order (order-only; no insertion/rebinding).
+    if not isinstance(dst, list) and hasattr(dst_owner_type, "__field_defaults__"):
+        class_defaults = dst_owner_type.__field_defaults__
+        ordered_keys = [k for k in class_defaults.keys() if k in dst]
+        extra_keys = [k for k in dst.keys() if k not in class_defaults]
+        if ordered_keys or extra_keys:
+            old = dict(dst)
+            dst.clear()
+            for k in ordered_keys:
+                dst[k] = old[k]
+            for k in extra_keys:
+                dst[k] = old[k]
 
-        for k in old_dst.keys():
-            if k not in dst:
-                dst[k] = old_dst[k]
+    # ---------------- six explicit cases ----------------
 
-    # list -> list
+    # 1) LIST -> LIST (includes list-to-self)
     if isinstance(src, list) and isinstance(dst, list):
         s_idx = _resolve_list_index(src, action.source_key)
         if s_idx is None:
             return (f"Source key {action.source_key!r} not found in source list "
                     f"as index or id (len={len(src)}).")
-        t_idx = _resolve_list_index(dst, action.target_key)
-        if t_idx is None:
-            # Insert at 0 or end if target list is empty
-            if len(dst) == 0:
-                t_idx = 0
-            else:
-                t_idx = len(dst)
 
+        if len(dst) == 0:
+            t_idx = 0
+        else:
+            t_idx = _resolve_list_index(dst, action.target_key)
+            if t_idx is None:
+                t_idx = len(dst) - 1  # last element as anchor
+
+        # infer bases from (unique, index)
+        base_same = _infer_base(action.source_unique, s_idx) if same_collection else None
+        base_src = _infer_base(action.source_unique, s_idx) if not same_collection else None
+        base_dst = _infer_base(action.target_unique, t_idx) if not same_collection else None
+
+        # capture lengths BEFORE mutation
+        src_len_before = len(src)
+        dst_len_before = len(dst)
+
+        # compute insert index (adjust if same list and move across pop)
         insert_at = _insert_pos_for_list(t_idx, tag)
         if is_move and same_collection:
-            # Adjust for index shift after pop
             base = t_idx if tag == "top" else t_idx + 1
             if s_idx < base:
                 base -= 1
             insert_at = max(0, min(base, len(dst)))
 
-        plan.update(kind="list->list", s_idx=s_idx, insert_at=insert_at)
-
-    # dict -> dict
-    elif isinstance(src, dict) and isinstance(dst, dict):
-        s_key = action.source_key
-        t_key = action.target_key
-
-        if t_key is None and len(dst) > 0:
-            t_key = next(iter(dst.keys()))
-
-        if s_key not in src:
-            return f"Source key {s_key!r} not found in source dict."
-
-        if same_collection:
-            if s_key == t_key or t_key is None:
-                plan.update(kind="noop")  # copying/reordering on itself is a no-op
-            else:
-                plan.update(kind="dict->dict-reorder", s_key=s_key, t_key=t_key)
-        else:
-            # Transfer; resolve collisions in target
-            item = src[s_key]
-            final_key = s_key
-            if s_key in dst:
-                is_move = False
-                # preferred = _get_existing_id(item)
-                # final_key = _unique_key_for_dict(dst, preferred)
-                final_key = s_key
-                if final_key is None:
-                    return "generate_id() unavailable or failed to produce a unique key for dict->dict transfer."
-            plan.update(kind="dict->dict-xfer", s_key=s_key, t_key=t_key, final_key=final_key)
-
-    # dict -> list
-    elif isinstance(src, dict) and isinstance(dst, list):
-        s_key = action.source_key
-        if s_key not in src:
-            return f"Source key {s_key!r} not found in source dict."
-        t_idx = _resolve_list_index(dst, action.target_key)
-        if t_idx is None:
-            t_idx = 0 if len(dst) == 0 else len(dst)
-        insert_at = _insert_pos_for_list(t_idx, tag)
-        plan.update(kind="dict->list", s_key=s_key, insert_at=insert_at)
-
-    # list -> dict
-    elif isinstance(src, list) and isinstance(dst, dict):
-        s_idx = _resolve_list_index(src, action.source_key)
-        if s_idx is None:
-            return (f"Source key {action.source_key!r} not found in source list "
-                    f"as index or id (len={len(src)}).")
-        t_anchor = action.target_key
-        if t_anchor is not None and len(dst) > 0 and t_anchor not in dst:
-            t_anchor = list(dst.keys())[-1]
-        # if t_anchor not in dst:
-        #     return f"Target anchor key {t_anchor!r} not found in target dict."
-
         item = src[s_idx]
-        preferred_id = _get_existing_id(item)
-        new_key = _unique_key_for_dict(dst, preferred_id)
-        if new_key is None:
-            return "generate_id() is not available to create a unique key for list->dict."
-        plan.update(kind="list->dict", s_idx=s_idx, t_anchor=t_anchor, new_key=new_key)
+        if is_move and same_collection:
+            popped = src.pop(s_idx)
+            try:
+                dst.insert(insert_at, popped)
+            except Exception as e:
+                src.insert(s_idx, popped)
+                return f"Internal error during same-list move insert: {e}"
 
-    else:
-        return "Unsupported collection types. Expected list or dict for both source and target."
+            # neighbors in SAME list
+            if insert_at < s_idx:
+                _shift_range_by_base(base_same, start_idx=insert_at, end_idx=s_idx - 1, delta=+1)
+            elif insert_at > s_idx:
+                _shift_range_by_base(base_same, start_idx=s_idx + 1, end_idx=insert_at, delta=-1)
 
-    # ---------------- phase 2: execute (mutate) ----------------
-    try:
-        kind = plan["kind"]
+            _record_draw_state(popped)
 
-        if kind == "noop":
-            return None
-
-        # list -> list
-        if kind == "list->list":
-            s_idx = plan["s_idx"]
-            insert_at = max(0, min(plan["insert_at"], len(dst)))
-            item = src[s_idx]
-
-            if is_move and same_collection:
-                popped = src.pop(s_idx)
-                try:
-                    dst.insert(insert_at, popped)
-                except Exception as e:
-                    src.insert(s_idx, popped)  # rollback
-                    return f"Internal error during same-list move insert: {e}"
-            else:
+        else:
+            # cross-list copy/move OR same-list copy
+            try:
                 dst.insert(insert_at, item)
-                if is_move:
-                    try:
-                        src.pop(s_idx)
-                    except Exception as e:
-                        # rollback the insert
-                        try:
-                            dst.pop(insert_at)
-                        except Exception:
-                            pass
-                        return f"Internal error removing from source after insert: {e}"
+            except Exception as e:
+                return f"Internal error inserting into target list: {e}"
 
-        # dict -> dict reorder within the same dict (fixed for downward moves)
-        elif kind == "dict->dict-reorder":
-            s_key = plan["s_key"]
-            t_key = plan["t_key"]
-            value = src[s_key]
-
-            new_d = {}
-            for k, v in dst.items():
-                if k == s_key:
-                    # Skip old instance of s_key; we'll insert it relative to t_key
-                    continue
-
-                if tag == "top" and k == t_key:
-                    new_d[s_key] = value
-                new_d[k] = v
-                if tag == "bottom" and k == t_key:
-                    new_d[s_key] = value
-
-            # Safety: ensure s_key exists even if something odd happens
-            if s_key not in new_d:
-                new_d[s_key] = value
-
-            dst.clear()
-            dst.update(new_d)
-            # NOTE: COPY within same dict is effectively a reorder (no duplicate keys).
-
-        # dict -> dict transfer (possibly rekeyed) between different dicts
-        elif kind == "dict->dict-xfer":
-            s_key = plan["s_key"]
-            t_key = plan["t_key"]
-            final_key = plan["final_key"]
-            value = src[s_key]
-
-            new_d = {}
-            for k, v in dst.items():
-                if tag == "top" and k == t_key:
-                    new_d[final_key] = value
-                new_d[k] = v
-                if tag == "bottom" and k == t_key:
-                    new_d[final_key] = value
-
-            dst.clear()
-            dst.update(new_d)
-
-            if is_move:
-                src.pop(s_key, None)
-
-        # dict -> list
-        elif kind == "dict->list":
-            s_key = plan["s_key"]
-            item = src[s_key]
-            insert_at = max(0, min(plan["insert_at"], len(dst)))
-            dst.insert(insert_at, item)
-            if is_move:
-                src.pop(s_key, None)
-
-        # list -> dict
-        elif kind == "list->dict":
-            s_idx = plan["s_idx"]
-            t_anchor = plan["t_anchor"]
-            new_key = plan["new_key"]
-            item = src[s_idx]
-
-            new_d = {}
-            for k, v in dst.items():
-                if t_anchor is None and len(new_d) == 0:
-                    new_d[new_key] = item
-                if tag == "top" and k == t_anchor:
-                    new_d[new_key] = item
-                new_d[k] = v
-                if tag == "bottom" and k == t_anchor:
-                    new_d[new_key] = item
-
-            dst.clear()
-            dst.update(new_d)
+            # target neighbors shift right from insert_at
+            _shift_range_by_base(base_dst, start_idx=insert_at, end_idx=dst_len_before - 1, delta=+1)
 
             if is_move:
                 try:
                     src.pop(s_idx)
                 except Exception as e:
-                    # rollback: remove inserted key
+                    # rollback best-effort
                     try:
-                        tmp = {k: v for k, v in dst.items() if k != new_key}
-                        dst.clear()
-                        dst.update(tmp)
+                        dst.pop(insert_at)
                     except Exception:
                         pass
-                    return f"Internal error removing from source list after dict insert: {e}"
+                    return f"Internal error removing from source after insert: {e}"
 
+                # source neighbors collapse left after s_idx
+                _shift_range_by_base(base_src, start_idx=s_idx + 1, end_idx=src_len_before - 1, delta=-1)
 
-        if hasattr(dst_type, "__field_defaults__"):
-            order = list(dst.keys())
+            _record_draw_state(item)
 
-            old_field_defaults = dst_type.__field_defaults__.copy()
-            d = dst_type.__field_defaults__
-            d.clear()
-            # reorder part
-            for k in order:
-                d[k] = dst.get(k)
+    # 2) DICT -> DICT (reorder or transfer)
+    elif isinstance(src, dict) and isinstance(dst, dict):
+        s_key = action.source_key
+        t_key = action.target_key
+        if s_key not in src:
+            return f"Source key {s_key!r} not found in source dict."
 
-            for k in dst.keys():
-                if k not in d:
-                    d[k] = dst[k]
+        if t_key is None and len(dst) > 0:
+            t_key = next(iter(dst.keys()))
 
-            setattr(dst_type, "__field_defaults__", d)
+        value = src[s_key]
 
+        if same_collection:
+            if not (s_key == t_key or t_key is None):
+                new_d = {}
+                for k, v in dst.items():
+                    if k == s_key:
+                        continue
+                    if tag == "top" and k == t_key:
+                        new_d[s_key] = value
+                    new_d[k] = v
+                    if tag == "bottom" and k == t_key:
+                        new_d[s_key] = value
+                if s_key not in new_d:
+                    new_d[s_key] = value
+                dst.clear()
+                dst.update(new_d)
+                _record_draw_state(value)
+            # dicts: no neighbor adjustments
         else:
-            return "Internal planning error: unknown operation kind."
+            final_key = s_key
+            if s_key in dst:
+                is_move = False  # key collision -> copy
+            new_d = {}
+            for k, v in dst.items():
+                if tag == "top" and k == t_key:
+                    new_d[final_key] = value
+                new_d[k] = v
+                if tag == "bottom" and k == t_key:
+                    new_d[final_key] = value
+            if not new_d and (t_key is None or len(dst) == 0):
+                new_d[final_key] = value
+            dst.clear()
+            dst.update(new_d)
+            if is_move:
+                src.pop(s_key, None)
+            _record_draw_state(value)
 
-    except Exception as e:
-        # Defensive catch-all: report without raising; collections should be intact or rolled back.
-        return f"Unexpected error during apply: {e}"
+    # 3) DICT -> LIST (insert into list)
+    elif isinstance(src, dict) and isinstance(dst, list):
+        s_key = action.source_key
+        if s_key not in src:
+            return f"Source key {s_key!r} not found in source dict."
+        item = src[s_key]
+
+        dst_len_before = len(dst)
+        if dst_len_before == 0:
+            t_idx = 0
+        else:
+            t_idx = _resolve_list_index(dst, action.target_key)
+            if t_idx is None:
+                t_idx = len(dst) - 1
+        insert_at = max(0, min(_insert_pos_for_list(t_idx, tag), len(dst)))
+
+        base_dst = _infer_base(action.target_unique, t_idx)
+
+        try:
+            dst.insert(insert_at, item)
+        except Exception as e:
+            return f"Internal error inserting into list: {e}"
+
+        # target neighbors shift right
+        _shift_range_by_base(base_dst, start_idx=insert_at, end_idx=dst_len_before - 1, delta=+1)
+
+        if is_move:
+            src.pop(s_key, None)
+
+        _record_draw_state(item)
+
+    # 4) LIST -> DICT (remove from list)
+    elif isinstance(src, list) and isinstance(dst, dict):
+        s_idx = _resolve_list_index(src, action.source_key)
+        if s_idx is None:
+            return (f"Source key {action.source_key!r} not found in source list "
+                    f"as index or id (len={len(src)}).")
+        item = src[s_idx]
+
+        src_len_before = len(src)
+        base_src = _infer_base(action.source_unique, s_idx)
+
+        t_anchor = action.target_key
+        if t_anchor is not None and len(dst) > 0 and t_anchor not in dst:
+            t_anchor = list(dst.keys())[-1]
+
+        preferred_id = _get_existing_id(item)
+        new_key = _unique_key_for_dict(dst, preferred_id)
+        if new_key is None:
+            return "generate_id() is not available to create a unique key for list->dict."
+
+        new_d = {}
+        for k, v in dst.items():
+            if t_anchor is None and len(new_d) == 0:
+                new_d[new_key] = item
+            if tag == "top" and k == t_anchor:
+                new_d[new_key] = item
+            new_d[k] = v
+            if tag == "bottom" and k == t_anchor:
+                new_d[new_key] = item
+        if not new_d and t_anchor is None:
+            new_d[new_key] = item
+
+        dst.clear()
+        dst.update(new_d)
+
+        if is_move:
+            try:
+                src.pop(s_idx)
+            except Exception as e:
+                # rollback dict insert
+                try:
+                    tmp = {k: v for k, v in dst.items() if k != new_key}
+                    dst.clear()
+                    dst.update(tmp)
+                except Exception:
+                    pass
+                return f"Internal error removing from source list after dict insert: {e}"
+
+            # collapse gap in source list
+            _shift_range_by_base(base_src, start_idx=s_idx + 1, end_idx=src_len_before - 1, delta=-1)
+
+        _record_draw_state(item)
+
+    else:
+        return "Unsupported collection types. Expected list or dict for both source and target."
+
+    # ---------------- reflect order into __field_defaults__ (order-only, in place) ----------------
+    if not isinstance(dst, list) and hasattr(dst_owner_type, "__field_defaults__"):
+        class_defaults = dst_owner_type.__field_defaults__
+        dst_keys = list(dst.keys())
+        defaults_keys = list(class_defaults.keys())
+
+        common_in_dst_order = [k for k in dst_keys if k in class_defaults]
+        defaults_only_tail = [k for k in defaults_keys if k not in dst]
+
+        new_order = common_in_dst_order + defaults_only_tail
+        if new_order != defaults_keys:
+            old_vals = {k: class_defaults[k] for k in class_defaults.keys()}
+            class_defaults.clear()
+            for k in new_order:
+                class_defaults[k] = old_vals.get(k)
 
     return None
+
 
 class DepthState:
     def __init__(self):
@@ -549,6 +576,7 @@ class Melty:
 
     max_indent = 0
     hotkey_registry = {}
+    move_draw_state_pending = {}
 
     # LibCST tracking -----------------------------------------
     _path_stack: list[tuple[str, int | None]] = []  # (field, idx)
