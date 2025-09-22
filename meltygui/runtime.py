@@ -1,4 +1,5 @@
 from enum import Enum
+from typing import MutableMapping
 
 import glfw
 import imgui
@@ -93,7 +94,7 @@ def add_to_collection(collection, item, preferred_key=None):
     elif isinstance(collection, list):
         collection.append(item)
         return None
-    elif isinstance(collection, dict):
+    elif isinstance(collection, (dict, MutableMapping)):
         if hasattr(item, 'id'):
             preferred_key = item.id
         key = preferred_key
@@ -128,7 +129,7 @@ def delete_from_collection(key, collection):
                 return f"Index {idx} out of range for list of length {len(collection)}."
         except Exception as e:
             return f"Error removing index {key} from list: {e}"
-    elif isinstance(collection, dict):
+    elif isinstance(collection, (dict, MutableMapping)):
         if key in collection:
             collection.pop(key)
             return None
@@ -142,6 +143,49 @@ def delete_from_collection(key, collection):
         else:
             return f"Key {key!r} not found in object's __dict__."
 
+
+def _supports_reorder(mp) -> bool:
+    return hasattr(mp, "reorder") and callable(getattr(mp, "reorder"))
+
+
+def _compute_reordered_keys(mp, moving_key: str, anchor_key: str | None, tag: str) -> list[str]:
+    keys = list(mp.keys())
+    if moving_key in keys:
+        keys.remove(moving_key)
+    if anchor_key is not None and anchor_key in keys:
+        idx = keys.index(anchor_key) + (1 if tag == "bottom" else 0)
+    else:
+        idx = 0 if tag == "top" else len(keys)
+    keys.insert(idx, moving_key)
+    return keys
+
+
+def _reorder_keys_in_mapping(mp, keys: list[str]) -> bool:
+    if _supports_reorder(mp):
+        mp.reorder(keys)
+        return True
+    if isinstance(mp, dict):  # was: type(mp) is dict
+        old = dict(mp)
+        mp.clear()
+        for k in keys:
+            if k in old:
+                mp[k] = old[k]
+        for k, v in old.items():
+            if k not in mp:
+                mp[k] = v
+        return True
+    return False
+
+
+def _insert_relative_in_mapping(mp, new_key: str, value, anchor_key: str | None, tag: str) -> bool:
+    """
+    Insert/ensure key and position it relative to anchor without destructive deletes.
+    Returns True if positioned; False if mapping can't be safely reordered.
+    """
+    if new_key not in mp:
+        mp[new_key] = value  # inserts at end (FolderProxy will create dir; others set value)
+    keys = _compute_reordered_keys(mp, new_key, anchor_key, tag)
+    return _reorder_keys_in_mapping(mp, keys)
 
 
 def apply_collection_action(action: CollectionAction):
@@ -164,7 +208,7 @@ def apply_collection_action(action: CollectionAction):
         return t if t in ("top", "bottom") else None
 
     def _get_existing_id(obj):
-        if isinstance(obj, dict) and "id" in obj:
+        if isinstance(obj, (dict, MutableMapping)) and "id" in obj:
             return str(obj["id"])
         maybe = getattr(obj, "id", None)
         return str(maybe) if maybe is not None else None
@@ -179,17 +223,28 @@ def apply_collection_action(action: CollectionAction):
         # id string?
         needle = str(key_or_index)
         for i, el in enumerate(lst):
-            if isinstance(el, dict) and "id" in el and str(el["id"]) == needle:
+            if isinstance(el, (dict, MutableMapping)) and "id" in el and str(el["id"]) == needle:
                 return i
             maybe = getattr(el, "id", None)
             if maybe is not None and str(maybe) == needle:
                 return i
         return None
 
+    def _supports_reorder(mp) -> bool:
+        return hasattr(mp, "reorder") and callable(getattr(mp, "reorder"))
+
+    def _looks_like_dir_value(val) -> bool:
+        # Keep this narrow: FolderProxy directory value
+        try:
+            import FolderProxy  # or import at top
+        except Exception:
+            FolderProxy = ()
+        return isinstance(val, FolderProxy)
+
     def _insert_pos_for_list(anchor_index, tag):
         return anchor_index if tag == "top" else anchor_index + 1
 
-    def _unique_key_for_dict(d: dict, preferred: str | None):
+    def _unique_key_for_dict(d, preferred: str | None):
         if preferred and preferred not in d:
             return preferred
         gen = globals().get("generate_id")
@@ -266,19 +321,21 @@ def apply_collection_action(action: CollectionAction):
     # Work on raw containers (lists or dict views of objects)
     src = src_owner
     dst = dst_owner
-    if not isinstance(src, (list, dict)) and hasattr(src, "__dict__"):
+    if not isinstance(src, (list, dict, MutableMapping)) and hasattr(src, "__dict__"):
         src = src.__dict__
-    if not isinstance(dst, (list, dict)) and hasattr(dst, "__dict__"):
+    if not isinstance(dst, (list, dict, MutableMapping)) and hasattr(dst, "__dict__"):
         dst = dst.__dict__
 
     same_collection = (src is dst)
 
     # If destination is a dict but CLASS exposes a shared __field_defaults__,
     # reorder *dst* to match class_defaults order (order-only; no insertion/rebinding).
-    if not isinstance(dst, list) and hasattr(dst_owner_type, "__field_defaults__"):
+    if (not isinstance(dst, list)
+            and hasattr(dst_owner_type, "__field_defaults__")
+            and type(dst) is dict):
         class_defaults = dst_owner_type.__field_defaults__
         ordered_keys = [k for k in class_defaults.keys() if k in dst]
-        extra_keys = [k for k in dst.keys() if k not in class_defaults]
+        extra_keys = [k for k in list(dst.keys()) if k not in class_defaults]
         if ordered_keys or extra_keys:
             old = dict(dst)
             dst.clear()
@@ -364,7 +421,7 @@ def apply_collection_action(action: CollectionAction):
             _record_draw_state(item)
 
     # 2) DICT -> DICT (reorder or transfer)
-    elif isinstance(src, dict) and isinstance(dst, dict):
+    elif isinstance(src, (dict, MutableMapping)) and isinstance(dst, (dict, MutableMapping)):
         s_key = action.source_key
         t_key = action.target_key
         if s_key not in src:
@@ -376,43 +433,58 @@ def apply_collection_action(action: CollectionAction):
         value = src[s_key]
 
         if same_collection:
+            # pure reorder; never use clear/pop on mappings that might have side-effects
             if not (s_key == t_key or t_key is None):
-                new_d = {}
-                for k, v in dst.items():
-                    if k == s_key:
-                        continue
-                    if tag == "top" and k == t_key:
-                        new_d[s_key] = value
-                    new_d[k] = v
-                    if tag == "bottom" and k == t_key:
-                        new_d[s_key] = value
-                if s_key not in new_d:
-                    new_d[s_key] = value
-                dst.clear()
-                dst.update(new_d)
+                keys = _compute_reordered_keys(dst, s_key, t_key, tag)
+                ok = _reorder_keys_in_mapping(dst, keys)
+                if not ok:
+                    return "Cannot safely reorder this mapping without destructive deletes."
                 _record_draw_state(value)
-            # dicts: no neighbor adjustments
         else:
             final_key = s_key
             if s_key in dst:
-                is_move = False  # key collision -> copy
-            new_d = {}
-            for k, v in dst.items():
-                if tag == "top" and k == t_key:
-                    new_d[final_key] = value
-                new_d[k] = v
-                if tag == "bottom" and k == t_key:
-                    new_d[final_key] = value
-            if not new_d and (t_key is None or len(dst) == 0):
-                new_d[final_key] = value
-            dst.clear()
-            dst.update(new_d)
+                is_move = False  # collision -> copy
+
+            # If the source owner exposes a true move, use it (duck-typed; generic)
+            if is_move and hasattr(src_owner, "move_item") and callable(getattr(src_owner, "move_item")):
+                try:
+                    # perform the physical move; returns the final key name at dst
+                    final_key = src_owner.move_item(dst_owner, s_key, new_name=s_key)
+                    # position it relative to t_key without destructive deletes
+                    _insert_relative_in_mapping(dst, final_key, dst[final_key], t_key, tag)
+                    _record_draw_state(dst[final_key])
+                    return
+                except NotImplementedError:
+                    pass
+                except Exception as e:
+                    # Fall back to safe copy semantics if hook fails
+                    is_move = False
+
+            # No move hook: do a safe insert+reorder only
+            ok = _insert_relative_in_mapping(dst, final_key, value, t_key, tag)
+            if not ok:
+                if type(dst) is dict:
+                    tmp = dict(dst)
+                    tmp[final_key] = value
+                    keys = _compute_reordered_keys(tmp, final_key, t_key, tag)
+                    dst.clear()
+                    for k in keys:
+                        dst[k] = tmp[k]
+                else:
+                    return "Target mapping cannot be reordered safely."
+
+            # IMPORTANT: never pop a value item unless we actually moved it
             if is_move:
-                src.pop(s_key, None)
+                if _looks_like_dir_value(value) and (_supports_reorder(src) or _supports_reorder(dst)):
+                    # Treat as copy for safety (we didn't really move on disk)
+                    is_move = False
+                else:
+                    src.pop(s_key, None)
+
             _record_draw_state(value)
 
     # 3) DICT -> LIST (insert into list)
-    elif isinstance(src, dict) and isinstance(dst, list):
+    elif isinstance(src, (dict, MutableMapping)) and isinstance(dst, list):
         s_key = action.source_key
         if s_key not in src:
             return f"Source key {s_key!r} not found in source dict."
@@ -443,7 +515,7 @@ def apply_collection_action(action: CollectionAction):
         _record_draw_state(item)
 
     # 4) LIST -> DICT (remove from list)
-    elif isinstance(src, list) and isinstance(dst, dict):
+    elif isinstance(src, list) and isinstance(dst, (dict, MutableMapping)):
         s_idx = _resolve_list_index(src, action.source_key)
         if s_idx is None:
             return (f"Source key {action.source_key!r} not found in source list "
@@ -462,30 +534,28 @@ def apply_collection_action(action: CollectionAction):
         if new_key is None:
             return "generate_id() is not available to create a unique key for list->dict."
 
-        new_d = {}
-        for k, v in dst.items():
-            if t_anchor is None and len(new_d) == 0:
-                new_d[new_key] = item
-            if tag == "top" and k == t_anchor:
-                new_d[new_key] = item
-            new_d[k] = v
-            if tag == "bottom" and k == t_anchor:
-                new_d[new_key] = item
-        if not new_d and t_anchor is None:
-            new_d[new_key] = item
-
-        dst.clear()
-        dst.update(new_d)
+        ok = _insert_relative_in_mapping(dst, new_key, item, t_anchor, tag)
+        if not ok:
+            # Fallback for plain dicts only
+            if type(dst) is dict:
+                tmp = dict(dst)
+                if new_key not in tmp:
+                    tmp[new_key] = item
+                keys = _compute_reordered_keys(tmp, new_key, t_anchor, tag)
+                dst.clear()
+                for k in keys:
+                    dst[k] = tmp[k]
+            else:
+                return "Target mapping cannot be reordered safely."
 
         if is_move:
             try:
                 src.pop(s_idx)
             except Exception as e:
-                # rollback dict insert
+                # rollback best-effort
                 try:
-                    tmp = {k: v for k, v in dst.items() if k != new_key}
-                    dst.clear()
-                    dst.update(tmp)
+                    if new_key in dst:
+                        del dst[new_key]
                 except Exception:
                     pass
                 return f"Internal error removing from source list after dict insert: {e}"

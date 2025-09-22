@@ -70,7 +70,7 @@ proxy = wrap(module)
 name_edits = {}
 code_export_str = "Test"
 
-filesystem_proxy = FolderProxy("./", text_mode=True)
+filesystem_proxy = FolderProxy("/home/lukas/test_folder", text_mode=True)
 # Main draw function, called by the GUI framework
 def draw(vis):
 
@@ -371,8 +371,9 @@ def core_draw_window(input_value, name, unique, window_func,
     if focus:
         imgui.set_next_window_focus()
 
-    if width > 0 and height > 0:
-        imgui.set_next_window_size(width, height + padding_fudge * 4)
+    if width is not None:
+        if width > 0 and height > 0:
+            imgui.set_next_window_size(width, height + padding_fudge * 4)
 
     if not decorations:
         if pos_x is not None and pos_y is not None:
@@ -1016,11 +1017,11 @@ def draw_collection(input_value, draw_state, depth, style_manager,
         obj_unique = ui_id(datatype=item.__class__, suffix=item_suffix)
 
         trigger_collapse = False
-        if isinstance(input_value, dict) and on_collapse:
+        if isinstance(input_value, (dict, MutableMapping)) and on_collapse:
             trigger_collapse = True
 
         trigger_expand = False
-        if isinstance(input_value, dict) and on_expand:
+        if isinstance(input_value, (dict, MutableMapping)) and on_expand:
             trigger_expand = True
 
         prev_tint = None
@@ -1057,7 +1058,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
                 item_changed, out_val = False, None
 
             if item_changed and apply_change and key is not None:
-                if isinstance(input_value, dict):
+                if isinstance(input_value, (dict, MutableMapping)):
                     input_value[key] = out_val
                 elif isinstance(input_value, list):
                     input_value[key] = out_val

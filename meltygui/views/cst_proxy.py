@@ -331,6 +331,29 @@ class CSTDictProxy(dict):
     Any mutation bubbles dirty to the parent CSTProxy.
     """
 
+    def reorder(self, keys: list[str]) -> None:
+        """
+        Reorder this mapping without changing values.
+        Unknown keys are ignored; missing existing keys are appended in original order.
+        """
+        # Snapshot of in in current order
+        current = dict(self)  # plain dict: preserves order since 3.7+
+        new = {}
+
+        # First, take keys in the requested order
+        for k in keys:
+            if k in current:
+                new[k] = current.pop(k)
+
+        # Then append any leftovers in their original relative order
+        for k, v in current.items():
+            new[k] = v
+
+        # Apply atomically via base methods (avoid double _touch)
+        super().clear()
+        super().update(new)
+        self._touch()
+
     def __init__(self, items_kv, parent: "CSTProxy", field_name: str):
         super().__init__()
         self._parent = parent
