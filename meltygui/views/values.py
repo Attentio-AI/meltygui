@@ -22,7 +22,9 @@ from src.lsd.gl_gui.model.core_model.new_core_model import KeyMod, Hotkey
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
 import libcst as cst
 
+from src.lsd.gl_gui.view.core_views.folders_proxy import FolderProxy
 from src.lsd.gl_gui.view.core_views.inspect_utils import get_params, set_fn_defaults
+from collections.abc import MutableMapping
 
 
 @render_wrapper(wraps=render_func)
@@ -62,23 +64,29 @@ def with_header(func, *args, **o_kwargs):
     return wrapper
 
 
-source = "x = foo(val=1)\nprint(x)\n"
+source = "x = foo(val=1)\nprint(x)\nsome_list=[0, 1, 2, 3]\n"
 module = cst.parse_module(source)
 proxy = wrap(module)
 name_edits = {}
 code_export_str = "Test"
+
+filesystem_proxy = FolderProxy("./", text_mode=True)
 # Main draw function, called by the GUI framework
 def draw(vis):
 
     draw_window(vis.root.lora_collection, name="Lora Root")
     draw_window(Melty.hotkey_registry, name="Hotkeys", is_window=True)
-    draw_window(module, nmae="CST Module")
+    draw_window(module, name="CST Module")
 
     global proxy
-    draw_window(proxy, nmae="CST Proxy")
+    draw_window(proxy, name="CST Proxy")
+
+    global filesystem_proxy
+    draw_window(filesystem_proxy, name="Filesystem")
 
     global code_export_str
     changed, code_str = draw_window(code_export_str, name="Code Export")
+
     if changed:
         print("Code changed")
         print(code_str)
@@ -148,11 +156,25 @@ def draw_cst_simple_whitespace(input_value: cst.SimpleWhitespace, **kwargs):
 
 
 # --- Assignments ---
-@cst_header(is_default_for=cst.Assign)
+def assign_name(input_value: cst.Assign):
+    if len(input_value.targets) == 1:
+        target = list(input_value.targets.values())[0]
+        if isinstance(target, cst.AssignTarget):
+            if isinstance(target.target, cst.Name):
+                return target.target.value
+            else:
+                return str(target.target)
+        else:
+            return str(target)
+    else:
+        return "Multiple Targets"
+
+@cst_header(is_default_for=cst.Assign, header_same_line=True, name_func=assign_name)
 def draw_cst_assign(input_value: cst.Assign, **kwargs):
     # An Assign has one or more targets, an AssignEqual token, and a value
-    draw_collection(input_value.targets)
+    # draw_collection(input_value.targets)
     imgui.text_colored("=", *(1, 1.1, 1, 0.5))
+    imgui.same_line()
     draw_any(input_value.value)
 
 
@@ -165,7 +187,8 @@ def draw_assign_target(input_value: cst.AssignTarget):
 # --- Names ---
 @render_func(is_default_for=cst.Name)
 def draw_cst_name(input_value: cst.Name):
-    imgui.text(f"{input_value.value}")
+    # imgui.text(f"{input_value.value}")
+    pass
 
 
 @cst_header(is_default_for=cst.Expr)
@@ -181,11 +204,9 @@ def call_name(call: cst.Call):
     else:
         return str(call.func)
 
-@cst_header(is_default_for=cst.Call, name_func=call_name)
+@cst_header(is_default_for=cst.Call, header_same_line=True, name_func=call_name)
 def draw_cst_call(input_value: cst.Call):
-    draw_any(input_value.func)
     imgui.same_line()
-
     imgui.align_text_to_frame_padding()
     imgui.text("(")
     imgui.same_line()
@@ -195,8 +216,7 @@ def draw_cst_call(input_value: cst.Call):
     imgui.text(")")
 
 
-
-@render_func(is_default_for=CSTDictProxy, show_bg=False, indent_size=0)
+@render_func(is_default_for=CSTDictProxy, header_same_line=True, show_bg=False, indent_size=0)
 def draw_cst_dict(input_value: CSTDictProxy, **kwargs):
     if len(input_value) > 0:
         # Show line numbers for dicts of simple statements
@@ -248,15 +268,93 @@ def draw_cst_arg(input_value: cst.Arg):
 
 
 # --- Individual Parameter ---
-@render_func(is_default_for=cst.Integer, header_same_line=True, show_add_delete=False)
+@render_func(is_default_for=cst.UnaryOperation, header_same_line=True, show_add_delete=False)
 def draw_cst_int(input_value, width=None):
     int_str = input_value.value
-    imgui.same_line()
     cast_str_to_int = int(int_str, 0)
+    if cast_str_to_int == 25:
+        pass
+
     changed, new_val = draw_int(cast_str_to_int, indent_size=0, show_name=False,
                                 show_add_delete=False)
     if changed:
         input_value.value = str(new_val)
+
+
+# --- Individual Parameter ---
+@render_func(is_default_for=(cst.UnaryOperation, cst.Integer), header_same_line=True, show_add_delete=False)
+def draw_cst_int(input_value, width=None):
+    # Format the magnitude to match the original literal's base/prefix/casing.
+    def _format_like(template: str, magnitude: int) -> str:
+        if template.startswith(("0x", "0X")):
+            s = hex(magnitude)  # '0x2a'
+            return s if template.startswith("0x") else "0X" + s[2:].upper()
+        elif template.startswith(("0o", "0O")):
+            s = oct(magnitude)  # '0o52'
+            return s if template.startswith("0o") else "0O" + s[2:]
+        elif template.startswith(("0b", "0B")):
+            s = bin(magnitude)  # '0b101010'
+            return s if template.startswith("0b") else "0B" + s[2:]
+        else:
+            return str(magnitude)
+
+    # Determine the current value and the template string to preserve formatting.
+    if input_value.__class__ == cst.UnaryOperation:
+        expr = input_value.expression  # expect an Integer
+        op = input_value.operator
+        inner_text = expr.value
+        magnitude = int(inner_text, 0)
+        sign = -1 if isinstance(op, cst.Minus) else 1
+        current_val = sign * magnitude
+        fmt_template = inner_text
+        is_unary = True
+    else:  # cst.Integer
+        inner_text = input_value.value
+        current_val = int(inner_text, 0)
+        fmt_template = inner_text
+        is_unary = False
+
+    changed, new_val = draw_int(current_val, indent_size=0, show_name=False, show_add_delete=False)
+    if not changed:
+        return False, input_value
+
+    if is_unary:
+        if new_val < 0:
+            # Keep UnaryOperation with Minus; update inner Integer magnitude.
+            if not isinstance(input_value.operator, cst.Minus):
+                input_value.operator = cst.Minus()
+            input_value.expression.value = _format_like(fmt_template, -new_val)
+            return True, input_value
+        else:
+            # Collapse to a plain Integer.
+            replacement = cst.Integer(value=_format_like(fmt_template, new_val))
+            return True, replacement
+    else:
+        if new_val < 0:
+            # Expand to UnaryOperation(Minus(), Integer(abs)).
+            replacement = cst.UnaryOperation(
+                operator=cst.Minus(),
+                expression=cst.Integer(value=_format_like(fmt_template, -new_val)),
+            )
+            return True, replacement
+        else:
+            # Stay as Integer; update literal text.
+            input_value.value = _format_like(fmt_template, new_val)
+            return True, input_value
+
+
+# @render_func(is_default_for=cst.Integer, header_same_line=True, show_add_delete=False)
+# def draw_cst_int(input_value, width=None):
+#     int_str = input_value.value
+#     cast_str_to_int = int(int_str, 0)
+#     if cast_str_to_int == 25:
+#         pass
+#
+#
+#     changed, new_val = draw_int(cast_str_to_int, indent_size=0, show_name=False,
+#                                 show_add_delete=False)
+#     if changed:
+#         input_value.value = str(new_val)
 
 ####################### libCST END ##################
 
@@ -810,7 +908,7 @@ def seperator(height):
     imgui.dummy(0, height / 2)
 
 
-@with_header(is_default_for=(cst.Module))
+@with_header(is_default_for=(cst.Module, MutableMapping))
 def draw_collection(input_value, draw_state, depth, style_manager,
                     meta, suffix, melty, show_search=True, on_collapse=False, on_drag_up=False, y_offset=0,
                     on_expand=False, width=None, indent_size=10, global_style=None, global_toggles=None, show_add_delete=True,
@@ -838,12 +936,12 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
     # --- configure per collection type ---
     ordered_driver = input_value
-    if isinstance(input_value, (dict, list, tuple, set)):
+    if isinstance(input_value, (dict, list, tuple, set, MutableMapping)):
         use_tint = True
         use_child_meta = True
         apply_change = True
         parent_type = input_value.__class__
-        if isinstance(input_value, dict):
+        if isinstance(input_value, (dict, MutableMapping)):
             keys = input_value.keys()
             collection = input_value
         else:
@@ -1302,7 +1400,13 @@ def draw_any(input_value, indent_size=0, *args, **kwargs):
         imgui.text_colored(f"[{meta.unique}]", 0.8, 0.5, 0.9)
 
     if kwargs['global_toggles'].force_show_datatype:
-        imgui.text_colored(f"[{input_value.__class__.__name__}]", 0.5, 0.5, 0.5)
+        # No padding
+        push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
+        push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
+        cursor_pos = imgui.get_cursor_pos()
+        draw_debug_label(f"[{input_value.__class__.__name__}]")
+
+        pop_style_var(2)
 
     return meta.view_function(input_value, *args, **kwargs)
 
@@ -1315,7 +1419,7 @@ def draw_none(input_value: NoneType):
     return False, None
 
 
-@with_header_minimal(is_default_for=(bool))
+@with_header_minimal(is_default_for=(bool), header_same_line=True)
 def draw_bool(input_value: bool):
     changed, is_checked = imgui.checkbox("##bool", input_value)
     if changed:
@@ -1454,6 +1558,10 @@ def draw_int(input_value: int, min_value=-100.0, max_value=100.0, speed=0.05):
 
     return changed, value
 
+@with_header(show_header=False, show_name=False, show_bg=True)
+def draw_debug_label(input_value:str):
+
+    imgui.text(input_value)
 
 @with_header_minimal(is_default_for=Enum)
 def draw_enum(input_value:Enum, global_style=None, style_manager=None, enum_tint=(0.3, 0.3, 0.3)):

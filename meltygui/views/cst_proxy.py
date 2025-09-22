@@ -556,7 +556,7 @@ class CSTDictProxy(dict):
 # CSTProxy with error handling
 # ==============================
 
-@exclude(["star", "header", "footer", "comma", "default_newline", "default_indent", "encoding", "has_trailing_newline"])
+@exclude(["star", "header", "footer", "comma", "lbracket", "rbracket", "default_newline", "default_indent", "encoding", "has_trailing_newline"])
 class CSTProxy:
     __slots__ = ("_node", "_field_names", "_dirty", "_parent", "_parent_field", "_error", "__dict__")
 
