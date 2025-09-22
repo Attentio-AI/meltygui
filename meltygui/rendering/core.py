@@ -316,6 +316,16 @@ def render_func(*args, **o_kwargs):
         if name == "" and is_root:
             kwargs["name"] = str(len(melty_state_registry)) + "root"
 
+        name_func = kwargs.get("name_func", None)
+        if name_func is not None:
+            try:
+                name = name_func(input_value)
+                if not isinstance(name, str):
+                    name = str(name)
+            except Exception as e:
+                name = str(f"{e}")
+
+
         key = kwargs.get("key", None)
         key = key if key is not None else ""
         if name == "" and not is_root:
@@ -332,14 +342,15 @@ def render_func(*args, **o_kwargs):
             suffix = Melty.unique_stack[Melty.depth] if Melty.depth < len(Melty.unique_stack) else name
 
         suffix = f"{suffix}_{name}"
+        unique_name = kwargs.get("unique_name", name)
 
         index = key if isinstance(key, int) else 0
-        unique = ui_id(datatype=type(input_value), suffix=suffix + name, idx=index)
+        unique = ui_id(datatype=type(input_value), suffix=suffix + unique_name, idx=index)
         imgui.begin_group()
         push_id(unique)
 
         if is_root:
-            unique = ui_id(datatype=type(input_value), suffix=name)
+            unique = ui_id(datatype=type(input_value), suffix=unique_name)
             Melty.unique_stack = []
             Melty.flow_spacing = 0.0
             melty = get_melty_state(unique)
@@ -496,6 +507,7 @@ def render_func(*args, **o_kwargs):
             ########################## The render call ##########################
             return_value = func(**clean_args)
             ######################################################################
+
 
             imgui.pop_style_var(2)
         except Exception as e:

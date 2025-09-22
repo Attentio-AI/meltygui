@@ -79,6 +79,44 @@ class CollectionAction:
 
 from enum import Enum
 
+
+def add_to_collection(collection, item, preferred_key=None):
+    """
+    Add an item to a collection (list or dict).
+    If a dict and preferred_key is given, use it if unique; else generate_id() until unique.
+    Returns:
+      - None on success, or an error message (str) on failure.
+    """
+    if hasattr(collection, "append_to"):
+        collection.append_to(item)
+        return collection
+    elif isinstance(collection, list):
+        collection.append(item)
+        return None
+    elif isinstance(collection, dict):
+        if hasattr(item, 'id'):
+            preferred_key = item.id
+        key = preferred_key
+        if key is not None and key in collection:
+            key = None
+        if key is None:
+            key = generate_id()
+        collection[key] = item
+
+    elif hasattr(collection, '__dict__'):
+        collection = collection.__dict__
+        if hasattr(item, 'id'):
+            preferred_key = str(item.id)
+
+        key = preferred_key
+        if key is not None and key in collection:
+            key = None
+        if key is None:
+            key = generate_id()
+        collection[key] = item
+    return collection
+
+
 def delete_from_collection(key, collection):
     if isinstance(collection, list):
         try:
@@ -104,38 +142,6 @@ def delete_from_collection(key, collection):
         else:
             return f"Key {key!r} not found in object's __dict__."
 
-
-def add_to_collection(collection, item, preferred_key=None):
-    """
-    Add an item to a collection (list or dict).
-    If a dict and preferred_key is given, use it if unique; else generate_id() until unique.
-    Returns:
-      - None on success, or an error message (str) on failure.
-    """
-    if isinstance(collection, list):
-        collection.append(item)
-        return None
-    elif isinstance(collection, dict):
-        if hasattr(item, 'id'):
-            preferred_key = item.id
-        key = preferred_key
-        if key is not None and key in collection:
-            key = None
-        if key is None:
-            key = generate_id()
-        collection[key] = item
-    elif hasattr(collection, '__dict__'):
-        collection = collection.__dict__
-        if hasattr(item, 'id'):
-            preferred_key = str(item.id)
-
-        key = preferred_key
-        if key is not None and key in collection:
-            key = None
-        if key is None:
-            key = generate_id()
-        collection[key] = item
-    return collection
 
 
 def apply_collection_action(action: CollectionAction):
@@ -260,9 +266,9 @@ def apply_collection_action(action: CollectionAction):
     # Work on raw containers (lists or dict views of objects)
     src = src_owner
     dst = dst_owner
-    if not isinstance(src, list) and hasattr(src, "__dict__"):
+    if not isinstance(src, (list, dict)) and hasattr(src, "__dict__"):
         src = src.__dict__
-    if not isinstance(dst, list) and hasattr(dst, "__dict__"):
+    if not isinstance(dst, (list, dict)) and hasattr(dst, "__dict__"):
         dst = dst.__dict__
 
     same_collection = (src is dst)

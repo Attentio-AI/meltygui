@@ -39,7 +39,7 @@ def with_header_minimal(func, *args, **o_kwargs):
         next_kwargs['is_tree'] = False
         next_kwargs['min_width'] = kwargs.get('min_width', 200)
 
-        return draw_header_core(**next_kwargs)
+        return core_header(**next_kwargs)
 
     setattr(wrapper, '__name__', f"{func.__name__} --- with_header_minimal")
     return wrapper
@@ -55,7 +55,7 @@ def with_header(func, *args, **o_kwargs):
         next_kwargs['outer_func'] = wrapper
         if 'width' in kwargs:
             pass
-        return draw_header_core(**next_kwargs)
+        return core_header(**next_kwargs)
 
     setattr(wrapper, '__name__', f"{func.__name__} --- with_header ")
 
@@ -121,7 +121,7 @@ def cst_header(func, *args, **o_kwargs):
         next_kwargs['y_offset'] = Melty.collection_spacing
         if 'width' in kwargs:
             pass
-        return draw_header_core(**next_kwargs)
+        return core_header(**next_kwargs)
 
     setattr(wrapper, '__name__', f"{func.__name__} --- with_header ")
 
@@ -131,6 +131,11 @@ def cst_header(func, *args, **o_kwargs):
 def draw_cst_single_line(input_value: cst.SimpleStatementLine, **kwargs):
     # An Assign has one or more targets, an AssignEqual token, and a value
     draw_any(input_value.body)
+
+
+@cst_header(is_default_for=cst.Comment)
+def draw_cst_single_line(input_value: cst.Comment, **kwargs):
+    imgui.text(f"# {input_value.value}")
 
 @cst_header(is_default_for=cst.SimpleWhitespace, show_name=False)
 def draw_cst_simple_whitespace(input_value: cst.SimpleWhitespace, **kwargs):
@@ -146,14 +151,19 @@ def draw_cst_simple_whitespace(input_value: cst.SimpleWhitespace, **kwargs):
 @cst_header(is_default_for=cst.Assign)
 def draw_cst_assign(input_value: cst.Assign, **kwargs):
     # An Assign has one or more targets, an AssignEqual token, and a value
-    for target in input_value.targets:
-        draw_any(target)
+    draw_collection(input_value.targets)
     imgui.text_colored("=", *(1, 1.1, 1, 0.5))
     draw_any(input_value.value)
 
 
 # --- Names ---
-@cst_header(is_default_for=cst.Name)
+@cst_header(is_default_for=cst.AssignTarget)
+def draw_assign_target(input_value: cst.AssignTarget):
+    draw_any(input_value.target)
+
+
+# --- Names ---
+@render_func(is_default_for=cst.Name)
 def draw_cst_name(input_value: cst.Name):
     imgui.text(f"{input_value.value}")
 
@@ -163,7 +173,15 @@ def draw_cst_expr(input_value: cst.Expr):
     # Just render the wrapped expression
     draw_any(input_value.value)
 # --- Function Calls ---
-@cst_header(is_default_for=cst.Call)
+
+# Call Name
+def call_name(call: cst.Call):
+    if isinstance(call.func, cst.Name):
+        return call.func.value
+    else:
+        return str(call.func)
+
+@cst_header(is_default_for=cst.Call, name_func=call_name)
 def draw_cst_call(input_value: cst.Call):
     draw_any(input_value.func)
     imgui.same_line()
@@ -171,28 +189,22 @@ def draw_cst_call(input_value: cst.Call):
     imgui.align_text_to_frame_padding()
     imgui.text("(")
     imgui.same_line()
-    draw_collection(input_value.args)
+    draw_any(input_value.args, horizontal=True)
     imgui.same_line()
     imgui.align_text_to_frame_padding()
     imgui.text(")")
 
-# --- Arguments ---
-# @cst_header(is_default_for=cst.Arg, show_bg=True)
-# def draw_cst_arg(input_value: cst.Arg):
-#     if input_value.keyword:
-#         imgui.text(f"{input_value.keyword.value}=")
-#         imgui.same_line()
-#     draw_any(input_value.value)
 
 
-# --- Function Definitions ---
-@cst_header(is_default_for=cst.FunctionDef, show_bg=True)
-def draw_cst_functiondef(input_value: cst.FunctionDef, **kwargs):
-    imgui.text(f"def {input_value.name.value}(")
-    draw_any(input_value.params)
-    imgui.text("):")
-    for stmt in input_value.body.body:
-        draw_any(stmt)
+@render_func(is_default_for=CSTDictProxy, show_bg=False, indent_size=0)
+def draw_cst_dict(input_value: CSTDictProxy, **kwargs):
+    if len(input_value) > 0:
+        # Show line numbers for dicts of simple statements
+        if isinstance(list(input_value.values())[0], cst.SimpleStatementLine):
+            kwargs['show_indices'] = True
+    kwargs['show_name'] = False
+
+    draw_collection(input_value, **kwargs)
 
 
 # --- Parameters ---
@@ -219,13 +231,30 @@ def draw_cst_param(input_value: cst.Param):
         draw_any(input_value.default)
 
 
+# --- Args ---
+def arg_name(arg: cst.Arg):
+    if arg.keyword:
+        return arg.keyword.value
+    elif isinstance(arg.value, cst.Name):
+        return arg.value.value
+    else:
+        return str(arg)
+
+
+@with_header_minimal(is_default_for=cst.Arg, show_bg=True, name_attrib="keyword",
+                     name_func=arg_name, show_add_delete=False, header_same_line=True)
+def draw_cst_arg(input_value: cst.Arg):
+    draw_any(input_value.value)
+
+
 # --- Individual Parameter ---
-@cst_header(is_default_for=cst.Integer)
+@render_func(is_default_for=cst.Integer, header_same_line=True, show_add_delete=False)
 def draw_cst_int(input_value, width=None):
     int_str = input_value.value
+    imgui.same_line()
     cast_str_to_int = int(int_str, 0)
-    changed, new_val = draw_int(cast_str_to_int, show_name=False,
-                                show_add_delete=False, width=100, min_width=100)
+    changed, new_val = draw_int(cast_str_to_int, indent_size=0, show_name=False,
+                                show_add_delete=False)
     if changed:
         input_value.value = str(new_val)
 
@@ -470,7 +499,7 @@ def draw_drop_target(input_value, draw_state, on_drag, do_flow, depth,
 @render_func
 def draw_header_end(global_style, unique, style_manager, show_search,
                     on_search, draw_state, collection, key,
-                    melty, show_add_delete=True):
+                    melty, show_add_delete=True, parent_show_add_delete=False):
     imgui.push_id(f"header_end_{unique}")
     bg_style = {
         "value": 0.01,
@@ -496,7 +525,7 @@ def draw_header_end(global_style, unique, style_manager, show_search,
     imgui.begin_group()
     imgui.pop_style_var(2)
 
-    if show_add_delete:
+    if parent_show_add_delete:
         imgui.same_line()
         start_x = imgui.get_cursor_screen_pos()[0]
         imgui.push_style_color(imgui.COLOR_TEXT, *search_color)
@@ -543,11 +572,11 @@ def draw_header_end(global_style, unique, style_manager, show_search,
     draw_state._end_header_size = (end_x - start_x, imgui.get_item_rect_size()[1])
 
 
-def draw_header_core(func, outer_func, input_value=None, collection=None, key=None, indent_size=10, depth=0, draw_state=None,
-                     window_stack=None, is_tree=True, is_window=False, spacing=Melty.spacing, padding=Melty.padding,
-                     show_header=True, show_bg=True, unique=0, name="", style_manager=None, global_style=None,
-                     selected_views=None, on_drag=False, on_drag_up=False, do_flow=True, melty=None, enable_flow=True,
-                     on_hover=False, next_kwargs=None, meta=None, on_same_line=False, y_offset=0, width=None, min_width=1, **kwargs):
+def core_header(func, outer_func, input_value=None, collection=None, key=None, indent_size=10, depth=0, draw_state=None,
+                window_stack=None, is_tree=True, is_window=False, spacing=Melty.spacing, padding=Melty.padding,
+                show_header=True, show_bg=True, unique=0, name="", style_manager=None, global_style=None, parent_show_add_delete=True,
+                selected_views=None, on_drag=False, on_drag_up=False, do_flow=True, melty=None, enable_flow=True, header_same_line=False,
+                on_hover=False, next_kwargs=None, meta=None, on_same_line=False, y_offset=0, width=None, min_width=1, **kwargs):
 
         if window_stack is None or len(window_stack) == 0:
             pass
@@ -645,21 +674,25 @@ def draw_header_core(func, outer_func, input_value=None, collection=None, key=No
 
             # Auto indent is decided here
             if not on_drag:
-                space_available = width - header_width
-                if not isinstance(input_value, (dict, list, tuple)) and not hasattr(input_value, '__dict__'):
-                    if draw_state.height is not None:
+                if header_same_line:
+                    same_line(spacing=0.0)
 
-                        if draw_state.expanded_height is None:
-                            draw_state.expanded_height = draw_state.height
+                else:
+                    space_available = width - header_width
+                    if (not isinstance(input_value, (dict, list, tuple)) and not hasattr(input_value, '__dict__')):
+                        if draw_state.height is not None:
 
-                        height = max(draw_state.height, draw_state.expanded_height)
+                            if draw_state.expanded_height is None:
+                                draw_state.expanded_height = draw_state.height
 
-                        if height is None or height < 79 or on_same_line:
-                            if (space_available > cutoff and draw_state.expanded) or on_same_line:
-                                header_on_same_line = True
-                                same_line(spacing=0.0)
+                            height = max(draw_state.height, draw_state.expanded_height)
 
-                if not header_on_same_line and not on_drag:
+                            if height is None or height < 79 or on_same_line:
+                                if (space_available > cutoff and draw_state.expanded) or on_same_line:
+                                    header_same_line = True
+                                    same_line(spacing=0.0)
+
+                if not header_same_line and not on_drag:
                     # ----------------- end header for dict ---------------
                     # This is the version with auto indent, probably a dict header
                     draw_header_end(**next_kwargs)
@@ -697,7 +730,7 @@ def draw_header_core(func, outer_func, input_value=None, collection=None, key=No
                     return_value = func_return_val
                 changed |= func_changed
                 #
-                if header_on_same_line and show_header:
+                if header_same_line and show_header:
                     # ----------------- end header single lines---------------
                     # This is the version for single lines probably
                     draw_header_end(**next_kwargs)
@@ -716,7 +749,7 @@ def draw_header_core(func, outer_func, input_value=None, collection=None, key=No
             style_manager.get_tint()
             Melty.bg_stack.pop()
 
-        imgui.same_line(spacing=0)
+        same_line(spacing=0)
         imgui.dummy(0, y_margin)
 
         end_y_pos = imgui.get_cursor_screen_pos()[1]
@@ -780,8 +813,8 @@ def seperator(height):
 @with_header(is_default_for=(cst.Module))
 def draw_collection(input_value, draw_state, depth, style_manager,
                     meta, suffix, melty, show_search=True, on_collapse=False, on_drag_up=False, y_offset=0,
-                    on_expand=False, width=None, indent_size=10, global_style=None, show_add_delete=True,
-                    show_instance_vars=True, unique=0, **kwargs):
+                    on_expand=False, width=None, indent_size=10, global_style=None, global_toggles=None, show_add_delete=True,
+                    show_instance_vars=True, unique=0, horizontal=False, show_indices=False, **kwargs):
     """
     Universal collection renderer
     """
@@ -840,14 +873,16 @@ def draw_collection(input_value, draw_state, depth, style_manager,
         if isinstance(collection, dict) and key not in collection:
             continue
         item = collection[key]
+
         # visual separator (object extras)
         if key is None and item is None:
             seperator(Melty.spacing[1])
             continue
 
         if hasattr(type(input_value), "__excluded_attrs__"):
-            if str(key) in type(input_value).__excluded_attrs__:
-                continue
+            if not global_toggles.force_show_excluded:
+                if str(key) in type(input_value).__excluded_attrs__:
+                    continue
 
         # apply global filter for all types
         if isinstance(key, (int, float, Enum, NoneType)):
@@ -899,9 +934,24 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
             y_offset = Melty.collection_spacing
             all_meta.append(item_meta)
+            if show_indices:
+                display_name = f"{str(idx)}"
+            else:
+                display_name = None
+
+            if horizontal:
+                if item_meta is not None and hasattr(item_meta, 'tmp_draw_state'):
+                    imgui.same_line()
+                    if item_meta.tmp_draw_state.width is not None:
+                        space_left = imgui.get_content_region_available()[0] - item_meta.tmp_draw_state.width
+                        if space_left < 0:
+                            imgui.new_line()
+
             item_changed, out_val = draw_any(item, indent_size=10, key=key, meta=item_meta, trigger_collapse=trigger_collapse,
                              trigger_expand=trigger_expand, y_offset=y_offset, on_collapse=on_collapse, on_expand=on_expand,
-                             collection=ordered_driver, suffix=obj_unique, name=key_str, show_add_delete=show_add_delete)
+                             collection=ordered_driver, suffix=obj_unique, name=key_str, display_name=display_name,
+                                             parent_show_add_delete=show_add_delete,
+                                             show_add_delete=show_add_delete)
 
             if isinstance(out_val, CollectionAction):
                 # perform the move - this should mutate the plain dicts you attached
@@ -936,12 +986,13 @@ def draw_collection(input_value, draw_state, depth, style_manager,
         last_key = None
 
     last_meta = all_meta[-1] if len(all_meta) > 0 else None
-    last_draw_state = last_meta.tmp_draw_state if last_meta is not None else draw_state
+    if hasattr(last_meta, 'tmp_draw_state'):
+        last_draw_state = last_meta.tmp_draw_state if last_meta is not None else draw_state
 
-    last_item = collection[last_key] if (isinstance(collection, dict) and last_key in collection) else None
-    _, flow_spacing = draw_drop_target(do_flow=True, enable_flow=True, melty=melty, offset=indent_size,
-                                       collection=ordered_driver, key=last_key, on_drag=False,
-                                       draw_state=last_draw_state, tag="bottom")
+        last_item = collection[last_key] if (isinstance(collection, dict) and last_key in collection) else None
+        _, flow_spacing = draw_drop_target(do_flow=True, enable_flow=True, melty=melty, offset=indent_size,
+                                           collection=ordered_driver, key=last_key, on_drag=False,
+                                           draw_state=last_draw_state, tag="bottom")
     # ------------------ end spacing -----------
 
     if drew_any:
@@ -1038,14 +1089,17 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
 
 
 @render_func
-def draw_header(input_value=None, name="", meta=None, unique=None, is_tree=True,
-                show_name=True, show_type=False, show_unique=False,
+def draw_header(input_value=None, name="", display_name=None, meta=None, unique=None, is_tree=True,
+                show_name=True, name_func=None, show_type=False, show_unique=False,
                 on_search=False, trigger_collapse=False, trigger_expand=False,
                 draw_state=None, is_window=False, on_click=False, show_tint=True,
                 on_hover=False, highlight=False, opacity=1.0, show_add_delete=True,
                 on_right_click=False, show_bg=False, selected_views=None, is_hovered=False,
                 on_drag=False, on_drag_released=False, on_action=None, style_manager=None,
                 global_style=None, global_toggles=None, width=None, depth=0, shift_click=False):
+
+    if display_name is not None:
+        name = display_name
 
     on_change = False
     return_val = on_action
@@ -1139,7 +1193,7 @@ def draw_header(input_value=None, name="", meta=None, unique=None, is_tree=True,
         if show_add_delete:
             if imgui.button(f"\uf067##add", width=20):
                 # Use str as default hinted type
-                hinted_type = str
+                hinted_type = NoneType
                 if meta.field_type is not None and hasattr(meta.field_type, "__args__"):
                     if len(meta.field_type.__args__) == 2:
                         hinted_type = meta.field_type.__args__[1]
@@ -1248,7 +1302,7 @@ def draw_any(input_value, indent_size=0, *args, **kwargs):
         imgui.text_colored(f"[{meta.unique}]", 0.8, 0.5, 0.9)
 
     if kwargs['global_toggles'].force_show_datatype:
-        imgui.text_colored(f"[{type(input_value).__name__}]", 0.5, 0.5, 0.5)
+        imgui.text_colored(f"[{input_value.__class__.__name__}]", 0.5, 0.5, 0.5)
 
     return meta.view_function(input_value, *args, **kwargs)
 
@@ -1273,6 +1327,8 @@ def draw_bool(input_value: bool):
 @with_header_minimal(is_default_for=(str))
 def draw_str(input_value: str):
 
+    if "1340" in input_value:
+        pass
     line_count = input_value.count('\n') + 1
     line_height = imgui.get_text_line_height_with_spacing()
     height = max(0, min(200, line_count * line_height + 8))
