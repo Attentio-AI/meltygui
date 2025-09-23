@@ -76,14 +76,14 @@ def draw(vis):
 
     draw_window(vis.root.lora_collection, name="Lora Root")
     draw_window(Melty.hotkey_registry, name="Hotkeys", is_window=True)
-    draw_window(module, name="CST Module")
-
+    # draw_window(module, name="CST Module")
+    #
     global proxy
     draw_window(proxy, name="CST Proxy")
-
+    #
     global filesystem_proxy
     draw_window(filesystem_proxy, name="Filesystem")
-
+    #
     global code_export_str
     changed, code_str = draw_window(code_export_str, name="Code Export")
 
@@ -100,7 +100,7 @@ def draw(vis):
             print("Error parsing code")
 
 
-    draw_window(export_code, name="Code Export")
+    # draw_window(export_code, name="Code Export")
 
     # draw_any(vis.root.synth_collection, is_window=False)
     # #
