@@ -191,7 +191,10 @@ def draw_cst_name(input_value: cst.Name):
     pass
 
 
-@cst_header(is_default_for=cst.Expr, header_same_line=True)
+def expr_name(call: cst.Call):
+        return ""
+@cst_header(is_default_for=cst.Expr, header_same_line=True, show_header=False,
+            show_bg=False, show_name=False, name_func=expr_name)
 def draw_cst_expr(input_value: cst.Expr):
     # Just render the wrapped expression
     draw_any(input_value.value)
@@ -202,7 +205,7 @@ def call_name(call: cst.Call):
     if isinstance(call.func, cst.Name):
         return call.func.value
     else:
-        return str(call.func)
+        return ""
 
 @cst_header(is_default_for=cst.Call, header_same_line=True, name_func=call_name)
 def draw_cst_call(input_value: cst.Call):
@@ -259,9 +262,7 @@ def arg_name(arg: cst.Arg):
     elif isinstance(arg.value, cst.Name):
         return arg.value.value
     else:
-        return str(arg)
-
-
+        return None
 @with_header_minimal(is_default_for=cst.Arg, show_bg=True, name_attrib="keyword",
                      name_func=arg_name, show_add_delete=False, header_same_line=True)
 def draw_cst_arg(input_value: cst.Arg):
@@ -983,6 +984,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
             if not global_toggles.force_show_excluded:
                 if str(key) in type(input_value).__excluded_attrs__:
                     continue
+        display_name = None
 
         # apply global filter for all types
         if isinstance(key, (int, float, Enum, NoneType)):
@@ -1034,10 +1036,8 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
             y_offset = Melty.collection_spacing
             all_meta.append(item_meta)
-            if show_indices:
+            if show_indices or isinstance(collection, (list, tuple, set)):
                 display_name = f"{str(idx)}"
-            else:
-                display_name = None
 
             if horizontal:
                 if item_meta is not None and hasattr(item_meta, 'tmp_draw_state'):
@@ -1095,7 +1095,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
                                            draw_state=last_draw_state, tag="bottom")
     # ------------------ end spacing -----------
 
-    if drew_any:
+    if drew_any and len(keys) > 1:
         imgui.dummy(0, Melty.end_collection_spacing)
 
     return changed, input_value
@@ -1240,7 +1240,7 @@ def draw_header(input_value=None, name="", display_name=None, meta=None, unique=
         same_line()
     cursor_start = imgui.get_cursor_pos()
 
-    if show_name and name != "":
+    if show_name and name != "" and name is not None and name != "None":
         if isinstance(input_value, (dict, MutableMapping)):
             folder_icon = "\uf07b"
             imgui.text_colored(folder_icon, *name_color)
@@ -1578,6 +1578,9 @@ def draw_function(input_value, unique):
 
 @with_header_minimal(is_default_for=(int), wraps=render_func)
 def draw_int(input_value: int, min_value=-100.0, max_value=100.0, speed=0.05):
+    int_text_width = imgui.calc_text_size(str(input_value))[0]
+
+    imgui.set_next_item_width(int_text_width + 20)
     changed, value = imgui.drag_int("##int", input_value,
                                       change_speed=speed,
                                       min_value=min_value,

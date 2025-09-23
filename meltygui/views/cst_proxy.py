@@ -126,7 +126,7 @@ def _fingerprint_struct(obj):
     return _fp_primitive(obj)
 
 
-def _hash_key_for_elem(elem, digest_size=12) -> str:
+def _hash_key_for_elem(elem, digest_size=3) -> str:
     """
     Stable short hex id for an element based on its trivia-insensitive structure.
     digest_size=12 -> 24 hex chars.
