@@ -359,7 +359,7 @@ class CSTDictProxy(dict):
         self._parent = parent
         self._field = field_name
         for k, v in items_kv:
-            w = wrap(v)
+            w = cst_wrap(v)
             if isinstance(w, CSTProxy):
                 w._set_parent(parent, field_name)
             super().__setitem__(k, w)
@@ -370,7 +370,7 @@ class CSTDictProxy(dict):
 
     # --- mutators ---
     def __setitem__(self, k, v):
-        w = wrap(v)
+        w = cst_wrap(v)
         if isinstance(w, CSTProxy):
             w._set_parent(self._parent, self._field)
         super().__setitem__(k, w)
@@ -397,7 +397,7 @@ class CSTDictProxy(dict):
     def setdefault(self, k, default=None):
         if k in self:
             return super().get(k)
-        w = wrap(default)
+        w = cst_wrap(default)
         if isinstance(w, CSTProxy):
             w._set_parent(self._parent, self._field)
         super().__setitem__(k, w)
@@ -410,13 +410,13 @@ class CSTDictProxy(dict):
         it = other.items() if hasattr(other, "items") else other
         changed = False
         for k, v in it:
-            w = wrap(v)
+            w = cst_wrap(v)
             if isinstance(w, CSTProxy):
                 w._set_parent(self._parent, self._field)
             super().__setitem__(k, w);
             changed = True
         for k, v in kw.items():
-            w = wrap(v)
+            w = cst_wrap(v)
             if isinstance(w, CSTProxy):
                 w._set_parent(self._parent, self._field)
             super().__setitem__(k, w);
@@ -562,7 +562,7 @@ class CSTDictProxy(dict):
             value = factory(hint_elem)
 
         # wrap & wire
-        w = wrap(value)
+        w = cst_wrap(value)
         if isinstance(w, CSTProxy):
             w._set_parent(parent_px, self._field)
 
@@ -647,7 +647,7 @@ class CSTProxy:
             if isinstance(val, collections.abc.Sequence) and not isinstance(val, str):
                 self.__dict__[name] = _make_sequence_proxy(self, name, list(val))
             else:
-                child = wrap(val)
+                child = cst_wrap(val)
                 if isinstance(child, CSTProxy):
                     child._set_parent(self, name)
                 self.__dict__[name] = child
@@ -764,9 +764,9 @@ class CSTProxy:
                 n = v.node if isinstance(v, CSTProxy) else v
                 if not isinstance(n, cst.CSTNode):
                     try:
-                        self.__dict__[name] = wrap(_autobox_expr(n, original))
+                        self.__dict__[name] = cst_wrap(_autobox_expr(n, original))
                     except Exception:
-                        self.__dict__[name] = wrap(_placeholder_like(original))
+                        self.__dict__[name] = cst_wrap(_placeholder_like(original))
                     repaired_any = True
 
             # 4) Other scalars: rely on _to_libcst during rebuild
@@ -797,7 +797,7 @@ class CSTProxy:
                 return seq.append_to(value=None, factory=None, key=key)
 
         # Wrap & ded parent if needed, then append via seq
-        w = wrap(value)
+        w = cst_wrap(value)
         if isinstance(w, CSTProxy):
             w._set_parent(self, field_name)
         if key is None:
@@ -808,7 +808,7 @@ class CSTProxy:
 
     def __setattr__(self, name, value):
         if name in getattr(self, "_field_names", ()):
-            w = wrap(value)
+            w = cst_wrap(value)
             if isinstance(w, CSTProxy):
                 w._set_parent(self, name)
             self.__dict__[name] = w
@@ -839,11 +839,11 @@ def _make_sequence_proxy(parent_px: CSTProxy, field_name: str, seq_values: list)
 # Public wrapper
 # ==============================
 
-def wrap(obj):
+def cst_wrap(obj):
     if isinstance(obj, CSTProxy):  return obj
     if isinstance(obj, cst.CSTNode) and dataclasses.is_dataclass(obj):
         return CSTProxy(obj)
     if isinstance(obj, collections.abc.Sequence) and not isinstance(obj, str):
         # bare sequences outside of fields become simple wrapped lists
-        return [wrap(x) for x in obj]
+        return [cst_wrap(x) for x in obj]
     return obj

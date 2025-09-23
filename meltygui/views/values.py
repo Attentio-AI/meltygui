@@ -66,7 +66,7 @@ def with_header(func, *args, **o_kwargs):
 
 source = "x = foo(val=1)\nprint(x)\nsome_list=[0, 1, 2, 3]\n"
 module = cst.parse_module(source)
-proxy = wrap(module)
+proxy = cst_wrap(module)
 name_edits = {}
 code_export_str = "Test"
 
@@ -93,7 +93,7 @@ def draw(vis):
         try:
             code_export_str = code_str
             new_module = cst.parse_module(code_str)
-            proxy = wrap(new_module)
+            proxy = cst_wrap(new_module)
             print("Code parsed successfully")
         except Exception as e:
             print_colored_traceback(e)
@@ -135,17 +135,17 @@ def cst_header(func, *args, **o_kwargs):
 
     return wrapper
 
-@cst_header(is_default_for=cst.SimpleStatementLine)
+@cst_header(is_default_for=cst.SimpleStatementLine, header_same_line=True)
 def draw_cst_single_line(input_value: cst.SimpleStatementLine, **kwargs):
     # An Assign has one or more targets, an AssignEqual token, and a value
     draw_any(input_value.body)
 
 
 @cst_header(is_default_for=cst.Comment)
-def draw_cst_single_line(input_value: cst.Comment, **kwargs):
+def draw_comment(input_value: cst.Comment, **kwargs):
     imgui.text(f"# {input_value.value}")
 
-@cst_header(is_default_for=cst.SimpleWhitespace, show_name=False)
+@cst_header(is_default_for=cst.SimpleWhitespace, header_same_line=True, show_name=False)
 def draw_cst_simple_whitespace(input_value: cst.SimpleWhitespace, **kwargs):
     # An Assign has one or more targets, an AssignEqual token, and a value
     imgui.same_line()
@@ -191,7 +191,7 @@ def draw_cst_name(input_value: cst.Name):
     pass
 
 
-@cst_header(is_default_for=cst.Expr)
+@cst_header(is_default_for=cst.Expr, header_same_line=True)
 def draw_cst_expr(input_value: cst.Expr):
     # Just render the wrapped expression
     draw_any(input_value.value)
@@ -216,7 +216,8 @@ def draw_cst_call(input_value: cst.Call):
     imgui.text(")")
 
 
-@render_func(is_default_for=CSTDictProxy, header_same_line=True, show_bg=False, indent_size=0)
+@render_func(is_default_for=CSTDictProxy, header_same_line=True,
+             show_bg=False, indent_size=0)
 def draw_cst_dict(input_value: CSTDictProxy, **kwargs):
     if len(input_value) > 0:
         # Show line numbers for dicts of simple statements
@@ -1240,6 +1241,11 @@ def draw_header(input_value=None, name="", display_name=None, meta=None, unique=
     cursor_start = imgui.get_cursor_pos()
 
     if show_name and name != "":
+        if isinstance(input_value, (dict, MutableMapping)):
+            folder_icon = "\uf07b"
+            imgui.text_colored(folder_icon, *name_color)
+            same_line(spacing=0.0)
+
         imgui.align_text_to_frame_padding()
         padding = imgui.get_style().frame_padding.x
         text_width = imgui.calc_text_size(name)[0]
@@ -1254,10 +1260,32 @@ def draw_header(input_value=None, name="", display_name=None, meta=None, unique=
             imgui.push_style_var(imgui.STYLE_FRAME_BORDERSIZE, 2.0)
             imgui.push_style_color(imgui.COLOR_BORDER, *outline_color)
 
-        imgui.button(f"{name}", width=text_width + padding * 2)
-        imgui.pop_style_color(4)
-        imgui.pop_style_var(2)
+        min_name_width = 30.0
+        name_width = max(text_width + padding * 2, min_name_width)
+        if not draw_state._name_edit:
+            imgui.button(f"{name}", width=name_width)
+            if imgui.is_mouse_double_clicked(0) and imgui.is_item_hovered():
+                draw_state._name_edit = True
+                imgui.set_keyboard_focus_here(0)
 
+            imgui.pop_style_color(4)
+            imgui.pop_style_var(2)
+        else:
+            imgui.set_next_item_width(name_width)
+            # Selected text on focus
+            flags = imgui.INPUT_TEXT_ENTER_RETURNS_TRUE | imgui.INPUT_TEXT_AUTO_SELECT_ALL
+            changed, new_name = imgui.input_text(f"##edit{name}_{unique}", name,
+                                                 flags=flags)
+            imgui.pop_style_color(4)
+            imgui.pop_style_var(2)
+            if changed:
+                draw_state._name_edit = False
+
+            if imgui.is_key_pressed(imgui.KEY_ESCAPE):
+                draw_state._name_edit = False
+
+            if not imgui.is_item_active():
+                draw_state._name_edit = False
         if on_drag:
             imgui.pop_style_color(1)
             imgui.pop_style_var(1)

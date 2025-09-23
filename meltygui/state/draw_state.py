@@ -84,6 +84,7 @@ class DrawState(DictConversion):
         self.enabled = True
         self._end_header_size = (0,0)
         self._max_indent = 0
+        self._name_edit = False
 
         self.track_mouse = False
 

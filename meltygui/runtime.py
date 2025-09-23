@@ -40,7 +40,7 @@ class OperationType(Enum):
     MOVE = 'move'
     ADD = 'add'
     DELETE = 'delete'
-
+    NAME_CHANGE = 'name_change'
 
 class CollectionAction:
     def __init__(self,
@@ -659,6 +659,25 @@ class Melty:
     _root_by_module: dict[str, cst.Module] = {}
     _gen_by_module: dict[str, int] = {}
 
+    save_draw_state_for = 1
+    spacing = (3, 1)
+    padding = (3, 3)
+    end_collection_spacing = 5
+    collection_spacing = 5
+    header_indent = 150
+
+    vis = None
+    type_defaults = {}
+    unique_stack = [0] * max_depth
+    size_stack = []
+    window_stack = []
+    window_hovered = False
+    global_attrs = {}
+    depth_state_stack = []
+    flow_spacing = 0.0
+    bg_stack = []
+    input_value_stack = [None]
+
     @classmethod
     def begin_frame(cls, module_id: str, root: cst.Module):
         cls._root_by_module[module_id] = root
@@ -721,24 +740,7 @@ class Melty:
         return (glfw.get_key(cls.vis.window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS or
                      glfw.get_key(cls.vis.window, glfw.KEY_RIGHT_SHIFT) == glfw.PRESS)
 
-    save_draw_state_for = 1
-    spacing = (3,1)
-    padding = (3,3)
-    end_collection_spacing = 10
-    collection_spacing = 10
-    header_indent = 150
 
-    vis = None
-    type_defaults = {}
-    unique_stack = [0] * max_depth
-    size_stack = []
-    window_stack = []
-    window_hovered = False
-    global_attrs = {}
-    depth_state_stack = []
-    flow_spacing = 0.0
-    bg_stack = []
-    input_value_stack = [None]
 
     @classmethod
     def is_window_enabled(cls):
