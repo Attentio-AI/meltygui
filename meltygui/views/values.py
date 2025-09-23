@@ -143,16 +143,18 @@ def draw_cst_single_line(input_value: cst.SimpleStatementLine, **kwargs):
 
 @cst_header(is_default_for=cst.Comment)
 def draw_comment(input_value: cst.Comment, **kwargs):
-    imgui.text(f"# {input_value.value}")
+    # imgui.text(f"# {input_value.value}")
+    pass
 
 @cst_header(is_default_for=cst.SimpleWhitespace, header_same_line=True, show_name=False)
 def draw_cst_simple_whitespace(input_value: cst.SimpleWhitespace, **kwargs):
     # An Assign has one or more targets, an AssignEqual token, and a value
-    imgui.same_line()
+    # imgui.same_line()
+    pass
 
-    imgui.button("SWS")
-    imgui.set_item_allow_overlap()
-    imgui.same_line()
+    # imgui.button("SWS")
+    # imgui.set_item_allow_overlap()
+    # imgui.same_line()
 
 
 # --- Assignments ---
@@ -191,11 +193,9 @@ def draw_cst_name(input_value: cst.Name):
     pass
 
 
-def expr_name(call: cst.Call):
-        return ""
-@cst_header(is_default_for=cst.Expr, header_same_line=True, show_header=False,
-            show_bg=False, show_name=False, name_func=expr_name)
-def draw_cst_expr(input_value: cst.Expr):
+@cst_header(is_default_for=(cst.Expr, cst.Element), header_same_line=True, show_header=False,
+            show_bg=False, show_name=False)
+def draw_cst_expr(input_value):
     # Just render the wrapped expression
     draw_any(input_value.value)
 # --- Function Calls ---
@@ -218,6 +218,22 @@ def draw_cst_call(input_value: cst.Call):
     imgui.align_text_to_frame_padding()
     imgui.text(")")
 
+
+@with_header(is_default_for=cst.Module, show_add_delete=False)
+def draw_cst_module(input_value: cst.Module):
+    return draw_any(input_value.body, show_name=False)
+
+@cst_header(is_default_for=cst.List, show_name=False, show_bg=False,
+            header_same_line=True)
+def draw_cst_list(input_value: cst.List):
+    imgui.same_line()
+    imgui.align_text_to_frame_padding()
+    imgui.text("[")
+    imgui.same_line()
+    draw_any(input_value.elements, horizontal=True)
+    imgui.same_line()
+    imgui.align_text_to_frame_padding()
+    imgui.text("]")
 
 @render_func(is_default_for=CSTDictProxy, header_same_line=True,
              show_bg=False, indent_size=0)
@@ -254,6 +270,11 @@ def draw_cst_param(input_value: cst.Param):
         imgui.same_line()
         draw_any(input_value.default)
 
+
+# @with_header(is_default_for=cst.Module, show_add_delete=False)
+# def draw_cst_module(input_value: cst.Module):
+#
+#     return draw_any(input_value.body, show_name=False)
 
 # --- Args ---
 def arg_name(arg: cst.Arg):
@@ -911,7 +932,7 @@ def seperator(height):
     imgui.dummy(0, height / 2)
 
 
-@with_header(is_default_for=(cst.Module, MutableMapping))
+@with_header(is_default_for=(MutableMapping))
 def draw_collection(input_value, draw_state, depth, style_manager,
                     meta, suffix, melty, show_search=True, on_collapse=False, on_drag_up=False, y_offset=0,
                     on_expand=False, width=None, indent_size=10, global_style=None, global_toggles=None, show_add_delete=True,
@@ -1429,11 +1450,41 @@ def draw_any(input_value, indent_size=0, *args, **kwargs):
         imgui.text_colored(f"[{meta.unique}]", 0.8, 0.5, 0.9)
 
     if kwargs['global_toggles'].force_show_datatype:
+        start_pos = imgui.get_cursor_screen_pos()
+
+
+        datatype_text = f"{input_value.__class__.__name__} ({type(input_value).__name__}) {kwargs.get('name', '')}"
+
+        # Draw bg rect
+        rect = (start_pos[0] - 4, start_pos[1] - 2,
+                start_pos[0] + imgui.calc_text_size(datatype_text)[0] + 4,
+                start_pos[1] + imgui.get_text_line_height_with_spacing() + 2)
+
+        if imgui.is_mouse_hovering_rect(*rect[0:2], *rect[2:4]):
+            imgui.get_foreground_draw_list().add_rect_filled(*rect, col=imgui.get_color_u32_rgba(0.1, 0.1, 0.1, 0.7), rounding=4.0)
+            imgui.get_foreground_draw_list().add_rect(*rect, col=imgui.get_color_u32_rgba(0.8, 0.5, 0.9, 0.8), rounding=4.0, thickness=1.0)
+
+            # Draw text
+            imgui.get_foreground_draw_list().add_text(start_pos[0], start_pos[1],
+                                                   imgui.get_color_u32_rgba(0.8, 0.5, 0.9, 1.0), datatype_text)
+
+        else:
+            imgui.get_window_draw_list().add_rect_filled(*rect, col=imgui.get_color_u32_rgba(0.1, 0.1, 0.1, 0.7),
+                                                          rounding=4.0)
+            imgui.get_window_draw_list().add_rect(*rect, col=imgui.get_color_u32_rgba(0.8, 0.5, 0.9, 0.8),
+                                                   rounding=4.0, thickness=1.0)
+
+            # Draw text
+            imgui.get_window_draw_list().add_text(start_pos[0], start_pos[1],
+                                                   imgui.get_color_u32_rgba(0.8, 0.5, 0.9, 1.0), datatype_text)
+
         # No padding
         push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
         push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
         cursor_pos = imgui.get_cursor_pos()
-        draw_debug_label(f"[{input_value.__class__.__name__}]")
+
+        # Reset cursor to avoid spacing issues
+        imgui.set_cursor_pos(cursor_pos)
 
         pop_style_var(2)
 
