@@ -10,7 +10,7 @@ from typing import Any
 import imgui
 
 from src.lsd.gl_gui.model.core_model.new_core_model import DrawState, Hotkey
-from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, request_render
+from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, request_render, print_stack_trace
 from src.lsd.gl_gui.melty import Melty, ActionType, apply_collection_action, MeltyState, DepthState, \
     delete_from_collection
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
@@ -352,6 +352,7 @@ def render_func(*args, **o_kwargs):
         if is_root:
             unique = ui_id(datatype=type(input_value), suffix=unique_name)
             Melty.unique_stack = []
+            Melty.draw_state_stack = []
             Melty.flow_spacing = 0.0
             melty = get_melty_state(unique)
             melty.nearest_drop_distance = melty.max_distance
@@ -392,7 +393,7 @@ def render_func(*args, **o_kwargs):
         start_indent = Melty.current_indent
         start_indent_count = Melty.indent_count
         start_unindent_count = Melty.unindent_count
-
+        is_initial_draw_state = True
         nested_call = input_value == Melty.input_value_stack[-1] if len(Melty.input_value_stack) > 0 else False
         Melty.input_value_stack.append(input_value)
         inc_depth = False
@@ -469,12 +470,15 @@ def render_func(*args, **o_kwargs):
                 if param not in kwargs and param != "kwargs" and param != 'args' and param != 'o_kwargs' and param != 'next_kwargs':
                     set_default(param, None)
 
+            is_initial_draw_state = draw_state in Melty.draw_state_stack
             inc_depth = "draw_state" in wanted_params or is_root
             if inc_depth:
                 if len(Melty.unique_stack) <= Melty.depth:
                     Melty.unique_stack.append(unique)
+                    Melty.draw_state_stack.append(draw_state)
                 else:
                     Melty.unique_stack[Melty.depth] = unique
+                    Melty.draw_state_stack[Melty.depth] = draw_state
 
                 Melty.depth = Melty.depth + 1
             kwargs['depth'] = Melty.depth
@@ -517,6 +521,7 @@ def render_func(*args, **o_kwargs):
                 # Needs to go after mouse event check
                 imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
                 imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
+
                 pop_id()
                 imgui.end_group()
 
@@ -524,15 +529,28 @@ def render_func(*args, **o_kwargs):
                 unindent_count = Melty.unindent_count - start_unindent_count
                 total_indent = indent_count - unindent_count
                 indent_size = 10 * total_indent
+                item_rect = imgui.get_item_rect_size()
 
                 # if draw_state.width is None:
                 imgui.pop_style_var(2)
                 if not kwargs.get("on_drag", False):
-                    original_width = draw_state.width
-                    draw_state.width = imgui.get_item_rect_size()[0]
-                    draw_state.height = imgui.get_item_rect_size()[1]
-                    if draw_state.width != original_width:
-                        request_render()
+                    original_width = draw_state._bounding_width
+                    original_height = draw_state._bounding_height
+                    if is_initial_draw_state:
+                        draw_state._bounding_width = max(draw_state._bounding_width, item_rect[0])
+                    else:
+                        draw_state._bounding_width = item_rect[0]
+
+                    if is_initial_draw_state:
+                        draw_state._bounding_height = max(draw_state._bounding_height, item_rect[1])
+                    else:
+                        draw_state._bounding_height = item_rect[1]
+
+                    draw_state.width = item_rect[0]
+                    draw_state.height = item_rect[1]
+
+                    # if draw_state._bounding_width != original_width or draw_state._bounding_height != original_height:
+                    request_render()
                 if inc_depth:
                     Melty.depth = Melty.depth - 1
 
@@ -643,6 +661,7 @@ def render_func(*args, **o_kwargs):
                         melty.hover_stack = []
                         melty.hotkey_stack = []
                         melty.unique_stack = []
+                        Melty.draw_state_stack = []
 
                         if not melty.nearest_drop_target is None:
                             melty.drag_drop_target = melty.nearest_drop_target

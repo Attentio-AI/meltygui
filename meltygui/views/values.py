@@ -26,6 +26,8 @@ from src.lsd.gl_gui.view.core_views.folders_proxy import FolderProxy
 from src.lsd.gl_gui.view.core_views.inspect_utils import get_params, set_fn_defaults
 from collections.abc import MutableMapping
 
+from src.lsd.gl_gui.view.core_views.offscreen import Offscreen
+
 
 @render_wrapper(wraps=render_func)
 def with_header_minimal(func, *args, **o_kwargs):
@@ -695,7 +697,7 @@ def draw_header_end(global_style, unique, style_manager, show_search,
 
 
 def core_header(func, outer_func, input_value=None, collection=None, key=None, indent_size=10, depth=0, draw_state=None,
-                window_stack=None, is_tree=True, is_window=False, spacing=Melty.spacing, padding=Melty.padding,
+                window_stack=None, is_tree=True, is_window=False, spacing=Melty.spacing, padding=Melty.padding, show_name=True,
                 show_header=True, show_bg=True, unique=0, name="", style_manager=None, global_style=None, parent_show_add_delete=True,
                 selected_views=None, on_drag=False, on_drag_up=False, do_flow=True, melty=None, enable_flow=True, header_same_line=False,
                 on_hover=False, next_kwargs=None, meta=None, on_same_line=False, y_offset=0, width=None, min_width=1, **kwargs):
@@ -721,6 +723,9 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
         Melty.indent(indent_size)
 
         # ----------------- top spacing -----------
+        if not show_name:
+            enable_flow = False
+
         _, flow_spacing = draw_drop_target(do_flow=True, enable_flow=enable_flow,
                          collection=collection, key=key, on_drag=False,
                          draw_state=draw_state, tag="top")
@@ -732,6 +737,8 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
                 width = min_width
                 draw_state.width = min_width
         else:
+            if min_width == 0:
+                min_width = 1e9
             draw_state.width = min(width, min_width)
 
         content_region = imgui.get_content_region_available()[0]
@@ -1564,7 +1571,13 @@ def draw_tuple(input_value: tuple, is_tree=False, draw_state=None, show_bg=False
     return changed, input_value
 
 @with_header_minimal(is_default_for=float)
-def draw_float(input_value:float, min_value=-100.0, max_value=100.0, speed=0.01):
+def draw_float(input_value:float, min_value=-100.0, max_value=100.0, speed=0.01, unique=0, draw_state=None):
+    w, h = draw_state._bounding_width, draw_state._bounding_height
+
+    if Offscreen.mark_start(str(unique), w, 30):
+        imgui.text("Hello there")
+    Offscreen.mark_end()
+
     changed, value = imgui.drag_float("##float", input_value,
                                       change_speed=speed,
                                       min_value=min_value,

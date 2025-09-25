@@ -74,6 +74,9 @@ class DrawState(DictConversion):
         self.height = None
         self.expanded_height = None
         self.width = None
+        self._bounding_width = 0
+        self._bounding_height = 0
+
         self._left_rel = None
         self._min_width = None
         self.top = None
