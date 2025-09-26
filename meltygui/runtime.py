@@ -5,6 +5,7 @@ import glfw
 import imgui
 import libcst as cst
 from src.lsd.gl_gui.model.core_model.core_enums import generate_id
+from src.lsd.gl_gui.view.core_views.blit_offscreen import TileCacheMinimal
 
 
 class Action:
@@ -667,6 +668,7 @@ class Melty:
     header_indent = 150
 
     vis = None
+    imgui_crashed = False
     type_defaults = {}
     unique_stack = [0] * max_depth
     size_stack = []
@@ -678,7 +680,7 @@ class Melty:
     bg_stack = []
     draw_state_stack = []
     input_value_stack = [None]
-
+    cache = TileCacheMinimal()
     @classmethod
     def begin_frame(cls, module_id: str, root: cst.Module):
         cls._root_by_module[module_id] = root

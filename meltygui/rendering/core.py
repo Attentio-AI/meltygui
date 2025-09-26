@@ -10,7 +10,8 @@ from typing import Any
 import imgui
 
 from src.lsd.gl_gui.model.core_model.new_core_model import DrawState, Hotkey
-from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, request_render, print_stack_trace
+from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, request_render, print_stack_trace, \
+    push_style_var, pop_style_var
 from src.lsd.gl_gui.melty import Melty, ActionType, apply_collection_action, MeltyState, DepthState, \
     delete_from_collection
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
@@ -69,11 +70,16 @@ id_stack = []
 stack_holder = {}
 def push_id(unique_id):
     global id_stack
+    if Melty.imgui_crashed:
+        return
     imgui.push_id(str(unique_id))
     id_stack.append(unique_id)
 
 def pop_id():
     global id_stack
+    if Melty.imgui_crashed:
+        return
+
     imgui.pop_id()
     id_stack.pop()
 
@@ -200,7 +206,7 @@ def render_wrapper(*o_args, **o_kwargs):
 
             return out_func
         except Exception as e:
-            print_colored_traceback()
+            print_colored_traceback(*sys.exc_info())
             return False, None
     #
     # do_wrap = o_kwargs.pop('wraps', None)
@@ -287,8 +293,6 @@ def render_func(*args, **o_kwargs):
     """
     @wraps(func)
     def wrapper(*args, **kwargs):
-        __tracebackhide__ = True
-
         start_time = time.time()
         if kwargs.get("bypass", False):
             kwargs.pop("bypass", None)
@@ -502,25 +506,30 @@ def render_func(*args, **o_kwargs):
             spacing = kwargs.get('spacing', Melty.spacing)
             padding = kwargs.get('padding', Melty.padding)
 
-            imgui.push_style_var(imgui.STYLE_ITEM_SPACING, spacing)
-            imgui.push_style_var(imgui.STYLE_FRAME_PADDING, padding)
+            push_style_var(imgui.STYLE_ITEM_SPACING, spacing)
+            push_style_var(imgui.STYLE_FRAME_PADDING, padding)
             #
             # start_indent_count = Melty.indent_count
             # start_unindent_count = Melty.unindent_count
 
             ########################## The render call ##########################
-            return_value = func(**clean_args)
+            try:
+                return_value = func(**clean_args)
+            except Exception as e:
+                print_colored_traceback(*sys.exc_info())
             ######################################################################
 
 
-            imgui.pop_style_var(2)
+            pop_style_var(2)
         except Exception as e:
             print_colored_traceback(*sys.exc_info())
         finally:
             def end_of_render():
+                if Melty.imgui_crashed:
+                    return False, None
                 # Needs to go after mouse event check
-                imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
-                imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
+                push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
+                push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
 
                 pop_id()
                 imgui.end_group()
@@ -532,7 +541,7 @@ def render_func(*args, **o_kwargs):
                 item_rect = imgui.get_item_rect_size()
 
                 # if draw_state.width is None:
-                imgui.pop_style_var(2)
+                pop_style_var(2)
                 if not kwargs.get("on_drag", False):
                     original_width = draw_state._bounding_width
                     original_height = draw_state._bounding_height
@@ -687,7 +696,6 @@ def render_func(*args, **o_kwargs):
                 draw_state.render_time = end_time - start_time
 
                 return changed, new_value
-
 
             changed, new_value = end_of_render()
 

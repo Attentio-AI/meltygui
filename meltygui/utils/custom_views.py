@@ -8,6 +8,8 @@ from traceback import _parse_value_tb
 import glfw
 import imgui
 import psutil
+from imgui import ImGuiError
+from imgui.integrations.glfw import GlfwRenderer
 
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.model.model_enums import RelaxedEnum
@@ -64,6 +66,7 @@ class LSDView:
         self.group_stack.clear()
 
     def unstack_group(self):
+
         try:
             for group_type in reversed(self.style_stack):
                 if group_type == GroupType.WINDOW:
@@ -371,11 +374,17 @@ def does_need_render():
 
 
 def new_frame():
+    if Melty.imgui_crashed:
+        return
+
     LSDView().group_stack.append(GroupType.FRAME)
     return imgui.new_frame()
 
 
 def end_frame():
+    if Melty.imgui_crashed:
+        return
+
     if LSDView().group_stack[-1] == GroupType.FRAME:
         LSDView().group_stack.pop()
         return imgui.end_frame()
@@ -386,11 +395,17 @@ def end_frame():
 
 
 def begin_child(signatures, *args, **kwargs):
+    if Melty.imgui_crashed:
+        return False
+
     LSDView().group_stack.append(GroupType.CHILD)
     return imgui.begin_child(signatures, *args, **kwargs)
 
 
 def end_child():
+    if Melty.imgui_crashed:
+        return
+
     if LSDView().group_stack[-1] == GroupType.CHILD:
         LSDView().group_stack.pop()
         return imgui.end_child()
@@ -401,12 +416,17 @@ def end_child():
 
 
 def begin(str_label, closable=False, flags=0):
+    if Melty.imgui_crashed:
+        return False, False
 
     LSDView().group_stack.append(GroupType.WINDOW)
     return imgui.begin(str_label, closable, flags)
 
 
 def end():
+    if Melty.imgui_crashed:
+        return
+
     if LSDView().group_stack[-1] == GroupType.WINDOW:
         LSDView().group_stack.pop()
         return imgui.end()
@@ -417,11 +437,16 @@ def end():
 
 
 def push_style_color(ImGuiCol_variable, float_r, float_g, float_b, float_a=1.):
+    if Melty.imgui_crashed:
+        return
     LSDView().color_stack.append(GroupType.COLOR)
     return imgui.push_style_color(ImGuiCol_variable, float_r, float_g, float_b, float_a)
 
 
 def pop_style_color(size=1):
+    if Melty.imgui_crashed:
+        return
+
     for _ in range(size):
         if LSDView().color_stack[-1] == GroupType.COLOR:
             LSDView().color_stack.pop()
@@ -433,10 +458,16 @@ def pop_style_color(size=1):
             imgui.pop_style_color(1)
 
 def push_style_var(ImGuiStyleVar_variable, value):
+    if Melty.imgui_crashed:
+        return
+
     LSDView().style_stack.append(GroupType.STYLE)
     return imgui.push_style_var(ImGuiStyleVar_variable, value)
 
 def pop_style_var(size=1):
+    if Melty.imgui_crashed:
+        return
+
     for _ in range(size):
         if LSDView().style_stack[-1] == GroupType.STYLE:
             LSDView().style_stack.pop()
@@ -494,9 +525,10 @@ def stack_trace():
     print_colored_traceback(*sys.exc_info(), limit=50)
 
 
-def print_stack_trace(size=None, skip=-1):
+def print_stack_trace(size=None, skip=-1, stack=None):
     # Get the current stack frame information
-    stack = traceback.extract_stack()
+    if stack is None:
+        stack = traceback.extract_stack()
 
     # Format and print the stack trace (excluding this function call)
     if size is None:
@@ -528,7 +560,30 @@ def print_colored_traceback(exc_type=None, exc_value=None, exc_traceback=None, l
 
     if color is None:
         color = "CYAN"
-    # Format the traceback
+
+    e = exc_value
+    if not Melty.imgui_crashed:
+        if isinstance(e, ImGuiError):
+            if Melty.vis is not None:
+                Melty.imgui_crashed = True
+                if Melty.vis.imgui_ctx is not None:
+
+                    # if Melty.vis._impl is not None:
+                    #     Melty.vis._impl.shutdown()
+                    #     Melty.vis.impl = None
+                    RED_BOLD = "\033[1;31m"
+                    RESET = "\033[0m"
+                    print("-" * 80)
+                    info = sys.exc_info()
+                    print(f"{RED_BOLD}ImGui Crashed! Recreating context from print\n{RESET}: {e}")
+                    stack_from_e = traceback.extract_tb(exc_traceback)
+                    print("-" * 80)
+
+                    Melty.vis.exception_raised = True
+                    Melty.imgui_crashed = True
+                    # Stack trace
+                    print_colored_traceback(*info, limit=50)
+
 
     def extract_vars(exc_traceback):
         """
@@ -570,6 +625,9 @@ def print_colored_traceback(exc_type=None, exc_value=None, exc_traceback=None, l
     te = traceback.TracebackException(type(value), value, tb, limit=limit, compact=True)
     exception_stack = te.stack
 
+    if value is None:
+        print_stack_trace()
+
     for idx, frame in enumerate(stack[:-1]):
         line_number = frame.lineno
         filename = frame.filename.removeprefix("/home/lukas/Desktop/latent-descent/")
@@ -585,6 +643,7 @@ def print_colored_traceback(exc_type=None, exc_value=None, exc_traceback=None, l
     yellow = COLORS['YELLOW']
     red = COLORS['RED']
     print(f"{yellow}-------- Error Caught -------{COLORS['RESET']}")
+
 
     for idx, frame in enumerate(exception_stack):
         line_number = frame.lineno
@@ -617,6 +676,13 @@ def print_colored_traceback(exc_type=None, exc_value=None, exc_traceback=None, l
 
     if file is None:
         file = sys.stdout
+
+    if Melty.imgui_crashed:
+        #p
+        import time
+        time.sleep(0.1)
+        os._exit(1)
+
     #
     # traceback_lines = traceback.format_exception(exc_type, exc_value, exc_traceback, limit=limit)
     #
