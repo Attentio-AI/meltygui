@@ -1,9 +1,12 @@
 # offscreen_tiles.py
 from __future__ import annotations
+
+import random
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 from OpenGL import GL as gl
 import imgui
+from imgui_bundle import ImVec4
 
 
 @dataclass
@@ -143,12 +146,23 @@ class TileCacheMinimal:
             self._stack.append(_Ctx(key, (x, y), size, False))
             return True
 
+        if w == 0 or h == 0:
+            return False
+
         tile = _ensure_tile(self._tiles.get(key), size[0], size[1])
         self._tiles[key] = tile
 
         if not tile.dirty:
             # Draw cached image now and skip live draw
-            imgui.image(tile.tex, size[0], size[1], uv0=(0.0, 1.0), uv1=(1.0, 0.0))
+            # Random tint
+            random_float = random.Random(hash(key)).random
+            tint = (0.5 + 0.5 * random_float(),
+                            0.5 + 0.5 * random_float(),
+                            0.5 + 0.5 * random_float(), 1.0)
+
+            imgui.image(tile.tex, size[0], size[1], uv0=(0.0, 1.0), uv1=(1.0, 0.0),
+                        tint_color=tint)
+
             self._stack.append(_Ctx(key, (x, y), size, True))
             return False
 

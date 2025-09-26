@@ -942,7 +942,7 @@ def seperator(height):
     imgui.dummy(0, height / 2)
 
 
-@with_header(is_default_for=(MutableMapping))
+@with_header(is_default_for=(MutableMapping), use_cache=True)
 def draw_collection(input_value, draw_state, depth, style_manager,
                     meta, suffix, melty, show_search=True, on_collapse=False, on_drag_up=False, y_offset=0,
                     on_expand=False, width=None, indent_size=10, global_style=None, global_toggles=None, show_add_delete=True,
@@ -1461,9 +1461,10 @@ def draw_any(input_value, indent_size=0, *args, **kwargs):
 
     if kwargs['global_toggles'].force_show_datatype:
         start_pos = imgui.get_cursor_screen_pos()
-
-
-        datatype_text = f"{input_value.__class__.__name__} ({type(input_value).__name__}) {kwargs.get('name', '')}"
+        width = kwargs.get("draw_state", None).width if kwargs.get("draw_state", None) is not None else None
+        height = kwargs.get("draw_state", None).height if kwargs.get("draw_state", None) is not None else None
+        # datatype_text = f"{input_value.__class__.__name__} ({type(input_value).__name__}) {kwargs.get('name', '')}"
+        datatype_text = f"{width} {height}"
 
         # Draw bg rect
         rect = (start_pos[0] - 4, start_pos[1] - 2,
@@ -1509,7 +1510,7 @@ def draw_none(input_value: NoneType):
     return False, None
 
 
-@with_header_minimal(is_default_for=(bool), header_same_line=True)
+@with_header_minimal(is_default_for=(bool), header_same_line=True, use_cache=False)
 def draw_bool(input_value: bool):
     changed, is_checked = imgui.checkbox("##bool", input_value)
     if changed:
@@ -1518,9 +1519,8 @@ def draw_bool(input_value: bool):
     return False, None
 
 
-@with_header_minimal(is_default_for=(str))
+@with_header_minimal(is_default_for=(str), use_cache=True)
 def draw_str(input_value: str):
-
     if "1340" in input_value:
         pass
     line_count = input_value.count('\n') + 1
@@ -1573,22 +1573,14 @@ def draw_tuple(input_value: tuple, is_tree=False, draw_state=None, show_bg=False
 
     return changed, input_value
 
-@with_header_minimal(is_default_for=float)
+@with_header_minimal(is_default_for=float, use_cache=True)
 def draw_float(input_value:float, min_value=-100.0, max_value=100.0, speed=0.01, unique=0, draw_state=None):
-    w, h = draw_state._bounding_width, draw_state._bounding_height
-
-    padding = imgui.get_style().frame_padding.y
-    if Melty.cache.mark_start_offscreen(str(unique), 500, 19):
-
-        changed, value = imgui.drag_float("##float", input_value,
-                                          change_speed=speed,
-                                          min_value=min_value,
-                                          max_value=max_value)
-        if changed:
-            return True, value
-    Melty.cache.mark_end_offscreen()
-
-    return False, None
+    changed, value = imgui.drag_float("##float", input_value,
+                                      change_speed=speed,
+                                      min_value=min_value,
+                                      max_value=max_value)
+    if changed:
+        return True, value
 
 
 @with_header_minimal(is_default_for=(Parameter), wraps=render_func)

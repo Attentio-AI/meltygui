@@ -363,7 +363,6 @@ def render_func(*args, **o_kwargs):
             melty.nearest_drop_target = None
             melty.nearest_drop_target_tag = None
             Melty.bg_stack = [(0,0,0)]
-            imgui.text(str(unique))
             Melty.indent_count = 0
             Melty.unindent_count = 0
 
@@ -391,6 +390,7 @@ def render_func(*args, **o_kwargs):
                 if not pending:
                     root.move_draw_state_pending = {}
 
+        used_cache = False
         draw_state = get_draw_state(unique)
         draw_state._input_value = input_value
         measured_max = 0
@@ -514,12 +514,23 @@ def render_func(*args, **o_kwargs):
 
             ########################## The render call ##########################
             try:
-                return_value = func(**clean_args)
+                original_width = draw_state._bounding_width
+                original_height = draw_state._bounding_height
+
+                use_cache = kwargs.get("use_cache", False)
+                if use_cache:
+                    used_cache = True
+                    if Melty.cache.mark_start_offscreen(str(unique), original_width, original_height):
+                        return_value = func(**clean_args)
+                        used_cache = False
+
+                    Melty.cache.mark_end_offscreen()
+                else:
+                    return_value = func(**clean_args)
+
             except Exception as e:
                 print_colored_traceback(*sys.exc_info())
             ######################################################################
-
-
             pop_style_var(2)
         except Exception as e:
             print_colored_traceback(*sys.exc_info())
@@ -542,7 +553,7 @@ def render_func(*args, **o_kwargs):
 
                 # if draw_state.width is None:
                 pop_style_var(2)
-                if not kwargs.get("on_drag", False):
+                if not kwargs.get("on_drag", False) and not used_cache:
                     original_width = draw_state._bounding_width
                     original_height = draw_state._bounding_height
                     if is_initial_draw_state:
