@@ -11,8 +11,9 @@ import glfw
 import imgui
 
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
-from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, tree, request_render, push_style_var, \
+from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, tree, push_style_var, \
     push_style_color, pop_style_color, pop_style_var, end, begin
+from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.melty import Melty, CollectionAction, OperationType, apply_collection_action, add_to_collection, \
     delete_from_collection
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
@@ -73,6 +74,8 @@ code_export_str = "Test"
 filesystem_proxy = FolderProxy("/home/lukas/test_folder", text_mode=True)
 # Main draw function, called by the GUI framework
 def draw(vis):
+    fb_w, fb_h = map(int, imgui.get_io().display_size)  # or your true GL FB size if HiDPI
+    Melty.cache.mask_begin_frame((fb_w, fb_h))
 
     draw_window(vis.root.lora_collection, name="Lora Root")
     draw_window(Melty.hotkey_registry, name="Hotkeys", is_window=True)
@@ -536,7 +539,7 @@ def draw_drop_target(input_value, draw_state, on_drag, do_flow, depth,
 
     if tag == "top":
         Melty.flow_spacing += int(flow_spacing)
-        imgui.set_cursor_pos_y(imgui.get_cursor_pos()[1] + flow_spacing)
+        imgui.set_cursor_pos_y(imgui.get_cursor_pos()[1] + int(flow_spacing))
 
     draw_state.flow_spacing = flow_spacing
 
@@ -694,9 +697,10 @@ def draw_header_end(global_style, unique, style_manager, show_search,
     push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
     push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
     imgui.end_group()
+    draw_state._end_header_size = (end_x - start_x, imgui.get_item_rect_size()[1])
+
     imgui.pop_id()
     pop_style_var(2)
-    draw_state._end_header_size = (end_x - start_x, imgui.get_item_rect_size()[1])
 
 
 def core_header(func, outer_func, input_value=None, collection=None, key=None, indent_size=10, depth=0, draw_state=None,
@@ -758,7 +762,7 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
         imgui.dummy(0, y_margin)
 
         if on_drag:
-            imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() - Melty.flow_spacing)
+            imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() - int(Melty.flow_spacing))
             Melty.flow_spacing = 0.0
 
         bg_tint = None
@@ -848,14 +852,13 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
 
                 padding_x = imgui.get_style().frame_padding.x
                 request_width = space_available - end_header_with - padding_x - 7
-                min_width = min(imgui.get_content_region_available()[0] - end_header_with,
+                min_width = min(imgui.get_content_region_available()[0],
                                 min_width - space_used)
                 min_width = max(min_width, request_width)
                 imgui.set_next_item_width(min_width)
 
                 ######################## MAIN FUNC CALL ########################
-                func_changed, func_return_val = func(spacing=(spacing[0], Melty.spacing[1]),
-                                    padding=(padding[0], Melty.padding[1]),
+                func_changed, func_return_val = func(
                                     **next_kwargs)
                 ############### END MAIN FUNC CALL #############################
                 if func_changed:
@@ -887,7 +890,7 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
         end_y_pos = imgui.get_cursor_screen_pos()[1]
 
         padding_x = imgui.get_style().frame_padding.x * 2.0
-        background_width = width - indent_size
+        background_width = width - indent_size - 4
         background_height = draw_state.height or 0
 
         draw_state.top = start_y_pos
@@ -942,7 +945,7 @@ def seperator(height):
     imgui.dummy(0, height / 2)
 
 
-@with_header(is_default_for=(MutableMapping), use_cache=True)
+@with_header(is_default_for=(MutableMapping), use_cache=False)
 def draw_collection(input_value, draw_state, depth, style_manager,
                     meta, suffix, melty, show_search=True, on_collapse=False, on_drag_up=False, y_offset=0,
                     on_expand=False, width=None, indent_size=10, global_style=None, global_toggles=None, show_add_delete=True,
@@ -1267,9 +1270,7 @@ def draw_header(input_value=None, name="", display_name=None, meta=None, unique=
         draw_state.expanded = tree("##tree", draw_state.expanded, width=50)
         pop_style_var(2)
         pop_style_color(1)
-
         same_line()
-    cursor_start = imgui.get_cursor_pos()
 
     if show_name and name != "" and name is not None and name != "None":
         if isinstance(input_value, (dict, MutableMapping)):
@@ -1323,7 +1324,6 @@ def draw_header(input_value=None, name="", display_name=None, meta=None, unique=
 
         same_line()
 
-    name_end = imgui.get_cursor_pos()
 
     if show_type:
         imgui.text_colored(f"({input_value.__class__.__name__})", *(0.8, 0.0, 0.5, 1.0))
@@ -1490,14 +1490,14 @@ def draw_any(input_value, indent_size=0, *args, **kwargs):
                                                    imgui.get_color_u32_rgba(0.8, 0.5, 0.9, 1.0), datatype_text)
 
         # No padding
-        push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
-        push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
-        cursor_pos = imgui.get_cursor_pos()
-
-        # Reset cursor to avoid spacing issues
-        imgui.set_cursor_pos(cursor_pos)
-
-        pop_style_var(2)
+        # push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
+        # push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
+        # # cursor_pos = imgui.get_cursor_pos()
+        # #
+        # # # Reset cursor to avoid spacing issues
+        # # imgui.set_cursor_pos(cursor_pos)
+        #
+        # pop_style_var(2)
 
     return meta.view_function(input_value, *args, **kwargs)
 
@@ -1573,7 +1573,7 @@ def draw_tuple(input_value: tuple, is_tree=False, draw_state=None, show_bg=False
 
     return changed, input_value
 
-@with_header_minimal(is_default_for=float, use_cache=True)
+@with_header(is_default_for=float, use_cache=True)
 def draw_float(input_value:float, min_value=-100.0, max_value=100.0, speed=0.01, unique=0, draw_state=None):
     changed, value = imgui.drag_float("##float", input_value,
                                       change_speed=speed,

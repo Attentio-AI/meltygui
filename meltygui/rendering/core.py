@@ -10,8 +10,9 @@ from typing import Any
 import imgui
 
 from src.lsd.gl_gui.model.core_model.new_core_model import DrawState, Hotkey
-from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, request_render, print_stack_trace, \
+from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, print_stack_trace, \
     push_style_var, pop_style_var
+from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.melty import Melty, ActionType, apply_collection_action, MeltyState, DepthState, \
     delete_from_collection
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
@@ -318,6 +319,7 @@ def render_func(*args, **o_kwargs):
             kwargs.update(header_defaults)
 
         if name == "" and is_root:
+            Melty.wrapped_depth = 0
             kwargs["name"] = str(len(melty_state_registry)) + "root"
 
         name_func = kwargs.get("name_func", None)
@@ -350,6 +352,10 @@ def render_func(*args, **o_kwargs):
 
         index = key if isinstance(key, int) else 0
         unique = ui_id(datatype=type(input_value), suffix=suffix + unique_name, idx=index)
+        computed_unique = unique
+        start_cursor = imgui.get_cursor_screen_pos()
+        end_cursor = imgui.get_cursor_screen_pos()
+
         imgui.begin_group()
         push_id(unique)
 
@@ -390,7 +396,7 @@ def render_func(*args, **o_kwargs):
                 if not pending:
                     root.move_draw_state_pending = {}
 
-        used_cache = False
+        did_use_cache = False
         draw_state = get_draw_state(unique)
         draw_state._input_value = input_value
         measured_max = 0
@@ -401,6 +407,8 @@ def render_func(*args, **o_kwargs):
         nested_call = input_value == Melty.input_value_stack[-1] if len(Melty.input_value_stack) > 0 else False
         Melty.input_value_stack.append(input_value)
         inc_depth = False
+        Melty.wrapped_depth = Melty.wrapped_depth + 1
+
         try:
             expected_type = param_types[wanted_params.index("input_value")] if "input_value" in wanted_params else None
             annotation_empty = expected_type == inspect.Parameter.empty
@@ -475,6 +483,9 @@ def render_func(*args, **o_kwargs):
                     set_default(param, None)
 
             is_initial_draw_state = draw_state in Melty.draw_state_stack
+            if is_initial_draw_state:
+                draw_state._did_use_cache = False
+
             inc_depth = "draw_state" in wanted_params or is_root
             if inc_depth:
                 if len(Melty.unique_stack) <= Melty.depth:
@@ -516,13 +527,25 @@ def render_func(*args, **o_kwargs):
             try:
                 original_width = draw_state._bounding_width
                 original_height = draw_state._bounding_height
+                start_cursor = imgui.get_cursor_screen_pos()
+
+                if name == "float_test_2":
+                    pass
 
                 use_cache = kwargs.get("use_cache", False)
-                if use_cache:
-                    used_cache = True
-                    if Melty.cache.mark_start_offscreen(str(unique), original_width, original_height):
+                did_use_cache = False
+
+                if use_cache and Melty.cache.enabled:
+                    method_id = id(func)
+                    if Melty.cache.mark_start_offscreen(str(computed_unique) + str(method_id),
+                                                        indent_size=kwargs.get("indent_size", 10),
+                                                        layer=Melty.depth):
                         return_value = func(**clean_args)
-                        used_cache = False
+                        did_use_cache = True
+                        draw_state._did_use_cache = True
+                    else:
+                        did_use_cache = True
+                        draw_state._did_use_cache = True
 
                     Melty.cache.mark_end_offscreen()
                 else:
@@ -536,6 +559,7 @@ def render_func(*args, **o_kwargs):
             print_colored_traceback(*sys.exc_info())
         finally:
             def end_of_render():
+
                 if Melty.imgui_crashed:
                     return False, None
                 # Needs to go after mouse event check
@@ -545,22 +569,20 @@ def render_func(*args, **o_kwargs):
                 pop_id()
                 imgui.end_group()
 
-                indent_count = Melty.indent_count - start_indent_count
-                unindent_count = Melty.unindent_count - start_unindent_count
-                total_indent = indent_count - unindent_count
-                indent_size = 10 * total_indent
+                if name == "float_test_2":
+                    pass
+
                 item_rect = imgui.get_item_rect_size()
 
                 # if draw_state.width is None:
                 pop_style_var(2)
-                if not kwargs.get("on_drag", False) and not used_cache:
+                if not kwargs.get("on_drag", False) and not did_use_cache:
                     original_width = draw_state._bounding_width
                     original_height = draw_state._bounding_height
                     if is_initial_draw_state:
                         draw_state._bounding_width = max(draw_state._bounding_width, item_rect[0])
                     else:
                         draw_state._bounding_width = item_rect[0]
-
                     if is_initial_draw_state:
                         draw_state._bounding_height = max(draw_state._bounding_height, item_rect[1])
                     else:
@@ -569,11 +591,11 @@ def render_func(*args, **o_kwargs):
                     draw_state.width = item_rect[0]
                     draw_state.height = item_rect[1]
 
-                    # if draw_state._bounding_width != original_width or draw_state._bounding_height != original_height:
-                    request_render()
+                    if (draw_state._bounding_width != original_width or
+                            draw_state._bounding_height != original_height):
+                        request_render()
                 if inc_depth:
                     Melty.depth = Melty.depth - 1
-
                 Melty.input_value_stack.pop()
 
                 melty.triggered_actions.pop(unique, None)
@@ -702,6 +724,8 @@ def render_func(*args, **o_kwargs):
                 else:
                     imgui.text("Unsupported return from render_func")
                     changed, new_value = False, None
+
+                Melty.wrapped_depth = Melty.wrapped_depth - 1
 
                 end_time = time.time()
                 draw_state.render_time = end_time - start_time

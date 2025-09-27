@@ -3,7 +3,7 @@ import glfw
 from typing import Callable, Union, Tuple
 from enum import Enum
 
-from src.lsd.gl_gui.utils.custom_views import request_render
+from src.lsd.gl_gui.utils.glfw_utils import request_render
 
 
 class EaseType(Enum):

@@ -67,6 +67,8 @@ class DrawState(DictConversion):
         super().__init__()
         self.cst = None
 
+        self._previous_hash = None
+
         self.unique = 0  # stable UI identifier
         self.expanded = True
         self.value_cache = None
@@ -78,6 +80,7 @@ class DrawState(DictConversion):
         self._bounding_height = 0
 
         self._left_rel = None
+        self._top_rel = None
         self._min_width = None
         self.top = None
         self.left = None
@@ -88,6 +91,8 @@ class DrawState(DictConversion):
         self._end_header_size = (0,0)
         self._max_indent = 0
         self._name_edit = False
+        self._screen_pos = (0, 0)
+        self._did_use_cache = False
 
         self.track_mouse = False
 

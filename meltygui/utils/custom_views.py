@@ -1,6 +1,5 @@
 import inspect
 import os
-import threading
 from collections import defaultdict
 from enum import Enum
 from traceback import _parse_value_tb
@@ -9,10 +8,10 @@ import glfw
 import imgui
 import psutil
 from imgui import ImGuiError
-from imgui.integrations.glfw import GlfwRenderer
 
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.model.model_enums import RelaxedEnum
+from src.lsd.gl_gui.utils.glfw_utils import _needs_render
 from src.lsd.lsd_utils import singleton
 
 
@@ -361,13 +360,6 @@ def tree(text, open=True, width=0, height=0):
 
     return opened
 
-
-_needs_render = threading.Event()
-
-
-def request_render():
-    _needs_render.set()
-    glfw.post_empty_event()
 
 def does_need_render():
     return _needs_render.is_set()
