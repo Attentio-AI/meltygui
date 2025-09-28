@@ -576,7 +576,7 @@ def render_func(*args, **o_kwargs):
 
                 # if draw_state.width is None:
                 pop_style_var(2)
-                if not kwargs.get("on_drag", False) and not did_use_cache:
+                if not kwargs.get("on_drag", False):
                     original_width = draw_state._bounding_width
                     original_height = draw_state._bounding_height
                     if is_initial_draw_state:

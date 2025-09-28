@@ -423,6 +423,8 @@ def core_draw_window(input_value, name, unique, window_func,
 
     window_title = f"{title}##window_{str(unique)}"
 
+    push_style_var(imgui.STYLE_WINDOW_PADDING, (0, 0))
+
     # Bring to front without collapse
     opened, _ = begin(f"{title}##window_{str(unique)}", closable, flags=flags)
     try:
@@ -451,6 +453,8 @@ def core_draw_window(input_value, name, unique, window_func,
         changed, new_value = False, input_value
 
     end()
+
+    pop_style_var()
 
     if hasattr(input_value, 'tint'):
         style_manager.set_imgui_tint(*previous_tint)
@@ -945,7 +949,7 @@ def seperator(height):
     imgui.dummy(0, height / 2)
 
 
-@with_header(is_default_for=(MutableMapping), use_cache=False)
+@with_header(is_default_for=(MutableMapping), use_cache=True)
 def draw_collection(input_value, draw_state, depth, style_manager,
                     meta, suffix, melty, show_search=True, on_collapse=False, on_drag_up=False, y_offset=0,
                     on_expand=False, width=None, indent_size=10, global_style=None, global_toggles=None, show_add_delete=True,

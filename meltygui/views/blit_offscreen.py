@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
+from math import ceil, floor
 from typing import Dict, List, Optional, Tuple
 from OpenGL import GL as gl
 import imgui
@@ -94,7 +95,7 @@ def _create_mask_tex(w: int, h: int) -> int:
     return tex
 
 
-def _create_fbo_with_tex(tex: int, depth_stencil: bool, w: int, h: int) -> Tuple[int, Optional[int]]:
+def _create_fbo_with_tex(tex: int, depth_stencil: bool, w, h) -> Tuple[int, Optional[int]]:
     fbo = gl.glGenFramebuffers(1)
     gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, fbo)
     gl.glFramebufferTexture2D(gl.GL_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT0, gl.GL_TEXTURE_2D, tex, 0)
@@ -104,7 +105,7 @@ def _create_fbo_with_tex(tex: int, depth_stencil: bool, w: int, h: int) -> Tuple
     if depth_stencil:
         rbo = gl.glGenRenderbuffers(1)
         gl.glBindRenderbuffer(gl.GL_RENDERBUFFER, rbo)
-        gl.glRenderbufferStorage(gl.GL_RENDERBUFFER, gl.GL_DEPTH24_STENCIL8, w, h)
+        gl.glRenderbufferStorage(gl.GL_RENDERBUFFER, gl.GL_DEPTH24_STENCIL8, int(w), int(h))
         gl.glFramebufferRenderbuffer(gl.GL_FRAMEBUFFER, gl.GL_DEPTH_STENCIL_ATTACHMENT, gl.GL_RENDERBUFFER, rbo)
 
     status = gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER)
@@ -118,6 +119,9 @@ def _ensure_tile(existing: Optional[_Tile], w: int, h: int) -> _Tile:
     if existing and existing.size == (w, h):
         return existing
 
+    if w == 0 or h == 0:
+        return None
+
     # make the new tile
     new_tex = _create_color_tex(w, h)
     new_fbo, new_rbo = _create_fbo_with_tex(new_tex, True, w, h)
@@ -128,9 +132,10 @@ def _ensure_tile(existing: Optional[_Tile], w: int, h: int) -> _Tile:
         try:
             gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, existing.fbo)
             gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, new_fbo)
-            mw = min(existing.size[0], w)
-            mh = min(existing.size[1], h)
-            gl.glBlitFramebuffer(0, 0, mw, mh, 0, 0, mw, mh, gl.GL_COLOR_BUFFER_BIT, gl.GL_NEAREST)
+            mw = int(min(existing.size[0], w))
+            mh = int(max(existing.size[1], h))
+            # print(f"TileCacheMasked: resizing tile {existing.size} -> {(w,h)}, blit {mw}x{mh}")
+            gl.glBlitFramebuffer(0, 0, mw, int(existing.size[1]), 0, 0, mw, int(h), gl.GL_COLOR_BUFFER_BIT, gl.GL_NEAREST)
         finally:
             st.restore()
         # cleanup old
@@ -143,7 +148,7 @@ def _ensure_tile(existing: Optional[_Tile], w: int, h: int) -> _Tile:
         st = _GLState()
         try:
             gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, new_fbo)
-            gl.glViewport(0, 0, w, h)
+            gl.glViewport(0, 0, int(w), int(h))
             gl.glDisable(gl.GL_SCISSOR_TEST)
             gl.glClearColor(0, 0, 0, 0)
             gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT | gl.GL_STENCIL_BUFFER_BIT)
@@ -292,7 +297,8 @@ class TileCacheMasked:
     def set_enabled(self, on: bool) -> None:
         if on and not self.enabled:
             for t in self._tiles.values():
-                t.dirty = True
+                if t is not None:
+                    t.dirty = True
             request_render()
         self.enabled = on
 
@@ -301,16 +307,20 @@ class TileCacheMasked:
 
     def invalidate(self, key: str) -> None:
         t = self._tiles.get(key)
-        if t: t.dirty = True
-        request_render()
+        if t is not None:
+            if t: t.dirty = True
+            request_render()
 
     def invalidate_all(self) -> None:
         for t in self._tiles.values():
-            t.dirty = True
+            if t is not None:
+                t.dirty = True
         request_render()
 
     def get_texture_id(self, key: str) -> Optional[int]:
         t = self._tiles.get(key)
+        if t is None:
+            return None
         return t.tex if t else None
 
     def cleanup(self) -> None:
@@ -383,14 +393,13 @@ class TileCacheMasked:
             minx, miny = dl.get_clip_rect_min()
             maxx, maxy = dl.get_clip_rect_max()
             return (minx, miny, maxx, maxy)
-        if hasattr(imgui, "get_window_clip_rect"):
-            x0, y0, x1, y1 = imgui.get_window_clip_rect()
-            return (x0, y0, x1, y1)
+
         wx, wy = imgui.get_window_position()
+        # scr
         crx0, cry0 = imgui.get_window_content_region_min()
         crx1, cry1 = imgui.get_window_content_region_max()
-        sx = imgui.get_scroll_x() if hasattr(imgui, "get_scroll_x") else 0.0
-        sy = imgui.get_scroll_y() if hasattr(imgui, "get_scroll_y") else 0.0
+        sx = imgui.get_scroll_x()
+        sy = imgui.get_scroll_y()
         x0 = wx + crx0 - sx
         y0 = wy + cry0 - sy
         x1 = wx + crx1 - sx
@@ -414,8 +423,8 @@ class TileCacheMasked:
         dd = imgui.get_draw_data()
         dp_x, dp_y = dd.display_pos  # top-left of draw space (screen pixels)
         s_x, s_y = dd.frame_buffer_scale  # DPI scale to framebuffer pixels
-        fb_w = int(round(dd.display_size[0] * s_x))
-        fb_h = int(round(dd.display_size[1] * s_y))
+        fb_w = int((dd.display_size[0] * s_x))
+        fb_h = int((dd.display_size[1] * s_y))
         return dp_x, dp_y, s_x, s_y, fb_w, fb_h
 
     @staticmethod
@@ -427,11 +436,12 @@ class TileCacheMasked:
         y_top1 = (y + h - dp_y) * s_y
         y0 = fb_h - y_top1
         y1 = fb_h - y_top0
-        return (int(round(x0)), int(round(y0)), int(round(x1)), int(round(y1)))
+        return ((x0), (y0), (x1), y1)
 
     # ----- Begin/End pair with per-view layer -----
-    def mark_start_offscreen(self, key: str, layer: int, indent_size=0, width=1, height=1) -> bool:
+    def mark_start_offscreen(self, key: str, layer: int, indent_size=0, width=0, height=0) -> bool:
         x, y = imgui.get_cursor_screen_pos()
+
         layer = int(max(0, min(255, layer)))
 
         # Avoid collision with background clear value used in the mask
@@ -447,13 +457,13 @@ class TileCacheMasked:
         imgui.pop_style_var(2)
         imgui.push_id(f"tilecache_{key}")
         if size is not None:
-            w = int(max(1, size[0]))
-            h = int(max(1, size[1]))
+            w = max(0, size[0])
+            h = max(0, size[1])
 
             # Mark THIS VIEW's rect in the mask for this frame (clipped to visible area)
             if w > 0 and h > 0:
                 clip = self._get_current_clip_rect_screen()
-                clipped = self._clip_rect(float(x), float(y), float(w), float(h), clip)
+                clipped = self._clip_rect(x, y, w, h, clip)
                 if clipped:
                     cx, cy, cw, ch = clipped
                     self.mask_mark_view(layer, cx, cy, cw, ch)
@@ -465,11 +475,12 @@ class TileCacheMasked:
             tile = _ensure_tile(self._tiles.get(key), size[0], size[1])
             self._tiles[key] = tile
 
-            if not tile.dirty and size[0] > 2 and size[1] > 2:
+            if tile is not None and not tile.dirty and size[0] > 0 and size[1] > 0:
                 random_float = random.Random(hash(key)).random
                 tint = (0.5 + 0.5 * random_float(),
                         0.5 + 0.5 * random_float(),
                         0.5 + 0.5 * random_float(), 1.0)
+
 
                 imgui.image(tile.tex, size[0], size[1], uv0=(0.0, 1.0), uv1=(1.0, 0.0), tint_color=tint)
                 self._stack.append(_Ctx(key, (x, y), size, layer, True))
@@ -488,7 +499,9 @@ class TileCacheMasked:
 
         if not ctx.drew_cached:
             rect_size = imgui.get_item_rect_size()
-            ctx.size = (max(1, int(rect_size.x)), max(1, int(rect_size.y)))
+
+            if ctx.size is None or abs(ctx.size[0] - rect_size.x) > 2 or abs(ctx.size[1] - rect_size.y) > 2:
+                ctx.size = (max(0, rect_size.x), max(0, rect_size.y))
 
         if not self.enabled or ctx.drew_cached:
             return
@@ -523,6 +536,7 @@ class TileCacheMasked:
             # 1) Snapshot default framebuffer to texture (resolves MSAA via blit)
             gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, 0)
             gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, self._snapshot_fbo)
+            print(f"TileCacheMasked: snapshot {dd_fb_w}x{dd_fb_h} -> {fb_w}x{fb_h}")
             gl.glBlitFramebuffer(0, 0, dd_fb_w, dd_fb_h, 0, 0, dd_fb_w, dd_fb_h,
                                  gl.GL_COLOR_BUFFER_BIT, gl.GL_NEAREST)
 
@@ -553,11 +567,11 @@ class TileCacheMasked:
                 x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(
                     r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y, fb_h
                 )
-                w = max(0, x1 - x0);
-                h = max(0, y1 - y0)
+                w = max(0.0, x1 - x0);
+                h = max(0.0, y1 - y0)
                 if w <= 0 or h <= 0:
                     continue
-                gl.glScissor(x0, y0, w, h)
+                gl.glScissor(int(x0), int(y0), int(w), int(h))
                 gl.glUniform1f(loc_layer_norm, r.layer / 255.0)
                 gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
 
@@ -586,14 +600,16 @@ class TileCacheMasked:
                     x, y, w, h, dp_x, dp_y, s_x, s_y, fb_h
                 )
 
-                gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, p.tile.fbo)
-                gl.glViewport(0, 0, p.tile.size[0], p.tile.size[1])
+                if p.tile is not None:
 
-                # do NOT clear -> preserve stale values under mas
-                gl.glUniform4f(self._loc_uSrcRectPx, float(x0), float(y0), float(x1), float(y1))
-                gl.glUniform1i(self._loc_uLayer, int(p.layer))
-                gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
-                p.tile.dirty = False
+                    gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, p.tile.fbo)
+                    gl.glViewport(0, 0, int(p.tile.size[0]), int(p.tile.size[1]))
+
+                    # do NOT clear; preserve stale pixels under overlaps
+                    gl.glUniform4f(self._loc_uSrcRectPx, float(x0), float(y0), float(x1), float(y1))
+                    gl.glUniform1i(self._loc_uLayer, int(p.layer))
+                    gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
+                    p.tile.dirty = False
 
             gl.glUseProgram(0)
 
