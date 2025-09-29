@@ -276,6 +276,7 @@ def apply_drag_and_drop(melty):
         request_render()
     melty.actions_to_apply = []
 
+
 @render_wrapper
 def render_func(*args, **o_kwargs):
     func = args[0] if args else None
@@ -285,6 +286,9 @@ def render_func(*args, **o_kwargs):
     param_defaults = o_kwargs.get("param_defaults", None)
     name_to_param_type = o_kwargs.get("name_to_param_type", None)
 
+    # Prebind once to avoid recomputing id(func) every frame
+    METHOD_ID = id(func)
+
     """
     Decorator for render functions.
     - Computes stable UI ID (unique) from callstack+meta.
@@ -292,6 +296,7 @@ def render_func(*args, **o_kwargs):
     - Injects meta/viewstate only if the function signature wants them.
     - Pushes/pops ImGui ID scope automatically.
     """
+
     @wraps(func)
     def wrapper(*args, **kwargs):
         start_time = time.time()
@@ -303,16 +308,19 @@ def render_func(*args, **o_kwargs):
         annotation = annotation_track(*args, wrapper=wrapper, **o_kwargs)
         if annotation is not None:
             return annotation
+
         return_value = None
         is_root = Melty.depth == 0
 
         first_arg = args[0] if args else None
         input_value = kwargs.get("input_value", first_arg)
         name = kwargs.get("name", "")
+
         if type(input_value).__name__ == "CSTProxy":
             pass
 
-        if 'show_name' in header_defaults:
+        # Guard None: safe access (original had a potential TypeError)
+        if header_defaults and 'show_name' in header_defaults:
             pass
 
         if header_defaults is not None:
@@ -321,6 +329,7 @@ def render_func(*args, **o_kwargs):
         if name == "" and is_root:
             Melty.wrapped_depth = 0
             kwargs["name"] = str(len(melty_state_registry)) + "root"
+            name = kwargs["name"]
 
         name_func = kwargs.get("name_func", None)
         if name_func is not None:
@@ -330,7 +339,6 @@ def render_func(*args, **o_kwargs):
                     name = str(name)
             except Exception as e:
                 name = str(f"{e}")
-
 
         key = kwargs.get("key", None)
         key = key if key is not None else ""
@@ -342,17 +350,25 @@ def render_func(*args, **o_kwargs):
         if Melty.depth > Melty.max_depth:
             return False, None
 
+        # ----- Unique computation before pushing ID scope (avoid divergence) -----
         suffix = kwargs.get("suffix", None)
-        unique_key = kwargs.get("key", name)
-        if suffix is None:
-            suffix = Melty.unique_stack[Melty.depth] if Melty.depth < len(Melty.unique_stack) else name
-
-        suffix = f"{suffix}_{name}"
         unique_name = kwargs.get("unique_name", name)
 
         index = key if isinstance(key, int) else 0
-        unique = ui_id(datatype=type(input_value), suffix=suffix + unique_name, idx=index)
+        if suffix is None:
+            suffix = Melty.unique_stack[Melty.depth] if Melty.depth < len(Melty.unique_stack) else (name or "")
+
+        # Keep original behavior of always appending name (even if empty)
+        suffix = f"{suffix}_{name}"
+
+        if is_root:
+            unique = ui_id(datatype=type(input_value), suffix=unique_name)
+        else:
+            unique = ui_id(datatype=type(input_value), suffix=suffix + unique_name + str(METHOD_ID), idx=index)
+
         computed_unique = unique
+        # -------------------------------------------------------------------------
+
         start_cursor = imgui.get_cursor_screen_pos()
         end_cursor = imgui.get_cursor_screen_pos()
 
@@ -360,7 +376,7 @@ def render_func(*args, **o_kwargs):
         push_id(unique)
 
         if is_root:
-            unique = ui_id(datatype=type(input_value), suffix=unique_name)
+            # NOTE: We already computed 'unique' once for root above; do not recompute.
             Melty.unique_stack = []
             Melty.draw_state_stack = []
             Melty.flow_spacing = 0.0
@@ -368,10 +384,9 @@ def render_func(*args, **o_kwargs):
             melty.nearest_drop_distance = melty.max_distance
             melty.nearest_drop_target = None
             melty.nearest_drop_target_tag = None
-            Melty.bg_stack = [(0,0,0)]
+            Melty.bg_stack = [(0, 0, 0)]
             Melty.indent_count = 0
             Melty.unindent_count = 0
-
         else:
             melty = get_melty_state(Melty.unique_stack[0])
 
@@ -394,15 +409,12 @@ def render_func(*args, **o_kwargs):
 
                 # Optional: clean up empty dict to avoid pointless checks later
                 if not pending:
-                    root.move_draw_state_pending = {}
+                    # FIX: ensure we reset the same container we read from
+                    Melty.move_draw_state_pending = {}
 
-        did_use_cache = False
         draw_state = get_draw_state(unique)
         draw_state._input_value = input_value
-        measured_max = 0
-        start_indent = Melty.current_indent
-        start_indent_count = Melty.indent_count
-        start_unindent_count = Melty.unindent_count
+
         is_initial_draw_state = True
         nested_call = input_value == Melty.input_value_stack[-1] if len(Melty.input_value_stack) > 0 else False
         Melty.input_value_stack.append(input_value)
@@ -445,7 +457,7 @@ def render_func(*args, **o_kwargs):
                 if key in vars(meta) and vars(meta)[key] is not None:
                     default_value = vars(meta)[key]
                 if default_value is None:
-                    default_value = param_defaults.get(key, default_value)
+                    default_value = (param_defaults or {}).get(key, default_value)
                 kwargs.setdefault(key, default_value)
 
             if not meta.visible_in_ui:
@@ -507,21 +519,19 @@ def render_func(*args, **o_kwargs):
                 kwargs.update(Melty.global_attrs)
             else:
                 clean_args = copy(kwargs)
-                to_delete = []
-                for to_provide in clean_args.keys():
-                    if to_provide not in wanted_params:
-                        to_delete.append(to_provide)
-                for an_arg in to_delete:
-                    clean_args.pop(an_arg)
+                # to_delete = []
+                # for to_provide in clean_args.keys():
+                #     if to_provide not in wanted_params:
+                #         to_delete.append(to_provide)
+                # for an_arg in to_delete:
+                #     clean_args.pop(an_arg)
+                clean_args = {k: kwargs[k] for k in wanted_params if k in kwargs}
 
             spacing = kwargs.get('spacing', Melty.spacing)
             padding = kwargs.get('padding', Melty.padding)
 
             push_style_var(imgui.STYLE_ITEM_SPACING, spacing)
             push_style_var(imgui.STYLE_FRAME_PADDING, padding)
-            #
-            # start_indent_count = Melty.indent_count
-            # start_unindent_count = Melty.unindent_count
 
             ########################## The render call ##########################
             try:
@@ -533,18 +543,15 @@ def render_func(*args, **o_kwargs):
                     pass
 
                 use_cache = kwargs.get("use_cache", False)
-                did_use_cache = False
-
                 if use_cache and Melty.cache.enabled:
-                    method_id = id(func)
-                    if Melty.cache.mark_start_offscreen(str(computed_unique) + str(method_id),
+                    global_toggles = kwargs.get("global_toggles", {})
+                    # Use the already-stable computed_unique + METHOD_ID
+                    if Melty.cache.mark_start_offscreen(str(computed_unique) + str(METHOD_ID),
                                                         indent_size=kwargs.get("indent_size", 10),
-                                                        layer=Melty.depth):
+                                                        layer=Melty.depth, global_toggles=global_toggles):
                         return_value = func(**clean_args)
-                        did_use_cache = True
                         draw_state._did_use_cache = True
                     else:
-                        did_use_cache = True
                         draw_state._did_use_cache = True
 
                     Melty.cache.mark_end_offscreen()
@@ -601,7 +608,7 @@ def render_func(*args, **o_kwargs):
                 melty.triggered_actions.pop(unique, None)
 
                 if Melty.is_window_enabled():
-                    for m_btn in [0,1,2]:
+                    for m_btn in [0, 1, 2]:
                         btn_state = draw_state.mouse_btn_state[m_btn]
 
                         if btn_state.drag_released:
@@ -649,14 +656,15 @@ def render_func(*args, **o_kwargs):
                         if btn_state.mouse_down:
                             current_mouse_pos = imgui.get_mouse_pos()
                             distance = math.sqrt((current_mouse_pos[0] - btn_state.mouse_down_pos[0]) ** 2 +
-                                                    (current_mouse_pos[1] - btn_state.mouse_down_pos[1]) ** 2)
+                                                 (current_mouse_pos[1] - btn_state.mouse_down_pos[1]) ** 2)
                             btn_state.drag_delta = (current_mouse_pos[0] - btn_state.mouse_down_pos[0],
-                                                     current_mouse_pos[1] - btn_state.mouse_down_pos[1])
+                                                    current_mouse_pos[1] - btn_state.mouse_down_pos[1])
 
                             if melty.last_mouse_pos is not None:
                                 this_m = imgui.get_mouse_pos()
                                 last_m = melty.last_mouse_pos
-                                frame_drag_distance = math.sqrt((this_m[0] - last_m[0]) ** 2 + (this_m[1] - last_m[1]) ** 2)
+                                frame_drag_distance = math.sqrt(
+                                    (this_m[0] - last_m[0]) ** 2 + (this_m[1] - last_m[1]) ** 2)
                                 melty.total_drag_distance += frame_drag_distance
                                 melty.total_drag_frames += 1
                             if melty.total_drag_distance >= 1 or btn_state.dragged:

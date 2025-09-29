@@ -439,7 +439,8 @@ class TileCacheMasked:
         return ((x0), (y0), (x1), y1)
 
     # ----- Begin/End pair with per-view layer -----
-    def mark_start_offscreen(self, key: str, layer: int, indent_size=0, width=0, height=0) -> bool:
+    def mark_start_offscreen(self, key: str, layer: int, global_toggles=None,
+                             indent_size=0, width=0, height=0) -> bool:
         x, y = imgui.get_cursor_screen_pos()
 
         layer = int(max(0, min(255, layer)))
@@ -476,11 +477,14 @@ class TileCacheMasked:
             self._tiles[key] = tile
 
             if tile is not None and not tile.dirty and size[0] > 0 and size[1] > 0:
-                random_float = random.Random(hash(key)).random
-                tint = (0.5 + 0.5 * random_float(),
-                        0.5 + 0.5 * random_float(),
-                        0.5 + 0.5 * random_float(), 1.0)
 
+                if global_toggles.offscreen_debug:
+                    random_float = random.Random(hash(key)).random
+                    tint = (0.5 + 0.5 * random_float(),
+                            0.5 + 0.5 * random_float(),
+                            0.5 + 0.5 * random_float(), 1.0)
+                else:
+                    tint = (1,1,1,1)
 
                 imgui.image(tile.tex, size[0], size[1], uv0=(0.0, 1.0), uv1=(1.0, 0.0), tint_color=tint)
                 self._stack.append(_Ctx(key, (x, y), size, layer, True))

@@ -1,4 +1,7 @@
 import inspect
+import os
+import shutil
+import sys
 import types
 from copy import copy
 from enum import Enum
@@ -17,6 +20,7 @@ from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.melty import Melty, CollectionAction, OperationType, apply_collection_action, add_to_collection, \
     delete_from_collection
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
+from src.lsd.gl_gui.view.core_views.core_decoration import hotkey, global_hotkeys
 from src.lsd.gl_gui.view.core_views.core_render import render_func, tmp_undo_stack, redo_stack, push_id, pop_id, ui_id, \
     render_wrapper, annotation_track, listens_for, get_draw_state
 from src.lsd.gl_gui.model.core_model.new_core_model import KeyMod, Hotkey
@@ -26,6 +30,7 @@ import libcst as cst
 from src.lsd.gl_gui.view.core_views.folders_proxy import FolderProxy
 from src.lsd.gl_gui.view.core_views.inspect_utils import get_params, set_fn_defaults
 from collections.abc import MutableMapping
+from src.lsd.gl_gui.view.core_views.codec_register import registry as FILE_CODECS
 
 
 @render_wrapper(wraps=render_func)
@@ -74,6 +79,12 @@ code_export_str = "Test"
 filesystem_proxy = FolderProxy("/home/lukas/test_folder", text_mode=True)
 # Main draw function, called by the GUI framework
 def draw(vis):
+    # Handle global hotkeys
+    for hotkey, target in global_hotkeys.items():
+        if Melty.is_key_pressed(hotkey.key):
+            if callable(target):
+                target()
+
     fb_w, fb_h = map(int, imgui.get_io().display_size)  # or your true GL FB size if HiDPI
     Melty.cache.mask_begin_frame((fb_w, fb_h))
 
@@ -706,6 +717,13 @@ def draw_header_end(global_style, unique, style_manager, show_search,
     imgui.pop_id()
     pop_style_var(2)
 
+@hotkey(glfw.KEY_O)
+def toggle_offscreen():
+    if Melty.cache.enabled:
+        Melty.cache.set_enabled(False)
+    else:
+        Melty.cache.set_enabled(True)
+
 
 def core_header(func, outer_func, input_value=None, collection=None, key=None, indent_size=10, depth=0, draw_state=None,
                 window_stack=None, is_tree=True, is_window=False, spacing=Melty.spacing, padding=Melty.padding, show_name=True,
@@ -949,7 +967,7 @@ def seperator(height):
     imgui.dummy(0, height / 2)
 
 
-@with_header(is_default_for=(MutableMapping), use_cache=True)
+@with_header(is_default_for=(MutableMapping), use_cache=False)
 def draw_collection(input_value, draw_state, depth, style_manager,
                     meta, suffix, melty, show_search=True, on_collapse=False, on_drag_up=False, y_offset=0,
                     on_expand=False, width=None, indent_size=10, global_style=None, global_toggles=None, show_add_delete=True,
@@ -1071,6 +1089,12 @@ def draw_collection(input_value, draw_state, depth, style_manager,
             if hasattr(item, "tint") or show_bg:
                 prev_tint = style_manager.get_tint()
                 style_manager.set_imgui_tint(*item.tint)
+
+            elif isinstance(collection, FolderProxy):
+                codec = FILE_CODECS.for_name(key)
+                if codec is not None and hasattr(codec, 'tint'):
+                    prev_tint = style_manager.get_tint()
+                    style_manager.set_imgui_tint(*codec.tint)
 
             y_offset = Melty.collection_spacing
             all_meta.append(item_meta)
@@ -1225,9 +1249,36 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
 
     imgui.get_window_draw_list().add_rect_filled(*rect, col=imgui_bg_color, rounding=rounding)
 
+def open_file(path, app=None):
+    def default_file_manager():
+        # Detect platform
+        if sys.platform.startswith('darwin'):
+            return "open"
+        elif os.name == 'nt':
+            return "explorer"
+        elif os.name == 'posix':
+            return "nemo"
+
+    if app is None:
+        app = default_file_manager()
+
+    import subprocess
+    if os.path.exists(path):
+        codec = FILE_CODECS.for_name(path)
+        if codec is not None and codec.default_app is not None:
+            if hasattr(codec, 'default_app'):
+                app = codec.default_app
+                # Check if app exists
+                if not shutil.which(app):
+                    print(f"App not found: {app}, falling back to default.")
+                    app = "nemo"
+
+        subprocess.Popen([app, path])
+    else:
+        print(f"Path does not exist: {path}")
 
 @render_func
-def draw_header(input_value=None, name="", display_name=None, meta=None, unique=None, is_tree=True,
+def draw_header(input_value=None, name="", collection=None, display_name=None, meta=None, unique=None, is_tree=True,
                 show_name=True, name_func=None, show_type=False, show_unique=False,
                 on_search=False, trigger_collapse=False, trigger_expand=False,
                 draw_state=None, is_window=False, on_click=False, show_tint=True,
@@ -1279,7 +1330,29 @@ def draw_header(input_value=None, name="", display_name=None, meta=None, unique=
     if show_name and name != "" and name is not None and name != "None":
         if isinstance(input_value, (dict, MutableMapping)):
             folder_icon = "\uf07b"
-            imgui.text_colored(folder_icon, *name_color)
+            # imgui.text_colored(folder_icon, *name_color)
+
+            push_style_color(imgui.COLOR_BUTTON, *(0.0, 0.0, 0.0, 0.0))
+            push_style_color(imgui.COLOR_TEXT, *name_color)
+            if imgui.button(f"{folder_icon}##open_folder"):
+                if hasattr(input_value, "file_path"):
+                    open_file(input_value.file_path)
+
+            pop_style_color(2)
+            same_line(spacing=0.0)
+        elif isinstance(collection, (FolderProxy)):
+            file_icon = "\uf15b"
+            # imgui.text_colored(folder_icon, *name_color)
+
+            push_style_color(imgui.COLOR_BUTTON, *(0.0, 0.0, 0.0, 0.0))
+            push_style_color(imgui.COLOR_TEXT, name_color[0], name_color[1], name_color[2], 0.5)
+            if imgui.button(f"{file_icon}##open_file"):
+                if hasattr(collection, "file_path"):
+                    folder_path = collection.file_path
+                    file_path = os.path.join(folder_path, str(name))
+                    open_file(file_path)
+
+            pop_style_color(2)
             same_line(spacing=0.0)
 
         imgui.align_text_to_frame_padding()
@@ -1408,9 +1481,9 @@ def render_profiler_time(input_value=None, brief=False, style_manager=None,
 
 
 @render_func
-@listens_for(Hotkey("on_search", glfw.KEY_F, KeyMod.CTRL))
-@listens_for(Hotkey("on_collapse", glfw.KEY_MINUS, KeyMod.CTRL, scoped=False))
-@listens_for(Hotkey("on_expand", glfw.KEY_EQUAL, KeyMod.CTRL, scoped=False))
+@listens_for(Hotkey(glfw.KEY_F, "on_search", KeyMod.CTRL))
+@listens_for(Hotkey(glfw.KEY_MINUS, "on_collapse", KeyMod.CTRL, scoped=False))
+@listens_for(Hotkey(glfw.KEY_EQUAL, "on_expand", KeyMod.CTRL, scoped=False))
 def draw_object(input_value=None, draw_state=None, meta=None, name="", style_manager=None,
                 depth=0, unique=0, suffix="", collection=None, key=None, *args, **kwargs):
     # if is_tree and not draw_state.expanded:

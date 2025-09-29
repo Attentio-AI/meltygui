@@ -440,7 +440,6 @@ def apply_collection_action(action: CollectionAction):
                 ok = _reorder_keys_in_mapping(dst, keys)
                 if not ok:
                     return "Cannot safely reorder this mapping without destructive deletes."
-                _record_draw_state(value)
         else:
             final_key = s_key
             if s_key in dst:

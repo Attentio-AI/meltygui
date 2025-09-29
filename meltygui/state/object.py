@@ -20,11 +20,13 @@ from src.lsd.gl_gui.model.class_utill import ClassUtility
 from src.lsd.gl_gui.model.global_undo_redo_manager import TrackedList, TrackedDict, TrackedSet, GlobalUndoRedoManager
 from src.lsd.gl_gui.model.core_model.core_enums import generate_id
 from src.lsd.gl_gui.view.app_view_utils import should_exclude
+from src.lsd.gl_gui.view.core_views.core_decoration import exclude
 
 _SEGMENT_RE = re.compile(
     r'(?:[^.\[]+|\[[^\]]*\])+')  # matches a segment like: attr, attr[0], attr["a.b"][1], [0], ...
 _BRACKET_RE = re.compile(r'\[([^\]]*)\]')  # extracts inner text of each [...] in a segment
 
+@exclude(["tint", "hash", "id", "name"])
 class DictConversion(metaclass=FieldMeta):
     def __init__(self):
         # Using weak references to avoid circular references

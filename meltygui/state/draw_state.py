@@ -1,5 +1,4 @@
 from enum import Enum
-from typing import Dict
 
 import imgui
 import libcst as cst
@@ -9,12 +8,6 @@ from src.lsd.gl_gui.model.dict_conversion import DictConversion
 
 
 # class decoration
-
-def exclude(attr_names, **kwargs):
-    def decorator(cls):
-        setattr(cls, '__excluded_attrs__', attr_names)
-        return cls
-    return decorator
 
 class SynthColors(DictConversion):
     def __init__(self):
@@ -170,11 +163,20 @@ class KeyMod(Enum):
 
 
 class Hotkey:
-    def __init__(self, name, key, mod=None, scoped=True):
+    def __init__(self, key=None, name="", mod=None, scoped=True):
         self.name = name
         self.key = key
         self.mod = mod
         self.scoped = scoped
+
+    # hashing and equality based on key and mod only
+    def __hash__(self):
+        return hash((self.key, self.mod))
+
+    def __eq__(self, other):
+        if not isinstance(other, Hotkey):
+            return False
+        return self.key == other.key and self.mod == other.mod
 
     def mod_active(self):
         if self.mod == KeyMod.CTRL:

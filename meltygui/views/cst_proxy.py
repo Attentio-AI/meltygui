@@ -4,7 +4,7 @@ import hashlib
 import re
 import libcst as cst
 
-from src.lsd.gl_gui.model.core_model.new_core_model import exclude
+from src.lsd.gl_gui.view.core_views.core_decoration import exclude
 
 # ==============================
 # Formatting & whitespace constants
