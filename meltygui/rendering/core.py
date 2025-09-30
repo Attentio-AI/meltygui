@@ -672,12 +672,13 @@ def render_func(*args, **o_kwargs):
                                     (this_m[0] - last_m[0]) ** 2 + (this_m[1] - last_m[1]) ** 2)
                                 melty.total_drag_distance += frame_drag_distance
                                 melty.total_drag_frames += 1
-                            if melty.total_drag_distance >= 1 or btn_state.dragged:
+                            if melty.total_drag_distance >= 0 or btn_state.dragged:
                                 btn_state.dragged = True
                                 melty.drag_in_progress = True
                                 melty.dragged_item = draw_state
                                 melty.mark_event(unique, m_btn, ActionType.DRAG)
                                 melty.drag_delta = btn_state.drag_delta
+
 
                     if draw_state.hovered and imgui.is_window_hovered():
                         if unique not in melty.triggered_actions:

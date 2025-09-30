@@ -18,6 +18,20 @@ def exclude(*args, **kwargs):
 
 global_hotkeys = {}
 
+def no_save(*args, **kwargs):
+    def decorator(cls):
+        if len(args) == 1 and isinstance(args[0], (list, set, tuple)):
+            from_args = args[0]
+        else:
+            from_args = set(args)
+        already_excluded = getattr(cls, '__no_save__', set())
+        merged_names = already_excluded.union(set(from_args))
+        merged_names = merged_names.union(from_args)
+
+        setattr(cls, '__no_save__', merged_names)
+        return cls
+
+    return decorator
 
 def hotkey(key):
     """

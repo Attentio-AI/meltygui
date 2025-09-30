@@ -411,12 +411,14 @@ def core_draw_window(input_value, name, unique, window_func,
 
     if width is not None:
         if width > 0 and height > 0:
-            imgui.set_next_window_size(width, height + padding_fudge * 4)
+            imgui.set_next_window_size(width, height)
 
     if not decorations:
         if pos_x is not None and pos_y is not None:
-            imgui.set_next_window_position(pos_x - indent_size - 2,
-                                           pos_y - padding_fudge)
+            imgui.set_next_window_position(pos_x - indent_size,
+                                           pos_y)
+            imgui.set_next_window_size(width + indent_size, height + padding_fudge)
+
     else:
         if pos_x is not None and pos_y is not None:
             imgui.set_next_window_position(pos_x, pos_y)
@@ -507,9 +509,9 @@ def render_with_foo(func, *args, **kwargs):
 
 
 @render_func
-def draw_drop_target(input_value, draw_state, on_drag, do_flow, depth,
-                     collection, key, melty, y_offset, enable_flow,
-                     unique, tag, style_manager, global_style, offset=0):
+def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
+                          collection, key, melty, y_offset, enable_flow,
+                          unique, tag, style_manager, global_style, offset=0, indent_size=10):
     cursor_y_screen = imgui.get_cursor_screen_pos()[1]
 
     if collection == input_value or not Melty.is_window_enabled():
@@ -630,8 +632,8 @@ def draw_drop_target(input_value, draw_state, on_drag, do_flow, depth,
 
             padding = imgui.get_style().frame_padding.x
             color = color if active_drop else inactive_color
-            draw_list.add_rect_filled(draw_state.left + offset + padding, cursor_top - 1,
-                                    draw_state.left + draw_state.width - padding * 2.0,
+            draw_list.add_rect_filled(draw_state.left + offset, cursor_top - 1,
+                                    draw_state.left + draw_state.width - indent_size,
                                     max(cursor_top, cursor_bottom - 1),
                                     col=imgui.get_color_u32_rgba(*color), rounding=4.0)
             #
@@ -756,9 +758,9 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
         if not show_name:
             enable_flow = False
 
-        _, flow_spacing = draw_drop_target(do_flow=True, enable_flow=enable_flow,
-                         collection=collection, key=key, on_drag=False,
-                         draw_state=draw_state, tag="top")
+        _, flow_spacing = draw_drag_drop_target(do_flow=True, enable_flow=enable_flow,
+                                                collection=collection, key=key, on_drag=False,
+                                                draw_state=draw_state, tag="top")
         # ------------------ end spacing -----------
         if width is None:
             if draw_state.width is not None and draw_state.width > 0:
@@ -923,8 +925,8 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
             if show_bg:
                 draw_list.channels_set_current(max(0, min(Melty.max_depth - 2, depth - 1)))
                 if not on_drag:
-                    draw_bg(bypass=True, left=start_x_pos, top=y_margin + start_y_pos - 1,
-                            width=background_width, height=snap_int(background_height - Melty.spacing[1] / 2.0 - y_offset),
+                    draw_bg(bypass=True, left=start_x_pos, top=y_margin + start_y_pos,
+                            width=background_width, height=snap_int(background_height - Melty.spacing[1] / 2.0 - y_offset - flow_spacing),
                             tint=bg_tint, depth=depth, selected=bg_selected, global_style=global_style,
                             style_manager=style_manager)
                 else:
@@ -1157,9 +1159,9 @@ def draw_collection(input_value, draw_state, depth, style_manager,
         last_draw_state = last_meta.tmp_draw_state if last_meta is not None else draw_state
 
         last_item = collection[last_key] if (isinstance(collection, dict) and last_key in collection) else None
-        _, flow_spacing = draw_drop_target(do_flow=True, enable_flow=True, melty=melty, offset=indent_size,
-                                           collection=ordered_driver, key=last_key, on_drag=False,
-                                           draw_state=last_draw_state, tag="bottom")
+        _, flow_spacing = draw_drag_drop_target(do_flow=True, enable_flow=True, melty=melty, offset=0,
+                                                collection=ordered_driver, key=last_key, on_drag=False,
+                                                draw_state=last_draw_state, tag="bottom")
     # ------------------ end spacing -----------
 
     if drew_any and len(keys) > 1:
@@ -1366,11 +1368,17 @@ def draw_header(input_value=None, name="", collection=None, display_name=None, m
         push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
         push_style_color(imgui.COLOR_BUTTON, *(0.0, 0.0, 0.0, 0.0))
         push_style_color(imgui.COLOR_TEXT, *name_color)
-        push_style_color(imgui.COLOR_BUTTON_HOVERED, *hover_color)
+
+        if Melty.is_window_enabled():
+            push_style_color(imgui.COLOR_BUTTON_HOVERED, *hover_color)
+        else:
+            push_style_color(imgui.COLOR_BUTTON_HOVERED, *(0.0, 0.0, 0.0, 0.0))
+
         push_style_color(imgui.COLOR_BUTTON_ACTIVE, *hover_color)
         push_style_var(imgui.STYLE_FRAME_ROUNDING, 2.0)
 
         if on_drag:
+            push_style_color(imgui.COLOR_BUTTON, *hover_color)
             push_style_var(imgui.STYLE_FRAME_BORDERSIZE, 2.0)
             push_style_color(imgui.COLOR_BORDER, *outline_color)
 
@@ -1401,7 +1409,7 @@ def draw_header(input_value=None, name="", collection=None, display_name=None, m
             if not imgui.is_item_active():
                 draw_state._name_edit = False
         if on_drag:
-            pop_style_color(1)
+            pop_style_color(2)
             pop_style_var(1)
 
         same_line()
@@ -1603,8 +1611,6 @@ def draw_bool(input_value: bool):
 
 @with_header_minimal(is_default_for=(str), use_cache=True)
 def draw_str(input_value: str):
-    if "1340" in input_value:
-        pass
     line_count = input_value.count('\n') + 1
     line_height = imgui.get_text_line_height_with_spacing()
 
@@ -1613,8 +1619,6 @@ def draw_str(input_value: str):
         height = imgui.get_text_line_height() + padding * 2
     else:
         height = (max(0, min(200, line_count * line_height + 8)))
-    space_available = imgui.get_content_region_available()[0]
-    imgui.set_next_item_width(space_available - 100)
     changed, value = imgui.input_text_multiline("##str", input_value, height=height)
     if changed:
         return True, value
@@ -1662,7 +1666,7 @@ def draw_tuple(input_value: tuple, is_tree=False, draw_state=None, show_bg=False
 
     return changed, input_value
 
-@with_header(is_default_for=float, use_cache=True)
+@with_header_minimal(is_default_for=float, use_cache=True)
 def draw_float(input_value:float, min_value=-100.0, max_value=100.0, speed=0.01, unique=0, draw_state=None):
     changed, value = imgui.drag_float("##float", input_value,
                                       change_speed=speed,

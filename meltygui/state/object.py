@@ -210,6 +210,14 @@ class DictConversion(metaclass=FieldMeta):
                 excluded = self.excluded
             else:
                 excluded = excluded.union(self.excluded)
+
+        if hasattr(self, '__no_save__'):
+            excluded = excluded[:]
+            if excluded is None:
+                excluded = self.__no_save__
+            else:
+                excluded += self.__no_save__
+
         result = {}
         is_root = False
         if objects is None:
@@ -246,6 +254,8 @@ class DictConversion(metaclass=FieldMeta):
 
         # Get all attributes that don't start with '_'
         for key, value in self.__dict__.items():
+
+
 
             if key.startswith('_') or (excluded and key in excluded):
                 continue

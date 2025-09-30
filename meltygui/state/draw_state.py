@@ -5,6 +5,7 @@ import libcst as cst
 
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
+from src.lsd.gl_gui.view.core_views.core_decoration import no_save
 
 
 # class decoration
@@ -52,7 +53,8 @@ class CSTDrawBits:
         self.anchor: tuple = ()
         self.text_buf: str = ""  # generic edit buffer
 
-
+@no_save("mouse_btn_state", "mouse_up", "mouse_down",
+         "drag_released", "hovered", "clicked", "dragged",)
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
 
