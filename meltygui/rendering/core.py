@@ -16,6 +16,7 @@ from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.melty import Melty, ActionType, apply_collection_action, MeltyState, DepthState, \
     delete_from_collection
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
+from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
 
 melty_state_registry = {}
 def get_melty_state(unique: int):
@@ -542,6 +543,10 @@ def render_func(*args, **o_kwargs):
                 if name == "float_test_2":
                     pass
 
+                # Snap cursor to nearest pixel
+                cursor_pos = imgui.get_cursor_pos()
+                imgui.set_cursor_pos((snap_int(cursor_pos[0]), snap_int(cursor_pos[1])))
+
                 use_cache = kwargs.get("use_cache", False)
                 if use_cache and Melty.cache.enabled:
                     global_toggles = kwargs.get("global_toggles", {})
@@ -589,14 +594,14 @@ def render_func(*args, **o_kwargs):
                     if is_initial_draw_state:
                         draw_state._bounding_width = max(draw_state._bounding_width, item_rect[0])
                     else:
-                        draw_state._bounding_width = item_rect[0]
+                        draw_state._bounding_width = snap_int(item_rect[0])
                     if is_initial_draw_state:
                         draw_state._bounding_height = max(draw_state._bounding_height, item_rect[1])
                     else:
-                        draw_state._bounding_height = item_rect[1]
+                        draw_state._bounding_height = snap_int(item_rect[1])
 
-                    draw_state.width = item_rect[0]
-                    draw_state.height = item_rect[1]
+                    draw_state.width = snap_int(item_rect[0])
+                    draw_state.height = snap_int(item_rect[1])
 
                     if (draw_state._bounding_width != original_width or
                             draw_state._bounding_height != original_height):

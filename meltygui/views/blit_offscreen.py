@@ -95,6 +95,9 @@ def _create_mask_tex(w: int, h: int) -> int:
     return tex
 
 
+def snap_int(v: float) -> int:
+    return int(round(v))
+
 def _create_fbo_with_tex(tex: int, depth_stencil: bool, w, h) -> Tuple[int, Optional[int]]:
     fbo = gl.glGenFramebuffers(1)
     gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, fbo)
@@ -105,7 +108,7 @@ def _create_fbo_with_tex(tex: int, depth_stencil: bool, w, h) -> Tuple[int, Opti
     if depth_stencil:
         rbo = gl.glGenRenderbuffers(1)
         gl.glBindRenderbuffer(gl.GL_RENDERBUFFER, rbo)
-        gl.glRenderbufferStorage(gl.GL_RENDERBUFFER, gl.GL_DEPTH24_STENCIL8, int(w), int(h))
+        gl.glRenderbufferStorage(gl.GL_RENDERBUFFER, gl.GL_DEPTH24_STENCIL8, snap_int(w), snap_int(h))
         gl.glFramebufferRenderbuffer(gl.GL_FRAMEBUFFER, gl.GL_DEPTH_STENCIL_ATTACHMENT, gl.GL_RENDERBUFFER, rbo)
 
     status = gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER)
@@ -132,10 +135,13 @@ def _ensure_tile(existing: Optional[_Tile], w: int, h: int) -> _Tile:
         try:
             gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, existing.fbo)
             gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, new_fbo)
-            mw = int(min(existing.size[0], w))
-            mh = int(max(existing.size[1], h))
             # print(f"TileCacheMasked: resizing tile {existing.size} -> {(w,h)}, blit {mw}x{mh}")
-            gl.glBlitFramebuffer(0, 0, mw, int(existing.size[1]), 0, 0, mw, int(h), gl.GL_COLOR_BUFFER_BIT, gl.GL_NEAREST)
+            gl.glBlitFramebuffer(0, 0, snap_int(existing.size[0]), snap_int(existing.size[1]), 0, 0,
+                                 snap_int(w), snap_int(h), gl.GL_COLOR_BUFFER_BIT, gl.GL_NEAREST)
+            # mw = min(existing.size[0], w)
+            # mh = min(existing.size[1], h)
+            # gl.glBlitFramebuffer(0, 0, mw, int(mh), 0, 0, mw, h, gl.GL_COLOR_BUFFER_BIT, gl.GL_NEAREST)
+
         finally:
             st.restore()
         # cleanup old
@@ -148,7 +154,7 @@ def _ensure_tile(existing: Optional[_Tile], w: int, h: int) -> _Tile:
         st = _GLState()
         try:
             gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, new_fbo)
-            gl.glViewport(0, 0, int(w), int(h))
+            gl.glViewport(0, 0, snap_int(w), snap_int(h))
             gl.glDisable(gl.GL_SCISSOR_TEST)
             gl.glClearColor(0, 0, 0, 0)
             gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT | gl.GL_STENCIL_BUFFER_BIT)
@@ -423,8 +429,8 @@ class TileCacheMasked:
         dd = imgui.get_draw_data()
         dp_x, dp_y = dd.display_pos  # top-left of draw space (screen pixels)
         s_x, s_y = dd.frame_buffer_scale  # DPI scale to framebuffer pixels
-        fb_w = int((dd.display_size[0] * s_x))
-        fb_h = int((dd.display_size[1] * s_y))
+        fb_w = snap_int(dd.display_size[0] * s_x)
+        fb_h = snap_int(dd.display_size[1] * s_y)
         return dp_x, dp_y, s_x, s_y, fb_w, fb_h
 
     @staticmethod
@@ -442,6 +448,8 @@ class TileCacheMasked:
     def mark_start_offscreen(self, key: str, layer: int, global_toggles=None,
                              indent_size=0, width=0, height=0) -> bool:
         x, y = imgui.get_cursor_screen_pos()
+        # Snap cursor to nearest pixel to avoid sub-pixel jitter
+        imgui.set_cursor_screen_pos((snap_int(x), snap_int(y)))
 
         layer = int(max(0, min(255, layer)))
 
@@ -486,7 +494,7 @@ class TileCacheMasked:
                 else:
                     tint = (1,1,1,1)
 
-                imgui.image(tile.tex, size[0], size[1], uv0=(0.0, 1.0), uv1=(1.0, 0.0), tint_color=tint)
+                imgui.image(tile.tex, snap_int(size[0]), snap_int(size[1]), uv0=(0.0, 1.0), uv1=(1.0, 0.0), tint_color=tint)
                 self._stack.append(_Ctx(key, (x, y), size, layer, True))
                 return False
 
@@ -575,7 +583,7 @@ class TileCacheMasked:
                 h = max(0.0, y1 - y0)
                 if w <= 0 or h <= 0:
                     continue
-                gl.glScissor(int(x0), int(y0), int(w), int(h))
+                gl.glScissor(snap_int(x0), snap_int(y0), snap_int(w), snap_int(h))
                 gl.glUniform1f(loc_layer_norm, r.layer / 255.0)
                 gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
 
@@ -607,11 +615,12 @@ class TileCacheMasked:
                 if p.tile is not None:
 
                     gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, p.tile.fbo)
-                    gl.glViewport(0, 0, int(p.tile.size[0]), int(p.tile.size[1]))
+                    gl.glViewport(0, 0, snap_int(p.tile.size[0]), snap_int(p.tile.size[1]))
 
                     # do NOT clear; preserve stale pixels under overlaps
                     gl.glUniform4f(self._loc_uSrcRectPx, float(x0), float(y0), float(x1), float(y1))
-                    gl.glUniform1i(self._loc_uLayer, int(p.layer))
+
+                    gl.glUniform1i(self._loc_uLayer, snap_int(p.layer))
                     gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
                     p.tile.dirty = False
 

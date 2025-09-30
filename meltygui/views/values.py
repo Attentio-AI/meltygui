@@ -20,6 +20,7 @@ from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.melty import Melty, CollectionAction, OperationType, apply_collection_action, add_to_collection, \
     delete_from_collection
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
+from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
 from src.lsd.gl_gui.view.core_views.core_decoration import hotkey, global_hotkeys
 from src.lsd.gl_gui.view.core_views.core_render import render_func, tmp_undo_stack, redo_stack, push_id, pop_id, ui_id, \
     render_wrapper, annotation_track, listens_for, get_draw_state
@@ -781,7 +782,7 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
         start_y_pos = imgui.get_cursor_screen_pos()[1]
         cutoff = 50
         y_margin = y_offset / 2.0
-        imgui.dummy(0, y_margin)
+        imgui.dummy(0, snap_int(y_margin))
 
         if on_drag:
             imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() - int(Melty.flow_spacing))
@@ -907,7 +908,7 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
             Melty.bg_stack.pop()
 
         same_line(spacing=0)
-        imgui.dummy(0, y_margin)
+        imgui.dummy(0, snap_int(y_margin))
 
         end_y_pos = imgui.get_cursor_screen_pos()[1]
 
@@ -923,7 +924,7 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
                 draw_list.channels_set_current(max(0, min(Melty.max_depth - 2, depth - 1)))
                 if not on_drag:
                     draw_bg(bypass=True, left=start_x_pos, top=y_margin + start_y_pos - 1,
-                            width=background_width, height=background_height - Melty.spacing[1] / 2.0 - y_offset,
+                            width=background_width, height=snap_int(background_height - Melty.spacing[1] / 2.0 - y_offset),
                             tint=bg_tint, depth=depth, selected=bg_selected, global_style=global_style,
                             style_manager=style_manager)
                 else:
@@ -933,11 +934,11 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
                                                                    value=0.0, alpha=0.3, saturation_scale=0.3))
                     draw_bg(bypass=True, left=start_x_pos + 2, top=y_margin + start_y_pos, global_style=global_style,
                             style_manager=style_manager, depth=depth,
-                            width=background_width - 4, height=background_height - Melty.spacing[1] / 2.0 - 1 - y_offset,
+                            width=background_width - 4, height=snap_int(background_height - Melty.spacing[1] / 2.0 - 1 - y_offset),
                             tint=shadow_color, outline_tint=outline_shadow, selected=bg_selected)
 
                 if draw_state.expanded or not is_tree:
-                    draw_state.expanded_height = end_y_pos - start_y_pos
+                    draw_state.expanded_height = snap_int(end_y_pos - start_y_pos)
 
             if draw_state.height is not None:
                 push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
@@ -962,9 +963,9 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
         return changed, return_value
 
 def seperator(height):
-    imgui.dummy(0, height / 2)
+    imgui.dummy(0, snap_int(height / 2))
     imgui.separator()
-    imgui.dummy(0, height / 2)
+    imgui.dummy(0, snap_int(height / 2))
 
 
 @with_header(is_default_for=(MutableMapping), use_cache=False)
@@ -1030,6 +1031,10 @@ def draw_collection(input_value, draw_state, depth, style_manager,
         if isinstance(collection, dict) and key not in collection:
             continue
         item = collection[key]
+
+        # Snap cursor to nearest unit
+        cursor_pos = imgui.get_cursor_pos()
+        imgui.set_cursor_pos((snap_int(cursor_pos[0]), snap_int(cursor_pos[1])))
 
         # visual separator (object extras)
         if key is None and item is None:
@@ -1158,7 +1163,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
     # ------------------ end spacing -----------
 
     if drew_any and len(keys) > 1:
-        imgui.dummy(0, Melty.end_collection_spacing)
+        imgui.dummy(0, snap_int(Melty.end_collection_spacing))
 
     return changed, input_value
 
@@ -1186,7 +1191,7 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
     right =  left + width + rounding
     bottom =  top + height + rounding
 
-    rect = (left, top, right, bottom)
+    rect = (snap_int(left), snap_int(top), snap_int(right), snap_int(bottom))
     rect_outline = (left - 1, top - 1, right + 1, bottom + 1)
     # rounding
     rounding = min(current_indent_px(), rounding)
@@ -1602,7 +1607,14 @@ def draw_str(input_value: str):
         pass
     line_count = input_value.count('\n') + 1
     line_height = imgui.get_text_line_height_with_spacing()
-    height = max(0, min(200, line_count * line_height + 8))
+
+    if line_count == 1:
+        padding = imgui.get_style().frame_padding.y
+        height = imgui.get_text_line_height() + padding * 2
+    else:
+        height = (max(0, min(200, line_count * line_height + 8)))
+    space_available = imgui.get_content_region_available()[0]
+    imgui.set_next_item_width(space_available - 100)
     changed, value = imgui.input_text_multiline("##str", input_value, height=height)
     if changed:
         return True, value
