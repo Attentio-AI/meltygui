@@ -445,7 +445,7 @@ class TileCacheMasked:
         return ((x0), (y0), (x1), y1)
 
     # ----- Begin/End pair with per-view layer -----
-    def mark_start_offscreen(self, key: str, layer: int, global_toggles=None,
+    def mark_start_offscreen(self, input_value, key: str, layer: int, global_toggles=None,
                              indent_size=0, width=0, height=0) -> bool:
         x, y = imgui.get_cursor_screen_pos()
         # Snap cursor to nearest pixel to avoid sub-pixel jitter
@@ -548,7 +548,6 @@ class TileCacheMasked:
             # 1) Snapshot default framebuffer to texture (resolves MSAA via blit)
             gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, 0)
             gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, self._snapshot_fbo)
-            print(f"TileCacheMasked: snapshot {dd_fb_w}x{dd_fb_h} -> {fb_w}x{fb_h}")
             gl.glBlitFramebuffer(0, 0, dd_fb_w, dd_fb_h, 0, 0, dd_fb_w, dd_fb_h,
                                  gl.GL_COLOR_BUFFER_BIT, gl.GL_NEAREST)
 

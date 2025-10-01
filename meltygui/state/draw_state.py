@@ -5,7 +5,7 @@ import libcst as cst
 
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.view.core_views.core_decoration import no_save
+from src.lsd.gl_gui.view.core_views.core_decoration import no_save, exclude
 
 
 # class decoration
@@ -30,6 +30,9 @@ class SynthColors(DictConversion):
 #         self.parent_module = None
 #         self.adapter = None
 #         self.target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
+
+@no_save("mouse_up", "mouse_down", "drag_released", "hovered", "clicked", "dragged",
+         "mouse_down_pos", "initial_screen_pos", "drag_delta")
 class MouseState(DictConversion):
     def __init__(self):
         super().__init__()
@@ -54,7 +57,8 @@ class CSTDrawBits:
         self.text_buf: str = ""  # generic edit buffer
 
 @no_save("mouse_btn_state", "mouse_up", "mouse_down",
-         "drag_released", "hovered", "clicked", "dragged",)
+         "drag_released", "clicked", "dragged", "render_time")
+@exclude("render_time", "width", "height", "top", "left")
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
 
@@ -150,9 +154,9 @@ class DrawState(DictConversion):
 
 
     def is_hovered(self):
-        if self.left is None or self.top is None or self.width is None or self.height is None:
+        if self.left is None or self.top is None or self._bounding_width is None or self._bounding_height is None:
             return False
-        rect = (self.left, self.top - 5, self.width, self.height + 10)
+        rect = (self.left, self.top - 5, self._bounding_width, self._bounding_height + 10)
         if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
             return True
         return False

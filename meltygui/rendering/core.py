@@ -415,6 +415,7 @@ def render_func(*args, **o_kwargs):
 
         draw_state = get_draw_state(unique)
         draw_state._input_value = input_value
+        start_cursor = imgui.get_cursor_screen_pos()
 
         is_initial_draw_state = True
         nested_call = input_value == Melty.input_value_stack[-1] if len(Melty.input_value_stack) > 0 else False
@@ -548,10 +549,29 @@ def render_func(*args, **o_kwargs):
                 imgui.set_cursor_pos((snap_int(cursor_pos[0]), snap_int(cursor_pos[1])))
 
                 use_cache = kwargs.get("use_cache", False)
+                tile_id = str(computed_unique) + str(METHOD_ID)
+                if Melty.is_invalid(value=draw_state):
+
+                    Melty.clear_invalid(value=draw_state)
+                    Melty.cache.invalidate(tile_id)
+
+                collection = kwargs.get("collection", None)
+
+
+
                 if use_cache and Melty.cache.enabled:
+                    if name == "alpha":
+                        pass
+                    if Melty.is_invalid(collection, input_value, name) or draw_state.is_hovered():
+                        print(f"Invalidating {name} / {input_value.__class__.__name__}")
+                        Melty.clear_invalid(collection, input_value, name)
+                        Melty.cache.invalidate(tile_id)
+                        print(f"Invalidating cache for {name} / {input_value.__class__.__name__}")
+
                     global_toggles = kwargs.get("global_toggles", {})
                     # Use the already-stable computed_unique + METHOD_ID
-                    if Melty.cache.mark_start_offscreen(str(computed_unique) + str(METHOD_ID),
+
+                    if Melty.cache.mark_start_offscreen(input_value, tile_id,
                                                         indent_size=kwargs.get("indent_size", 10),
                                                         layer=Melty.depth, global_toggles=global_toggles):
                         return_value = func(**clean_args)
@@ -597,10 +617,16 @@ def render_func(*args, **o_kwargs):
                         draw_state._bounding_width = snap_int(item_rect[0])
                     if is_initial_draw_state:
                         draw_state._bounding_height = max(draw_state._bounding_height, item_rect[1])
+                        draw_state.left = min(draw_state.left or start_cursor[0], snap_int(start_cursor[0]))
+                        draw_state.top = min(draw_state.top or start_cursor[1], snap_int(start_cursor[1]))
                     else:
                         draw_state._bounding_height = snap_int(item_rect[1])
+                        draw_state.left = snap_int(start_cursor[0])
+                        draw_state.top = snap_int(start_cursor[1])
 
-                    draw_state.width = snap_int(item_rect[0])
+                    min_width = kwargs.get("min_width", 0) if kwargs.get("min_width", 0) is not None else 0
+                    measured_width = snap_int(item_rect[0]) if item_rect[0] is not None else 0
+                    draw_state.width = max(min_width, measured_width)
                     draw_state.height = snap_int(item_rect[1])
 
                     if (draw_state._bounding_width != original_width or

@@ -15,6 +15,7 @@ import torch
 from torch import Tensor, nn
 from transformers import PreTrainedTokenizerBase, LlamaTokenizerFast
 
+from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.model.core_markers import FieldMeta
 from src.lsd.gl_gui.model.class_utill import ClassUtility
 from src.lsd.gl_gui.model.global_undo_redo_manager import TrackedList, TrackedDict, TrackedSet, GlobalUndoRedoManager
@@ -793,6 +794,21 @@ class DictConversion(metaclass=FieldMeta):
 
     def __setattr__(self, name: str, value: Any) -> None:
         # Handle special internal attributes normally
+        is_visible = name not in self.__excluded_attrs__ if hasattr(self, '__excluded_attrs__') else False
+
+
+        if is_visible and not name.startswith('_') and name != "driver":
+            current_val = object.__getattribute__(self, name) if hasattr(self, name) else None
+            # print(f"{name} old_value: {current_val} new_value: {value}")
+            if value != current_val:
+                if name == "width":
+                    pass
+
+                if name == "alpha":
+                    print(f"{self.__class__.__name__} {name} old_value: {current_val} new_value: {value}")
+                Melty.invalidate(parent=self, value=value, attr_name=name)
+
+
         if name.startswith('_'):
             super().__setattr__(name, value)
             return

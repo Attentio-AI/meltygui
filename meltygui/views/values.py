@@ -91,6 +91,9 @@ def draw(vis):
 
     draw_window(vis.root.lora_collection, name="Lora Root")
     draw_window(Melty.hotkey_registry, name="Hotkeys", is_window=True)
+
+    draw_window(len(Melty.dirty_objects), name="Invalidate Cache")
+
     # draw_window(module, name="CST Module")
     #
     global proxy
@@ -113,6 +116,8 @@ def draw(vis):
         except Exception as e:
             print_colored_traceback(e)
             print("Error parsing code")
+
+    # Melty.dirty_objects.clear()
 
 
     # draw_window(export_code, name="Code Export")
@@ -510,7 +515,7 @@ def render_with_foo(func, *args, **kwargs):
 
 @render_func
 def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
-                          collection, key, melty, y_offset, enable_flow,
+                          collection, key, melty, y_offset, enable_flow, min_width,
                           unique, tag, style_manager, global_style, offset=0, indent_size=10):
     cursor_y_screen = imgui.get_cursor_screen_pos()[1]
 
@@ -626,7 +631,7 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
                                                               value=0.7,
                                                               alpha=opacity, saturation=0.8)
             if draw_state.width == None:
-                draw_state.width = 1
+                draw_state.width = min_width
             if draw_state.left == None:
                 draw_state.left = 1
 
@@ -767,11 +772,11 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
                 width = draw_state.width
             else:
                 width = min_width
-                draw_state.width = min_width
+                # draw_state.width = min_width
         else:
             if min_width == 0:
                 min_width = 1e9
-            draw_state.width = min(width, min_width)
+            # draw_state.width = max(width, min_width)
 
         content_region = imgui.get_content_region_available()[0]
         width = min(width, content_region)
@@ -1733,14 +1738,17 @@ def draw_int(input_value: int, min_value=-100.0, max_value=100.0, speed=0.05):
     int_text_width = imgui.calc_text_size(str(input_value))[0]
 
     imgui.set_next_item_width(int_text_width + 20)
-    changed, value = imgui.drag_int("##int", input_value,
-                                      change_speed=speed,
-                                      min_value=min_value,
-                                      max_value=max_value)
-    if changed:
-        return True, value
+    max_int = 2147483647
+    if input_value < max_int:
+        changed, value = imgui.drag_int("##int", input_value,
+                                          change_speed=speed,
+                                          min_value=min_value,
+                                          max_value=max_value)
+        if changed:
+            return True, value
 
-    return changed, value
+        return changed, value
+    return False, input_value
 
 @with_header(show_header=False, show_name=False, show_bg=True)
 def draw_debug_label(input_value:str):

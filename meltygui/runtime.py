@@ -681,6 +681,57 @@ class Melty:
     draw_state_stack = []
     input_value_stack = [None]
     cache = TileCacheMasked()
+    dirty_objects = set()
+    all_dirty = False
+
+
+    @classmethod
+    def invalidate(cls, parent=None, value=None, attr_name=None):
+        # if len(cls.dirty_objects) > 1000:
+        #     cls.all_dirty = True
+        #     cls.dirty_objects.clear()
+        #     return
+
+        if value is not None and (hasattr(value, "__dict__") or isinstance(value, (dict, list, set))):
+            cls.dirty_objects.add(f"{id(value)}")
+
+        if parent is not None:
+            cls.dirty_objects.add(f"{id(parent)}")
+            if attr_name is not None:
+                cls.dirty_objects.add(f"{id(parent)}.{attr_name}")
+
+    @classmethod
+    def is_invalid(cls, parent=None, value=None, attr_name=None):
+        # if cls.all_dirty:
+        #     return True
+
+        is_invalid = False
+
+        if value is not None and (hasattr(value, "__dict__") or isinstance(value, (dict, list, set))):
+            is_invalid |= f"{id(value)}" in cls.dirty_objects
+        elif parent is not None:
+            if attr_name is None:
+                is_invalid |= f"{id(parent)}" in cls.dirty_objects
+            else:
+                is_invalid |= f"{id(parent)}.{attr_name}" in cls.dirty_objects or f"{id(parent)}" in cls.dirty_objects
+        return is_invalid
+
+    @classmethod
+    def clear_invalid(cls, parent=None, value=None, attr_name=None):
+        if value is not None and (hasattr(value, "__dict__") or isinstance(value, (dict, list, set))):
+            cls.dirty_objects.discard(f"{id(value)}")
+            # Also clear the parent.attr_name if any
+            if parent is not None and attr_name is not None:
+                cls.dirty_objects.discard(f"{id(parent)}.{attr_name}")
+
+        if parent is not None:
+            cls.dirty_objects.discard(f"{id(parent)}")
+            if attr_name is not None:
+                cls.dirty_objects.discard(f"{id(parent)}.{attr_name}")
+        if len(cls.dirty_objects) == 0:
+            cls.all_dirty = False
+
+
     @classmethod
     def begin_frame(cls, module_id: str, root: cst.Module):
         cls._root_by_module[module_id] = root

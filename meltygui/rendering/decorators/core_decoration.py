@@ -33,6 +33,7 @@ def no_save(*args, **kwargs):
 
     return decorator
 
+
 def hotkey(key):
     """
     This is the decorator factory. It takes arguments for the decorator.
