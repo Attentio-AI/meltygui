@@ -5,8 +5,7 @@ import glfw
 import imgui
 import libcst as cst
 from src.lsd.gl_gui.model.core_model.core_enums import generate_id
-from src.lsd.gl_gui.view.core_views.blit_offscreen import TileCacheMasked
-
+from src.lsd.gl_gui.view.core_views.blit_offscreen import *
 
 class Action:
 
@@ -642,6 +641,7 @@ class MeltyState:
         self.items_to_delete.append((key, collection))
 
 class Melty:
+    default_font = None
     max_depth = 40
     indent_size = 10
     annotation_mode = True
@@ -692,13 +692,17 @@ class Melty:
         #     cls.dirty_objects.clear()
         #     return
 
+
+
         if value is not None and (hasattr(value, "__dict__") or isinstance(value, (dict, list, set))):
-            cls.dirty_objects.add(f"{id(value)}")
+            Melty.cache.invalidate_by_obj(value)
+            # cls.dirty_objects.add(f"{id(value)}")
 
         if parent is not None:
-            cls.dirty_objects.add(f"{id(parent)}")
-            if attr_name is not None:
-                cls.dirty_objects.add(f"{id(parent)}.{attr_name}")
+            Melty.cache.invalidate_by_obj(parent)
+            # cls.dirty_objects.add(f"{id(parent)}")
+            # if attr_name is not None:
+            #     cls.dirty_objects.add(f"{id(parent)}.{attr_name}")
 
     @classmethod
     def is_invalid(cls, parent=None, value=None, attr_name=None):

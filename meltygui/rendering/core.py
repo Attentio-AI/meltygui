@@ -27,6 +27,241 @@ def get_melty_state(unique: int):
     return melty_state_registry[unique]
 
 
+# Cache to track used space - key is snapped y position, value is left x used
+_floating_text_cache = {}
+_floating_text_prev_frame_heights = {}  # Store max label height per line from previous frame
+
+
+def floating_text(text: str, x_offset: float = 0, line_height: float = None, tint: tuple = (1, 1, 1, 1),
+                  max_width: float = 200):
+    cursor_pos = imgui.get_cursor_pos()
+
+    inside_window = len(Melty.window_stack) > 0
+
+    # Get draw list - only use overlay
+    draw_list = imgui.get_overlay_draw_list()
+    window_pos = imgui.get_window_position()
+
+    # Get current window ID to track space per-window
+    window_id = Melty.window_stack[-1] if len(Melty.window_stack) > 0 else 0
+
+    # Account for scroll offset
+    scroll_x = imgui.get_scroll_x()
+    scroll_y = imgui.get_scroll_y()
+
+    # Check if the cursor position (in content space) is within the visible scrolled region
+    content_min = imgui.get_window_content_region_min()
+    content_max = imgui.get_window_content_region_max()
+    content_height = content_max.y - content_min.y
+
+    # Don't render if outside the current visible region
+    if cursor_pos[1] < scroll_y or cursor_pos[1] > scroll_y + content_height:
+        return
+
+    # Starting point (cursor position in absolute coordinates, adjusted for scrolling)
+    start_x = window_pos.x + cursor_pos[0] - scroll_x
+    start_y = window_pos.y + cursor_pos[1] - scroll_y
+
+    padding = 4
+    spacing = 8
+
+    # Check if text needs wrapping
+    single_line_size = imgui.calc_text_size(text)
+    text_line_height = imgui.get_text_line_height()
+
+    # Split text into lines if needed
+    text_lines = []
+    if single_line_size.x > max_width:
+        # Text needs wrapping - manually split by words
+        words = text.split(' ')
+        current_line = ""
+
+        for word in words:
+            test_line = current_line + (" " if current_line else "") + word
+            test_size = imgui.calc_text_size(test_line)
+            if test_size.x <= max_width:
+                current_line = test_line
+            else:
+                if current_line:
+                    text_lines.append(current_line)
+                    current_line = word
+                else:
+                    # First word is too long, just add it anyway
+                    text_lines.append(word)
+                    current_line = ""
+        if current_line:
+            text_lines.append(current_line)
+    else:
+        text_lines = [text]
+
+    # Use imgui's calc_text_size with wrap_width to get proper wrapped dimensions
+    wrapped_size = imgui.calc_text_size(text, wrap_width=max_width)
+    text_width = wrapped_size.x
+    total_text_height = wrapped_size.y
+
+    # Use text height for line snapping if not provided
+    if line_height is None:
+        line_height = text_line_height + padding * 2
+
+    # Calculate label height
+    label_height = total_text_height + padding * 2
+
+    # Snap to line index based on cursor position
+    relative_y = cursor_pos[1] - scroll_y
+    line_index = round(relative_y / line_height)
+
+    # Calculate actual_y by summing previous lines' heights from previous frame
+    actual_y = 0
+    for i in range(line_index):
+        prev_key = (window_id, i)
+        if prev_key in _floating_text_prev_frame_heights:
+            actual_y += _floating_text_prev_frame_heights[prev_key]
+        else:
+            actual_y += line_height  # default height if not set
+
+    snapped_y = window_pos.y + actual_y
+
+    # Track max label height for this line in current frame
+    cache_key = (window_id, line_index)
+    if cache_key in _floating_text_cache:
+        cache_data = _floating_text_cache[cache_key]
+        cache_data['max_height'] = max(cache_data.get('max_height', 0), label_height)
+        left_x = cache_data.get('left_x', float('inf'))
+    else:
+        _floating_text_cache[cache_key] = {
+            'max_height': label_height,
+            'left_x': float('inf')
+        }
+        left_x = float('inf')
+
+    # Calculate x position relative to window (right edge of label)
+    current_x_right = window_pos.x + x_offset
+
+    # Check for horizontal overlap at this y position
+    if current_x_right >= left_x:
+        current_x_right = left_x - spacing
+
+    # Calculate left edge of this label
+    label_left = current_x_right - text_width - padding * 2
+
+    # Update cache for this line's x position
+    _floating_text_cache[cache_key]['left_x'] = label_left
+
+    # Text position (left edge)
+    text_x = label_left + padding
+    text_y = snapped_y
+
+    # End point for the line (right edge of label box, same height)
+    end_x = current_x_right - padding
+    end_y = text_y
+
+    # Check if mouse is hovering over the text box
+    mouse_pos = imgui.get_mouse_pos()
+    is_hovered = (mouse_pos.x >= text_x - padding and
+                  mouse_pos.x <= text_x + text_width + padding and
+                  mouse_pos.y >= text_y - padding and
+                  mouse_pos.y <= text_y + label_height - padding)
+
+    # Calculate control points for S-curve
+    horizontal_distance = end_x - start_x
+    curve_offset = abs(horizontal_distance) * 0.5
+
+    cp1_x = start_x + curve_offset if horizontal_distance > 0 else start_x - curve_offset
+    cp1_y = start_y
+    cp2_x = end_x - curve_offset if horizontal_distance > 0 else end_x + curve_offset
+    cp2_y = end_y
+
+    # Use channels: 0 for lines (back), 1 for boxes (front)
+    if is_hovered:
+        line_channel = 0
+        line_color = imgui.get_color_u32_rgba(1, 1, 1, 1)
+        dot_color = imgui.get_color_u32_rgba(1, 1, 1, 1)
+        line_thickness = 2.5
+    else:
+        line_channel = 0
+        line_color = imgui.get_color_u32_rgba(tint[0], tint[1], tint[2], tint[3] * 0.5)
+        dot_color = imgui.get_color_u32_rgba(tint[0], tint[1], tint[2], tint[3])
+        line_thickness = 1.0
+
+    if inside_window:
+        draw_list.channels_set_current(line_channel)
+    draw_list.add_bezier_cubic(
+        start_x, start_y,
+        cp1_x, cp1_y,
+        cp2_x, cp2_y,
+        end_x, end_y,
+        line_color,
+        line_thickness,
+        0
+    )
+
+    # Draw the dot
+    draw_list.add_circle_filled(
+        start_x, start_y,
+        3.0,
+        dot_color,
+        12
+    )
+
+    # Draw boxes on front channel
+    if inside_window:
+        draw_list.channels_set_current(1)
+
+    # Draw background rectangle
+    draw_list.add_rect_filled(
+        text_x - padding,
+        text_y - padding,
+        text_x + text_width + padding,
+        text_y + label_height - padding,
+        imgui.get_color_u32_rgba(0.1, 0.1, 0.1, 1.0)
+    )
+
+    # Draw outline in tint color (or yellow if hovered)
+    if is_hovered:
+        outline_color = imgui.get_color_u32_rgba(1, 1, 1, 1)
+        outline_thickness = 2.0
+    else:
+        outline_color = imgui.get_color_u32_rgba(tint[0], tint[1], tint[2], tint[3])
+        outline_thickness = 1.0
+
+    draw_list.add_rect(
+        text_x - padding,
+        text_y - padding,
+        text_x + text_width + padding,
+        text_y + label_height - padding,
+        outline_color,
+        0.0,
+        0,
+        outline_thickness
+    )
+
+    # Draw text lines
+    text_color = imgui.get_color_u32_rgba(tint[0], tint[1], tint[2], tint[3])
+    line_y = text_y
+    for line in text_lines:
+        draw_list.add_text(
+            text_x,
+            line_y,
+            text_color,
+            line
+        )
+        line_y += text_line_height
+
+
+def clear_floating_text_cache():
+    """Call this at the start of each frame to reset label positioning"""
+    global _floating_text_cache, _floating_text_prev_frame_heights
+
+    # Copy current frame's max heights to previous frame for next frame's use
+    _floating_text_prev_frame_heights = {
+        key: data['max_height']
+        for key, data in _floating_text_cache.items()
+        if 'max_height' in data
+    }
+
+    # Clear the cache for new labe
+    _floating_text_cache.clear()
+
 def get_draw_state(unique: int) -> DrawState:
     """Get or create a ViewState object for a widget ID."""
     if unique not in Melty.vis.root.draw_state_registry or Melty.vis.root.draw_state_registry[unique] is None:
@@ -415,7 +650,6 @@ def render_func(*args, **o_kwargs):
 
         draw_state = get_draw_state(unique)
         draw_state._input_value = input_value
-        start_cursor = imgui.get_cursor_screen_pos()
 
         is_initial_draw_state = True
         nested_call = input_value == Melty.input_value_stack[-1] if len(Melty.input_value_stack) > 0 else False
@@ -549,34 +783,49 @@ def render_func(*args, **o_kwargs):
                 imgui.set_cursor_pos((snap_int(cursor_pos[0]), snap_int(cursor_pos[1])))
 
                 use_cache = kwargs.get("use_cache", False)
-                tile_id = str(computed_unique) + str(METHOD_ID)
-                if Melty.is_invalid(value=draw_state):
+                tile_id = str(computed_unique) + str(METHOD_ID) + str(name)
+                # if Melty.is_invalid(value=draw_state):
 
-                    Melty.clear_invalid(value=draw_state)
-                    Melty.cache.invalidate(tile_id)
+                    # Melty.clear_invalid(value=draw_state)
+                    # Melty.cache.invalidate(tile_id)
 
                 collection = kwargs.get("collection", None)
 
+                def jet_color(val:float):
+                    # Jet color map
+                    four_value = 4.0 * val
+                    r = min(four_value - 1.5, -four_value + 4.5)
+                    g = min(four_value - 0.5, -four_value + 3.5)
+                    b = min(four_value + 0.5, -four_value + 2.5)
+                    return max(0.0, min(1.0, r)), max(0.0, min(1.0, g)), max(0.0, min(1.0, b)), 1.0
 
+                # draw_state.is_hovered_last = draw_state.is_hovered()
+                depth_tint = (Melty.wrapped_depth * 0.05)
+                jet = jet_color(depth_tint)
+                floating_text(f"{func.__name__} w:{draw_state.width}", tint=jet)
 
                 if use_cache and Melty.cache.enabled:
                     if name == "alpha":
                         pass
-                    if Melty.is_invalid(collection, input_value, name) or draw_state.is_hovered():
-                        print(f"Invalidating {name} / {input_value.__class__.__name__}")
-                        Melty.clear_invalid(collection, input_value, name)
-                        Melty.cache.invalidate(tile_id)
-                        print(f"Invalidating cache for {name} / {input_value.__class__.__name__}")
+
+                    # if draw_state.is_bounding_hovered():
+                    # #     print(f"Invalidating {name} / {input_value.__class__.__name__}")
+                    # #     Melty.clear_invalid(collection, input_value, name)
+                    #     Melty.invalidate(collection, input_value, name)
+                    #     print(f"Invalidating cache for {name} / {input_value.__class__.__name__}")
 
                     global_toggles = kwargs.get("global_toggles", {})
                     # Use the already-stable computed_unique + METHOD_ID
 
-                    if Melty.cache.mark_start_offscreen(input_value, tile_id,
+
+                    if Melty.cache.mark_start_offscreen(input_value=input_value, collection=collection, draw_state=draw_state, key=tile_id, name=name,
                                                         indent_size=kwargs.get("indent_size", 10),
                                                         layer=Melty.depth, global_toggles=global_toggles):
                         return_value = func(**clean_args)
                         draw_state._did_use_cache = True
                     else:
+                        is_hovered_bounds = draw_state.is_bounding_hovered()
+                        draw_state.is_hovered_last = is_hovered_bounds
                         draw_state._did_use_cache = True
 
                     Melty.cache.mark_end_offscreen()
@@ -617,16 +866,14 @@ def render_func(*args, **o_kwargs):
                         draw_state._bounding_width = snap_int(item_rect[0])
                     if is_initial_draw_state:
                         draw_state._bounding_height = max(draw_state._bounding_height, item_rect[1])
-                        draw_state.left = min(draw_state.left or start_cursor[0], snap_int(start_cursor[0]))
-                        draw_state.top = min(draw_state.top or start_cursor[1], snap_int(start_cursor[1]))
+                        draw_state.bounds_left = snap_int(start_cursor[0])
+                        draw_state.bounds_top = snap_int(start_cursor[1])
                     else:
                         draw_state._bounding_height = snap_int(item_rect[1])
-                        draw_state.left = snap_int(start_cursor[0])
-                        draw_state.top = snap_int(start_cursor[1])
+                        draw_state.bounds_left = snap_int(start_cursor[0])
+                        draw_state.bounds_top = snap_int(start_cursor[1])
 
-                    min_width = kwargs.get("min_width", 0) if kwargs.get("min_width", 0) is not None else 0
-                    measured_width = snap_int(item_rect[0]) if item_rect[0] is not None else 0
-                    draw_state.width = max(min_width, measured_width)
+                    draw_state.width = snap_int(item_rect[0])
                     draw_state.height = snap_int(item_rect[1])
 
                     if (draw_state._bounding_width != original_width or

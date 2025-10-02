@@ -33,6 +33,8 @@ class SynthColors(DictConversion):
 
 @no_save("mouse_up", "mouse_down", "drag_released", "hovered", "clicked", "dragged",
          "mouse_down_pos", "initial_screen_pos", "drag_delta")
+@exclude("mouse_up", "mouse_down", "drag_released", "hovered", "clicked", "dragged",
+         "mouse_down_pos", "initial_screen_pos", "drag_delta")
 class MouseState(DictConversion):
     def __init__(self):
         super().__init__()
@@ -58,7 +60,8 @@ class CSTDrawBits:
 
 @no_save("mouse_btn_state", "mouse_up", "mouse_down",
          "drag_released", "clicked", "dragged", "render_time")
-@exclude("render_time", "width", "height", "top", "left")
+@exclude("render_time", "bounds_left", "bounds_top", "_input_value", "width",
+         "hovered", "_did_use_cache", "height", "top", "left", "delete_countdown")
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
 
@@ -108,6 +111,10 @@ class DrawState(DictConversion):
         self.screen_pos = (0, 0)
         self.drag_delta = (0, 0)
         self._input_value = None
+        self.is_hovered_last = False
+
+        self.bounds_left = None
+        self.bounds_top = None
 
         self.delete_countdown = Melty.save_draw_state_for
 
@@ -154,9 +161,17 @@ class DrawState(DictConversion):
 
 
     def is_hovered(self):
-        if self.left is None or self.top is None or self._bounding_width is None or self._bounding_height is None:
+        if self.left is None or self.top is None or self.width is None or self.height is None:
             return False
-        rect = (self.left, self.top - 5, self._bounding_width, self._bounding_height + 10)
+        rect = (self.left, self.top - 5, self.width, self.height + 10)
+        if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
+            return True
+        return False
+
+    def is_bounding_hovered(self):
+        if self.bounds_top is None or self.bounds_left is None or self._bounding_width is None or self._bounding_height is None:
+            return False
+        rect = (self.bounds_left, self.bounds_top - 5, self._bounding_width, self._bounding_height + 10)
         if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
             return True
         return False

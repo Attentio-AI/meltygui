@@ -796,16 +796,16 @@ class DictConversion(metaclass=FieldMeta):
         # Handle special internal attributes normally
         is_visible = name not in self.__excluded_attrs__ if hasattr(self, '__excluded_attrs__') else False
 
-
         if is_visible and not name.startswith('_') and name != "driver":
             current_val = object.__getattribute__(self, name) if hasattr(self, name) else None
+
             # print(f"{name} old_value: {current_val} new_value: {value}")
             if value != current_val:
+                print(f"{self.__class__.__name__} {name} old_value: {current_val} new_value: {value}")
+
                 if name == "width":
                     pass
 
-                if name == "alpha":
-                    print(f"{self.__class__.__name__} {name} old_value: {current_val} new_value: {value}")
                 Melty.invalidate(parent=self, value=value, attr_name=name)
 
 

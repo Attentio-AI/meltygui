@@ -260,7 +260,7 @@ void main(){
   // mask is GL_R8 -> k/255 values with NEAREST
   int maskLayer = int(floor(texture(uMask, uv).r * 255.0 + 0.5));
 
-  if (maskLayer == uLayer) {
+  if (maskLayer <= uLayer) {
     oColor = texture(uSrc, uv);
   } else {
     discard; // preserve pre-existing (stale) pixels in tile
@@ -276,6 +276,10 @@ class TileCacheMasked:
     def __init__(self):
         self.enabled: bool = False
         self.top_is_low: bool = True  # True => small layer index is on top; False => larger is on top
+
+        # Lookup dicts for bubbling
+        self.py_id_to_keys: Dict[str, set] = {}
+        self.key_to_parent_key: Dict[str, str] = {}
 
         self._tiles: Dict[str, _Tile] = {}
         self._sizes = {}  # key -> (w,h)
@@ -298,6 +302,8 @@ class TileCacheMasked:
         self._loc_uFBSize = None
         self._loc_uSrcRectPx = None
         self._loc_uLayer = None
+        self.pending_invalid = []
+
 
     # ----- Public toggles / lifecycle -----
     def set_enabled(self, on: bool) -> None:
@@ -311,11 +317,41 @@ class TileCacheMasked:
     def set_top_is_low(self, v: bool) -> None:
         self.top_is_low = bool(v)
 
+    def invalidate_by_obj(self, obj, name=None):
+
+        if name is not None:
+            keys = self.py_id_to_keys.get(f"{id(obj)}.{name}", None)
+            if keys is not None:
+                for k in keys:
+                    self.invalidate(k)
+        else:
+            keys = self.py_id_to_keys.get(f"{id(obj)}", None)
+            if keys is not None:
+                for k in keys:
+                    self.invalidate(k)
+
+    def apply_invalid(self):
+        for t in self.pending_invalid:
+            if t is not None:
+                print("TileCacheMasked: invalidating tile")
+                t.dirty = True
+        if self.pending_invalid:
+            request_render()
+        self.pending_invalid.clear()
+
     def invalidate(self, key: str) -> None:
         t = self._tiles.get(key)
         if t is not None:
-            if t: t.dirty = True
-            request_render()
+            print("TileCacheMasked: invalidating tile", key)
+            self.pending_invalid.append(t)
+            # if t: t.dirty = True
+
+        # Invalidate parent
+        parent = self.key_to_parent_key.get(key, None)
+
+        # self.invalidate_all()
+        if parent is not None:
+            self.invalidate(parent)
 
     def invalidate_all(self) -> None:
         for t in self._tiles.values():
@@ -445,7 +481,7 @@ class TileCacheMasked:
         return ((x0), (y0), (x1), y1)
 
     # ----- Begin/End pair with per-view layer -----
-    def mark_start_offscreen(self, input_value, key: str, layer: int, global_toggles=None,
+    def mark_start_offscreen(self, input_value, collection, draw_state, name, key: str, layer: int, global_toggles=None,
                              indent_size=0, width=0, height=0) -> bool:
         x, y = imgui.get_cursor_screen_pos()
         # Snap cursor to nearest pixel to avoid sub-pixel jitter
@@ -459,6 +495,18 @@ class TileCacheMasked:
         else:
             if layer == 0: layer = 1  # reserve 0 for background when using MAX
         size = self._sizes.get(key, None)
+
+        parent_ctx = self._stack[-1] if self._stack else None
+        self.key_to_parent_key[key] = parent_ctx.key if parent_ctx else None
+        if name is not None:
+            name_key = f"{id(collection)}.{name}"
+            self.py_id_to_keys[name_key] = self.py_id_to_keys.get(name_key, set())
+            self.py_id_to_keys[name_key].add(key)
+
+        if isinstance(input_value, (list, dict, set)) or hasattr(input_value, '__dict__'):
+            self.py_id_to_keys.setdefault(f"{id(input_value)}", set()).add(key)
+
+        self.py_id_to_keys.setdefault(f"{id(draw_state)}", set()).add(key)
 
         imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
         imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (0,0))
@@ -498,7 +546,10 @@ class TileCacheMasked:
                 self._stack.append(_Ctx(key, (x, y), size, layer, True))
                 return False
 
+
         self._stack.append(_Ctx(key, (x, y), size, layer, False))
+
+
         return True
 
     def mark_end_offscreen(self) -> None:
@@ -529,6 +580,8 @@ class TileCacheMasked:
 
     # ----- Finalize (post-frame) -----
     def finalize_captures(self, framebuffer_size: Tuple[int, int]) -> None:
+        self.apply_invalid()
+
         if self._snapshot_fbo is None:
             return
 

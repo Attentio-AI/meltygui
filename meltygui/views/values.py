@@ -23,7 +23,7 @@ from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
 from src.lsd.gl_gui.view.core_views.core_decoration import hotkey, global_hotkeys
 from src.lsd.gl_gui.view.core_views.core_render import render_func, tmp_undo_stack, redo_stack, push_id, pop_id, ui_id, \
-    render_wrapper, annotation_track, listens_for, get_draw_state
+    render_wrapper, annotation_track, listens_for, get_draw_state, clear_floating_text_cache
 from src.lsd.gl_gui.model.core_model.new_core_model import KeyMod, Hotkey
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
 import libcst as cst
@@ -86,6 +86,11 @@ def draw(vis):
             if callable(target):
                 target()
 
+    clear_floating_text_cache()
+    overlay_list = imgui.get_overlay_draw_list()
+    overlay_list.channels_split(2)
+    overlay_list.channels_set_current(1)
+
     fb_w, fb_h = map(int, imgui.get_io().display_size)  # or your true GL FB size if HiDPI
     Melty.cache.mask_begin_frame((fb_w, fb_h))
 
@@ -118,7 +123,7 @@ def draw(vis):
             print("Error parsing code")
 
     # Melty.dirty_objects.clear()
-
+    overlay_list.channels_merge()
 
     # draw_window(export_code, name="Code Export")
 
@@ -462,10 +467,12 @@ def core_draw_window(input_value, name, unique, window_func,
         draw_list = imgui.get_window_draw_list()
         draw_list.channels_split(Melty.max_depth)
 
+
         changed, new_value = window_func(*args, **kwargs)
         Melty.window_stack.pop()
         if not decorations:
             pop_style_var(1)
+
         draw_list.channels_merge()
     except Exception as e:
         print_colored_traceback(e)
