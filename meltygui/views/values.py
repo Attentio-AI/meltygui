@@ -982,7 +982,7 @@ def seperator(height):
     imgui.dummy(0, snap_int(height / 2))
 
 
-@with_header(is_default_for=(MutableMapping), use_cache=False)
+@with_header(is_default_for=(MutableMapping), use_cache=True)
 def draw_collection(input_value, draw_state, depth, style_manager,
                     meta, suffix, melty, show_search=True, on_collapse=False, on_drag_up=False, y_offset=0,
                     on_expand=False, width=None, indent_size=10, global_style=None, global_toggles=None, show_add_delete=True,

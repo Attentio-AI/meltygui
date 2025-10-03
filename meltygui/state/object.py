@@ -801,13 +801,7 @@ class DictConversion(metaclass=FieldMeta):
 
             # print(f"{name} old_value: {current_val} new_value: {value}")
             if value != current_val:
-                print(f"{self.__class__.__name__} {name} old_value: {current_val} new_value: {value}")
-
-                if name == "width":
-                    pass
-
-                Melty.invalidate(parent=self, value=value, attr_name=name)
-
+                Melty.invalidate(value=value, attr_name=name)
 
         if name.startswith('_'):
             super().__setattr__(name, value)

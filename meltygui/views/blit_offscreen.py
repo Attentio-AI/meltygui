@@ -331,20 +331,18 @@ class TileCacheMasked:
                     self.invalidate(k)
 
     def apply_invalid(self):
-        for t in self.pending_invalid:
-            if t is not None:
-                print("TileCacheMasked: invalidating tile")
-                t.dirty = True
-        if self.pending_invalid:
-            request_render()
+        # for t in self.pending_invalid:
+        #     if t is not None:
+        #         t.dirty = True
+        # if self.pending_invalid:
+        #     request_render()
         self.pending_invalid.clear()
 
-    def invalidate(self, key: str) -> None:
+    def invalidate(self, key: str, immediate=False) -> None:
         t = self._tiles.get(key)
         if t is not None:
-            print("TileCacheMasked: invalidating tile", key)
-            self.pending_invalid.append(t)
-            # if t: t.dirty = True
+            # self.pending_invalid.append(t)
+            if t: t.dirty = True
 
         # Invalidate parent
         parent = self.key_to_parent_key.get(key, None)

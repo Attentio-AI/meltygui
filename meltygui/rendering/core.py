@@ -800,21 +800,20 @@ def render_func(*args, **o_kwargs):
                     return max(0.0, min(1.0, r)), max(0.0, min(1.0, g)), max(0.0, min(1.0, b)), 1.0
 
                 # draw_state.is_hovered_last = draw_state.is_hovered()
-                depth_tint = (Melty.wrapped_depth * 0.05)
-                jet = jet_color(depth_tint)
-                floating_text(f"{func.__name__} w:{draw_state.width}", tint=jet)
+                global_toggles = kwargs.get("global_toggles", {})
+
+                if global_toggles.offscreen_debug:
+                    depth_tint = (Melty.wrapped_depth * 0.05)
+                    jet = jet_color(depth_tint)
+                    floating_text(f"{func.__name__} w:{draw_state.width}", tint=jet)
 
                 if use_cache and Melty.cache.enabled:
                     if name == "alpha":
                         pass
 
-                    # if draw_state.is_bounding_hovered():
-                    # #     print(f"Invalidating {name} / {input_value.__class__.__name__}")
-                    # #     Melty.clear_invalid(collection, input_value, name)
-                    #     Melty.invalidate(collection, input_value, name)
-                    #     print(f"Invalidating cache for {name} / {input_value.__class__.__name__}")
+                    if draw_state.is_bounding_hovered() or melty.dragged_item == draw_state:
+                        Melty.cache.invalidate(tile_id)
 
-                    global_toggles = kwargs.get("global_toggles", {})
                     # Use the already-stable computed_unique + METHOD_ID
 
 
