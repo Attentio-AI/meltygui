@@ -90,6 +90,8 @@ def draw(vis):
     overlay_list = imgui.get_overlay_draw_list()
     overlay_list.channels_split(2)
     overlay_list.channels_set_current(1)
+    Melty.hovered_drawstate_pending = set()
+    # Melty.hovered_drawstate = set()
 
     fb_w, fb_h = map(int, imgui.get_io().display_size)  # or your true GL FB size if HiDPI
     Melty.cache.mask_begin_frame((fb_w, fb_h))
@@ -124,6 +126,7 @@ def draw(vis):
 
     # Melty.dirty_objects.clear()
     overlay_list.channels_merge()
+    Melty.hovered_drawstate = Melty.hovered_drawstate_pending
 
     # draw_window(export_code, name="Code Export")
 
@@ -596,7 +599,7 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
                            and tag == melty.drag_drop_target_tag)
 
             if Melty.inside_window():
-                draw_list.channels_set_current(min(depth + 1, Melty.max_depth + 1))
+                draw_list.channels_set_current(min(depth + 1, Melty.max_depth - 1))
 
                 if active_drop:
                     draw_list.channels_set_current(min(depth + 2, Melty.max_depth - 1))
@@ -928,7 +931,7 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
 
         padding_x = imgui.get_style().frame_padding.x * 2.0
         background_width = width - indent_size - 4
-        background_height = draw_state.height or 0
+        background_height = draw_state.height if draw_state.height is not None else 0
 
         draw_state.top = start_y_pos
         draw_state.left = start_x_pos

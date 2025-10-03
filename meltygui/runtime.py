@@ -683,7 +683,8 @@ class Melty:
     cache = TileCacheMasked()
     dirty_objects = set()
     all_dirty = False
-
+    hovered_drawstate = set()
+    hovered_drawstate_pending = set()
 
     @classmethod
     def invalidate(cls, parent=None, value=None, attr_name=None):

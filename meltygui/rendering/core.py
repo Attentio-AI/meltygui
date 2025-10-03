@@ -817,11 +817,12 @@ def render_func(*args, **o_kwargs):
                     # Use the already-stable computed_unique + METHOD_ID
 
 
-                    if Melty.cache.mark_start_offscreen(input_value=input_value, collection=collection, draw_state=draw_state, key=tile_id, name=name,
+                    if Melty.cache.mark_start_offscreen(input_value=input_value, collection=collection,
+                                                        draw_state=draw_state, key=tile_id, name=name,
                                                         indent_size=kwargs.get("indent_size", 10),
                                                         layer=Melty.depth, global_toggles=global_toggles):
                         return_value = func(**clean_args)
-                        draw_state._did_use_cache = True
+                        draw_state._did_use_cache = False
                     else:
                         is_hovered_bounds = draw_state.is_bounding_hovered()
                         draw_state.is_hovered_last = is_hovered_bounds
@@ -846,8 +847,13 @@ def render_func(*args, **o_kwargs):
                 push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
                 push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
 
+
                 pop_id()
+                draw_state.is_active = imgui.is_item_active()
+                draw_state.is_focused = imgui.is_item_focused()
+                draw_state.scroll_offset = imgui.get_scroll_y()
                 imgui.end_group()
+
 
                 if name == "float_test_2":
                     pass
@@ -897,7 +903,7 @@ def render_func(*args, **o_kwargs):
 
                         if btn_state.drag_released:
                             btn_state.drag_released = False
-                        if draw_state.hovered and imgui.is_window_hovered():
+                        if draw_state.id in Melty.hovered_drawstate and imgui.is_window_hovered():
                             if imgui.is_mouse_down(m_btn) and btn_state.mouse_up:
                                 if not btn_state.mouse_down:
                                     melty.total_drag_distance = 0.0
@@ -952,7 +958,7 @@ def render_func(*args, **o_kwargs):
                                 melty.drag_delta = btn_state.drag_delta
 
 
-                    if draw_state.hovered and imgui.is_window_hovered():
+                    if draw_state.id in Melty.hovered_drawstate and imgui.is_window_hovered():
                         if unique not in melty.triggered_actions:
                             melty.mark_event(unique, 0, ActionType.HOVERED)
 
@@ -979,6 +985,7 @@ def render_func(*args, **o_kwargs):
                             hovered_draw_state = Melty.vis.root.draw_state_registry.get(last, None)
                             if hovered_draw_state is not None:
                                 hovered_draw_state.hovered = True
+                                Melty.hovered_drawstate_pending.add(hovered_draw_state.id)
 
                         if len(melty.hotkey_stack) > 0:
                             last = melty.hotkey_stack[0]

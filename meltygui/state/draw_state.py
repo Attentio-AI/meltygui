@@ -59,7 +59,8 @@ class CSTDrawBits:
         self.text_buf: str = ""  # generic edit buffer
 
 @no_save("mouse_btn_state", "mouse_up", "mouse_down",
-         "drag_released", "clicked", "dragged", "render_time")
+         "drag_released", "clicked", "dragged", "render_time",
+         "is_active", "is_focused", "scroll_offset")
 @exclude("render_time", "bounds_left", "bounds_top", "_input_value", "width",
          "hovered", "_did_use_cache", "height", "top", "left", "delete_countdown")
 class DrawState(DictConversion):
@@ -67,6 +68,12 @@ class DrawState(DictConversion):
 
     def __init__(self):
         super().__init__()
+
+        # Imgui state mirror
+        self.is_active = False
+        self.is_focused = False
+        self.scroll_offset = (0, 0)
+
         self.cst = None
 
         self._previous_hash = None
