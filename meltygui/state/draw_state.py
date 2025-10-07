@@ -33,8 +33,6 @@ class SynthColors(DictConversion):
 
 @no_save("mouse_up", "mouse_down", "drag_released", "hovered", "clicked", "dragged",
          "mouse_down_pos", "initial_screen_pos", "drag_delta")
-@exclude("mouse_up", "mouse_down", "drag_released", "hovered", "clicked", "dragged",
-         "mouse_down_pos", "initial_screen_pos", "drag_delta")
 class MouseState(DictConversion):
     def __init__(self):
         super().__init__()
@@ -58,9 +56,9 @@ class CSTDrawBits:
         self.anchor: tuple = ()
         self.text_buf: str = ""  # generic edit buffer
 
-@no_save("mouse_btn_state", "mouse_up", "mouse_down",
+@no_save("mouse_btn_state", "mouse_up", "mouse_down", "bounding_width", "bounding_height",
          "drag_released", "clicked", "dragged", "render_time",
-         "is_active", "is_focused", "scroll_offset")
+         "is_active", "is_focused", "scroll_offset", "drag_window_pos_x", "drag_window_pos_y")
 @exclude("render_time", "bounds_left", "bounds_top", "_input_value", "width",
          "hovered", "_did_use_cache", "height", "top", "left", "delete_countdown")
 class DrawState(DictConversion):
@@ -68,7 +66,8 @@ class DrawState(DictConversion):
 
     def __init__(self):
         super().__init__()
-
+        self.drag_window_pos_x = None
+        self.drag_window_pos_y = None
         # Imgui state mirror
         self.is_active = False
         self.is_focused = False
@@ -89,8 +88,8 @@ class DrawState(DictConversion):
         self.height = None
         self.expanded_height = None
         self.width = None
-        self._bounding_width = 0
-        self._bounding_height = 0
+        self.bounding_width = 0
+        self.bounding_height = 0
 
         self._left_rel = None
         self._top_rel = None
@@ -180,9 +179,9 @@ class DrawState(DictConversion):
         return False
 
     def is_bounding_hovered(self):
-        if self.bounds_top is None or self.bounds_left is None or self._bounding_width is None or self._bounding_height is None:
+        if self.bounds_top is None or self.bounds_left is None or self.bounding_width is None or self.bounding_height is None:
             return False
-        rect = (self.bounds_left, self.bounds_top - 5, self._bounding_width, self._bounding_height + 10)
+        rect = (self.bounds_left, self.bounds_top - 5, self.bounding_width, self.bounding_height + 10)
         if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
             return True
         return False

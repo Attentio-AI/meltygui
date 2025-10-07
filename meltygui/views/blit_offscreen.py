@@ -262,7 +262,7 @@ void main(){
   // mask is GL_R8 -> k/255 values with NEAREST
   int maskLayer = int(floor(texture(uMask, uv).r * 255.0 + 0.5));
 
-  if (maskLayer <= uLayer) {
+  if (maskLayer >= uLayer) {
     oColor = texture(uSrc, uv) * uTint;
   } else {
     discard; // preserve pre-existing (stale) pixels in tile
@@ -277,7 +277,7 @@ void main(){
 class TileCacheMasked:
     def __init__(self):
         self.enabled: bool = True
-        self.top_is_low: bool = True  # True => small layer index is on top; False => larger is on top
+        self.top_is_low: bool = False  # True => smaller layer index is on top; False => larger is on top
 
 
         random_float = random.Random().random
@@ -517,6 +517,9 @@ class TileCacheMasked:
             self.py_id_to_keys.setdefault(f"{id(input_value)}", set()).add(key)
 
         self.py_id_to_keys.setdefault(f"{id(draw_state)}", set()).add(key)
+        self.py_id_to_keys.setdefault(f"{id(draw_state.mouse_btn_state[0])}", set()).add(key)
+        self.py_id_to_keys.setdefault(f"{id(draw_state.mouse_btn_state[1])}", set()).add(key)
+        self.py_id_to_keys.setdefault(f"{id(draw_state.mouse_btn_state[2])}", set()).add(key)
 
         imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
         imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (0,0))

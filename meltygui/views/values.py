@@ -470,7 +470,7 @@ def core_draw_window(input_value, name, unique, window_func,
         draw_list = imgui.get_window_draw_list()
         draw_list.channels_split(Melty.max_depth)
 
-
+        kwargs['imgui_window'] = (pos_x, pos_y)
         changed, new_value = window_func(*args, **kwargs)
         Melty.window_stack.pop()
         if not decorations:
@@ -835,6 +835,7 @@ def core_header(func, outer_func, input_value=None, collection=None, key=None, i
 
                 pos_x = start_pos_x + drag_delta[0]
                 pos_y = start_pos_y + drag_delta[1]
+                draw_state.window_pos = (pos_x, pos_y)
 
                 core_draw_window(window_func=outer_func, input_value=input_value,
                                  window_stack=window_stack,

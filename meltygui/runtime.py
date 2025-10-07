@@ -115,6 +115,9 @@ def add_to_collection(collection, item, preferred_key=None):
         if key is None:
             key = generate_id()
         collection[key] = item
+
+    Melty.invalidate(value=collection)
+    request_render()
     return collection
 
 

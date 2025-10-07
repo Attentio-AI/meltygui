@@ -604,6 +604,7 @@ def render_func(*args, **o_kwargs):
 
         computed_unique = unique
         # -------------------------------------------------------------------------
+        start_cursor = imgui.get_cursor_pos()
 
         start_cursor = imgui.get_cursor_screen_pos()
         end_cursor = imgui.get_cursor_screen_pos()
@@ -771,16 +772,19 @@ def render_func(*args, **o_kwargs):
 
             ########################## The render call ##########################
             try:
-                original_width = draw_state._bounding_width
-                original_height = draw_state._bounding_height
+                original_width = draw_state.bounding_width
+                original_height = draw_state.bounding_height
                 start_cursor = imgui.get_cursor_screen_pos()
 
                 if name == "float_test_2":
                     pass
 
+
                 # Snap cursor to nearest pixel
                 cursor_pos = imgui.get_cursor_pos()
                 imgui.set_cursor_pos((snap_int(cursor_pos[0]), snap_int(cursor_pos[1])))
+
+
 
                 use_cache = kwargs.get("use_cache", False)
                 tile_id = str(computed_unique) + str(METHOD_ID) + str(name)
@@ -815,14 +819,12 @@ def render_func(*args, **o_kwargs):
                     hover_changed = last_bounding_hovered != draw_state.bounding_hovered
 
                     if (draw_state.bounding_hovered or hover_changed):
-                        Melty.invalidate(parent=collection)
-                        Melty.invalidate(value=input_value)
-                        Melty.invalidate(value=draw_state)
+                        Melty.cache.invalidate(tile_id)
 
                     if Melty.cache.mark_start_offscreen(input_value=input_value, collection=collection,
                                                         draw_state=draw_state, key=tile_id, name=name,
                                                         indent_size=kwargs.get("indent_size", 10),
-                                                        layer=Melty.depth, global_toggles=global_toggles):
+                                                        layer=Melty.wrapped_depth, global_toggles=global_toggles):
                         return_value = func(**clean_args)
                         draw_state.imgui_is_active = imgui.is_item_active()
                         draw_state.imgui_is_focused = imgui.is_item_focused()
@@ -863,27 +865,35 @@ def render_func(*args, **o_kwargs):
 
                 # if draw_state.width is None:
                 pop_style_var(2)
+
                 if not kwargs.get("on_drag", False):
-                    original_width = draw_state._bounding_width
-                    original_height = draw_state._bounding_height
+
+                    draw_state.window_pos_left = snap_int(start_cursor[0])
+                    draw_state.window_pos_top = snap_int(start_cursor[1])
+
+                    original_width = draw_state.bounding_width
+                    original_height = draw_state.bounding_height
                     if is_initial_draw_state:
-                        draw_state._bounding_width = max(draw_state._bounding_width, item_rect[0])
+                        draw_state.bounding_width = max(draw_state.bounding_width, item_rect[0])
                     else:
-                        draw_state._bounding_width = snap_int(item_rect[0])
+                        draw_state.bounding_width = snap_int(item_rect[0])
                     if is_initial_draw_state:
-                        draw_state._bounding_height = max(draw_state._bounding_height, item_rect[1])
+                        draw_state.bounding_height = max(draw_state.bounding_height, item_rect[1])
                         draw_state.bounds_left = snap_int(start_cursor[0])
                         draw_state.bounds_top = snap_int(start_cursor[1])
                     else:
-                        draw_state._bounding_height = snap_int(item_rect[1])
+                        draw_state.bounding_height = snap_int(item_rect[1])
                         draw_state.bounds_left = snap_int(start_cursor[0])
                         draw_state.bounds_top = snap_int(start_cursor[1])
+
+                        draw_state.cursor_left = snap_int(cursor_pos[0])
+                        draw_state.cursor_top = snap_int(cursor_pos[1])
 
                     draw_state.width = snap_int(item_rect[0])
                     draw_state.height = snap_int(item_rect[1])
 
-                    if (draw_state._bounding_width != original_width or
-                            draw_state._bounding_height != original_height):
+                    if (draw_state.bounding_width != original_width or
+                            draw_state.bounding_height != original_height):
                         request_render()
                 if inc_depth:
                     Melty.depth = Melty.depth - 1
