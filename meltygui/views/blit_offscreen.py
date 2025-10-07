@@ -244,6 +244,7 @@ void main(){
 _COPY_FS = """
 #version 330 core
 in vec2 vUV;
+uniform vec4 uTint;
 uniform sampler2D uSrc;      // snapshot
 uniform sampler2D uMask;     // GL_R8, NEAREST
 uniform vec2  uFBSize;       // framebuffer size in px
@@ -262,7 +263,7 @@ void main(){
   int maskLayer = int(floor(texture(uMask, uv).r * 255.0 + 0.5));
 
   if (maskLayer <= uLayer) {
-    oColor = texture(uSrc, uv);
+    oColor = texture(uSrc, uv) * uTint;
   } else {
     discard; // preserve pre-existing (stale) pixels in tile
   }
@@ -278,6 +279,11 @@ class TileCacheMasked:
         self.enabled: bool = True
         self.top_is_low: bool = True  # True => small layer index is on top; False => larger is on top
 
+
+        random_float = random.Random().random
+        self.frame_tint = (0.5 + 0.5 * random_float(),
+                0.5 + 0.5 * random_float(),
+                0.5 + 0.5 * random_float(), 1.0)
         # Lookup dicts for bubbling
         self.py_id_to_keys: Dict[str, set] = {}
         self.key_to_parent_key: Dict[str, str] = {}
@@ -394,6 +400,11 @@ class TileCacheMasked:
     # ----- Mask API (per-view rectangles) -----
     def mask_begin_frame(self, framebuffer_size: Tuple[int, int]) -> None:
         fb_w, fb_h = map(int, framebuffer_size)
+
+        random_float = random.Random().random
+        self.frame_tint = (0.5 + 0.5 * random_float(),
+                           0.5 + 0.5 * random_float(),
+                           0.5 + 0.5 * random_float(), 1.0)
 
         if (fb_w, fb_h) != self._fb_size or self._snapshot_fbo is None:
             self._fb_size = (fb_w, fb_h)
@@ -534,10 +545,7 @@ class TileCacheMasked:
             if tile is not None and not tile.dirty and size[0] > 0 and size[1] > 0:
 
                 if global_toggles.offscreen_debug:
-                    random_float = random.Random(hash(key)).random
-                    tint = (0.5 + 0.5 * random_float(),
-                            0.5 + 0.5 * random_float(),
-                            0.5 + 0.5 * random_float(), 1.0)
+                    tint = (1, 1, 1, 1)
                 else:
                     tint = (1,1,1,1)
 
@@ -589,7 +597,7 @@ class TileCacheMasked:
             self._pending.append(_Pending(tile=tile, pos=ctx.pos, size=ctx.size, layer=ctx.layer))
 
     # ----- Finalize (post-frame) -----
-    def finalize_captures(self, framebuffer_size: Tuple[int, int]) -> None:
+    def finalize_captures(self, framebuffer_size: Tuple[int, int], global_toggles=None) -> None:
 
         if self._snapshot_fbo is None:
             return
@@ -677,6 +685,11 @@ class TileCacheMasked:
 
                     gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, p.tile.fbo)
                     gl.glViewport(0, 0, snap_int(p.tile.size[0]), snap_int(p.tile.size[1]))
+
+                    if global_toggles is not None and global_toggles.offscreen_debug:
+                        gl.glUniform4f(gl.glGetUniformLocation(self._prog_copy, "uTint"), *self.frame_tint)
+                    else:
+                        gl.glUniform4f(gl.glGetUniformLocation(self._prog_copy, "uTint"), 1.0, 1.0, 1.0, 1.0)
 
                     # do NOT clear; preserve stale pixels under overlaps
                     gl.glUniform4f(self._loc_uSrcRectPx, float(x0), float(y0), float(x1), float(y1))

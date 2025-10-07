@@ -814,8 +814,10 @@ def render_func(*args, **o_kwargs):
 
                     hover_changed = last_bounding_hovered != draw_state.bounding_hovered
 
-                    if (draw_state.bounding_hovered or hover_changed or melty.dragged_item == draw_state):
-                        Melty.cache.invalidate(tile_id)
+                    if (draw_state.bounding_hovered or hover_changed):
+                        Melty.invalidate(parent=collection)
+                        Melty.invalidate(value=input_value)
+                        Melty.invalidate(value=draw_state)
 
                     if Melty.cache.mark_start_offscreen(input_value=input_value, collection=collection,
                                                         draw_state=draw_state, key=tile_id, name=name,
@@ -826,6 +828,7 @@ def render_func(*args, **o_kwargs):
                         draw_state.imgui_is_focused = imgui.is_item_focused()
                         draw_state.imgui_is_hovered = imgui.is_item_hovered()
                         draw_state.imgui_is_edited = imgui.is_item_edited()
+                        draw_state.imgui_is_clicked = imgui.is_item_clicked()
                         draw_state.imgui_is_item_activated = imgui.is_item_activated()
                         draw_state._did_use_cache = False
                     else:
