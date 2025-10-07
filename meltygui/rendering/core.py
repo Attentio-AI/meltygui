@@ -808,20 +808,25 @@ def render_func(*args, **o_kwargs):
                     floating_text(f"{func.__name__} w:{draw_state.width}", tint=jet)
 
                 if use_cache and Melty.cache.enabled:
-                    if name == "alpha":
-                        pass
 
-                    if draw_state.is_bounding_hovered() or melty.dragged_item == draw_state:
+                    last_bounding_hovered = draw_state.is_bounding_hovered()
+                    draw_state.bounding_hovered = draw_state.is_bounding_hovered()
+
+                    hover_changed = last_bounding_hovered != draw_state.bounding_hovered
+
+                    if (draw_state.bounding_hovered or hover_changed or melty.dragged_item == draw_state):
                         Melty.cache.invalidate(tile_id)
-
-                    # Use the already-stable computed_unique + METHOD_ID
-
 
                     if Melty.cache.mark_start_offscreen(input_value=input_value, collection=collection,
                                                         draw_state=draw_state, key=tile_id, name=name,
                                                         indent_size=kwargs.get("indent_size", 10),
                                                         layer=Melty.depth, global_toggles=global_toggles):
                         return_value = func(**clean_args)
+                        draw_state.imgui_is_active = imgui.is_item_active()
+                        draw_state.imgui_is_focused = imgui.is_item_focused()
+                        draw_state.imgui_is_hovered = imgui.is_item_hovered()
+                        draw_state.imgui_is_edited = imgui.is_item_edited()
+                        draw_state.imgui_is_item_activated = imgui.is_item_activated()
                         draw_state._did_use_cache = False
                     else:
                         is_hovered_bounds = draw_state.is_bounding_hovered()
@@ -832,6 +837,7 @@ def render_func(*args, **o_kwargs):
                 else:
                     return_value = func(**clean_args)
 
+
             except Exception as e:
                 print_colored_traceback(*sys.exc_info())
             ######################################################################
@@ -840,23 +846,15 @@ def render_func(*args, **o_kwargs):
             print_colored_traceback(*sys.exc_info())
         finally:
             def end_of_render():
-
                 if Melty.imgui_crashed:
                     return False, None
                 # Needs to go after mouse event check
                 push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
                 push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
 
-
                 pop_id()
-                draw_state.is_active = imgui.is_item_active()
-                draw_state.is_focused = imgui.is_item_focused()
-                draw_state.scroll_offset = imgui.get_scroll_y()
+
                 imgui.end_group()
-
-
-                if name == "float_test_2":
-                    pass
 
                 item_rect = imgui.get_item_rect_size()
 

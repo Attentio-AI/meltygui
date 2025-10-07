@@ -799,9 +799,11 @@ class DictConversion(metaclass=FieldMeta):
         if is_visible and not name.startswith('_') and name != "driver":
             current_val = object.__getattribute__(self, name) if hasattr(self, name) else None
 
-            # print(f"{name} old_value: {current_val} new_value: {value}")
-            if value != current_val:
-                Melty.invalidate(self, value=value, attr_name=name)
+            try:
+                if value != current_val:
+                    Melty.invalidate(parent=self, value=value, attr_name=name)
+            except Exception as e:
+                pass
 
         if name.startswith('_'):
             super().__setattr__(name, value)

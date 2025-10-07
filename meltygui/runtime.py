@@ -694,16 +694,19 @@ class Melty:
         #     return
 
 
+        if attr_name is not None:
+            Melty.cache.invalidate_by_obj(parent, attr_name)
 
-        if value is not None and (hasattr(value, "__dict__") or isinstance(value, (dict, list, set))):
-            Melty.cache.invalidate_by_obj(value)
-            # cls.dirty_objects.add(f"{id(value)}")
+        else:
+            if value is not None and (hasattr(value, "__dict__") or isinstance(value, (dict, list, set))):
+                Melty.cache.invalidate_by_obj(value)
+                # cls.dirty_objects.add(f"{id(value)}")
 
-        if parent is not None:
-            Melty.cache.invalidate_by_obj(parent)
-            # cls.dirty_objects.add(f"{id(parent)}")
-            # if attr_name is not None:
-            #     cls.dirty_objects.add(f"{id(parent)}.{attr_name}")
+            if parent is not None:
+                Melty.cache.invalidate_by_obj(parent)
+                # cls.dirty_objects.add(f"{id(parent)}")
+                # if attr_name is not None:
+                #     cls.dirty_objects.add(f"{id(parent)}.{attr_name}")
 
     @classmethod
     def is_invalid(cls, parent=None, value=None, attr_name=None):

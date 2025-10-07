@@ -42,6 +42,7 @@ class _Tile:
 
 @dataclass
 class _Ctx:
+    draw_state: any
     key: str
     pos: Tuple[float, float]  # ImGui screen-space (logical, top-left) at begin
     size: Tuple[int, int]
@@ -274,7 +275,7 @@ void main(){
 # ==============================
 class TileCacheMasked:
     def __init__(self):
-        self.enabled: bool = False
+        self.enabled: bool = True
         self.top_is_low: bool = True  # True => small layer index is on top; False => larger is on top
 
         # Lookup dicts for bubbling
@@ -324,16 +325,16 @@ class TileCacheMasked:
             if keys is not None:
                 for k in keys:
                     self.invalidate(k)
-        else:
-            keys = self.py_id_to_keys.get(f"{id(obj)}", None)
-            if keys is not None:
-                for k in keys:
-                    self.invalidate(k)
+
+        keys = self.py_id_to_keys.get(f"{id(obj)}", None)
+        if keys is not None:
+            for k in keys:
+                self.invalidate(k)
 
     def apply_invalid(self):
-        # for t in self.pending_invalid:
-        #     if t is not None:
-        #         t.dirty = True
+        for t in self.pending_invalid:
+            if t is not None:
+                t.dirty = True
         # if self.pending_invalid:
         #     request_render()
         self.pending_invalid.clear()
@@ -341,10 +342,10 @@ class TileCacheMasked:
     def invalidate(self, key: str, immediate=False) -> None:
         t = self._tiles.get(key)
         if t is not None:
-            # self.pending_invalid.append(t)
             if t: t.dirty = True
 
         # Invalidate parent
+        self.pending_invalid.append(t)
         parent = self.key_to_parent_key.get(key, None)
 
         # self.invalidate_all()
@@ -541,22 +542,33 @@ class TileCacheMasked:
                     tint = (1,1,1,1)
 
                 imgui.image(tile.tex, snap_int(size[0]), snap_int(size[1]), uv0=(0.0, 1.0), uv1=(1.0, 0.0), tint_color=tint)
-                self._stack.append(_Ctx(key, (x, y), size, layer, True))
+                draw_state.imgui_is_active = imgui.is_item_active()
+                draw_state.imgui_is_focused = imgui.is_item_focused()
+                draw_state.imgui_is_hovered = imgui.is_item_hovered()
+                draw_state.imgui_is_edited = imgui.is_item_edited()
+                self._stack.append(_Ctx(draw_state, key, (x, y), size, layer, True))
                 return False
 
 
-        self._stack.append(_Ctx(key, (x, y), size, layer, False))
-
+        self._stack.append(_Ctx(draw_state, key, (x, y), size, layer, False))
+        draw_state.imgui_is_active = imgui.is_item_active()
+        draw_state.imgui_is_focused = imgui.is_item_focused()
+        draw_state.imgui_is_hovered = imgui.is_item_hovered()
+        draw_state.imgui_is_edited = imgui.is_item_edited()
 
         return True
 
     def mark_end_offscreen(self) -> None:
+        ctx = self._stack.pop()
+
         imgui.pop_id()
         imgui.end_group()
+
         if not self._stack:
             return
-        ctx = self._stack.pop()
         no_size_yet = ctx.size is None
+
+
 
         if not ctx.drew_cached:
             rect_size = imgui.get_item_rect_size()
@@ -578,7 +590,6 @@ class TileCacheMasked:
 
     # ----- Finalize (post-frame) -----
     def finalize_captures(self, framebuffer_size: Tuple[int, int]) -> None:
-        self.apply_invalid()
 
         if self._snapshot_fbo is None:
             return
@@ -675,12 +686,12 @@ class TileCacheMasked:
                     p.tile.dirty = False
 
             gl.glUseProgram(0)
-
-            request_render()
         finally:
             st.restore()
             self._pending.clear()
             self._mask_rects.clear()
+
+            self.apply_invalid()
 
     # ----- internal -----
     def _ensure_programs(self):

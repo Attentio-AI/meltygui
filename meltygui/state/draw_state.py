@@ -73,7 +73,11 @@ class DrawState(DictConversion):
         self.is_active = False
         self.is_focused = False
         self.scroll_offset = (0, 0)
-
+        self.imgui_is_active = False
+        self.imgui_is_focused = False
+        self.imgui_is_hovered = False
+        self.imgui_is_edited = False
+        self.imgui_is_item_activated = False
         self.cst = None
 
         self._previous_hash = None
