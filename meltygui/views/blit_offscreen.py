@@ -348,10 +348,14 @@ class TileCacheMasked:
     def invalidate(self, key: str, immediate=False) -> None:
         t = self._tiles.get(key)
         if t is not None:
+            if t.dirty:
+                self.pending_invalid.append(t)
+
             if t: t.dirty = True
 
         # Invalidate parent
-        self.pending_invalid.append(t)
+
+
         parent = self.key_to_parent_key.get(key, None)
 
         # self.invalidate_all()
@@ -361,7 +365,8 @@ class TileCacheMasked:
     def invalidate_all(self) -> None:
         for t in self._tiles.values():
             if t is not None:
-                t.dirty = True
+                self.pending_invalid.append(t)
+
         request_render()
 
     def get_texture_id(self, key: str) -> Optional[int]:
@@ -555,8 +560,9 @@ class TileCacheMasked:
                 imgui.image(tile.tex, snap_int(size[0]), snap_int(size[1]), uv0=(0.0, 1.0), uv1=(1.0, 0.0), tint_color=tint)
                 draw_state.imgui_is_active = imgui.is_item_active()
                 draw_state.imgui_is_focused = imgui.is_item_focused()
-                draw_state.imgui_is_hovered = imgui.is_item_hovered()
                 draw_state.imgui_is_edited = imgui.is_item_edited()
+                draw_state.imgui_scroll_y = imgui.get_scroll_y()
+
                 self._stack.append(_Ctx(draw_state, key, (x, y), size, layer, True))
                 return False
 
@@ -564,7 +570,8 @@ class TileCacheMasked:
         self._stack.append(_Ctx(draw_state, key, (x, y), size, layer, False))
         draw_state.imgui_is_active = imgui.is_item_active()
         draw_state.imgui_is_focused = imgui.is_item_focused()
-        draw_state.imgui_is_hovered = imgui.is_item_hovered()
+        draw_state.imgui_scroll_y = imgui.get_scroll_y()
+
         draw_state.imgui_is_edited = imgui.is_item_edited()
 
         return True

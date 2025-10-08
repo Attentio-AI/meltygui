@@ -609,9 +609,6 @@ def render_func(*args, **o_kwargs):
         start_cursor = imgui.get_cursor_screen_pos()
         end_cursor = imgui.get_cursor_screen_pos()
 
-        imgui.begin_group()
-        push_id(unique)
-
         if is_root:
             # NOTE: We already computed 'unique' once for root above; do not recompute.
             Melty.unique_stack = []
@@ -651,6 +648,23 @@ def render_func(*args, **o_kwargs):
 
         draw_state = get_draw_state(unique)
         draw_state._input_value = input_value
+
+        cursor_pos = imgui.get_cursor_pos()
+
+        imgui.set_cursor_pos((snap_int(cursor_pos[0]), snap_int(cursor_pos[1])))
+
+        if kwargs.get("melty_window", False):
+            cursor_pos = imgui.get_cursor_screen_pos()
+
+            if draw_state.window_pos is None:
+                draw_state.window_pos = (0, 0)
+            window_pos = draw_state.window_pos
+
+            imgui.set_cursor_screen_pos((snap_int(cursor_pos[0] + window_pos[0]),
+                                         snap_int(cursor_pos[1] + window_pos[1])))
+
+        imgui.begin_group()
+        push_id(unique)
 
         is_initial_draw_state = True
         nested_call = input_value == Melty.input_value_stack[-1] if len(Melty.input_value_stack) > 0 else False
@@ -769,6 +783,7 @@ def render_func(*args, **o_kwargs):
 
             push_style_var(imgui.STYLE_ITEM_SPACING, spacing)
             push_style_var(imgui.STYLE_FRAME_PADDING, padding)
+            tile_id = str(computed_unique) + str(METHOD_ID) + str(name)
 
             ########################## The render call ##########################
             try:
@@ -782,12 +797,8 @@ def render_func(*args, **o_kwargs):
 
                 # Snap cursor to nearest pixel
                 cursor_pos = imgui.get_cursor_pos()
-                imgui.set_cursor_pos((snap_int(cursor_pos[0]), snap_int(cursor_pos[1])))
-
-
 
                 use_cache = kwargs.get("use_cache", False)
-                tile_id = str(computed_unique) + str(METHOD_ID) + str(name)
                 # if Melty.is_invalid(value=draw_state):
 
                     # Melty.clear_invalid(value=draw_state)
@@ -818,7 +829,7 @@ def render_func(*args, **o_kwargs):
 
                     hover_changed = last_bounding_hovered != draw_state.bounding_hovered
 
-                    if (draw_state.bounding_hovered or hover_changed):
+                    if (draw_state.bounding_hovered):
                         Melty.cache.invalidate(tile_id)
 
                     if Melty.cache.mark_start_offscreen(input_value=input_value, collection=collection,
@@ -828,14 +839,16 @@ def render_func(*args, **o_kwargs):
                         return_value = func(**clean_args)
                         draw_state.imgui_is_active = imgui.is_item_active()
                         draw_state.imgui_is_focused = imgui.is_item_focused()
-                        draw_state.imgui_is_hovered = imgui.is_item_hovered()
                         draw_state.imgui_is_edited = imgui.is_item_edited()
-                        draw_state.imgui_is_clicked = imgui.is_item_clicked()
-                        draw_state.imgui_is_item_activated = imgui.is_item_activated()
+                        # draw_state.imgui_is_clicked = imgui.is_item_clicked()
+                        # draw_state.imgui_is_item_activated = imgui.is_item_activated()
+
+                        # Scroll position relative to window
+                        draw_state.imgui_scroll_y = imgui.get_scroll_y()
                         draw_state._did_use_cache = False
                     else:
                         is_hovered_bounds = draw_state.is_bounding_hovered()
-                        draw_state.is_hovered_last = is_hovered_bounds
+                        # draw_state.is_hovered_last = is_hovered_bounds
                         draw_state._did_use_cache = True
 
                     Melty.cache.mark_end_offscreen()
@@ -856,6 +869,7 @@ def render_func(*args, **o_kwargs):
                 # Needs to go after mouse event check
                 push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
                 push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
+                tile_id = str(computed_unique) + str(METHOD_ID) + str(name)
 
                 pop_id()
 
@@ -867,9 +881,9 @@ def render_func(*args, **o_kwargs):
                 pop_style_var(2)
 
                 if not kwargs.get("on_drag", False):
-
-                    draw_state.window_pos_left = snap_int(start_cursor[0])
-                    draw_state.window_pos_top = snap_int(start_cursor[1])
+                    #
+                    # draw_state.window_pos_left = snap_int(start_cursor[0])
+                    # draw_state.window_pos_top = snap_int(start_cursor[1])
 
                     original_width = draw_state.bounding_width
                     original_height = draw_state.bounding_height
@@ -923,11 +937,15 @@ def render_func(*args, **o_kwargs):
                                     btn_state.mouse_down_pos = imgui.get_mouse_pos()
                                     melty.mouse_down_pos = imgui.get_mouse_pos()
                                     btn_state.initial_screen_pos = (draw_state.left, draw_state.top)
+                                    btn_state.initial_window_pos = draw_state.window_pos
+
                                     melty.initial_drag_offset = (current_mouse_pos[0] - draw_state.left,
                                                                  current_mouse_pos[1] - draw_state.top)
 
                                 btn_state.mouse_down = True
                                 melty.mark_event(unique, m_btn, ActionType.DOWN)
+                                Melty.cache.invalidate(tile_id)
+
                             if not imgui.is_mouse_down(m_btn):
                                 btn_state.mouse_up = True
                         else:
@@ -935,6 +953,7 @@ def render_func(*args, **o_kwargs):
                         if was_mouse_down and not imgui.is_mouse_down(m_btn):
                             btn_state.clicked = True
                             melty.mark_event(unique, m_btn, ActionType.CLICK)
+                            Melty.cache.invalidate(tile_id)
 
                         if not imgui.is_mouse_down(m_btn):
                             btn_state.mouse_down = False
@@ -943,6 +962,7 @@ def render_func(*args, **o_kwargs):
                                 melty.total_drag_frames = 0
                                 btn_state.drag_released = True
                                 melty.mark_event(unique, m_btn, ActionType.DRAG_UP)
+                                Melty.cache.invalidate(tile_id)
                                 melty.initial_drag_offset = None
 
                             btn_state.dragged = False
@@ -966,8 +986,8 @@ def render_func(*args, **o_kwargs):
                                 melty.drag_in_progress = True
                                 melty.dragged_item = draw_state
                                 melty.mark_event(unique, m_btn, ActionType.DRAG)
+                                Melty.cache.invalidate(tile_id)
                                 melty.drag_delta = btn_state.drag_delta
-
 
                     if draw_state.id in Melty.hovered_drawstate and imgui.is_window_hovered():
                         if unique not in melty.triggered_actions:
@@ -997,12 +1017,14 @@ def render_func(*args, **o_kwargs):
                             if hovered_draw_state is not None:
                                 hovered_draw_state.hovered = True
                                 Melty.hovered_drawstate_pending.add(hovered_draw_state.id)
+                                Melty.invalidate(hovered_draw_state)
 
                         if len(melty.hotkey_stack) > 0:
                             last = melty.hotkey_stack[0]
                             hovered_draw_state = Melty.vis.root.draw_state_registry.get(last, None)
                             if hovered_draw_state is not None:
                                 hovered_draw_state.hotkey_receiver = True
+                                Melty.invalidate(hovered_draw_state)
 
                         melty.hover_stack = []
                         melty.hotkey_stack = []
@@ -1018,7 +1040,6 @@ def render_func(*args, **o_kwargs):
                         while len(melty.items_to_delete) > 0:
                             key, collection = melty.items_to_delete.pop(0)
                             delete_from_collection(key, collection)
-
                             request_render()
 
                 if return_value is None:

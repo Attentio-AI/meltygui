@@ -57,9 +57,9 @@ class CSTDrawBits:
         self.text_buf: str = ""  # generic edit buffer
 
 @no_save("mouse_btn_state", "mouse_up", "mouse_down", "bounding_width", "bounding_height",
-         "drag_released", "clicked", "dragged", "render_time",
+         "drag_released", "clicked", "dragged", "render_time", "imgui_is_toggled_open",
          "is_active", "is_focused", "scroll_offset", "drag_window_pos_x", "drag_window_pos_y")
-@exclude("render_time", "bounds_left", "bounds_top", "_input_value", "width",
+@exclude("render_time", "bounds_left", "bounds_top", "_input_value", "width", "flow_spacing",
          "hovered", "_did_use_cache", "height", "top", "left", "delete_countdown")
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
@@ -78,6 +78,9 @@ class DrawState(DictConversion):
         self.imgui_is_edited = False
         self.imgui_is_item_activated = False
         self.cst = None
+        self.window_pos = None
+
+        self.imgui_is_toggled_open = False
 
         self._previous_hash = None
 
@@ -181,7 +184,7 @@ class DrawState(DictConversion):
     def is_bounding_hovered(self):
         if self.bounds_top is None or self.bounds_left is None or self.bounding_width is None or self.bounding_height is None:
             return False
-        rect = (self.bounds_left, self.bounds_top - 5, self.bounding_width, self.bounding_height + 10)
+        rect = (self.bounds_left, self.bounds_top + 5, self.bounding_width, self.bounding_height + 10)
         if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
             return True
         return False
