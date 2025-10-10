@@ -56,9 +56,15 @@ class CSTDrawBits:
         self.anchor: tuple = ()
         self.text_buf: str = ""  # generic edit buffer
 
+class DragMode(Enum):
+    NONE = 'none'
+    MOVE = 'move'
+    RESIZE_BR = 'resize_br'
+
+
 @no_save("mouse_btn_state", "mouse_up", "mouse_down", "bounding_width", "bounding_height",
          "drag_released", "clicked", "dragged", "render_time", "imgui_is_toggled_open",
-         "is_active", "is_focused", "scroll_offset", "drag_window_pos_x", "drag_window_pos_y")
+         "is_active", "is_focused", "scroll_offset", "drag_window_pos_x", "drag_window_pos_y", "drag_mode")
 @exclude("render_time", "bounds_left", "bounds_top", "_input_value", "width", "flow_spacing",
          "hovered", "_did_use_cache", "height", "top", "left", "delete_countdown")
 class DrawState(DictConversion):
@@ -79,6 +85,9 @@ class DrawState(DictConversion):
         self.imgui_is_item_activated = False
         self.cst = None
         self.window_pos = None
+        self.window_size = (100, 100)
+        self.drag_mode = DragMode.NONE
+        self.use_child = False
 
         self.imgui_is_toggled_open = False
 

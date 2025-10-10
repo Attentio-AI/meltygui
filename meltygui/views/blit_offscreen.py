@@ -530,7 +530,8 @@ class TileCacheMasked:
         imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (0,0))
         imgui.begin_group()
         imgui.pop_style_var(2)
-        imgui.push_id(f"tilecache_{key}")
+        from src.lsd.gl_gui.view.core_views.core_render import push_id
+        push_id(f"tilecache_{key}")
         if size is not None:
             w = max(0, size[0])
             h = max(0, size[1])
@@ -579,7 +580,8 @@ class TileCacheMasked:
     def mark_end_offscreen(self) -> None:
         ctx = self._stack.pop()
 
-        imgui.pop_id()
+        from src.lsd.gl_gui.view.core_views.core_render import pop_id
+        pop_id()
         imgui.end_group()
 
         if not self._stack:
