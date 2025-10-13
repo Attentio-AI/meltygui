@@ -120,6 +120,7 @@ def draw(vis):
     Melty.hovered_drawstate_pending = set()
     # Melty.hovered_drawstate = set()
 
+
     fb_w, fb_h = map(int, imgui.get_io().display_size)  # or your true GL FB size if HiDPI
     Melty.cache.mask_begin_frame((fb_w, fb_h))
     draw_melty_windows(vis)
@@ -1563,7 +1564,7 @@ def open_file(path, app=None):
     else:
         print(f"Path does not exist: {path}")
 
-@render_func
+@render_func(use_cache=True)
 def draw_header(input_value=None, name="", collection=None, display_name=None, meta=None, unique=None, is_tree=True,
                 show_name=True, name_func=None, show_type=False, show_unique=False,
                 on_search=False, trigger_collapse=False, trigger_expand=False,
@@ -1878,7 +1879,7 @@ def draw_none(input_value: NoneType):
     return False, None
 
 
-@with_header_minimal(is_default_for=(bool), header_same_line=True, use_cache=False)
+@with_header_minimal(is_default_for=(bool), header_same_line=True, use_cache=True)
 def draw_bool(input_value: bool):
     changed, is_checked = imgui.checkbox("##bool", input_value)
     if changed:

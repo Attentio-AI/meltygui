@@ -3,6 +3,21 @@ import uuid
 from src.lsd.gl_gui.model.model_enums import RelaxedEnum
 
 
+class OffscreenDebugMode(RelaxedEnum):
+    OFF = "Off"
+    SHOW_LAYERS = "Show Layers"
+    SHOW_MASK = "Show Mask"
+
+
+class OffscreenDebugMode(RelaxedEnum):
+    OFF = "Off"
+    SHOW_LAYERS = "layer"
+    SHOW_MASK = "mask"
+    SHOW_UV = "uv"
+    SHOW_SRC_PX = "srcpx"
+    SHOW_CHECKER = "checker"
+    SHOW_SOLID = "solid"
+
 
 class ViewMode(RelaxedEnum):
     NONE = "None"

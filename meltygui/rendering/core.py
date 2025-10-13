@@ -912,7 +912,7 @@ def render_func(*args, **o_kwargs):
 
             push_style_var(imgui.STYLE_ITEM_SPACING, spacing)
             push_style_var(imgui.STYLE_FRAME_PADDING, padding)
-            tile_id = str(computed_unique) + str(METHOD_ID) + str(name)
+            tile_id = str(computed_unique) + str(METHOD_ID) + str(name) + str(Melty.wrapped_depth)
 
             ########################## The render call ##########################
             try:
@@ -937,7 +937,7 @@ def render_func(*args, **o_kwargs):
                 if global_toggles.offscreen_debug:
                     depth_tint = (Melty.wrapped_depth * 0.05)
                     jet = jet_color(depth_tint)
-                    floating_text(f"{func.__name__} w:{draw_state.width}", tint=jet)
+                    floating_text(f"{func.__name__} w:{Melty.wrapped_depth}", tint=jet)
 
                 if use_cache and Melty.cache.enabled:
 
