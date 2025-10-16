@@ -80,16 +80,16 @@ code_export_str = "Test"
 
 filesystem_proxy = FolderProxy("/home/lukas/test_folder", text_mode=True)
 # Main draw function, called by the GUI framework
-
-def draw_melty_windows():
-
+def draw_pending_windows():
     for window, args, kwargs in Melty.windows:
         window_func = kwargs.get('window_func', draw_object)
         kwargs['melty_window'] = True
         window_func(window, *args, **kwargs)
 
+    Melty.windows.clear()
 
-def draw_melty_main(vis):
+
+def draw_melty_windows(vis):
     flags = (imgui.WINDOW_NO_BACKGROUND | imgui.WINDOW_NO_TITLE_BAR | imgui.WINDOW_NO_RESIZE |
              imgui.WINDOW_NO_MOVE | imgui.WINDOW_NO_SCROLLBAR | imgui.WINDOW_NO_NAV_FOCUS |
             imgui.WINDOW_NO_BRING_TO_FRONT_ON_FOCUS | imgui.SELECTABLE_ALLOW_ITEM_OVERLAP |
@@ -135,7 +135,7 @@ def draw(vis):
 
     fb_w, fb_h = map(int, imgui.get_io().display_size)  # or your true GL FB size if HiDPI
     Melty.cache.mask_begin_frame((fb_w, fb_h))
-    draw_melty_main(vis)
+    draw_melty_windows(vis)
 
     draw_window(vis.root.lora_collection, name="Lora Root")
     draw_window(Melty.hotkey_registry, name="Hotkeys", is_window=True)
@@ -169,7 +169,8 @@ def draw(vis):
 
     Melty.hovered_drawstate = Melty.hovered_drawstate_pending
 
-    draw_melty_windows()
+    draw_pending_windows()
+
 
     # draw_window(export_code, name="Code Export")
 
@@ -451,30 +452,29 @@ def draw_cst_int(input_value, width=None):
 #         input_value.value = str(new_val)
 
 ####################### libCST END ##################
-def core_draw_melty_window(input_value, name, unique, window_func,
-                           window_stack, style_manager, draw_state,
-                           args, kwargs, indent_size=10, width=0, height=0, pos_x=None, pos_y=None,
-                           decorations=True, focus=False, enable=True):
+
+def core_draw_melty_window(input_value, *args, **kwargs):
+
     # tmp_undo_stack(unique)
     # undo_push_stack(unique)
     changed, new_value = False, input_value
-    cursor_pos = imgui.get_cursor_screen_pos()
-    # changed, new_value = False, input_value
-    #
-    # # kwargs['imgui_window'] = (pos_x, pos_y)
-    changed, new_value = window_func(melty_window=True,
-                                     window_pos=(pos_x, pos_y),
-                                     *args, **kwargs)
-    #
-    imgui.set_cursor_screen_pos(cursor_pos)
+    # cursor_pos = imgui.get_cursor_screen_pos()
+    # # changed, new_value = False, input_value
+    # #
+    # # # kwargs['imgui_window'] = (pos_x, pos_y)
+    # changed, new_value = window_func(melty_window=True,
+    #                                  window_pos=(pos_x, pos_y),
+    #                                  *args, **kwargs)
+    # #
+    # imgui.set_cursor_screen_pos(cursor_pos)
 
     # undo_stack(unique)
+
 
     return changed, new_value
 
 
 def queue_melty_window(input_value, *args, **kwargs):
-
     Melty.windows.append((input_value, args, kwargs))
 
     return False, input_value
@@ -1203,7 +1203,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             tmp_undo_stack(unique)
             # undo_child_stack(unique)
 
-            core_draw_melty_window(window_func=render_func, input_value=input_value,
+            queue_melty_window(window_func=render_func, input_value=input_value,
                                    window_stack=window_stack, draw_state=draw_state,
                                    pos_x=pos_x, pos_y=pos_y, height=draw_state.height,
                                    width=imgui.get_content_region_available()[0], indent_size=indent_size,
