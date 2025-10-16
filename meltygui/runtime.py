@@ -646,9 +646,12 @@ class MeltyState:
         self.items_to_delete.append((key, collection))
 
 class Melty:
-    windows = {}
+    windows = []
+    glfw_window = None
 
-
+    channels_split = False
+    is_melty_window = False
+    melty_window_stack = []
     default_font = None
     max_depth = 40
     indent_size = 10

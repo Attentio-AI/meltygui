@@ -1,5 +1,6 @@
 from enum import Enum
 
+import glfw
 import imgui
 import libcst as cst
 
@@ -181,12 +182,20 @@ class DrawState(DictConversion):
         else:
             self.height = max(self.height, inner_draw_state.height)
 
+    def is_glfw_mouse_hovering_rect(self, x1, y1, x2, y2):
+
+        global_mouse = glfw.get_cursor_pos(Melty.glfw_window)
+        mx, my = global_mouse
+        # basic collision check
+        if x1 <= mx <= x2 and y1 <= my <= y2:
+            return True
+        return False
 
     def is_hovered(self):
         if self.left is None or self.top is None or self.width is None or self.height is None:
             return False
         rect = (self.left, self.top - 5, self.width, self.height + 10)
-        if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
+        if self.is_glfw_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
             return True
         return False
 
@@ -194,7 +203,7 @@ class DrawState(DictConversion):
         if self.bounds_top is None or self.bounds_left is None or self.bounding_width is None or self.bounding_height is None:
             return False
         rect = (self.bounds_left, self.bounds_top + 5, self.bounding_width, self.bounding_height + 10)
-        if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
+        if self.is_glfw_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
             return True
         return False
 
