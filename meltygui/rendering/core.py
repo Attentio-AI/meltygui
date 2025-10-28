@@ -964,7 +964,8 @@ def render_func(*args, **o_kwargs):
         Melty.input_value_stack.append(input_value)
         inc_depth = False
         Melty.wrapped_depth = Melty.wrapped_depth + 1
-
+        depth_to_restore = None
+        wrapped_depth_to_restore = None
 
         try:
             expected_type = param_types[wanted_params.index("input_value")] if "input_value" in wanted_params else None
@@ -1056,8 +1057,16 @@ def render_func(*args, **o_kwargs):
                     Melty.draw_state_stack[Melty.depth] = draw_state
 
                 Melty.depth = Melty.depth + 1
-            kwargs['depth'] = Melty.depth
             kwargs['next_kwargs'] = kwargs
+
+            requested_z = kwargs.get("z_pos", None)
+            if requested_z is not None:
+                depth_to_restore = Melty.depth
+                wrapped_depth_to_restore = Melty.wrapped_depth
+                Melty.depth = requested_z
+                Melty.wrapped_depth = requested_z
+
+            kwargs['depth'] = Melty.depth
 
             if type(input_value).__name__ == "LoraCollection":
                 pass
@@ -1192,6 +1201,12 @@ def render_func(*args, **o_kwargs):
                     if (draw_state.bounding_width != original_width or
                             draw_state.bounding_height != original_height):
                         request_render()
+
+                if depth_to_restore is not None:
+                    Melty.depth = depth_to_restore
+                    Melty.wrapped_depth = wrapped_depth_to_restore
+
+
                 if inc_depth:
                     Melty.depth = Melty.depth - 1
                 Melty.input_value_stack.pop()

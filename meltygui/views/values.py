@@ -80,9 +80,23 @@ code_export_str = "Test"
 
 filesystem_proxy = FolderProxy("/home/lukas/test_folder", text_mode=True)
 # Main draw function, called by the GUI framework
-def draw_pending_windows():
+@render_func
+def draw_pending_windows(style_manager):
+    draw_list = imgui.get_window_draw_list()
+    # if not Melty.channels_split:
+    #     draw_list.channels_split(Melty.max_depth)
+    #     Melty.channels_split = True
+    previous_tint = style_manager.get_tint()
+
     for window, args, kwargs in Melty.windows:
         imgui.set_cursor_screen_pos((0, 0))
+
+        if hasattr(window, 'tint') and window.tint is not None:
+            style_manager.set_imgui_tint(*window.tint)
+        # depth = kwargs.get("z_pos", Melty.max_depth - 1)
+        # kwargs['z_pos'] = depth
+        #
+        # draw_list.channels_set_current(min(depth + 1, Melty.max_depth - 1))
 
         window_pos = kwargs['window_pos']
         imgui.set_cursor_screen_pos((window_pos[0],
@@ -93,10 +107,14 @@ def draw_pending_windows():
         window_func = kwargs.get('window_func', draw_object)
         kwargs['melty_window'] = False
         window_func(window, *args, **kwargs)
-        print(kwargs['pos_x'])
-        print("test")
+
+    style_manager.set_imgui_tint(*previous_tint)
 
     Melty.windows.clear()
+
+    if Melty.channels_split:
+        draw_list.channels_merge()
+        Melty.channels_split = False
 
 
 def draw_melty_windows(vis):
@@ -486,6 +504,7 @@ def core_draw_melty_window(input_value, *args, **kwargs):
 
 
 def queue_melty_window(input_value, *args, **kwargs):
+    kwargs['z_pos'] = Melty.depth
     Melty.windows.append((input_value, args, kwargs))
 
     return False, input_value
@@ -746,7 +765,6 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
                            and tag == melty.drag_drop_target_tag)
 
             if Melty.channels_split:
-
                 draw_list.channels_set_current(min(depth + 1, Melty.max_depth - 1))
 
                 if active_drop:
