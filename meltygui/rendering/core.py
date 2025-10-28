@@ -50,7 +50,6 @@ def handle_actions(melty, unique, draw_state, func=None):
             global_mouse_down = imgui.get_io().mouse_down[m_btn] if m_btn < len(imgui.get_io().mouse_down) else False
             mouse_pos = imgui.get_mouse_pos()
 
-
             if btn_state.drag_released:
                 btn_state.drag_released = False
             if draw_state.id in Melty.hovered_drawstate:
@@ -130,9 +129,9 @@ def handle_actions(melty, unique, draw_state, func=None):
         if is_hovered and func in Melty.hotkey_registry:
             melty.hotkey_stack.append(unique)
 
-        global_mouse_down = glfw.get_mouse_button(Melty.glfw_window, 0) == glfw.PRESS
-        if not global_mouse_down:
-            melty.drag_in_progress = False
+        # global_mouse_down = glfw.get_mouse_button(Melty.glfw_window, 0) == glfw.PRESS
+        # if not global_mouse_down:
+        #     melty.drag_in_progress = False
 
 
 
@@ -1114,7 +1113,7 @@ def render_func(*args, **o_kwargs):
                     draw_state.bounding_hovered = last_bounding_hovered
                     hover_changed = last_bounding_hovered != draw_state.bounding_hovered
 
-                    if (draw_state.bounding_hovered):
+                    if draw_state.bounding_hovered or hover_changed:
                         Melty.cache.invalidate(tile_id)
 
                     if Melty.cache.mark_start_offscreen(input_value=input_value, collection=collection,
@@ -1122,9 +1121,9 @@ def render_func(*args, **o_kwargs):
                                                         indent_size=kwargs.get("indent_size", 10),
                                                         layer=Melty.wrapped_depth, global_toggles=global_toggles):
                         return_value = func(**clean_args)
-                        draw_state.imgui_is_active = imgui.is_item_active()
-                        draw_state.imgui_is_focused = imgui.is_item_focused()
-                        draw_state.imgui_is_edited = imgui.is_item_edited()
+                        # draw_state.imgui_is_active = imgui.is_item_active()
+                        # draw_state.imgui_is_focused = imgui.is_item_focused()
+                        # draw_state.imgui_is_edited = imgui.is_item_edited()
                         # draw_state.imgui_is_clicked = imgui.is_item_clicked()
                         # draw_state.imgui_is_item_activated = imgui.is_item_activated()
 
@@ -1212,14 +1211,14 @@ def render_func(*args, **o_kwargs):
                         if hovered_draw_state is not None:
                             hovered_draw_state.hovered = True
                             Melty.hovered_drawstate_pending.add(hovered_draw_state.id)
-                            Melty.invalidate(hovered_draw_state)
+                            # Melty.invalidate(hovered_draw_state)
 
                     if len(melty.hotkey_stack) > 0:
                         last = melty.hotkey_stack[0]
                         hovered_draw_state = Melty.vis.root.draw_state_registry.get(last, None)
                         if hovered_draw_state is not None:
                             hovered_draw_state.hotkey_receiver = True
-                            Melty.invalidate(hovered_draw_state)
+                            # Melty.invalidate(hovered_draw_state)
 
                     melty.hover_stack = []
                     melty.hotkey_stack = []

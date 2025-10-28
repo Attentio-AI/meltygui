@@ -82,9 +82,19 @@ filesystem_proxy = FolderProxy("/home/lukas/test_folder", text_mode=True)
 # Main draw function, called by the GUI framework
 def draw_pending_windows():
     for window, args, kwargs in Melty.windows:
+        imgui.set_cursor_screen_pos((0, 0))
+
+        window_pos = kwargs['window_pos']
+        imgui.set_cursor_screen_pos((window_pos[0],
+                                     window_pos[1]))
+        # Consume window pos
+        kwargs['window_pos'] = (0,0)
+
         window_func = kwargs.get('window_func', draw_object)
-        kwargs['melty_window'] = True
+        kwargs['melty_window'] = False
         window_func(window, *args, **kwargs)
+        print(kwargs['pos_x'])
+        print("test")
 
     Melty.windows.clear()
 
@@ -110,6 +120,8 @@ def draw_melty_windows(vis):
     Melty.channels_split = True
 
     draw_any(vis.root.lora_collection, melty_window=True, auto_resize=False, name="Test Window")
+
+    draw_pending_windows()
 
     Melty.window_stack.pop()
 
@@ -169,7 +181,6 @@ def draw(vis):
 
     Melty.hovered_drawstate = Melty.hovered_drawstate_pending
 
-    draw_pending_windows()
 
 
     # draw_window(export_code, name="Code Export")
@@ -1174,30 +1185,31 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             mouse_down_y = draw_state.mouse_btn_state[0].mouse_down_pos[1]
             drag_delta = (mouse_pos[0] - mouse_down_x, mouse_pos[1] - mouse_down_y)
 
-            pos_x = drag_delta[0]
-            pos_y = drag_delta[1]
+            # pos_x = drag_delta[0]
+            # pos_y = drag_delta[1]
             # # imgui.set_cursor_screen_pos((pos_x, pos_y))
             #
-            # next_kwargs['melty_window'] = True
-            # next_kwargs['on_drag'] = False
-            # next_kwargs['auto_resize'] = False
-            # next_kwargs['enable_scroll'] = False
+            next_kwargs['melty_window'] = True
+            next_kwargs['on_drag'] = False
+            next_kwargs['auto_resize'] = False
+            next_kwargs['enable_scroll'] = False
             #
-            # if draw_state.mouse_btn_state[0].initial_window_pos is None:
-            #     draw_state.mouse_btn_state[0].initial_window_pos = (0, 0)
+            if draw_state.mouse_btn_state[0].initial_window_pos is None:
+                draw_state.mouse_btn_state[0].initial_window_pos = (0, 0)
             #
-            # start_pos_x = draw_state.mouse_btn_state[0].initial_window_pos[0]
-            # start_pos_y = draw_state.mouse_btn_state[0].initial_window_pos[1]
-            # pos_x = start_pos_x + drag_delta[0]
-            # pos_y = start_pos_y + drag_delta[1]
+            start_pos_x = draw_state.mouse_btn_state[0].initial_window_pos[0]
+            start_pos_y = draw_state.mouse_btn_state[0].initial_window_pos[1]
+
+            pos_x = drag_delta[0] + initial_cursor_pos[0]
+            pos_y = drag_delta[1] + initial_cursor_pos[1]
             # next_kwargs['draw_state'].window_pos = (0, 0)
             # draw_state.window_pos = (40, 1000)
 
             # func_changed, func_return_value = outer_func(
             #     **next_kwargs)
-            current_cursor = imgui.get_cursor_screen_pos()
-            imgui.set_cursor_screen_pos((initial_cursor_pos[0],
-                                         initial_cursor_pos[1]))
+            # current_cursor = imgui.get_cursor_screen_pos()
+            # imgui.set_cursor_screen_pos((initial_cursor_pos[0],
+            #                              initial_cursor_pos[1]))
 
             next_kwargs['enable_flow'] = False
             tmp_undo_stack(unique)
@@ -1205,17 +1217,18 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
 
             queue_melty_window(window_func=render_func, input_value=input_value,
                                    window_stack=window_stack, draw_state=draw_state,
-                                   pos_x=pos_x, pos_y=pos_y, height=draw_state.height,
-                                   width=imgui.get_content_region_available()[0], indent_size=indent_size,
+                                   pos_x=0, pos_y=0, height=draw_state.height,
+                                   window_pos=(pos_x, pos_y),
+                                   width=draw_state.width, indent_size=indent_size,
                                    style_manager=style_manager, name=name, decorations=False,
                                    focus=True, unique=unique, enable=False, args=(), kwargs=next_kwargs)
             # redo_child_stack(unique)
             redo_stack(unique)
+            #
+            # imgui.set_cursor_screen_pos((current_cursor[0],
+            #                              current_cursor[1]))
 
-            imgui.set_cursor_screen_pos((current_cursor[0],
-                                         current_cursor[1]))
-
-            # Melty.assign(parent=collection, attr_name=key, value=input_value)
+            Melty.invalidate(parent=collection, attr_name=key, value=input_value)
 
         else:
             next_kwargs['do_flow'] = True

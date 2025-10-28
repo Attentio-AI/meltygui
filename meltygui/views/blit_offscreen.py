@@ -722,6 +722,7 @@ class TileCacheMasked:
                 draw_state.imgui_is_focused = imgui.is_item_focused()
                 draw_state.imgui_is_edited = imgui.is_item_edited()
                 draw_state.imgui_scroll_y = imgui.get_scroll_y()
+                draw_state.imgui_is_hovered = imgui.is_item_hovered()
 
                 self._stack.append(
                     _Ctx(draw_state=draw_state, key=rkey, pos=(x, y), size=size, layer=layer, drew_cached=True))
@@ -729,10 +730,12 @@ class TileCacheMasked:
 
         # Push context; pos/size will be updated to the *final* rect in mark_end_offscreen()
         self._stack.append(_Ctx(draw_state=draw_state, key=rkey, pos=(x, y), size=size, layer=layer, drew_cached=False))
-        draw_state.imgui_is_active = imgui.is_item_active()
-        draw_state.imgui_is_focused = imgui.is_item_focused()
-        draw_state.imgui_scroll_y = imgui.get_scroll_y()
-        draw_state.imgui_is_edited = imgui.is_item_edited()
+        # draw_state.imgui_is_active = imgui.is_item_active()
+        # draw_state.imgui_is_focused = imgui.is_item_focused()
+        # draw_state.imgui_scroll_y = imgui.get_scroll_y()
+        # draw_state.imgui_is_edited = imgui.is_item_edited()
+        # draw_state.imgui_is_hovered = imgui.is_item_hovered()
+
         return True
 
     def mark_end_offscreen(self) -> None:
