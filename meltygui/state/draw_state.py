@@ -64,7 +64,7 @@ class DragMode(Enum):
 
 
 @no_save("mouse_btn_state", "mouse_up", "mouse_down", "bounding_width", "bounding_height",
-         "drag_released", "clicked", "dragged", "render_time", "imgui_is_toggled_open",
+         "drag_released", "clicked", "dragged", "render_time", "imgui_is_toggled_open", "z_pos",
          "is_active", "is_focused", "scroll_offset", "drag_window_pos_x", "drag_window_pos_y", "drag_mode")
 @exclude("render_time", "bounds_left", "bounds_top", "_input_value", "width", "flow_spacing",
          "hovered", "_did_use_cache", "height", "top", "left", "delete_countdown", "z_pos")

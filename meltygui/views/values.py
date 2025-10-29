@@ -80,12 +80,14 @@ code_export_str = "Test"
 
 filesystem_proxy = FolderProxy("/home/lukas/test_folder", text_mode=True)
 # Main draw function, called by the GUI framework
-@render_func
+
+@render_func(use_cache=False)
 def draw_pending_windows(style_manager):
+    # imgui.text("test")
     draw_list = imgui.get_window_draw_list()
-    # if not Melty.channels_split:
-    #     draw_list.channels_split(Melty.max_depth)
-    #     Melty.channels_split = True
+    if not Melty.channels_split:
+        draw_list.channels_split(Melty.max_depth)
+        Melty.channels_split = True
     previous_tint = style_manager.get_tint()
 
     for window, args, kwargs in Melty.windows:
@@ -112,9 +114,9 @@ def draw_pending_windows(style_manager):
 
     Melty.windows.clear()
 
-    if Melty.channels_split:
-        draw_list.channels_merge()
-        Melty.channels_split = False
+    # if Melty.channels_split:
+    #     draw_list.channels_merge()
+    #     Melty.channels_split = False
 
 
 def draw_melty_windows(vis):
@@ -130,16 +132,24 @@ def draw_melty_windows(vis):
     imgui.set_next_window_size(fb_w - 300, fb_h)
     title = "main##window_melty"
     opened, _ = begin(title, closable=False, flags=flags)
-    imgui.text("test")
-    Melty.window_stack.append((title, True))
 
     draw_list = imgui.get_window_draw_list()
     draw_list.channels_split(Melty.max_depth)
     Melty.channels_split = True
 
-    draw_any(vis.root.lora_collection, melty_window=True, auto_resize=False, name="Test Window")
+    imgui.text("test")
+    Melty.window_stack.append((title, True))
 
-    draw_pending_windows()
+    draw_list = imgui.get_window_draw_list()
+    # draw_list.channels_split(Melty.max_depth)
+    # Melty.channels_split = True
+    # draw_pending_windows()
+    # draw_list.channels_merge()
+    # Melty.channels_split = False
+
+
+    draw_any(vis.root.lora_collection, melty_window=True, auto_resize=False, name="Test Window")
+    draw_pending_windows(name="##pending_windows")
 
     Melty.window_stack.pop()
 
@@ -195,7 +205,8 @@ def draw(vis):
             print("Error parsing code")
 
     # Melty.dirty_objects.clear()
-    overlay_list.channels_merge()
+    # overlay_list.channels_merge()
+    # Melty.channels_split = False
 
     Melty.hovered_drawstate = Melty.hovered_drawstate_pending
 
@@ -504,7 +515,7 @@ def core_draw_melty_window(input_value, *args, **kwargs):
 
 
 def queue_melty_window(input_value, *args, **kwargs):
-    kwargs['z_pos'] = Melty.depth
+    kwargs['z_pos'] = Melty.depth + 1
     Melty.windows.append((input_value, args, kwargs))
 
     return False, input_value
@@ -1098,14 +1109,29 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                     # draw_list = imgui.get_window_draw_list()
                     # draw_list.channels_split(Melty.max_depth)
                     inside_window = len(Melty.window_stack) > 0
+                    # draw_list = imgui.get_window_draw_list()
+                    # if Melty.channels_split and show_bg:
+                    #     draw_list.channels_set_current(min(Melty.max_depth - 1, depth))
+                    #
+                    # next_kwargs['func'] = func
+                    # next_kwargs['draw_state'] = draw_state
+                    # func_changed, func_return_val = draw_child(header_height=header_height,
+                    #                                            melty_window=False, **next_kwargs)
                     draw_list = imgui.get_window_draw_list()
                     if Melty.channels_split and show_bg:
                         draw_list.channels_set_current(min(Melty.max_depth - 1, depth))
 
-                    next_kwargs['func'] = func
-                    next_kwargs['draw_state'] = draw_state
-                    func_changed, func_return_val = draw_child(header_height=header_height,
-                                                               melty_window=False, **next_kwargs)
+                    left = draw_state.left
+                    top = draw_state.top
+                    width = draw_state.width
+                    height = draw_state.height
+                    rect = (left, top, left + width, top + height)
+
+                    draw_list.push_clip_rect(*rect)
+
+                    func_changed, func_return_val = func(**next_kwargs)
+
+                    draw_list.pop_clip_rect()
 
                 else:
                     draw_list = imgui.get_window_draw_list()
@@ -1167,7 +1193,9 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
 
         if Melty.channels_split:
             if show_bg:
-                draw_list.channels_set_current(max(0, min(Melty.max_depth - 2, depth - 1)))
+                channel = max(0, min(Melty.max_depth - 2, depth - 1))
+                draw_list.channels_set_current(channel)
+
                 if not on_drag or melty_window:
                     draw_bg(bypass=True, left=start_x_pos, top=y_margin + start_y_pos,
                             width=background_width, height=snap_int(background_height - Melty.spacing[1] / 2.0 - y_offset),
