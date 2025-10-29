@@ -147,7 +147,6 @@ def draw_melty_windows(vis):
     # draw_list.channels_merge()
     # Melty.channels_split = False
 
-
     draw_any(vis.root.lora_collection, melty_window=True, auto_resize=False, name="Test Window")
     draw_pending_windows(name="##pending_windows")
 
@@ -515,7 +514,7 @@ def core_draw_melty_window(input_value, *args, **kwargs):
 
 
 def queue_melty_window(input_value, *args, **kwargs):
-    kwargs['z_pos'] = Melty.depth + 1
+    kwargs['z_pos'] = Melty.depth + 6
     Melty.windows.append((input_value, args, kwargs))
 
     return False, input_value
@@ -920,6 +919,97 @@ def toggle_offscreen():
         Melty.cache.set_enabled(True)
 
 
+import imgui
+
+
+def draw_vertical_scrollbar(content_height: float,
+                            view_height: float,
+                            view_width: float,
+                            scroll_offset: float,
+                            scrollbar_width: float,
+                            left: float = 0.0,
+                            top: float = 0.0,
+                            *,
+                            pad: float = 0.0,
+                            rounding: float = 3.0,
+                            min_grab_size: float | None = None):
+    # Style & colors
+    style = imgui.get_style()
+    if min_grab_size is None:
+        min_grab_size = float(style.grab_min_size)
+
+    col_track = imgui.get_color_u32_rgba(0,0,0,0.2)
+    col_grab = imgui.get_color_u32_rgba(1,1,1, 0.5)
+    col_border = imgui.get_color_u32(imgui.COLOR_BORDER)
+
+    # Early clamps & removals
+    view_height = max(0.0, float(view_height))
+    view_width = max(0.0, float(view_width))
+    content_height = max(0.0, float(content_height))
+    scrollbar_width = max(0.0, float(scrollbar_width))
+
+    max_scroll = max(0.0, content_height - view_height)
+    scroll_offset = float(max(0.0, min(scroll_offset, max_scroll)))
+
+    # Anchor the container at the current cursor position in screen space
+    origin_x, origin_y = (left, top)
+
+    # Track geometry (stick it to the right edge of the container)
+    track_w = min(scrollbar_width, view_width)
+    track_h = view_height
+    track_x1 = origin_x + (view_width - track_w)
+    track_y1 = origin_y
+    track_x2 = track_x1 + track_w
+    track_y2 = track_y1 + track_h
+
+    # Compute grab size & position
+    if content_height <= 0.0 or track_h <= 0.0:
+        grab_h = 0.0
+        t = 0.0
+    else:
+        # Proportional grab with a minimum; cap to track height.
+        ratio = view_height / content_height if content_height > 0.0 else 1.0
+        grab_h = max(min_grab_size, ratio * track_h)
+        grab_h = min(grab_h, track_h)
+
+        # Normalized scroll position -> grab position
+        travel = max(0.0, track_h - grab_h)
+        t = 0.0 if max_scroll == 0.0 else (scroll_offset / max_scroll)
+        t = max(0.0, min(1.0, t))  # clamp just in case
+
+    grab_y1 = track_y1 + (max(0.0, track_h - grab_h) * t)
+    grab_y2 = grab_y1 + grab_h
+
+    # Inner padding for better visuals
+    inner_x1 = track_x1 + pad
+    inner_x2 = track_x2 - pad
+    inner_y1 = track_y1 + pad
+    inner_y2 = track_y2 - pad
+    grab_x1 = inner_x1
+    grab_x2 = inner_x2
+    grab_y1 = max(inner_y1, min(grab_y1, inner_y2 - (grab_y2 - grab_y1)))
+    grab_y2 = grab_y1 + max(0.0, min(grab_h, inner_y2 - inner_y1))
+
+    # Draw
+    dl = imgui.get_window_draw_list()
+    # Track
+    dl.add_rect_filled(track_x1, track_y1, track_x2, track_y2, col_track, rounding)
+    dl.add_rect(track_x1, track_y1, track_x2, track_y2, col_border, rounding)
+    # Grab
+    if grab_y2 > grab_y1 and grab_x2 > grab_x1:
+        dl.add_rect_filled(grab_x1, grab_y1, grab_x2, grab_y2, col_grab, rounding)
+        dl.add_rect(grab_x1, grab_y1, grab_x2, grab_y2, col_border, rounding)
+
+    return {
+        "offset": scroll_offset,
+        "track_min": (track_x1, track_y1),
+        "track_max": (track_x2, track_y2),
+        "grab_min": (grab_x1, grab_y1),
+        "grab_max": (grab_x2, grab_y2),
+        "visible": content_height > view_height
+    }
+
+
 def core_header(func, outer_func, render_func, input_value=None, melty_window=False, auto_resize=True, collection=None, key=None, indent_size=10, depth=0, draw_state=None,
                 window_stack=None, is_tree=True, is_window=False, spacing=Melty.spacing, padding=Melty.padding, show_name=True,
                 show_header=True, show_bg=True, unique=0, name="", style_manager=None, global_style=None, parent_show_add_delete=True,
@@ -1132,6 +1222,9 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                     func_changed, func_return_val = func(**next_kwargs)
 
                     draw_list.pop_clip_rect()
+
+                    draw_vertical_scrollbar(draw_state._content_height, view_height=height, view_width=width,
+                                            scroll_offset=0, scrollbar_width=8.0, left=left, top=top)
 
                 else:
                     draw_list = imgui.get_window_draw_list()
@@ -1366,6 +1459,8 @@ def draw_collection(input_value, draw_state, depth, style_manager,
     drew_any = False
     collection_spacing = 0
     all_meta = []
+    content_height = 0.0
+    start_cursor = imgui.get_cursor_pos()[1]
     for idx, key in enumerate(keys):
         if isinstance(collection, dict) and key not in collection:
             continue
@@ -1478,12 +1573,16 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
             changed |= item_changed
             drew_any = True
+
+            content_height = max(content_height, imgui.get_cursor_pos()[1] - start_cursor)
         except Exception as e:
             print(f"Error rendering field '{key_str}' of {type(input_value).__name__}: {e}")
             print_colored_traceback(e)
         finally:
             if prev_tint is not None:
                 style_manager.set_imgui_tint(*prev_tint)
+
+    draw_state._content_height = content_height
 
     # ----------------- flow spacing -----------
     last_key = list(keys)[-1] if len(keys) > 0 else None
@@ -1507,7 +1606,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
     return changed, input_value
 
 
-@render_func
+@render_func(use_cache=True)
 def draw_bg(left=0, top=0, width=20, height=20, depth=0,
             global_style=None, outline=True,
             style_manager=None, tint=None, outline_tint=None, selected=False,
