@@ -1012,10 +1012,13 @@ def draw_vertical_scrollbar(content_height: float,
 
 def core_header(func, outer_func, render_func, input_value=None, melty_window=False, auto_resize=True, collection=None, key=None, indent_size=10, depth=0, draw_state=None,
                 window_stack=None, is_tree=True, is_window=False, spacing=Melty.spacing, padding=Melty.padding, show_name=True,
+                on_scroll=None,
                 show_header=True, show_bg=True, unique=0, name="", style_manager=None, global_style=None, parent_show_add_delete=True,
                 selected_views=None, on_drag=False, on_drag_up=False, do_flow=True, melty=None, enable_flow=True, header_same_line=False,
                 on_hover=False, next_kwargs=None, meta=None, on_same_line=False, y_offset=0, width=None, min_width=1, enable_scroll=True, **kwargs):
 
+        if on_scroll is not None:
+            print(on_scroll)
 
         initial_cursor_pos = imgui.get_cursor_screen_pos()
         if window_stack is None or len(window_stack) == 0:

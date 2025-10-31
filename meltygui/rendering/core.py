@@ -120,6 +120,13 @@ def handle_actions(melty, unique, draw_state, func=None):
             if unique not in melty.triggered_actions:
                 melty.mark_event(unique, 0, ActionType.HOVERED)
 
+        # Handle scroll
+        if draw_state.id in Melty.hovered_drawstate:
+            scroll_y = imgui.get_io().mouse_wheel
+            if scroll_y != 0.0:
+                print("Scroll detected:", scroll_y)
+                melty.mark_event(unique, scroll_y, ActionType.SCROLL, value=scroll_y)
+
         is_hovered = draw_state.is_hovered()
         draw_state.hovered = False
         draw_state.hotkey_receiver = False

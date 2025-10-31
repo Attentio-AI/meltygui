@@ -29,11 +29,13 @@ class ActionType(Enum):
     DRAG = 'on_drag'
     DRAG_UP = 'on_drag_up'
     HOVERED = 'on_hover'
+    SCROLL = 'on_scroll'
 
 class MouseAction:
-    def __init__(self, action_type: ActionType, button=0):
+    def __init__(self, action_type: ActionType, button=0, value=None):
         self.action_type = action_type
         self.button = button
+        self.value = value
 
 class OperationType(Enum):
     COPY = 'copy'
@@ -636,7 +638,7 @@ class MeltyState:
             if action.action_type == event_type and action.button == mouse_btn:
                 return True
         return False
-    def mark_event(self, unique, mouse_btn, event_type: ActionType):
+    def mark_event(self, unique, mouse_btn, event_type: ActionType, value=None):
         self.triggered_actions[unique] = MouseAction(event_type, mouse_btn)
 
     def to_apply(self, action: CollectionAction):
