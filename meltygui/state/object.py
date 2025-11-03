@@ -71,10 +71,6 @@ class DictConversion(metaclass=FieldMeta):
             ClassUtility().initialize_class_names(class_root)
 
         # We read root without mutating the huge input dict
-        if object_dict is None:
-            print("Warning: object_dict is None")
-            return None
-
         root_id = object_dict.get("root", None)
         if root_id is None:
             print("Warning: no root id found in object_dict")
