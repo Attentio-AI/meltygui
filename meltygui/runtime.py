@@ -632,6 +632,14 @@ class MeltyState:
         self.actions_to_apply = []
         self.items_to_delete = []
 
+    def check_event_value(self, unique, mouse_btn, event_type):
+        if unique in self.triggered_actions:
+            action = self.triggered_actions[unique]
+            if action.action_type == event_type:
+                return action.value
+        return None
+
+
     def check_event(self, unique, mouse_btn, event_type):
         if unique in self.triggered_actions:
             action = self.triggered_actions[unique]
@@ -639,7 +647,7 @@ class MeltyState:
                 return True
         return False
     def mark_event(self, unique, mouse_btn, event_type: ActionType, value=None):
-        self.triggered_actions[unique] = MouseAction(event_type, mouse_btn)
+        self.triggered_actions[unique] = MouseAction(event_type, mouse_btn, value)
 
     def to_apply(self, action: CollectionAction):
         self.actions_to_apply.append(action)

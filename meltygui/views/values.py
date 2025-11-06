@@ -1018,7 +1018,23 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                 on_hover=False, next_kwargs=None, meta=None, on_same_line=False, y_offset=0, width=None, min_width=1, enable_scroll=True, **kwargs):
 
         if on_scroll is not None:
-            print(on_scroll)
+            scroll_offset = draw_state.scroll_offset
+            current_x = scroll_offset[0]
+            current_y = scroll_offset[1]
+
+            direction = -1
+            glfw_scroll_speed = 60
+            scroll_speed = 50.0
+
+            new_offset_y = current_y + on_scroll * direction * scroll_speed
+
+            min_scroll_y = 0
+            max_scroll_y = max(0, draw_state._content_height - draw_state.height)
+            draw_state.scroll_offset = (current_x,
+                                        max(min_scroll_y, min(new_offset_y, max_scroll_y)))
+
+
+            print(draw_state.scroll_offset)
 
         initial_cursor_pos = imgui.get_cursor_screen_pos()
         if window_stack is None or len(window_stack) == 0:
@@ -1222,12 +1238,18 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
 
                     draw_list.push_clip_rect(*rect)
 
+                    current_cursor = imgui.get_cursor_screen_pos()
+                    imgui.set_cursor_screen_pos((current_cursor[0], current_cursor[1] - draw_state.scroll_offset[1]))
+
                     func_changed, func_return_val = func(**next_kwargs)
+
+                    current_cursor = imgui.get_cursor_screen_pos()
+                    imgui.set_cursor_screen_pos((current_cursor[0], current_cursor[1] + draw_state.scroll_offset[1]))
 
                     draw_list.pop_clip_rect()
 
                     draw_vertical_scrollbar(draw_state._content_height, view_height=height, view_width=width,
-                                            scroll_offset=0, scrollbar_width=8.0, left=left, top=top)
+                                            scroll_offset=draw_state.scroll_offset[1], scrollbar_width=8.0, left=left, top=top)
 
                 else:
                     draw_list = imgui.get_window_draw_list()
@@ -1368,6 +1390,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             redo_stack(unique)
             #
             # imgui.set_cursor_screen_pos((current_cursor[0],
+            # imgui.set_cursor_screen_pos((current_cursor[0],
             #                              current_cursor[1]))
 
             Melty.invalidate(parent=collection, attr_name=key, value=input_value)
@@ -1464,6 +1487,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
     all_meta = []
     content_height = 0.0
     start_cursor = imgui.get_cursor_pos()[1]
+
     for idx, key in enumerate(keys):
         if isinstance(collection, dict) and key not in collection:
             continue

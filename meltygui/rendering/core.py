@@ -124,8 +124,8 @@ def handle_actions(melty, unique, draw_state, func=None):
         if draw_state.id in Melty.hovered_drawstate:
             scroll_y = imgui.get_io().mouse_wheel
             if scroll_y != 0.0:
-                print("Scroll detected:", scroll_y)
-                melty.mark_event(unique, scroll_y, ActionType.SCROLL, value=scroll_y)
+                melty.mark_event(unique, scroll_y,
+                                 ActionType.SCROLL, value=scroll_y)
 
         is_hovered = draw_state.is_hovered()
         draw_state.hovered = False
@@ -1029,6 +1029,8 @@ def render_func(*args, **o_kwargs):
             set_default("on_drag", melty.check_event(unique, 0, ActionType.DRAG))
             set_default("on_drag_up", melty.check_event(unique, 0, ActionType.DRAG_UP))
             set_default("on_hover", melty.check_event(unique, 0, ActionType.HOVERED))
+            set_default("on_scroll", melty.check_event_value(unique, -1, ActionType.SCROLL))
+
             set_default("on_action", melty.triggered_actions.get(unique, None))
             set_default("func", func)
             set_default("render_func", wrapper)
