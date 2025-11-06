@@ -1196,7 +1196,11 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                 use_child = (not auto_resize and enable_scroll)
                 draw_state.use_child = use_child
 
-                if use_child:
+                has_size = (draw_state.width is not None and draw_state.height is not None and
+                            draw_state.left is not None and draw_state.top is not None)
+                needs_scroll = draw_state._content_height > draw_state.height if draw_state.height is not None else False
+
+                if use_child and has_size and needs_scroll:
                     #
                     # child_w = draw_state.width
                     # child_h = draw_state.height
@@ -1230,26 +1234,32 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                     if Melty.channels_split and show_bg:
                         draw_list.channels_set_current(min(Melty.max_depth - 1, depth))
 
-                    left = draw_state.left
-                    top = draw_state.top
-                    width = draw_state.width
-                    height = draw_state.height
-                    rect = (left, top, left + width, top + height)
+                    d_left = draw_state.left
+                    d_top = draw_state.top
+                    d_width = draw_state.width
+                    d_height = draw_state.height
+
+                    rect = (d_left, d_top - header_height, d_left + d_width, d_top + d_height)
 
                     draw_list.push_clip_rect(*rect)
 
                     current_cursor = imgui.get_cursor_screen_pos()
                     imgui.set_cursor_screen_pos((current_cursor[0], current_cursor[1] - draw_state.scroll_offset[1]))
+                    inner_start_y = imgui.get_cursor_screen_pos()[1]
 
                     func_changed, func_return_val = func(**next_kwargs)
+
+                    inner_end_y = imgui.get_cursor_screen_pos()[1]
+                    draw_state._content_height = inner_end_y - inner_start_y
 
                     current_cursor = imgui.get_cursor_screen_pos()
                     imgui.set_cursor_screen_pos((current_cursor[0], current_cursor[1] + draw_state.scroll_offset[1]))
 
                     draw_list.pop_clip_rect()
 
-                    draw_vertical_scrollbar(draw_state._content_height, view_height=height, view_width=width,
-                                            scroll_offset=draw_state.scroll_offset[1], scrollbar_width=8.0, left=left, top=top)
+                    draw_vertical_scrollbar(draw_state._content_height, view_height=d_height, view_width=d_width,
+                                            scroll_offset=draw_state.scroll_offset[1], scrollbar_width=8.0, left=d_left,
+                                            top=d_top)
 
                 else:
                     draw_list = imgui.get_window_draw_list()

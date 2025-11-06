@@ -602,7 +602,12 @@ class MeltyState:
     def __init__(self):
         self.hover_stack = []
         self.hotkey_stack = []
+        self.scroll_stack = []
         self.triggered_actions = {}
+
+        self.top_event_depth = {}
+        self.top_event = {}
+
         self.dragged_item = None
         self.max_distance = 200
 
@@ -646,8 +651,13 @@ class MeltyState:
             if action.action_type == event_type and action.button == mouse_btn:
                 return True
         return False
+
     def mark_event(self, unique, mouse_btn, event_type: ActionType, value=None):
         self.triggered_actions[unique] = MouseAction(event_type, mouse_btn, value)
+        depth = Melty.depth
+        if event_type not in self.top_event_depth or depth < self.top_event_depth[event_type]:
+            self.top_event_depth[event_type] = depth
+            self.top_event[event_type] = unique
 
     def to_apply(self, action: CollectionAction):
         self.actions_to_apply.append(action)

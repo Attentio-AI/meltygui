@@ -35,7 +35,7 @@ _floating_text_prev_frame_heights = {}  # Store max label height per line from p
 
 
 def handle_actions(melty, unique, draw_state, func=None):
-    if Melty.is_window_enabled():
+    if Melty.is_window_enabled() and imgui.is_window_hovered():
         for m_btn in [0, 1, 2]:
             btn_state = draw_state.mouse_btn_state[m_btn]
 
@@ -47,7 +47,7 @@ def handle_actions(melty, unique, draw_state, func=None):
             btn_state.clicked = False
 
             # Mouse down from glfw
-            global_mouse_down = imgui.get_io().mouse_down[m_btn] if m_btn < len(imgui.get_io().mouse_down) else False
+            global_mouse_down = imgui.is_mouse_down(m_btn)
             mouse_pos = imgui.get_mouse_pos()
 
             if btn_state.drag_released:
@@ -121,7 +121,8 @@ def handle_actions(melty, unique, draw_state, func=None):
                 melty.mark_event(unique, 0, ActionType.HOVERED)
 
         # Handle scroll
-        if draw_state.id in Melty.hovered_drawstate:
+        was_scrolled = False
+        if draw_state._content_height > draw_state.height:
             scroll_y = imgui.get_io().mouse_wheel
             if scroll_y != 0.0:
                 melty.mark_event(unique, scroll_y,
@@ -132,6 +133,7 @@ def handle_actions(melty, unique, draw_state, func=None):
         draw_state.hotkey_receiver = False
         if is_hovered:
             melty.hover_stack.append(unique)
+
 
         if is_hovered and func in Melty.hotkey_registry:
             melty.hotkey_stack.append(unique)
@@ -1029,7 +1031,11 @@ def render_func(*args, **o_kwargs):
             set_default("on_drag", melty.check_event(unique, 0, ActionType.DRAG))
             set_default("on_drag_up", melty.check_event(unique, 0, ActionType.DRAG_UP))
             set_default("on_hover", melty.check_event(unique, 0, ActionType.HOVERED))
-            set_default("on_scroll", melty.check_event_value(unique, -1, ActionType.SCROLL))
+
+            if melty.top_event.get(ActionType.SCROLL, None) == unique:
+                set_default("on_scroll", melty.check_event_value(unique, -1, ActionType.SCROLL))
+                melty.top_event.pop(ActionType.SCROLL, None)
+                melty.top_event_depth.pop(ActionType.SCROLL, None)
 
             set_default("on_action", melty.triggered_actions.get(unique, None))
             set_default("func", func)
@@ -1220,6 +1226,7 @@ def render_func(*args, **o_kwargs):
                 Melty.input_value_stack.pop()
 
                 melty.triggered_actions.pop(unique, None)
+
                 handle_actions(melty, unique, draw_state, func)
 
                 hovered_draw_state = None
@@ -1244,6 +1251,7 @@ def render_func(*args, **o_kwargs):
                             # Melty.invalidate(hovered_draw_state)
 
                     melty.hover_stack = []
+
                     melty.hotkey_stack = []
                     melty.unique_stack = []
                     Melty.draw_state_stack = []
