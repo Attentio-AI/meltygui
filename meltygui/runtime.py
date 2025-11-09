@@ -669,6 +669,7 @@ class MeltyState:
 class Melty:
     windows = []
     glfw_window = None
+    clip_stack = []
 
     channels_split = False
     is_melty_window = False
@@ -719,6 +720,26 @@ class Melty:
     all_dirty = False
     hovered_drawstate = set()
     hovered_drawstate_pending = set()
+
+    @classmethod
+    def push_clip(cls, rect):
+        draw_list = imgui.get_window_draw_list()
+        draw_list.push_clip_rect(*rect)
+        cls.clip_stack.append(rect)
+
+    @classmethod
+    def pop_clip(cls):
+        if len(cls.clip_stack) == 0:
+            return
+        draw_list = imgui.get_window_draw_list()
+        draw_list.pop_clip_rect()
+        cls.clip_stack.pop()
+
+    @classmethod
+    def current_clip(cls):
+        if len(cls.clip_stack) == 0:
+            return None
+        return cls.clip_stack[-1]
 
     @classmethod
     def invalidate(cls, parent=None, value=None, attr_name=None):

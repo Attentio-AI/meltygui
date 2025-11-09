@@ -611,32 +611,39 @@ class TileCacheMasked:
 
     # ----- Helpers for transforms & clipping -----
     def _get_current_clip_rect_screen(self) -> Tuple[float, float, float, float]:
-        dl = imgui.get_window_draw_list()
-        if hasattr(dl, "get_clip_rect_min") and hasattr(dl, "get_clip_rect_max"):
-            minx, miny = dl.get_clip_rect_min()
-            maxx, maxy = dl.get_clip_rect_max()
-            return (minx, miny, maxx, maxy)
+        # dl = imgui.get_window_draw_list()
+        # if hasattr(dl, "get_clip_rect_min") and hasattr(dl, "get_clip_rect_max"):
+        #     minx, miny = dl.get_clip_rect_min()
+        #     maxx, maxy = dl.get_clip_rect_max()
+        #     return (minx, miny, maxx, maxy)
+        #
+        # wx, wy = imgui.get_window_position()
+        # crx0, cry0 = imgui.get_window_content_region_min()
+        # crx1, cry1 = imgui.get_window_content_region_max()
+        # sx = imgui.get_scroll_x()
+        # sy = imgui.get_scroll_y()
+        # x0 = wx + crx0 - sx
+        # y0 = wy + cry0 - sy
+        # x1 = wx + crx1 - sx
+        # y1 = wy + cry1 - sy
 
-        wx, wy = imgui.get_window_position()
-        crx0, cry0 = imgui.get_window_content_region_min()
-        crx1, cry1 = imgui.get_window_content_region_max()
-        sx = imgui.get_scroll_x()
-        sy = imgui.get_scroll_y()
-        x0 = wx + crx0 - sx
-        y0 = wy + cry0 - sy
-        x1 = wx + crx1 - sx
-        y1 = wy + cry1 - sy
-        return (x0, y0, x1, y1)
+        from src.lsd.gl_gui.melty import Melty
+        clip = Melty.current_clip()
+
+        return clip
 
     @staticmethod
     def _clip_rect(x: float, y: float, w: float, h: float, clip_xyxy: Tuple[float, float, float, float]
                    ) -> Optional[Tuple[float, float, float, float]]:
+
+        if clip_xyxy is None:
+            return None
         cx0, cy0, cx1, cy1 = clip_xyxy
-        x0 = max(x, cx0);
+        x0 = max(x, cx0)
         y0 = max(y, cy0)
-        x1 = min(x + w, cx1);
+        x1 = min(x + w, cx1)
         y1 = min(y + h, cy1)
-        if x1 <= x0 or y1 <= y0:
+        if x1 <= x0 and y1 <= y0:
             return None
         return (x0, y0, x1 - x0, y1 - y0)
 
@@ -772,11 +779,14 @@ class TileCacheMasked:
             w, h = ctx.size
             clip = self._get_current_clip_rect_screen()
             clipped = self._clip_rect(x, y, w, h, clip)
+            # clipped = False
             if clipped:
                 cx, cy, cw, ch = clipped
-                self.mask_mark_view(ctx.layer, cx, cy, cw, ch, ctx.key)
+                if cw > 0 and ch > 0:
+                    self.mask_mark_view(ctx.layer, cx, cy, cw, ch, ctx.key)
             else:
-                self.mask_mark_view(ctx.layer, x, y, w, h, ctx.key)
+                if w > 0 and h > 0:
+                    self.mask_mark_view(ctx.layer, x, y, w, h, ctx.key)
 
         # If disabled or we used cached image, don't enqueue copy
         if not self.enabled or ctx.drew_cached:

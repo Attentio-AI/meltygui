@@ -169,6 +169,7 @@ def draw(vis):
     Melty.hovered_drawstate_pending = set()
     # Melty.hovered_drawstate = set()
 
+    Melty.clip_stack = []
 
     fb_w, fb_h = map(int, imgui.get_io().display_size)  # or your true GL FB size if HiDPI
     Melty.cache.mask_begin_frame((fb_w, fb_h))
@@ -1203,7 +1204,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
 
                     rect = (d_left, d_top - header_height, d_left + d_width, d_top + d_height)
 
-                    draw_list.push_clip_rect(*rect)
+                    Melty.push_clip(rect)
 
                     current_cursor = imgui.get_cursor_screen_pos()
                     imgui.set_cursor_screen_pos((current_cursor[0], current_cursor[1] - draw_state.scroll_offset[1]))
@@ -1217,7 +1218,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                     current_cursor = imgui.get_cursor_screen_pos()
                     imgui.set_cursor_screen_pos((current_cursor[0], current_cursor[1] + draw_state.scroll_offset[1]))
 
-                    draw_list.pop_clip_rect()
+                    Melty.pop_clip()
 
                     draw_vertical_scrollbar(draw_state._content_height, view_height=d_height, view_width=d_width,
                                             scroll_offset=draw_state.scroll_offset[1], scrollbar_width=8.0, left=d_left,
