@@ -681,7 +681,7 @@ class TileCacheMasked:
         imgui.set_cursor_screen_pos((snap_int(x), snap_int(y)))
 
         # Layer derived from nesting depth; reserve 0 for background.
-        layer = max(self._LAYER_MIN, min(self._LAYER_MAX, len(self._stack) + 1))
+        layer = max(self._LAYER_MIN, min(self._LAYER_MAX, layer + 1))
 
         parent_ctx = self._stack[-1] if self._stack else None
         rkey = self._resolve_key(key)

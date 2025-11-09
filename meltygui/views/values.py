@@ -34,7 +34,7 @@ from collections.abc import MutableMapping
 from src.lsd.gl_gui.view.core_views.codec_register import registry as FILE_CODECS
 
 
-@render_wrapper(wraps=render_func, use_cache=True)
+@render_wrapper(wraps=render_func)
 def with_header_minimal(func, *args, **o_kwargs):
     def wrapper(next_kwargs=None, **kwargs):
         annotation = annotation_track(*args, wrapper=wrapper, **o_kwargs)
@@ -69,7 +69,6 @@ def with_header(func, *args, **o_kwargs):
     setattr(wrapper, '__name__', f"{func.__name__} --- with_header ")
 
     return wrapper
-
 
 source = "x = foo(val=1)\nprint(x)\nsome_list=[0, 1, 2, 3]\n"
 module = cst.parse_module(source)
@@ -632,7 +631,7 @@ def draw_melty_window(input_value, window_stack=None, style_manager=None,
     return return_val
 
 
-@render_func(use_cache=False)
+@render_func(use_cache=True)
 def draw_window(input_value, window_stack=None, style_manager=None,
                 indent_size=0, name="", draw_state=None, unique=0, *args, **kwargs):
     kwargs['input_value'] = input_value
@@ -1358,6 +1357,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
 
             imgui.set_cursor_screen_pos((pos_x,
                                          pos_y))
+            next_kwargs['z_pos'] = Melty.depth + 7
             func_changed, func_return_val = render_func(**next_kwargs)
 
 
@@ -1615,7 +1615,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
     return changed, input_value
 
 
-@render_func(use_cache=True)
+@render_func(use_cache=False)
 def draw_bg(left=0, top=0, width=20, height=20, depth=0,
             global_style=None, outline=True,
             style_manager=None, tint=None, outline_tint=None, selected=False,
@@ -1635,11 +1635,11 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
 
     if top == 0:
         top = imgui.get_cursor_screen_pos()[1]
-    right =  left + width + rounding
+    right =  left + width
     bottom =  top + height + rounding
 
-    rect = (snap_int(left), snap_int(top), snap_int(right), snap_int(bottom))
-    rect_outline = (left - 1, top - 1, right + 1, bottom + 1)
+    rect = (snap_int(left) + 1, snap_int(top) + 1, snap_int(right) - 1, snap_int(bottom))
+    rect_outline = (snap_int(left), snap_int(top), snap_int(right), snap_int(bottom) + 1)
     # rounding
     rounding = min(current_indent_px(), rounding)
 
@@ -1687,7 +1687,7 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
 
         if outline_tint is not None:
             outline_color = imgui.get_color_u32_rgba(*outline_tint)
-        imgui.get_window_draw_list().add_rect(*rect_outline, col=outline_color, rounding=rounding, thickness=2.0)
+        imgui.get_window_draw_list().add_rect(*rect_outline, col=outline_color, rounding=rounding, thickness=1.0)
     bg_color = (style_manager.
                 make_color_style_value(input=bg_style, value=max(0, dynamic_value) + hovered_offset))
 
@@ -1940,7 +1940,7 @@ def render_profiler_time(input_value=None, brief=False, style_manager=None,
 
 
 
-@render_func
+@render_func(use_cache=True)
 @listens_for(Hotkey(glfw.KEY_F, "on_search", KeyMod.CTRL))
 @listens_for(Hotkey(glfw.KEY_MINUS, "on_collapse", KeyMod.CTRL, scoped=False))
 @listens_for(Hotkey(glfw.KEY_EQUAL, "on_expand", KeyMod.CTRL, scoped=False))
@@ -2114,7 +2114,7 @@ def draw_tuple(input_value: tuple, unique):
 
     return changed, input_value
 
-@with_header_minimal(is_default_for=float, use_cache=True)
+@with_header_minimal(is_default_for=float)
 def draw_float(input_value:float, min_value=-100.0, max_value=100.0, speed=0.01, unique=0, draw_state=None):
     changed, value = imgui.drag_float("##float", input_value,
                                       change_speed=speed,
