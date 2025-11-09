@@ -842,8 +842,6 @@ def render_func(*args, **o_kwargs):
         draw_state._input_value = input_value
         draw_state._has_popup = kwargs.get("has_popup", False)
 
-        draw_state.bounds_left = snap_int(start_cursor[0])
-        draw_state.bounds_top = snap_int(start_cursor[1])
 
         cursor_pos = imgui.get_cursor_pos()
 
@@ -1105,6 +1103,8 @@ def render_func(*args, **o_kwargs):
 
                 # if draw_state.width is None:
 
+                draw_state.bounds_left = snap_int(start_cursor[0])
+                draw_state.bounds_top = snap_int(start_cursor[1])
                 if not kwargs.get("on_drag", False):
                     #
                     # draw_state.window_pos_left = snap_int(start_cursor[0])

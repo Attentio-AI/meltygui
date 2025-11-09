@@ -205,7 +205,8 @@ class DrawState(DictConversion):
             return True
 
         if self.is_glfw_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
-            return True
+            if imgui.is_window_hovered():
+                return True
         return False
 
     def is_bounding_hovered(self):
