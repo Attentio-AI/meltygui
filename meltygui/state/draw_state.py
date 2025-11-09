@@ -67,7 +67,7 @@ class DragMode(Enum):
          "drag_released", "clicked", "dragged", "render_time", "imgui_is_toggled_open", "z_pos",
          "is_active", "is_focused", "scroll_offset", "drag_window_pos_x", "drag_window_pos_y", "drag_mode")
 @exclude("render_time", "bounds_left", "bounds_top", "_input_value", "width", "flow_spacing",
-         "hovered", "_did_use_cache", "height", "top", "left", "delete_countdown", "z_pos", "scrolled")
+         "hovered", "_did_use_cache", "height", "top", "left", "delete_countdown", "z_pos", "scrolled", "is_hovered_last")
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
 

@@ -1349,18 +1349,27 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             #                              initial_cursor_pos[1]))
 
             next_kwargs['enable_flow'] = False
-            tmp_undo_stack(unique)
-            # undo_child_stack(unique)
+            # tmp_undo_stack(unique)
 
-            queue_melty_window(window_func=render_func, input_value=input_value,
-                                   window_stack=window_stack, draw_state=draw_state,
-                                   pos_x=0, pos_y=0, height=draw_state.height,
-                                   window_pos=(pos_x, pos_y),
-                                   width=draw_state.width, indent_size=indent_size,
-                                   style_manager=style_manager, name=name, decorations=False,
-                                   focus=True, unique=unique, enable=False, args=(), kwargs=next_kwargs)
+            # undo_child_stack(unique)
+            # next_kwargs["window_pos"] = (pos_x, pos_y)
+
+            start_cursor = imgui.get_cursor_screen_pos()
+
+            imgui.set_cursor_screen_pos((pos_x,
+                                         pos_y))
+            func_changed, func_return_val = render_func(**next_kwargs)
+
+
+            # queue_melty_window(window_func=render_func, input_value=input_value,
+            #                        window_stack=window_stack, draw_state=draw_state,
+            #                        pos_x=0, pos_y=0, height=draw_state.height,
+            #                        window_pos=(pos_x, pos_y),
+            #                        width=draw_state.width, indent_size=indent_size,
+            #                        style_manager=style_manager, name=name, decorations=False,
+            #                        focus=True, unique=unique, enable=True, args=(), kwargs=next_kwargs)
             # redo_child_stack(unique)
-            redo_stack(unique)
+            # redo_stack(unique)
             #
             # imgui.set_cursor_screen_pos((current_cursor[0],
             # imgui.set_cursor_screen_pos((current_cursor[0],
@@ -1867,6 +1876,7 @@ def draw_header(input_value=None, name="", suffix="", collection=None, display_n
         tint_changed, tint_value = draw_tuple(input_value.tint, suffix=suffix, show_header=False)
         if tint_changed:
             input_value.tint = tint_value
+            Melty.cache.invalidate_by_obj(input_value, name)
         same_line()
 
     if show_add_delete and isinstance(input_value, (list, dict)) or hasattr(input_value, "__dict__"):
