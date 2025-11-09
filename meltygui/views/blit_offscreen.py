@@ -705,12 +705,14 @@ class TileCacheMasked:
 
         imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
         imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
+        from src.lsd.gl_gui.view.core_views.core_render import push_id
+
+        push_id(f"tilecache_{draw_state.unique}{id(draw_state)}")  # UI id: keep based on caller-provided key
+
         from src.lsd.gl_gui.view.core_views.core_render import begin_group
         begin_group()
         imgui.pop_style_var(2)
 
-        from src.lsd.gl_gui.view.core_views.core_render import push_id
-        push_id(f"tilecache_{key}")  # UI id: keep based on caller-provided key
 
         # Try to draw cached if we have a clean tile sized correctly
         if size is not None and self.enabled:
@@ -718,11 +720,11 @@ class TileCacheMasked:
             if t and (t.size == (size[0], size[1])) and (not self._is_dirty(t)) and (rkey not in self._cancelled_keys):
                 imgui.image(t.tex, snap_int(size[0]), snap_int(size[1]), uv0=(0.0, 1.0), uv1=(1.0, 0.0),
                             tint_color=(1, 1, 1, 1))
-                draw_state.imgui_is_active = imgui.is_item_active()
-                draw_state.imgui_is_focused = imgui.is_item_focused()
-                draw_state.imgui_is_edited = imgui.is_item_edited()
-                draw_state.imgui_scroll_y = imgui.get_scroll_y()
-                draw_state.imgui_is_hovered = imgui.is_item_hovered()
+                # draw_state.imgui_is_active = imgui.is_item_active()
+                # draw_state.imgui_is_focused = imgui.is_item_focused()
+                # draw_state.imgui_is_edited = imgui.is_item_edited()
+                # draw_state.imgui_scroll_y = imgui.get_scroll_y()
+                # draw_state.imgui_is_hovered = imgui.is_item_hovered()
 
                 self._stack.append(
                     _Ctx(draw_state=draw_state, key=rkey, pos=(x, y), size=size, layer=layer, drew_cached=True))
@@ -745,6 +747,15 @@ class TileCacheMasked:
         pop_id()
         from src.lsd.gl_gui.view.core_views.core_render import end_group
         end_group()
+
+        # ctx.draw_state.imgui_is_edited = imgui.is_item_edited()
+        # ctx.draw_state.imgui_is_active = imgui.is_item_active()
+        # ctx.draw_state.imgui_is_focused = imgui.is_item_focused()
+        # ctx.draw_state.imgui_scroll_y = imgui.get_scroll_y()
+        # ctx.draw_state.imgui_is_hovered = imgui.is_item_hovered()
+        # # if ctx.draw_state._has_popup:
+        # ctx.draw_state.imgui_popover_open = (
+        #     imgui.is_popup_open("", flags=imgui.POPUP_ANY_POPUP))
 
         if not self._stack:
             return

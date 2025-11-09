@@ -73,6 +73,7 @@ class DrawState(DictConversion):
 
     def __init__(self):
         super().__init__()
+        self._queued_windows = []
         self.drag_window_pos_x = None
         self.drag_window_pos_y = None
         # Imgui state mirror
@@ -83,6 +84,7 @@ class DrawState(DictConversion):
         self.imgui_is_focused = False
         self.imgui_is_hovered = False
         self.imgui_is_edited = False
+        self.imgui_popover_open = False
         self.imgui_is_item_activated = False
         self.cst = None
         self.window_pos = None
@@ -137,6 +139,7 @@ class DrawState(DictConversion):
         self.screen_pos = (0, 0)
         self.drag_delta = (0, 0)
         self._input_value = None
+        self._has_popup = False
         self.is_hovered_last = False
 
         self.bounds_left = None
@@ -198,16 +201,25 @@ class DrawState(DictConversion):
         if self.left is None or self.top is None or self.width is None or self.height is None:
             return False
         rect = (self.left, self.top - 5, self.width, self.height + 10)
+        if self.imgui_is_active:
+            return True
+
         if self.is_glfw_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
             return True
         return False
 
     def is_bounding_hovered(self):
-        if self.bounds_top is None or self.bounds_left is None or self.bounding_width is None or self.bounding_height is None:
+        if self.bounds_top is None or self.bounds_left is None or self.width is None or self.height is None:
             return False
-        rect = (self.bounds_left, self.bounds_top + 5, self.bounding_width, self.bounding_height + 10)
-        if self.is_glfw_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
+        rect = (self.bounds_left, self.bounds_top, self.width, self.height + 10)
+
+        if (self.imgui_is_active or self.imgui_is_hovered or self.imgui_is_edited or
+                self.imgui_is_item_activated or self.imgui_popover_open):
             return True
+
+        if self.is_glfw_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
+            if imgui.is_window_hovered() or Melty.imgui_popup_open:
+                return True
         return False
 
 

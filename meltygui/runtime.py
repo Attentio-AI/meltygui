@@ -637,6 +637,7 @@ class MeltyState:
         self.actions_to_apply = []
         self.items_to_delete = []
 
+
     def check_event_value(self, unique, mouse_btn, event_type):
         if unique in self.triggered_actions:
             action = self.triggered_actions[unique]
@@ -681,6 +682,8 @@ class Melty:
     current_indent = 0
     indent_count = 0
     unindent_count = 0
+
+    imgui_popup_open = False
 
     max_indent = 0
     hotkey_registry = {}

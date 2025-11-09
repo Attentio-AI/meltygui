@@ -23,8 +23,7 @@ from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
 from src.lsd.gl_gui.view.core_views.core_decoration import hotkey, global_hotkeys
 from src.lsd.gl_gui.view.core_views.core_render import render_func, tmp_undo_stack, redo_stack, push_id, pop_id, ui_id, \
-    render_wrapper, annotation_track, listens_for, get_draw_state, clear_floating_text_cache, handle_actions, \
-    begin_child, end_child, undo_child_stack, redo_child_stack, begin_window, end_window
+    render_wrapper, annotation_track, listens_for, get_draw_state, clear_floating_text_cache, handle_actions, begin_window, end_window
 from src.lsd.gl_gui.model.core_model.new_core_model import KeyMod, Hotkey, DragMode
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
 import libcst as cst
@@ -515,6 +514,9 @@ def core_draw_melty_window(input_value, *args, **kwargs):
 
 def queue_melty_window(input_value, *args, **kwargs):
     kwargs['z_pos'] = Melty.depth + 6
+    draw_state = kwargs.get('draw_state', None)
+    if draw_state is not None:
+        Melty.cache.invalidate_by_obj(input_value)
     Melty.windows.append((input_value, args, kwargs))
 
     return False, input_value
@@ -650,45 +652,6 @@ def draw_window(input_value, window_stack=None, style_manager=None,
                      style_manager=style_manager, name=name, indent_size=indent_size, draw_state=draw_state,
                             focus=False,
                      unique=unique, args=args, kwargs=kwargs)
-
-
-@render_func(use_cache=False)
-def draw_child(input_value, melty, draw_state, unique, header_height=0, func=None, *args, **kwargs):
-    child_w = draw_state.width if draw_state.width is not None else 300
-    child_h = draw_state.height if draw_state.height is not None else 100
-
-    # All pass through
-    child_flags = (imgui.WINDOW_NO_MOVE |
-                   imgui.WINDOW_NO_SAVED_SETTINGS |
-                   imgui.WINDOW_NO_BACKGROUND)
-    tmp_undo_stack(unique)
-
-    begin_child(f"child_{unique}",
-                      width=child_w - 20,
-                      height=child_h + header_height,
-                      flags=child_flags)
-
-
-    draw_list = imgui.get_window_draw_list()
-    draw_list.channels_split(Melty.max_depth)
-    Melty.channels_split = True
-
-    changed, new_value = func(input_value=input_value, melty=melty, unique=unique,
-                              draw_state=draw_state, *args, **kwargs)
-
-
-    imgui.get_window_draw_list().channels_merge()
-    Melty.channels_split = False
-
-    end_child()
-
-    if not Melty.channels_split:
-        draw_list.channels_split(Melty.max_depth)
-        Melty.channels_split = True
-
-    redo_stack(unique)
-
-    return changed, new_value
 
 
 @render_wrapper(wraps=render_func)
@@ -1024,7 +987,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
 
             direction = -1
             glfw_scroll_speed = 60
-            scroll_speed = 50.0
+            scroll_speed = 100.0
 
             new_offset_y = current_y + on_scroll * direction * scroll_speed
 
@@ -1757,8 +1720,8 @@ def open_file(path, app=None):
     else:
         print(f"Path does not exist: {path}")
 
-@render_func
-def draw_header(input_value=None, name="", collection=None, display_name=None, meta=None, unique=None, is_tree=True,
+@render_func()
+def draw_header(input_value=None, name="", suffix="", collection=None, display_name=None, meta=None, unique=None, is_tree=True,
                 show_name=True, name_func=None, show_type=False, show_unique=False,
                 on_search=False, trigger_collapse=False, trigger_expand=False,
                 draw_state=None, is_window=False, on_click=False, show_tint=True,
@@ -1899,7 +1862,9 @@ def draw_header(input_value=None, name="", collection=None, display_name=None, m
         imgui.set_item_allow_overlap()
 
     if show_tint and hasattr(input_value, "tint"):
-        tint_changed, tint_value = draw_tuple(input_value.tint, min_width=0, show_header=False)
+        draw_state._has_popup = True
+        obj_unique = ui_id(datatype=input_value.tint.__class__, suffix=str(suffix) + name)
+        tint_changed, tint_value = draw_tuple(input_value.tint, suffix=suffix, show_header=False)
         if tint_changed:
             input_value.tint = tint_value
         same_line()
@@ -2099,15 +2064,15 @@ def draw_str(input_value: str):
     return changed, value
 
 
-@with_header_minimal(is_default_for=('tint'))
-def draw_tuple(input_value: tuple, is_tree=False, draw_state=None, show_bg=False):
+@with_header_minimal(is_default_for=('tint'), has_popup=True, use_cache=True)
+def draw_tuple(input_value: tuple, unique):
     if len(input_value) > 0 and isinstance(input_value[0], (float, int)):
         if len(input_value) == 4:
             color_list = list(input_value)
             color_flags = (imgui.COLOR_EDIT_NO_INPUTS | imgui.COLOR_EDIT_NO_LABEL | imgui.COLOR_EDIT_FLOAT |
                            imgui.COLOR_EDIT_NO_TOOLTIP)
             changed, color = imgui.color_edit4(
-                f"##_color",
+                f"##picker_edit{unique}",
                 color_list[0], color_list[1], color_list[2], color_list[3],
                 flags=color_flags)
             if changed:
@@ -2118,7 +2083,7 @@ def draw_tuple(input_value: tuple, is_tree=False, draw_state=None, show_bg=False
                            imgui.COLOR_EDIT_NO_ALPHA | imgui.COLOR_EDIT_FLOAT |
                            imgui.COLOR_EDIT_NO_TOOLTIP)
             changed, color = imgui.color_edit3(
-                f"##_color",
+                f"##picker_edit{unique}",
                 color_list[0], color_list[1], color_list[2],
                 flags=color_flags)
             if changed:

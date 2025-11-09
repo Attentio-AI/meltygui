@@ -35,7 +35,7 @@ _floating_text_prev_frame_heights = {}  # Store max label height per line from p
 
 
 def handle_actions(melty, unique, draw_state, func=None):
-    if Melty.is_window_enabled() and imgui.is_window_hovered():
+    if Melty.is_window_enabled() and (imgui.is_window_hovered()):
         for m_btn in [0, 1, 2]:
             btn_state = draw_state.mouse_btn_state[m_btn]
 
@@ -423,33 +423,9 @@ class WrapType(Enum):
     WINDOW=4
 
 channels_split_stack = False
-child_stack = []
 child_stack_holder = {}
-wc_stack = []
-def begin_child(unique_id, *args, **kwargs):
-    global child_stack
-
-    if len(wc_stack) > 0:
-        imgui.get_window_draw_list().channels_merge()
-        Melty.channels_split = False
-    wc_stack.append(unique_id)
-
-    child_stack.append((unique_id, WrapType.CHILD, args, kwargs))
-    return_value = imgui.begin_child(unique_id, *args, **kwargs)
-    return return_value
 
 def begin_window(unique_id, *args, **kwargs):
-    global child_stack
-
-    # tmp_undo_stack(unique_id)
-
-    if len(wc_stack) > 0:
-        imgui.get_window_draw_list().channels_merge()
-        Melty.channels_split = False
-
-    wc_stack.append(unique_id)
-
-    child_stack.append((unique_id, WrapType.WINDOW, args, kwargs))
     return_val = imgui.begin(unique_id, *args, **kwargs)
     draw_list = imgui.get_window_draw_list()
     draw_list.channels_split(Melty.max_depth)
@@ -457,93 +433,20 @@ def begin_window(unique_id, *args, **kwargs):
     return return_val
 
 def begin_group(unique_id=0, *args, **kwargs):
-    global child_stack
-
-    child_stack.append((unique_id, WrapType.GROUP, args, kwargs))
     return imgui.begin_group()
 
-def end_child():
-    global child_stack
-    wc_stack.pop() if len(wc_stack) > 0 else None
-
-    try:
-        if len(child_stack) > 0:
-            item = child_stack.pop()
-            imgui.get_window_draw_list().channels_merge()
-            Melty.channels_split = False
-            imgui.end_child()
-    except Exception as e:
-        print_colored_traceback(*sys.exc_info())
-
-    if len(wc_stack) > 0:
-        draw_list = imgui.get_window_draw_list()
-        draw_list.channels_split(Melty.max_depth)
-        Melty.channels_split = True
-
 def end_group():
-    global child_stack
-    if len(child_stack) > 0:
-        child_stack.pop()
-        imgui.end_group()
+    imgui.end_group()
 
 def end_window(unique_id):
-    global child_stack
-    wc_stack.pop() if len(wc_stack) > 0 else None
-    if len(child_stack) > 0:
-        child_stack.pop()
-        imgui.get_window_draw_list().channels_merge()
-        Melty.channels_split = False
-        imgui.end()
-    # redo_stack(unique_id)
-
-    if len(wc_stack) > 0:
-        draw_list = imgui.get_window_draw_list()
-        draw_list.channels_split(Melty.max_depth)
+    imgui.get_window_draw_list().channels_merge()
+    Melty.channels_split = False
+    imgui.end()
 
 
-
-def undo_child_stack(undo_id):
-    """Context manager to temporarily clear the child stack."""
-    global child_stack
-    global child_stack_holder
-    child_stack_holder[undo_id] = child_stack[:]
-    try:
-        for u_id, wrap_type, _, _ in reversed(child_stack_holder[undo_id]):
-            if wrap_type == WrapType.CHILD:
-                imgui.get_window_draw_list().channels_merge()
-                Melty.channels_split = False
-                imgui.end_child()
-            elif wrap_type == WrapType.GROUP:
-                imgui.end_group()
-            elif wrap_type == WrapType.WINDOW:
-                imgui.get_window_draw_list().channels_merge()
-                Melty.channels_split = False
-                imgui.end()
-    except Exception as e:
-        pass
-
-    child_stack = []
-    return undo_id
-
-def redo_child_stack(undo_id):
-    """Restore the child stack to a previously saved state."""
-    global child_stack
-    global child_stack_holder
-    if undo_id in child_stack_holder:
-        saved_stack = child_stack_holder.pop(undo_id)
-        for all_args in saved_stack:
-            if all_args[1] == WrapType.GROUP:
-                imgui.begin_group()
-            elif all_args[1] == WrapType.CHILD:
-                imgui.begin_child(all_args[0], *all_args[2], **all_args[3])
-            elif all_args[1] == WrapType.WINDOW:
-                imgui.begin(all_args[0], *all_args[2], **all_args[3])
-        child_stack = saved_stack
-
-        if len(wc_stack) > 0:
-            draw_list = imgui.get_window_draw_list()
-            draw_list.channels_split(Melty.max_depth)
-            Melty.channels_split = True
+    # draw_list = imgui.get_window_draw_list()
+    # draw_list.channels_split(Melty.max_depth)
+    # Melty.channels_split = True
 
 
 id_stack = []
@@ -886,7 +789,7 @@ def render_func(*args, **o_kwargs):
         if is_root:
             unique = ui_id(datatype=type(input_value), suffix=unique_name)
         else:
-            unique = ui_id(datatype=type(input_value), suffix=suffix + unique_name + str(METHOD_ID), idx=index)
+            unique = ui_id(datatype=type(input_value), suffix=suffix + unique_name + str(key) + str(METHOD_ID), idx=index)
 
         computed_unique = unique
         # -------------------------------------------------------------------------
@@ -894,6 +797,7 @@ def render_func(*args, **o_kwargs):
 
         start_cursor = imgui.get_cursor_screen_pos()
         end_cursor = imgui.get_cursor_screen_pos()
+
 
         if is_root:
             # NOTE: We already computed 'unique' once for root above; do not recompute.
@@ -907,6 +811,8 @@ def render_func(*args, **o_kwargs):
             Melty.bg_stack = [(0, 0, 0)]
             Melty.indent_count = 0
             Melty.unindent_count = 0
+
+            Melty.imgui_popup_open = imgui.is_popup_open("", flags=imgui.POPUP_ANY_POPUP)
         else:
             melty = get_melty_state(Melty.unique_stack[0])
 
@@ -934,6 +840,10 @@ def render_func(*args, **o_kwargs):
 
         draw_state = get_draw_state(unique)
         draw_state._input_value = input_value
+        draw_state._has_popup = kwargs.get("has_popup", False)
+
+        draw_state.bounds_left = snap_int(start_cursor[0])
+        draw_state.bounds_top = snap_int(start_cursor[1])
 
         cursor_pos = imgui.get_cursor_pos()
 
@@ -1130,6 +1040,8 @@ def render_func(*args, **o_kwargs):
                     depth_tint = (Melty.wrapped_depth * 0.05)
                     jet = jet_color(depth_tint)
                     floating_text(f"{func.__name__} w:{Melty.wrapped_depth}", tint=jet)
+                if draw_state._has_popup:
+                    draw_state.imgui_popover_open = Melty.imgui_popup_open
 
                 if use_cache and Melty.cache.enabled:
 
@@ -1137,7 +1049,8 @@ def render_func(*args, **o_kwargs):
                     draw_state.bounding_hovered = last_bounding_hovered
                     hover_changed = last_bounding_hovered != draw_state.bounding_hovered
 
-                    if draw_state.bounding_hovered or hover_changed:
+                    if (draw_state.bounding_hovered or hover_changed or
+                            draw_state.width is None or draw_state.height is None or draw_state.imgui_popover_open):
                         Melty.cache.invalidate(tile_id)
 
                     if Melty.cache.mark_start_offscreen(input_value=input_value, collection=collection,
@@ -1161,6 +1074,14 @@ def render_func(*args, **o_kwargs):
                 else:
                     return_value = func(**clean_args)
 
+                draw_state.imgui_is_edited = imgui.is_item_edited()
+                draw_state.imgui_is_active = imgui.is_item_active()
+                draw_state.imgui_is_focused = imgui.is_item_focused()
+                draw_state.imgui_scroll_y = imgui.get_scroll_y()
+                draw_state.imgui_is_hovered = imgui.is_item_hovered()
+
+                if draw_state._has_popup:
+                    draw_state.imgui_popover_open = Melty.imgui_popup_open
 
             except Exception as e:
                 print_colored_traceback(*sys.exc_info())
@@ -1177,14 +1098,13 @@ def render_func(*args, **o_kwargs):
                 push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
                 pop_id()
                 end_group()
+
                 pop_style_var(2)
 
                 item_rect = imgui.get_item_rect_size()
 
                 # if draw_state.width is None:
 
-                draw_state.bounds_left = snap_int(start_cursor[0])
-                draw_state.bounds_top = snap_int(start_cursor[1])
                 if not kwargs.get("on_drag", False):
                     #
                     # draw_state.window_pos_left = snap_int(start_cursor[0])
