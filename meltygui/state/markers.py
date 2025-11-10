@@ -66,6 +66,7 @@ class FieldMeta(type):
                 field_meta[key].field_type = type(value)
             elif callable(value_annotation):
                 try:
+
                     meta = value_annotation(value)
                     if hasattr(meta, 'is_meta'):
                         meta.name = key
@@ -75,7 +76,7 @@ class FieldMeta(type):
                         new_namespace[f"{key}_meta"] = meta
                         field_meta[key].field_type = type(value)
                 except Exception as e:
-                    print(f"Error creating Meta for field {key} with annotation {value_annotation}: {e}")
+                    # print(f"Error creating Meta for field {key} with annotation {value_annotation}: {e}")
                     field_defaults[key] = value
                     new_namespace[key] = value
                     from src.lsd.gl_gui.view.core_views.core_meta import Meta

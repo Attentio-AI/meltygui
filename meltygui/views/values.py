@@ -107,14 +107,12 @@ def draw_melty_windows(vis):
 
     draw_window(vis.root.lora_collection, name="Test Window 1")
     draw_window(filesystem_proxy, name="Filesystem Test")
-
-    Melty.window_stack.pop()
-
-    draw_list.channels_merge()
-    Melty.channels_split = False
-
     draw_any(Melty.registered_windows, show_add_delete=False, name="Window Manager")
 
+    # End frame ###############
+    Melty.window_stack.pop()
+    draw_list.channels_merge()
+    Melty.channels_split = False
     end()
 
 
@@ -122,10 +120,11 @@ def draw_melty_windows(vis):
              show_bg=True, show_add_delete=False)
 def draw_managed_window(input_value, *args, **kwargs):
     imgui.same_line()
-    if input_value.draw_state is not None:
-        imgui.text(input_value.window_args.get('name', 'Managed Window'))
-    else:
-        imgui.text("No Draw State")
+    pass
+    # if input_value.draw_state is not None:
+    #     imgui.text(input_value.window_args.get('name', 'Managed Window'))
+    # else:
+    #     imgui.text("No Draw State")
 
 
 @render_func(melty_window=True, auto_resize=False)
@@ -1565,11 +1564,11 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
     rounding = global_style.get_global_constant("rounding", default=0.0, folder="bg_styles")
 
     # Draw rect
-    if left == 0:
-        left = imgui.get_cursor_screen_pos()[0]
-
-    if top == 0:
-        top = imgui.get_cursor_screen_pos()[1]
+    # if left == 0:
+    #     left = imgui.get_cursor_screen_pos()[0]
+    #
+    # if top == 0:
+    #     top = imgui.get_cursor_screen_pos()[1]
     right =  left + width
     bottom =  top + height + rounding
 
