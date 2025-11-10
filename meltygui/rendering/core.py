@@ -122,7 +122,7 @@ def handle_actions(melty, unique, draw_state, func=None):
 
         # Handle scroll
         was_scrolled = False
-        if draw_state._content_height > draw_state.height:
+        if draw_state.content_height > draw_state.height:
             scroll_y = imgui.get_io().mouse_wheel
             if scroll_y != 0.0:
                 melty.mark_event(unique, scroll_y,
@@ -789,7 +789,7 @@ def render_func(*args, **o_kwargs):
         if is_root:
             unique = ui_id(datatype=type(input_value), suffix=unique_name)
         else:
-            unique = ui_id(datatype=type(input_value), suffix=suffix + unique_name + str(key) + str(METHOD_ID), idx=index)
+            unique = ui_id(datatype=type(input_value), suffix=suffix + unique_name + name + str(key) + str(METHOD_ID), idx=index)
 
         computed_unique = unique
         # -------------------------------------------------------------------------
@@ -1050,6 +1050,7 @@ def render_func(*args, **o_kwargs):
                     if (draw_state.bounding_hovered or
                             draw_state.width is None or draw_state.height is None or draw_state.imgui_popover_open):
                         Melty.cache.invalidate(tile_id)
+                        request_render()
 
                     if Melty.cache.mark_start_offscreen(input_value=input_value, collection=collection,
                                                         draw_state=draw_state, key=tile_id, name=name,

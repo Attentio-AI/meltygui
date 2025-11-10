@@ -88,11 +88,11 @@ class DrawState(DictConversion):
         self.imgui_is_item_activated = False
         self.cst = None
         self.window_pos = None
-        self.window_size = (100, 100)
+        self.window_size = (300, 300)
         self.drag_mode = DragMode.NONE
         self.use_child = False
         self.z_pos = None
-        self._content_height = 0
+        self.content_height = 0
 
         self.imgui_is_toggled_open = False
 

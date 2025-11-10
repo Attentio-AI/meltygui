@@ -902,14 +902,15 @@ class TileCacheMasked:
             for r in local_mask_rects:
                 x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y, fb_h)
 
-                ix0 = int(floor(x0));
+                ix0 = int(floor(x0))
                 iy0 = int(floor(y0))
-                ix1 = int(ceil(x1));
+                ix1 = int(ceil(x1))
                 iy1 = int(ceil(y1))
-                iw = max(0, ix1 - ix0);
+                iw = max(0, ix1 - ix0)
                 ih = max(0, iy1 - iy0)
-                if iw <= 0 or ih <= 0:
-                    continue
+
+                # if iw <= 0 or ih <= 0:
+                #     continue
 
                 gl.glViewport(ix0, iy0, iw, ih)
 

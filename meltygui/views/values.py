@@ -146,7 +146,16 @@ def draw_melty_windows(vis):
     # Melty.channels_split = False
 
     draw_any(vis.root.lora_collection, melty_window=True, auto_resize=False, name="Test Window")
-    draw_pending_windows(name="##pending_windows")
+
+    imgui.set_cursor_screen_pos((0,0))
+    draw_any(0.0, melty_window=True, auto_resize=False, name="Some val")
+
+    imgui.set_cursor_screen_pos((0, 0))
+    draw_any(vis.root.lora_collection, melty_window=True, auto_resize=False, name="Test Window 1")
+
+    # draw_pending_windows(name="##pending_windows")
+
+    draw_window(filesystem_proxy, name="Filesystem Test")
 
     Melty.window_stack.pop()
 
@@ -154,6 +163,11 @@ def draw_melty_windows(vis):
     Melty.channels_split = False
 
     end()
+
+def draw_window(input_value, name="Window"):
+    imgui.set_cursor_screen_pos((0, 0))
+    draw_any(input_value, melty_window=True, auto_resize=False, name=name)
+
 
 def draw(vis):
     # Handle global hotkeys
@@ -173,22 +187,22 @@ def draw(vis):
 
     fb_w, fb_h = map(int, imgui.get_io().display_size)  # or your true GL FB size if HiDPI
     Melty.cache.mask_begin_frame((fb_w, fb_h))
-    draw_melty_windows(vis)
 
-    draw_window(vis.root.lora_collection, name="Lora Root")
-    draw_window(Melty.hotkey_registry, name="Hotkeys", is_window=True)
-    draw_window(len(Melty.dirty_objects), name="Invalidate Cache")
+    draw_imgui_window(vis.root.lora_collection, name="Lora Root")
+    draw_imgui_window(Melty.hotkey_registry, name="Hotkeys", is_window=True)
+    draw_imgui_window(len(Melty.dirty_objects), name="Invalidate Cache")
+    draw_melty_windows(vis)
 
     # draw_window(module, name="CST Module")
     #
     global proxy
-    draw_window(proxy, name="CST Proxy")
+    draw_imgui_window(proxy, name="CST Proxy")
     #
     global filesystem_proxy
-    draw_window(filesystem_proxy, name="Filesystem")
+    draw_imgui_window(filesystem_proxy, name="Filesystem")
     #
     global code_export_str
-    changed, code_str = draw_window(code_export_str, name="Code Export")
+    changed, code_str = draw_imgui_window(code_export_str, name="Code Export")
 
     if changed:
         print("Code changed")
@@ -207,8 +221,6 @@ def draw(vis):
     # Melty.channels_split = False
 
     Melty.hovered_drawstate = Melty.hovered_drawstate_pending
-
-
 
     # draw_window(export_code, name="Code Export")
 
@@ -633,8 +645,8 @@ def draw_melty_window(input_value, window_stack=None, style_manager=None,
 
 
 @render_func(use_cache=True)
-def draw_window(input_value, window_stack=None, style_manager=None,
-                indent_size=0, name="", draw_state=None, unique=0, *args, **kwargs):
+def draw_imgui_window(input_value, window_stack=None, style_manager=None,
+                      indent_size=0, name="", draw_state=None, unique=0, *args, **kwargs):
     kwargs['input_value'] = input_value
     kwargs['style_manager'] = style_manager
     kwargs['window_stack'] = window_stack
@@ -992,7 +1004,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             new_offset_y = current_y + on_scroll * direction * scroll_speed
 
             min_scroll_y = 0
-            max_scroll_y = max(0, draw_state._content_height - draw_state.height)
+            max_scroll_y = max(0, draw_state.content_height - draw_state.height)
             draw_state.scroll_offset = (current_x,
                                         max(min_scroll_y, min(new_offset_y, max_scroll_y)))
 
@@ -1161,7 +1173,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
 
                 has_size = (draw_state.width is not None and draw_state.height is not None and
                             draw_state.left is not None and draw_state.top is not None)
-                needs_scroll = draw_state._content_height > draw_state.height if draw_state.height is not None else False
+                needs_scroll = draw_state.content_height > draw_state.height if draw_state.height is not None else False
 
                 if use_child and has_size and needs_scroll:
                     #
@@ -1213,14 +1225,14 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                     func_changed, func_return_val = func(**next_kwargs)
 
                     inner_end_y = imgui.get_cursor_screen_pos()[1]
-                    draw_state._content_height = inner_end_y - inner_start_y
+                    draw_state.content_height = inner_end_y - inner_start_y
 
                     current_cursor = imgui.get_cursor_screen_pos()
                     imgui.set_cursor_screen_pos((current_cursor[0], current_cursor[1] + draw_state.scroll_offset[1]))
 
                     Melty.pop_clip()
 
-                    draw_vertical_scrollbar(draw_state._content_height, view_height=d_height, view_width=d_width,
+                    draw_vertical_scrollbar(draw_state.content_height, view_height=d_height, view_width=d_width,
                                             scroll_offset=draw_state.scroll_offset[1], scrollbar_width=8.0, left=d_left,
                                             top=d_top)
 
@@ -1592,7 +1604,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
             if prev_tint is not None:
                 style_manager.set_imgui_tint(*prev_tint)
 
-    draw_state._content_height = content_height
+    draw_state.content_height = content_height
 
     # ----------------- flow spacing -----------
     last_key = list(keys)[-1] if len(keys) > 0 else None
