@@ -458,7 +458,6 @@ def push_id(unique_id):
     imgui.push_id(str(unique_id))
     id_stack.append(unique_id)
 
-
 def pop_id():
     global id_stack
     if Melty.imgui_crashed:
@@ -594,6 +593,7 @@ def render_wrapper(*o_args, **o_kwargs):
 
             if wrap_func is not None:
                 o_kwargs.update(kwargs)
+
                 out_func = wrap_func(out_func, inner_func=r_func, **kwargs)
 
             return out_func
@@ -655,8 +655,8 @@ def annotation_track(*args, wrapper, **kwargs):
             setattr(new_meta, k, v)
         new_meta.view_function = wrapper
         return new_meta
-    return None
 
+    return None
 
 def apply_drag_and_drop(melty):
 
@@ -666,7 +666,6 @@ def apply_drag_and_drop(melty):
         result = apply_collection_action(action)
         request_render()
     melty.actions_to_apply = []
-
 
 def get_resize_handle(a_ds):
     if a_ds.left is None:
@@ -1191,6 +1190,9 @@ def render_func(*args, **o_kwargs):
                 if melty_window:
                     draw_resize_handle(draw_state)
                     Melty.melty_window_stack.pop()
+
+                if melty_window:
+                    imgui.set_cursor_screen_pos((0,0))
 
                 if return_value is None:
                     changed, new_value = False, None

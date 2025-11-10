@@ -18,7 +18,7 @@ from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, tree, pus
     push_style_color, pop_style_color, pop_style_var, end, begin
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.melty import Melty, CollectionAction, OperationType, apply_collection_action, add_to_collection, \
-    delete_from_collection
+    delete_from_collection, ManagedWindow
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
 from src.lsd.gl_gui.view.core_views.core_decoration import hotkey, global_hotkeys
@@ -54,6 +54,7 @@ def with_header_minimal(func, *args, **o_kwargs):
     return wrapper
 
 
+
 @render_wrapper(wraps=render_func, use_cache=True)
 def with_header(func, *args, **o_kwargs):
     def wrapper(next_kwargs=None, draw_state=None, **kwargs):
@@ -62,8 +63,6 @@ def with_header(func, *args, **o_kwargs):
 
         next_kwargs['func'] = func
         next_kwargs['outer_func'] = wrapper
-        if 'width' in kwargs:
-            pass
         return core_header(**next_kwargs)
 
     setattr(wrapper, '__name__', f"{func.__name__} --- with_header ")
@@ -79,42 +78,6 @@ code_export_str = "Test"
 filesystem_proxy = FolderProxy("/home/lukas/test_folder", text_mode=True)
 # Main draw function, called by the GUI framework
 
-@render_func(use_cache=False)
-def draw_pending_windows(style_manager):
-    # imgui.text("test")
-    draw_list = imgui.get_window_draw_list()
-    if not Melty.channels_split:
-        draw_list.channels_split(Melty.max_depth)
-        Melty.channels_split = True
-    previous_tint = style_manager.get_tint()
-
-    for window, args, kwargs in Melty.windows:
-        imgui.set_cursor_screen_pos((0, 0))
-
-        if hasattr(window, 'tint') and window.tint is not None:
-            style_manager.set_imgui_tint(*window.tint)
-        # depth = kwargs.get("z_pos", Melty.max_depth - 1)
-        # kwargs['z_pos'] = depth
-        #
-        # draw_list.channels_set_current(min(depth + 1, Melty.max_depth - 1))
-
-        window_pos = kwargs['window_pos']
-        imgui.set_cursor_screen_pos((window_pos[0],
-                                     window_pos[1]))
-        # Consume window pos
-        kwargs['window_pos'] = (0,0)
-
-        window_func = kwargs.get('window_func', draw_object)
-        kwargs['melty_window'] = False
-        window_func(window, *args, **kwargs)
-
-    style_manager.set_imgui_tint(*previous_tint)
-
-    Melty.windows.clear()
-
-    # if Melty.channels_split:
-    #     draw_list.channels_merge()
-    #     Melty.channels_split = False
 
 
 def draw_melty_windows(vis):
@@ -135,26 +98,14 @@ def draw_melty_windows(vis):
     draw_list.channels_split(Melty.max_depth)
     Melty.channels_split = True
 
-    imgui.text("test")
     Melty.window_stack.append((title, True))
 
     draw_list = imgui.get_window_draw_list()
-    # draw_list.channels_split(Melty.max_depth)
-    # Melty.channels_split = True
-    # draw_pending_windows()
-    # draw_list.channels_merge()
-    # Melty.channels_split = False
 
     draw_any(vis.root.lora_collection, melty_window=True, auto_resize=False, name="Test Window")
+    draw_any(0.0, name="Some val", melty_window=True, auto_resize=False, show_bg=True)
 
-    imgui.set_cursor_screen_pos((0,0))
-    draw_any(0.0, melty_window=True, auto_resize=False, name="Some val")
-
-    imgui.set_cursor_screen_pos((0, 0))
-    draw_any(vis.root.lora_collection, melty_window=True, auto_resize=False, name="Test Window 1")
-
-    # draw_pending_windows(name="##pending_windows")
-
+    draw_window(vis.root.lora_collection, name="Test Window 1")
     draw_window(filesystem_proxy, name="Filesystem Test")
 
     Melty.window_stack.pop()
@@ -162,12 +113,29 @@ def draw_melty_windows(vis):
     draw_list.channels_merge()
     Melty.channels_split = False
 
+    draw_any(Melty.registered_windows, show_add_delete=False, name="Window Manager")
+
     end()
 
-def draw_window(input_value, name="Window"):
-    imgui.set_cursor_screen_pos((0, 0))
-    draw_any(input_value, melty_window=True, auto_resize=False, name=name)
 
+@with_header(is_default_for=ManagedWindow, is_tree=False,
+             show_bg=True, show_add_delete=False)
+def draw_managed_window(input_value, *args, **kwargs):
+    imgui.same_line()
+    if input_value.draw_state is not None:
+        imgui.text(input_value.window_args.get('name', 'Managed Window'))
+    else:
+        imgui.text("No Draw State")
+
+
+@render_func(melty_window=True, auto_resize=False)
+def draw_window(input_value, *args, **kwargs):
+    Melty.registered_windows[kwargs.get('name', 'Managed Window')] = ManagedWindow(input_value=input_value,
+                                                               draw_state=kwargs.get('draw_state', None),
+                                                               window_args=kwargs,
+                                                               name=kwargs.get('name', 'Managed Window'))
+
+    return draw_any(input_value, *args, **kwargs)
 
 def draw(vis):
     # Handle global hotkeys
@@ -188,9 +156,9 @@ def draw(vis):
     fb_w, fb_h = map(int, imgui.get_io().display_size)  # or your true GL FB size if HiDPI
     Melty.cache.mask_begin_frame((fb_w, fb_h))
 
-    draw_imgui_window(vis.root.lora_collection, name="Lora Root")
-    draw_imgui_window(Melty.hotkey_registry, name="Hotkeys", is_window=True)
-    draw_imgui_window(len(Melty.dirty_objects), name="Invalidate Cache")
+    # draw_imgui_window(vis.root.lora_collection, name="Lora Root")
+    # draw_imgui_window(Melty.hotkey_registry, name="Hotkeys", is_window=True)
+    # draw_imgui_window(list(Melty.dirty_objects), name="Invalidate Cache")
     draw_melty_windows(vis)
 
     # draw_window(module, name="CST Module")
@@ -198,23 +166,23 @@ def draw(vis):
     global proxy
     draw_imgui_window(proxy, name="CST Proxy")
     #
-    global filesystem_proxy
-    draw_imgui_window(filesystem_proxy, name="Filesystem")
+    # global filesystem_proxy
+    # draw_imgui_window(filesystem_proxy, name="Filesystem")
     #
-    global code_export_str
-    changed, code_str = draw_imgui_window(code_export_str, name="Code Export")
+    # global code_export_str
+    # changed, code_str = draw_imgui_window(code_export_str, name="Code Export")
 
-    if changed:
-        print("Code changed")
-        print(code_str)
-        try:
-            code_export_str = code_str
-            new_module = cst.parse_module(code_str)
-            proxy = cst_wrap(new_module)
-            print("Code parsed successfully")
-        except Exception as e:
-            print_colored_traceback(e)
-            print("Error parsing code")
+    # if changed:
+    #     print("Code changed")
+    #     print(code_str)
+    #     try:
+    #         code_export_str = code_str
+    #         new_module = cst.parse_module(code_str)
+    #         proxy = cst_wrap(new_module)
+    #         print("Code parsed successfully")
+    #     except Exception as e:
+    #         print_colored_traceback(e)
+    #         print("Error parsing code")
 
     # Melty.dirty_objects.clear()
     # overlay_list.channels_merge()
@@ -991,7 +959,6 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                 show_header=True, show_bg=True, unique=0, name="", style_manager=None, global_style=None, parent_show_add_delete=True,
                 selected_views=None, on_drag=False, on_drag_up=False, do_flow=True, melty=None, enable_flow=True, header_same_line=False,
                 on_hover=False, next_kwargs=None, meta=None, on_same_line=False, y_offset=0, width=None, min_width=1, enable_scroll=True, **kwargs):
-
         if on_scroll is not None:
             scroll_offset = draw_state.scroll_offset
             current_x = scroll_offset[0]
@@ -1137,14 +1104,9 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                     # This is the version with auto indent, probably a dict header
                     draw_header_end(**next_kwargs)
 
-
         if show_bg:
             style_manager.get_tint()
             Melty.bg_stack.append(style_manager.get_tint())
-
-
-        if not auto_resize:
-            pass
 
         if not is_tree or draw_state.expanded:
             if not on_drag or melty_window:
@@ -1176,35 +1138,6 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                 needs_scroll = draw_state.content_height > draw_state.height if draw_state.height is not None else False
 
                 if use_child and has_size and needs_scroll:
-                    #
-                    # child_w = draw_state.width
-                    # child_h = draw_state.height
-                    #
-                    # # All click through
-                    # child_flags = (imgui.WINDOW_NO_MOVE |
-                    #                   imgui.WINDOW_NO_SAVED_SETTINGS |
-                    #                   imgui.WINDOW_NO_BACKGROUND)
-                    # tmp_undo_stack(unique)
-                    #
-                    # imgui.begin_child(f"child_{unique}",
-                    #                   width=child_w - 20,
-                    #                   height=child_h + header_height,
-                    #                   flags=child_flags)
-                    #
-                    # imgui.begin_group()
-                    #
-                    #
-                    # draw_list = imgui.get_window_draw_list()
-                    # draw_list.channels_split(Melty.max_depth)
-                    inside_window = len(Melty.window_stack) > 0
-                    # draw_list = imgui.get_window_draw_list()
-                    # if Melty.channels_split and show_bg:
-                    #     draw_list.channels_set_current(min(Melty.max_depth - 1, depth))
-                    #
-                    # next_kwargs['func'] = func
-                    # next_kwargs['draw_state'] = draw_state
-                    # func_changed, func_return_val = draw_child(header_height=header_height,
-                    #                                            melty_window=False, **next_kwargs)
                     draw_list = imgui.get_window_draw_list()
                     if Melty.channels_split and show_bg:
                         draw_list.channels_set_current(min(Melty.max_depth - 1, depth))
@@ -1242,25 +1175,11 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                         draw_list.channels_set_current(min(Melty.max_depth - 1, depth))
                     func_changed, func_return_val = func(**next_kwargs)
 
-                # if inside_window:
-                #     draw_list.channels_set_current(Melty.max_depth - 1)
-
-                # if use_child:
-                #     imgui.get_window_draw_list().channels_merge()
-                #     imgui.end_group()
-                #     handle_actions(melty, unique, draw_state)
-                #     imgui.end_child()
-                #     if inside_window:
-                #         draw_list.channels_split(Melty.max_depth)
-                #     redo_stack(unique)
-
                 ############### END MAIN FUNC CALL #############################
                 if func_changed:
                     return_value = func_return_val
                 changed |= func_changed
 
-
-                #
                 if header_same_line and show_header:
                     # ----------------- end header single lines---------------
                     # This is the version for single lines probably
@@ -1370,8 +1289,11 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
 
             imgui.set_cursor_screen_pos((pos_x,
                                          pos_y))
-            next_kwargs['z_pos'] = Melty.depth + 7
+            next_kwargs['z_pos'] = Melty.wrapped_depth + 7
+
+            Melty.undo_clip(unique)
             func_changed, func_return_val = render_func(**next_kwargs)
+            Melty.redo_clip(unique)
 
 
             # queue_melty_window(window_func=render_func, input_value=input_value,
@@ -1989,9 +1911,6 @@ def draw_object(input_value=None, draw_state=None, meta=None, name="", style_man
 
 @render_func
 def draw_any(input_value, indent_size=0, *args, **kwargs):
-    if input_value.__class__.__name__ == cst.Integer.__name__:
-        pass
-
     kwargs['indent_size'] = indent_size
 
     # meta info
@@ -2049,7 +1968,14 @@ def draw_any(input_value, indent_size=0, *args, **kwargs):
         #
         # pop_style_var(2)
 
-    return meta.view_function(input_value, *args, **kwargs)
+
+
+    return_val = meta.view_function(input_value, *args, **kwargs)
+    #
+    # if kwargs.get('melty_window', False):
+    #     imgui.set_cursor_screen_pos((0, 0))
+
+    return return_val
 
 
 @with_header_minimal(is_default_for=(NoneType))
@@ -2208,7 +2134,6 @@ def draw_int(input_value: int, min_value=-100.0, max_value=100.0, speed=0.05):
 
 @with_header(show_header=False, show_name=False, show_bg=True)
 def draw_debug_label(input_value:str):
-
     imgui.text(input_value)
 
 @with_header_minimal(is_default_for=Enum)

@@ -666,10 +666,19 @@ class MeltyState:
     def to_delete(self, key, collection):
         self.items_to_delete.append((key, collection))
 
+class ManagedWindow:
+    def __init__(self, input_value, draw_state, window_args, name):
+        self.input_value = input_value
+        self.draw_state = draw_state
+        self.window_args = window_args
+        self.name = name
+
 class Melty:
     windows = []
     glfw_window = None
     clip_stack = []
+    clip_stack_holder = {}
+    registered_windows = {}
 
     channels_split = False
     is_melty_window = False
@@ -740,6 +749,26 @@ class Melty:
         if len(cls.clip_stack) == 0:
             return None
         return cls.clip_stack[-1]
+
+    @classmethod
+    def undo_clip(cls, undo_point_id):
+        """Context manager to temporarily clear the ID stack."""
+        cls.clip_stack_holder[undo_point_id] = cls.clip_stack[:]
+        for _ in cls.clip_stack_holder[undo_point_id]:
+            draw_list = imgui.get_window_draw_list()
+            draw_list.pop_clip_rect()
+        cls.clip_stack = []
+
+    @classmethod
+    def redo_clip(cls, undo_point_id):
+        """Restore the ID stack to a previously saved state."""
+        if undo_point_id in cls.clip_stack_holder:
+            saved_stack = cls.clip_stack_holder.pop(undo_point_id)
+            for rect in saved_stack:
+                draw_list = imgui.get_window_draw_list()
+                draw_list.push_clip_rect(*rect)
+            cls.clip_stack = saved_stack
+
 
     @classmethod
     def invalidate(cls, parent=None, value=None, attr_name=None):
