@@ -122,11 +122,12 @@ def handle_actions(melty, unique, draw_state, func=None):
 
         # Handle scroll
         was_scrolled = False
-        if draw_state.content_height > draw_state.height:
-            scroll_y = imgui.get_io().mouse_wheel
-            if scroll_y != 0.0:
-                melty.mark_event(unique, scroll_y,
-                                 ActionType.SCROLL, value=scroll_y)
+        if draw_state.height is not None:
+            if draw_state.content_height > draw_state.height:
+                scroll_y = imgui.get_io().mouse_wheel
+                if scroll_y != 0.0:
+                    melty.mark_event(unique, scroll_y,
+                                     ActionType.SCROLL, value=scroll_y)
 
         is_hovered = draw_state.is_hovered()
         draw_state.hovered = False
@@ -792,11 +793,7 @@ def render_func(*args, **o_kwargs):
 
         computed_unique = unique
         # -------------------------------------------------------------------------
-        start_cursor = imgui.get_cursor_pos()
-
         start_cursor = imgui.get_cursor_screen_pos()
-        end_cursor = imgui.get_cursor_screen_pos()
-
 
         if is_root:
             # NOTE: We already computed 'unique' once for root above; do not recompute.
@@ -842,9 +839,7 @@ def render_func(*args, **o_kwargs):
         draw_state._has_popup = kwargs.get("has_popup", False)
         draw_state.auto_resize = kwargs.get("auto_resize", False)
 
-        cursor_pos = imgui.get_cursor_pos()
-
-        imgui.set_cursor_pos((snap_int(cursor_pos[0]), snap_int(cursor_pos[1])))
+        # imgui.set_cursor_pos((snap_int(cursor_pos[0]), snap_int(cursor_pos[1])))
         if kwargs.get("window_pos", None) is not None:
             draw_state.window_pos = kwargs.get("window_pos", None)
 
@@ -859,7 +854,6 @@ def render_func(*args, **o_kwargs):
             if draw_state.window_pos is None:
                 draw_state.window_pos = (0, 0)
             window_pos = draw_state.window_pos
-
 
             if draw_state is not None and not kwargs.get("on_drag", True):
                 kwargs['melty_window'] = False
@@ -1021,8 +1015,6 @@ def render_func(*args, **o_kwargs):
             try:
                 start_cursor = imgui.get_cursor_screen_pos()
 
-                # Snap cursor to nearest pixel
-                cursor_pos = imgui.get_cursor_pos()
                 use_cache = kwargs.get("use_cache", False)
                 collection = kwargs.get("collection", None)
 
@@ -1062,11 +1054,6 @@ def render_func(*args, **o_kwargs):
                                                         indent_size=kwargs.get("indent_size", 10),
                                                         layer=offscreen_depth, global_toggles=global_toggles):
                         return_value = func(**clean_args)
-                        # draw_state.imgui_is_active = imgui.is_item_active()
-                        # draw_state.imgui_is_focused = imgui.is_item_focused()
-                        # draw_state.imgui_is_edited = imgui.is_item_edited()
-                        # draw_state.imgui_is_clicked = imgui.is_item_clicked()
-                        # draw_state.imgui_is_item_activated = imgui.is_item_activated()
 
                         # Scroll position relative to window
                         draw_state.imgui_scroll_y = imgui.get_scroll_y()
@@ -1083,6 +1070,7 @@ def render_func(*args, **o_kwargs):
                 draw_state.imgui_is_focused = imgui.is_item_focused()
                 draw_state.imgui_scroll_y = imgui.get_scroll_y()
                 draw_state.imgui_is_hovered = imgui.is_item_hovered()
+                draw_state.imgui_scroll_y = imgui.get_scroll_y()
 
                 if draw_state._has_popup:
                     draw_state.imgui_popover_open = Melty.imgui_popup_open
@@ -1102,20 +1090,24 @@ def render_func(*args, **o_kwargs):
                 push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
                 pop_id()
                 end_group()
-
                 pop_style_var(2)
+
+                if kwargs.get("on_drag", False):
+                    if draw_state.left is not None and draw_state.top is not None:
+                        if draw_state.width is not None and draw_state.height is not None:
+                            imgui.set_cursor_screen_pos((start_cursor[0],
+                                                         draw_state.top + draw_state.height))
 
                 item_rect = imgui.get_item_rect_size()
 
+                # if draw_state.width is not None and draw_state.height is not None:
+                #     imgui.set_cursor_screen_pos((snap_int(start_cursor[0]) + draw_state.width,
+                #                                  snap_int(start_cursor[1]) + draw_state.height))
                 # if draw_state.width is None:
 
                 draw_state.bounds_left = snap_int(start_cursor[0])
                 draw_state.bounds_top = snap_int(start_cursor[1])
                 if not kwargs.get("on_drag", False):
-                    #
-                    # draw_state.window_pos_left = snap_int(start_cursor[0])
-                    # draw_state.window_pos_top = snap_int(start_cursor[1])
-
                     original_width = draw_state.bounding_width
                     original_height = draw_state.bounding_height
                     if is_initial_draw_state:
@@ -1126,8 +1118,6 @@ def render_func(*args, **o_kwargs):
                         draw_state.bounding_height = max(draw_state.bounding_height, item_rect[1])
                     else:
                         draw_state.bounding_height = snap_int(item_rect[1])
-                        draw_state.cursor_left = snap_int(cursor_pos[0])
-                        draw_state.cursor_top = snap_int(cursor_pos[1])
 
                     if not draw_state.expanded:
                         kwargs["auto_resize"] = True
@@ -1142,7 +1132,6 @@ def render_func(*args, **o_kwargs):
                     if (draw_state.bounding_width != original_width or
                             draw_state.bounding_height != original_height):
                         request_render()
-
 
                 if depth_to_restore is not None:
                     Melty.depth = depth_to_restore
@@ -1200,6 +1189,10 @@ def render_func(*args, **o_kwargs):
 
                 if melty_window:
                     imgui.set_cursor_screen_pos((0,0))
+
+                # if kwargs.get("on_drag", False):
+                #     imgui.set_cursor_screen_pos((draw_state.cursor_left, draw_state.cursor_top))
+
 
                 if return_value is None:
                     changed, new_value = False, None

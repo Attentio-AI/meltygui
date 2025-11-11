@@ -46,6 +46,7 @@ class MouseState(DictConversion):
         self.mouse_down_pos = (0, 0)
         self.initial_screen_pos = (0, 0)
         self.drag_delta = (0, 0)
+        self.initial_window_pos = (0, 0)
 
 
 class CSTDrawBits:
@@ -67,7 +68,7 @@ class DragMode(Enum):
          "drag_released", "clicked", "dragged", "render_time", "imgui_is_toggled_open", "z_pos",
          "is_active", "is_focused", "scroll_offset", "drag_window_pos_x", "drag_window_pos_y", "drag_mode")
 @exclude("render_time", "bounds_left", "bounds_top", "_input_value", "width", "flow_spacing",
-         "hovered", "_did_use_cache", "height", "top", "left", "delete_countdown", "z_pos", "scrolled", "is_hovered_last")
+         "hovered", "_did_use_cache", "drag_window", "height", "top", "left", "delete_countdown", "z_pos", "scrolled", "is_hovered_last")
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
 
@@ -108,7 +109,7 @@ class DrawState(DictConversion):
         self.width = None
         self.bounding_width = 0
         self.bounding_height = 0
-
+        self.drag_window = False
         self._left_rel = None
         self._top_rel = None
         self._min_width = None
@@ -165,29 +166,7 @@ class DrawState(DictConversion):
         else:
             self.cst.anchor = (type(node).__name__,)
 
-    def proxy_bounds(self, inner_draw_state):
-        if inner_draw_state is None or inner_draw_state.left is None:
-            return
 
-        if self.left is None:
-            self.left = inner_draw_state.left
-        else:
-            self.left = max(self.left, inner_draw_state.left)
-
-        if self.top is None:
-            self.top = inner_draw_state.top
-        else:
-            self.top = max(self.top, inner_draw_state.top)
-
-        if self.width is None:
-            self.width = inner_draw_state.width
-        else:
-            self.width = max(self.width, inner_draw_state.width)
-
-        if self.height is None:
-            self.height = inner_draw_state.height
-        else:
-            self.height = max(self.height, inner_draw_state.height)
 
     def is_glfw_mouse_hovering_rect(self, x1, y1, x2, y2):
 
