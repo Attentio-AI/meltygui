@@ -1073,6 +1073,14 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                     pos_x = start_pos_x + drag_delta[0]
                     pos_y = start_pos_y + drag_delta[1]
                     draw_state.window_pos = (pos_x, pos_y)
+                else:
+                    start_pos_x = draw_state.mouse_btn_state[0].initial_window_size[0]
+                    start_pos_y = draw_state.mouse_btn_state[0].initial_window_size[1]
+                    size_w = start_pos_x + drag_delta[0]
+                    size_h = start_pos_y + drag_delta[1]
+                    draw_state.width, draw_state.height = (max(size_w, 25), max(size_h, 24))
+                    draw_state.window_size = (draw_state.width, draw_state.height)
+
 
             rect_size = imgui.get_item_rect_size()
             header_width = rect_size[0]
@@ -1206,7 +1214,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
         background_width = width - indent_size - 4
         background_height = draw_state.height if draw_state.height is not None else 0
 
-        if not on_drag and not kwargs.get("drag_window", False):
+        if (not on_drag and not kwargs.get("drag_window", False)) or melty_window:
             draw_state.top = start_y_pos
             draw_state.left = start_x_pos
         draw_list = imgui.get_window_draw_list()
@@ -1265,7 +1273,6 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             pos_x = drag_delta[0] + initial_cursor_pos[0]
             pos_y = drag_delta[1] + initial_cursor_pos[1]
 
-
             imgui.set_cursor_screen_pos((pos_x, pos_y))
 
             Melty.undo_clip(unique)
@@ -1282,9 +1289,9 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
         #     imgui.set_cursor_screen_pos((current_pos[0] - offset[0],
         #                                  current_pos[1] - offset[1]))
 
-        # if melty_window:
-        #     imgui.set_cursor_screen_pos((initial_cursor_pos[0],
-        #                                  initial_cursor_pos[1]))
+        if melty_window:
+            imgui.set_cursor_screen_pos((initial_cursor_pos[0],
+                                         initial_cursor_pos[1]))
 
         if on_drag_up and not melty_window:
             melty.drag_in_progress = False
@@ -2015,7 +2022,7 @@ def draw_tuple(input_value: tuple, unique):
 
     return changed, input_value
 
-@with_header_minimal(is_default_for=float)
+@with_header_minimal(is_default_for=float, use_cache=True)
 def draw_float(input_value:float, min_value=-100.0, max_value=100.0, speed=0.01, unique=0, draw_state=None):
     changed, value = imgui.drag_float("##float", input_value,
                                       change_speed=speed,

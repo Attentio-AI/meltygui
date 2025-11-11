@@ -793,7 +793,11 @@ def render_func(*args, **o_kwargs):
 
         computed_unique = unique
         # -------------------------------------------------------------------------
+        start_cursor = imgui.get_cursor_pos()
+
         start_cursor = imgui.get_cursor_screen_pos()
+        end_cursor = imgui.get_cursor_screen_pos()
+
 
         if is_root:
             # NOTE: We already computed 'unique' once for root above; do not recompute.
@@ -839,7 +843,9 @@ def render_func(*args, **o_kwargs):
         draw_state._has_popup = kwargs.get("has_popup", False)
         draw_state.auto_resize = kwargs.get("auto_resize", False)
 
-        # imgui.set_cursor_pos((snap_int(cursor_pos[0]), snap_int(cursor_pos[1])))
+        cursor_pos = imgui.get_cursor_pos()
+
+        imgui.set_cursor_pos((snap_int(cursor_pos[0]), snap_int(cursor_pos[1])))
         if kwargs.get("window_pos", None) is not None:
             draw_state.window_pos = kwargs.get("window_pos", None)
 
@@ -1092,7 +1098,7 @@ def render_func(*args, **o_kwargs):
                 end_group()
                 pop_style_var(2)
 
-                if kwargs.get("on_drag", False):
+                if kwargs.get("on_drag", False) and not melty_window:
                     if draw_state.left is not None and draw_state.top is not None:
                         if draw_state.width is not None and draw_state.height is not None:
                             imgui.set_cursor_screen_pos((start_cursor[0],
@@ -1118,6 +1124,8 @@ def render_func(*args, **o_kwargs):
                         draw_state.bounding_height = max(draw_state.bounding_height, item_rect[1])
                     else:
                         draw_state.bounding_height = snap_int(item_rect[1])
+                        draw_state.cursor_left = snap_int(cursor_pos[0])
+                        draw_state.cursor_top = snap_int(cursor_pos[1])
 
                     if not draw_state.expanded:
                         kwargs["auto_resize"] = True
