@@ -107,6 +107,9 @@ def draw_melty_windows(vis):
 
     draw_window(vis.root.lora_collection, name="Test Window 1")
     draw_window(filesystem_proxy, name="Filesystem Test")
+    global proxy
+    draw_window(proxy, name="CST Proxy")
+
     draw_any(Melty.registered_windows, show_add_delete=False, name="Window Manager")
 
     # End frame ###############
@@ -127,12 +130,16 @@ def draw_managed_window(input_value, *args, **kwargs):
     #     imgui.text("No Draw State")
 
 
-@render_func(melty_window=True, auto_resize=False)
+@render_func(melty_window=True, auto_resize=False, use_cache=True)
 def draw_window(input_value, *args, **kwargs):
-    Melty.registered_windows[kwargs.get('name', 'Managed Window')] = ManagedWindow(input_value=input_value,
+    window_name = kwargs.get('name', 'Managed Window')
+    Melty.registered_windows[window_name] = ManagedWindow(input_value=input_value,
                                                                draw_state=kwargs.get('draw_state', None),
                                                                window_args=kwargs,
                                                                name=kwargs.get('name', 'Managed Window'))
+
+    window_z_pos = list(Melty.registered_windows.keys()).index(window_name)
+    kwargs['z_pos'] = window_z_pos + 2
 
     return draw_any(input_value, *args, **kwargs)
 
@@ -162,8 +169,8 @@ def draw(vis):
 
     # draw_window(module, name="CST Module")
     #
-    global proxy
-    draw_imgui_window(proxy, name="CST Proxy")
+    # global proxy
+    # draw_imgui_window(proxy, name="CST Proxy")
     #
     # global filesystem_proxy
     # draw_imgui_window(filesystem_proxy, name="Filesystem")

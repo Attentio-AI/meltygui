@@ -694,6 +694,9 @@ class TileCacheMasked:
         rkey = self._resolve_key(key)
         size = self._sizes.get(rkey, None)
 
+        if not draw_state.auto_resize:
+            size = draw_state.width, draw_state.height
+
         self.key_to_parent_key[rkey] = parent_ctx.key if parent_ctx else None
         if name is not None:
             name_key = f"{id(collection)}.{name}"

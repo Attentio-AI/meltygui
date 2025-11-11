@@ -840,7 +840,7 @@ def render_func(*args, **o_kwargs):
         draw_state = get_draw_state(unique)
         draw_state._input_value = input_value
         draw_state._has_popup = kwargs.get("has_popup", False)
-
+        draw_state.auto_resize = kwargs.get("auto_resize", False)
 
         cursor_pos = imgui.get_cursor_pos()
 
@@ -985,7 +985,11 @@ def render_func(*args, **o_kwargs):
                 depth_to_restore = Melty.depth
                 wrapped_depth_to_restore = Melty.wrapped_depth
                 Melty.depth = requested_z
-                Melty.wrapped_depth = requested_z
+
+                relative_change = abs(requested_z - Melty.wrapped_depth)
+
+                Melty.wrapped_depth = Melty.wrapped_depth + relative_change
+
 
             kwargs['depth'] = Melty.depth
             kwargs['next_kwargs'] = kwargs
@@ -1051,10 +1055,12 @@ def render_func(*args, **o_kwargs):
                         Melty.cache.invalidate(tile_id)
                         request_render()
 
+                    offscreen_depth = Melty.wrapped_depth if "z_pos" not in kwargs else kwargs.get("z_pos", Melty.wrapped_depth)
+
                     if Melty.cache.mark_start_offscreen(input_value=input_value, collection=collection,
                                                         draw_state=draw_state, key=tile_id, name=name,
                                                         indent_size=kwargs.get("indent_size", 10),
-                                                        layer=Melty.wrapped_depth, global_toggles=global_toggles):
+                                                        layer=offscreen_depth, global_toggles=global_toggles):
                         return_value = func(**clean_args)
                         # draw_state.imgui_is_active = imgui.is_item_active()
                         # draw_state.imgui_is_focused = imgui.is_item_focused()
@@ -1136,6 +1142,7 @@ def render_func(*args, **o_kwargs):
                     if (draw_state.bounding_width != original_width or
                             draw_state.bounding_height != original_height):
                         request_render()
+
 
                 if depth_to_restore is not None:
                     Melty.depth = depth_to_restore

@@ -93,6 +93,7 @@ class DrawState(DictConversion):
         self.use_child = False
         self.z_pos = None
         self.content_height = 0
+        self.auto_resize = True
 
         self.imgui_is_toggled_open = False
 
