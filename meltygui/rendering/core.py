@@ -1048,7 +1048,7 @@ def render_func(*args, **o_kwargs):
                     draw_state.bounding_hovered = last_bounding_hovered
                     hover_changed = last_bounding_hovered != draw_state.bounding_hovered
 
-                    if (draw_state.bounding_hovered or
+                    if (draw_state.bounding_hovered or hover_changed or 
                             draw_state.width is None or draw_state.height is None or draw_state.imgui_popover_open):
                         Melty.cache.invalidate(tile_id)
                         request_render()
