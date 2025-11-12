@@ -43,7 +43,6 @@ def with_header_minimal(func, *args, **o_kwargs):
         next_kwargs['func'] = func
         next_kwargs['outer_func'] = wrapper
         next_kwargs['y_offset'] = 0
-        next_kwargs['enable_flow'] = True
         next_kwargs['show_bg'] = False
         next_kwargs['is_tree'] = False
         next_kwargs['min_width'] = kwargs.get('min_width', 200)
@@ -60,7 +59,6 @@ def with_header(func, *args, **o_kwargs):
     def wrapper(next_kwargs=None, draw_state=None, **kwargs):
         annotation = annotation_track(*args, wrapper=wrapper, **o_kwargs)
         if annotation is not None: return annotation
-
         next_kwargs['func'] = func
         next_kwargs['outer_func'] = wrapper
         return core_header(**next_kwargs)
@@ -131,7 +129,7 @@ def draw_managed_window(input_value, *args, **kwargs):
 
 
 @render_func(melty_window=True, auto_resize=False, use_cache=True)
-def draw_window(input_value, *args, **kwargs):
+def draw_window(input_value, style_manager=None, *args, **kwargs):
     window_name = kwargs.get('name', 'Managed Window')
     Melty.registered_windows[window_name] = ManagedWindow(input_value=input_value,
                                                                draw_state=kwargs.get('draw_state', None),
@@ -141,7 +139,15 @@ def draw_window(input_value, *args, **kwargs):
     window_z_pos = list(Melty.registered_windows.keys()).index(window_name)
     kwargs['z_pos'] = window_z_pos + 2
 
-    return draw_any(input_value, *args, **kwargs)
+    previous_tint = style_manager.get_tint()
+    if hasattr(input_value, 'tint') and input_value.tint is not None:
+        style_manager.set_imgui_tint(*input_value.tint)
+    return_val = draw_any(input_value, *args, **kwargs)
+
+    if hasattr(input_value, 'tint'):
+        style_manager.set_imgui_tint(*previous_tint)
+
+    return return_val
 
 def draw(vis):
     # Handle global hotkeys
@@ -994,7 +1000,6 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
         if meta is not None:
             meta.tmp_draw_state = draw_state
 
-        inside_window = len(Melty.window_stack) > 0
         draw_list = imgui.get_window_draw_list()
 
         if Melty.channels_split and show_bg:
@@ -1143,19 +1148,24 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                             draw_state.left is not None and draw_state.top is not None)
                 needs_scroll = draw_state.content_height > draw_state.height if draw_state.height is not None else False
 
+                d_left = draw_state.left
+                d_top = draw_state.top
+                d_width = draw_state.width
+                d_height = draw_state.height
+                clip = True
+
+                if (draw_state.left is None or draw_state.top is None or
+                        draw_state.width is None or draw_state.height is None):
+                    clip = False
+
                 if use_child and has_size and needs_scroll:
                     draw_list = imgui.get_window_draw_list()
                     if Melty.channels_split and show_bg:
                         draw_list.channels_set_current(min(Melty.max_depth - 1, depth))
 
-                    d_left = draw_state.left
-                    d_top = draw_state.top
-                    d_width = draw_state.width
-                    d_height = draw_state.height
-
-                    rect = (d_left, d_top - header_height, d_left + d_width, d_top + d_height)
-
-                    Melty.push_clip(rect)
+                    if clip:
+                        rect = (d_left, d_top - header_height, d_left + d_width, d_top + d_height)
+                        Melty.push_clip(rect)
 
                     current_cursor = imgui.get_cursor_screen_pos()
                     imgui.set_cursor_screen_pos((current_cursor[0], current_cursor[1] - draw_state.scroll_offset[1]))
@@ -1169,13 +1179,15 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                     current_cursor = imgui.get_cursor_screen_pos()
                     imgui.set_cursor_screen_pos((current_cursor[0], current_cursor[1] + draw_state.scroll_offset[1]))
 
-                    Melty.pop_clip()
+                    if clip:
+                        Melty.pop_clip()
 
                     draw_vertical_scrollbar(draw_state.content_height, view_height=d_height, view_width=d_width,
                                             scroll_offset=draw_state.scroll_offset[1], scrollbar_width=8.0, left=d_left,
                                             top=d_top)
 
                 else:
+
                     draw_list = imgui.get_window_draw_list()
                     if Melty.channels_split and show_bg:
                         draw_list.channels_set_current(min(Melty.max_depth - 1, depth))
@@ -1214,9 +1226,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
         background_width = width - indent_size - 4
         background_height = draw_state.height if draw_state.height is not None else 0
 
-        if (not on_drag and not kwargs.get("drag_window", False)) or melty_window:
-            draw_state.top = start_y_pos
-            draw_state.left = start_x_pos
+
         draw_list = imgui.get_window_draw_list()
 
         if Melty.channels_split:
@@ -1275,6 +1285,8 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
 
             imgui.set_cursor_screen_pos((pos_x, pos_y))
 
+            draw_state.cursor_ = pos_x
+
             Melty.undo_clip(unique)
 
             _, _ = render_func(**next_kwargs)
@@ -1292,6 +1304,10 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
         if melty_window:
             imgui.set_cursor_screen_pos((initial_cursor_pos[0],
                                          initial_cursor_pos[1]))
+
+        if (not on_drag and not kwargs.get("drag_window", False)) or melty_window:
+            draw_state.top = start_y_pos
+            draw_state.left = start_x_pos
 
         if on_drag_up and not melty_window:
             melty.drag_in_progress = False
@@ -1507,7 +1523,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
     if hasattr(last_meta, 'tmp_draw_state'):
         last_draw_state = last_meta.tmp_draw_state if last_meta is not None else draw_state
 
-        last_item = collection[last_key] if (isinstance(collection, dict) and last_key in collection) else None
+        # last_item = collection[last_key] if (isinstance(collection, dict) and last_key in collection) else None
         _, flow_spacing = draw_drag_drop_target(do_flow=True, enable_flow=True, melty=melty, offset=0,
                                                 collection=ordered_driver, key=last_key, on_drag=False,
                                                 draw_state=last_draw_state, tag="bottom")

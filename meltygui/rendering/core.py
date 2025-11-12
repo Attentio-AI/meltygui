@@ -970,15 +970,15 @@ def render_func(*args, **o_kwargs):
                 draw_state._did_use_cache = False
 
             inc_depth = "draw_state" in wanted_params or is_root
-            if inc_depth:
-                if len(Melty.unique_stack) <= Melty.depth:
-                    Melty.unique_stack.append(unique)
-                    Melty.draw_state_stack.append(draw_state)
-                else:
-                    Melty.unique_stack[Melty.depth] = unique
-                    Melty.draw_state_stack[Melty.depth] = draw_state
+            inc_depth = True
+            if len(Melty.unique_stack) <= Melty.depth:
+                Melty.unique_stack.append(unique)
+                Melty.draw_state_stack.append(draw_state)
+            else:
+                Melty.unique_stack[Melty.depth] = unique
+                Melty.draw_state_stack[Melty.depth] = draw_state
 
-                Melty.depth = Melty.depth + 1
+            Melty.depth = Melty.depth + 1
 
             requested_z = kwargs.get("z_pos", None)
             if requested_z is not None:
@@ -1048,12 +1048,12 @@ def render_func(*args, **o_kwargs):
                     draw_state.bounding_hovered = last_bounding_hovered
                     hover_changed = last_bounding_hovered != draw_state.bounding_hovered
 
-                    if (draw_state.bounding_hovered or hover_changed or 
+                    if (draw_state.bounding_hovered or hover_changed or
                             draw_state.width is None or draw_state.height is None or draw_state.imgui_popover_open):
                         Melty.cache.invalidate(tile_id)
-                        request_render()
 
-                    offscreen_depth = Melty.wrapped_depth if "z_pos" not in kwargs else kwargs.get("z_pos", Melty.wrapped_depth)
+                    # offscreen_depth = Melty.wrapped_depth if "z_pos" not in kwargs else kwargs.get("z_pos", Melty.wrapped_depth)
+                    offscreen_depth = Melty.depth
 
                     if Melty.cache.mark_start_offscreen(input_value=input_value, collection=collection,
                                                         draw_state=draw_state, key=tile_id, name=name,
@@ -1089,6 +1089,10 @@ def render_func(*args, **o_kwargs):
             print_colored_traceback(*sys.exc_info())
         finally:
             def end_of_render():
+                # if (not kwargs.get("on_drag", False) and not kwargs.get("drag_window", False)) or melty_window:
+                #     draw_state.top = start_cursor[1]
+                #     draw_state.left = start_cursor[0]
+
                 if Melty.imgui_crashed:
                     return False, None
                 # Needs to go after mouse event check
@@ -1105,6 +1109,8 @@ def render_func(*args, **o_kwargs):
                                                          draw_state.top + draw_state.height))
 
                 item_rect = imgui.get_item_rect_size()
+
+
 
                 # if draw_state.width is not None and draw_state.height is not None:
                 #     imgui.set_cursor_screen_pos((snap_int(start_cursor[0]) + draw_state.width,

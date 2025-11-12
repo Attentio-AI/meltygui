@@ -624,11 +624,14 @@ class CSTProxy:
         object.__setattr__(self, "_parent", parent)
         object.__setattr__(self, "_parent_field", field_name)
 
-    def _mark_dirty_up(self):
+    def _mark_dirty_up(self, depth=0):
         object.__setattr__(self, "_dirty", True)
         p = object.__getattribute__(self, "_parent")
+        if depth > 100:
+            return
+
         if p is not None:
-            p._mark_dirty_up()
+            p._mark_dirty_up(depth + 1)
 
     # --- field reflection & rebuild ---
     def _refresh_fields_from(self, node):

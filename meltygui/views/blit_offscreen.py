@@ -75,12 +75,12 @@ class _Rect:
 # ==============================
 # GL helpers
 # ==============================
-def _create_color_tex(w: int, h: int, internal_format=gl.GL_RGBA8) -> int:
+def _create_color_tex(w: int, h: int, internal_format=gl.GL_RGB8) -> int:
     tex = gl.glGenTextures(1)
     gl.glBindTexture(gl.GL_TEXTURE_2D, tex)
-    gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, internal_format, w, h, 0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, None)
-    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
-    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+    gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, internal_format, w, h, 0, gl.GL_RGB, gl.GL_UNSIGNED_BYTE, None)
+    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST)
+    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST)
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE)
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)
     gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
@@ -1026,7 +1026,7 @@ class TileCacheMasked:
             if self.debug_overlay_mask_to_screen or self.debug_overlay_src_to_screen:
                 gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
                 gl.glViewport(0, 0, dd_fb_w, dd_fb_h)
-                gl.glDisable(gl.GL_BLEND)
+                gl.glEnable(gl.GL_BLEND)
                 gl.glUseProgram(self._prog_blit)
 
                 def blit_tex(tex, x, y, w, h):
