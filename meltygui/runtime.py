@@ -602,7 +602,6 @@ class MeltyState:
     def __init__(self):
         self.hover_stack = []
         self.hotkey_stack = []
-        self.scroll_stack = []
         self.triggered_actions = {}
 
         self.top_event_depth = {}
@@ -679,6 +678,7 @@ class Melty:
     clip_stack = []
     clip_stack_holder = {}
     registered_windows = {}
+    scroll_stack = []
 
     channels_split = False
     is_melty_window = False

@@ -47,6 +47,7 @@ class MouseState(DictConversion):
         self.initial_screen_pos = (0, 0)
         self.drag_delta = (0, 0)
         self.initial_window_pos = (0, 0)
+        self.initial_scroll_offset = (0, 0)
 
 
 class CSTDrawBits:
@@ -60,7 +61,7 @@ class CSTDrawBits:
 
 class DragMode(Enum):
     NONE = 'none'
-    MOVE = 'move'
+    WINDOW = 'move'
     RESIZE_BR = 'resize_br'
 
 
@@ -98,7 +99,7 @@ class DrawState(DictConversion):
         self.z_pos = None
         self.content_height = 0
         self.auto_resize = True
-
+        self._tile_id = None
         self.imgui_is_toggled_open = False
 
         self._previous_hash = None

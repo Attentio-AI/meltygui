@@ -59,6 +59,8 @@ def handle_actions(melty, unique, draw_state, func=None):
                         melty.total_drag_frames = 0
                         current_mouse_pos = mouse_pos
                         btn_state.mouse_down_pos = mouse_pos
+                        btn_state.initial_scroll_offset = Melty.scroll_stack[-1] if len(Melty.scroll_stack) > 0 else (0, 0)
+
                         melty.mouse_down_pos = mouse_pos
                         btn_state.initial_screen_pos = (draw_state.left, draw_state.top)
                         btn_state.initial_window_pos = draw_state.window_pos
@@ -700,7 +702,7 @@ def get_drag_mode(a_ds):
     if inside_br:
         return DragMode.RESIZE_BR
 
-    return DragMode.MOVE
+    return DragMode.WINDOW
 
 @render_wrapper
 def render_func(*args, **o_kwargs):
@@ -1016,7 +1018,12 @@ def render_func(*args, **o_kwargs):
 
             push_style_var(imgui.STYLE_ITEM_SPACING, spacing)
             push_style_var(imgui.STYLE_FRAME_PADDING, padding)
-            tile_id = str(computed_unique) + str(METHOD_ID) + str(name) + str(Melty.wrapped_depth)
+            tile_id = str(computed_unique) + str(METHOD_ID) + str(name) + str(Melty.depth)
+
+            if kwargs.get("tile_id", None) is not None:
+                tile_id = kwargs.get("tile_id", tile_id)
+
+            draw_state._tile_id = tile_id
 
             ########################## The render call ##########################
             try:
@@ -1052,9 +1059,14 @@ def render_func(*args, **o_kwargs):
                     if (draw_state.bounding_hovered or hover_changed or
                             draw_state.width is None or draw_state.height is None or draw_state._imgui_popover_open):
                         Melty.cache.invalidate(tile_id)
+                        request_render()
 
                     # offscreen_depth = Melty.wrapped_depth if "z_pos" not in kwargs else kwargs.get("z_pos", Melty.wrapped_depth)
                     offscreen_depth = Melty.depth
+
+                    if Melty.channels_split:
+                        draw_list = imgui.get_window_draw_list()
+                        draw_list.channels_set_current(min(offscreen_depth , Melty.max_depth - 1))
 
                     if Melty.cache.mark_start_offscreen(input_value=input_value, collection=collection,
                                                         draw_state=draw_state, key=tile_id, name=name,

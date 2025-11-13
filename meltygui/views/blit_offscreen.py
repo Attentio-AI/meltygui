@@ -961,6 +961,7 @@ class TileCacheMasked:
                 gl.glUseProgram(self._prog_mask)
 
                 subtree_keys = self._collect_subtree_keys(p.key, local_mask_rects)
+
                 for r in local_mask_rects:
                     if r.key not in subtree_keys:
                         continue
@@ -1026,7 +1027,7 @@ class TileCacheMasked:
             if self.debug_overlay_mask_to_screen or self.debug_overlay_src_to_screen:
                 gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
                 gl.glViewport(0, 0, dd_fb_w, dd_fb_h)
-                gl.glEnable(gl.GL_BLEND)
+                gl.glDisable(gl.GL_BLEND)
                 gl.glUseProgram(self._prog_blit)
 
                 def blit_tex(tex, x, y, w, h):
