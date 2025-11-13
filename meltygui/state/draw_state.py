@@ -65,8 +65,10 @@ class DragMode(Enum):
 
 
 @no_save("mouse_btn_state", "mouse_up", "mouse_down", "bounding_width", "bounding_height",
-         "drag_released", "clicked", "dragged", "render_time", "imgui_is_toggled_open", "z_pos",
-         "is_active", "is_focused", "scroll_offset", "drag_window_pos_x", "drag_window_pos_y", "drag_mode")
+         "drag_released", "top", "left", "clicked", "dragged", "render_time", "imgui_is_toggled_open", "z_pos",
+         "is_active", "is_focused", "drag_window_pos_x", "drag_window_pos_y", "drag_mode",
+         "z_pos", "draw_window_pos_x", "draw_window_pos_y",
+         "content_height", "drag_delta", "screen_pos")
 @exclude("render_time", "bounds_left", "bounds_top", "_input_value", "width", "flow_spacing",
          "hovered", "_did_use_cache", "drag_window", "height", "top", "left", "delete_countdown", "z_pos", "scrolled", "is_hovered_last")
 class DrawState(DictConversion):
@@ -80,12 +82,13 @@ class DrawState(DictConversion):
         # Imgui state mirror
         self.is_active = False
         self.is_focused = False
+        self.content_region = (0, 0)
         self.scroll_offset = (0, 0)
-        self.imgui_is_active = False
-        self.imgui_is_focused = False
-        self.imgui_is_hovered = False
-        self.imgui_is_edited = False
-        self.imgui_popover_open = False
+        self._imgui_is_active = False
+        self._imgui_is_focused = False
+        self._imgui_is_hovered = False
+        self._imgui_is_edited = False
+        self._imgui_popover_open = False
         self.imgui_is_item_activated = False
         self.cst = None
         self.window_pos = None
@@ -117,9 +120,10 @@ class DrawState(DictConversion):
         self.left = None
         self.search_text = ""
         self.search_active = False
-        self.flow_spacing = 0.0
+        self._flow_spacing = 0.0
         self.enabled = True
         self._end_header_size = (0,0)
+        self._header_height = 0
         self._max_indent = 0
         self._name_edit = False
         self._screen_pos = (0, 0)
@@ -130,15 +134,15 @@ class DrawState(DictConversion):
         self.mouse_btn_state = {0: MouseState(),
                                 1: MouseState(),
                                 2: MouseState()}
-        self.mouse_up = False
+        self._mouse_up = False
         self.mouse_down = False
         self.drag_released = False
-        self.hovered = False
+        self._hovered = False
         self.hotkey_receiver = False
-        self.scrolled = False
-        self.clicked = False
+        self._scrolled = False
+        self._clicked = False
         self.dragged = False
-        self.screen_pos = (0, 0)
+        self._screen_pos = (0, 0)
         self.drag_delta = (0, 0)
         self._input_value = None
         self._has_popup = False
@@ -181,7 +185,7 @@ class DrawState(DictConversion):
         if self.left is None or self.top is None or self.width is None or self.height is None:
             return False
         rect = (self.left, self.top - 5, self.width, self.height + 10)
-        if self.imgui_is_active:
+        if self._imgui_is_active:
             return True
 
         if self.is_glfw_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
@@ -194,8 +198,8 @@ class DrawState(DictConversion):
             return False
         rect = (self.bounds_left, self.bounds_top, self.width, self.height + 10)
 
-        if (self.imgui_is_active or self.imgui_is_hovered or self.imgui_is_edited or
-                self.imgui_is_item_activated or self.imgui_popover_open):
+        if (self._imgui_is_active or self._imgui_is_hovered or self._imgui_is_edited or
+                self.imgui_is_item_activated or self._imgui_popover_open):
             return True
 
         if self.is_glfw_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):

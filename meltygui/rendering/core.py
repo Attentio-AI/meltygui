@@ -44,7 +44,7 @@ def handle_actions(melty, unique, draw_state, func=None):
                 melty.dragged_item = None
 
             was_mouse_down = btn_state.mouse_down
-            btn_state.clicked = False
+            btn_state._clicked = False
 
             # Mouse down from glfw
             global_mouse_down = imgui.is_mouse_down(m_btn)
@@ -53,7 +53,7 @@ def handle_actions(melty, unique, draw_state, func=None):
             if btn_state.drag_released:
                 btn_state.drag_released = False
             if draw_state.id in Melty.hovered_drawstate:
-                if global_mouse_down and btn_state.mouse_up:
+                if global_mouse_down and btn_state._mouse_up:
                     if not btn_state.mouse_down:
                         melty.total_drag_distance = 0.0
                         melty.total_drag_frames = 0
@@ -73,11 +73,11 @@ def handle_actions(melty, unique, draw_state, func=None):
                     # Melty.cache.invalidate(tile_id)
 
                 if not global_mouse_down:
-                    btn_state.mouse_up = True
+                    btn_state._mouse_up = True
             else:
-                btn_state.mouse_up = False
+                btn_state._mouse_up = False
             if was_mouse_down and not global_mouse_down:
-                btn_state.clicked = True
+                btn_state._clicked = True
 
                 melty.mark_event(unique, m_btn, ActionType.CLICK)
                 # Melty.cache.invalidate(tile_id)
@@ -130,7 +130,7 @@ def handle_actions(melty, unique, draw_state, func=None):
                                      ActionType.SCROLL, value=scroll_y)
 
         is_hovered = draw_state.is_hovered()
-        draw_state.hovered = False
+        draw_state._hovered = False
         draw_state.hotkey_receiver = False
         if is_hovered:
             melty.hover_stack.append(unique)
@@ -788,8 +788,9 @@ def render_func(*args, **o_kwargs):
 
         if is_root:
             unique = ui_id(datatype=type(input_value), suffix=unique_name)
+            suffix = unique_name
         else:
-            unique = ui_id(datatype=type(input_value), suffix=suffix + unique_name + name + str(key) + str(METHOD_ID), idx=index)
+            unique = ui_id(datatype=type(input_value), suffix=suffix + unique_name + name + str(key), idx=index)
 
         computed_unique = unique
         # -------------------------------------------------------------------------
@@ -1040,7 +1041,7 @@ def render_func(*args, **o_kwargs):
                     jet = jet_color(depth_tint)
                     floating_text(f"{func.__name__} w:{Melty.wrapped_depth}", tint=jet)
                 if draw_state._has_popup:
-                    draw_state.imgui_popover_open = Melty.imgui_popup_open
+                    draw_state._imgui_popover_open = Melty.imgui_popup_open
 
                 if use_cache and Melty.cache.enabled:
 
@@ -1049,7 +1050,7 @@ def render_func(*args, **o_kwargs):
                     hover_changed = last_bounding_hovered != draw_state.bounding_hovered
 
                     if (draw_state.bounding_hovered or hover_changed or
-                            draw_state.width is None or draw_state.height is None or draw_state.imgui_popover_open):
+                            draw_state.width is None or draw_state.height is None or draw_state._imgui_popover_open):
                         Melty.cache.invalidate(tile_id)
 
                     # offscreen_depth = Melty.wrapped_depth if "z_pos" not in kwargs else kwargs.get("z_pos", Melty.wrapped_depth)
@@ -1062,7 +1063,7 @@ def render_func(*args, **o_kwargs):
                         return_value = func(**clean_args)
 
                         # Scroll position relative to window
-                        draw_state.imgui_scroll_y = imgui.get_scroll_y()
+                        draw_state._imgui_scroll_y = imgui.get_scroll_y()
                         draw_state._did_use_cache = False
                     else:
                         draw_state._did_use_cache = True
@@ -1071,15 +1072,15 @@ def render_func(*args, **o_kwargs):
                 else:
                     return_value = func(**clean_args)
 
-                draw_state.imgui_is_edited = imgui.is_item_edited()
-                draw_state.imgui_is_active = imgui.is_item_active()
-                draw_state.imgui_is_focused = imgui.is_item_focused()
-                draw_state.imgui_scroll_y = imgui.get_scroll_y()
-                draw_state.imgui_is_hovered = imgui.is_item_hovered()
-                draw_state.imgui_scroll_y = imgui.get_scroll_y()
+                draw_state._imgui_is_edited = imgui.is_item_edited()
+                draw_state._imgui_is_active = imgui.is_item_active()
+                draw_state._imgui_is_focused = imgui.is_item_focused()
+                draw_state._imgui_scroll_y = imgui.get_scroll_y()
+                draw_state._imgui_is_hovered = imgui.is_item_hovered()
+                draw_state._imgui_scroll_y = imgui.get_scroll_y()
 
                 if draw_state._has_popup:
-                    draw_state.imgui_popover_open = Melty.imgui_popup_open
+                    draw_state._imgui_popover_open = Melty.imgui_popup_open
 
             except Exception as e:
                 print_colored_traceback(*sys.exc_info())
@@ -1110,6 +1111,9 @@ def render_func(*args, **o_kwargs):
 
                 item_rect = imgui.get_item_rect_size()
 
+                if len(Melty.clip_stack) > 0:
+                    clip_width = Melty.clip_stack[-1][2] - Melty.clip_stack[-1][0]
+                    item_rect = (min(item_rect[0], clip_width), item_rect[1])
 
 
                 # if draw_state.width is not None and draw_state.height is not None:
@@ -1117,11 +1121,12 @@ def render_func(*args, **o_kwargs):
                 #                                  snap_int(start_cursor[1]) + draw_state.height))
                 # if draw_state.width is None:
 
+
                 draw_state.bounds_left = snap_int(start_cursor[0])
                 draw_state.bounds_top = snap_int(start_cursor[1])
                 if not kwargs.get("on_drag", False):
-                    original_width = draw_state.bounding_width
-                    original_height = draw_state.bounding_height
+                    original_width_b = draw_state.bounding_width
+                    original_height_b = draw_state.bounding_height
                     if is_initial_draw_state:
                         draw_state.bounding_width = max(draw_state.bounding_width, item_rect[0])
                     else:
@@ -1143,9 +1148,11 @@ def render_func(*args, **o_kwargs):
                         draw_state.width = draw_state.window_size[0]
                         draw_state.height = draw_state.window_size[1]
 
-                    if (draw_state.bounding_width != original_width or
-                            draw_state.bounding_height != original_height):
+                    if (draw_state.bounding_width != original_width_b or
+                            draw_state.bounding_height != original_height_b):
+                        # Melty.invalidate(new_value)
                         request_render()
+
 
                 if depth_to_restore is not None:
                     Melty.depth = depth_to_restore
@@ -1169,16 +1176,16 @@ def render_func(*args, **o_kwargs):
                         last = melty.hover_stack[0]
                         hovered_draw_state = Melty.vis.root.draw_state_registry.get(last, None)
                         if hovered_draw_state is not None:
-                            hovered_draw_state.hovered = True
+                            hovered_draw_state._hovered = True
                             Melty.hovered_drawstate_pending.add(hovered_draw_state.id)
-                            # Melty.invalidate(hovered_draw_state)
+                            # Melty.invalidate(tile_id)
 
                     if len(melty.hotkey_stack) > 0:
                         last = melty.hotkey_stack[0]
                         hovered_draw_state = Melty.vis.root.draw_state_registry.get(last, None)
                         if hovered_draw_state is not None:
                             hovered_draw_state.hotkey_receiver = True
-                            # Melty.invalidate(hovered_draw_state)
+                            # Melty.invalidate(tile_id)
 
                     melty.hover_stack = []
 
