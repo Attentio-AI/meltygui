@@ -995,7 +995,12 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             max_scroll_y = max(0, draw_state.content_height - draw_state.height)
             draw_state.scroll_offset = (current_x,
                                         max(min_scroll_y, min(new_offset_y, max_scroll_y)))
-
+        #
+        # if on_drag and not melty_window:
+        #     tile_id = Melty.get_tile_id()
+        #     print(f"Tile ID before invalidate: {tile_id}")
+        #     Melty.cache.invalidate(Melty.get_parent_tile_id())
+        #     request_render()
 
         initial_cursor_pos = imgui.get_cursor_screen_pos()
         if window_stack is None or len(window_stack) == 0:
@@ -1066,6 +1071,10 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
         bg_selected = False
         header_on_same_line = False
 
+        if (not on_drag and not kwargs.get("drag_window", False)) or melty_window:
+            draw_state.top = start_y_pos
+            draw_state.left = start_x_pos
+
         if show_header:
             next_kwargs['highlight'] = on_hover
             if on_drag and not melty_window:
@@ -1088,12 +1097,13 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                 drag_delta = (mouse_pos[0] - mouse_down_x, mouse_pos[1] - mouse_down_y)
 
                 if draw_state.drag_mode == DragMode.WINDOW:
-                    start_pos_x = draw_state.mouse_btn_state[0].initial_window_pos[0]
-                    start_pos_y = draw_state.mouse_btn_state[0].initial_window_pos[1]
-                    pos_x = start_pos_x + drag_delta[0]
-                    pos_y = start_pos_y + drag_delta[1]
-                    draw_state.window_pos = (pos_x, pos_y)
-                else:
+                    pass
+                    # start_pos_x = draw_state.mouse_btn_state[0].initial_window_pos[0]
+                    # start_pos_y = draw_state.mouse_btn_state[0].initial_window_pos[1]
+                    # pos_x = start_pos_x + drag_delta[0]
+                    # pos_y = start_pos_y + drag_delta[1]
+                    # draw_state.window_pos = (pos_x, pos_y)
+                elif draw_state.drag_mode == DragMode.RESIZE_BR:
                     start_pos_x = draw_state.mouse_btn_state[0].initial_window_size[0]
                     start_pos_y = draw_state.mouse_btn_state[0].initial_window_size[1]
                     size_w = start_pos_x + drag_delta[0]
@@ -1323,7 +1333,6 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             imgui.set_cursor_screen_pos((pos_x, pos_y))
             draw_state.cursor_ = pos_x
 
-            # Melty.undo_clip(unique)
 
             Melty.undo_clip(unique)
             _, _ = render_func(**next_kwargs)
@@ -1342,9 +1351,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             imgui.set_cursor_screen_pos((initial_cursor_pos[0],
                                          initial_cursor_pos[1]))
 
-        if (not on_drag and not kwargs.get("drag_window", False)) or melty_window:
-            draw_state.top = start_y_pos
-            draw_state.left = start_x_pos
+
 
         if on_drag_up and not melty_window:
             melty.drag_in_progress = False

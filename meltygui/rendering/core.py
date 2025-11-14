@@ -42,6 +42,7 @@ def handle_actions(melty, unique, draw_state, func=None):
             if btn_state.drag_released:
                 btn_state.drag_released = False
                 melty.dragged_item = None
+                melty.dragged_tile = None
 
             was_mouse_down = btn_state.mouse_down
             btn_state._clicked = False
@@ -114,6 +115,7 @@ def handle_actions(melty, unique, draw_state, func=None):
                     btn_state.dragged = True
                     melty.drag_in_progress = True
                     melty.dragged_item = draw_state
+                    melty.dragged_tile = Melty.get_tile_id()
                     melty.mark_event(unique, m_btn, ActionType.DRAG)
                     # Melty.cache.invalidate(tile_id)
                     melty.drag_delta = btn_state.drag_delta
@@ -616,7 +618,6 @@ def render_wrapper(*o_args, **o_kwargs):
 
 def annotation_track(*args, wrapper, **kwargs):
     first_arg = args[0] if args else None
-    param_defaults = kwargs.get('param_defaults', None)
     from src.lsd.gl_gui.view.core_views.core_presets import Meta
     if Melty.annotation_mode:
         # Class decoration mode, with args
@@ -635,9 +636,6 @@ def annotation_track(*args, wrapper, **kwargs):
             args = args[1:] if len(args) > 1 else ()
 
             new_meta = Meta()
-            # for k, v in param_defaults.items():
-            #     setattr(new_meta, k, v)
-            #
             for k, v in kwargs.items():
                 setattr(new_meta, k, v)
             new_meta.view_function = wrapper
@@ -651,8 +649,6 @@ def annotation_track(*args, wrapper, **kwargs):
 
         # # View function was used as annotation, ie. some_param: as_float = 0.0
         new_meta = Meta()
-        # for k, v in param_defaults.items():
-        #     setattr(new_meta, k, v)
 
         for k, v in kwargs.items():
             setattr(new_meta, k, v)
@@ -743,13 +739,6 @@ def render_func(*args, **o_kwargs):
         input_value = kwargs.get("input_value", first_arg)
         name = kwargs.get("name", "")
 
-        if type(input_value).__name__ == "CSTProxy":
-            pass
-
-        # Guard None: safe access (original had a potential TypeError)
-        if header_defaults and 'show_name' in header_defaults:
-            pass
-
         if header_defaults is not None:
             kwargs.update(header_defaults)
 
@@ -801,7 +790,6 @@ def render_func(*args, **o_kwargs):
         start_cursor = imgui.get_cursor_screen_pos()
         end_cursor = imgui.get_cursor_screen_pos()
 
-
         if is_root:
             # NOTE: We already computed 'unique' once for root above; do not recompute.
             Melty.unique_stack = []
@@ -846,61 +834,16 @@ def render_func(*args, **o_kwargs):
         draw_state._has_popup = kwargs.get("has_popup", False)
         draw_state.auto_resize = kwargs.get("auto_resize", False)
 
-        cursor_pos = imgui.get_cursor_pos()
-
-        imgui.set_cursor_pos((snap_int(cursor_pos[0]), snap_int(cursor_pos[1])))
-        if kwargs.get("window_pos", None) is not None:
-            draw_state.window_pos = kwargs.get("window_pos", None)
-
-        melty_window = False
-        if kwargs.get("melty_window", False):
-            melty_window = True
-            if name != "Test Window":
-                pass
-            Melty.melty_window_stack.append(unique)
-            cursor_pos = imgui.get_cursor_screen_pos()
-
-            if draw_state.window_pos is None:
-                draw_state.window_pos = (0, 0)
-            window_pos = draw_state.window_pos
-
-            if draw_state is not None and not kwargs.get("on_drag", True):
-                kwargs['melty_window'] = False
-
-            imgui.set_cursor_screen_pos((snap_int(cursor_pos[0] + window_pos[0]),
-                                         snap_int(cursor_pos[1] + window_pos[1])))
-
-        if len(Melty.melty_window_stack) > 0:
-            Melty.is_melty_window = True
-        else:
-            Melty.is_melty_window = False
-
-        begin_group(unique)
-        push_id(unique)
-
         is_initial_draw_state = True
-        nested_call = input_value == Melty.input_value_stack[-1] if len(Melty.input_value_stack) > 0 else False
+        # nested_call = input_value == Melty.input_value_stack[-1] if len(Melty.input_value_stack) > 0 else False
         Melty.input_value_stack.append(input_value)
         inc_depth = False
         Melty.wrapped_depth = Melty.wrapped_depth + 1
         depth_to_restore = None
         wrapped_depth_to_restore = None
+        melty_window = False
 
         try:
-            expected_type = param_types[wanted_params.index("input_value")] if "input_value" in wanted_params else None
-            annotation_empty = expected_type == inspect.Parameter.empty
-
-            if not annotation_empty:
-                if expected_type is not Any and isinstance(expected_type, type):
-                    if not isinstance(input_value, expected_type):
-                        yellow = (1.0, 1.0, 0.0, 1.0)
-                        if imgui.button(f"Fix Type##{unique}"):
-                            return True, expected_type()
-                        same_line()
-                        imgui.text_colored(f"Type mismatch in {func.__name__}\n"
-                                           f"Expected {expected_type.__name__}, "
-                                           f"got {type(input_value).__name__}", *yellow)
-                        return False, None
 
             meta = kwargs.get("meta", None)
             if meta is None:
@@ -924,9 +867,6 @@ def render_func(*args, **o_kwargs):
                 if default_value is None:
                     default_value = (param_defaults or {}).get(key, default_value)
                 kwargs.setdefault(key, default_value)
-
-            if not meta.visible_in_ui:
-                return False, None
 
             kwargs.update(Melty.global_attrs)
 
@@ -960,8 +900,6 @@ def render_func(*args, **o_kwargs):
                         else:
                             kwargs.setdefault(hk_name, False)
             kwargs.setdefault('meta', meta)
-            if name == "alpha":
-                pass
 
             kwargs.update(meta.__dict__)
             for param in wanted_params:
@@ -997,12 +935,10 @@ def render_func(*args, **o_kwargs):
             kwargs['depth'] = Melty.depth
             kwargs['next_kwargs'] = kwargs
 
-            if type(input_value).__name__ == "LoraCollection":
-                pass
 
             if 'kwargs' in wanted_params:
                 clean_args = kwargs
-                kwargs.update(Melty.global_attrs)
+                # kwargs.update(Melty.global_attrs)
             else:
                 # clean_args = copy(kwargs)
                 # to_delete = []
@@ -1013,17 +949,77 @@ def render_func(*args, **o_kwargs):
                 #     clean_args.pop(an_arg)
                 clean_args = {k: kwargs[k] for k in wanted_params if k in kwargs}
 
-            spacing = kwargs.get('spacing', Melty.spacing)
-            padding = kwargs.get('padding', Melty.padding)
-
-            push_style_var(imgui.STYLE_ITEM_SPACING, spacing)
-            push_style_var(imgui.STYLE_FRAME_PADDING, padding)
-            tile_id = str(computed_unique) + str(METHOD_ID) + str(name) + str(Melty.depth)
-
-            if kwargs.get("tile_id", None) is not None:
-                tile_id = kwargs.get("tile_id", tile_id)
+            tile_id = str(computed_unique)[:5] + str(METHOD_ID)[-5:] + str(name) + str(Melty.depth) + str(id(input_value))[:3]
 
             draw_state._tile_id = tile_id
+            ##################################################### WINDOW SETUP #####################################################
+            if kwargs.get("melty_window", False) and kwargs.get("on_drag", False):
+                mouse_pos = imgui.get_mouse_pos()
+
+                mouse_down_x = draw_state.mouse_btn_state[0].mouse_down_pos[0]
+                mouse_down_y = draw_state.mouse_btn_state[0].mouse_down_pos[1]
+                drag_delta = (mouse_pos[0] - mouse_down_x, mouse_pos[1] - mouse_down_y)
+
+                if draw_state.drag_mode == DragMode.WINDOW:
+                    start_pos_x = draw_state.mouse_btn_state[0].initial_window_pos[0]
+                    start_pos_y = draw_state.mouse_btn_state[0].initial_window_pos[1]
+                    pos_x = start_pos_x + drag_delta[0]
+                    pos_y = start_pos_y + drag_delta[1]
+                    draw_state.window_pos = (pos_x, pos_y)
+
+            if kwargs.get("window_pos", None) is not None:
+                draw_state.window_pos = kwargs.get("window_pos", None)
+
+            if kwargs.get("melty_window", False):
+                melty_window = True
+                Melty.melty_window_stack.append(unique)
+                cursor_pos = imgui.get_cursor_screen_pos()
+
+                if draw_state.window_pos is None:
+                    draw_state.window_pos = (0, 0)
+                window_pos = draw_state.window_pos
+
+                if draw_state is not None and not kwargs.get("on_drag", True):
+                    kwargs['melty_window'] = False
+
+                imgui.set_cursor_screen_pos((snap_int(cursor_pos[0] + window_pos[0]),
+                                             snap_int(cursor_pos[1] + window_pos[1])))
+
+            if len(Melty.melty_window_stack) > 0:
+                Melty.is_melty_window = True
+            else:
+                Melty.is_melty_window = False
+
+            ######################## ERROR HANDLING FOR TYPES ########################
+
+            cursor_pos = imgui.get_cursor_pos()
+            imgui.set_cursor_pos((snap_int(cursor_pos[0]), snap_int(cursor_pos[1])))
+
+            begin_group(unique)
+            push_id(unique)
+
+            expected_type = param_types[wanted_params.index("input_value")] if "input_value" in wanted_params else None
+            annotation_empty = expected_type == inspect.Parameter.empty
+            if not annotation_empty:
+                if expected_type is not Any and isinstance(expected_type, type):
+                    if not isinstance(input_value, expected_type):
+                        yellow = (1.0, 1.0, 0.0, 1.0)
+                        if imgui.button(f"Fix Type##{unique}"):
+                            return True, expected_type()
+                        same_line()
+                        imgui.text_colored(f"Type mismatch in {func.__name__}\n"
+                                           f"Expected {expected_type.__name__}, "
+                                           f"got {type(input_value).__name__}", *yellow)
+                        return False, None
+
+            if not meta.visible_in_ui:
+                return False, None
+
+            spacing = kwargs.get('spacing', Melty.spacing)
+            padding = kwargs.get('padding', Melty.padding)
+            push_style_var(imgui.STYLE_ITEM_SPACING, spacing)
+            push_style_var(imgui.STYLE_FRAME_PADDING, padding)
+
 
             ########################## The render call ##########################
             try:
@@ -1059,6 +1055,17 @@ def render_func(*args, **o_kwargs):
                     if (draw_state.bounding_hovered or hover_changed or
                             draw_state.width is None or draw_state.height is None or draw_state._imgui_popover_open):
                         Melty.cache.invalidate(tile_id)
+
+                    if melty.dragged_tile == tile_id:
+                        # for a_tile in Melty.tile_id_stack:
+                        #     Melty.cache.invalidate(a_tile)
+
+                        # Melty.cache.invalidate(tile_id)
+                        Melty.cache.invalidate_by_obj(input_value)
+
+                        # if collection is not None:
+                        #     Melty.cache.invalidate_by_obj(collection)
+
                         request_render()
 
                     # offscreen_depth = Melty.wrapped_depth if "z_pos" not in kwargs else kwargs.get("z_pos", Melty.wrapped_depth)
@@ -1072,6 +1079,9 @@ def render_func(*args, **o_kwargs):
                                                         draw_state=draw_state, key=tile_id, name=name,
                                                         indent_size=kwargs.get("indent_size", 10),
                                                         layer=offscreen_depth, global_toggles=global_toggles):
+
+
+
                         return_value = func(**clean_args)
 
                         # Scroll position relative to window
@@ -1079,6 +1089,11 @@ def render_func(*args, **o_kwargs):
                         draw_state._did_use_cache = False
                     else:
                         draw_state._did_use_cache = True
+                        # left, top = imgui.get_item_rect_min()
+                        # width, height = imgui.get_item_rect_size()
+                        # Melty.cache.mask_mark_rect(Melty.depth, left, top, width, height,
+                        #                            key=f"{unique}_mask")
+
 
                     Melty.cache.mark_end_offscreen()
                 else:
@@ -1114,6 +1129,9 @@ def render_func(*args, **o_kwargs):
                 pop_id()
                 end_group()
                 pop_style_var(2)
+
+                # if not kwargs.get("on_drag", False) or melty_window:
+                #     draw_state.left, draw_state.top = imgui.get_item_rect_min()
 
                 if kwargs.get("on_drag", False) and not melty_window:
                     if draw_state.left is not None and draw_state.top is not None:
@@ -1162,9 +1180,7 @@ def render_func(*args, **o_kwargs):
 
                     if (draw_state.bounding_width != original_width_b or
                             draw_state.bounding_height != original_height_b):
-                        # Melty.invalidate(new_value)
                         request_render()
-
 
                 if depth_to_restore is not None:
                     Melty.depth = depth_to_restore

@@ -608,6 +608,7 @@ class MeltyState:
         self.top_event = {}
 
         self.dragged_item = None
+        self.dragged_tile = None
         self.max_distance = 200
 
         self.selected_views = {}
@@ -679,6 +680,7 @@ class Melty:
     clip_stack_holder = {}
     registered_windows = {}
     scroll_stack = []
+    tile_id_stack = []
 
     channels_split = False
     is_melty_window = False
@@ -729,6 +731,20 @@ class Melty:
     all_dirty = False
     hovered_drawstate = set()
     hovered_drawstate_pending = set()
+
+    @classmethod
+    def get_tile_id(cls):
+        if len(cls.tile_id_stack) > 0:
+            return cls.tile_id_stack[-1]
+        else:
+            return None
+
+    @classmethod
+    def get_parent_tile_id(cls):
+        if len(cls.tile_id_stack) > 1:
+            return cls.tile_id_stack[-2]
+        else:
+            return None
 
     @classmethod
     def push_clip(cls, rect):

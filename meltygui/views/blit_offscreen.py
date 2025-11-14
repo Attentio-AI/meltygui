@@ -683,6 +683,9 @@ class TileCacheMasked:
     # ----- Begin/End with per-view layer (from depth) -----
     def mark_start_offscreen(self, input_value, collection, draw_state, name, key: str, layer: int, global_toggles=None,
                              indent_size=0, width=0, height=0) -> bool:
+
+        from src.lsd.gl_gui.melty import Melty
+        Melty.tile_id_stack.append(key)
         x, y = imgui.get_cursor_screen_pos()
         # snap cursor to nearest pixel to avoid sub-pixel jitter during layout
         imgui.set_cursor_screen_pos((snap_int(x), snap_int(y)))
@@ -757,6 +760,9 @@ class TileCacheMasked:
         pop_id()
         from src.lsd.gl_gui.view.core_views.core_render import end_group
         end_group()
+
+        from src.lsd.gl_gui.melty import Melty
+        Melty.tile_id_stack.pop()
 
         # ctx.draw_state.imgui_is_edited = imgui.is_item_edited()
         # ctx.draw_state.imgui_is_active = imgui.is_item_active()
