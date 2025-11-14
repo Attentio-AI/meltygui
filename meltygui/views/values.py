@@ -101,8 +101,8 @@ def draw_melty_windows(vis):
 
     draw_list = imgui.get_window_draw_list()
 
-    draw_any(vis.root.lora_collection, melty_window=True, auto_resize=False, name="Test Window")
-    draw_any(0.0, name="Some val", melty_window=True, auto_resize=False, show_bg=True)
+    # draw_any(vis.root.lora_collection, melty_window=True, auto_resize=False, name="Test Window")
+    # draw_any(0.0, name="Some Number", melty_window=True, auto_resize=False, show_bg=True)
 
     draw_window(vis.root.lora_collection, name="Test Window 1")
     draw_window(filesystem_proxy, name="Filesystem Test")
@@ -143,6 +143,7 @@ def draw_window(input_value, style_manager=None, *args, **kwargs):
     previous_tint = style_manager.get_tint()
     if hasattr(input_value, 'tint') and input_value.tint is not None:
         style_manager.set_imgui_tint(*input_value.tint)
+
     return_val = draw_any(input_value, *args, **kwargs)
 
     if hasattr(input_value, 'tint'):
@@ -695,7 +696,10 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
     mouse_over_window = imgui.is_mouse_hovering_rect(*window_rect)
 
     if melty.drag_in_progress:
-        if melty.dragged_item._input_value == collection:
+        if melty.dragged_item is None:
+            melty.drag_in_progress = False
+
+        elif melty.dragged_item._input_value == collection:
             return False, 0.0
 
     if melty.drag_in_progress and do_flow and not on_drag and mouse_over_window:
@@ -792,7 +796,7 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
 
             if opacity > 0.001:
                 Melty.cache.mask_mark_rect(Melty.depth + 2, left, top, width, height,
-                                               key=f"{cursor_top}_{cursor_bottom}flow")
+                                               key=f"{Melty.get_tile_id()}_flow")
             #
             # draw_list.add_line(draw_state.left, draw_state.top - 2 - offset,
             #                    draw_state.left + draw_state.width,
@@ -959,7 +963,12 @@ def draw_vertical_scrollbar(content_height: float,
     # Draw
     dl = imgui.get_window_draw_list()
     # Track
+    track_w = track_x2 - track_x1
+    track_h = track_y2 - track_y1
     dl.add_rect_filled(track_x1, track_y1, track_x2, track_y2, col_track, rounding)
+    Melty.cache.mask_mark_rect(Melty.max_depth  - 1, track_x1, track_y1, track_w, track_h,
+                               key=Melty.get_tile_id() + "scrollbar")
+
     dl.add_rect(track_x1, track_y1, track_x2, track_y2, col_border, rounding)
     # Grab
     if grab_y2 > grab_y1 and grab_x2 > grab_x1:
@@ -1484,7 +1493,10 @@ def draw_collection(input_value, draw_state, depth, style_manager,
         view_fn = getattr(item_meta, "view_function", draw_collection)
         if view_fn is None:
             view_fn = draw_collection
-        item_suffix = f"{base_suffix}_{key_str}"
+
+        id_val = getattr(input_value, "unique_id", "")
+
+        item_suffix = f"{base_suffix}_{key_str}_{id_val}"
         obj_unique = ui_id(datatype=item.__class__, suffix=item_suffix)
 
         trigger_collapse = False

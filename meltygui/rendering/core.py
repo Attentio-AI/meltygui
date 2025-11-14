@@ -772,7 +772,7 @@ def render_func(*args, **o_kwargs):
 
         index = key if isinstance(key, int) else 0
         if suffix is None:
-            suffix = Melty.unique_stack[Melty.depth] if Melty.depth < len(Melty.unique_stack) else (name or "")
+            suffix = Melty.unique_stack[-1] if len(Melty.unique_stack) > 0 else (name or "")
 
         # Keep original behavior of always appending name (even if empty)
         suffix = f"{suffix}_{name}"
@@ -781,7 +781,7 @@ def render_func(*args, **o_kwargs):
             unique = ui_id(datatype=type(input_value), suffix=unique_name)
             suffix = unique_name
         else:
-            unique = ui_id(datatype=type(input_value), suffix=suffix + unique_name + name + str(key), idx=index)
+            unique = ui_id(datatype=type(input_value), suffix=suffix + unique_name + str(key), idx=index)
 
         computed_unique = unique
         # -------------------------------------------------------------------------
@@ -912,11 +912,13 @@ def render_func(*args, **o_kwargs):
 
             inc_depth = "draw_state" in wanted_params or is_root
             inc_depth = True
-            if len(Melty.unique_stack) <= Melty.depth:
-                Melty.unique_stack.append(unique)
+
+            Melty.unique_stack.append(computed_unique)
+
+            if len(Melty.draw_state_stack) <= Melty.depth:
                 Melty.draw_state_stack.append(draw_state)
             else:
-                Melty.unique_stack[Melty.depth] = unique
+                # Melty.unique_stack[Melty.depth] = computed_unique
                 Melty.draw_state_stack[Melty.depth] = draw_state
 
             Melty.depth = Melty.depth + 1
@@ -949,7 +951,7 @@ def render_func(*args, **o_kwargs):
                 #     clean_args.pop(an_arg)
                 clean_args = {k: kwargs[k] for k in wanted_params if k in kwargs}
 
-            tile_id = str(computed_unique)[:5] + str(METHOD_ID)[-5:] + str(name) + str(Melty.depth) + str(id(input_value))[:3]
+            tile_id = str(computed_unique)[-5:] + str(METHOD_ID)[-5:] + str(key)
 
             draw_state._tile_id = tile_id
             ##################################################### WINDOW SETUP #####################################################
@@ -1188,6 +1190,8 @@ def render_func(*args, **o_kwargs):
 
                 if inc_depth:
                     Melty.depth = Melty.depth - 1
+                    Melty.unique_stack.pop()
+
                 Melty.input_value_stack.pop()
 
                 melty.triggered_actions.pop(unique, None)

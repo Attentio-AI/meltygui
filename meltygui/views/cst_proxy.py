@@ -596,6 +596,11 @@ class CSTProxy:
     def __class__(self):
         return type(self._node)
 
+    @property
+    def unique_id(self):
+        finger_print = _hash_key_for_elem(self.node)
+        return str(finger_print)
+
     # ---- error handling ----
     @property
     def has_error(self) -> bool:
@@ -614,6 +619,12 @@ class CSTProxy:
         if self._dirty:
             self._rebuild()
         return object.__getattribute__(self, "_node")
+
+    # To string
+    # def __str__(self) -> str:
+    #     # fingerprint
+    #     finger_print = _hash_key_for_elem(self.node)
+    #     return str(finger_print)
 
     def flush(self):
         if self._dirty:
@@ -808,6 +819,10 @@ class CSTProxy:
             key = _dedupe_key(base, seq)
         seq[key] = w  # bubbles dirty
         return key
+
+    # Hash & repr
+    def __hash__(self):
+        return hash(_fingerprint_struct(self.node))
 
     def __setattr__(self, name, value):
         if name in getattr(self, "_field_names", ()):
