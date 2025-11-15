@@ -364,6 +364,14 @@ class CSTDictProxy(dict):
                 w._set_parent(parent, field_name)
             super().__setitem__(k, w)
 
+        from src.lsd.gl_gui.model.core_model.core_enums import generate_id
+        self.id = generate_id()
+
+
+    @property
+    def unique_id(self):
+        return str(self.id)
+
     # --- helpers ---
     def _touch(self):
         self._parent._mark_dirty_up()
@@ -589,6 +597,8 @@ class CSTProxy:
         object.__setattr__(self, "_parent", None)
         object.__setattr__(self, "_parent_field", None)
         object.__setattr__(self, "_error", None)  # ErrorState | None
+        from src.lsd.gl_gui.model.core_model.core_enums import generate_id
+        self.id = generate_id()
         self._refresh_fields_from(node)
 
     # class spoofing so type-based routing works
@@ -599,7 +609,7 @@ class CSTProxy:
     @property
     def unique_id(self):
         finger_print = _hash_key_for_elem(self.node)
-        return str(finger_print)
+        return str(finger_print) + "_" + str(self.id)
 
     # ---- error handling ----
     @property

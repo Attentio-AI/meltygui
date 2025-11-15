@@ -54,7 +54,7 @@ def with_header_minimal(func, *args, **o_kwargs):
 
 
 
-@render_wrapper(wraps=render_func)
+@render_wrapper(wraps=render_func, use_cache=True)
 def with_header(func, *args, **o_kwargs):
     def wrapper(next_kwargs=None, draw_state=None, **kwargs):
 
@@ -96,28 +96,25 @@ def draw_melty_windows(vis):
     draw_list = imgui.get_window_draw_list()
     draw_list.channels_split(Melty.max_depth)
     Melty.channels_split = True
-
     Melty.window_stack.append((title, True))
 
-    draw_list = imgui.get_window_draw_list()
-
-    # draw_any(vis.root.lora_collection, melty_window=True, auto_resize=False, name="Test Window")
-    # draw_any(0.0, name="Some Number", melty_window=True, auto_resize=False, show_bg=True)
-
-    draw_window(vis.root.lora_collection, name="Test Window 1")
-
-    global filesystem_proxy
-    draw_window(filesystem_proxy, name="Filesystem Test")
-    global proxy
-    draw_window(proxy, name="CST Proxy")
-
     draw_any(Melty.registered_windows, show_add_delete=False, name="Window Manager")
+
+    draw_main_window(name="main_window")
 
     # End frame ###############
     Melty.window_stack.pop()
     draw_list.channels_merge()
     Melty.channels_split = False
     end()
+
+
+@render_func
+def draw_main_window(vis, *args, **kwargs):
+
+    draw_window(proxy, name="CST Proxy")
+    draw_window(filesystem_proxy, name="Filesystem Test")
+    draw_window(vis.root.lora_collection, name="Test Window 1")
 
 
 @with_header(is_default_for=ManagedWindow, is_tree=False,
@@ -660,7 +657,7 @@ def render_with_foo(func, *args, **kwargs):
     return wrapper
 
 
-@render_func(use_cache=False)
+@render_func(use_cache=True)
 def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
                           collection, key, melty, y_offset, enable_flow, min_width,
                           unique, tag, style_manager, global_style, offset=0, indent_size=10):
@@ -1106,8 +1103,8 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             if melty_window and on_drag:
                 mouse_pos = imgui.get_mouse_pos()
 
-                mouse_down_x = melty.mouse_down_pos[0]
-                mouse_down_y = melty.mouse_down_pos[1]
+                mouse_down_x = draw_state.mouse_btn_state[0].mouse_down_pos[0]
+                mouse_down_y = draw_state.mouse_btn_state[0].mouse_down_pos[1]
                 drag_delta = (mouse_pos[0] - mouse_down_x, mouse_pos[1] - mouse_down_y)
 
                 if draw_state.drag_mode == DragMode.WINDOW:
@@ -1319,8 +1316,8 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
         if on_drag and not melty_window:
 
             mouse_pos = imgui.get_mouse_pos()
-            mouse_down_x = melty.mouse_down_pos[0]
-            mouse_down_y = melty.mouse_down_pos[1]
+            mouse_down_x = draw_state.mouse_btn_state[0].mouse_down_pos[0]
+            mouse_down_y = draw_state.mouse_btn_state[0].mouse_down_pos[1]
             drag_delta = (mouse_pos[0] - mouse_down_x, mouse_pos[1] - mouse_down_y)
 
             next_kwargs['opacity'] = 1.0
@@ -1332,13 +1329,11 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             next_kwargs['drag_window'] = True
             next_kwargs['enable_flow'] = False
             next_kwargs['z_pos'] = Melty.depth + 7
-            next_kwargs['draw_state'] = draw_state
-
 
             if draw_state.mouse_btn_state[0].initial_window_pos is None:
                 draw_state.mouse_btn_state[0].initial_window_pos = (0, 0)
 
-            initial_sx, initial_sy = melty.initial_scroll_offset
+            initial_sx, initial_sy = draw_state.mouse_btn_state[0].initial_scroll_offset
             current_sx, current_sy = Melty.scroll_stack[-1] if len(Melty.scroll_stack) > 0 else (0, 0)
             delta_sx = current_sx - initial_sx
             delta_sy = current_sy - initial_sy
@@ -1853,7 +1848,7 @@ def draw_header(input_value=None, name="", suffix="", collection=None, display_n
         same_line()
 
     if show_unique:
-        imgui.text_colored(f"({str(Melty.get_tile_id())[-3:]})", *(0.4, 0.6, 0.9, 1.0))
+        imgui.text_colored(f"({str(unique)[-3:]})", *(0.4, 0.6, 0.9, 1.0))
         same_line()
     if show_name and name != "":
         same_line()

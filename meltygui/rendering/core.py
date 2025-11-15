@@ -1057,7 +1057,7 @@ def render_func(*args, **o_kwargs):
                         #     Melty.cache.invalidate(a_tile)
 
                         # Melty.cache.invalidate(tile_id)
-                        # Melty.cache.invalidate_by_obj(input_value)
+                        Melty.cache.invalidate_by_obj(input_value)
 
                         # if collection is not None:
                         #     Melty.cache.invalidate_by_obj(collection)
