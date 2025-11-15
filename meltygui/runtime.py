@@ -631,6 +631,7 @@ class MeltyState:
         self.drag_target_key = None
         self.drag_target_collection = None
         self.drag_drop_action = CollectionAction()
+        self.initial_scroll_offset = (0,0)
 
         self.target_distance = self.max_distance
 

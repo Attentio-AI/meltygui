@@ -47,7 +47,6 @@ def with_header_minimal(func, *args, **o_kwargs):
         next_kwargs['show_bg'] = False
         next_kwargs['is_tree'] = False
         next_kwargs['min_width'] = kwargs.get('min_width', 200)
-
         return core_header(**next_kwargs)
 
     setattr(wrapper, '__name__', f"{func.__name__} --- with_header_minimal")
@@ -55,9 +54,10 @@ def with_header_minimal(func, *args, **o_kwargs):
 
 
 
-@render_wrapper(wraps=render_func, use_cache=True)
+@render_wrapper(wraps=render_func)
 def with_header(func, *args, **o_kwargs):
     def wrapper(next_kwargs=None, draw_state=None, **kwargs):
+
         annotation = annotation_track(*args, wrapper=wrapper, **o_kwargs)
         if annotation is not None: return annotation
         next_kwargs['func'] = func
@@ -105,6 +105,8 @@ def draw_melty_windows(vis):
     # draw_any(0.0, name="Some Number", melty_window=True, auto_resize=False, show_bg=True)
 
     draw_window(vis.root.lora_collection, name="Test Window 1")
+
+    global filesystem_proxy
     draw_window(filesystem_proxy, name="Filesystem Test")
     global proxy
     draw_window(proxy, name="CST Proxy")
@@ -129,7 +131,7 @@ def draw_managed_window(input_value, *args, **kwargs):
     #     imgui.text("No Draw State")
 
 
-@render_func(melty_window=True, auto_resize=False)
+@render_func(melty_window=True, auto_resize=False, draggable=True)
 def draw_window(input_value, style_manager=None, *args, **kwargs):
     window_name = kwargs.get('name', 'Managed Window')
     Melty.registered_windows[window_name] = ManagedWindow(input_value=input_value,
@@ -345,7 +347,7 @@ def draw_cst_dict(input_value: CSTDictProxy, **kwargs):
     if len(input_value) > 0:
         # Show line numbers for dicts of simple statements
         if isinstance(list(input_value.values())[0], cst.SimpleStatementLine):
-            kwargs['show_indices'] = True
+            kwargs['show_indices'] = False
     kwargs['show_name'] = False
 
     draw_collection(input_value, **kwargs)
@@ -658,7 +660,7 @@ def render_with_foo(func, *args, **kwargs):
     return wrapper
 
 
-@render_func(use_cache=True)
+@render_func(use_cache=False)
 def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
                           collection, key, melty, y_offset, enable_flow, min_width,
                           unique, tag, style_manager, global_style, offset=0, indent_size=10):
@@ -778,10 +780,11 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
                                                               alpha=opacity, saturation=0.8)
             # if draw_state.width == None:
             #     draw_state.width = min_width
-            if draw_state.left == None:
-                draw_state.left = 1
+            # if draw_state.left == None:
+            #     draw_state.left = 1
 
             padding = imgui.get_style().frame_padding.x
+
             color = color if active_drop else inactive_color
 
             top = cursor_top - 1
@@ -991,6 +994,8 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                 show_header=True, show_bg=True, unique=0, name="", style_manager=None, global_style=None, parent_show_add_delete=True,
                 selected_views=None, on_drag=False, on_drag_up=False, do_flow=True, melty=None, enable_flow=True, header_same_line=False,
                 on_hover=False, next_kwargs=None, meta=None, on_same_line=False, y_offset=0, width=None, min_width=1, enable_scroll=True, **kwargs):
+
+
         if on_scroll is not None:
             scroll_offset = draw_state.scroll_offset
             current_x = scroll_offset[0]
@@ -1101,8 +1106,8 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             if melty_window and on_drag:
                 mouse_pos = imgui.get_mouse_pos()
 
-                mouse_down_x = draw_state.mouse_btn_state[0].mouse_down_pos[0]
-                mouse_down_y = draw_state.mouse_btn_state[0].mouse_down_pos[1]
+                mouse_down_x = melty.mouse_down_pos[0]
+                mouse_down_y = melty.mouse_down_pos[1]
                 drag_delta = (mouse_pos[0] - mouse_down_x, mouse_pos[1] - mouse_down_y)
 
                 if draw_state.drag_mode == DragMode.WINDOW:
@@ -1314,8 +1319,8 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
         if on_drag and not melty_window:
 
             mouse_pos = imgui.get_mouse_pos()
-            mouse_down_x = draw_state.mouse_btn_state[0].mouse_down_pos[0]
-            mouse_down_y = draw_state.mouse_btn_state[0].mouse_down_pos[1]
+            mouse_down_x = melty.mouse_down_pos[0]
+            mouse_down_y = melty.mouse_down_pos[1]
             drag_delta = (mouse_pos[0] - mouse_down_x, mouse_pos[1] - mouse_down_y)
 
             next_kwargs['opacity'] = 1.0
@@ -1327,11 +1332,13 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             next_kwargs['drag_window'] = True
             next_kwargs['enable_flow'] = False
             next_kwargs['z_pos'] = Melty.depth + 7
+            next_kwargs['draw_state'] = draw_state
+
 
             if draw_state.mouse_btn_state[0].initial_window_pos is None:
                 draw_state.mouse_btn_state[0].initial_window_pos = (0, 0)
 
-            initial_sx, initial_sy = draw_state.mouse_btn_state[0].initial_scroll_offset
+            initial_sx, initial_sy = melty.initial_scroll_offset
             current_sx, current_sy = Melty.scroll_stack[-1] if len(Melty.scroll_stack) > 0 else (0, 0)
             delta_sx = current_sx - initial_sx
             delta_sy = current_sy - initial_sy
@@ -1711,7 +1718,7 @@ def open_file(path, app=None):
     else:
         print(f"Path does not exist: {path}")
 
-@render_func()
+@render_func(draggable=False)
 def draw_header(input_value=None, name="", suffix="", collection=None, display_name=None, meta=None, unique=None, is_tree=True,
                 show_name=True, name_func=None, show_type=False, show_unique=False,
                 on_search=False, trigger_collapse=False, trigger_expand=False,
@@ -1846,7 +1853,7 @@ def draw_header(input_value=None, name="", suffix="", collection=None, display_n
         same_line()
 
     if show_unique:
-        imgui.text_colored(f"({str(unique)[-3:]})", *(0.4, 0.6, 0.9, 1.0))
+        imgui.text_colored(f"({str(Melty.get_tile_id())[-3:]})", *(0.4, 0.6, 0.9, 1.0))
         same_line()
     if show_name and name != "":
         same_line()
@@ -1956,7 +1963,7 @@ def draw_object(input_value=None, draw_state=None, meta=None, name="", style_man
     return changed, new_value
 
 
-@render_func(use_cache=True)
+@render_func(use_cache=True, draggable=True)
 def draw_any(input_value, indent_size=0, *args, **kwargs):
     kwargs['indent_size'] = indent_size
 
@@ -2053,9 +2060,11 @@ def draw_str(input_value: str):
         height = imgui.get_text_line_height() + padding * 2
     else:
         height = (max(0, min(200, line_count * line_height + 8)))
-    # changed, value = imgui.input_text_multiline("##str", input_value, height=height)
-    # if changed:
-    #     return True, value
+
+    imgui.set_item_allow_overlap()
+    changed, value = imgui.input_text_multiline("##str", input_value, height=height)
+    if changed:
+        return True, value
 
     return changed, value
 

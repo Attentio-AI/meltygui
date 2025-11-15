@@ -35,7 +35,7 @@ _floating_text_prev_frame_heights = {}  # Store max label height per line from p
 
 
 def handle_actions(melty, unique, draw_state, func=None):
-    if Melty.is_window_enabled() and (imgui.is_window_hovered()):
+    if Melty.is_window_enabled() and (imgui.is_window_hovered() or melty.drag_in_progress):
         for m_btn in [0, 1, 2]:
             btn_state = draw_state.mouse_btn_state[m_btn]
 
@@ -61,6 +61,7 @@ def handle_actions(melty, unique, draw_state, func=None):
                         current_mouse_pos = mouse_pos
                         btn_state.mouse_down_pos = mouse_pos
                         btn_state.initial_scroll_offset = Melty.scroll_stack[-1] if len(Melty.scroll_stack) > 0 else (0, 0)
+                        melty.initial_scroll_offset = Melty.scroll_stack[-1] if len(Melty.scroll_stack) > 0 else (0, 0)
 
                         melty.mouse_down_pos = mouse_pos
                         btn_state.initial_screen_pos = (draw_state.left, draw_state.top)
@@ -133,15 +134,6 @@ def handle_actions(melty, unique, draw_state, func=None):
                     melty.mark_event(unique, scroll_y,
                                      ActionType.SCROLL, value=scroll_y)
 
-        is_hovered = draw_state.is_hovered()
-        draw_state._hovered = False
-        draw_state.hotkey_receiver = False
-        if is_hovered:
-            melty.hover_stack.append(unique)
-
-
-        if is_hovered and func in Melty.hotkey_registry:
-            melty.hotkey_stack.append(unique)
 
         # global_mouse_down = glfw.get_mouse_button(Melty.glfw_window, 0) == glfw.PRESS
         # if not global_mouse_down:
@@ -834,6 +826,7 @@ def render_func(*args, **o_kwargs):
         draw_state._has_popup = kwargs.get("has_popup", False)
         draw_state.auto_resize = kwargs.get("auto_resize", False)
 
+
         is_initial_draw_state = True
         # nested_call = input_value == Melty.input_value_stack[-1] if len(Melty.input_value_stack) > 0 else False
         Melty.input_value_stack.append(input_value)
@@ -935,8 +928,9 @@ def render_func(*args, **o_kwargs):
 
 
             kwargs['depth'] = Melty.depth
-            kwargs['next_kwargs'] = kwargs
+            draw_state._draggable = kwargs.get("draggable", False)
 
+            kwargs['next_kwargs'] = kwargs
 
             if 'kwargs' in wanted_params:
                 clean_args = kwargs
@@ -1063,7 +1057,7 @@ def render_func(*args, **o_kwargs):
                         #     Melty.cache.invalidate(a_tile)
 
                         # Melty.cache.invalidate(tile_id)
-                        Melty.cache.invalidate_by_obj(input_value)
+                        # Melty.cache.invalidate_by_obj(input_value)
 
                         # if collection is not None:
                         #     Melty.cache.invalidate_by_obj(collection)
@@ -1101,6 +1095,18 @@ def render_func(*args, **o_kwargs):
                 else:
                     return_value = func(**clean_args)
 
+                melty.triggered_actions.pop(unique, None)
+                handle_actions(melty, unique, draw_state, func)
+
+                is_hovered = draw_state.is_hovered()
+                draw_state._hovered = False
+                draw_state.hotkey_receiver = False
+                if is_hovered:
+                    melty.hover_stack.append(unique)
+
+                if is_hovered and func in Melty.hotkey_registry:
+                    melty.hotkey_stack.append(unique)
+
                 draw_state._imgui_is_edited = imgui.is_item_edited()
                 draw_state._imgui_is_active = imgui.is_item_active()
                 draw_state._imgui_is_focused = imgui.is_item_focused()
@@ -1125,21 +1131,32 @@ def render_func(*args, **o_kwargs):
 
                 if Melty.imgui_crashed:
                     return False, None
+
+
+
                 # Needs to go after mouse event check
                 push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
                 push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
                 pop_id()
                 end_group()
+
+                # if (not kwargs.get("on_drag", False) and not kwargs.get("drag_window", False)) or melty_window:
+                #     draw_state.left, draw_state.top = imgui.get_item_rect_min()
+                #     # draw_state.left = start_cursor[0]
+
                 pop_style_var(2)
 
-                # if not kwargs.get("on_drag", False) or melty_window:
-                #     draw_state.left, draw_state.top = imgui.get_item_rect_min()
 
-                if kwargs.get("on_drag", False) and not melty_window:
-                    if draw_state.left is not None and draw_state.top is not None:
-                        if draw_state.width is not None and draw_state.height is not None:
-                            imgui.set_cursor_screen_pos((start_cursor[0],
-                                                         draw_state.top + draw_state.height))
+                item_size = imgui.get_item_rect_min()
+
+                # if (not kwargs.get("on_drag", False) and not kwargs.get("drag_window", False)) or melty_window:
+                #     draw_state.top = item_size[1]
+                #     draw_state.left = item_size[0]
+                # if kwargs.get("on_drag", False) and not melty_window:
+                #     if draw_state.left is not None and draw_state.top is not None:
+                #         if draw_state.width is not None and draw_state.height is not None:
+                #             imgui.set_cursor_screen_pos((start_cursor[0],
+                #                                          draw_state.top + draw_state.height))
 
                 item_rect = imgui.get_item_rect_size()
 
@@ -1194,9 +1211,7 @@ def render_func(*args, **o_kwargs):
 
                 Melty.input_value_stack.pop()
 
-                melty.triggered_actions.pop(unique, None)
 
-                handle_actions(melty, unique, draw_state, func)
 
                 hovered_draw_state = None
                 # Root view

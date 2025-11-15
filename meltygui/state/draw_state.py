@@ -119,6 +119,7 @@ class DrawState(DictConversion):
         self._min_width = None
         self.top = None
         self.left = None
+        self._draggable = False
         self.search_text = ""
         self.search_active = False
         self._flow_spacing = 0.0
@@ -183,6 +184,9 @@ class DrawState(DictConversion):
         return False
 
     def is_hovered(self):
+        # if not self._draggable:
+        #     return False
+
         if self.left is None or self.top is None or self.width is None or self.height is None:
             return False
         rect = (self.left, self.top - 5, self.width, self.height + 10)
