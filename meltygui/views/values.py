@@ -35,7 +35,7 @@ from src.lsd.gl_gui.view.core_views.codec_register import registry as FILE_CODEC
 from src.lsd.gl_gui.view.core_views.offscreen import Offscreen
 
 
-@render_wrapper(wraps=render_func)
+@render_wrapper(wraps=render_func, use_cache=True)
 def with_header_minimal(func, *args, **o_kwargs):
     def wrapper(next_kwargs=None, **kwargs):
         annotation = annotation_track(*args, wrapper=wrapper, **o_kwargs)
@@ -100,7 +100,11 @@ def draw_melty_windows(vis):
 
     draw_any(Melty.registered_windows, show_add_delete=False, name="Window Manager")
 
-    draw_main_window(name="main_window")
+    draw_window(proxy, name="CST Proxy")
+    draw_window(filesystem_proxy, name="Filesystem Test")
+    draw_window(vis.root.lora_collection, name="Test Window 1")
+    # draw_debug(name="Debug Window")
+
 
     # End frame ###############
     Melty.window_stack.pop()
@@ -109,12 +113,11 @@ def draw_melty_windows(vis):
     end()
 
 
-@render_func
-def draw_main_window(vis, *args, **kwargs):
+@with_header(is_default_for=ManagedWindow, is_tree=False,
+             show_bg=True, show_add_delete=False)
+def draw_debug(input_value, melty, *args, **kwargs):
+    draw_any(melty)
 
-    draw_window(proxy, name="CST Proxy")
-    draw_window(filesystem_proxy, name="Filesystem Test")
-    draw_window(vis.root.lora_collection, name="Test Window 1")
 
 
 @with_header(is_default_for=ManagedWindow, is_tree=False,
@@ -128,7 +131,7 @@ def draw_managed_window(input_value, *args, **kwargs):
     #     imgui.text("No Draw State")
 
 
-@render_func(melty_window=True, auto_resize=False, draggable=True)
+@render_func(use_cache=True, melty_window=True, auto_resize=False, draggable=True)
 def draw_window(input_value, style_manager=None, *args, **kwargs):
     window_name = kwargs.get('name', 'Managed Window')
     Melty.registered_windows[window_name] = ManagedWindow(input_value=input_value,
@@ -157,6 +160,8 @@ def draw(vis):
             if callable(target):
                 target()
 
+    Melty.all_uniques = set()
+
     clear_floating_text_cache()
     overlay_list = imgui.get_overlay_draw_list()
     overlay_list.channels_split(2)
@@ -173,6 +178,8 @@ def draw(vis):
     # draw_imgui_window(Melty.hotkey_registry, name="Hotkeys", is_window=True)
     # draw_imgui_window(list(Melty.dirty_objects), name="Invalidate Cache")
     draw_melty_windows(vis)
+
+
 
     # draw_window(module, name="CST Module")
     #
@@ -657,7 +664,7 @@ def render_with_foo(func, *args, **kwargs):
     return wrapper
 
 
-@render_func(use_cache=True)
+@render_func(use_cache=False)
 def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
                           collection, key, melty, y_offset, enable_flow, min_width,
                           unique, tag, style_manager, global_style, offset=0, indent_size=10):
@@ -777,8 +784,8 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
                                                               alpha=opacity, saturation=0.8)
             # if draw_state.width == None:
             #     draw_state.width = min_width
-            # if draw_state.left == None:
-            #     draw_state.left = 1
+            if draw_state.left == None:
+                draw_state.left = 1
 
             padding = imgui.get_style().frame_padding.x
 
@@ -796,7 +803,7 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
 
             if opacity > 0.001:
                 Melty.cache.mask_mark_rect(Melty.depth + 2, left, top, width, height,
-                                               key=f"{Melty.get_tile_id()}_flow")
+                                               key=f"{left}x{top}_flow")
             #
             # draw_list.add_line(draw_state.left, draw_state.top - 2 - offset,
             #                    draw_state.left + draw_state.width,
@@ -967,7 +974,7 @@ def draw_vertical_scrollbar(content_height: float,
     track_h = track_y2 - track_y1
     dl.add_rect_filled(track_x1, track_y1, track_x2, track_y2, col_track, rounding)
     Melty.cache.mask_mark_rect(Melty.max_depth  - 1, track_x1, track_y1, track_w, track_h,
-                               key=Melty.get_tile_id() + "scrollbar")
+                               key=str(Melty.get_tile_id()) + "scrollbar")
 
     dl.add_rect(track_x1, track_y1, track_x2, track_y2, col_border, rounding)
     # Grab
@@ -993,6 +1000,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                 on_hover=False, next_kwargs=None, meta=None, on_same_line=False, y_offset=0, width=None, min_width=1, enable_scroll=True, **kwargs):
 
 
+
         if on_scroll is not None:
             scroll_offset = draw_state.scroll_offset
             current_x = scroll_offset[0]
@@ -1014,6 +1022,12 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
         #     request_render()
 
         initial_cursor_pos = imgui.get_cursor_screen_pos()
+        # if draw_state.window_size is not None and not kwargs.get("auto_resize", True):
+        #     imgui.button(draw_state.window_size[0], draw_state.window_size[1])
+        #     imgui.set_cursor_screen_pos(((initial_cursor_pos[0]),
+        #                                  (initial_cursor_pos[1])))
+
+
         if window_stack is None or len(window_stack) == 0:
             pass
 
@@ -1037,10 +1051,10 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
         if not show_name:
             enable_flow = False
 
-        if not melty_window and enable_flow:
-            _, flow_spacing = draw_drag_drop_target(do_flow=True, enable_flow=enable_flow,
-                                                    collection=collection, key=key, on_drag=False,
-                                                    draw_state=draw_state, tag="top")
+        # if not melty_window and enable_flow:
+        #     _, flow_spacing = draw_dragging_header(do_flow=True, enable_flow=enable_flow,
+        #                                             collection=collection, key=key, on_drag=False,
+        #                                             draw_state=draw_state, tag="header")
         # ------------------ end spacing -----------
         if width is None:
             if draw_state.width is not None and draw_state.width > 0:
@@ -1324,7 +1338,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             next_kwargs['do_flow'] = False
             next_kwargs['melty_window'] = False
             next_kwargs['on_drag'] = False
-            next_kwargs['auto_resize'] = False
+            next_kwargs['auto_resize'] = True
             next_kwargs['enable_scroll'] = False
             next_kwargs['drag_window'] = True
             next_kwargs['enable_flow'] = False
@@ -1343,8 +1357,6 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
 
             imgui.set_cursor_screen_pos((pos_x, pos_y))
             draw_state.cursor_ = pos_x
-
-
             Melty.undo_clip(unique)
             _, _ = render_func(**next_kwargs)
             Melty.redo_clip(unique)
@@ -1498,9 +1510,6 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
         id_val = getattr(input_value, "unique_id", "")
 
-        item_suffix = f"{base_suffix}_{key_str}_{id_val}"
-        obj_unique = ui_id(datatype=item.__class__, suffix=item_suffix)
-
         trigger_collapse = False
         if isinstance(input_value, (dict, MutableMapping)) and on_collapse:
             trigger_collapse = True
@@ -1537,7 +1546,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
             item_changed, out_val = draw_any(item, indent_size=10, key=key, meta=item_meta, trigger_collapse=trigger_collapse,
                              trigger_expand=trigger_expand, y_offset=y_offset, on_collapse=on_collapse, on_expand=on_expand,
-                             collection=ordered_driver, suffix=obj_unique, name=key_str, display_name=display_name,
+                             collection=ordered_driver, name=key_str, display_name=display_name,
                                              parent_show_add_delete=show_add_delete,
                                              show_add_delete=show_add_delete)
 
@@ -1581,10 +1590,10 @@ def draw_collection(input_value, draw_state, depth, style_manager,
     if hasattr(last_meta, 'tmp_draw_state'):
         last_draw_state = last_meta.tmp_draw_state if last_meta is not None else draw_state
 
-        # last_item = collection[last_key] if (isinstance(collection, dict) and last_key in collection) else None
-        _, flow_spacing = draw_drag_drop_target(do_flow=True, enable_flow=True, melty=melty, offset=0,
-                                                collection=ordered_driver, key=last_key, on_drag=False,
-                                                draw_state=last_draw_state, tag="bottom")
+        # # last_item = collection[last_key] if (isinstance(collection, dict) and last_key in collection) else None
+        # _, flow_spacing = draw_drag_drop_target(do_render=False, enable_hover=True, melty=melty, offset=0,
+        #                                         collection=ordered_driver, key=last_key, on_drag=False,
+        #                                         draw_state=last_draw_state, direction="bottom")
     # ------------------ end spacing -----------
 
     if drew_any and len(keys) > 1:
@@ -1713,7 +1722,7 @@ def open_file(path, app=None):
     else:
         print(f"Path does not exist: {path}")
 
-@render_func(draggable=False)
+@render_func()
 def draw_header(input_value=None, name="", suffix="", collection=None, display_name=None, meta=None, unique=None, is_tree=True,
                 show_name=True, name_func=None, show_type=False, show_unique=False,
                 on_search=False, trigger_collapse=False, trigger_expand=False,
@@ -1848,7 +1857,7 @@ def draw_header(input_value=None, name="", suffix="", collection=None, display_n
         same_line()
 
     if show_unique:
-        imgui.text_colored(f"({str(unique)[-3:]})", *(0.4, 0.6, 0.9, 1.0))
+        imgui.text_colored(f"({str(Melty.get_tile_id())})", *(0.4, 0.0, 0.9, 1.0))
         same_line()
     if show_name and name != "":
         same_line()
@@ -1856,8 +1865,7 @@ def draw_header(input_value=None, name="", suffix="", collection=None, display_n
 
     if show_tint and hasattr(input_value, "tint"):
         draw_state._has_popup = True
-        obj_unique = ui_id(datatype=input_value.tint.__class__, suffix=str(suffix) + name)
-        tint_changed, tint_value = draw_tuple(input_value.tint, suffix=suffix, show_header=False)
+        tint_changed, tint_value = draw_tuple(input_value.tint, show_header=False)
         if tint_changed:
             input_value.tint = tint_value
             Melty.cache.invalidate_by_obj(input_value, name)
@@ -1938,7 +1946,7 @@ def draw_object(input_value=None, draw_state=None, meta=None, name="", style_man
 
         # Handle collections
         changed, new_value = draw_collection(input_value=input_value, collection=collection,
-                                             name=name, key=key, suffix=suffix, **kwargs)
+                                             name=name, key=key, **kwargs)
     else:
         return_value = None
         push_id(unique)
@@ -1958,7 +1966,7 @@ def draw_object(input_value=None, draw_state=None, meta=None, name="", style_man
     return changed, new_value
 
 
-@render_func(use_cache=True, draggable=True)
+@render_func(use_cache=True)
 def draw_any(input_value, indent_size=0, *args, **kwargs):
     kwargs['indent_size'] = indent_size
 
@@ -1975,7 +1983,8 @@ def draw_any(input_value, indent_size=0, *args, **kwargs):
     if kwargs['global_toggles'].force_show_view_fn:
         imgui.text_colored(f"[{meta.view_function.__name__}]", 0.8, 0.5, 0.9)
     if kwargs['global_toggles'].force_show_unique and hasattr(meta, 'unique'):
-        imgui.text_colored(f"[{meta.unique}]", 0.8, 0.5, 0.9)
+        imgui.text_colored(f"[{Melty.get_tile_id()}]", 0.8, 0.5, 0.9)
+        # imgui.text_colored(f"[{kwargs['unique']}]", 0.8, 0.0, 0.9)
 
     if kwargs['global_toggles'].force_show_datatype:
         start_pos = imgui.get_cursor_screen_pos()

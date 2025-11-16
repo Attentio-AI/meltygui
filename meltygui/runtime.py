@@ -733,6 +733,8 @@ class Melty:
     hovered_drawstate = set()
     hovered_drawstate_pending = set()
 
+    all_uniques = set()
+
     @classmethod
     def get_tile_id(cls):
         if len(cls.tile_id_stack) > 0:

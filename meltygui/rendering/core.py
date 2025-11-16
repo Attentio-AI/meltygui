@@ -43,6 +43,7 @@ def handle_actions(melty, unique, draw_state, func=None):
                 btn_state.drag_released = False
                 melty.dragged_item = None
                 melty.dragged_tile = None
+                print("drag released")
 
             was_mouse_down = btn_state.mouse_down
             btn_state._clicked = False
@@ -117,8 +118,8 @@ def handle_actions(melty, unique, draw_state, func=None):
                     melty.drag_in_progress = True
                     melty.dragged_item = draw_state
                     melty.dragged_tile = Melty.get_tile_id()
+
                     melty.mark_event(unique, m_btn, ActionType.DRAG)
-                    # Melty.cache.invalidate(tile_id)
                     melty.drag_delta = btn_state.drag_delta
 
         if draw_state.id in Melty.hovered_drawstate:
@@ -409,6 +410,7 @@ def ui_id(datatype=None, suffix=None, idx=0) -> int:
     suffix_int = strhash(str(suffix))
 
     unique = h if suffix is None else (((h * 16777619) ^ suffix_int) + (idx + 1))
+    unique = strhash(str(unique))
 
     return unique
 
@@ -702,7 +704,7 @@ def render_func(*args, **o_kwargs):
     name_to_param_type = o_kwargs.get("name_to_param_type", None)
 
     # Prebind once to avoid recomputing id(func) every frame
-    METHOD_ID = id(func)
+    METHOD_ID = func.__name__
 
     """
     Decorator for render functions.
@@ -759,23 +761,23 @@ def render_func(*args, **o_kwargs):
             return False, None
 
         # ----- Unique computation before pushing ID scope (avoid divergence) -----
-        suffix = kwargs.get("suffix", None)
+        old_suffix = kwargs.get("suffix", None)
         unique_name = kwargs.get("unique_name", name)
 
         index = key if isinstance(key, int) else 0
-        if suffix is None:
-            suffix = Melty.unique_stack[-1] if len(Melty.unique_stack) > 0 else (name or "")
+        suffix = Melty.unique_stack[-1] if len(Melty.unique_stack) > 0 else (name or "")
 
         # Keep original behavior of always appending name (even if empty)
-        suffix = f"{suffix}_{name}"
+        suffix = f"{old_suffix}_{suffix}_{name}"
 
         if is_root:
-            unique = ui_id(datatype=type(input_value), suffix=unique_name)
+            unique = ui_id(datatype=type(input_value), suffix=unique_name + func.__name__)
             suffix = unique_name
         else:
-            unique = ui_id(datatype=type(input_value), suffix=suffix + unique_name + str(key), idx=index)
+            unique = ui_id(datatype=type(input_value), suffix=suffix + unique_name + str(key) + func.__name__, idx=index)
 
         computed_unique = unique
+
         # -------------------------------------------------------------------------
         start_cursor = imgui.get_cursor_pos()
 
@@ -826,6 +828,10 @@ def render_func(*args, **o_kwargs):
         draw_state._has_popup = kwargs.get("has_popup", False)
         draw_state.auto_resize = kwargs.get("auto_resize", False)
 
+        if unique in Melty.all_uniques:
+            print("[Unique] Warning: Duplicate key detected:", computed_unique, type(input_value).__name__, "in",
+                  type(kwargs.get('collection', object)).__name__, "with name", name,"with func:", func.__name__)
+        Melty.all_uniques.add(unique)
 
         is_initial_draw_state = True
         # nested_call = input_value == Melty.input_value_stack[-1] if len(Melty.input_value_stack) > 0 else False
@@ -921,11 +927,8 @@ def render_func(*args, **o_kwargs):
                 depth_to_restore = Melty.depth
                 wrapped_depth_to_restore = Melty.wrapped_depth
                 Melty.depth = requested_z
-
                 relative_change = abs(requested_z - Melty.wrapped_depth)
-
                 Melty.wrapped_depth = Melty.wrapped_depth + relative_change
-
 
             kwargs['depth'] = Melty.depth
             draw_state._draggable = kwargs.get("draggable", False)
@@ -945,7 +948,9 @@ def render_func(*args, **o_kwargs):
                 #     clean_args.pop(an_arg)
                 clean_args = {k: kwargs[k] for k in wanted_params if k in kwargs}
 
-            tile_id = str(computed_unique)[-5:] + str(METHOD_ID)[-5:] + str(key)
+            last_id = str(Melty.get_tile_id())[-5:]
+            last_id_hash = str(strhash(last_id))[-5:]
+            tile_id = unique
 
             draw_state._tile_id = tile_id
             ##################################################### WINDOW SETUP #####################################################
@@ -993,6 +998,9 @@ def render_func(*args, **o_kwargs):
 
             begin_group(unique)
             push_id(unique)
+
+            if not draw_state.expanded:
+                kwargs["auto_resize"] = True
 
             expected_type = param_types[wanted_params.index("input_value")] if "input_value" in wanted_params else None
             annotation_empty = expected_type == inspect.Parameter.empty
@@ -1051,19 +1059,18 @@ def render_func(*args, **o_kwargs):
                     if (draw_state.bounding_hovered or hover_changed or
                             draw_state.width is None or draw_state.height is None or draw_state._imgui_popover_open):
                         Melty.cache.invalidate(tile_id)
+                        Melty.cache.invalidate_by_obj(collection)
+                        # Melty.cache.invalidate_current()
 
                     if melty.dragged_tile == tile_id:
-                        # for a_tile in Melty.tile_id_stack:
-                        #     Melty.cache.invalidate(a_tile)
+                        for a_tile in Melty.tile_id_stack:
+                            Melty.cache.invalidate(a_tile)
+                        Melty.cache.invalidate_by_obj(collection)
 
-                        # Melty.cache.invalidate(tile_id)
                         Melty.cache.invalidate_by_obj(input_value)
-
-                        # if collection is not None:
-                        #     Melty.cache.invalidate_by_obj(collection)
-
+                        Melty.cache.invalidate(tile_id)
+                        Melty.cache.invalidate_current()
                         request_render()
-
                     # offscreen_depth = Melty.wrapped_depth if "z_pos" not in kwargs else kwargs.get("z_pos", Melty.wrapped_depth)
                     offscreen_depth = Melty.depth
 
@@ -1072,12 +1079,8 @@ def render_func(*args, **o_kwargs):
                         draw_list.channels_set_current(min(offscreen_depth , Melty.max_depth - 1))
 
                     if Melty.cache.mark_start_offscreen(input_value=input_value, collection=collection,
-                                                        draw_state=draw_state, key=tile_id, name=name,
-                                                        indent_size=kwargs.get("indent_size", 10),
-                                                        layer=offscreen_depth, global_toggles=global_toggles):
-
-
-
+                                                        draw_state=draw_state, key=tile_id,
+                                                        layer=Melty.depth):
                         return_value = func(**clean_args)
 
                         # Scroll position relative to window
@@ -1090,6 +1093,10 @@ def render_func(*args, **o_kwargs):
                         # Melty.cache.mask_mark_rect(Melty.depth, left, top, width, height,
                         #                            key=f"{unique}_mask")
 
+
+                        #
+                        # if collection is not None:
+                        #     Melty.cache.invalidate_by_obj(collection)
 
                     Melty.cache.mark_end_offscreen()
                 else:
@@ -1132,8 +1139,6 @@ def render_func(*args, **o_kwargs):
                 if Melty.imgui_crashed:
                     return False, None
 
-
-
                 # Needs to go after mouse event check
                 push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
                 push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
@@ -1145,61 +1150,62 @@ def render_func(*args, **o_kwargs):
                 #     # draw_state.left = start_cursor[0]
 
                 pop_style_var(2)
+                item_rect = imgui.get_item_rect_size()
 
 
-                item_size = imgui.get_item_rect_min()
-
-                # if (not kwargs.get("on_drag", False) and not kwargs.get("drag_window", False)) or melty_window:
-                #     draw_state.top = item_size[1]
-                #     draw_state.left = item_size[0]
                 # if kwargs.get("on_drag", False) and not melty_window:
                 #     if draw_state.left is not None and draw_state.top is not None:
                 #         if draw_state.width is not None and draw_state.height is not None:
                 #             imgui.set_cursor_screen_pos((start_cursor[0],
                 #                                          draw_state.top + draw_state.height))
 
-                item_rect = imgui.get_item_rect_size()
-
-                if len(Melty.clip_stack) > 0:
-                    clip_width = Melty.clip_stack[-1][2] - Melty.clip_stack[-1][0]
-                    item_rect = (min(item_rect[0], clip_width), item_rect[1])
-
+                # if draw_state.window_size is not None and not kwargs.get("auto_resize", True):
+                #     item_rect = draw_state.window_size
+                #     imgui.set_cursor_screen_pos((item_min[0], item_min[1]))
 
                 # if draw_state.width is not None and draw_state.height is not None:
                 #     imgui.set_cursor_screen_pos((snap_int(start_cursor[0]) + draw_state.width,
                 #                                  snap_int(start_cursor[1]) + draw_state.height))
                 # if draw_state.width is None:
 
-
                 draw_state.bounds_left = snap_int(start_cursor[0])
                 draw_state.bounds_top = snap_int(start_cursor[1])
+
+                # if draw_state.window_size is not None and not kwargs.get("auto_resize", True):
+                #     item_rect = (draw_state.window_size[0], draw_state.window_size[1])
+                # else:
+                if len(Melty.clip_stack) > 0:
+                    clip_width = Melty.clip_stack[-1][2] - Melty.clip_stack[-1][0]
+                    clip_height = Melty.clip_stack[-1][3] - Melty.clip_stack[-1][1]
+                    item_rect = (min(item_rect[0], clip_width), min(item_rect[1], clip_height))
                 if not kwargs.get("on_drag", False):
                     original_width_b = draw_state.bounding_width
                     original_height_b = draw_state.bounding_height
-                    if is_initial_draw_state:
-                        draw_state.bounding_width = max(draw_state.bounding_width, item_rect[0])
-                    else:
-                        draw_state.bounding_width = snap_int(item_rect[0])
-                    if is_initial_draw_state:
-                        draw_state.bounding_height = max(draw_state.bounding_height, item_rect[1])
-                    else:
-                        draw_state.bounding_height = snap_int(item_rect[1])
-                        draw_state.cursor_left = snap_int(cursor_pos[0])
-                        draw_state.cursor_top = snap_int(cursor_pos[1])
 
-                    if not draw_state.expanded:
-                        kwargs["auto_resize"] = True
+                    # if len(Melty.clip_stack) > 0:
+                    #     clip_width = Melty.clip_stack[-1][2] - Melty.clip_stack[-1][0]
+                    #     clip_height = Melty.clip_stack[-1][3] - Melty.clip_stack[-1][1]
+                    #     item_rect = (min(item_rect[0], clip_width), min(item_rect[1], clip_height))
 
-                    if kwargs.get("auto_resize", True) or draw_state.width is None or draw_state.height is None:
-                        draw_state.width = snap_int(item_rect[0])
-                        draw_state.height = snap_int(item_rect[1])
-                    else:
-                        draw_state.width = draw_state.window_size[0]
-                        draw_state.height = draw_state.window_size[1]
+                    draw_state.width = snap_int(item_rect[0])
+                    draw_state.height = snap_int(item_rect[1])
 
-                    if (draw_state.bounding_width != original_width_b or
-                            draw_state.bounding_height != original_height_b):
-                        request_render()
+                    # if (draw_state.bounding_width != original_width_b or
+                    #         draw_state.bounding_height != original_height_b):
+                    #     request_render()
+
+                draw_state.bounding_width = snap_int(item_rect[0])
+                draw_state.bounding_height = snap_int(item_rect[1])
+
+                # if draw_state.window_size is not None and not kwargs.get("auto_resize", True):
+                #     draw_state.width = draw_state.window_size[0]
+                #     draw_state.height = draw_state.window_size[1]
+                #     draw_state.bounding_width = draw_state.window_size[0]
+                #     draw_state.bounding_height = draw_state.window_size[1]
+
+
+                # if draw_state.window_size is None:
+                #     draw_state.window_size = item_rect[0], item_rect[1]
 
                 if depth_to_restore is not None:
                     Melty.depth = depth_to_restore
@@ -1210,8 +1216,6 @@ def render_func(*args, **o_kwargs):
                     Melty.unique_stack.pop()
 
                 Melty.input_value_stack.pop()
-
-
 
                 hovered_draw_state = None
                 # Root view
@@ -1235,7 +1239,6 @@ def render_func(*args, **o_kwargs):
                             # Melty.invalidate(tile_id)
 
                     melty.hover_stack = []
-
                     melty.hotkey_stack = []
                     melty.unique_stack = []
                     Melty.draw_state_stack = []

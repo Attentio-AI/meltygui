@@ -71,7 +71,8 @@ class DragMode(Enum):
          "z_pos", "draw_window_pos_x", "draw_window_pos_y",
          "content_height", "drag_delta", "screen_pos")
 @exclude("render_time", "bounds_left", "bounds_top", "_input_value", "width", "flow_spacing",
-         "hovered", "_did_use_cache", "drag_window", "height", "top", "left", "delete_countdown", "z_pos", "scrolled", "is_hovered_last")
+         "hovered", "_did_use_cache","drag_window", "bounding_width", "bounding_height",
+         "height", "top", "left", "delete_countdown", "z_pos", "scrolled", "is_hovered_last")
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
 
@@ -93,7 +94,7 @@ class DrawState(DictConversion):
         self.imgui_is_item_activated = False
         self.cst = None
         self.window_pos = None
-        self.window_size = (300, 300)
+        self.window_size = None
         self.drag_mode = DragMode.NONE
         self.use_child = False
         self.z_pos = None
@@ -193,7 +194,7 @@ class DrawState(DictConversion):
         if self._imgui_is_active:
             return True
 
-        if self.is_glfw_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
+        if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
             if imgui.is_window_hovered():
                 return True
         return False
@@ -207,7 +208,7 @@ class DrawState(DictConversion):
                 self.imgui_is_item_activated or self._imgui_popover_open):
             return True
 
-        if self.is_glfw_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
+        if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
             if imgui.is_window_hovered() or Melty.imgui_popup_open:
                 return True
         return False
