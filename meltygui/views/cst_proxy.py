@@ -99,7 +99,7 @@ def _fingerprint_struct(obj):
 
     if isinstance(obj, cst.CSTNode) and dataclasses.is_dataclass(obj):
         typ = type(obj).__name__
-        obj_hash = id(obj)
+        # obj_hash = hash(obj)
         parts = []
         for f in dataclasses.fields(obj):
             name = f.name
@@ -119,7 +119,7 @@ def _fingerprint_struct(obj):
                 parts.append((name, ("seq", tuple(seq_elems))))
             else:
                 parts.append((name, _fingerprint_struct(val)))
-        return ("cst", typ, obj_hash, tuple(parts))
+        return ("cst", typ, tuple(parts))
 
     if isinstance(obj, collections.abc.Sequence) and not isinstance(obj, str):
         return ("seq", tuple(_fingerprint_struct(e) for e in obj))
@@ -369,9 +369,9 @@ class CSTDictProxy(dict):
         self.id = generate_id()
 
 
-    @property
-    def unique_id(self):
-        return str(self.id)
+    # @property
+    # def unique_id(self):
+    #     return str(self.id)
 
     # --- helpers ---
     def _touch(self):
@@ -607,15 +607,15 @@ class CSTProxy:
     def __class__(self):
         return type(self._node)
 
-    @property
-    def unique_id(self):
-        finger_print = _hash_key_for_elem(self)
-        return str(finger_print)
-
-    @property
-    def name(self):
-        finger_print = _hash_key_for_elem(self)
-        return str(finger_print)
+    # @property
+    # def unique_id(self):
+    #     finger_print = _hash_key_for_elem(self)
+    #     return str(finger_print)
+    #
+    # @property
+    # def name(self):
+    #     finger_print = _hash_key_for_elem(self)
+    #     return str(finger_print)
 
     # ---- error handling ----
     @property

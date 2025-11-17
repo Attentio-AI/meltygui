@@ -55,7 +55,7 @@ def with_header_minimal(func, *args, **o_kwargs):
 
 
 
-@render_wrapper(wraps=render_func, use_cache=True)
+@render_wrapper(wraps=render_func, use_cache=False)
 def with_header(func, *args, **o_kwargs):
     def wrapper(next_kwargs=None, draw_state=None, **kwargs):
 
@@ -187,7 +187,6 @@ def draw(vis):
     overlay_list.channels_split(2)
     overlay_list.channels_set_current(1)
     Melty.hovered_drawstate_pending = set()
-    # Melty.hovered_drawstate = set()
 
     Melty.clip_stack = []
 
@@ -710,6 +709,7 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
 
     mouse_pos = imgui.get_mouse_pos()
     cursor_top = imgui.get_cursor_screen_pos()[1]
+    cursor_left = imgui.get_cursor_screen_pos()[0]
     static_offset = drop_gap
     distance_to_mouse = abs(mouse_pos[1] - cursor_y_screen -
                             melty.initial_drag_offset[1] - drop_gap + static_offset)
@@ -805,8 +805,8 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
                                                               alpha=opacity, saturation=0.8)
             # if draw_state.width == None:
             #     draw_state.width = min_width
-            if draw_state.left == None:
-                draw_state.left = 1
+            # if draw_state.left == None:
+            #     draw_state.left = 1
 
             padding = imgui.get_style().frame_padding.x
 
@@ -814,8 +814,8 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
 
             top = cursor_top - 1
             bottom = max(cursor_top, cursor_bottom - 1)
-            left = draw_state.left + offset
-            right = draw_state.left + draw_state.width - indent_size
+            left = cursor_left + offset
+            right = cursor_left + draw_state.width - indent_size
             width = right - left
             height = bottom - top
 
@@ -1128,32 +1128,32 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
 
             # --------------------- HEADER -----------------
             if (not on_drag) or melty_window:
-                changed, return_value = draw_header(read_only=False,
+                changed, return_value = draw_header(input_value, read_only=False,
                     spacing=(spacing[0], Melty.spacing[1]),
                                               padding=(padding[0], Melty.padding[1] + 1),
                                               **next_kwargs)
 
-            if melty_window and on_drag:
-                mouse_pos = imgui.get_mouse_pos()
-
-                mouse_down_x = draw_state.mouse_btn_state[0].mouse_down_pos[0]
-                mouse_down_y = draw_state.mouse_btn_state[0].mouse_down_pos[1]
-                drag_delta = (mouse_pos[0] - mouse_down_x, mouse_pos[1] - mouse_down_y)
-
-                if draw_state.drag_mode == DragMode.WINDOW:
-                    pass
-                    # start_pos_x = draw_state.mouse_btn_state[0].initial_window_pos[0]
-                    # start_pos_y = draw_state.mouse_btn_state[0].initial_window_pos[1]
-                    # pos_x = start_pos_x + drag_delta[0]
-                    # pos_y = start_pos_y + drag_delta[1]
-                    # draw_state.window_pos = (pos_x, pos_y)
-                elif draw_state.drag_mode == DragMode.RESIZE_BR:
-                    start_pos_x = draw_state.mouse_btn_state[0].initial_window_size[0]
-                    start_pos_y = draw_state.mouse_btn_state[0].initial_window_size[1]
-                    size_w = start_pos_x + drag_delta[0]
-                    size_h = start_pos_y + drag_delta[1]
-                    draw_state.width, draw_state.height = (max(size_w, 25), max(size_h, 24))
-                    draw_state.window_size = (draw_state.width, draw_state.height)
+            # if melty_window and on_drag:
+            #     mouse_pos = imgui.get_mouse_pos()
+            #
+            #     mouse_down_x = draw_state.mouse_btn_state[0].mouse_down_pos[0]
+            #     mouse_down_y = draw_state.mouse_btn_state[0].mouse_down_pos[1]
+            #     drag_delta = (mouse_pos[0] - mouse_down_x, mouse_pos[1] - mouse_down_y)
+            #
+            #     if draw_state.drag_mode == DragMode.WINDOW:
+            #         pass
+            #         # start_pos_x = draw_state.mouse_btn_state[0].initial_window_pos[0]
+            #         # start_pos_y = draw_state.mouse_btn_state[0].initial_window_pos[1]
+            #         # pos_x = start_pos_x + drag_delta[0]
+            #         # pos_y = start_pos_y + drag_delta[1]
+            #         # draw_state.window_pos = (pos_x, pos_y)
+            #     elif draw_state.drag_mode == DragMode.RESIZE_BR:
+            #         start_pos_x = draw_state.mouse_btn_state[0].initial_window_size[0]
+            #         start_pos_y = draw_state.mouse_btn_state[0].initial_window_size[1]
+            #         size_w = start_pos_x + drag_delta[0]
+            #         size_h = start_pos_y + drag_delta[1]
+            #         draw_state.width, draw_state.height = (max(size_w, 25), max(size_h, 24))
+            #         draw_state.window_size = (draw_state.width, draw_state.height)
 
             rect_size = imgui.get_item_rect_size()
             header_width = rect_size[0]
@@ -1180,7 +1180,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             if not header_same_line and (not on_drag or melty_window):
                 # ----------------- end header for collections ---------------
                 # This is the version with an indent, probably a dict header
-                draw_header_end(**next_kwargs)
+                draw_header_end(input_value, **next_kwargs)
 
         if show_bg:
             style_manager.get_tint()
@@ -1624,6 +1624,8 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
     def current_indent_px():
         return Melty.current_indent
 
+    depth = len(Melty.bg_stack) * 2
+
     # float_style = global_styles.get_global_constant(constant_name="bg_style", default_type=Style, folder="bg_styles")
     # float_style.apply(global_styles=global_styles, style_manager=style_manager, depth=depth)
     #
@@ -1754,6 +1756,7 @@ def draw_header(input_value=None, name="", suffix="", collection=None, display_n
     value_factor = global_style.get_global_constant("depth_factor", default=1.0, folder="bg_styles")
     value_offset = global_style.get_global_constant("depth_offset", default=0.0, folder="bg_styles")
 
+    depth = len(Melty.bg_stack)
     depth_factor = global_style.get_global_constant("depth_factor", default=1.0, folder="bg_styles")
     depth_offset = global_style.get_global_constant("depth_offset", default=0.0, folder="bg_styles") + 0.2
     dynamic_value = max(0, (float(depth + depth_offset) * depth_factor))
@@ -1782,6 +1785,7 @@ def draw_header(input_value=None, name="", suffix="", collection=None, display_n
         push_style_var(imgui.STYLE_ITEM_SPACING, (0,3))
 
         draw_state.expanded = tree("##tree", draw_state.expanded, width=50)
+
         pop_style_var(2)
         pop_style_color(1)
         same_line()
@@ -1904,6 +1908,11 @@ def draw_header(input_value=None, name="", suffix="", collection=None, display_n
             same_line(spacing=0.0)
 
     same_line(spacing=0.0)
+
+    if is_tree:
+        if not draw_state.expanded:
+            imgui.same_line()
+            imgui.dummy(40, 1)
 
     do_profile = global_toggles.profiler == ProfileMode.ON
     if do_profile:

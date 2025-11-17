@@ -806,7 +806,6 @@ class Melty:
 
         if attr_name is not None:
             Melty.cache.invalidate_by_obj(parent, attr_name)
-            request_render()
 
         else:
             if value is not None and (hasattr(value, "__dict__") or isinstance(value, (dict, list, set))):
