@@ -1,3 +1,4 @@
+from collections import deque
 from enum import Enum
 from typing import MutableMapping
 
@@ -683,6 +684,9 @@ class Melty:
     scroll_stack = []
     tile_id_stack = []
 
+    last_invalid_attr = ""
+    last_invalid = deque(maxlen=5)
+
     channels_split = False
     is_melty_window = False
     melty_window_stack = []
@@ -795,9 +799,14 @@ class Melty:
         #     cls.all_dirty = True
         #     cls.dirty_objects.clear()
         #     return
+        cls.last_invalid_attr = f"{parent.__class__.__name__} {str(attr_name)}"
+        cls.last_invalid.append(cls.last_invalid_attr)
+        Melty.cache.invalidate_by_obj(cls.last_invalid)
+        Melty.cache.invalidate_by_obj(value)
 
         if attr_name is not None:
             Melty.cache.invalidate_by_obj(parent, attr_name)
+            request_render()
 
         else:
             if value is not None and (hasattr(value, "__dict__") or isinstance(value, (dict, list, set))):

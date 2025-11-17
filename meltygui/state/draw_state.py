@@ -189,6 +189,7 @@ class DrawState(DictConversion):
 
         if self.left is None or self.top is None or self.width is None or self.height is None:
             return False
+
         rect = (self.left, self.top - 5, self.width, self.height + 10)
         if self._imgui_is_active:
             return True

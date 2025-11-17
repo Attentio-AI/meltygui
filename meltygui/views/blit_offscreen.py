@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import random
+from collections import deque
 from dataclasses import dataclass
 from math import ceil, floor
 from typing import Dict, List, Optional, Tuple, MutableMapping
@@ -106,7 +107,6 @@ def _create_mask_tex(w: int, h: int) -> int:
 
 def snap_int(v: float) -> int:
     return int(round(v))
-
 
 def _create_fbo_with_tex(tex: int, depth_stencil: bool, w, h) -> Tuple[int, Optional[int]]:
     fbo = gl.glGenFramebuffers(1)
@@ -734,7 +734,7 @@ class TileCacheMasked:
             name_key = f"{id(collection)}.{name}"
             self.py_id_to_keys.setdefault(name_key, set()).add(rkey)
 
-        if isinstance(input_value, (list, dict, set, MutableMapping)) or hasattr(input_value, '__dict__'):
+        if isinstance(input_value, (list, dict, set, deque, MutableMapping)) or hasattr(input_value, '__dict__'):
             self.py_id_to_keys.setdefault(f"{id(input_value)}", set()).add(rkey)
 
         self.py_id_to_keys.setdefault(f"{id(draw_state)}", set()).add(rkey)
