@@ -49,6 +49,7 @@ class _Ctx:
     size: Optional[Tuple[int, int]]
     layer: int
     drew_cached: bool
+    auto_resize: bool
 
 
 @dataclass
@@ -375,6 +376,7 @@ class TileCacheMasked:
         self.offscreen_debug_mode: OffscreenDebugMode = OffscreenDebugMode.OFF
         self.offscreen_scale = 200.0
 
+
         # Copy debug toggles
         self.copy_debug_mode = OffscreenDebugMode.OFF  # "off","uv","srcpx","mask","layer","checker","solid"
         self.debug_overlay_mask_to_screen: bool = False
@@ -697,7 +699,7 @@ class TileCacheMasked:
         return subtree
 
     # ----- Begin/End with per-view layer (from depth) -----
-    def mark_start_offscreen(self, input_value, collection, draw_state, key: str, layer: int, name="") -> bool:
+    def mark_start_offscreen(self, input_value, collection, draw_state, key: str, layer: int, name="", caller=None) -> bool:
 
         from src.lsd.gl_gui.melty import Melty
         Melty.tile_id_stack.append(key)
@@ -716,7 +718,11 @@ class TileCacheMasked:
             print("[TileCacheMasked] Warning: Duplicate key detected:", key, type(input_value).__name__)
         self.all_keys.add(rkey)
 
-
+        if not draw_state.auto_resize and draw_state.width is not None and draw_state.height is not None:
+            size = snap_int(draw_state.width), snap_int(draw_state.height)
+            self._sizes[rkey] = size
+        # if not draw_state.auto_resize and draw_state.window_size is not None:
+        #     size = (snap_int(draw_state.window_size[0]), snap_int(ctx.draw_state.window_size[1]))
 
         # if not draw_state.auto_resize and draw_state.width is not None and draw_state.height is not None:
         #     size = snap_int(draw_state.width), snap_int(draw_state.height)
@@ -743,16 +749,37 @@ class TileCacheMasked:
         imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
         from src.lsd.gl_gui.view.core_views.core_render import push_id
 
-        push_id(f"{rkey}")  # UI id: keep based on caller-provided key
+        push_id(f"{rkey}_offscreen")  # UI id to keep based on caller-provided key
 
         from src.lsd.gl_gui.view.core_views.core_render import begin_group
         begin_group()
         imgui.pop_style_var(2)
 
+        has_area = size is not None and size[0] != 0 and size[1] != 0
+
         # Try to draw cached if we have a clean tile sized correctly
         if size is not None and self.enabled:
             t = self._tiles.get(rkey)
-            if t and (t.size == (size[0], size[1])) and (not self._is_dirty(t)) and (rkey not in self._cancelled_keys):
+
+            debug_mode = False
+            if debug_mode:
+                bounding_rect = (x, y, size[0], size[1])
+                draw_list = imgui.get_window_draw_list()
+                draw_list.add_rect(
+                    bounding_rect[0], bounding_rect[1],
+                    bounding_rect[0] + bounding_rect[2], bounding_rect[1] + bounding_rect[3],
+                    imgui.get_color_u32_rgba(1, 1, 1, 0.1),
+                    thickness=1.0
+                )
+                if caller is not None:
+                    caller_name = caller.__name__
+                    draw_list.add_text(
+                        x + 4, y + 4 + size[1],
+                        imgui.get_color_u32_rgba(1, 0, 0, 0.45),
+                        f"{caller_name}"
+                    )
+
+            if t and has_area and (t.size == (size[0], size[1])) and (not self._is_dirty(t)):
                 imgui.image(t.tex, snap_int(size[0]), snap_int(size[1]), uv0=(0.0, 1.0), uv1=(1.0, 0.0),
                             tint_color=(1, 1, 1, 1))
                 # draw_state.imgui_is_active = imgui.is_item_active()
@@ -762,11 +789,13 @@ class TileCacheMasked:
                 # draw_state.imgui_is_hovered = imgui.is_item_hovered()
 
                 self._stack.append(
-                    _Ctx(draw_state=draw_state, key=rkey, pos=(x, y), size=size, layer=layer, drew_cached=True))
+                    _Ctx(draw_state=draw_state, key=rkey, pos=(x, y), size=size, layer=layer, drew_cached=True,
+                         auto_resize=draw_state.auto_resize))
                 return False
 
         # Push context; pos/size will be updated to the *final* rect in mark_end_offscreen()
-        self._stack.append(_Ctx(draw_state=draw_state, key=rkey, pos=(x, y), size=size, layer=layer, drew_cached=False))
+        self._stack.append(_Ctx(draw_state=draw_state, key=rkey, pos=(x, y), size=size, layer=layer, drew_cached=False,
+                                auto_resize=draw_state.auto_resize))
         # draw_state.imgui_is_active = imgui.is_item_active()
         # draw_state.imgui_is_focused = imgui.is_item_focused()
         # draw_state.imgui_scroll_y = imgui.get_scroll_y()
@@ -800,16 +829,20 @@ class TileCacheMasked:
 
         # Always query the *final* item rect from ImGui (post-layout)
         minx, miny = imgui.get_item_rect_min()
-        # if not ctx.draw_state.auto_resize and ctx.draw_state.window_size is not None:
-        #     siz = (snap_int(ctx.draw_state.window_size[0]), snap_int(ctx.draw_state.window_size[1]))
-        # else:
-        siz = imgui.get_item_rect_size()
+
+        size = imgui.get_item_rect_size()
+        if not ctx.auto_resize and ctx.draw_state.window_size is not None:
+            size = snap_int(ctx.draw_state.width), snap_int(ctx.draw_state.height)
+        # if len(Melty.clip_stack) > 0:
+        #     clip_width = Melty.clip_stack[-1][2] - Melty.clip_stack[-1][0]
+        #     clip_height = Melty.clip_stack[-1][3] - Melty.clip_stack[-1][1]
+        #     siz = (min(siz[0], clip_width), min(siz[1], clip_height))
 
         ctx.pos = (float(minx), float(miny))
-        ctx.size = (max(0, float(siz[0])), max(0, float(siz[1])))
+        ctx.size = size[0], size[1]
 
         # --- Always record mask rects (even if we drew cached) so parents' subtree masks include children ---
-        if ctx.size and ctx.size[0] > 0 and ctx.size[1] > 0:
+        if ctx.size:
             x, y = ctx.pos
             w, h = ctx.size
             clip = self._get_current_clip_rect_screen()

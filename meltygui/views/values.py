@@ -131,7 +131,7 @@ def draw_managed_window(input_value, *args, **kwargs):
     #     imgui.text("No Draw State")
 
 
-@render_func(use_cache=True, melty_window=True, auto_resize=False, draggable=True)
+@render_func(use_cache=True, auto_resize=False, melty_window=True, draggable=True)
 def draw_window(input_value, style_manager=None, *args, **kwargs):
     window_name = kwargs.get('name', 'Managed Window')
     Melty.registered_windows[window_name] = ManagedWindow(input_value=input_value,
@@ -145,8 +145,20 @@ def draw_window(input_value, style_manager=None, *args, **kwargs):
     previous_tint = style_manager.get_tint()
     if hasattr(input_value, 'tint') and input_value.tint is not None:
         style_manager.set_imgui_tint(*input_value.tint)
+    meta = kwargs.get("meta", None)
+    if meta is None:
+        from src.lsd.gl_gui.view.core_views.core_meta import Meta
+        if hasattr(Meta, 'get_child_meta'):
+            meta = Meta.get_child_meta(None, field_name=kwargs.get("name", ''), value=input_value)
 
-    return_val = draw_any(input_value, *args, **kwargs)
+    if meta.view_function is None or 'draw_any' in meta.view_function.__name__:
+        meta.view_function = draw_collection
+    return_val = meta.view_function(input_value, *args, **kwargs)
+    # return_val = draw_any(input_value,
+    #                       window_size=kwargs['draw_state'].window_size,
+    #                       auto_resize=False,
+    #                       draggable=True,
+    #                       melty_window=True)
 
     if hasattr(input_value, 'tint'):
         style_manager.set_imgui_tint(*previous_tint)
@@ -235,10 +247,8 @@ def cst_header(func, *args, **o_kwargs):
         next_kwargs['show_add_delete'] = False
         next_kwargs['show_bg'] = kwargs.get('show_bg', True)
         next_kwargs['is_tree'] = False
-
         next_kwargs['y_offset'] = Melty.collection_spacing
-        if 'width' in kwargs:
-            pass
+
         return core_header(**next_kwargs)
 
     setattr(wrapper, '__name__', f"{func.__name__} --- with_header ")
@@ -328,10 +338,10 @@ def draw_cst_call(input_value: cst.Call):
     imgui.align_text_to_frame_padding()
     imgui.text(")")
 
-
-@with_header(is_default_for=cst.Module, show_add_delete=False)
-def draw_cst_module(input_value: cst.Module):
-    return draw_any(input_value.body, show_name=False)
+#
+# @with_header(is_default_for=cst.Module, use_cache=True, show_add_delete=False)
+# def draw_cst_module(input_value: cst.Module):
+#     return draw_any(input_value.body, show_name=False)
 
 @cst_header(is_default_for=cst.List, show_name=False, show_bg=False,
             header_same_line=True)
@@ -346,15 +356,18 @@ def draw_cst_list(input_value: cst.List):
     imgui.text("]")
 
 @render_func(is_default_for=CSTDictProxy, header_same_line=True,
-             show_bg=False, indent_size=0)
+             show_bg=False, indent_size=0, draggable=True)
 def draw_cst_dict(input_value: CSTDictProxy, **kwargs):
+    show_indices = False
+
     if len(input_value) > 0:
         # Show line numbers for dicts of simple statements
         if isinstance(list(input_value.values())[0], cst.SimpleStatementLine):
-            kwargs['show_indices'] = False
-    kwargs['show_name'] = False
+            show_indices = True
+    # kwargs['show_bg'] = False
 
-    draw_collection(input_value, **kwargs)
+    draw_collection(input_value, header_same_line=True, show_bg=False,
+                    show_name=False, show_indices=show_indices, indent_size=0)
 
 
 # --- Parameters ---
@@ -973,8 +986,8 @@ def draw_vertical_scrollbar(content_height: float,
     track_w = track_x2 - track_x1
     track_h = track_y2 - track_y1
     dl.add_rect_filled(track_x1, track_y1, track_x2, track_y2, col_track, rounding)
-    Melty.cache.mask_mark_rect(Melty.max_depth  - 1, track_x1, track_y1, track_w, track_h,
-                               key=str(Melty.get_tile_id()) + "scrollbar")
+    # Melty.cache.mask_mark_rect(Melty.depth, track_x1, track_y1, track_w, track_h,
+    #                            key=str(Melty.unique_stack[-1]) + "scrollbar")
 
     dl.add_rect(track_x1, track_y1, track_x2, track_y2, col_border, rounding)
     # Grab
@@ -1045,16 +1058,18 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
         if not show_bg:
             y_offset = 0
 
+        start_x_pos = imgui.get_cursor_screen_pos()[0]
+        start_y_pos = imgui.get_cursor_screen_pos()[1]
         Melty.indent(indent_size)
 
         # ----------------- top spacing -----------
         if not show_name:
             enable_flow = False
 
-        # if not melty_window and enable_flow:
-        #     _, flow_spacing = draw_dragging_header(do_flow=True, enable_flow=enable_flow,
-        #                                             collection=collection, key=key, on_drag=False,
-        #                                             draw_state=draw_state, tag="header")
+        if not melty_window and enable_flow:
+            _, flow_spacing = draw_drag_drop_target(do_flow=True, enable_flow=enable_flow,
+                                                    collection=collection, key=key, on_drag=False,
+                                                    draw_state=draw_state, tag="top")
         # ------------------ end spacing -----------
         if width is None:
             if draw_state.width is not None and draw_state.width > 0:
@@ -1082,8 +1097,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
         # if show_bg:
         #     draw_state._left_rel += indent_size
 
-        start_x_pos = imgui.get_cursor_screen_pos()[0]
-        start_y_pos = imgui.get_cursor_screen_pos()[1]
+
         cutoff = 50
         y_margin = y_offset / 2.0
         imgui.dummy(0, snap_int(y_margin))
@@ -1197,7 +1211,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                 has_size = (draw_state.width is not None and draw_state.height is not None and
                             draw_state.left is not None and draw_state.top is not None)
 
-                needs_scroll = draw_state.content_height + header_height > draw_state.height if draw_state.height is not None else False
+                needs_scroll = draw_state.content_height > draw_state.height if draw_state.height is not None else False
                 if not needs_scroll:
                     draw_state.scroll_offset = (0, 0)
 
@@ -1238,7 +1252,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                     if clip:
                         Melty.pop_clip()
 
-                    draw_list.channels_set_current(Melty.max_depth - 1)
+                    draw_list.channels_set_current(Melty.depth)
                     draw_vertical_scrollbar(draw_state.content_height, view_height=d_height, view_width=d_width,
                                             scroll_offset=draw_state.scroll_offset[1], scrollbar_width=8.0, left=d_left,
                                             top=d_top)
@@ -1290,10 +1304,8 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
 
         end_y_pos = imgui.get_cursor_screen_pos()[1]
 
-        background_width = width - indent_size - 4
-        background_height = draw_state.height if draw_state.height is not None else 0
-
-
+        background_width = width
+        background_height = draw_state.height  if draw_state.height is not None else 0
         draw_list = imgui.get_window_draw_list()
 
         if Melty.channels_split:
@@ -1328,7 +1340,6 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
         Melty.unindent(indent_size)
 
         if on_drag and not melty_window:
-
             mouse_pos = imgui.get_mouse_pos()
             mouse_down_x = draw_state.mouse_btn_state[0].mouse_down_pos[0]
             mouse_down_y = draw_state.mouse_btn_state[0].mouse_down_pos[1]
@@ -1570,7 +1581,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
             changed |= item_changed
             drew_any = True
 
-            content_height = max(content_height, imgui.get_cursor_pos()[1] - start_cursor)
+            draw_state.content_height = max(draw_state.content_height, imgui.get_cursor_pos()[1] - start_cursor)
         except Exception as e:
             print(f"Error rendering field '{key_str}' of {type(input_value).__name__}: {e}")
             print_colored_traceback(e)
@@ -1578,7 +1589,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
             if prev_tint is not None:
                 style_manager.set_imgui_tint(*prev_tint)
 
-    draw_state.content_height = content_height
+    # draw_state.content_height = content_height
 
     # ----------------- flow spacing -----------
     last_key = list(keys)[-1] if len(keys) > 0 else None
@@ -1590,10 +1601,10 @@ def draw_collection(input_value, draw_state, depth, style_manager,
     if hasattr(last_meta, 'tmp_draw_state'):
         last_draw_state = last_meta.tmp_draw_state if last_meta is not None else draw_state
 
-        # # last_item = collection[last_key] if (isinstance(collection, dict) and last_key in collection) else None
-        # _, flow_spacing = draw_drag_drop_target(do_render=False, enable_hover=True, melty=melty, offset=0,
-        #                                         collection=ordered_driver, key=last_key, on_drag=False,
-        #                                         draw_state=last_draw_state, direction="bottom")
+        # last_item = collection[last_key] if (isinstance(collection, Mapping) and last_key in collection) else None
+        _, flow_spacing = draw_drag_drop_target(do_flow=True, enable_flow=True, melty=melty, offset=0,
+                                                collection=ordered_driver, key=last_key, on_drag=False,
+                                                draw_state=last_draw_state, tag="bottom")
     # ------------------ end spacing -----------
 
     if drew_any and len(keys) > 1:
@@ -1623,7 +1634,7 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
     # if top == 0:
     #     top = imgui.get_cursor_screen_pos()[1]
     right =  left + width
-    bottom =  top + height + rounding
+    bottom =  top + height
     #
     # if draw_state is not None:
     #     draw_state.left = left
