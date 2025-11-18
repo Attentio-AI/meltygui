@@ -673,7 +673,7 @@ def get_resize_handle(a_ds):
     left = a_ds.left
     top = a_ds.top
     right = left + a_ds.width
-    bottom = top + a_ds.height
+    bottom = top + a_ds.height - 1
 
     margin = 20
     return (right - margin, bottom - margin, right, bottom)
@@ -733,9 +733,6 @@ def render_func(*args, **o_kwargs):
     header_defaults = o_kwargs.get("header_defaults", None)
     param_defaults = o_kwargs.get("param_defaults", None)
     name_to_param_type = o_kwargs.get("name_to_param_type", None)
-
-    # Prebind once to avoid recomputing id(func) every frame
-    METHOD_ID = func.__name__
 
     """
     Decorator for render functions.
@@ -1166,7 +1163,7 @@ def render_func(*args, **o_kwargs):
                 # if kwargs.get("auto_resize", True):
                 #     draw_state.window_size = None
 
-                if not kwargs.get("on_drag", False):
+                if not melty.drag_in_progress:
                     draw_state.bounds_left = snap_int(start_cursor[0])
                     draw_state.bounds_top = snap_int(start_cursor[1])
 

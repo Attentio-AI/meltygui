@@ -71,7 +71,7 @@ class DragMode(Enum):
          "z_pos", "draw_window_pos_x", "draw_window_pos_y",
          "content_height", "drag_delta", "screen_pos")
 @exclude("render_time", "bounds_left", "bounds_top", "_input_value", "width", "flow_spacing",
-         "hovered", "_did_use_cache", "drag_window", "height", "bounding_hovered", "top", "left", "delete_countdown", "z_pos", "scrolled", "is_hovered_last")
+         "hovered", "_did_use_cache", "drag_window", "height", "bounding_hovered", "delete_countdown", "z_pos", "scrolled", "is_hovered_last")
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
 
@@ -174,7 +174,7 @@ class DrawState(DictConversion):
             self.cst.anchor = (type(node).__name__,)
 
     def get_resize_handle(self):
-        if self.left is None:
+        if self.left is None or self.width is None or self.top is None or self.height is None:
             return (0, 0, 0, 0)
         left = self.left
         top = self.top

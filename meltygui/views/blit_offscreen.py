@@ -377,7 +377,6 @@ class TileCacheMasked:
         self.offscreen_debug_mode: OffscreenDebugMode = OffscreenDebugMode.OFF
         self.offscreen_scale = 200.0
 
-
         # Copy debug toggles
         self.copy_debug_mode = OffscreenDebugMode.OFF  # "off","uv","srcpx","mask","layer","checker","solid"
         self.debug_overlay_mask_to_screen: bool = False
@@ -785,11 +784,6 @@ class TileCacheMasked:
             if t and has_area and (t.size == (size[0], size[1])) and (not self._is_dirty(t)):
                 imgui.image(t.tex, snap_int(size[0]), snap_int(size[1]), uv0=(0.0, 1.0), uv1=(1.0, 0.0),
                             tint_color=(1, 1, 1, 1))
-                # draw_state.imgui_is_active = imgui.is_item_active()
-                # draw_state.imgui_is_focused = imgui.is_item_focused()
-                # draw_state.imgui_is_edited = imgui.is_item_edited()
-                # draw_state.imgui_scroll_y = imgui.get_scroll_y()
-                # draw_state.imgui_is_hovered = imgui.is_item_hovered()
 
                 self._stack.append(
                     _Ctx(draw_state=draw_state, key=rkey, pos=(x, y), size=size, layer=layer, drew_cached=True,
@@ -799,11 +793,6 @@ class TileCacheMasked:
         # Push context; pos/size will be updated to the *final* rect in mark_end_offscreen()
         self._stack.append(_Ctx(draw_state=draw_state, key=rkey, pos=(x, y), size=size, layer=layer, drew_cached=False,
                                 auto_resize=draw_state.auto_resize))
-        # draw_state.imgui_is_active = imgui.is_item_active()
-        # draw_state.imgui_is_focused = imgui.is_item_focused()
-        # draw_state.imgui_scroll_y = imgui.get_scroll_y()
-        # draw_state.imgui_is_edited = imgui.is_item_edited()
-        # draw_state.imgui_is_hovered = imgui.is_item_hovered()
 
         return True
 
