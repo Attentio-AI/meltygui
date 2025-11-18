@@ -922,8 +922,8 @@ def draw_vertical_scrollbar(content_height: float,
     if min_grab_size is None:
         min_grab_size = float(style.grab_min_size)
 
-    col_track = imgui.get_color_u32_rgba(0,0,0,0.2)
-    col_grab = imgui.get_color_u32_rgba(1,1,1, 0.5)
+    col_track = imgui.get_color_u32_rgba(0,0,0,0.1)
+    col_grab = imgui.get_color_u32_rgba(1,1,1, 0.3)
     col_border = imgui.get_color_u32(imgui.COLOR_BORDER)
 
     # Early clamps & removals
@@ -1022,7 +1022,6 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
 
         initial_cursor_pos = imgui.get_cursor_screen_pos()
 
-
         if window_stack is None or len(window_stack) == 0:
             pass
 
@@ -1042,7 +1041,6 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
 
         start_x_pos = imgui.get_cursor_screen_pos()[0]
         start_y_pos = imgui.get_cursor_screen_pos()[1]
-        Melty.indent(indent_size)
         # ----------------- top spacing -----------
         if not show_name:
             enable_flow = False
@@ -1124,6 +1122,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                 # This is the version with an indent, probably a dict header
                 draw_header_end(input_value, **next_kwargs)
 
+
         if show_bg:
             style_manager.get_tint()
             Melty.bg_stack.append(style_manager.get_tint())
@@ -1173,6 +1172,9 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                     draw_state.width is None or draw_state.height is None):
                 clip = False
 
+            if not header_same_line:
+                Melty.indent(indent_size)
+
             if use_child and has_size and needs_scroll:
                 draw_list = imgui.get_window_draw_list()
                 if Melty.channels_split and show_bg:
@@ -1199,7 +1201,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
 
                 draw_list.channels_set_current(Melty.depth)
                 draw_vertical_scrollbar(draw_state.content_height, view_height=d_height, view_width=d_width,
-                                        scroll_offset=draw_state.scroll_offset[1], scrollbar_width=8.0, left=d_left,
+                                        scroll_offset=draw_state.scroll_offset[1], scrollbar_width=4.0, left=d_left,
                                         top=d_top)
                 draw_list.channels_set_current(min(Melty.max_depth - 1, Melty.depth))
 
@@ -1215,6 +1217,9 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
 
                 if clip and use_child:
                     Melty.pop_clip()
+
+            if not header_same_line:
+                Melty.unindent(indent_size)
 
             if needs_scroll:
                 Melty.scroll_stack.pop()
@@ -1258,7 +1263,6 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                 push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
                 push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
                 pop_style_var(2)
-        Melty.unindent(indent_size)
 
         if not on_drag or melty_window:
             next_kwargs['do_flow'] = True
@@ -1553,7 +1557,6 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
 
     bg_style = global_style.get_global_constant("bg_style", default=bg_style, folder="bg_styles")
     outline_saturation = global_style.get_global_constant("outline_saturation", default=0.5, folder="bg_styles")
-
     outline_offset = global_style.get_global_constant("outline_offset", default=0.0, folder="bg_styles") - 0.1
     outline_factor = global_style.get_global_constant("outline_factor", default=1.0, folder="bg_styles") * 1.4
 
@@ -1991,8 +1994,8 @@ def draw_str(input_value: str):
     if not show_controls:
         imgui.push_style_var(imgui.STYLE_ALPHA, 0)
 
-    imgui.set_item_allow_overlap()
     changed, value = imgui.input_text_multiline("##str", input_value, height=height)
+    # imgui.set_item_allow_overlap()
 
     if not show_controls:
         imgui.pop_style_var(1)

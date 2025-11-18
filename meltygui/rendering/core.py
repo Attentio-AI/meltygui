@@ -1,4 +1,5 @@
 import inspect
+import json
 import math
 import sys
 import time
@@ -12,6 +13,7 @@ import glfw
 import imgui
 
 from src.lsd.gl_gui.model.core_model.new_core_model import DrawState, Hotkey, DragMode
+from src.lsd.gl_gui.model.core_model.stable_hash import stable_hash
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, print_stack_trace, \
     push_style_var, pop_style_var
 from src.lsd.gl_gui.utils.glfw_utils import request_render
@@ -40,7 +42,7 @@ def handle_actions(melty, unique, draw_state, func=None):
         melty.initial_drag_offset = None
         melty.mouse_down_pos = None
 
-    if (Melty.is_window_enabled() and (imgui.is_window_hovered() or melty.drag_in_progress)):
+    if (Melty.is_window_enabled() and (imgui.is_window_hovered() or melty.drag_in_progress)) or Melty.blocker_hovered:
         for m_btn in [0, 1, 2]:
             btn_state = draw_state.mouse_btn_state[m_btn]
 
@@ -675,7 +677,7 @@ def get_resize_handle(a_ds):
     right = left + a_ds.width
     bottom = top + a_ds.height - 1
 
-    margin = 20
+    margin = 34
     return (right - margin, bottom - margin, right, bottom)
 
 def draw_resize_handle(a_ds):
@@ -693,16 +695,39 @@ def draw_resize_handle(a_ds):
 
     if width <= 0 or height <= 0:
         return
-    imgui.set_cursor_screen_pos((rect_br[0], rect_br[1]))
-    imgui.set_item_allow_overlap()
-    imgui.invisible_button(str(a_ds.unique) + "resize_btn", width, height)
-    imgui.set_item_allow_overlap()
 
-    draw_list.add_rect_filled(rect_br[0], rect_br[1], rect_br[2], rect_br[3],
-                              imgui.get_color_u32_rgba(0.8, 0.8, 0.2, 0.3))
+    current_cursor = imgui.get_cursor_screen_pos()
+    if a_ds.expanded:
+        imgui.set_cursor_screen_pos((rect_br[0], rect_br[1]))
+        imgui.invisible_button(str(a_ds.unique) + "resize_btn", width, height)
+        imgui.same_line(0)
+
+    alpha = 0.0
+    if imgui.is_mouse_hovering_rect(rect_br[0], rect_br[1], rect_br[2], rect_br[3]):
+        Melty.blocker_hovered = True
+        alpha = 0.5
+
+    # draw_list.add_rect_filled(rect_br[0], rect_br[1], rect_br[2], rect_br[3],
+    #                           imgui.get_color_u32_rgba(0.8, 0.8, 0.2, 0.3))
+
+    # Resizeable corner drag
+    arrow_size = 13
+    margin = 1
+    draw_list.add_triangle_filled(
+        rect_br[2] - margin - 1, rect_br[3] - arrow_size - margin,
+        rect_br[2] - margin - 1, rect_br[3] - margin,
+        rect_br[2] - margin - 1 - arrow_size, rect_br[3] - margin,
+        imgui.get_color_u32_rgba(1,1,1, alpha)
+    )
     # Bottom corner
-    Melty.cache.mask_mark_rect(Melty.max_depth - 1, rect_br[0], rect_br[1], width, height,
-                               key=str(a_ds.unique) + "resize")
+    if alpha > 0.0:
+        Melty.cache.mask_mark_rect(Melty.max_depth - 1,
+                                   rect_br[2] - arrow_size - margin - 1,
+                                   rect_br[3] - margin - arrow_size, arrow_size, arrow_size,
+                                   key=str(a_ds.unique) + "resize")
+    if a_ds.expanded:
+
+        imgui.set_cursor_screen_pos(current_cursor)
 
 
 def get_drag_mode(a_ds):
@@ -858,6 +883,15 @@ def render_func(*args, **o_kwargs):
 
         draw_state = get_draw_state(unique)
         draw_state._input_value = input_value
+
+        # hashable_representation = tuple(sorted(input_value.items()))
+        # sorted_dict_string = json.dumps(input_value, sort_keys=True).encode('utf-8')
+        # try:
+        #     draw_state.value_hash = stable_hash(input_value)
+        # except Exception as e:
+        #     print("[Unique] Warning: Could not compute stable hash for object of type", type(input_value).__name__,
+        #             "with unique", unique, name, "due to:", e)
+
         draw_state._has_popup = kwargs.get("has_popup", False)
         draw_state.auto_resize = kwargs.get("auto_resize", False)
 
@@ -1066,6 +1100,11 @@ def render_func(*args, **o_kwargs):
                 clean_args = {k: kwargs[k] for k in wanted_params if k in kwargs}
             ###########################################################
 
+            if melty_window:
+                draw_list = imgui.get_window_draw_list()
+                if Melty.channels_split:
+                    draw_list.channels_set_current((Melty.max_depth - 2))
+                draw_resize_handle(draw_state)
             try:
                 on_drag = kwargs.get("on_drag", False)
                 kwargs['on_drag'] = False
@@ -1183,6 +1222,7 @@ def render_func(*args, **o_kwargs):
                 ######################################## HANDLE ACTIONS #######################
                 is_hovered = draw_state.is_hovered()
 
+
                 melty.triggered_actions.pop(unique, None)
                 handle_actions(melty, unique, draw_state, func)
 
@@ -1243,10 +1283,6 @@ def render_func(*args, **o_kwargs):
                         request_render()
 
                 if melty_window:
-                    draw_list = imgui.get_window_draw_list()
-                    if Melty.channels_split:
-                        draw_list.channels_set_current((Melty.max_depth - 1))
-                    draw_resize_handle(draw_state)
                     Melty.melty_window_stack.pop()
 
                 if melty_window:

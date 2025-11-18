@@ -258,9 +258,7 @@ class DictConversion(metaclass=FieldMeta):
 
         # Get all attributes that don't start with '_'
         for key, value in self.__dict__.items():
-
-
-
+            key = str(key)
             if key.startswith('_') or (excluded and key in excluded):
                 continue
 
@@ -292,6 +290,7 @@ class DictConversion(metaclass=FieldMeta):
         new_instance = instance_type()
         # Copy attributes from the current instance to the new instance
         for key, value in self.__dict__.items():
+            key = str(key)
             if key.startswith('_') or key == 'id':
                 continue
             setattr(self, key, new_instance.__dict__.get(key, None))
@@ -395,6 +394,8 @@ class DictConversion(metaclass=FieldMeta):
         # Add all non-excluded attributes to the string representation
         for key, value in self.__dict__.items():
             # Skip private attributes (starting with underscore)
+            key = str(key)
+
             if key.startswith('_') or key in excluded_attrs or value is None:
                 continue
 
@@ -521,6 +522,7 @@ class DictConversion(metaclass=FieldMeta):
             memo[id(value)] = "dict:processing"  # Add immediately to avoid recursion
             items_str = "{"
             for k, v in value.items():
+                k = str(k)
                 if k.startswith('_') or k in exclude:
                     continue
                 # Convert the key to string representation
