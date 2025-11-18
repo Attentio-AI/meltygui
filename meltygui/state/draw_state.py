@@ -6,7 +6,7 @@ import libcst as cst
 
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.view.core_views.core_decoration import no_save, exclude
+from src.lsd.gl_gui.view.core_views.core_decoration import no_save, exclude, deep_refresh
 
 
 # class decoration
@@ -67,11 +67,12 @@ class DragMode(Enum):
 
 @no_save("mouse_btn_state", "mouse_up", "mouse_down", "bounding_width", "bounding_height",
          "drag_released", "top", "left", "clicked", "dragged", "render_time", "imgui_is_toggled_open", "z_pos",
-         "is_active", "is_focused", "drag_window_pos_x", "drag_window_pos_y", "drag_mode",
+         "is_active", "is_focused", "drag_window_pos_x", "content_region", "bounds_top", "bounds_left", "drag_window_pos_y", "drag_mode",
          "z_pos", "draw_window_pos_x", "draw_window_pos_y",
          "content_height", "drag_delta", "screen_pos")
 @exclude("render_time", "bounds_left", "bounds_top", "_input_value", "width", "flow_spacing",
          "hovered", "_did_use_cache", "value_hash", "drag_window", "height", "bounding_hovered", "delete_countdown", "z_pos", "scrolled", "is_hovered_last")
+@deep_refresh("expanded")
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
 
@@ -81,7 +82,6 @@ class DrawState(DictConversion):
         self.drag_window_pos_x = None
         self.drag_window_pos_y = None
         self._bounding_hovered = False
-        self.value_hash = None
         # Imgui state mirror
         self.is_active = False
         self.is_focused = False
@@ -108,7 +108,6 @@ class DrawState(DictConversion):
 
         self.unique = 0  # stable UI identifier
         self.expanded = True
-        self.value_cache = None
         self.name = ""
         self.height = None
         self.expanded_height = None

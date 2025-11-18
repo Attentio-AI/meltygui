@@ -79,6 +79,12 @@ filesystem_proxy = FolderProxy("/home/lukas/test_folder", text_mode=True)
 # Main draw function, called by the GUI framework
 
 
+class TestObj:
+    def __init__(self):
+        self.test_val = 0.0
+        self.test_list = [1, 2, 3, 4, 5]
+
+test_obj = TestObj()
 
 def draw_melty_windows(vis):
     flags = (imgui.WINDOW_NO_BACKGROUND | imgui.WINDOW_NO_TITLE_BAR | imgui.WINDOW_NO_RESIZE |
@@ -101,6 +107,11 @@ def draw_melty_windows(vis):
 
     draw_any(Melty.registered_windows, show_add_delete=False, name="Window Manager")
 
+    global test_obj
+    draw_window(test_obj, name="Test value")
+    draw_window(test_obj, name="Test value 1")
+
+
     draw_window(proxy, name="CST Proxy")
     draw_window(filesystem_proxy, name="Filesystem Test")
     draw_window(vis.root.lora_collection, name="Test Window 1")
@@ -118,8 +129,6 @@ def draw_melty_windows(vis):
              show_bg=True, show_add_delete=False)
 def draw_debug(input_value, melty, *args, **kwargs):
     draw_any(melty)
-
-
 
 @with_header(is_default_for=ManagedWindow, is_tree=False,
              show_bg=True, show_add_delete=False)
@@ -146,33 +155,28 @@ def draw_window(input_value, style_manager=None, *args, **kwargs):
     kwargs['z_pos'] = window_z_pos + 2
 
     draw_state = kwargs.get('draw_state', None)
-    if draw_state is not None:
-        if draw_state.window_size is None:
-            draw_state.window_size = (400, 300)
-            draw_state.width = 400
-            draw_state.height = 300
-
-    loading_icon_0 = "\uf00d"
-    loading_icon_1 = "\uf067"
-    frame_spacing = 1
-    alpha = 0.25
-    icon_cursor = imgui.get_cursor_screen_pos()
-    icon_x = icon_cursor[0] + draw_state.width - 20
-    icon_y = icon_cursor[1] + 2
-    if (Melty.frame_count // frame_spacing) % 2 == 0:
-        draw_list = imgui.get_overlay_draw_list()
-        draw_list.add_text(icon_x, icon_y,
-                           imgui.get_color_u32_rgba(1, 1, 1, alpha),
-                           loading_icon_0)
-    else:
-        draw_list = imgui.get_overlay_draw_list()
-        draw_list.add_text(icon_x, icon_y,
-                           imgui.get_color_u32_rgba(1, 1, 1, alpha),
-                           loading_icon_1)
+    if draw_state.width is not None and draw_state.height is not None:
+        loading_icon_0 = "\uf00d"
+        loading_icon_1 = "\uf067"
+        frame_spacing = 1
+        alpha = 0.25
+        icon_cursor = imgui.get_cursor_screen_pos()
+        icon_x = icon_cursor[0] + draw_state.width - 20
+        icon_y = icon_cursor[1] + 2
+        if (Melty.frame_count // frame_spacing) % 2 == 0:
+            draw_list = imgui.get_overlay_draw_list()
+            draw_list.add_text(icon_x, icon_y,
+                               imgui.get_color_u32_rgba(1, 1, 1, alpha),
+                               loading_icon_0)
+        else:
+            draw_list = imgui.get_overlay_draw_list()
+            draw_list.add_text(icon_x, icon_y,
+                               imgui.get_color_u32_rgba(1, 1, 1, alpha),
+                               loading_icon_1)
 
     previous_tint = style_manager.get_tint()
-    if hasattr(input_value, 'tint') and input_value.tint is not None:
-        style_manager.set_imgui_tint(*input_value.tint)
+    if hasattr(input_value, 'tint') and getattr(input_value, "tint") is not None:
+        style_manager.set_imgui_tint(*getattr(input_value, "tint"))
 
     meta = kwargs.get("meta", None)
     if meta is None:
@@ -202,8 +206,7 @@ def draw(vis):
     Melty.all_uniques = set()
     clear_floating_text_cache()
     overlay_list = imgui.get_overlay_draw_list()
-    overlay_list.channels_split(2)
-    overlay_list.channels_set_current(1)
+
     Melty.hovered_drawstate_pending = set()
 
     Melty.clip_stack = []
@@ -1272,9 +1275,9 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
         if not on_drag or melty_window:
             next_kwargs['do_flow'] = True
 
-        if melty_window:
-            imgui.set_cursor_screen_pos((initial_cursor_pos[0],
-                                         initial_cursor_pos[1]))
+        # if melty_window:
+        #     imgui.set_cursor_screen_pos((initial_cursor_pos[0],
+        #                                  initial_cursor_pos[1]))
 
         if on_drag_up and not melty_window:
             melty.drag_in_progress = False

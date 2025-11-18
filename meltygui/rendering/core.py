@@ -111,10 +111,10 @@ def handle_actions(melty, unique, draw_state, func=None):
 
             if btn_state.mouse_down:
                 current_mouse_pos = mouse_pos
-                distance = math.sqrt((current_mouse_pos[0] - melty.mouse_down_pos[0]) ** 2 +
-                                     (current_mouse_pos[1] - melty.mouse_down_pos[1]) ** 2)
-                btn_state.drag_delta = (current_mouse_pos[0] - melty.mouse_down_pos[0],
-                                        current_mouse_pos[1] - melty.mouse_down_pos[1])
+                distance = math.sqrt((current_mouse_pos[0] - btn_state.mouse_down_pos[0]) ** 2 +
+                                     (current_mouse_pos[1] - btn_state.mouse_down_pos[1]) ** 2)
+                btn_state.drag_delta = (current_mouse_pos[0] - btn_state.mouse_down_pos[0],
+                                        current_mouse_pos[1] - btn_state.mouse_down_pos[1])
 
                 if melty.last_mouse_pos is not None:
                     this_m = mouse_pos
@@ -886,6 +886,12 @@ def render_func(*args, **o_kwargs):
                     Melty.move_draw_state_pending = {}
 
         draw_state = get_draw_state(unique)
+
+        if draw_state._input_value != input_value:
+            Melty.cache.invalidate_up_by_obj(kwargs.get("collection", input_value))
+
+            request_render()
+
         draw_state._input_value = input_value
 
         # hashable_representation = tuple(sorted(input_value.items()))
@@ -895,6 +901,8 @@ def render_func(*args, **o_kwargs):
         # except Exception as e:
         #     print("[Unique] Warning: Could not compute stable hash for object of type", type(input_value).__name__,
         #             "with unique", unique, name, "due to:", e)
+
+
 
         draw_state._has_popup = kwargs.get("has_popup", False)
         draw_state.auto_resize = kwargs.get("auto_resize", False)
@@ -1014,6 +1022,9 @@ def render_func(*args, **o_kwargs):
 
             ############################# WINDOW SETUP #####################################################
             window_drag = False
+            if kwargs.get("melty_window", False):
+                imgui.set_cursor_screen_pos((0, 0))
+
             if kwargs.get("melty_window", False) and kwargs.get("on_drag", False):
                 window_drag = True
                 mouse_pos = imgui.get_mouse_pos()
@@ -1038,6 +1049,7 @@ def render_func(*args, **o_kwargs):
                     draw_state.window_size = (draw_state.width, draw_state.height)
                     draw_state.expanded = True
 
+
             if kwargs.get("window_pos", None) is not None:
                 draw_state.window_pos = kwargs.get("window_pos", None)
 
@@ -1046,16 +1058,18 @@ def render_func(*args, **o_kwargs):
                 Melty.melty_window_stack.append(unique)
                 cursor_pos = imgui.get_cursor_screen_pos()
 
-                if draw_state.window_pos is None:
-                    draw_state.window_pos = (0, 0)
-                window_pos = draw_state.window_pos
+                if draw_state.window_pos is None and draw_state.width is not None:
+                    draw_state.window_pos = Melty.init_window_cursor
+                    cursor_spacing = 5
+                    Melty.init_window_cursor = (Melty.init_window_cursor[0] +
+                                                draw_state.width + cursor_spacing,
+                                                Melty.init_window_cursor[1])
 
-                if draw_state is not None and not kwargs.get("on_drag", True):
-                    kwargs['melty_window'] = False
+                if draw_state.window_pos is not None:
+                    imgui.set_cursor_screen_pos((snap_int(cursor_pos[0] + draw_state.window_pos[0]),
+                                                 snap_int(cursor_pos[1] + draw_state.window_pos[1])))
 
-                imgui.set_cursor_screen_pos((snap_int(cursor_pos[0] + window_pos[0]),
-                                             snap_int(cursor_pos[1] + window_pos[1])))
-
+            kwargs['melty_window'] = False
 
             if len(Melty.melty_window_stack) > 0:
                 Melty.is_melty_window = True
@@ -1226,6 +1240,11 @@ def render_func(*args, **o_kwargs):
                 else:
                     draw_state.bounding_width = snap_int(item_rect[0])
                     draw_state.bounding_height = snap_int(item_rect[1])
+
+                    if draw_state.window_size is None:
+                        draw_state.window_size = snap_int(item_rect[0]), snap_int(item_rect[1])
+                        draw_state.width = snap_int(item_rect[0])
+                        draw_state.height = snap_int(item_rect[1])
 
                 ######################################## HANDLE ACTIONS #######################
                 is_hovered = draw_state.is_hovered()

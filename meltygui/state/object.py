@@ -810,7 +810,6 @@ class DictConversion(metaclass=FieldMeta):
             current_val = object.__getattribute__(self, name) if hasattr(self, name) else None
             try:
                 if value != current_val:
-
                     if deep_refresh:
                         Melty.cache.invalidate_up_by_obj(obj=self, name=name)
                     else:
@@ -829,7 +828,6 @@ class DictConversion(metaclass=FieldMeta):
                         Melty.last_invalid_attr = f"{parent_name}{self.__class__.__name__}.{str(name)} {value_str[:30]}"
                         Melty.last_invalid.append(Melty.last_invalid_attr)
                         Melty.cache.invalidate_up_by_obj(Melty.last_invalid)
-
             except Exception as e:
                 pass
 
