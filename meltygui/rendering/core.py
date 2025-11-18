@@ -855,7 +855,11 @@ def render_func(*args, **o_kwargs):
             Melty.indent_count = 0
             Melty.unindent_count = 0
 
-            Melty.imgui_popup_open = imgui.is_popup_open("", flags=imgui.POPUP_ANY_POPUP)
+
+            is_popup_open = imgui.is_popup_open("", flags=imgui.POPUP_ANY_POPUP)
+            # if is_popup_open != Melty.imgui_popup_open and not is_popup_open:
+            #     Melty.cache.invalidate_all()
+            Melty.imgui_popup_open = is_popup_open
         else:
             melty = get_melty_state(Melty.unique_stack[0])
 
@@ -1169,6 +1173,10 @@ def render_func(*args, **o_kwargs):
                 draw_state._imgui_scroll_y = imgui.get_scroll_y()
 
                 if draw_state._has_popup:
+                    is_popup_open = Melty.imgui_popup_open
+                    if is_popup_open != draw_state._imgui_popover_open and not is_popup_open:
+                        Melty.cache.invalidate_up_by_obj(input_value)
+
                     draw_state._imgui_popover_open = Melty.imgui_popup_open
 
             except Exception as e:
@@ -1336,16 +1344,16 @@ def render_func(*args, **o_kwargs):
                 # Melty.cache.invalidate_by_obj(collection)
                 # Melty.cache.invalidate_by_obj(input_value)
                 # Melty.cache.invalidate_current()
-            if melty.dragged_tile == tile_id:
-                Melty.cache.invalidate_by_obj(draw_state)
-
-                # for a_tile in Melty.tile_id_stack:
-                #     Melty.cache.invalidate(a_tile)
-                # Melty.cache.invalidate_by_obj(collection)
-                # Melty.cache.invalidate_by_obj(input_value)
-                Melty.cache.invalidate(tile_id)
-                # Melty.cache.invalidate_current()
-                request_render()
+            # if melty.dragged_tile == tile_id:
+            #     Melty.cache.invalidate_by_obj(draw_state)
+            #
+            #     # for a_tile in Melty.tile_id_stack:
+            #     #     Melty.cache.invalidate(a_tile)
+            #     # Melty.cache.invalidate_by_obj(collection)
+            #     # Melty.cache.invalidate_by_obj(input_value)
+            #     Melty.cache.invalidate(tile_id)
+            #     # Melty.cache.invalidate_current()
+            #     request_render()
             offscreen_depth = Melty.depth
 
             if Melty.channels_split:

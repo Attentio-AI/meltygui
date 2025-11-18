@@ -689,7 +689,7 @@ class Melty:
     tile_id_stack = []
 
     last_invalid_attr = ""
-    last_invalid = deque(maxlen=5)
+    last_invalid = deque(maxlen=10)
 
     channels_split = False
     is_melty_window = False

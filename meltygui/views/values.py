@@ -1475,7 +1475,8 @@ def draw_collection(input_value, draw_state, depth, style_manager,
             draw_state.content_height = max(draw_state.content_height, imgui.get_cursor_pos()[1] - start_cursor)
         except Exception as e:
             print(f"Error rendering field '{key_str}' of {type(input_value).__name__}: {e}")
-            print_colored_traceback(e)
+            print_colored_traceback(*sys.exc_info())
+
         finally:
             if prev_tint is not None:
                 style_manager.set_imgui_tint(*prev_tint)
@@ -1519,7 +1520,7 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
     # float_style.apply(global_styles=global_styles, style_manager=style_manager, depth=depth)
     #
     # rounding = global_style.get_global_constant("rounding", default=0.0, folder="bg_styles")
-    rounding = 4.0
+    rounding = 5.0
     # Draw rect
     # if left == 0:
     #     left = imgui.get_cursor_screen_pos()[0]
@@ -1535,8 +1536,8 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
     #     draw_state.width = width
     #     draw_state.height = height
 
-    thickness = 2.0
-    half_thickness = thickness / 2.0
+    thickness = 1.0
+    half_thickness = 0.5
     rect = (snap_int(left) + thickness, snap_int(top) + thickness, snap_int(right) - thickness, snap_int(bottom) - thickness)
     rect_outline = (snap_int(left) + half_thickness, snap_int(top) + half_thickness,
                     snap_int(right) - half_thickness, snap_int(bottom) - half_thickness)
@@ -1548,7 +1549,7 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
     depth_offset = global_style.get_global_constant("depth_offset", default=0.0, folder="bg_styles") - 1.3
     dynamic_value = max(0, (float(depth + depth_offset) * depth_factor))
     bg_style = {
-        "value": -0.01,
+        "value": 0.01,
         "saturation": 1.2,
         "alpha": 1.0,
         'max_value': 1.0
@@ -1566,17 +1567,21 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
 
     bg_style = global_style.get_global_constant("bg_style", default=bg_style, folder="bg_styles")
     outline_saturation = global_style.get_global_constant("outline_saturation", default=0.5, folder="bg_styles")
-    outline_offset = global_style.get_global_constant("outline_offset", default=0.0, folder="bg_styles") - 0.1
+    outline_offset = global_style.get_global_constant("outline_offset", default=0.0, folder="bg_styles") - 0.05
     outline_factor = global_style.get_global_constant("outline_factor", default=1.0, folder="bg_styles") * 1.4
 
     if not auto_resize:
-        outline_factor *= 1.2
+        outline_factor *= 1.3
+        outline_saturation = 0.9
 
 
-    bleed_factor = 0.1
+    if auto_resize:
+        bleed_factor = 0.2
+    else:
+        bleed_factor = 0.0
     bg_bleed = Melty.get_bg_color(-1)
     bg_bleed = style_manager.make_custom_styled(*bg_bleed, input=bg_style,
-                                                value=0.7,
+                                                value=0.6,
                                                 alpha=1.0, saturation=1.8)
 
     outline_color = (style_manager.

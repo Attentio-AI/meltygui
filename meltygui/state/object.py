@@ -21,13 +21,14 @@ from src.lsd.gl_gui.model.class_utill import ClassUtility
 from src.lsd.gl_gui.model.global_undo_redo_manager import TrackedList, TrackedDict, TrackedSet, GlobalUndoRedoManager
 from src.lsd.gl_gui.model.core_model.core_enums import generate_id
 from src.lsd.gl_gui.view.app_view_utils import should_exclude
-from src.lsd.gl_gui.view.core_views.core_decoration import exclude
+from src.lsd.gl_gui.view.core_views.core_decoration import exclude, deep_refresh
 
 _SEGMENT_RE = re.compile(
     r'(?:[^.\[]+|\[[^\]]*\])+')  # matches a segment like: attr, attr[0], attr["a.b"][1], [0], ...
 _BRACKET_RE = re.compile(r'\[([^\]]*)\]')  # extracts inner text of each [...] in a segment
 
 @exclude(["tint", "hash", "id", "name", "prev_mouse_y", "prev_mouse_x"])
+@deep_refresh("tint")
 class DictConversion(metaclass=FieldMeta):
     def __init__(self):
         # Using weak references to avoid circular references
@@ -800,15 +801,38 @@ class DictConversion(metaclass=FieldMeta):
     def __setattr__(self, name: str, value: Any) -> None:
         # Handle special internal attributes normally
         is_visible = name not in self.__excluded_attrs__ if hasattr(self, '__excluded_attrs__') else False
+        deep_refresh = False
+        if name in self.__deep_refresh__:
+            is_visible = True
+            deep_refresh = True
 
         if is_visible and not name.startswith('_') and name != "driver":
             current_val = object.__getattribute__(self, name) if hasattr(self, name) else None
-
             try:
                 if value != current_val:
-                    Melty.invalidate(parent=self, value=value, attr_name=name)
+
+                    if deep_refresh:
+                        Melty.cache.invalidate_up_by_obj(obj=self, name=name)
+                    else:
+                        Melty.cache.invalidate_by_obj(obj=self, name=name)
+
+                    parent_name = ""
+                    if hasattr(self, "_input_value"):
+                        parent_class = self._input_value
+                        parent_name = f"{parent_class.__name__}\n"
+
+                    if self.__class__.__name__ != "MouseState":
+                        try:
+                            value_str = str(value)
+                        except:
+                            value_str = f"{value.__class__.__name__} object"
+                        Melty.last_invalid_attr = f"{parent_name}{self.__class__.__name__}.{str(name)} {value_str[:30]}"
+                        Melty.last_invalid.append(Melty.last_invalid_attr)
+                        Melty.cache.invalidate_up_by_obj(Melty.last_invalid)
+
             except Exception as e:
                 pass
+
 
         if name.startswith('_'):
             super().__setattr__(name, value)

@@ -16,6 +16,21 @@ def exclude(*args, **kwargs):
     return decorator
 
 
+def deep_refresh(*args, **kwargs):
+    def decorator(cls):
+        if len(args) == 1 and isinstance(args[0], (list, set, tuple)):
+            from_args = args[0]
+        else:
+            from_args = set(args)
+        already_excluded = getattr(cls, '__deep_refresh__', set())
+        merged_names = already_excluded.union(set(from_args))
+        merged_names = merged_names.union(from_args)
+
+        setattr(cls, '__deep_refresh__', merged_names)
+        return cls
+
+    return decorator
+
 global_hotkeys = {}
 
 def no_save(*args, **kwargs):

@@ -390,6 +390,7 @@ class TileCacheMasked:
         # Lookup dicts for bubbling (key chains)
         self.py_id_to_keys: Dict[str, set] = {}
         self.key_to_parent_key: Dict[str, str] = {}
+        self.parent_key_to_child_keys: Dict[str, set] = {}
 
         self._tiles: Dict[str, _Tile] = {}
         self._sizes = {}  # resolved key -> (w,h)
@@ -465,6 +466,18 @@ class TileCacheMasked:
 
         self.invalidate(self._stack[-1].key)
 
+    def invalidate_up_by_obj(self, obj, name=None):
+        # if name is not None:
+        #     keys = self.py_id_to_keys.get(f"{id(obj)}.{name}", None)
+        #     if keys is not None:
+        #         for k in keys:
+        #             self.invalidate_up(k)
+        # else:
+        keys = self.py_id_to_keys.get(f"{id(obj)}", None)
+        if keys is not None:
+            for k in keys:
+                self.invalidate_up(k)
+
     def invalidate_by_obj(self, obj, name=None):
         if name is not None:
             keys = self.py_id_to_keys.get(f"{id(obj)}.{name}", None)
@@ -489,6 +502,27 @@ class TileCacheMasked:
         if parent_key and parent_key != key:
             all_keys.extend(self.get_parent_keys(parent_key))
         return all_keys
+
+    def get_child_keys(self, key):
+        child_keys = self.parent_key_to_child_keys.get(key, set())
+        all_keys = set(child_keys)
+        for ck in child_keys:
+            all_keys.update(self.get_child_keys(ck))
+        return all_keys
+
+    # More expensive, redraws all children
+    def invalidate_up(self, k: str) -> None:
+        self.invalidate(k)
+
+        # Defer parent invalidation to next frame as well
+        child_keys = self.get_child_keys(k)
+        for child in child_keys:
+            if child and child != k:
+                pt = self._tiles.get(child)
+                if pt is not None:
+                    pt.last_invalidated_frame = max(pt.last_invalidated_frame, self._frame_id + 1)
+                    pt.dirty = self._is_dirty(pt)
+                    self.pending_invalid.append(pt)
 
     def invalidate(self, key: str, immediate=False) -> None:
         keys_to_touch = [self._resolve_key(key)]
@@ -730,8 +764,15 @@ class TileCacheMasked:
         #     size = snap_int(draw_state.width), snap_int(draw_state.height)
         # if not draw_state.auto_resize:
         #     size = (snap_int(draw_state.bounding_width), snap_int(draw_state.bounding_height))
-
         self.key_to_parent_key[rkey] = parent_ctx.key if parent_ctx else None
+
+        # record child keys for parent
+        parent_key = parent_ctx.key if parent_ctx else None
+        if parent_key is not None:
+            if parent_key not in self.parent_key_to_child_keys:
+                self.parent_key_to_child_keys[parent_key] = set()
+            self.parent_key_to_child_keys[parent_key].add(rkey)
+
         if name is not None:
             name_key = f"{id(collection)}.{name}"
             self.py_id_to_keys.setdefault(name_key, set()).add(rkey)
