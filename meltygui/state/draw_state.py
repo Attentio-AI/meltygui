@@ -173,7 +173,27 @@ class DrawState(DictConversion):
         else:
             self.cst.anchor = (type(node).__name__,)
 
+    def get_resize_handle(self):
+        if self.left is None:
+            return (0, 0, 0, 0)
+        left = self.left
+        top = self.top
+        right = left + self.width
+        bottom = top + self.height + 2
 
+        margin = 20
+        return (right - margin, bottom - margin, right, bottom)
+
+    def get_drag_mode(self):
+        mx, my = imgui.get_mouse_pos()
+        rect_br = self.get_resize_handle()
+        inside_br = (rect_br[0] <= mx <= rect_br[2] and rect_br[1] <= my <= rect_br[3])
+
+        # Bottom right
+        if inside_br:
+            return DragMode.RESIZE_BR
+
+        return DragMode.WINDOW
 
     def is_glfw_mouse_hovering_rect(self, x1, y1, x2, y2):
 

@@ -40,7 +40,7 @@ def handle_actions(melty, unique, draw_state, func=None):
         melty.initial_drag_offset = None
         melty.mouse_down_pos = None
 
-    if Melty.is_window_enabled() and (imgui.is_window_hovered() or melty.drag_in_progress):
+    if (Melty.is_window_enabled() and (imgui.is_window_hovered() or melty.drag_in_progress)):
         for m_btn in [0, 1, 2]:
             btn_state = draw_state.mouse_btn_state[m_btn]
 
@@ -673,7 +673,7 @@ def get_resize_handle(a_ds):
     left = a_ds.left
     top = a_ds.top
     right = left + a_ds.width
-    bottom = top + a_ds.height + 2
+    bottom = top + a_ds.height
 
     margin = 20
     return (right - margin, bottom - margin, right, bottom)
@@ -688,14 +688,25 @@ def draw_resize_handle(a_ds):
 
     rect_br = get_resize_handle(a_ds)
     draw_list = imgui.get_window_draw_list()
+    width = rect_br[2] - rect_br[0]
+    height = rect_br[3] - rect_br[1]
+
+    if width <= 0 or height <= 0:
+        return
+    imgui.set_cursor_screen_pos((rect_br[0], rect_br[1]))
+    imgui.set_item_allow_overlap()
+    imgui.invisible_button(str(a_ds.unique) + "resize_btn", width, height)
+    imgui.set_item_allow_overlap()
+
     draw_list.add_rect_filled(rect_br[0], rect_br[1], rect_br[2], rect_br[3],
                               imgui.get_color_u32_rgba(0.8, 0.8, 0.2, 0.3))
     # Bottom corner
+    Melty.cache.mask_mark_rect(Melty.max_depth - 1, rect_br[0], rect_br[1], width, height,
+                               key=str(a_ds.unique) + "resize")
 
 
 def get_drag_mode(a_ds):
     mx, my = imgui.get_mouse_pos()
-
     rect_br = get_resize_handle(a_ds)
     inside_br = (rect_br[0] <= mx <= rect_br[2] and rect_br[1] <= my <= rect_br[3])
 
@@ -963,6 +974,9 @@ def render_func(*args, **o_kwargs):
             kwargs['depth'] = Melty.depth
             draw_state._draggable = kwargs.get("draggable", False)
 
+            if draw_state.get_drag_mode() == DragMode.RESIZE_BR:
+                melty.hover_stack.append(unique)
+
             ############################# WINDOW SETUP #####################################################
             window_drag = False
             if kwargs.get("melty_window", False) and kwargs.get("on_drag", False):
@@ -1006,6 +1020,7 @@ def render_func(*args, **o_kwargs):
 
                 imgui.set_cursor_screen_pos((snap_int(cursor_pos[0] + window_pos[0]),
                                              snap_int(cursor_pos[1] + window_pos[1])))
+
 
             if len(Melty.melty_window_stack) > 0:
                 Melty.is_melty_window = True
@@ -1231,6 +1246,9 @@ def render_func(*args, **o_kwargs):
                         request_render()
 
                 if melty_window:
+                    draw_list = imgui.get_window_draw_list()
+                    if Melty.channels_split:
+                        draw_list.channels_set_current((Melty.max_depth - 1))
                     draw_resize_handle(draw_state)
                     Melty.melty_window_stack.pop()
 

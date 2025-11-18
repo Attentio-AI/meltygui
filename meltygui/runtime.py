@@ -662,6 +662,10 @@ class MeltyState:
             self.top_event_depth[event_type] = depth
             self.top_event[event_type] = unique
 
+    def clear_events(self, unique):
+        if unique in self.triggered_actions:
+            self.triggered_actions.pop(unique)
+
     def to_apply(self, action: CollectionAction):
         self.actions_to_apply.append(action)
 
@@ -736,8 +740,18 @@ class Melty:
     all_dirty = False
     hovered_drawstate = set()
     hovered_drawstate_pending = set()
+    frame_count = 0
 
     all_uniques = set()
+
+    @classmethod
+    def begin_frame(cls):
+        cls.frame_count += 1
+        # cls._root_by_module[module_id] = root
+        # cls._gen_by_module.setdefault(module_id, 0)
+        # cls._path_stack.clear()
+
+
 
     @classmethod
     def get_tile_id(cls):
@@ -768,7 +782,7 @@ class Melty:
         cls.clip_stack.pop()
 
     @classmethod
-    def current_clip(cls):
+    def get_clip_rect(cls):
         if len(cls.clip_stack) == 0:
             return None
         return cls.clip_stack[-1]
@@ -814,11 +828,7 @@ class Melty:
             elif parent is not None:
                 Melty.cache.invalidate_by_obj(parent)
 
-    @classmethod
-    def begin_frame(cls, module_id: str, root: cst.Module):
-        cls._root_by_module[module_id] = root
-        cls._gen_by_module.setdefault(module_id, 0)
-        cls._path_stack.clear()
+
 
     @classmethod
     def current_path(cls) -> tuple[tuple[str, int | None], ...]:

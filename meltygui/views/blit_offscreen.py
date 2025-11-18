@@ -128,7 +128,7 @@ def _create_fbo_with_tex(tex: int, depth_stencil: bool, w, h) -> Tuple[int, Opti
     return fbo, rbo
 
 
-def _ensure_tile(existing: Optional[_Tile], w: int, h: int, frame_id: int = 0) -> Optional[_Tile]:
+def _ensure_tile(existing: Optional[_Tile], w: int, h: int, frame_id: int = 0, tile_id=None) -> Optional[_Tile]:
     if existing and existing.size == (w, h):
         return existing
 
@@ -168,6 +168,7 @@ def _ensure_tile(existing: Optional[_Tile], w: int, h: int, frame_id: int = 0) -
             st.restore()
 
     t = _Tile(fbo=new_fbo, tex=new_tex, rbo=new_rbo, size=(w, h), dirty=True)
+
     t.last_invalidated_frame = frame_id  # requires a copy to become clean
     return t
 
@@ -646,7 +647,7 @@ class TileCacheMasked:
         # y1 = wy + cry1 - sy
 
         from src.lsd.gl_gui.melty import Melty
-        clip = Melty.current_clip()
+        clip = Melty.get_clip_rect()
 
         return clip
 
@@ -669,7 +670,9 @@ class TileCacheMasked:
     def _get_draw_xform():
         dd = imgui.get_draw_data()
         dp_x, dp_y = dd.display_pos  # top-left of draw space (screen pixels)
-        s_x, s_y = dd.frame_buffer_scale  # DPI scale to framebuffer pixels
+        # s_x, s_y = dd.frame_buffer_scale  # DPI scale to framebuffer pixels
+
+        s_x, s_y = 1, 1  # DPI scale to framebuffer pixels
         fb_w = snap_int(dd.display_size[0] * s_x)
         fb_h = snap_int(dd.display_size[1] * s_y)
         return dp_x, dp_y, s_x, s_y, fb_w, fb_h
@@ -869,6 +872,7 @@ class TileCacheMasked:
             # Allocate/resize tile only if we need to copy (dirty or size changed)
             if (t is None) or (t.size != (ctx.size[0], ctx.size[1])):
                 t = _ensure_tile(t, ctx.size[0], ctx.size[1], frame_id=self._frame_id)
+                self.invalidate(ctx.key)
                 self._tiles[ctx.key] = t
 
             if self._is_dirty(t) and (ctx.key not in self._enq_copy_keys):
@@ -972,10 +976,10 @@ class TileCacheMasked:
             for r in local_mask_rects:
                 x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y, fb_h)
 
-                ix0 = int(floor(x0))
-                iy0 = int(floor(y0))
-                ix1 = int(ceil(x1))
-                iy1 = int(ceil(y1))
+                ix0 = int(snap_int(x0))
+                iy0 = int(snap_int(y0))
+                ix1 = int(snap_int(x1))
+                iy1 = int(snap_int(y1))
                 iw = max(0, ix1 - ix0)
                 ih = max(0, iy1 - iy0)
 
@@ -1090,35 +1094,35 @@ class TileCacheMasked:
 
             gl.glUseProgram(0)
 
-            # 4) Optional: draw mask/snapshot overlays to default framebuffer for eyeballing
-            if self.debug_overlay_mask_to_screen or self.debug_overlay_src_to_screen:
-                gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
-                gl.glViewport(0, 0, dd_fb_w, dd_fb_h)
-                gl.glDisable(gl.GL_BLEND)
-                gl.glUseProgram(self._prog_blit)
-
-                def blit_tex(tex, x, y, w, h):
-                    gl.glActiveTexture(gl.GL_TEXTURE0);
-                    gl.glBindTexture(gl.GL_TEXTURE_2D, tex)
-                    gl.glUniform1i(gl.glGetUniformLocation(self._prog_blit, "uTex"), 0)
-                    gl.glViewport(x, y, w, h)
-                    gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
-
-                small_w = max(64, dd_fb_w // 6)
-                small_h = max(64, dd_fb_h // 6)
-
-                # top-left stack
-                ox, oy = 8, 8
-                if self.debug_overlay_mask_to_screen:
-                    blit_tex(self._mask_tex, ox, oy, small_w, small_h)
-                    oy += small_h + 8
-
-                if self.debug_overlay_src_to_screen:
-                    blit_tex(self._snapshot_tex, ox, oy, small_w, small_h)
-
-                # restore viewport
-                gl.glViewport(0, 0, dd_fb_w, dd_fb_h)
-                gl.glUseProgram(0)
+            # # 4) Optional: draw mask/snapshot overlays to default framebuffer for eyeballing
+            # if self.debug_overlay_mask_to_screen or self.debug_overlay_src_to_screen:
+            #     gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
+            #     gl.glViewport(0, 0, dd_fb_w, dd_fb_h)
+            #     gl.glDisable(gl.GL_BLEND)
+            #     gl.glUseProgram(self._prog_blit)
+            #
+            #     def blit_tex(tex, x, y, w, h):
+            #         gl.glActiveTexture(gl.GL_TEXTURE0);
+            #         gl.glBindTexture(gl.GL_TEXTURE_2D, tex)
+            #         gl.glUniform1i(gl.glGetUniformLocation(self._prog_blit, "uTex"), 0)
+            #         gl.glViewport(x, y, w, h)
+            #         gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
+            #
+            #     small_w = max(64, dd_fb_w // 6)
+            #     small_h = max(64, dd_fb_h // 6)
+            #
+            #     # bottom-left stack
+            #     ox, oy = 8, 8
+            #     if self.debug_overlay_mask_to_screen:
+            #         blit_tex(self._mask_tex, ox, oy, small_w, small_h)
+            #         oy += small_h + 8
+            #
+            #     if self.debug_overlay_src_to_screen:
+            #         blit_tex(self._snapshot_tex, ox, oy, small_w, small_h)
+            #
+            #     # restore viewport
+            #     gl.glViewport(0, 0, dd_fb_w, dd_fb_h)
+            #     gl.glUseProgram(0)
 
         finally:
             st.restore()
