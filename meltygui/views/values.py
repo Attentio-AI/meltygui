@@ -922,6 +922,7 @@ def draw_vertical_scrollbar(content_height: float,
     if min_grab_size is None:
         min_grab_size = float(style.grab_min_size)
 
+
     col_track = imgui.get_color_u32_rgba(0,0,0,0.1)
     col_grab = imgui.get_color_u32_rgba(1,1,1, 0.3)
     col_border = imgui.get_color_u32(imgui.COLOR_BORDER)
@@ -938,13 +939,16 @@ def draw_vertical_scrollbar(content_height: float,
     # Anchor the container at the current cursor position in screen space
     origin_x, origin_y = (left, top)
 
+    bar_margin = 4.0
+    bar_margin_x = 2.0
+
     # Track geometry (stick it to the right edge of the container)
     track_w = min(scrollbar_width, view_width)
     track_h = view_height
-    track_x1 = origin_x + (view_width - track_w)
-    track_y1 = origin_y
-    track_x2 = track_x1 + track_w
-    track_y2 = track_y1 + track_h
+    track_x1 = origin_x + (view_width - track_w) - bar_margin_x
+    track_y1 = origin_y + bar_margin
+    track_x2 = track_x1 + track_w - bar_margin_x
+    track_y2 = track_y1 + track_h - bar_margin * 2
 
     # Compute grab size & position
     if content_height <= 0.0 or track_h <= 0.0:
@@ -1181,7 +1185,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                     draw_list.channels_set_current(min(Melty.max_depth - 1, Melty.depth))
 
                 if clip:
-                    rect = (d_left, d_top + header_height, d_left + d_width, d_top + d_height)
+                    rect = (d_left, d_top + header_height, d_left + d_width, d_top + d_height - 2)
                     Melty.push_clip(rect)
 
                 current_cursor = imgui.get_cursor_screen_pos()
@@ -1200,6 +1204,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                     Melty.pop_clip()
 
                 draw_list.channels_set_current(Melty.depth)
+
                 draw_vertical_scrollbar(draw_state.content_height, view_height=d_height, view_width=d_width,
                                         scroll_offset=draw_state.scroll_offset[1], scrollbar_width=4.0, left=d_left,
                                         top=d_top)
@@ -1256,7 +1261,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                 draw_bg(bypass=True, left=start_x_pos, top=y_margin + start_y_pos,
                         width=background_width, height=(background_height - Melty.spacing[1] / 2.0 - y_offset),
                         tint=bg_tint, depth=Melty.depth, selected=bg_selected, global_style=global_style,
-                        style_manager=style_manager)
+                        style_manager=style_manager, auto_resize=auto_resize)
 
 
             if draw_state.height is not None:
@@ -1503,7 +1508,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 def draw_bg(left=0, top=0, width=20, height=20, depth=0,
             global_style=None, outline=True,
             style_manager=None, tint=None, outline_tint=None, selected=False,
-            hovered=False):
+            hovered=False, auto_resize=False):
     # Render background
     def current_indent_px():
         return Melty.current_indent
@@ -1513,8 +1518,8 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
     # float_style = global_styles.get_global_constant(constant_name="bg_style", default_type=Style, folder="bg_styles")
     # float_style.apply(global_styles=global_styles, style_manager=style_manager, depth=depth)
     #
-    rounding = global_style.get_global_constant("rounding", default=0.0, folder="bg_styles")
-
+    # rounding = global_style.get_global_constant("rounding", default=0.0, folder="bg_styles")
+    rounding = 4.0
     # Draw rect
     # if left == 0:
     #     left = imgui.get_cursor_screen_pos()[0]
@@ -1530,17 +1535,21 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
     #     draw_state.width = width
     #     draw_state.height = height
 
-    rect = (snap_int(left) + 1, snap_int(top) + 1, snap_int(right) - 1, snap_int(bottom) - 1)
-    rect_outline = (snap_int(left), snap_int(top), snap_int(right), snap_int(bottom))
+    thickness = 2.0
+    half_thickness = thickness / 2.0
+    rect = (snap_int(left) + thickness, snap_int(top) + thickness, snap_int(right) - thickness, snap_int(bottom) - thickness)
+    rect_outline = (snap_int(left) + half_thickness, snap_int(top) + half_thickness,
+                    snap_int(right) - half_thickness, snap_int(bottom) - half_thickness)
     # rounding
-    rounding = min(current_indent_px(), rounding)
+
+    rounding = min(max(10.0, current_indent_px()), rounding)
 
     depth_factor = global_style.get_global_constant("depth_factor", default=1.0, folder="bg_styles") * 0.95
     depth_offset = global_style.get_global_constant("depth_offset", default=0.0, folder="bg_styles") - 1.3
     dynamic_value = max(0, (float(depth + depth_offset) * depth_factor))
     bg_style = {
-        "value": 0.01,
-        "saturation": 1.0,
+        "value": -0.01,
+        "saturation": 1.2,
         "alpha": 1.0,
         'max_value': 1.0
     }
@@ -1560,7 +1569,11 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
     outline_offset = global_style.get_global_constant("outline_offset", default=0.0, folder="bg_styles") - 0.1
     outline_factor = global_style.get_global_constant("outline_factor", default=1.0, folder="bg_styles") * 1.4
 
-    bleed_factor = 0.05
+    if not auto_resize:
+        outline_factor *= 1.2
+
+
+    bleed_factor = 0.1
     bg_bleed = Melty.get_bg_color(-1)
     bg_bleed = style_manager.make_custom_styled(*bg_bleed, input=bg_style,
                                                 value=0.7,
@@ -1578,7 +1591,7 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
 
         if outline_tint is not None:
             outline_color = imgui.get_color_u32_rgba(*outline_tint)
-        imgui.get_window_draw_list().add_rect(*rect_outline, col=outline_color, rounding=rounding, thickness=1.0)
+        imgui.get_window_draw_list().add_rect(*rect_outline, col=outline_color, rounding=rounding, thickness=2.0)
     bg_color = (style_manager.
                 make_color_style_value(input=bg_style, value=max(0, dynamic_value) + hovered_offset))
 

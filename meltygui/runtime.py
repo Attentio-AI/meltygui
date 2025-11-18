@@ -719,7 +719,7 @@ class Melty:
     spacing = (3, 1)
     padding = (3, 3)
     end_collection_spacing = 5
-    collection_spacing = 5
+    collection_spacing = 3
     header_indent = 150
 
     vis = None
