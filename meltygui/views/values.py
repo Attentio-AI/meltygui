@@ -223,10 +223,10 @@ def draw(vis):
     Melty.cache.mask_begin_frame((fb_w, fb_h))
 
     draw_melty_windows(vis)
-
     apply_drag_and_drop()
 
     Melty.hovered_drawstate = Melty.hovered_drawstate_pending
+
 
     # draw_window(export_code, name="Code Export")
 
@@ -455,7 +455,11 @@ def draw_cst_int(input_value, width=None):
         expr = input_value.expression  # expect an Integer
         op = input_value.operator
         inner_text = expr.value
-        magnitude = int(inner_text, 0)
+        try:
+            magnitude = int(inner_text, 0)
+        except ValueError:
+            magnitude = 0
+
         sign = -1 if isinstance(op, cst.Minus) else 1
         current_val = sign * magnitude
         fmt_template = inner_text

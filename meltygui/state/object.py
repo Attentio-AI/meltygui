@@ -814,7 +814,9 @@ class DictConversion(metaclass=FieldMeta):
                     if deep_refresh:
                         Melty.cache.invalidate_up_by_obj(obj=self, max_depth=4)
                     else:
-                        Melty.cache.invalidate_by_obj(obj=self, name=name)
+                        Melty.cache.invalidate_by_obj(obj=self)
+
+                    from src.lsd.gl_gui.utils.glfw_utils import request_render
 
                     parent_name = ""
                     if hasattr(self, "_input_value"):
@@ -822,6 +824,8 @@ class DictConversion(metaclass=FieldMeta):
                         parent_name = f"{parent_class.__name__}\n"
 
                     if self.__class__.__name__ != "MouseState":
+                        request_render()
+
                         try:
                             value_str = str(value)
                         except:

@@ -477,7 +477,7 @@ class TileCacheMasked:
         parent_key = self.key_to_parent_key.get(self._stack[-1].key, None)
         self.invalidate_up(parent_key, max_depth=2)
 
-    def invalidate_up_by_obj(self, obj, name=None, max_depth=15):
+    def invalidate_up_by_obj(self, obj, name=None, max_depth=9):
         if name is not None:
             keys = self.py_id_to_keys.get(f"{id(obj)}.{name}", None)
             if keys is not None:
@@ -514,7 +514,7 @@ class TileCacheMasked:
             all_keys.extend(self.get_parent_keys(parent_key))
         return all_keys
 
-    def get_child_keys(self, key, depth=0, max_depth=15):
+    def get_child_keys(self, key, depth=0, max_depth=9):
 
         if depth >= max_depth:
             return set()
@@ -530,7 +530,7 @@ class TileCacheMasked:
         return all_keys
 
     # More expensive, redraws all children
-    def invalidate_up(self, k: str, max_depth=15) -> None:
+    def invalidate_up(self, k: str, max_depth=9) -> None:
         self.invalidate(k)
 
         # Defer parent invalidation to next frame as well

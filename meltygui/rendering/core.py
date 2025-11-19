@@ -665,14 +665,22 @@ def annotation_track(*args, wrapper, **kwargs):
 def apply_drag_and_drop():
 
     ######## -------- apply drag & drop -----------
+    did_apply = False
     while len(Melty.actions_to_apply) > 0:
         action = Melty.actions_to_apply.pop(0)
         result = apply_collection_action(action)
 
-        Melty.cache.invalidate_up_by_obj(action.source_collection)
-        Melty.cache.invalidate_up_by_obj(action.target_collection)
-        request_render()
+        if action.source_collection == action.target_collection:
+            Melty.cache.invalidate_up_by_obj(action.source_collection)
+        else:
+            Melty.cache.invalidate_up_by_obj(action.source_collection)
+            Melty.cache.invalidate_up_by_obj(action.target_collection)
+        did_apply = True
+
     Melty.actions_to_apply = []
+    if did_apply:
+        request_render()
+
 
 def get_resize_handle(a_ds):
     if a_ds.left is None:
@@ -828,7 +836,8 @@ def render_func(*args, **o_kwargs):
         suffix = Melty.unique_stack[-1] if len(Melty.unique_stack) > 0 else (name or "")
 
         # Keep original behavior of always appending name (even if empty)
-        suffix = f"{old_suffix}_{suffix}_{unique_name}"
+        suffix = f"{old_suffix}_{suffix}_{name}"
+
 
         if is_root:
             unique = ui_id(datatype=type(input_value), suffix=unique_name + func.__name__)
@@ -891,7 +900,7 @@ def render_func(*args, **o_kwargs):
 
         draw_state = get_draw_state(unique)
 
-        if isinstance(input_value, (type(None), int, float, str, bool, tuple, list, dict, set)):
+        if isinstance(input_value, (type(None), int, float, str, bool, tuple, set)):
             if draw_state._input_value != input_value:
                 Melty.cache.invalidate_up_by_obj(kwargs.get("collection", input_value))
                 request_render()
@@ -909,12 +918,12 @@ def render_func(*args, **o_kwargs):
         draw_state._has_popup = kwargs.get("has_popup", False)
         draw_state.auto_resize = kwargs.get("auto_resize", False)
 
-        tile_id = computed_unique
+        tile_id = strhash(str(computed_unique) + str(draw_state.id))
         draw_state._tile_id = tile_id
 
-        if unique in Melty.all_uniques:
-            print("[Unique] Warning: Duplicate key detected:", computed_unique, type(input_value).__name__, "in",
-                  type(kwargs.get('collection', object)).__name__, "with name", name,"with func:", func.__name__)
+        # if unique in Melty.all_uniques:
+        #     print("[Unique] Warning: Duplicate key detected:", computed_unique, type(input_value).__name__, "in",
+        #           type(kwargs.get('collection', object)).__name__, "with name", name,"with func:", func.__name__)
         Melty.all_uniques.add(unique)
 
         is_initial_draw_state = True
@@ -1222,18 +1231,19 @@ def render_func(*args, **o_kwargs):
                 if len(Melty.clip_stack) > 0:
                     clip_width = Melty.clip_stack[-1][2] - Melty.clip_stack[-1][0]
                     item_rect = (min(item_rect[0], clip_width), item_rect[1])
-
+                original_width_b = draw_state.bounding_width
+                original_height_b = draw_state.bounding_height
                 # if kwargs.get("auto_resize", True):
                 #     draw_state.window_size = None
 
                 if not melty.drag_in_progress:
+
                     draw_state.bounds_left = snap_int(start_cursor[0])
                     draw_state.bounds_top = snap_int(start_cursor[1])
 
                     if kwargs.get("auto_resize", True) or draw_state.window_size is not None:
                         draw_state.width = snap_int(item_rect[0])
                         draw_state.height = snap_int(item_rect[1])
-
                 if not kwargs.get("auto_resize", True) and draw_state.window_size is not None:
                     margin = 40
 
@@ -1257,9 +1267,13 @@ def render_func(*args, **o_kwargs):
                         draw_state.width = snap_int(item_rect[0])
                         draw_state.height = snap_int(item_rect[1])
 
+                if (draw_state.bounding_width != original_width_b or
+                        draw_state.bounding_height != original_height_b):
+                    request_render()
+
+
                 ######################################## HANDLE ACTIONS #######################
                 is_hovered = draw_state.is_hovered()
-
 
                 melty.triggered_actions.pop(unique, None)
                 handle_actions(melty, unique, draw_state, func)

@@ -66,7 +66,6 @@ class FieldMeta(type):
                 field_meta[key].field_type = type(value)
             elif callable(value_annotation):
                 try:
-
                     meta = value_annotation(value)
                     if hasattr(meta, 'is_meta'):
                         meta.name = key
