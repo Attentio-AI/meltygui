@@ -314,7 +314,7 @@ def apply_collection_action(action: CollectionAction):
     # Capture owner types BEFORE any __dict__ coercion (for __field_defaults__)
     src_owner_type = type(src_owner)
     dst_owner_type = type(dst_owner)
-
+    item = None
     tag = _norm_tag(action.target_tag)
     if tag is None:
         return "target_tag must be 'top' or 'bottom'."
@@ -574,7 +574,6 @@ def apply_collection_action(action: CollectionAction):
         return "Unsupported collection types. Expected list or dict for both source and target."
 
     # Melty.cache.invalidate_all()
-
     # ---------------- reflect order into __field_defaults__ (order-only, in place) ----------------
     if not isinstance(dst, list) and hasattr(dst_owner_type, "__field_defaults__"):
         class_defaults = dst_owner_type.__field_defaults__
@@ -590,6 +589,8 @@ def apply_collection_action(action: CollectionAction):
             class_defaults.clear()
             for k in new_order:
                 class_defaults[k] = old_vals.get(k)
+
+
 
     return None
 
@@ -636,7 +637,6 @@ class MeltyState:
 
         self.target_distance = self.max_distance
 
-        self.actions_to_apply = []
         self.items_to_delete = []
 
 
@@ -666,8 +666,7 @@ class MeltyState:
         if unique in self.triggered_actions:
             self.triggered_actions.pop(unique)
 
-    def to_apply(self, action: CollectionAction):
-        self.actions_to_apply.append(action)
+
 
     def to_delete(self, key, collection):
         self.items_to_delete.append((key, collection))
@@ -687,6 +686,8 @@ class Melty:
     registered_windows = {}
     scroll_stack = []
     tile_id_stack = []
+
+    actions_to_apply = []
 
     init_window_cursor = (150, 10)
 
@@ -749,14 +750,16 @@ class Melty:
     all_uniques = set()
 
     @classmethod
+    def to_apply(cls, action: CollectionAction):
+        cls.actions_to_apply.append(action)
+
+    @classmethod
     def begin_frame(cls):
         cls.frame_count += 1
         cls.blocker_hovered = False
         # cls._root_by_module[module_id] = root
         # cls._gen_by_module.setdefault(module_id, 0)
         # cls._path_stack.clear()
-
-
 
     @classmethod
     def get_tile_id(cls):
@@ -791,6 +794,42 @@ class Melty:
         if len(cls.clip_stack) == 0:
             return None
         return cls.clip_stack[-1]
+
+    @classmethod
+    def get_clip_size(cls):
+        if len(cls.clip_stack) == 0:
+            return None
+        rect = cls.clip_stack[-1]
+        width = rect[2] - rect[0]
+        height = rect[3] - rect[1]
+        return width, height
+
+    @classmethod
+    def inside_clip(cls, draw_state=None, rect=None):
+        clip_rect = cls.get_clip_rect()
+        if clip_rect is None:
+            return True
+        clip_left, clip_top, clip_right, clip_bottom = clip_rect
+
+        if draw_state is not None:
+            left = draw_state.left
+            top = draw_state.top
+            width = draw_state.width
+            height = draw_state.height
+        else:
+            left, top, width, height = rect
+
+        if top is None or left is None:
+            return True
+
+        if width is None or height is None:
+            return True
+
+        if (left + width < clip_left or left > clip_right or
+            top + height < clip_top or top > clip_bottom):
+            return False
+        return True
+
 
     @classmethod
     def undo_clip(cls, undo_point_id):

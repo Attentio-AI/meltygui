@@ -24,7 +24,8 @@ from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int, TileCacheMasked
 from src.lsd.gl_gui.view.core_views.core_decoration import hotkey, global_hotkeys
 from src.lsd.gl_gui.view.core_views.core_render import render_func, tmp_undo_stack, redo_stack, push_id, pop_id, ui_id, \
-    render_wrapper, annotation_track, listens_for, get_draw_state, clear_floating_text_cache, handle_actions, begin_window, end_window
+    render_wrapper, annotation_track, listens_for, get_draw_state, clear_floating_text_cache, handle_actions, \
+    begin_window, end_window, apply_drag_and_drop
 from src.lsd.gl_gui.model.core_model.new_core_model import KeyMod, Hotkey, DragMode
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
 import libcst as cst
@@ -105,24 +106,27 @@ def draw_melty_windows(vis):
     Melty.channels_split = True
     Melty.window_stack.append((title, True))
 
-    draw_any(Melty.registered_windows, show_add_delete=False, name="Window Manager")
-
-    global test_obj
-    draw_window(test_obj, name="Test value")
-    draw_window(test_obj, name="Test value 1")
-
-
-    draw_window(proxy, name="CST Proxy")
-    draw_window(filesystem_proxy, name="Filesystem Test")
-    draw_window(vis.root.lora_collection, name="Test Window 1")
-    # draw_debug(name="Debug Window")
-    draw_window(Melty.last_invalid, show_bg=True, name="Last Invalid")
+    draw_main(name="Main Window", vis=vis)
 
     # End frame ###############
     Melty.window_stack.pop()
     draw_list.channels_merge()
     Melty.channels_split = False
     end()
+
+@render_func(use_cache=True)
+def draw_main(input_value, vis):
+    global test_obj
+    draw_any(Melty.registered_windows, show_add_delete=False, name="Window Manager")
+
+    draw_window(test_obj, name="Test value")
+    draw_window(test_obj, name="Test value 1")
+
+    draw_window(proxy, name="CST Proxy")
+    draw_window(filesystem_proxy, name="Filesystem Test")
+    draw_window(vis.root.lora_collection, name="Test Window 1")
+    draw_window(vis.root.lora_collection.loras, name="Test Window 2")
+    draw_window(Melty.last_invalid, show_bg=True, name="Last Invalid")
 
 
 @with_header(is_default_for=ManagedWindow, is_tree=False,
@@ -144,12 +148,17 @@ def draw_managed_window(input_value, *args, **kwargs):
 @render_func(use_cache=True, auto_resize=False, show_bg=True, melty_window=True, draggable=True)
 def draw_window(input_value, style_manager=None, *args, **kwargs):
     window_name = kwargs.get('name', 'Managed Window')
-    Melty.registered_windows[window_name] = ManagedWindow(input_value=input_value,
-                                                               draw_state=kwargs.get('draw_state', None),
-                                                               window_args=kwargs,
-                                                               name=kwargs.get('name', 'Managed Window'))
 
-
+    if window_name not in Melty.registered_windows:
+        Melty.registered_windows[window_name] = ManagedWindow(input_value=input_value,
+                                                                   draw_state=kwargs.get('draw_state', None),
+                                                                   window_args=kwargs,
+                                                                   name=kwargs.get('name', 'Managed Window'))
+    else:
+        Melty.registered_windows[window_name].input_value = input_value
+        Melty.registered_windows[window_name].draw_state = kwargs.get('draw_state', None)
+        Melty.registered_windows[window_name].window_args = kwargs
+        Melty.registered_windows[window_name].name = kwargs.get('name', 'Managed Window')
 
     window_z_pos = list(Melty.registered_windows.keys()).index(window_name)
     kwargs['z_pos'] = window_z_pos + 2
@@ -205,7 +214,6 @@ def draw(vis):
 
     Melty.all_uniques = set()
     clear_floating_text_cache()
-    overlay_list = imgui.get_overlay_draw_list()
 
     Melty.hovered_drawstate_pending = set()
 
@@ -215,6 +223,8 @@ def draw(vis):
     Melty.cache.mask_begin_frame((fb_w, fb_h))
 
     draw_melty_windows(vis)
+
+    apply_drag_and_drop()
 
     Melty.hovered_drawstate = Melty.hovered_drawstate_pending
 
@@ -673,7 +683,7 @@ def render_with_foo(func, *args, **kwargs):
     return wrapper
 
 
-@render_func(use_cache=False)
+@render_func(use_cache=True)
 def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
                           collection, key, melty, y_offset, enable_flow, min_width,
                           unique, tag, style_manager, global_style, offset=0, indent_size=10):
@@ -987,7 +997,7 @@ def draw_vertical_scrollbar(content_height: float,
     track_w = track_x2 - track_x1
     track_h = track_y2 - track_y1
     dl.add_rect_filled(track_x1, track_y1, track_x2, track_y2, col_track, rounding)
-    Melty.cache.mask_mark_rect(Melty.depth - 2, track_x1, track_y1, track_w, track_h,
+    Melty.cache.mask_mark_rect(Melty.depth - 4, track_x1, track_y1, track_w, track_h,
                                key=str(Melty.unique_stack[-1]) + "scrollbar")
 
     dl.add_rect(track_x1, track_y1, track_x2, track_y2, col_border, rounding)
@@ -1275,9 +1285,9 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
         if not on_drag or melty_window:
             next_kwargs['do_flow'] = True
 
-        # if melty_window:
-        #     imgui.set_cursor_screen_pos((initial_cursor_pos[0],
-        #                                  initial_cursor_pos[1]))
+        if melty_window:
+            imgui.set_cursor_screen_pos((initial_cursor_pos[0],
+                                         initial_cursor_pos[1]))
 
         if on_drag_up and not melty_window:
             melty.drag_in_progress = False
@@ -1455,7 +1465,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
             if isinstance(out_val, CollectionAction):
                 # perform the move - this should mutate the plain dicts you attached
-                result = melty.to_apply(out_val)
+                result = Melty.to_apply(out_val)
                 item_changed, out_val = False, None
 
             if item_changed and apply_change and key is not None:
@@ -1688,7 +1698,15 @@ def draw_header(input_value=None, name="", suffix="", collection=None, display_n
         push_style_var(imgui.STYLE_FRAME_PADDING, (2,4))
         push_style_var(imgui.STYLE_ITEM_SPACING, (0,3))
 
-        draw_state.expanded = tree("##tree", draw_state.expanded, width=50)
+        # no background
+        imgui.push_style_color(imgui.COLOR_BUTTON, *(0.0, 0.0, 0.0, 0.0))
+        imgui.push_style_color(imgui.COLOR_BUTTON_HOVERED, *(0.0, 0.0, 0.0, 0.0))
+        if imgui.arrow_button(f"##tree", imgui.DIRECTION_DOWN if draw_state.expanded else imgui.DIRECTION_RIGHT):
+            draw_state.expanded = not draw_state.expanded
+            request_render()
+        imgui.pop_style_color(2)
+
+        # draw_state.expanded = toggle(f"{down_icon}##tree", draw_state.expanded, width=50)
 
         pop_style_var(2)
         pop_style_color(1)
@@ -1799,7 +1817,7 @@ def draw_header(input_value=None, name="", suffix="", collection=None, display_n
         tint_changed, tint_value = draw_tuple(input_value.tint, show_header=False)
         if tint_changed:
             input_value.tint = tint_value
-            Melty.cache.invalidate_by_obj(input_value, name)
+            # Melty.cache.invalidate_by_obj(input_value, name)
         same_line()
 
     if show_add_delete and isinstance(input_value, (list, dict)) or hasattr(input_value, "__dict__"):
@@ -1976,8 +1994,7 @@ def draw_any(input_value, indent_size=0, *args, **kwargs):
 def draw_none(input_value: NoneType):
     imgui.align_text_to_frame_padding()
     imgui.text("None")
-
-    return False, None
+    return False, input_value
 
 
 @with_header_minimal(is_default_for=(bool), header_same_line=True, use_cache=False)

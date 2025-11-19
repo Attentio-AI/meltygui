@@ -391,6 +391,7 @@ class TileCacheMasked:
         self.py_id_to_keys: Dict[str, set] = {}
         self.key_to_parent_key: Dict[str, str] = {}
         self.parent_key_to_child_keys: Dict[str, set] = {}
+        self.key_to_draw_state: Dict[str, any] = {}
 
         self._tiles: Dict[str, _Tile] = {}
         self._sizes = {}  # resolved key -> (w,h)
@@ -466,17 +467,27 @@ class TileCacheMasked:
 
         self.invalidate(self._stack[-1].key)
 
-    def invalidate_up_by_obj(self, obj, name=None):
+    def invalidate_parent(self, obj):
         # if name is not None:
         #     keys = self.py_id_to_keys.get(f"{id(obj)}.{name}", None)
         #     if keys is not None:
         #         for k in keys:
         #             self.invalidate_up(k)
         # else:
+        parent_key = self.key_to_parent_key.get(self._stack[-1].key, None)
+        self.invalidate_up(parent_key, max_depth=2)
+
+    def invalidate_up_by_obj(self, obj, name=None, max_depth=15):
+        if name is not None:
+            keys = self.py_id_to_keys.get(f"{id(obj)}.{name}", None)
+            if keys is not None:
+                for k in keys:
+                    self.invalidate_up(k, max_depth=max_depth)
+
         keys = self.py_id_to_keys.get(f"{id(obj)}", None)
         if keys is not None:
             for k in keys:
-                self.invalidate_up(k)
+                self.invalidate_up(k, max_depth=max_depth)
 
     def invalidate_by_obj(self, obj, name=None):
         if name is not None:
@@ -503,19 +514,27 @@ class TileCacheMasked:
             all_keys.extend(self.get_parent_keys(parent_key))
         return all_keys
 
-    def get_child_keys(self, key):
+    def get_child_keys(self, key, depth=0, max_depth=15):
+
+        if depth >= max_depth:
+            return set()
+
+        # draw_state = self.key_to_draw_state.get(key, None)
+        # if draw_state is not None and not draw_state.clipped:
+        #     return set()
+
         child_keys = self.parent_key_to_child_keys.get(key, set())
         all_keys = set(child_keys)
         for ck in child_keys:
-            all_keys.update(self.get_child_keys(ck))
+            all_keys.update(self.get_child_keys(ck, depth + 1, max_depth=max_depth))
         return all_keys
 
     # More expensive, redraws all children
-    def invalidate_up(self, k: str) -> None:
+    def invalidate_up(self, k: str, max_depth=15) -> None:
         self.invalidate(k)
 
         # Defer parent invalidation to next frame as well
-        child_keys = self.get_child_keys(k)
+        child_keys = self.get_child_keys(k, max_depth=max_depth)
         for child in child_keys:
             if child and child != k:
                 pt = self._tiles.get(child)
@@ -524,13 +543,13 @@ class TileCacheMasked:
                     pt.dirty = self._is_dirty(pt)
                     self.pending_invalid.append(pt)
 
-    def invalidate(self, key: str, immediate=False) -> None:
+    def invalidate(self, key: str) -> None:
         keys_to_touch = [self._resolve_key(key)]
 
         for k in keys_to_touch:
             t = self._tiles.get(k)
             if t is not None:
-                target_frame = self._frame_id + 1 if self._recording else self._frame_id
+                target_frame = self._frame_id + 1
                 t.last_invalidated_frame = max(t.last_invalidated_frame, target_frame)
                 t.dirty = self._is_dirty(t)
                 self.pending_invalid.append(t)
@@ -765,6 +784,7 @@ class TileCacheMasked:
         # if not draw_state.auto_resize:
         #     size = (snap_int(draw_state.bounding_width), snap_int(draw_state.bounding_height))
         self.key_to_parent_key[rkey] = parent_ctx.key if parent_ctx else None
+        self.key_to_draw_state[rkey] = draw_state
 
         # record child keys for parent
         parent_key = parent_ctx.key if parent_ctx else None
@@ -823,6 +843,7 @@ class TileCacheMasked:
                     )
 
             if t and has_area and (t.size == (size[0], size[1])) and (not self._is_dirty(t)):
+
                 imgui.image(t.tex, snap_int(size[0]), snap_int(size[1]), uv0=(0.0, 1.0), uv1=(1.0, 0.0),
                             tint_color=(1, 1, 1, 1))
 
@@ -1112,15 +1133,21 @@ class TileCacheMasked:
                     qid = _begin_occlusion_query()
                     gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
                     passed = _end_occlusion_query(qid) if qid is not None else None
+                    # if passed == 0:
+                    #     # fully occluded -> invalid dirty
+                    #     # p.tile.last_clean_frame = self._frame_id
+                    #     self.invalidate(p.key)
 
-                    if isinstance(passed, int):
-                        if passed > 0:
-                            p.tile.last_clean_frame = self._frame_id
-                            p.tile.dirty = self._is_dirty(p.tile)
-                    else:
+                    # if isinstance(passed, int):
+                    #     from src.lsd.gl_gui.mutty import Mutty
+                    #
+                    #     p.tile.last_clean_frame = self._frame_id
+                    #     p.tile.dirty = self._is_dirty(p.tile)
+                    #
+                    # else:
                         # fallback (no queries) -> optimistic clean
-                        p.tile.last_clean_frame = self._frame_id
-                        p.tile.dirty = self._is_dirty(p.tile)
+                    p.tile.last_clean_frame = self._frame_id
+                    p.tile.dirty = self._is_dirty(p.tile)
 
             gl.glUseProgram(0)
 

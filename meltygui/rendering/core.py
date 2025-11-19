@@ -126,8 +126,10 @@ def handle_actions(melty, unique, draw_state, func=None):
                 if melty.total_drag_distance >= 2 or btn_state.dragged:
                     btn_state.dragged = True
                     melty.drag_in_progress = True
-                    melty.dragged_item = draw_state
-                    melty.dragged_tile = Melty.get_tile_id()
+
+                    if draw_state.window_pos is None:
+                        melty.dragged_item = draw_state
+                        melty.dragged_tile = Melty.get_tile_id()
                     melty.mark_event(unique, m_btn, ActionType.DRAG)
                     melty.drag_delta = btn_state.drag_delta
 
@@ -660,14 +662,17 @@ def annotation_track(*args, wrapper, **kwargs):
 
     return None
 
-def apply_drag_and_drop(melty):
+def apply_drag_and_drop():
 
     ######## -------- apply drag & drop -----------
-    while len(melty.actions_to_apply) > 0:
-        action = melty.actions_to_apply.pop(0)
+    while len(Melty.actions_to_apply) > 0:
+        action = Melty.actions_to_apply.pop(0)
         result = apply_collection_action(action)
+
+        Melty.cache.invalidate_up_by_obj(action.source_collection)
+        Melty.cache.invalidate_up_by_obj(action.target_collection)
         request_render()
-    melty.actions_to_apply = []
+    Melty.actions_to_apply = []
 
 def get_resize_handle(a_ds):
     if a_ds.left is None:
@@ -823,12 +828,11 @@ def render_func(*args, **o_kwargs):
         suffix = Melty.unique_stack[-1] if len(Melty.unique_stack) > 0 else (name or "")
 
         # Keep original behavior of always appending name (even if empty)
-        suffix = f"{old_suffix}_{suffix}_{name}"
-
+        suffix = f"{old_suffix}_{suffix}_{unique_name}"
 
         if is_root:
             unique = ui_id(datatype=type(input_value), suffix=unique_name + func.__name__)
-            suffix = unique_name
+            suffix = f"{unique_name}_{func.__name__}_{unique}"
         else:
             unique = ui_id(datatype=type(input_value), suffix=suffix + unique_name + str(key) + func.__name__, idx=index)
 
@@ -887,10 +891,10 @@ def render_func(*args, **o_kwargs):
 
         draw_state = get_draw_state(unique)
 
-        if draw_state._input_value != input_value:
-            Melty.cache.invalidate_up_by_obj(kwargs.get("collection", input_value))
-
-            request_render()
+        if isinstance(input_value, (type(None), int, float, str, bool, tuple, list, dict, set)):
+            if draw_state._input_value != input_value:
+                Melty.cache.invalidate_up_by_obj(kwargs.get("collection", input_value))
+                request_render()
 
         draw_state._input_value = input_value
 
@@ -901,8 +905,6 @@ def render_func(*args, **o_kwargs):
         # except Exception as e:
         #     print("[Unique] Warning: Could not compute stable hash for object of type", type(input_value).__name__,
         #             "with unique", unique, name, "due to:", e)
-
-
 
         draw_state._has_popup = kwargs.get("has_popup", False)
         draw_state.auto_resize = kwargs.get("auto_resize", False)
@@ -1022,8 +1024,8 @@ def render_func(*args, **o_kwargs):
 
             ############################# WINDOW SETUP #####################################################
             window_drag = False
-            if kwargs.get("melty_window", False):
-                imgui.set_cursor_screen_pos((0, 0))
+            # if kwargs.get("melty_window", False):
+            #     imgui.set_cursor_screen_pos((0, 0))
 
             if kwargs.get("melty_window", False) and kwargs.get("on_drag", False):
                 window_drag = True
@@ -1206,16 +1208,16 @@ def render_func(*args, **o_kwargs):
                 # Needs to go after mouse down check
                 push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
                 push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
+
+
                 pop_id()
                 end_group()
                 pop_style_var(2)
 
-                if kwargs.get("on_drag", False) and not melty_window:
-                    if draw_state.left is not None and draw_state.top is not None:
-                        if draw_state.width is not None and draw_state.height is not None:
-                            imgui.set_cursor_screen_pos((start_cursor[0],
-                                                         start_cursor[1] + draw_state.height))
-
+                if draw_state.left is not None and draw_state.top is not None:
+                    if draw_state.width is not None and draw_state.height is not None:
+                        imgui.set_cursor_screen_pos((start_cursor[0],
+                                                     start_cursor[1] + draw_state.height))
                 item_rect = imgui.get_item_rect_size()
                 if len(Melty.clip_stack) > 0:
                     clip_width = Melty.clip_stack[-1][2] - Melty.clip_stack[-1][0]
@@ -1233,6 +1235,14 @@ def render_func(*args, **o_kwargs):
                         draw_state.height = snap_int(item_rect[1])
 
                 if not kwargs.get("auto_resize", True) and draw_state.window_size is not None:
+                    margin = 40
+
+                    display_size = imgui.get_io().display_size
+                    clamped_size = (
+                        min(draw_state.window_size[0], display_size[0]),
+                        min(draw_state.window_size[1], display_size[1] - margin)
+                    )
+                    draw_state.window_size = clamped_size
                     draw_state.width = draw_state.window_size[0]
                     draw_state.height = draw_state.window_size[1]
                     draw_state.bounding_width = draw_state.window_size[0]
@@ -1241,8 +1251,9 @@ def render_func(*args, **o_kwargs):
                     draw_state.bounding_width = snap_int(item_rect[0])
                     draw_state.bounding_height = snap_int(item_rect[1])
 
-                    if draw_state.window_size is None:
-                        draw_state.window_size = snap_int(item_rect[0]), snap_int(item_rect[1])
+                    if draw_state.window_size is None and melty_window:
+                        window_margin = 8
+                        draw_state.window_size = snap_int(item_rect[0]) + window_margin, snap_int(item_rect[1])
                         draw_state.width = snap_int(item_rect[0])
                         draw_state.height = snap_int(item_rect[1])
 
@@ -1302,8 +1313,6 @@ def render_func(*args, **o_kwargs):
                         melty.drag_drop_target = melty.nearest_drop_target
                         melty.drag_drop_target_tag = melty.nearest_drop_target_tag
 
-                    apply_drag_and_drop(melty)
-
                     while len(melty.items_to_delete) > 0:
                         key, collection = melty.items_to_delete.pop(0)
                         delete_from_collection(key, collection)
@@ -1318,6 +1327,7 @@ def render_func(*args, **o_kwargs):
                 # if kwargs.get("on_drag", False):
                 #     imgui.set_cursor_screen_pos((draw_state.cursor_left, draw_state.cursor_top))
 
+                # Melty.vis._frame_id += 1
 
                 if return_value is None:
                     changed, new_value = False, None
@@ -1350,6 +1360,16 @@ def render_func(*args, **o_kwargs):
             floating_text(f"{func.__name__} w:{Melty.wrapped_depth}", tint=jet)
         if draw_state._has_popup:
             draw_state._imgui_popover_open = Melty.imgui_popup_open
+
+        inside_clip = Melty.inside_clip(rect=(start_cursor[0], start_cursor[1],
+                                               draw_state.width, draw_state.height))
+        if inside_clip != draw_state.clipped and inside_clip:
+            Melty.cache.invalidate_by_obj(tile_id)
+
+            # Melty.cache.invalidate_by_obj(collection)
+
+        draw_state.clipped = inside_clip
+
         if use_cache and Melty.cache.enabled:
             last_bounding_hovered = draw_state.is_bounding_hovered()
             draw_state._bounding_hovered = last_bounding_hovered
@@ -1395,6 +1415,7 @@ def render_func(*args, **o_kwargs):
             Melty.cache.mark_end_offscreen()
         else:
             return_value = func(**clean_args)
+
 
         return return_value
 
