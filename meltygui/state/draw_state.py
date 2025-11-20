@@ -48,6 +48,7 @@ class MouseState(DictConversion):
         self.drag_delta = (0, 0)
         self.initial_window_pos = (0, 0)
         self.initial_scroll_offset = (0, 0)
+        self.delete_countdown = Melty.save_draw_state_for
 
 
 class CSTDrawBits:
@@ -111,9 +112,9 @@ class DrawState(DictConversion):
         self.unique = 0  # stable UI identifier
         self.expanded = True
         self.name = ""
-        self.height = None
+        self.height = 0
         self.expanded_height = None
-        self.width = None
+        self.width = 0
         self.bounding_width = 0
         self.bounding_height = 0
         self.drag_window = False

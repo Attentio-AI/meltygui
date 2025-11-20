@@ -20,6 +20,7 @@ from src.lsd.gl_gui.model.core_markers import FieldMeta
 from src.lsd.gl_gui.model.class_utill import ClassUtility
 from src.lsd.gl_gui.model.global_undo_redo_manager import TrackedList, TrackedDict, TrackedSet, GlobalUndoRedoManager
 from src.lsd.gl_gui.model.core_model.core_enums import generate_id
+from src.lsd.gl_gui.model.model_enums import RelaxedEnum
 from src.lsd.gl_gui.view.app_view_utils import should_exclude
 from src.lsd.gl_gui.view.core_views.core_decoration import exclude, deep_refresh
 
@@ -30,9 +31,15 @@ _BRACKET_RE = re.compile(r'\[([^\]]*)\]')  # extracts inner text of each [...] i
 @exclude(["tint", "hash", "id", "name", "prev_mouse_y", "prev_mouse_x"])
 @deep_refresh("tint")
 class DictConversion(metaclass=FieldMeta):
+
+
     def __init__(self):
         # Using weak references to avoid circular references
         self.__post_init__()
+
+        if not hasattr(self.__class__, 'default_instance'):
+            self.__class__.default_instance = None
+            self.__class__.default_instance = self.__class__()
 
     hash = None
     def __post_init__(self):
@@ -41,15 +48,16 @@ class DictConversion(metaclass=FieldMeta):
         self._parent: Optional[weakref.ReferenceType] = None
         self._parent_key: Optional[Union[str, int]] = None
         self._children: Dict[Union[str, int], 'DictConversion'] = {}
-        self._history_manager = GlobalUndoRedoManager.get_instance()
         self._exclude_attrs = {'_history_manager', '_exclude_attrs', '_parameters',
                                '_buffers', '_modules', 'training'}
         self._obj_path = None
         self._path_updated = None
         self.name = ""
+
         self.tint = (0, 0, 0)  # Default black tint
         # self.child_collapsed = set()
-        self._history_manager = GlobalUndoRedoManager.get_instance()
+        # self._history_manager = GlobalUndoRedoManager.get_instance()
+
 
     def from_dict(self, object_dict, excluded=None, class_root=None, vis=None):
         # ---- fast refs
@@ -85,6 +93,7 @@ class DictConversion(metaclass=FieldMeta):
             if okey == "root":
                 continue
             class_path = ovalue["type"]
+
             instance = DictConv.instantiate_from_class_path(class_path)
             instantiated_objects[okey] = instance
 
@@ -166,6 +175,7 @@ class DictConversion(metaclass=FieldMeta):
         for okey, ovalue in object_dict.items():
             if okey == "root":
                 continue
+
             instance = instantiated_objects[okey]
             for key, new_value in ovalue.items():
                 if key == "subviews":
@@ -214,7 +224,11 @@ class DictConversion(metaclass=FieldMeta):
             if excluded is None:
                 excluded = self.excluded
             else:
-                excluded = excluded.union(self.excluded)
+                if isinstance(excluded, list):
+                    excluded = set(excluded)
+
+                if self.excluded is not None:
+                    excluded = excluded.union(self.excluded)
 
         if hasattr(self, '__no_save__'):
             excluded = excluded[:]
@@ -231,7 +245,8 @@ class DictConversion(metaclass=FieldMeta):
 
         if not shallow:
             shallow_parse = self.to_dict(excluded=excluded, objects=objects, shallow=True, use_references=False)
-            shallow_parse["is_root"] = is_root
+            if is_root:
+                shallow_parse["is_root"] = is_root
             from src.lsd.gl_gui.model.dynamic_obj import DynamicObj
             if isinstance(self, DynamicObj):
                 pass
@@ -251,17 +266,34 @@ class DictConversion(metaclass=FieldMeta):
 
             classtype = DictConversion.get_full_class_path(self)
             shallow_parse["type"] = classtype
+            if classtype == "MouseState":
+                pass
             if is_root:
                 objects["root"] = object_id
 
             if shallow_parse is not None:
                 objects[object_id] = shallow_parse
 
+
+        default_instance = self.__class__.default_instance
         # Get all attributes that don't start with '_'
         for key, value in self.__dict__.items():
             key = str(key)
             if key.startswith('_') or (excluded and key in excluded):
                 continue
+
+            if key != "delete_countdown":
+                if isinstance(value, (int, float, str, bool, bytes, Enum, RelaxedEnum, tuple, type(None))):
+                    if hasattr(default_instance, key):
+                        default_value = getattr(default_instance, key)
+                        if value == default_value:
+                            continue
+
+                if isinstance(value, (DictConversion)):
+                    if hasattr(default_instance, key):
+                        default_value = getattr(default_instance, key)
+                        if id(value) == id(default_value):
+                            continue
 
             #
             # if hasattr(value, 'unused_obj') and value.unused_obj:
@@ -817,15 +849,14 @@ class DictConversion(metaclass=FieldMeta):
                     else:
                         Melty.cache.invalidate_by_obj(obj=self, name=name)
 
-                    request_render()
-
                     parent_name = ""
                     if hasattr(self, "_input_value"):
                         parent_class = self._input_value
                         parent_name = f"{parent_class.__name__}\n"
 
                     if self.__class__.__name__ != "MouseState":
-                        request_render()
+                        if Melty.frame_count > 0:
+                            request_render()
 
                         try:
                             value_str = str(value)
@@ -938,22 +969,22 @@ class DictConversion(metaclass=FieldMeta):
 
 
     # Global undo/redo methods that delegate to the global manager
-    def undo(self):
-        """Undo the last change across all tracked objects."""
-
-        return self._history_manager.undo()
-
-    def redo(self):
-        """Redo the last undone change across all tracked objects."""
-        return self._history_manager.redo()
-
-    def can_undo(self):
-        """Check if there are changes to undo."""
-        return self._history_manager.can_undo()
-
-    def can_redo(self):
-        """Check if there are changes to redo."""
-        return self._history_manager.can_redo()
+    # def undo(self):
+    #     """Undo the last change across all tracked objects."""
+    #
+    #     return self._history_manager.undo()
+    #
+    # def redo(self):
+    #     """Redo the last undone change across all tracked objects."""
+    #     return self._history_manager.redo()
+    #
+    # def can_undo(self):
+    #     """Check if there are changes to undo."""
+    #     return self._history_manager.can_undo()
+    #
+    # def can_redo(self):
+    #     """Check if there are changes to redo."""
+    #     return self._history_manager.can_redo()
 
 
     def __getitem__(self, key: Union[str, int]) -> Any:
@@ -1261,8 +1292,19 @@ class DictConversion(metaclass=FieldMeta):
     @staticmethod
     def instantiate_from_class_path(class_path: str, last_try=False):
         parts = class_path.split('.')
-
         class_name = parts[-1]
+        parent_name = parts[-2] if len(parts) >= 2 else ""
+        combined_name = f"{parent_name}.{class_name}" if parent_name else class_name
+
+        if class_name in ClassUtility().class_names:
+            class_path = ClassUtility().class_names[class_name]
+        elif combined_name in ClassUtility().class_names:
+            class_path = ClassUtility().class_names[combined_name]
+        else:
+            pass
+
+        parts = class_path.split('.')
+
         # module_name = ".".join(parts[:-1])
         # module = importlib.import_module(module_name)
         # if module is None:
@@ -1331,14 +1373,17 @@ class DictConversion(metaclass=FieldMeta):
         parts = class_path.split('.')
         module = None
         class_name = parts[-1]
-        parent_name = parts[-2]
+
+        if len(parts) >= 2:
+            parent_name = parts[-2]
+        else:
+            parent_name = ""
         combined_name = f"{parent_name}.{class_name}"
 
         ClassUtility().initialize_class_names()
 
         class_parent = f"{parent_name}.{class_name}"
-        if class_name == "AnchorPair":
-            print("Debugging AnchorPair")
+
         if class_parent in ClassUtility().class_names:
             class_path = ClassUtility().class_names[class_parent]
             parts = class_path.split('.')
@@ -1430,7 +1475,7 @@ class DictConversion(metaclass=FieldMeta):
         qualname = cls.__qualname__  # This already contains the full nested path
 
         # Combine module with qualname
-        return f"{module}.{qualname}"
+        return f"{qualname}"
         # cls = obj.__class__
         # module = cls.__module__d
         #

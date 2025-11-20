@@ -739,7 +739,6 @@ def draw_resize_handle(a_ds):
                                    rect_br[3] - margin - arrow_size, arrow_size, arrow_size,
                                    key=str(a_ds.unique) + "resize")
     if a_ds.expanded:
-
         imgui.set_cursor_screen_pos(current_cursor)
 
 
@@ -841,11 +840,10 @@ def render_func(*args, **o_kwargs):
         suffix = Melty.unique_stack[-1] if len(Melty.unique_stack) > 0 else (name or "")
 
         # Keep original behavior of always appending name (even if empty)
-        suffix = f"{old_suffix}_{suffix}_{name}"
-
+        suffix = f"{old_suffix}_{suffix}_{unique_name}_{key}"
 
         if is_root:
-            unique = ui_id(datatype=type(input_value), suffix=unique_name + func.__name__)
+            unique = ui_id(datatype=type(input_value), suffix=unique_name + str(key) + str(suffix) + func.__name__)
             suffix = f"{unique_name}_{func.__name__}_{unique}"
         else:
             unique = ui_id(datatype=type(input_value), suffix=suffix + unique_name + str(key) + func.__name__, idx=index)
@@ -907,8 +905,9 @@ def render_func(*args, **o_kwargs):
 
         if isinstance(input_value, (type(None), int, float, str, bool, tuple, set)):
             if draw_state._input_value != input_value:
-                Melty.cache.invalidate_up_by_obj(kwargs.get("collection", input_value))
-                request_render()
+                if kwargs.get("collection", None) is not None:
+                    Melty.cache.invalidate_up_by_obj(kwargs.get("collection"))
+                    request_render()
 
         draw_state._input_value = input_value
 
@@ -1254,7 +1253,7 @@ def render_func(*args, **o_kwargs):
                         draw_state.width = snap_int(item_rect[0])
                         draw_state.height = snap_int(item_rect[1])
                 if not kwargs.get("auto_resize", True) and draw_state.window_size is not None:
-                    margin = 40
+                    margin = 250
 
                     display_size = imgui.get_io().display_size
                     clamped_size = (
@@ -1270,9 +1269,9 @@ def render_func(*args, **o_kwargs):
                     draw_state.bounding_width = snap_int(item_rect[0])
                     draw_state.bounding_height = snap_int(item_rect[1])
 
-                    if (draw_state.bounding_width != original_width_b or
-                            draw_state.bounding_height != original_height_b):
-                        request_render()
+                    # if (draw_state.bounding_width != original_width_b or
+                    #         draw_state.bounding_height != original_height_b):
+                    #     request_render()
 
                     if draw_state.window_size is None and melty_window:
                         window_margin = 8

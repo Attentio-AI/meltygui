@@ -129,6 +129,7 @@ def draw_main(input_value, vis):
     draw_window(vis.root.lora_collection, name="Test Window 1")
     draw_window(vis.root.lora_collection.loras, name="Test Window 2")
     draw_window(Melty.last_invalid, show_bg=True, name="Last Invalid")
+    # draw_window(Melty.last_request_render, show_bg=True, name="Last Request")
 
     draw_any(Melty.registered_windows, show_add_delete=False, name="Window Manager")
 
@@ -2016,7 +2017,7 @@ def draw_bool(input_value: bool):
     return False, None
 
 
-@with_header_minimal(is_default_for=(str), use_cache=True)
+@with_header_minimal(is_default_for=(str), use_cache=False)
 def draw_str(input_value: str):
     line_count = input_value.count('\n') + 1
     line_height = imgui.get_text_line_height_with_spacing()
@@ -2042,8 +2043,11 @@ def draw_str(input_value: str):
     if not show_controls:
         imgui.push_style_var(imgui.STYLE_ALPHA, 0)
 
-    changed, value = imgui.input_text_multiline("##str", input_value, height=height)
-    # imgui.set_item_allow_overlap()
+    if line_count == 1:
+        changed, value = imgui.input_text("##str", input_value,
+                                          flags=imgui.INPUT_TEXT_ENTER_RETURNS_TRUE)
+    else:
+        changed, value = imgui.input_text_multiline("##str", input_value, height=height)
 
     if not show_controls:
         imgui.pop_style_var(1)

@@ -687,9 +687,11 @@ class Melty:
     scroll_stack = []
     tile_id_stack = []
 
+    last_request_render = ""
+
     actions_to_apply = []
 
-    init_window_cursor = (150, 10)
+    init_window_cursor = (350, 350)
 
     last_invalid_attr = ""
     last_invalid = deque(maxlen=10)
