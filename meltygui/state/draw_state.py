@@ -65,11 +65,11 @@ class DragMode(Enum):
     RESIZE_BR = 'resize_br'
 
 
-@no_save("mouse_btn_state", "mouse_up", "mouse_down", "bounding_width", "bounding_height",
-         "drag_released", "top", "left", "clicked", "dragged", "render_time", "imgui_is_toggled_open", "z_pos",
-         "is_active", "is_focused", "drag_window_pos_x", "content_region", "bounds_top", "bounds_left", "drag_window_pos_y", "drag_mode",
-         "z_pos", "draw_window_pos_x", "draw_window_pos_y",
-         "content_height", "drag_delta", "screen_pos")
+@no_save("mouse_btn_state", "mouse_up", "mouse_down", "bounding_width", "bounding_height", "unique", "search_active",
+         "drag_released","clicked", "dragged", "dragged", "top", "left", "bounds_top", "bounds_left", "name", "expanded_height",
+         "render_time", "imgui_is_toggled_open", "z_pos", "content_height", "hotkey_receiver", "use_child", "cst", "search_text",
+         "is_active", "is_focused", "drag_window_pos_x", "drag_window_pos_y", "drag_mode", "auto_resize", "clipped", "is_hovered_last",
+         "z_pos", "draw_window_pos_x", "draw_window_pos_y", "drag_delta", "screen_pos", "imgui_is_item_activated")
 @exclude("render_time", "bounds_left", "bounds_top", "_input_value", "width", "flow_spacing",
          "hovered", "_did_use_cache", "value_hash", "drag_window", "height", "bounding_hovered", "delete_countdown", "z_pos", "scrolled", "is_hovered_last")
 @deep_refresh("expanded")

@@ -117,16 +117,20 @@ def draw_melty_windows(vis):
 @render_func(use_cache=False)
 def draw_main(input_value, vis):
     global test_obj
-    draw_any(Melty.registered_windows, show_add_delete=False, name="Window Manager")
 
-    draw_window(test_obj, name="Test value")
-    draw_window(test_obj, name="Test value 1")
 
-    draw_window(proxy, name="CST Proxy")
+
+    #
+    # draw_window(test_obj, name="Test value")
+    # draw_window(test_obj, name="Test value 1")
+
+    # draw_window(proxy, name="CST Proxy")
     draw_window(filesystem_proxy, name="Filesystem Test")
     draw_window(vis.root.lora_collection, name="Test Window 1")
     draw_window(vis.root.lora_collection.loras, name="Test Window 2")
     draw_window(Melty.last_invalid, show_bg=True, name="Last Invalid")
+
+    draw_any(Melty.registered_windows, show_add_delete=False, name="Window Manager")
 
 
 @with_header(is_default_for=ManagedWindow, is_tree=False,
@@ -685,8 +689,7 @@ def render_with_foo(func, *args, **kwargs):
 
     return wrapper
 
-
-@render_func(use_cache=True)
+@render_func(use_cache=False)
 def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
                           collection, key, melty, y_offset, enable_flow, min_width,
                           unique, tag, style_manager, global_style, offset=0, indent_size=10):

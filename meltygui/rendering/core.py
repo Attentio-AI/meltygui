@@ -671,10 +671,10 @@ def apply_drag_and_drop():
         result = apply_collection_action(action)
 
         if action.source_collection == action.target_collection:
-            Melty.cache.invalidate_up_by_obj(action.source_collection)
+            Melty.cache.invalidate_up_by_obj(action.source_collection, max_depth=2)
         else:
-            Melty.cache.invalidate_up_by_obj(action.source_collection)
-            Melty.cache.invalidate_up_by_obj(action.target_collection)
+            Melty.cache.invalidate_up_by_obj(action.source_collection, max_depth=2)
+            Melty.cache.invalidate_up_by_obj(action.target_collection, max_depth=2)
         did_apply = True
 
     Melty.actions_to_apply = []
@@ -1169,9 +1169,9 @@ def render_func(*args, **o_kwargs):
                     #next_kwargs['enable_flow'] = False
                     next_kwargs['z_pos'] = Melty.depth + 7
                     Melty.depth = Melty.depth + 7
-
-                    if draw_state.mouse_btn_state[0].initial_window_pos is None:
-                        draw_state.mouse_btn_state[0].initial_window_pos = (0, 0)
+                    #
+                    # if draw_state.mouse_btn_state[0].initial_window_pos is None:
+                    #     draw_state.mouse_btn_state[0].initial_window_pos = (0, 0)
 
                     initial_sx, initial_sy = melty.initial_scroll_offset
                     current_sx, current_sy = Melty.scroll_stack[-1] if len(Melty.scroll_stack) > 0 else (0, 0)
@@ -1386,7 +1386,7 @@ def render_func(*args, **o_kwargs):
         inside_clip = Melty.inside_clip(rect=(start_cursor[0], start_cursor[1],
                                                draw_state.width, draw_state.height))
         if inside_clip != draw_state.clipped and inside_clip:
-            Melty.cache.invalidate_up(tile_id)
+            Melty.cache.invalidate_by_obj(tile_id)
 
             # Melty.cache.invalidate_by_obj(collection)
 

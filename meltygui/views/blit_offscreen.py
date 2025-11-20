@@ -367,7 +367,7 @@ void main() {
 # ==============================
 class TileCacheMasked:
     def __init__(self):
-        self.enabled: bool = True
+        self.enabled: bool = False
 
         # Layer constants:
         self._LAYER_BG = 0  # reserved background in mask
@@ -483,6 +483,7 @@ class TileCacheMasked:
     #     self.invalidate_up(parent_key, max_depth=2)
 
     def invalidate_up_by_obj(self, obj, name=None, max_depth=9):
+
         if name is not None:
             keys = self.py_id_to_keys.get(f"{id(obj)}.{name}", None)
             if keys is not None:
@@ -536,6 +537,8 @@ class TileCacheMasked:
 
     # More expensive, redraws all children
     def invalidate_up(self, k: str, max_depth=9) -> None:
+        from src.lsd.gl_gui.melty import Melty
+
         self.invalidate(k)
 
         # Defer parent invalidation to next frame as well
@@ -546,7 +549,7 @@ class TileCacheMasked:
                 if pt is not None:
                     pt.last_invalidated_frame = max(pt.last_invalidated_frame, self._frame_id + 1)
                     pt.dirty = self._is_dirty(pt)
-                    # self.pending_invalid.append(pt)
+                    self.pending_invalid.append(pt)
 
     def invalidate(self, key: str) -> None:
         keys_to_touch = [self._resolve_key(key)]
@@ -567,7 +570,7 @@ class TileCacheMasked:
                     if pt is not None:
                         pt.last_invalidated_frame = max(pt.last_invalidated_frame, self._frame_id + 1)
                         pt.dirty = self._is_dirty(pt)
-                        # self.pending_invalid.append(pt)
+                        self.pending_invalid.append(pt)
 
             # Optional hard cancel for this frame (rarely needed):
             # if self._recording:
