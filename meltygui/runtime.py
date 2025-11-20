@@ -687,6 +687,9 @@ class ManagedWindow:
         self.name = name
 
 class Melty:
+
+    overlays = []
+
     windows = []
     glfw_window = None
     clip_stack = []
@@ -767,6 +770,7 @@ class Melty:
     def begin_frame(cls):
         cls.frame_count += 1
         cls.blocker_hovered = False
+        cls.overlays = []
         # cls._root_by_module[module_id] = root
         # cls._gen_by_module.setdefault(module_id, 0)
         # cls._path_stack.clear()

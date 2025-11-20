@@ -72,8 +72,9 @@ class DragMode(Enum):
          "is_active", "is_focused", "drag_window_pos_x", "drag_window_pos_y", "drag_mode", "auto_resize", "clipped", "is_hovered_last",
          "z_pos", "draw_window_pos_x", "draw_window_pos_y", "drag_delta", "screen_pos", "imgui_is_item_activated")
 @exclude("render_time", "bounds_left", "bounds_top", "_input_value", "width", "flow_spacing",
-         "hovered", "_did_use_cache", "value_hash", "drag_window", "height", "bounding_hovered", "delete_countdown", "z_pos", "scrolled", "is_hovered_last")
-@deep_refresh("expanded")
+         "hovered", "_did_use_cache", "value_hash", "drag_window",
+         "bounding_hovered", "delete_countdown", "z_pos", "scrolled", "is_hovered_last")
+@deep_refresh("expanded", 'content_height')
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
 
@@ -211,6 +212,10 @@ class DrawState(DictConversion):
         # if not self._draggable:
         #     return False
 
+        mouse_x, mouse_y = imgui.get_mouse_pos()
+        if not Melty.inside_clip(rect=(mouse_x, mouse_y, 1, 1)):
+            return False
+
         if self.left is None or self.top is None or self.width is None or self.height is None:
             return False
 
@@ -224,6 +229,11 @@ class DrawState(DictConversion):
         return False
 
     def is_bounding_hovered(self):
+
+        mouse_x, mouse_y = imgui.get_mouse_pos()
+        if not Melty.inside_clip(rect=(mouse_x, mouse_y, 1,1)):
+            return False
+
         if self.bounds_top is None or self.bounds_left is None or self.width is None or self.height is None:
             return False
         rect = (self.bounds_left, self.bounds_top, self.width, self.height + 10)

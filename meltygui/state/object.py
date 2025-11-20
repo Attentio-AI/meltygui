@@ -848,7 +848,6 @@ class DictConversion(metaclass=FieldMeta):
                         Melty.cache.invalidate_up_by_obj(obj=self, max_depth=4)
                     else:
                         Melty.cache.invalidate_by_obj(obj=self, name=name)
-
                     parent_name = ""
                     if hasattr(self, "_input_value"):
                         parent_class = self._input_value

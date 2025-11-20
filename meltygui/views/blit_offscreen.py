@@ -489,11 +489,11 @@ class TileCacheMasked:
             if keys is not None:
                 for k in keys:
                     self.invalidate_up(k, max_depth=max_depth)
-
-        keys = self.py_id_to_keys.get(f"{id(obj)}", None)
-        if keys is not None:
-            for k in keys:
-                self.invalidate_up(k, max_depth=max_depth)
+        else:
+            keys = self.py_id_to_keys.get(f"{id(obj)}", None)
+            if keys is not None:
+                for k in keys:
+                    self.invalidate_up(k, max_depth=max_depth)
 
     def invalidate_by_obj(self, obj, name=None):
         if name is not None:

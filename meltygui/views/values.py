@@ -1002,8 +1002,8 @@ def draw_vertical_scrollbar(content_height: float,
     track_w = track_x2 - track_x1
     track_h = track_y2 - track_y1
     dl.add_rect_filled(track_x1, track_y1, track_x2, track_y2, col_track, rounding)
-    Melty.cache.mask_mark_rect(Melty.depth - 4, track_x1, track_y1, track_w, track_h,
-                               key=str(Melty.unique_stack[-1]) + "scrollbar")
+    # Melty.cache.mask_mark_rect(Melty.depth, track_x1, track_y1, track_w, track_h,
+    #                            key=str(Melty.unique_stack[-1]) + "scrollbar")
 
     dl.add_rect(track_x1, track_y1, track_x2, track_y2, col_border, rounding)
     # Grab

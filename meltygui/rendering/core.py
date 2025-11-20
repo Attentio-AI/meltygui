@@ -23,6 +23,8 @@ from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
 
 melty_state_registry = {}
+
+
 def get_melty_state(unique: int):
     """Get or create a Melty state object for a widget ID."""
     if unique not in melty_state_registry or melty_state_registry[unique] is None:
@@ -68,7 +70,8 @@ def handle_actions(melty, unique, draw_state, func=None):
                         melty.total_drag_frames = 0
                         current_mouse_pos = mouse_pos
                         btn_state.mouse_down_pos = mouse_pos
-                        btn_state.initial_scroll_offset = Melty.scroll_stack[-1] if len(Melty.scroll_stack) > 0 else (0, 0)
+                        btn_state.initial_scroll_offset = Melty.scroll_stack[-1] if len(Melty.scroll_stack) > 0 else (
+                        0, 0)
                         melty.initial_scroll_offset = Melty.scroll_stack[-1] if len(Melty.scroll_stack) > 0 else (0, 0)
 
                         melty.mouse_down_pos = mouse_pos
@@ -99,7 +102,7 @@ def handle_actions(melty, unique, draw_state, func=None):
                     melty.total_drag_distance = 0.0
                     melty.total_drag_frames = 0
                     btn_state.drag_released = True
-                    melty.initial_scroll_offset = (0,0)
+                    melty.initial_scroll_offset = (0, 0)
                     btn_state.initial_scroll_offset = None
                     melty.initial_drag_offset = None
                     btn_state.initial_screen_pos = None
@@ -139,18 +142,16 @@ def handle_actions(melty, unique, draw_state, func=None):
 
         # Handle scroll
         was_scrolled = False
-        if draw_state.height is not None:
+        if draw_state.height is not None and draw_state.is_hovered():
             if draw_state.content_height > draw_state.height:
                 scroll_y = imgui.get_io().mouse_wheel
                 if scroll_y != 0.0:
                     melty.mark_event(unique, scroll_y,
                                      ActionType.SCROLL, value=scroll_y)
 
-
         # global_mouse_down = glfw.get_mouse_button(Melty.glfw_window, 0) == glfw.PRESS
         # if not global_mouse_down:
         #     melty.drag_in_progress = False
-
 
 
 def floating_text(text: str, x_offset: float = 0, line_height: float = None, tint: tuple = (1, 1, 1, 1),
@@ -383,6 +384,7 @@ def clear_floating_text_cache():
     # Clear the cache for new labe
     _floating_text_cache.clear()
 
+
 def get_draw_state(unique: int) -> DrawState:
     """Get or create a ViewState object for a widget ID."""
     if unique not in Melty.vis.root.draw_state_registry or Melty.vis.root.draw_state_registry[unique] is None:
@@ -392,13 +394,16 @@ def get_draw_state(unique: int) -> DrawState:
     Melty.vis.root.draw_state_registry[unique].delete_countdown = Melty.save_draw_state_for
     return Melty.vis.root.draw_state_registry[unique]
 
+
 def strhash(s: str) -> int:
     """Stable 32-bit hash of a string."""
     return zlib.crc32(s.encode("utf-8")) & 0xffffffff
 
+
 def combine(h: int, s: str) -> int:
     """Order-sensitive, stable combine (FNV-style)."""
     return ((h * 16777619) ^ strhash(s)) & 0xffffffff
+
 
 def ui_id(datatype=None, suffix=None, idx=0) -> int:
     """
@@ -429,11 +434,13 @@ def ui_id(datatype=None, suffix=None, idx=0) -> int:
 class WrapType(Enum):
     CHILD = 1
     ID = 2
-    GROUP=3
-    WINDOW=4
+    GROUP = 3
+    WINDOW = 4
+
 
 channels_split_stack = False
 child_stack_holder = {}
+
 
 def begin_window(unique_id, *args, **kwargs):
     return_val = imgui.begin(unique_id, *args, **kwargs)
@@ -442,17 +449,19 @@ def begin_window(unique_id, *args, **kwargs):
     Melty.channels_split = True
     return return_val
 
+
 def begin_group(unique_id=0, *args, **kwargs):
     return imgui.begin_group()
 
+
 def end_group():
     imgui.end_group()
+
 
 def end_window(unique_id):
     imgui.get_window_draw_list().channels_merge()
     Melty.channels_split = False
     imgui.end()
-
 
     # draw_list = imgui.get_window_draw_list()
     # draw_list.channels_split(Melty.max_depth)
@@ -461,12 +470,15 @@ def end_window(unique_id):
 
 id_stack = []
 stack_holder = {}
+
+
 def push_id(unique_id):
     global id_stack
     if Melty.imgui_crashed:
         return
     imgui.push_id(str(unique_id))
     id_stack.append(unique_id)
+
 
 def pop_id():
     global id_stack
@@ -484,6 +496,7 @@ def pop_id():
     # imgui.pop_id()
     # id_stack.pop()
 
+
 def tmp_undo_stack(undo_point_id):
     """Context manager to temporarily clear the ID stack."""
     global id_stack
@@ -492,6 +505,7 @@ def tmp_undo_stack(undo_point_id):
     for _ in stack_holder[undo_point_id]:
         imgui.pop_id()
     id_stack = []
+
 
 def redo_stack(undo_point_id):
     """Restore the ID stack to a previously saved state."""
@@ -514,6 +528,7 @@ def listens_for(hotkey):
         elif isinstance(hotkey, Hotkey):
             Melty.hotkey_registry[func][hotkey.name] = hotkey
         return func
+
     return decorator
 
 
@@ -522,6 +537,7 @@ def render_wrapper(*o_args, **o_kwargs):
     if not callable(first_arg):
         def class_wrapper(the_func):
             return render_wrapper(the_func, *o_args, **o_kwargs)
+
         return class_wrapper
 
     r_func = o_args[0] if o_args else None
@@ -533,13 +549,13 @@ def render_wrapper(*o_args, **o_kwargs):
         if not callable(first_arg):
             def class_wrapper(the_func):
                 return wrapper(the_func, *args, **kwargs)
+
             return class_wrapper
 
         if 'inner_func' in kwargs:
             inner_func = kwargs.get('inner_func', None)
         else:
             inner_func = r_func
-
 
         func = first_arg if callable(first_arg) else None
         # use the specified wrapper if r_func
@@ -559,7 +575,8 @@ def render_wrapper(*o_args, **o_kwargs):
             wrap_name_to_param_type[param_name] = wrap_param_types[idx]
 
         param_defaults = {p: params[p].default for p in params if params[p].default is not inspect.Parameter.empty}
-        wrap_defaults = {p: wrap_params[p].default for p in wrap_params if wrap_params[p].default is not inspect.Parameter.empty}
+        wrap_defaults = {p: wrap_params[p].default for p in wrap_params if
+                         wrap_params[p].default is not inspect.Parameter.empty}
 
         params = params | wrap_params
         param_types = param_types + wrap_param_types
@@ -569,7 +586,6 @@ def render_wrapper(*o_args, **o_kwargs):
         wanted_params = list(params.keys())
         wanted_params.remove("args") if "args" in wanted_params else None
         wanted_params.remove("o_kwargs") if "o_kwargs" in wanted_params else None
-
 
         def add_default(value):
             kwargs.pop('is_default_for', None)
@@ -598,8 +614,8 @@ def render_wrapper(*o_args, **o_kwargs):
 
             out_func = r_func(func, param_types=param_types, wanted_params=wanted_params,
                               wanted_params_inner=wrap_defaults, header_defaults=kwargs,
-                          param_defaults=param_defaults, name_to_param_type=name_to_param_type,
-                          **o_kwargs)
+                              param_defaults=param_defaults, name_to_param_type=name_to_param_type,
+                              **o_kwargs)
 
             if wrap_func is not None:
                 o_kwargs.update(kwargs)
@@ -610,6 +626,7 @@ def render_wrapper(*o_args, **o_kwargs):
         except Exception as e:
             print_colored_traceback(*sys.exc_info())
             return False, None
+
     #
     # do_wrap = o_kwargs.pop('wraps', None)
     # if callable(do_wrap):
@@ -620,6 +637,7 @@ def render_wrapper(*o_args, **o_kwargs):
     #     wrapper = wrap_func(inner_func, **o_kwargs)
 
     return wrapper
+
 
 def annotation_track(*args, wrapper, **kwargs):
     first_arg = args[0] if args else None
@@ -662,8 +680,8 @@ def annotation_track(*args, wrapper, **kwargs):
 
     return None
 
-def apply_drag_and_drop():
 
+def apply_drag_and_drop():
     ######## -------- apply drag & drop -----------
     did_apply = False
     while len(Melty.actions_to_apply) > 0:
@@ -692,6 +710,7 @@ def get_resize_handle(a_ds):
 
     margin = 34
     return (right - margin, bottom - margin, right, bottom)
+
 
 def draw_resize_handle(a_ds):
     if a_ds.width is None:
@@ -730,7 +749,7 @@ def draw_resize_handle(a_ds):
         rect_br[2] - margin - 1, rect_br[3] - arrow_size - margin,
         rect_br[2] - margin - 1, rect_br[3] - margin,
         rect_br[2] - margin - 1 - arrow_size, rect_br[3] - margin,
-        imgui.get_color_u32_rgba(1,1,1, alpha)
+        imgui.get_color_u32_rgba(1, 1, 1, alpha)
     )
     # Bottom corner
     if alpha > 0.0:
@@ -762,6 +781,7 @@ def jet_color(val: float):
     b = min(four_value + 0.5, -four_value + 2.5)
     return max(0.0, min(1.0, r)), max(0.0, min(1.0, g)), max(0.0, min(1.0, b)), 1.0
 
+
 @render_wrapper
 def render_func(*args, **o_kwargs):
     func = args[0] if args else None
@@ -786,13 +806,21 @@ def render_func(*args, **o_kwargs):
             kwargs.pop("bypass", None)
             return func(*args, **kwargs)
 
+        return_extras = kwargs.get('return_extras', False)
+        kwargs['return_extras'] = False
+
+        if kwargs.get("overlay", False):
+            kwargs.pop("overlay", None)
+            Melty.overlays.append((wrapper, kwargs))
+            if return_extras:
+                return False, None, kwargs
+
+            return False, None
+
         o_kwargs.update(kwargs)
         annotation = annotation_track(*args, wrapper=wrapper, **o_kwargs)
         if annotation is not None:
             return annotation
-
-        return_extras = kwargs.get('return_extras', False)
-        kwargs['return_extras'] = False
 
         return_value = None
         is_root = Melty.depth == 0
@@ -846,7 +874,8 @@ def render_func(*args, **o_kwargs):
             unique = ui_id(datatype=type(input_value), suffix=unique_name + str(key) + func.__name__)
             suffix = f"{unique_name}_{func.__name__}_{unique}_{key}"
         else:
-            unique = ui_id(datatype=type(input_value), suffix=suffix + unique_name + str(key) + func.__name__, idx=index)
+            unique = ui_id(datatype=type(input_value), suffix=suffix + unique_name + str(key) + func.__name__,
+                           idx=index)
 
         computed_unique = unique
 
@@ -870,7 +899,6 @@ def render_func(*args, **o_kwargs):
             Melty.bg_stack = [(0, 0, 0)]
             Melty.indent_count = 0
             Melty.unindent_count = 0
-
 
             is_popup_open = imgui.is_popup_open("", flags=imgui.POPUP_ANY_POPUP)
             # if is_popup_open != Melty.imgui_popup_open and not is_popup_open:
@@ -1064,7 +1092,6 @@ def render_func(*args, **o_kwargs):
                     draw_state.window_size = (draw_state.width, draw_state.height)
                     draw_state.expanded = True
 
-
             if kwargs.get("window_pos", None) is not None:
                 draw_state.window_pos = kwargs.get("window_pos", None)
 
@@ -1149,7 +1176,8 @@ def render_func(*args, **o_kwargs):
 
                     from src.lsd.gl_gui.view.core_views.new_core_view import draw_drag_drop_target
                     _, flow_spacing = draw_drag_drop_target(do_flow=True, enable_flow=True,
-                                                            collection=kwargs.get("collection", None), key=key, on_drag=False,
+                                                            collection=kwargs.get("collection", None), key=key,
+                                                            on_drag=False,
                                                             draw_state=draw_state, tag="top")
 
                     next_kwargs = kwargs['next_kwargs']
@@ -1185,7 +1213,8 @@ def render_func(*args, **o_kwargs):
 
                     start_pos = imgui.get_cursor_screen_pos()
                     imgui.set_cursor_screen_pos((pos_x, pos_y))
-                    return_value = draw_inner_main(clean_args, draw_state, input_value, next_kwargs, melty, tile_id, unique)
+                    return_value = draw_inner_main(clean_args, draw_state, input_value, next_kwargs, melty, tile_id,
+                                                   unique)
                     kwargs['on_drag'] = True
                     Melty.redo_clip(unique)
 
@@ -1228,7 +1257,6 @@ def render_func(*args, **o_kwargs):
                 push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
                 push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
 
-
                 pop_id()
                 end_group()
                 pop_style_var(2)
@@ -1251,9 +1279,9 @@ def render_func(*args, **o_kwargs):
                     draw_state.bounds_left = snap_int(start_cursor[0])
                     draw_state.bounds_top = snap_int(start_cursor[1])
 
-                    if kwargs.get("auto_resize", True) or draw_state.window_size is not None:
-                        draw_state.width = snap_int(item_rect[0])
-                        draw_state.height = snap_int(item_rect[1])
+                    # if kwargs.get("auto_resize", True) or draw_state.window_size is not None:
+                    #     draw_state.width = snap_int(item_rect[0])
+                    #     draw_state.height = snap_int(item_rect[1])
                 if not kwargs.get("auto_resize", True) and draw_state.window_size is not None:
                     margin = 250
 
@@ -1278,9 +1306,10 @@ def render_func(*args, **o_kwargs):
                     if draw_state.window_size is None and melty_window:
                         window_margin = 8
                         draw_state.window_size = snap_int(item_rect[0]) + window_margin, snap_int(item_rect[1])
+
+                    if not melty.drag_in_progress:
                         draw_state.width = snap_int(item_rect[0])
                         draw_state.height = snap_int(item_rect[1])
-
 
                 ######################################## HANDLE ACTIONS #######################
                 is_hovered = draw_state.is_hovered()
@@ -1343,7 +1372,7 @@ def render_func(*args, **o_kwargs):
                     Melty.melty_window_stack.pop()
 
                 if melty_window:
-                    imgui.set_cursor_screen_pos((0,0))
+                    imgui.set_cursor_screen_pos((0, 0))
 
                 # if kwargs.get("on_drag", False):
                 #     imgui.set_cursor_screen_pos((draw_state.cursor_left, draw_state.cursor_top))
@@ -1385,7 +1414,7 @@ def render_func(*args, **o_kwargs):
             draw_state._imgui_popover_open = Melty.imgui_popup_open
 
         inside_clip = Melty.inside_clip(rect=(start_cursor[0], start_cursor[1],
-                                               draw_state.width, draw_state.height))
+                                              draw_state.width, draw_state.height))
         if inside_clip != draw_state.clipped and inside_clip:
             Melty.cache.invalidate_by_obj(tile_id)
 
