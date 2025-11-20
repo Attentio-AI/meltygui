@@ -843,8 +843,8 @@ def render_func(*args, **o_kwargs):
         suffix = f"{old_suffix}_{suffix}_{unique_name}_{key}"
 
         if is_root:
-            unique = ui_id(datatype=type(input_value), suffix=unique_name + str(key) + str(suffix) + func.__name__)
-            suffix = f"{unique_name}_{func.__name__}_{unique}"
+            unique = ui_id(datatype=type(input_value), suffix=unique_name + str(key) + func.__name__)
+            suffix = f"{unique_name}_{func.__name__}_{unique}_{key}"
         else:
             unique = ui_id(datatype=type(input_value), suffix=suffix + unique_name + str(key) + func.__name__, idx=index)
 
@@ -894,7 +894,7 @@ def render_func(*args, **o_kwargs):
                     ds.unique = unique  # keep the DS in sync
 
                 # Install under the new unique (overwrite if needed)
-                registry[unique] = ds
+                registry[unique] = ds.deepcopy()
 
                 # Optional: clean up empty dict to avoid pointless checks later
                 if not pending:
@@ -1077,12 +1077,14 @@ def render_func(*args, **o_kwargs):
                     draw_state.window_pos = Melty.init_window_cursor
                     cursor_spacing = 5
                     Melty.init_window_cursor = (Melty.init_window_cursor[0] +
-                                                draw_state.width + cursor_spacing,
+                                                300 + cursor_spacing,
                                                 Melty.init_window_cursor[1])
 
                 if draw_state.window_pos is not None:
                     imgui.set_cursor_screen_pos((snap_int(cursor_pos[0] + draw_state.window_pos[0]),
                                                  snap_int(cursor_pos[1] + draw_state.window_pos[1])))
+            else:
+                draw_state.window_pos = None
 
             kwargs['melty_window'] = False
 
@@ -1269,9 +1271,9 @@ def render_func(*args, **o_kwargs):
                     draw_state.bounding_width = snap_int(item_rect[0])
                     draw_state.bounding_height = snap_int(item_rect[1])
 
-                    # if (draw_state.bounding_width != original_width_b or
-                    #         draw_state.bounding_height != original_height_b):
-                    #     request_render()
+                    if (draw_state.bounding_width != original_width_b or
+                            draw_state.bounding_height != original_height_b):
+                        request_render()
 
                     if draw_state.window_size is None and melty_window:
                         window_margin = 8

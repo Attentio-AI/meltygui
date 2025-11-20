@@ -118,8 +118,6 @@ def draw_melty_windows(vis):
 def draw_main(input_value, vis):
     global test_obj
 
-
-
     #
     # draw_window(test_obj, name="Test value")
     # draw_window(test_obj, name="Test value 1")
