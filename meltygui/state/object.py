@@ -823,16 +823,16 @@ class DictConversion(metaclass=FieldMeta):
                         parent_class = self._input_value
                         parent_name = f"{parent_class.__name__}\n"
 
-                    if self.__class__.__name__ != "MouseState":
-                        request_render()
-
-                        try:
-                            value_str = str(value)
-                        except:
-                            value_str = f"{value.__class__.__name__} object"
-                        Melty.last_invalid_attr = f"{parent_name}{self.__class__.__name__}.{str(name)} {value_str[:30]}"
-                        Melty.last_invalid.append(Melty.last_invalid_attr)
-                        Melty.cache.invalidate_up_by_obj(Melty.last_invalid)
+                    # if self.__class__.__name__ != "MouseState":
+                    #     # request_render()
+                    #
+                    #     try:
+                    #         value_str = str(value)
+                    #     except:
+                    #         value_str = f"{value.__class__.__name__} object"
+                    #     Melty.last_invalid_attr = f"{parent_name}{self.__class__.__name__}.{str(name)} {value_str[:30]}"
+                    #     Melty.last_invalid.append(Melty.last_invalid_attr)
+                    #     Melty.cache.invalidate_up_by_obj(Melty.last_invalid)
 
             except Exception as e:
                 pass

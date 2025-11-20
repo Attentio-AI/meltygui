@@ -71,7 +71,7 @@ class DragMode(Enum):
          "z_pos", "draw_window_pos_x", "draw_window_pos_y",
          "content_height", "drag_delta", "screen_pos")
 @exclude("render_time", "bounds_left", "bounds_top", "_input_value", "width", "flow_spacing",
-         "hovered", "_did_use_cache", "value_hash", "drag_window", "bounding_hovered", "delete_countdown", "z_pos", "scrolled", "is_hovered_last")
+         "hovered", "_did_use_cache", "value_hash", "drag_window", "height", "bounding_hovered", "delete_countdown", "z_pos", "scrolled", "is_hovered_last")
 @deep_refresh("expanded")
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""

@@ -114,7 +114,7 @@ def draw_melty_windows(vis):
     Melty.channels_split = False
     end()
 
-@render_func(use_cache=True)
+@render_func(use_cache=False)
 def draw_main(input_value, vis):
     global test_obj
     draw_any(Melty.registered_windows, show_add_delete=False, name="Window Manager")
@@ -223,7 +223,6 @@ def draw(vis):
     Melty.cache.mask_begin_frame((fb_w, fb_h))
 
     draw_melty_windows(vis)
-    apply_drag_and_drop()
 
     Melty.hovered_drawstate = Melty.hovered_drawstate_pending
 
@@ -1020,7 +1019,8 @@ def draw_vertical_scrollbar(content_height: float,
     }
 
 
-def core_header(func, outer_func, render_func, input_value=None, melty_window=False, auto_resize=True, collection=None, key=None, indent_size=10, depth=0, draw_state=None,
+def core_header(func, outer_func, render_func, input_value=None, melty_window=False, auto_resize=True,
+                collection=None, key=None, indent_size=10, depth=0, draw_state=None,
                 window_stack=None, is_tree=True, is_window=False, spacing=Melty.spacing, padding=Melty.padding, show_name=True,
                 on_scroll=None, on_mouse_down=False, no_measure=False,
                 show_header=True, show_bg=True, unique=0, name="", style_manager=None, global_style=None, parent_show_add_delete=True,
@@ -1028,18 +1028,21 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                 on_hover=False, next_kwargs=None, meta=None, on_same_line=False, y_offset=0, width=None, min_width=1, enable_scroll=True, **kwargs):
 
         if on_scroll is not None:
-            scroll_offset = draw_state.scroll_offset
-            current_x = scroll_offset[0]
-            current_y = scroll_offset[1]
+            needs_scroll = draw_state.content_height > draw_state.height if draw_state.height is not None else False
+            if needs_scroll:
+                scroll_offset = draw_state.scroll_offset
+                current_x = scroll_offset[0]
+                current_y = scroll_offset[1]
+                direction = -1
+                scroll_speed = 100.0
+                new_offset_y = current_y + on_scroll * direction * scroll_speed
 
-            direction = -1
-            scroll_speed = 100.0
-            new_offset_y = current_y + on_scroll * direction * scroll_speed
+                min_scroll_y = 0
+                max_scroll_y = max(0, draw_state.content_height - draw_state.height)
+                draw_state.scroll_offset = (current_x,
+                                            max(min_scroll_y, min(new_offset_y, max_scroll_y)))
 
-            min_scroll_y = 0
-            max_scroll_y = max(0, draw_state.content_height - draw_state.height)
-            draw_state.scroll_offset = (current_x,
-                                        max(min_scroll_y, min(new_offset_y, max_scroll_y)))
+                Melty.cache.invalidate_up_current(max_depth=1)
 
         initial_cursor_pos = imgui.get_cursor_screen_pos()
 
@@ -1142,7 +1145,6 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                 # ----------------- end header for collections ---------------
                 # This is the version with an indent, probably a dict header
                 draw_header_end(input_value, **next_kwargs)
-
 
         if show_bg:
             style_manager.get_tint()
@@ -1423,7 +1425,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
         # view function & identifier
         view_fn = getattr(item_meta, "view_function", draw_collection)
         if view_fn is None:
-            view_fn = draw_collection
+            view_fn = draw_any
 
         id_val = getattr(input_value, "unique_id", "")
 
@@ -1461,11 +1463,12 @@ def draw_collection(input_value, draw_state, depth, style_manager,
                         if space_left < 0:
                             imgui.new_line()
 
-            item_changed, out_val = draw_any(item, indent_size=10, key=key, meta=item_meta, trigger_collapse=trigger_collapse,
+            item_changed, out_val, extras = draw_any(item, return_extras=True, indent_size=10, key=key, meta=item_meta, trigger_collapse=trigger_collapse,
                              trigger_expand=trigger_expand, y_offset=y_offset, on_collapse=on_collapse, on_expand=on_expand,
                              collection=ordered_driver, name=key_str, display_name=display_name,
                                              parent_show_add_delete=show_add_delete,
                                              show_add_delete=show_add_delete)
+
 
             if isinstance(out_val, CollectionAction):
                 # perform the move - this should mutate the plain dicts you attached
@@ -1779,10 +1782,10 @@ def draw_header(input_value=None, name="", suffix="", collection=None, display_n
             if imgui.is_item_hovered():
                 button_rect = (rect_min[0], rect_min[1], rect_min[0] + name_width,
                                rect_min[1] + imgui.get_item_rect_size()[ 1])
-
-                Melty.cache.mask_mark_rect(Melty.depth + 2, button_rect[0], button_rect[1],
-                                            button_rect[2], button_rect[3],
-                                           key=str(Melty.unique_stack[-1]) + "scrollbar")
+                #
+                # Melty.cache.mask_draw_rect(Melty.depth + 2, button_rect[0], button_rect[1],
+                #                             button_rect[2], button_rect[3],
+                #                            key=str(Melty.unique_stack[-1]) + "scrollbar")
         else:
             imgui.set_next_item_width(name_width)
             # Selected text on focus

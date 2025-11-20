@@ -792,6 +792,9 @@ def render_func(*args, **o_kwargs):
         if annotation is not None:
             return annotation
 
+        return_extras = kwargs.get('return_extras', False)
+        kwargs['return_extras'] = False
+
         return_value = None
         is_root = Melty.depth == 0
 
@@ -826,6 +829,8 @@ def render_func(*args, **o_kwargs):
         from src.lsd.gl_gui.view.core_views.core_presets import Meta
 
         if Melty.depth > Melty.max_depth:
+            if return_extras:
+                return False, None, kwargs
             return False, None
 
         # ----- Unique computation before pushing ID scope (avoid divergence) -----
@@ -1120,6 +1125,8 @@ def render_func(*args, **o_kwargs):
                         return False, None
 
             if not meta.visible_in_ui:
+                if return_extras:
+                    return False, None, kwargs
                 return False, None
             ###########################################################
             kwargs['next_kwargs'] = kwargs
@@ -1212,6 +1219,8 @@ def render_func(*args, **o_kwargs):
             def end_of_render():
                 pop_style_var(2)
                 if Melty.imgui_crashed:
+                    if return_extras:
+                        return False, None, kwargs
                     return False, None
 
                 # Needs to go after mouse down check
@@ -1261,15 +1270,15 @@ def render_func(*args, **o_kwargs):
                     draw_state.bounding_width = snap_int(item_rect[0])
                     draw_state.bounding_height = snap_int(item_rect[1])
 
+                    if (draw_state.bounding_width != original_width_b or
+                            draw_state.bounding_height != original_height_b):
+                        request_render()
+
                     if draw_state.window_size is None and melty_window:
                         window_margin = 8
                         draw_state.window_size = snap_int(item_rect[0]) + window_margin, snap_int(item_rect[1])
                         draw_state.width = snap_int(item_rect[0])
                         draw_state.height = snap_int(item_rect[1])
-
-                if (draw_state.bounding_width != original_width_b or
-                        draw_state.bounding_height != original_height_b):
-                    request_render()
 
 
                 ######################################## HANDLE ACTIONS #######################
@@ -1308,15 +1317,12 @@ def render_func(*args, **o_kwargs):
                         if hovered_draw_state is not None:
                             hovered_draw_state._hovered = True
                             Melty.hovered_drawstate_pending.add(hovered_draw_state.id)
-                            # Melty.cache.invalidate_by_obj(input_value)
-                            # request_render()
 
                     if len(melty.hotkey_stack) > 0:
                         last = melty.hotkey_stack[0]
                         hovered_draw_state = Melty.vis.root.draw_state_registry.get(last, None)
                         if hovered_draw_state is not None:
                             hovered_draw_state.hotkey_receiver = True
-                            # Melty.invalidate(tile_id)
 
                     melty.hover_stack = []
                     melty.hotkey_stack = []
@@ -1360,6 +1366,8 @@ def render_func(*args, **o_kwargs):
 
             changed, new_value = end_of_render()
 
+        if return_extras:
+            return changed, new_value, kwargs
         return changed, new_value
 
     def draw_inner_main(clean_args, draw_state, input_value, kwargs, melty, tile_id, unique):
@@ -1378,7 +1386,7 @@ def render_func(*args, **o_kwargs):
         inside_clip = Melty.inside_clip(rect=(start_cursor[0], start_cursor[1],
                                                draw_state.width, draw_state.height))
         if inside_clip != draw_state.clipped and inside_clip:
-            Melty.cache.invalidate_by_obj(tile_id)
+            Melty.cache.invalidate_up(tile_id)
 
             # Melty.cache.invalidate_by_obj(collection)
 
@@ -1392,7 +1400,7 @@ def render_func(*args, **o_kwargs):
             if (draw_state._bounding_hovered or hover_changed or draw_state._hovered or
                     draw_state.width is None or draw_state.height is None or draw_state._imgui_popover_open):
                 Melty.cache.invalidate(tile_id)
-                Melty.cache.invalidate_by_obj(draw_state)
+                # Melty.cache.invalidate_by_obj(draw_state)
 
                 # Melty.cache.invalidate_by_obj(collection)
                 # Melty.cache.invalidate_by_obj(input_value)
@@ -1428,8 +1436,9 @@ def render_func(*args, **o_kwargs):
 
             Melty.cache.mark_end_offscreen()
         else:
-            return_value = func(**clean_args)
 
+            Melty.cache.mark_uncached(input_value, key=tile_id)
+            return_value = func(**clean_args)
 
         return return_value
 

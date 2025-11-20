@@ -467,15 +467,20 @@ class TileCacheMasked:
 
         self.invalidate(self._stack[-1].key)
 
-    def invalidate_parent(self, obj):
-        # if name is not None:
-        #     keys = self.py_id_to_keys.get(f"{id(obj)}.{name}", None)
-        #     if keys is not None:
-        #         for k in keys:
-        #             self.invalidate_up(k)
-        # else:
-        parent_key = self.key_to_parent_key.get(self._stack[-1].key, None)
-        self.invalidate_up(parent_key, max_depth=2)
+    def invalidate_up_current(self, max_depth=9):
+        if len(self._stack) == 0:
+            return
+
+        self.invalidate_up(self._stack[-1].key, max_depth=max_depth)
+    # def invalidate_parent(self, obj):
+    #     # if name is not None:
+    #     #     keys = self.py_id_to_keys.get(f"{id(obj)}.{name}", None)
+    #     #     if keys is not None:
+    #     #         for k in keys:
+    #     #             self.invalidate_up(k)
+    #     # else:
+    #     parent_key = self.key_to_parent_key.get(self._stack[-1].key, None)
+    #     self.invalidate_up(parent_key, max_depth=2)
 
     def invalidate_up_by_obj(self, obj, name=None, max_depth=9):
         if name is not None:
@@ -541,7 +546,7 @@ class TileCacheMasked:
                 if pt is not None:
                     pt.last_invalidated_frame = max(pt.last_invalidated_frame, self._frame_id + 1)
                     pt.dirty = self._is_dirty(pt)
-                    self.pending_invalid.append(pt)
+                    # self.pending_invalid.append(pt)
 
     def invalidate(self, key: str) -> None:
         keys_to_touch = [self._resolve_key(key)]
@@ -562,7 +567,7 @@ class TileCacheMasked:
                     if pt is not None:
                         pt.last_invalidated_frame = max(pt.last_invalidated_frame, self._frame_id + 1)
                         pt.dirty = self._is_dirty(pt)
-                        self.pending_invalid.append(pt)
+                        # self.pending_invalid.append(pt)
 
             # Optional hard cancel for this frame (rarely needed):
             # if self._recording:
@@ -753,6 +758,12 @@ class TileCacheMasked:
                 k = parent_of.get(k)
         return subtree
 
+    def mark_uncached(self, input_value, key: str) -> None:
+        rkey = self._resolve_key(key)
+        parent_ctx = self._stack[-1] if self._stack else None
+        self.py_id_to_keys.setdefault(f"{id(input_value)}", set()).add(rkey)
+        self.key_to_parent_key[rkey] = parent_ctx.key if parent_ctx else None
+
     # ----- Begin/End with per-view layer (from depth) -----
     def mark_start_offscreen(self, input_value, collection, draw_state, key: str, layer: int, name="", caller=None) -> bool:
 
@@ -823,24 +834,26 @@ class TileCacheMasked:
         # Try to draw cached if we have a clean tile sized correctly
         if size is not None and self.enabled:
             t = self._tiles.get(rkey)
+            use_image = t and has_area and (t.size == (size[0], size[1])) and (not self._is_dirty(t))
 
             debug_mode = False
             if debug_mode:
                 bounding_rect = (x, y, size[0], size[1])
                 draw_list = imgui.get_window_draw_list()
-                draw_list.add_rect(
-                    bounding_rect[0], bounding_rect[1],
-                    bounding_rect[0] + bounding_rect[2], bounding_rect[1] + bounding_rect[3],
-                    imgui.get_color_u32_rgba(1, 1, 1, 0.1),
-                    thickness=1.0
-                )
-                if caller is not None:
-                    caller_name = caller.__name__
-                    draw_list.add_text(
-                        x + 4, y + 4 + size[1],
-                        imgui.get_color_u32_rgba(1, 0, 0, 0.45),
-                        f"{caller_name}"
+                if not use_image:
+                    draw_list.add_rect(
+                        bounding_rect[0], bounding_rect[1],
+                        bounding_rect[0] + bounding_rect[2], bounding_rect[1] + bounding_rect[3],
+                        imgui.get_color_u32_rgba(1, 1, 1, 0.5),
+                        thickness=2.0
                     )
+                    if caller is not None:
+                        caller_name = caller.__name__
+                        draw_list.add_text(
+                            x + 4, y + 4 + size[1],
+                            imgui.get_color_u32_rgba(1, 0, 0, 0.45),
+                            f"{caller_name}"
+                        )
 
             if t and has_area and (t.size == (size[0], size[1])) and (not self._is_dirty(t)):
 
@@ -1067,7 +1080,6 @@ class TileCacheMasked:
                 x, y = p.pos
                 w, h = p.size
                 x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(x, y, w, h, dp_x, dp_y, s_x, s_y, fb_h)
-
                 # 3a) Build subtree mask for this tile
                 gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._sub_mask_fbo)
                 gl.glViewport(0, 0, fb_w, fb_h)
