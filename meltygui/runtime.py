@@ -119,6 +119,14 @@ def add_to_collection(collection, item, preferred_key=None):
             key = generate_id()
         collection[key] = item
 
+    if hasattr(item, 'tint'):
+        if item.tint is None or item.tint == (0, 0, 0):
+            lighten = 0.2
+            item.tint = Melty.bg_stack[-1]
+            item.tint = (min(1.0, item.tint[0] + lighten),
+                         min(1.0, item.tint[1] + lighten),
+                         min(1.0, item.tint[2] + lighten))
+
     Melty.invalidate(value=collection)
     request_render()
     return collection
