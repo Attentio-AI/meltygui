@@ -130,7 +130,7 @@ def draw_main(input_value, vis):
     draw_window(Melty.last_invalid, show_bg=True, name="Last Invalid")
     # draw_window(Melty.last_request_render, show_bg=True, name="Last Invalid")
 
-    draw_window(Melty.registered_windows, indent_size=10, auto_resize=False, is_tree=True, show_add_delete=False, name="Window Manager")
+    draw_window(Melty.registered_windows, indent_size=10, is_tree=True, show_add_delete=False, name="Window Manager")
 
 
 @with_header(is_default_for=ManagedWindow, is_tree=False,
@@ -140,7 +140,7 @@ def draw_debug(input_value, melty, *args, **kwargs):
 
 @with_header(is_default_for=ManagedWindow, is_tree=False, show_name=False,
              show_bg=True, show_add_delete=False)
-def draw_managed_window(input_value, draw_state, name,  style_manager, unique=0, mouse_down=False, *args, **kwargs):
+def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, mouse_down=False, *args, **kwargs):
 
     window_input_value = input_value.input_value
     if hasattr(window_input_value, 'tint') and window_input_value.tint is not None:

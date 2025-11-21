@@ -85,7 +85,6 @@ def handle_actions(melty, unique, draw_state, func=None):
                         melty.mark_event(unique, m_btn, ActionType.DOWN)
 
                     btn_state.mouse_down = True
-                    # Melty.cache.invalidate(tile_id)
 
                 if not global_mouse_down:
                     btn_state._mouse_up = True
@@ -94,7 +93,6 @@ def handle_actions(melty, unique, draw_state, func=None):
             if was_mouse_down and not global_mouse_down:
                 btn_state._clicked = True
                 melty.mark_event(unique, m_btn, ActionType.CLICK)
-                # Melty.cache.invalidate(tile_id)
 
             if not global_mouse_down:
                 btn_state.mouse_down = False
@@ -108,7 +106,6 @@ def handle_actions(melty, unique, draw_state, func=None):
                     btn_state.initial_screen_pos = None
                     melty.mouse_down_pos = None
                     melty.mark_event(unique, m_btn, ActionType.DRAG_UP)
-                    # Melty.cache.invalidate(tile_id)
 
                 btn_state.dragged = False
 
@@ -867,8 +864,8 @@ def render_func(*args, **o_kwargs):
         suffix = f"{old_suffix}_{suffix}_{unique_name}_{key}"
 
         if is_root:
-            unique = ui_id(datatype=type(input_value), suffix=unique_name + str(key) + func.__name__)
-            suffix = f"{func.__name__}_{unique}_{key}"
+            unique = ui_id(datatype=type(input_value), suffix=name + unique_name + str(key) + func.__name__)
+            suffix = f"{unique_name}_{func.__name__}_{unique}_{key}"
         else:
             unique = ui_id(datatype=type(input_value), suffix=suffix + unique_name + str(key) + func.__name__,
                            idx=index)
@@ -931,6 +928,7 @@ def render_func(*args, **o_kwargs):
             if draw_state._input_value != input_value:
                 if kwargs.get("collection", None) is not None:
                     Melty.cache.invalidate_up_by_obj(kwargs.get("collection"))
+                    print("old value:", draw_state._input_value, "new value:", input_value,)
                     request_render()
 
         draw_state._input_value = input_value
@@ -1451,14 +1449,15 @@ def render_func(*args, **o_kwargs):
         if draw_state._has_popup:
             draw_state._imgui_popover_open = Melty.imgui_popup_open
 
-        inside_clip = Melty.inside_clip(rect=(start_cursor[0], start_cursor[1],
-                                              draw_state.width, draw_state.height))
-        if inside_clip != draw_state.clipped and inside_clip:
-            Melty.cache.invalidate_by_obj(tile_id)
+        if draw_state.width > 0 and draw_state.height > 0:
+            inside_clip = Melty.inside_clip(rect=(start_cursor[0], start_cursor[1],
+                                                  draw_state.width, draw_state.height))
+            if inside_clip != draw_state.clipped and inside_clip:
+                Melty.cache.invalidate_by_obj(tile_id)
 
-            # Melty.cache.invalidate_by_obj(collection)
+                # Melty.cache.invalidate_by_obj(collection)
 
-        draw_state.clipped = inside_clip
+            draw_state.clipped = inside_clip
 
         if use_cache and Melty.cache.enabled:
             last_bounding_hovered = draw_state.is_bounding_hovered()
@@ -1470,18 +1469,6 @@ def render_func(*args, **o_kwargs):
                 Melty.cache.invalidate(tile_id)
                 # Melty.cache.invalidate_by_obj(draw_state)
 
-                # Melty.cache.invalidate_by_obj(collection)
-                # Melty.cache.invalidate_by_obj(input_value)
-                # Melty.cache.invalidate_current()
-            # if melty.dragged_tile == tile_id:
-            #     Melty.cache.invalidate_by_obj(draw_state)
-            #
-            #     # for a_tile in Melty.tile_id_stack:
-            #     #     Melty.cache.invalidate(a_tile)
-            #     # Melty.cache.invalidate_by_obj(collection)
-            #     # Melty.cache.invalidate_by_obj(input_value)
-            #     Melty.cache.invalidate(tile_id)
-            #     # Melty.cache.invalidate_current()
             #     request_render()
             offscreen_depth = Melty.depth
 
