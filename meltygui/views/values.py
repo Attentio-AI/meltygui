@@ -38,7 +38,7 @@ from src.lsd.gl_gui.view.core_views.codec_register import registry as FILE_CODEC
 from src.lsd.gl_gui.view.core_views.offscreen import Offscreen
 
 
-@render_wrapper(wraps=render_func, use_cache=True)
+@render_wrapper(wraps=render_func, use_cache=False)
 def with_header_minimal(func, *args, **o_kwargs):
     def wrapper(next_kwargs=None, **kwargs):
         annotation = annotation_track(*args, wrapper=wrapper, **o_kwargs)
@@ -130,7 +130,7 @@ def draw_main(input_value, vis):
     draw_window(Melty.last_invalid, show_bg=True, name="Last Invalid")
     # draw_window(Melty.last_request_render, show_bg=True, name="Last Invalid")
 
-    draw_any(Melty.registered_windows, show_add_delete=False, name="Window Manager")
+    draw_window(Melty.registered_windows, indent_size=10, auto_resize=False, is_tree=True, show_add_delete=False, name="Window Manager")
 
 
 @with_header(is_default_for=ManagedWindow, is_tree=False,
@@ -138,44 +138,54 @@ def draw_main(input_value, vis):
 def draw_debug(input_value, melty, *args, **kwargs):
     draw_any(melty)
 
-@with_header(is_default_for=ManagedWindow, is_tree=False,
+@with_header(is_default_for=ManagedWindow, is_tree=False, show_name=False,
              show_bg=True, show_add_delete=False)
-def draw_managed_window(input_value, *args, **kwargs):
+def draw_managed_window(input_value, draw_state, name,  style_manager, unique=0, mouse_down=False, *args, **kwargs):
+
+    window_input_value = input_value.input_value
+    if hasattr(window_input_value, 'tint') and window_input_value.tint is not None:
+        draw_state.tint = window_input_value.tint
+    else:
+        draw_state.tint = (0.9, 0.991, 0.999)
+
+    window_draw_state = input_value.draw_state
+
+    if mouse_down:
+        window_draw_state.closed = not window_draw_state.closed
+
+    imgui.dummy(30, 20)
     imgui.same_line()
-    pass
-    # if input_value.draw_state is not None:
-    #     imgui.text(input_value.window_args.get('name', 'Managed Window'))
-    # else:
-    #     imgui.text("No Draw State")
+
+    if window_input_value == Melty.registered_windows:
+        button(f"{name}", color=(0,0,0,0), saturation=1.3, width=130)[0]
+        return
+    if window_draw_state.closed:
+        if button(f"{name}", color=(0,0,0), saturation=1.3, width=130)[0]:
+            print("Opening window")
+            window_draw_state.closed = False
+    else:
+        if button(f"{name}", saturation=1.3, width=130)[0]:
+            print("Closing window")
+            window_draw_state.closed = True
 
 
-@render_func(use_cache=True, auto_resize=False, show_bg=True, melty_window=True, draggable=True)
+@render_func(use_cache=True, auto_resize=False, closeable=True, show_bg=True, melty_window=True, draggable=True)
 def draw_window(input_value, style_manager=None, *args, **kwargs):
     window_name = kwargs.get('name', 'Managed Window')
-
-    if window_name not in Melty.registered_windows:
-        Melty.registered_windows[window_name] = ManagedWindow(input_value=input_value,
-                                                                   draw_state=kwargs.get('draw_state', None),
-                                                                   window_args=kwargs,
-                                                                   name=kwargs.get('name', 'Managed Window'))
-    else:
-        Melty.registered_windows[window_name].input_value = input_value
-        Melty.registered_windows[window_name].draw_state = kwargs.get('draw_state', None)
-        Melty.registered_windows[window_name].window_args = kwargs
-        Melty.registered_windows[window_name].name = kwargs.get('name', 'Managed Window')
 
     window_z_pos = list(Melty.registered_windows.keys()).index(window_name)
     kwargs['z_pos'] = window_z_pos + 2
 
     draw_state = kwargs.get('draw_state', None)
-    if draw_state.width is not None and draw_state.height is not None:
+
+    if draw_state.width is not None and draw_state.height is not None and draw_state.expanded:
         loading_icon_0 = "\uf00d"
         loading_icon_1 = "\uf067"
         frame_spacing = 1
         alpha = 0.25
         icon_cursor = imgui.get_cursor_screen_pos()
         icon_x = icon_cursor[0] + draw_state.width - 20
-        icon_y = icon_cursor[1] + 2
+        icon_y = icon_cursor[1] + draw_state.height - 20
         if (Melty.frame_count // frame_spacing) % 2 == 0:
             draw_list = imgui.get_overlay_draw_list()
             draw_list.add_text(icon_x, icon_y,
@@ -840,7 +850,7 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
 
 @render_func
 def draw_header_end(global_style, unique, style_manager, show_search,
-                    on_search, draw_state, collection, key,
+                    on_search, draw_state, collection, key, closeable,
                     melty, show_add_delete=True, parent_show_add_delete=False):
     push_id(f"header_end_{unique}")
     bg_style = {
@@ -879,6 +889,19 @@ def draw_header_end(global_style, unique, style_manager, show_search,
         padding = imgui.get_style().frame_padding.x
         end_x = imgui.get_cursor_screen_pos()[0] + padding
         pop_style_color(2)
+
+    if closeable:
+        imgui.same_line()
+
+        cursor_start = imgui.get_cursor_screen_pos()
+        if draw_state.width is not None and draw_state.left is not None and draw_state.expanded:
+            imgui.set_cursor_screen_pos((draw_state.left + draw_state.width - 20 + imgui.get_window_position()[0],
+                                       imgui.get_cursor_screen_pos()[1]))
+
+        close_icon = "\uf00d"
+        if button(f"{close_icon}", color=(1, 1, 1, 0))[0]:
+            draw_state.closed = not draw_state.closed
+        imgui.set_cursor_screen_pos(cursor_start)
 
     # if show_search or draw_state.search_active:
     #     imgui.same_line()
@@ -1104,12 +1127,18 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
 
         if not show_bg:
             y_offset = 0
-
+        prev_tint = None
+        if hasattr(input_value, "tint") and show_bg:
+            prev_tint = style_manager.get_tint()
+            style_manager.set_imgui_tint(*input_value.tint)
+        elif draw_state.tint is not None and show_bg:
+            prev_tint = style_manager.get_tint()
+            style_manager.set_imgui_tint(*draw_state.tint)
         start_x_pos = imgui.get_cursor_screen_pos()[0]
         start_y_pos = imgui.get_cursor_screen_pos()[1]
         # ----------------- top spacing -----------
-        if not show_name:
-            enable_flow = False
+        # if not show_name:
+        #     enable_flow = False
 
         if not melty_window and enable_flow:
             _, flow_spacing = draw_drag_drop_target(do_flow=True, enable_flow=enable_flow,
@@ -1190,7 +1219,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
 
         bg_color = (0, 0, 0, 1)
         if show_bg:
-            bg_color = get_bg_color(len(Melty.bg_color_stack) * 2cd, rounding=4.0,
+            bg_color = get_bg_color(len(Melty.bg_color_stack) * 2, rounding=4.0,
                                     global_style=global_style,
                                     style_manager=style_manager,
                                     auto_resize=auto_resize)
@@ -1272,9 +1301,10 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
 
                 draw_list.channels_set_current(Melty.depth)
 
-                draw_vertical_scrollbar(draw_state.content_height, view_height=d_height, view_width=d_width,
+                scroll_bar_offset = header_height - 5
+                draw_vertical_scrollbar(draw_state.content_height, view_height=d_height - scroll_bar_offset, view_width=d_width,
                                         scroll_offset=draw_state.scroll_offset[1], scrollbar_width=4.0, left=d_left,
-                                        top=d_top)
+                                        top=d_top + scroll_bar_offset)
                 draw_list.channels_set_current(min(Melty.max_depth - 1, Melty.depth))
 
             else:
@@ -1345,7 +1375,8 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
         if melty_window:
             imgui.set_cursor_screen_pos((initial_cursor_pos[0],
                                          initial_cursor_pos[1]))
-
+        if prev_tint is not None:
+            style_manager.set_imgui_tint(*prev_tint)
         if on_drag_up and not melty_window:
             melty.drag_in_progress = False
             new_action = copy(melty.drag_drop_action)
@@ -1491,11 +1522,11 @@ def draw_collection(input_value, draw_state, depth, style_manager,
         prev_tint = None
         try:
             show_bg = getattr(item_meta, "show_bg", False)
-            if hasattr(item, "tint") or show_bg:
-                prev_tint = style_manager.get_tint()
-                style_manager.set_imgui_tint(*item.tint)
+            # if hasattr(item, "tint") or show_bg:
+            #     prev_tint = style_manager.get_tint()
+            #     style_manager.set_imgui_tint(*item.tint)
 
-            elif isinstance(collection, FolderProxy):
+            if isinstance(collection, FolderProxy):
                 codec = FILE_CODECS.for_name(key)
                 if codec is not None and hasattr(codec, 'tint'):
                     prev_tint = style_manager.get_tint()
@@ -1699,14 +1730,50 @@ def open_file(path, app=None):
         print(f"Path does not exist: {path}")
 
 @render_func()
-def draw_header(input_value=None, name="", suffix="", collection=None, display_name=None, meta=None, unique=None, is_tree=True,
+def button(input_value="", color=None, width=None, height=None, style_manager=None, value=0.5, saturation=0.8, unique=0):
+    if height is None:
+        height = imgui.get_frame_height()
+
+    if width is None:
+        width = imgui.calc_text_size(input_value)[0] + imgui.get_style().frame_padding.x * 2
+        width = max(height, width)
+
+    if color is not None:
+        mixed_color = style_manager.make_color_rgb(color[0], color[1], color[2],
+                                                value=0.35, factor=0.9, saturation_scale=saturation, alpha=1.0)
+        text_color = style_manager.make_color_rgb(color[0], color[1], color[2],
+                                                 value=1.0, factor=0.5, saturation_scale=0.8, alpha=1.0)
+        rounding = 4.0
+
+        imgui.push_style_var(imgui.STYLE_FRAME_ROUNDING, rounding)
+        alpha = color[3] if len(color) > 3 else 1.0
+
+        imgui.push_style_color(imgui.COLOR_BUTTON, *mixed_color[:3], alpha)
+        imgui.push_style_color(imgui.COLOR_BUTTON_HOVERED, *(min(mixed_color[0]+0.1,1.0),
+                                                            min(mixed_color[1]+0.1,1.0),
+                                                            min(mixed_color[2]+0.1,1.0),
+                                                            max(0.3, alpha)))
+        imgui.push_style_color(imgui.COLOR_BUTTON_ACTIVE, *(max(mixed_color[0]-0.1,0.0),
+                                                              max(mixed_color[1]-0.1,0.0),
+                                                              max(mixed_color[2]-0.1,0.0),
+                                                            alpha))
+        imgui.push_style_color(imgui.COLOR_TEXT, *text_color[:3], 1.0)
+
+    clicked = imgui.button(input_value + f"##{unique}", width, height)
+    if color is not None:
+        imgui.pop_style_color(4)
+        imgui.pop_style_var(1)
+
+    return clicked, input_value
+
+
+@render_func()
+def draw_header(input_value=None, name="", suffix="", closeable=False, collection=None, display_name=None, meta=None, unique=None, is_tree=True,
                 show_name=True, name_func=None, show_type=False, show_unique=False,
                 on_search=False, trigger_collapse=False, trigger_expand=False,
-                draw_state=None, is_window=False, on_click=False, show_tint=True,
-                on_hover=False, highlight=False, opacity=1.0, show_add_delete=True,
-                on_right_click=False, show_bg=False, selected_views=None, is_hovered=False,
-                on_drag=False, on_drag_released=False, on_action=None, style_manager=None,
-                global_style=None, global_toggles=None, width=None, depth=0, window_pos=None, shift_click=False):
+                draw_state=None, show_tint=True, opacity=1.0, show_add_delete=True,
+                on_drag=False, on_action=None, style_manager=None,
+                global_style=None, global_toggles=None):
 
     if display_name is not None:
         name = display_name
@@ -1735,6 +1802,8 @@ def draw_header(input_value=None, name="", suffix="", collection=None, display_n
     outline_color = (style_manager.
                    make_color_style_value(input=bg_style, saturation=0.8, alpha=1.0,
                                           value=0.9))
+
+
     if is_tree:
         if trigger_collapse:
             draw_state.expanded = False
@@ -1887,6 +1956,8 @@ def draw_header(input_value=None, name="", suffix="", collection=None, display_n
 
     same_line(spacing=0.0)
 
+
+
     if is_tree:
         if not draw_state.expanded:
             imgui.same_line()
@@ -1933,7 +2004,7 @@ def render_profiler_time(input_value=None, brief=False, style_manager=None,
 
 
 
-@render_func(use_cache=True)
+@render_func(use_cache=False)
 @listens_for(Hotkey(glfw.KEY_F, "on_search", KeyMod.CTRL))
 @listens_for(Hotkey(glfw.KEY_MINUS, "on_collapse", KeyMod.CTRL, scoped=False))
 @listens_for(Hotkey(glfw.KEY_EQUAL, "on_expand", KeyMod.CTRL, scoped=False))
@@ -2140,7 +2211,7 @@ class TestClass(DictConversion):
         self.value = 2
         self.str_val = "Test"
 
-@with_header_minimal(is_default_for=float, use_cache=True)
+@with_header_minimal(is_default_for=float, use_cache=False)
 def draw_float(input_value:float, min_value=-100.0, max_value=100.0, speed=0.01, unique=0, draw_state=None):
     changed, value = imgui.drag_float("##float", input_value,
                                       change_speed=speed,

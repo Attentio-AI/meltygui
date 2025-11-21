@@ -121,11 +121,10 @@ class ImGuiStyleManager:
                 b1 * (1 - alpha) + b2 * alpha
             )
 
-        hn, sn, vn = colorsys.rgb_to_hsv(r, g, b)
+        # hn, sn, vn = colorsys.rgb_to_hsv(r, g, b)
         h, s, v = self.hsv
 
-        modified_rgb = colorsys.hsv_to_rgb(h, saturation_scale, value)
-
+        modified_rgb = self.make_custom(*self.current_rgb, value, saturation_scale=saturation_scale, alpha=alpha)
         # Apply alpha blending with the original color
         modified_rgb = mix(r, g, b, modified_rgb[0], modified_rgb[1], modified_rgb[2], factor)
 

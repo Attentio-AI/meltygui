@@ -813,7 +813,7 @@ class Melty:
     @classmethod
     def get_clip_size(cls):
         if len(cls.clip_stack) == 0:
-            return None
+            return None, None
         rect = cls.clip_stack[-1]
         width = rect[2] - rect[0]
         height = rect[3] - rect[1]

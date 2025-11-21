@@ -96,7 +96,7 @@ def _create_mask_tex(w: int, h: int) -> int:
     """
     tex = gl.glGenTextures(1)
     gl.glBindTexture(gl.GL_TEXTURE_2D, tex)
-    gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_R16, w, h, 0, gl.GL_RED, gl.GL_UNSIGNED_SHORT, None)
+    gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_R8, w, h, 0, gl.GL_RED, gl.GL_UNSIGNED_SHORT, None)
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST)
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST)
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE)
@@ -143,8 +143,14 @@ def _ensure_tile(existing: Optional[_Tile], w: int, h: int, frame_id: int = 0, t
     if existing:
         st = _GLState()
         try:
+            from src.lsd.gl_gui.melty import Melty
+            bg_color = Melty.bg_color_stack[-1] if len(Melty.bg_color_stack) > 0 else (0, 0, 0, 1)
+
             gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, existing.fbo)
             gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, new_fbo)
+            gl.glClearColor(*bg_color[:3], 1.0)  # BG=0
+            gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT | gl.GL_STENCIL_BUFFER_BIT)
+
             gl.glBlitFramebuffer(0, 0, snap_int(existing.size[0]), snap_int(existing.size[1]), 0, 0,
                                  snap_int(w), snap_int(h), gl.GL_COLOR_BUFFER_BIT, gl.GL_NEAREST)
         finally:
@@ -730,6 +736,18 @@ class TileCacheMasked:
         return (x0, y0, x1 - x0, y1 - y0)
 
     @staticmethod
+    def _fully_clipped(x: float, y: float, w: float, h: float, clip_xyxy: Tuple[float, float, float, float]) -> bool:
+        if clip_xyxy is None:
+            return False
+        cx0, cy0, cx1, cy1 = clip_xyxy
+        x0 = max(x, cx0)
+        y0 = max(y, cy0)
+        x1 = min(x + w, cx1)
+        y1 = min(y + h, cy1)
+        return x1 <= x0 or y1 <= y0
+
+
+    @staticmethod
     def _get_draw_xform():
         dd = imgui.get_draw_data()
         dp_x, dp_y = dd.display_pos  # top-left of draw space (screen pixels)
@@ -915,11 +933,12 @@ class TileCacheMasked:
         ctx.size = size[0], size[1]
 
         # --- Always record mask rects (even if we drew cached) so parents' subtree masks include children ---
+        x, y = ctx.pos
+        w, h = ctx.size
+        clip = self._get_current_clip_rect_screen()
+        clipped = self._clip_rect(x, y, w, h, clip)
+        fully_clipped = self._fully_clipped(x, y, w, h, clip)
         if ctx.size:
-            x, y = ctx.pos
-            w, h = ctx.size
-            clip = self._get_current_clip_rect_screen()
-            clipped = self._clip_rect(x, y, w, h, clip)
             # clipped = False
             if clipped:
                 cx, cy, cw, ch = clipped
@@ -1035,9 +1054,7 @@ class TileCacheMasked:
             gl.glDisable(gl.GL_BLEND)
             gl.glColorMask(gl.GL_TRUE, gl.GL_FALSE, gl.GL_FALSE, gl.GL_FALSE)
 
-            from src.lsd.gl_gui.melty import Melty
-            bg_color = Melty.bg_stack[-1] if len(Melty.bg_stack) > 0 else (0, 0, 0, 1)
-            gl.glClearColor(*bg_color[:3], 1.0)  # BG=0
+            gl.glClearColor(0,0,0, 1.0)  # BG=0
             gl.glClear(gl.GL_COLOR_BUFFER_BIT)
 
             gl.glEnable(gl.GL_BLEND)

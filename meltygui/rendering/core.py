@@ -18,7 +18,7 @@ from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, print_sta
     push_style_var, pop_style_var
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.melty import Melty, ActionType, apply_collection_action, MeltyState, DepthState, \
-    delete_from_collection
+    delete_from_collection, ManagedWindow
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
 
@@ -1168,6 +1168,26 @@ def render_func(*args, **o_kwargs):
                                            f"got {type(input_value).__name__}", *yellow)
                         return False, None
 
+
+            if melty_window:
+                if name not in Melty.registered_windows:
+                    Melty.registered_windows[name] = ManagedWindow(input_value=input_value,
+                                                                          draw_state=kwargs.get('draw_state', None),
+                                                                          window_args=kwargs,
+                                                                          name=kwargs.get('name', 'Managed Window'))
+                else:
+                    Melty.registered_windows[name].input_value = input_value
+                    Melty.registered_windows[name].draw_state = kwargs.get('draw_state', None)
+                    Melty.registered_windows[name].window_args = kwargs
+                    Melty.registered_windows[name].name = kwargs.get('name', 'Managed Window')
+
+
+            if kwargs.get("closeable", False):
+                if draw_state.closed and not input_value == Melty.registered_windows:
+                    if return_extras:
+                        return False, None, kwargs
+                    return False, None
+
             if not meta.visible_in_ui:
                 if return_extras:
                     return False, None, kwargs
@@ -1399,6 +1419,8 @@ def render_func(*args, **o_kwargs):
                     changed, new_value = False, None
                 elif isinstance(return_value, tuple) and len(return_value) == 2:
                     changed, new_value = return_value
+                elif isinstance(return_value, bool):
+                    changed, new_value = return_value, input_value
                 else:
                     imgui.text("Unsupported return from render_func")
                     changed, new_value = False, None

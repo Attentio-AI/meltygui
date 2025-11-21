@@ -84,6 +84,8 @@ class DrawState(DictConversion):
         self.misc = {}
         self.misc_used = set()
 
+        self.closed = False
+
         self._queued_windows = []
         self.drag_window_pos_x = None
         self.drag_window_pos_y = None
@@ -113,6 +115,7 @@ class DrawState(DictConversion):
         self.imgui_is_toggled_open = False
 
         self._previous_hash = None
+        self.tint = None
 
         self.unique = 0  # stable UI identifier
         self.expanded = True
