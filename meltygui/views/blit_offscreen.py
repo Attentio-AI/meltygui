@@ -106,7 +106,7 @@ def _create_mask_tex(w: int, h: int) -> int:
 
 
 def snap_int(v: float) -> int:
-    return int(round(v))
+    return int(v)
 
 def _create_fbo_with_tex(tex: int, depth_stencil: bool, w, h) -> Tuple[int, Optional[int]]:
     fbo = gl.glGenFramebuffers(1)
@@ -162,7 +162,10 @@ def _ensure_tile(existing: Optional[_Tile], w: int, h: int, frame_id: int = 0, t
             gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, new_fbo)
             gl.glViewport(0, 0, snap_int(w), snap_int(h))
             gl.glDisable(gl.GL_SCISSOR_TEST)
-            gl.glClearColor(0, 0, 0, 0)
+            from src.lsd.gl_gui.melty import Melty
+            bg_color = Melty.bg_color_stack[-1] if len(Melty.bg_color_stack) > 0 else (0, 0, 0, 1)
+            # Darkened background for offscreen tiles
+            gl.glClearColor(*bg_color[:3], 1.0)  # BG=0
             gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT | gl.GL_STENCIL_BUFFER_BIT)
         finally:
             st.restore()
@@ -1031,7 +1034,10 @@ class TileCacheMasked:
             gl.glDisable(gl.GL_SCISSOR_TEST)
             gl.glDisable(gl.GL_BLEND)
             gl.glColorMask(gl.GL_TRUE, gl.GL_FALSE, gl.GL_FALSE, gl.GL_FALSE)
-            gl.glClearColor(0.0, 0.0, 0.0, 1.0)  # BG=0
+
+            from src.lsd.gl_gui.melty import Melty
+            bg_color = Melty.bg_stack[-1] if len(Melty.bg_stack) > 0 else (0, 0, 0, 1)
+            gl.glClearColor(*bg_color[:3], 1.0)  # BG=0
             gl.glClear(gl.GL_COLOR_BUFFER_BIT)
 
             gl.glEnable(gl.GL_BLEND)
@@ -1089,7 +1095,11 @@ class TileCacheMasked:
                 gl.glDisable(gl.GL_SCISSOR_TEST)
                 gl.glDisable(gl.GL_BLEND)
                 gl.glColorMask(gl.GL_TRUE, gl.GL_FALSE, gl.GL_FALSE, gl.GL_FALSE)
-                gl.glClearColor(0.0, 0.0, 0.0, 1.0)
+                from src.lsd.gl_gui.melty import Melty
+                bg_color = Melty.bg_stack[-1] if len(Melty.bg_stack) > 0 else (0, 0, 0, 1)
+                gl.glClearColor(*bg_color[:3], 1.0)  # BG=0
+
+                # gl.glClearColor(0.0, 0.0, 0.0, 1.0)
                 gl.glClear(gl.GL_COLOR_BUFFER_BIT)
 
                 gl.glEnable(gl.GL_BLEND)

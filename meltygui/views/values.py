@@ -15,6 +15,7 @@ import glfw
 import imgui
 
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
+from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, tree, push_style_var, \
     push_style_color, pop_style_color, pop_style_var, end, begin
 from src.lsd.gl_gui.utils.glfw_utils import request_render
@@ -26,7 +27,7 @@ from src.lsd.gl_gui.view.core_views.core_decoration import hotkey, global_hotkey
 from src.lsd.gl_gui.view.core_views.core_render import render_func, tmp_undo_stack, redo_stack, push_id, pop_id, ui_id, \
     render_wrapper, annotation_track, listens_for, get_draw_state, clear_floating_text_cache, handle_actions, \
     begin_window, end_window, apply_drag_and_drop
-from src.lsd.gl_gui.model.core_model.new_core_model import KeyMod, Hotkey, DragMode
+from src.lsd.gl_gui.model.core_model.new_core_model import KeyMod, Hotkey, DragMode, DrawState
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
 import libcst as cst
 
@@ -127,7 +128,7 @@ def draw_main(input_value, vis):
     draw_window(vis.root.lora_collection, name="Test Window 1")
     draw_window(vis.root.lora_collection.loras, name="Test Window 2")
     draw_window(Melty.last_invalid, show_bg=True, name="Last Invalid")
-    # draw_window(Melty.last_request_render, show_bg=True, name="Last Request")
+    # draw_window(Melty.last_request_render, show_bg=True, name="Last Invalid")
 
     draw_any(Melty.registered_windows, show_add_delete=False, name="Window Manager")
 
@@ -232,7 +233,7 @@ def draw(vis):
 
     # draw_window(export_code, name="Code Export")
 
-    # draw_any(vis.root.synth_collection, is_window=False)
+    # draw_any(vis.root.synth_colors, is_window=False)
     # #
     # draw_any("hello there", is_window=True)
 
@@ -328,7 +329,7 @@ def draw_cst_expr(input_value):
     draw_any(input_value.value)
 # --- Function Calls ---
 
-# Call Name
+# Call name
 def call_name(call: cst.Call):
     if isinstance(call.func, cst.Name):
         return call.func.value
@@ -372,7 +373,7 @@ def draw_cst_dict(input_value: CSTDictProxy, **kwargs):
         # Show line numbers for dicts of simple statements
         if isinstance(list(input_value.values())[0], cst.SimpleStatementLine):
             show_indices = True
-    # kwargs['show_bg'] = False
+    # kwargs['show_name'] = False
 
     draw_collection(input_value, header_same_line=True, show_bg=False,
                     show_name=False, show_indices=show_indices, indent_size=0)
@@ -407,7 +408,7 @@ def draw_cst_param(input_value: cst.Param):
 #
 #     return draw_any(input_value.body, show_name=False)
 
-# --- Args ---
+# --- Arguments ---
 def arg_name(arg: cst.Arg):
     if arg.keyword:
         return arg.keyword.value
@@ -438,7 +439,7 @@ def draw_cst_int(input_value, width=None):
 # --- Individual Parameter ---
 @render_func(is_default_for=(cst.UnaryOperation, cst.Integer), header_same_line=True, show_add_delete=False)
 def draw_cst_int(input_value, width=None):
-    # Format the magnitude to match the original literal's base/prefix/casing.
+    # Format the magnitude to match the original literal's base/prefix/case.
     def _format_like(template: str, magnitude: int) -> str:
         if template.startswith(("0x", "0X")):
             s = hex(magnitude)  # '0x2a'
@@ -452,7 +453,7 @@ def draw_cst_int(input_value, width=None):
         else:
             return str(magnitude)
 
-    # Determine the current value and the template string to preserve formatting.
+    # Determine current signed value and the template string to preserve formatting.
     if input_value.__class__ == cst.UnaryOperation:
         expr = input_value.expression  # expect an Integer
         op = input_value.operator
@@ -514,12 +515,12 @@ def draw_cst_int(input_value, width=None):
 #     if changed:
 #         input_value.value = str(new_val)
 
-####################### libCST END ##################
+####################### libCST END ##########################
 
 def core_draw_melty_window(input_value, *args, **kwargs):
 
     # tmp_undo_stack(unique)
-    # undo_push_stack(unique)
+    # undo_child_stack(unique)
     changed, new_value = False, input_value
     # cursor_pos = imgui.get_cursor_screen_pos()
     # # changed, new_value = False, input_value
@@ -531,7 +532,7 @@ def core_draw_melty_window(input_value, *args, **kwargs):
     # #
     # imgui.set_cursor_screen_pos(cursor_pos)
 
-    # undo_stack(unique)
+    # redo_stack(unique)
 
 
     return changed, new_value
@@ -590,7 +591,7 @@ def core_draw_window(input_value, name, unique, window_func,
 
     push_style_var(imgui.STYLE_WINDOW_PADDING, (0, 0))
 
-    # Bring to front without collapse
+    # Bring to front without focusing
     opened, _ = begin_window(f"{title}##window_{str(unique)}", closable, flags=flags)
     try:
         # if not decorations:
@@ -945,7 +946,7 @@ def draw_vertical_scrollbar(content_height: float,
     col_grab = imgui.get_color_u32_rgba(1,1,1, 0.3)
     col_border = imgui.get_color_u32(imgui.COLOR_BORDER)
 
-    # Early clamps & removals
+    # Early clamps & deriveds
     view_height = max(0.0, float(view_height))
     view_width = max(0.0, float(view_width))
     content_height = max(0.0, float(content_height))
@@ -973,12 +974,12 @@ def draw_vertical_scrollbar(content_height: float,
         grab_h = 0.0
         t = 0.0
     else:
-        # Proportional grab with a minimum; cap to track height.
+        # Proportional size with a minimum; cap to track height.
         ratio = view_height / content_height if content_height > 0.0 else 1.0
         grab_h = max(min_grab_size, ratio * track_h)
         grab_h = min(grab_h, track_h)
 
-        # Normalized scroll position -> grab position
+        # Normalized scroll position -> grab top
         travel = max(0.0, track_h - grab_h)
         t = 0.0 if max_scroll == 0.0 else (scroll_offset / max_scroll)
         t = max(0.0, min(1.0, t))  # clamp just in case
@@ -986,7 +987,7 @@ def draw_vertical_scrollbar(content_height: float,
     grab_y1 = track_y1 + (max(0.0, track_h - grab_h) * t)
     grab_y2 = grab_y1 + grab_h
 
-    # Inner padding for better visuals
+    # Inner padding for nicer visuals
     inner_x1 = track_x1 + pad
     inner_x2 = track_x2 - pad
     inner_y1 = track_y1 + pad
@@ -1020,6 +1021,45 @@ def draw_vertical_scrollbar(content_height: float,
         "visible": content_height > view_height
     }
 
+
+bg_style_default = {
+    "value": 0.01,
+    "saturation": 1.2,
+    "alpha": 1.0,
+    'max_value': 1.0
+}
+def get_bg_color(depth, rounding, global_style, style_manager, auto_resize):
+
+    depth_factor = global_style.get_global_constant("depth_factor", default=1.0, folder="bg_styles") * 0.95
+    depth_offset = global_style.get_global_constant("depth_offset", default=0.0, folder="bg_styles") - 1.3
+    dynamic_value = max(0, (float(depth + depth_offset) * depth_factor))
+
+    hovered_offset = 0.0
+
+    def mix_colors(c1, c2, fac):
+        return (c1[0] * (1 - fac) + c2[0] * fac,
+                c1[1] * (1 - fac) + c2[1] * fac,
+                c1[2] * (1 - fac) + c2[2] * fac)
+
+    global bg_style_default
+    bg_style = global_style.get_global_constant("bg_style", default=bg_style_default, folder="bg_styles")
+    outline_factor = global_style.get_global_constant("outline_factor", default=1.0, folder="bg_styles") * 1.4
+
+    if not auto_resize:
+        outline_factor *= 1.3
+
+    if auto_resize:
+        bleed_factor = 0.2
+    else:
+        bleed_factor = 0.0
+    bg_bleed = Melty.get_bg_color(-1)
+    bg_bleed = style_manager.make_custom_styled(*bg_bleed, input=bg_style,
+                                                value=0.6,
+                                                alpha=1.0, saturation=1.8)
+    bg_color = (style_manager.
+                make_color_style_value(input=bg_style, value=max(0, dynamic_value) + hovered_offset))
+    bg_color = mix_colors(bg_color, bg_bleed, bleed_factor)
+    return bg_color
 
 def core_header(func, outer_func, render_func, input_value=None, melty_window=False, auto_resize=True,
                 collection=None, key=None, indent_size=10, depth=0, draw_state=None,
@@ -1115,7 +1155,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             next_kwargs.pop('padding', None)
             next_kwargs.pop('melty_window', False)
 
-            # --------------------- HEADER -----------------
+            # ------------------ HEADER -----------------
             if (not on_drag) or melty_window:
                 changed, return_value = draw_header(input_value, read_only=False,
                     spacing=(spacing[0], Melty.spacing[1]),
@@ -1148,7 +1188,13 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                 # This is the version with an indent, probably a dict header
                 draw_header_end(input_value, **next_kwargs)
 
+        bg_color = (0, 0, 0, 1)
         if show_bg:
+            bg_color = get_bg_color(len(Melty.bg_color_stack) * 2cd, rounding=4.0,
+                                    global_style=global_style,
+                                    style_manager=style_manager,
+                                    auto_resize=auto_resize)
+            Melty.bg_color_stack.append(bg_color)
             style_manager.get_tint()
             Melty.bg_stack.append(style_manager.get_tint())
 
@@ -1256,16 +1302,14 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             changed |= func_changed
 
             if header_same_line and show_header:
-                # ----------------- end header for item---------------
-                # This is the version for list items probably
+                # ----------------- end header single item---------------
+                # This is the version for single items probably
                 draw_header_end(**next_kwargs)
 
         if not on_drag:
             imgui.dummy(0, 1)
 
-        if show_bg:
-            style_manager.get_tint()
-            Melty.bg_stack.pop()
+
 
         same_line(spacing=0)
         imgui.dummy(0, snap_int(y_margin))
@@ -1279,17 +1323,22 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                 channel = max(0, min(Melty.max_depth - 2, Melty.depth - 1))
                 draw_list.channels_set_current(channel)
 
-                draw_bg(bypass=True, left=start_x_pos, top=y_margin + start_y_pos,
+                _, bg_color = draw_bg(bypass=True, left=start_x_pos, top=y_margin + start_y_pos, bg_color=bg_color,
                         width=background_width, height=(background_height - Melty.spacing[1] / 2.0 - y_offset),
                         tint=bg_tint, depth=Melty.depth, selected=bg_selected, global_style=global_style,
                         style_manager=style_manager, auto_resize=auto_resize)
-
+                draw_state.bg_color = bg_color
 
             if draw_state.height is not None:
                 push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
                 push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
                 pop_style_var(2)
 
+
+        if show_bg:
+            style_manager.get_tint()
+            Melty.bg_stack.pop()
+            Melty.bg_color_stack.pop()
         if not on_drag or melty_window:
             next_kwargs['do_flow'] = True
 
@@ -1326,7 +1375,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
     """
     changed = False
     base_suffix = suffix  # keep original arg intact
-    # ----- SIMPLE NORMALIZATION (lowercase; remove spaces, '_' and '-') -----
+    # ----- SIMPLE NORMALIZER (lowercase; remove spaces, '_' and '-') -----
     _TRANS = str.maketrans("", "", " _-")
     def norm_string(s) -> str:
         if s is None:
@@ -1383,7 +1432,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
             continue
         item = collection[key]
 
-        # Snap cursor to nearest unit
+        # Snap cursor to nearest pixel
         cursor_pos = imgui.get_cursor_screen_pos()
         imgui.set_cursor_screen_pos((snap_int(cursor_pos[0]), snap_int(cursor_pos[1])))
 
@@ -1398,7 +1447,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
                     continue
         display_name = None
 
-        # apply global filter for all types
+        # apply global skip to all types
         if isinstance(key, (int, float, Enum, NoneType)):
             key_str = f"{input_value.__class__.__name__}"
         else:
@@ -1424,7 +1473,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
         item_meta.collection_type = meta.field_type
 
-        # view function & identifier
+        # view function & suffix
         view_fn = getattr(item_meta, "view_function", draw_collection)
         if view_fn is None:
             view_fn = draw_any
@@ -1473,7 +1522,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
 
             if isinstance(out_val, CollectionAction):
-                # perform the move - this should mutate the plain dicts you attached
+                # perform the move; this should mutate the plain dicts you attached
                 result = Melty.to_apply(out_val)
                 item_changed, out_val = False, None
 
@@ -1505,7 +1554,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
     # draw_state.content_height = content_height
 
-    # ----------------- flow spacing -----------
+    # ----------------- top spacing -----------
     last_key = list(keys)[-1] if len(keys) > 0 else None
 
     if not drew_any:
@@ -1515,7 +1564,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
     if hasattr(last_meta, 'tmp_draw_state'):
         last_draw_state = last_meta.tmp_draw_state if last_meta is not None else draw_state
 
-        # last_item = collection[last_key] if (isinstance(collection, Mapping) and last_key in collection) else None
+        # last_item = collection[last_key] if (isinstance(collection, dict) and last_key in collection) else None
         _, flow_spacing = draw_drag_drop_target(do_flow=True, enable_flow=True, melty=melty, offset=0,
                                                 collection=ordered_driver, key=last_key, on_drag=False,
                                                 draw_state=last_draw_state, tag="bottom")
@@ -1529,7 +1578,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
 @render_func(use_cache=False)
 def draw_bg(left=0, top=0, width=20, height=20, depth=0,
-            global_style=None, outline=True,
+            global_style=None, outline=True, bg_color=None,
             style_manager=None, tint=None, outline_tint=None, selected=False,
             hovered=False, auto_resize=False):
     # Render background
@@ -1538,32 +1587,18 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
 
     depth = len(Melty.bg_stack) * 2
 
-    # float_style = global_styles.get_global_constant(constant_name="bg_style", default_type=Style, folder="bg_styles")
-    # float_style.apply(global_styles=global_styles, style_manager=style_manager, depth=depth)
-    #
-    # rounding = global_style.get_global_constant("rounding", default=0.0, folder="bg_styles")
+
     rounding = 5.0
-    # Draw rect
-    # if left == 0:
-    #     left = imgui.get_cursor_screen_pos()[0]
-    #
-    # if top == 0:
-    #     top = imgui.get_cursor_screen_pos()[1]
+
     right =  left + width
     bottom =  top + height
-    #
-    # if draw_state is not None:
-    #     draw_state.left = left
-    #     draw_state.top = top
-    #     draw_state.width = width
-    #     draw_state.height = height
 
     thickness = 1.0
     half_thickness = 0.5
     rect = (snap_int(left) + thickness, snap_int(top) + thickness, snap_int(right) - thickness, snap_int(bottom) - thickness)
     rect_outline = (snap_int(left) + half_thickness, snap_int(top) + half_thickness,
                     snap_int(right) - half_thickness, snap_int(bottom) - half_thickness)
-    # rounding
+    # Outline
 
     rounding = min(max(10.0, current_indent_px()), rounding)
 
@@ -1619,11 +1654,12 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
         if outline_tint is not None:
             outline_color = imgui.get_color_u32_rgba(*outline_tint)
         imgui.get_window_draw_list().add_rect(*rect_outline, col=outline_color, rounding=rounding, thickness=2.0)
-    bg_color = (style_manager.
-                make_color_style_value(input=bg_style, value=max(0, dynamic_value) + hovered_offset))
 
+    if bg_color is None:
+        bg_color = (style_manager.
+                    make_color_style_value(input=bg_style, value=max(0, dynamic_value) + hovered_offset))
 
-    bg_color = mix_colors(bg_color, bg_bleed, bleed_factor)
+        bg_color = mix_colors(bg_color, bg_bleed, bleed_factor)
 
     imgui_bg_color = imgui.get_color_u32_rgba(bg_color[0], bg_color[1], bg_color[2], 1.0)
 
@@ -1631,6 +1667,8 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
         imgui_bg_color = imgui.get_color_u32_rgba(*tint)
 
     imgui.get_window_draw_list().add_rect_filled(*rect, col=imgui_bg_color, rounding=rounding)
+
+    return False, bg_color
 
 def open_file(path, app=None):
     def default_file_manager():
@@ -1715,7 +1753,7 @@ def draw_header(input_value=None, name="", suffix="", collection=None, display_n
             request_render()
         imgui.pop_style_color(2)
 
-        # draw_state.expanded = toggle(f"{down_icon}##tree", draw_state.expanded, width=50)
+        # draw_state.expanded = tree(f"{down_icon}##tree", draw_state.expanded, width=50)
 
         pop_style_var(2)
         pop_style_color(1)
@@ -1785,7 +1823,7 @@ def draw_header(input_value=None, name="", suffix="", collection=None, display_n
                 button_rect = (rect_min[0], rect_min[1], rect_min[0] + name_width,
                                rect_min[1] + imgui.get_item_rect_size()[ 1])
                 #
-                # Melty.cache.mask_draw_rect(Melty.depth + 2, button_rect[0], button_rect[1],
+                # Melty.cache.mask_mark_rect(Melty.depth + 2, button_rect[0], button_rect[1],
                 #                             button_rect[2], button_rect[3],
                 #                            key=str(Melty.unique_stack[-1]) + "scrollbar")
         else:
@@ -1834,7 +1872,7 @@ def draw_header(input_value=None, name="", suffix="", collection=None, display_n
         text_color = (style_manager.
                       make_color_style_value(input=bg_style, saturation=0.2,
                                              value=1.0))
-        # imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() - 2)
+        # imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + 2)
         if show_add_delete:
             if imgui.button(f"\uf067##add", width=20):
                 # Use str as default hinted type
@@ -1933,7 +1971,7 @@ def draw_object(input_value=None, draw_state=None, meta=None, name="", style_man
 def draw_any(input_value, indent_size=0, *args, **kwargs):
     kwargs['indent_size'] = indent_size
 
-    # meta info
+    # meta selection
     meta = kwargs.get("meta", None)
     if meta is None:
         from src.lsd.gl_gui.view.core_views.core_meta import Meta
@@ -1956,7 +1994,7 @@ def draw_any(input_value, indent_size=0, *args, **kwargs):
         # datatype_text = f"{input_value.__class__.__name__} ({type(input_value).__name__}) {kwargs.get('name', '')}"
         datatype_text = f"{width} {height}"
 
-        # Draw bg rect
+        # Draw bg box
         rect = (start_pos[0] - 4, start_pos[1] - 2,
                 start_pos[0] + imgui.calc_text_size(datatype_text)[0] + 4,
                 start_pos[1] + imgui.get_text_line_height_with_spacing() + 2)
@@ -2096,12 +2134,19 @@ def draw_tuple(input_value: tuple, unique):
 
     return changed, input_value
 
+class TestClass(DictConversion):
+    def __init__(self):
+        super().__init__()
+        self.value = 2
+        self.str_val = "Test"
+
 @with_header_minimal(is_default_for=float, use_cache=True)
 def draw_float(input_value:float, min_value=-100.0, max_value=100.0, speed=0.01, unique=0, draw_state=None):
     changed, value = imgui.drag_float("##float", input_value,
                                       change_speed=speed,
                                       min_value=min_value,
                                       max_value=max_value)
+
     if changed:
         return True, value
 

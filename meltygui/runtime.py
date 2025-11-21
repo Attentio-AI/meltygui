@@ -749,6 +749,7 @@ class Melty:
     depth_state_stack = []
     flow_spacing = 0.0
     bg_stack = []
+    bg_color_stack = []
     draw_state_stack = []
     input_value_stack = [None]
     cache = TileCacheMasked()

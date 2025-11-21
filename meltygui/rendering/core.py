@@ -814,7 +814,6 @@ def render_func(*args, **o_kwargs):
             Melty.overlays.append((wrapper, kwargs))
             if return_extras:
                 return False, None, kwargs
-
             return False, None
 
         o_kwargs.update(kwargs)
@@ -824,9 +823,6 @@ def render_func(*args, **o_kwargs):
 
         return_value = None
         is_root = Melty.depth == 0
-
-        read_only = kwargs.get("read_only", False)
-
         first_arg = args[0] if args else None
         input_value = kwargs.get("input_value", first_arg)
         name = kwargs.get("name", "")
@@ -872,7 +868,7 @@ def render_func(*args, **o_kwargs):
 
         if is_root:
             unique = ui_id(datatype=type(input_value), suffix=unique_name + str(key) + func.__name__)
-            suffix = f"{unique_name}_{func.__name__}_{unique}_{key}"
+            suffix = f"{func.__name__}_{unique}_{key}"
         else:
             unique = ui_id(datatype=type(input_value), suffix=suffix + unique_name + str(key) + func.__name__,
                            idx=index)
@@ -985,11 +981,28 @@ def render_func(*args, **o_kwargs):
 
             meta.unique = unique
 
-            def set_default(key, default_value):
+            def set_default(key, default_value, type=None):
                 if key in vars(meta) and vars(meta)[key] is not None:
                     default_value = vars(meta)[key]
+
+                # Custom draw state object to be dynamically created for unmatched params
+                if key in draw_state.misc and type is not None:
+                    default_value = draw_state.misc[key]
+                    draw_state.misc_used.add(key)
+
+                    if not default_value.__class__.__name__ == type.__name__:
+                        default_value = None
+                        draw_state.misc.pop(key, None)
+
                 if default_value is None:
                     default_value = (param_defaults or {}).get(key, default_value)
+
+                    # Create a new instance for the custom draw state object
+                    if type is not None and default_value is None:
+                        draw_state.misc[key] = type()
+                        draw_state.misc_used.add(key)
+                        default_value = draw_state.misc[key]
+
                 kwargs.setdefault(key, default_value)
 
             kwargs.update(Melty.global_attrs)
@@ -1027,10 +1040,13 @@ def render_func(*args, **o_kwargs):
                             kwargs.setdefault(hk_name, False)
             kwargs.setdefault('meta', meta)
 
-            kwargs.update(meta.__dict__)
+            # kwargs.update(meta.__dict__)
             for param in wanted_params:
                 if param not in kwargs and param != "kwargs" and param != 'args' and param != 'o_kwargs' and param != 'next_kwargs':
-                    set_default(param, None)
+                    wanted_type = name_to_param_type.get(param, None)
+                    if wanted_type is inspect.Parameter.empty:
+                        wanted_type = None
+                    set_default(param, None, wanted_type)
 
             is_initial_draw_state = draw_state in Melty.draw_state_stack
             if is_initial_draw_state:

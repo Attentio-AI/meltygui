@@ -288,7 +288,11 @@ class DictConversion(metaclass=FieldMeta):
                         default_value = getattr(default_instance, key)
                         if value == default_value:
                             continue
-
+                if isinstance(value, (dict, list, set)):
+                    if hasattr(default_instance, key):
+                        default_value = getattr(default_instance, key)
+                        if value == default_value and len(default_value) == 0:
+                            continue
                 if isinstance(value, (DictConversion)):
                     if hasattr(default_instance, key):
                         default_value = getattr(default_instance, key)
