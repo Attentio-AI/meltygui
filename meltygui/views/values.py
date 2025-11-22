@@ -23,7 +23,7 @@ from src.lsd.gl_gui.melty import Melty, CollectionAction, OperationType, apply_c
     delete_from_collection, ManagedWindow
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int, TileCacheMasked
-from src.lsd.gl_gui.view.core_views.core_decoration import hotkey, global_hotkeys
+from src.lsd.gl_gui.view.core_views.core_decoration import hotkey, global_hotkeys, live
 from src.lsd.gl_gui.view.core_views.core_render import render_func, tmp_undo_stack, redo_stack, push_id, pop_id, ui_id, \
     render_wrapper, annotation_track, listens_for, get_draw_state, clear_floating_text_cache, handle_actions, \
     begin_window, end_window, apply_drag_and_drop
@@ -36,6 +36,7 @@ from src.lsd.gl_gui.view.core_views.inspect_utils import get_params, set_fn_defa
 from collections.abc import MutableMapping
 from src.lsd.gl_gui.view.core_views.codec_register import registry as FILE_CODECS
 from src.lsd.gl_gui.view.core_views.offscreen import Offscreen
+from src.lsd.gl_gui.view.events.event_manager import EventManager
 
 
 @render_wrapper(wraps=render_func, use_cache=False)
@@ -80,7 +81,7 @@ code_export_str = "Test"
 filesystem_proxy = FolderProxy("/home/lukas/test_folder", text_mode=True)
 # Main draw function, called by the GUI framework
 
-
+@live
 class TestObj:
     def __init__(self):
         self.test_val = 0.0
@@ -127,6 +128,7 @@ def draw_main(input_value, vis):
 
     #
     draw_window(test_obj, name="Layer 1")
+    draw_window(EventManager.input_sources, name="Input Sources")
 
     # draw_window(proxy, name="CST Proxy")
     draw_window(filesystem_proxy, name="Filesystem Test")
@@ -1422,12 +1424,26 @@ def draw_collection(input_value, draw_state, depth, style_manager,
             collection = list(input_value)
 
     elif hasattr(input_value, "__dict__") and depth < Melty.max_depth:
-        if hasattr(type(input_value), "__field_defaults__") and hasattr(input_value, 'to_dict'):
+
+        if hasattr(input_value, "__all_attributes__") and not isinstance(input_value, DictConversion):
+            keys = input_value.__all_attributes__
+            instance_keys = input_value.__dict__.keys()
+
+            for k in instance_keys:
+                if k not in keys:
+                    keys.append(k)
+            collection = input_value.__dict__
+
+        elif hasattr(type(input_value), "__field_defaults__") and hasattr(input_value, 'to_dict'):
             type(input_value).__field_defaults__.update(input_value.__dict__)
             keys = type(input_value).__field_defaults__.keys()
+            collection = input_value.__dict__
         else:
             keys = input_value.__dict__.keys()
-        collection = input_value.__dict__
+            collection = input_value.__dict__
+
+        # hide private attributes
+        # keys = [k for k in collections_var if not k.startswith('_')]
         use_tint = False
         use_child_meta = True
         apply_change = True
@@ -1444,9 +1460,15 @@ def draw_collection(input_value, draw_state, depth, style_manager,
     start_cursor = imgui.get_cursor_pos()[1]
 
     for idx, key in enumerate(keys):
-        if isinstance(collection, dict) and key not in collection:
-            continue
-        item = collection[key]
+        try:
+            item = getattr(input_value, key)
+        except Exception:
+            if isinstance(collection, dict) and key not in collection:
+                continue
+            item = collection[key]
+
+        if callable(item):
+            pass
 
         # Snap cursor to nearest pixel
         cursor_pos = imgui.get_cursor_screen_pos()
@@ -2226,8 +2248,8 @@ def draw_mapping_proxy(input_value):
     return changed, input_value
 
 
-@with_header_minimal(is_default_for=(types.FunctionType), wraps=render_func)
-def draw_function(input_value, unique):
+@with_header_minimal(wraps=render_func, show_add_delete=False)
+def eval_function(input_value, draw_state):
     signature = inspect.signature(input_value)
     params = signature.parameters
     changed, new_val = draw_any(params, name="Parameters", show_add_delete=False)
@@ -2236,6 +2258,42 @@ def draw_function(input_value, unique):
 
     push_style_var(imgui.STYLE_ITEM_SPACING, (2, 4))
     push_style_var(imgui.STYLE_FRAME_PADDING, (8, 6))
+    push_style_var(imgui.STYLE_FRAME_ROUNDING, 6)
+
+    function_args = inspect.signature(input_value).parameters
+    kwargs = {}
+    for name, param in function_args.items():
+        if param.default is not inspect.Parameter.empty:
+            kwargs[name] = param.default
+        else:
+            kwargs[name] = None
+    try:
+        result = input_value(**kwargs)
+        draw_any(result, name="Result", show_header=True, show_add_delete=False)
+        if draw_state._result != result:
+            Melty.cache.invalidate_all()
+        draw_state._result = result
+
+    except Exception as e:
+        print(f"Error calling function '{input_value.__name__}': {e}")
+        print_colored_traceback(*sys.exc_info())
+
+    pop_style_var(3)
+
+    return changed, input_value
+
+@with_header(is_default_for=(types.FunctionType, types.MethodType),
+                     wraps=render_func, show_add_delete=False, header_same_line=True)
+def draw_function(input_value, draw_state, unique):
+    signature = inspect.signature(input_value)
+    params = signature.parameters
+    if len(params) > 0:
+        changed, new_val = draw_any(params, name="Parameters", show_add_delete=False)
+        if changed:
+            set_fn_defaults(input_value, new_val)
+
+    push_style_var(imgui.STYLE_ITEM_SPACING, (2, 4))
+    push_style_var(imgui.STYLE_FRAME_PADDING, (6, 6))
     push_style_var(imgui.STYLE_FRAME_ROUNDING, 6)
 
     if imgui.button(f"{input_value.__name__}##{unique}"):
@@ -2247,14 +2305,16 @@ def draw_function(input_value, unique):
             else:
                 kwargs[name] = None
         try:
-            input_value(**kwargs)
+            draw_state._result = input_value(**kwargs)
         except Exception as e:
             print(f"Error calling function '{input_value.__name__}': {e}")
             print_colored_traceback(e)
 
+    draw_any(draw_state._result, name="Result", header_same_line=True, show_header=False, show_add_delete=False)
+
     pop_style_var(3)
 
-    return changed, input_value
+    return False, input_value
 
 @with_header_minimal(is_default_for=(int), wraps=render_func)
 def draw_int(input_value: int, min_value=-100.0, max_value=100.0, speed=0.05):

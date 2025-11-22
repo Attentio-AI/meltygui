@@ -5,6 +5,7 @@ import sys
 import time
 import zlib
 from copy import copy
+from dataclasses import dataclass
 from enum import Enum
 from functools import wraps
 from typing import Any
@@ -21,9 +22,14 @@ from src.lsd.gl_gui.melty import Melty, ActionType, apply_collection_action, Mel
     delete_from_collection, ManagedWindow
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
+from src.lsd.gl_gui.view.events.event_manager import EventManager
 
 melty_state_registry = {}
 static_melty = MeltyState()
+
+
+
+
 
 def get_melty_state(unique: int):
 
@@ -43,6 +49,9 @@ _floating_text_prev_frame_heights = {}  # Store max label height per line from p
 
 
 def handle_actions(melty, unique, draw_state, func=None):
+
+    input_sources = EventManager.input_sources
+
     if not imgui.is_mouse_down():
         melty.initial_scroll_offset = (0, 0)
         melty.initial_drag_offset = None
@@ -86,9 +95,10 @@ def handle_actions(melty, unique, draw_state, func=None):
                         btn_state.initial_window_size = (draw_state.width, draw_state.height)
                         draw_state.drag_mode = get_drag_mode(draw_state)
 
-                        melty.initial_drag_offset = (current_mouse_pos[0] - draw_state.left,
-                                                     current_mouse_pos[1] - draw_state.top)
-                        melty.mark_event(unique, m_btn, ActionType.DOWN)
+                        if draw_state.left is not None and draw_state.top is not None:
+                            melty.initial_drag_offset = (current_mouse_pos[0] - draw_state.left,
+                                                         current_mouse_pos[1] - draw_state.top)
+                            melty.mark_event(unique, m_btn, ActionType.DOWN)
 
                     btn_state.mouse_down = True
 
@@ -903,8 +913,6 @@ def render_func(*args, **o_kwargs):
             Melty.unindent_count = 0
 
             is_popup_open = imgui.is_popup_open("", flags=imgui.POPUP_ANY_POPUP)
-            # if is_popup_open != Melty.imgui_popup_open and not is_popup_open:
-            #     Melty.cache.invalidate_all()
             Melty.imgui_popup_open = is_popup_open
         else:
             melty = get_melty_state(Melty.unique_stack[0])
@@ -935,14 +943,16 @@ def render_func(*args, **o_kwargs):
         tile_id = strhash(str(computed_unique) + str(draw_state.id) + str(active_layer))
         draw_state._tile_id = tile_id
 
-        if Melty.frame_count > 2 and draw_state.frame_count > 2:
-            if isinstance(input_value, (type(None), int, float, str, bool, tuple, set)):
-                if draw_state._input_value != input_value:
-                    if kwargs.get("collection", None) is not None:
-                        # print(name, "old value:", draw_state._input_value, "new value:", input_value)
-                        # print(name)
-                        Melty.cache.invalidate_up_by_obj(kwargs.get("collection", None), name)
-                        request_render()
+        # Handle untracked object invalidation
+        if not hasattr(input_value, "__melty__"):
+            if Melty.frame_count > 2 and draw_state.frame_count > 2:
+                if isinstance(input_value, (type(None), int, float, str, bool, tuple, set)):
+                    if draw_state._input_value != input_value:
+                        if kwargs.get("collection", None) is not None:
+                            # print(name, "old value:", draw_state._input_value, "new value:", input_value)
+                            # print(name)
+                            Melty.cache.invalidate_up_by_obj(kwargs.get("collection", None), name)
+                            request_render()
 
         draw_state._input_value = input_value
         draw_state.name = name
@@ -1444,8 +1454,6 @@ def render_func(*args, **o_kwargs):
             if inside_clip != draw_state.clipped and inside_clip:
                 Melty.cache.invalidate(tile_id, force=True)
 
-                # Melty.cache.invalidate_by_obj(collection)
-
             draw_state.clipped = inside_clip
 
         if use_cache and Melty.cache.enabled:
@@ -1456,7 +1464,6 @@ def render_func(*args, **o_kwargs):
             if (draw_state._bounding_hovered or hover_changed or draw_state._hovered or
                     draw_state.width is None or draw_state.height is None or draw_state._imgui_popover_open):
                 Melty.cache.invalidate(tile_id, force=True)
-                # Melty.cache.invalidate_by_obj(draw_state)
 
             #     request_render()
             offscreen_depth = Melty.depth
@@ -1489,3 +1496,4 @@ def render_func(*args, **o_kwargs):
         return return_value
 
     return wrapper
+

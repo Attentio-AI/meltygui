@@ -22,7 +22,7 @@ from src.lsd.gl_gui.model.global_undo_redo_manager import TrackedList, TrackedDi
 from src.lsd.gl_gui.model.core_model.core_enums import generate_id
 from src.lsd.gl_gui.model.model_enums import RelaxedEnum
 from src.lsd.gl_gui.view.app_view_utils import should_exclude
-from src.lsd.gl_gui.view.core_views.core_decoration import exclude, deep_refresh
+from src.lsd.gl_gui.view.core_views.core_decoration import exclude, deep_refresh, live
 
 _SEGMENT_RE = re.compile(
     r'(?:[^.\[]+|\[[^\]]*\])+')  # matches a segment like: attr, attr[0], attr["a.b"][1], [0], ...
@@ -30,6 +30,7 @@ _BRACKET_RE = re.compile(r'\[([^\]]*)\]')  # extracts inner text of each [...] i
 
 @exclude(["tint", "hash", "id", "name", "prev_mouse_y", "prev_mouse_x", "pending_invalidate"])
 @deep_refresh("tint")
+@live
 class DictConversion(metaclass=FieldMeta):
 
 
@@ -867,160 +868,20 @@ class DictConversion(metaclass=FieldMeta):
         return value
 
     def __setattr__(self, name: str, value: Any) -> None:
-        # Handle special internal attributes normally
-        is_visible = name not in self.__excluded_attrs__ if hasattr(self, '__excluded_attrs__') else False
-        deep_refresh = False
-        if name in self.__deep_refresh__:
-            is_visible = True
-            deep_refresh = True
-
-        if is_visible and not name.startswith('_') and name != "driver" and Melty.frame_count > 3:
-            current_val = object.__getattribute__(self, name) if hasattr(self, name) else None
-            try:
-                if value != current_val:
-                    from src.lsd.gl_gui.utils.glfw_utils import request_render
-
-                    if deep_refresh:
-                        Melty.cache.invalidate_up_by_obj(obj=self, max_depth=4)
-                    else:
-                        Melty.cache.invalidate_by_obj(obj=self, name=name)
-                    parent_name = ""
-                    if hasattr(self, "_input_value"):
-                        parent_class = self._input_value
-                        parent_name = f"{parent_class.__name__}\n"
-
-                    # if self.__class__.__name__ != "MouseManager":
-                    #     if Melty.frame_count > 0:
-                    #         request_render()
-                    #
-                    #     try:
-                    #         value_str = str(value)
-                    #     except:
-                    #         value_str = f"{value.__class__.__name__} object"
-                    #     Melty.last_invalid_attr = f"{parent_name}{self.__class__.__name__}.{str(name)} {value_str[:30]}"
-                    #     Melty.last_invalid.update(Melty.last_invalid_attr)
-                    #     Melty.cache.invalidate_up_by_obj(Melty.last_invalid)
-
-            except Exception as e:
-                pass
-
 
         if name.startswith('_'):
             super().__setattr__(name, value)
             return
 
-        # Skip history tracking if disabled or for special attributes
-        # if self._history_manager.disabled:
-        #     super().__setattr__(name, value)
-        #     return
-
-        # Check if weak reference is still valid
-        # Uncomment if needed
-        # if weak self.is_still_valid(value):
-        #     super().__setattr__(name, value)
-        #     return
-
         try:
             wrapped_value = value
-
-            # Get old value if it exists for history tracking
-            # if hasattr(self, 'history_manager') and self._history_manager is not None and not self._history_manager.disabled:
-            #     old_value = None
-            #     if hasattr(self, name):
-            #         old_value = getattr(self, name)
-            #
-            #         # Skip if value isn't changing
-            #         if old_value is value:
-            #             return
-            #
-            #         # Deep copy for non-primitive types
-            #         if isinstance(old_value, (dict, list, set)) or isinstance(old_value, DictConversion):
-            #             old_value = deepcopy(old_value)
-            #
-            #     # Wrap container types for tracking
-            #
-            #     wrapped_value = self._wrap_container(value, name)
-
-            # Set up parent reference if value is DictConversion
-            # if isinstance(wrapped_value, DictConversion):
-            #     wrapped_value._parent = weakref.ref(self)
-            #     wrapped_value._parent_key = name
-            #     if self._children is None:
-            #         self._children = {}
-            #     self._children[name] = wrapped_value
-            #
-            #     if self._history_manager is not None and not self._history_manager.disabled:
-            #         # Ensure nested DictConversion objects use the same history manager
-            #         wrapped_value._history_manager = self._history_manager
-            #
-            # elif isinstance(wrapped_value, (list, tuple)):
-            #     # Handle lists/tuples of DictConversion objects
-            #     for i, item in enumerate(wrapped_value):
-            #         if isinstance(item, DictConversion):
-            #             item._parent = weakref.ref(self)
-            #             item._parent_key = f"{name}[{i}]"
-            #             if self._children is None:
-            #                 self._children = {}
-            #             self._children[f"{name}[{i}]"] = item
-            #
-            #             if self._history_manager is not None and not self._history_manager.disabled:
-            #
-            #                 # Ensure they use the same history manager
-            #                 item._history_manager = self._history_manager
-
-            # elif isinstance(wrapped_value, dict):
-            #     # Handle dictionaries containing DictConversion objects
-            #     for k, v in wrapped_value.items():
-            #         if isinstance(v, DictConversion):
-            #             v._parent = weakref.ref(self)
-            #             v._parent_key = f"{name}['{v.id}']"
-            #             if self._children is None:
-            #                 self._children = {}
-            #             self._children[f"{name}['{v.id}']"] = v
-            #
-            #             if self._history_manager is not None and not self._history_manager.disabled:
-            #                 # Ensure they use the same history manager
-            #                 v._history_manager = self._history_manager
-
             # Make the actual change
             super().__setattr__(name, wrapped_value)
-
-            # if self._history_manager is not None and not self._history_manager.disabled:
-            #     # Record the change if it's not a tracked container itself
-            #     # (tracked containers record their own changes)
-            #     if not any(isinstance(wrapped_value, t) for t in (TrackedList, TrackedDict, TrackedSet)):
-            #         if hasattr(self, '_history_manager'):
-            #             self._history_manager.record_change(
-            #                 self,
-            #                 name,
-            #                 old_value,
-            #                 deepcopy(wrapped_value) if isinstance(wrapped_value, (dict, list, set, DictConversion)) else wrapped_value
-            #             )
 
         except Exception as e:
             # If something goes wrong, still apply the change
             super().__setattr__(name, value)
             raise
-
-
-    # Global undo/redo methods that delegate to the global manager
-    # def undo(self):
-    #     """Undo the last change across all tracked objects."""
-    #
-    #     return self._history_manager.undo()
-    #
-    # def redo(self):
-    #     """Redo the last undone change across all tracked objects."""
-    #     return self._history_manager.redo()
-    #
-    # def can_undo(self):
-    #     """Check if there are changes to undo."""
-    #     return self._history_manager.can_undo()
-    #
-    # def can_redo(self):
-    #     """Check if there are changes to redo."""
-    #     return self._history_manager.can_redo()
-
 
     def __getitem__(self, key: Union[str, int]) -> Any:
         # First check if this key is directly in __dict__

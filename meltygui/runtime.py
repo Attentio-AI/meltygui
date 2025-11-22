@@ -775,6 +775,8 @@ class Melty:
 
     @classmethod
     def begin_frame(cls):
+        from src.lsd.gl_gui.view.events.event_manager import EventManager
+        EventManager.mark_frame_start()
         Melty.bg_stack = [(0, 0, 0)]
 
 

@@ -162,6 +162,8 @@ class DrawState(DictConversion):
         self._has_popup = False
         self.is_hovered_last = False
 
+        self._result = None
+
         self.bounds_left = None
         self.bounds_top = None
 
