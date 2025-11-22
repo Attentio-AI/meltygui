@@ -98,7 +98,7 @@ def _create_mask_tex(w: int, h: int) -> int:
     """
     tex = gl.glGenTextures(1)
     gl.glBindTexture(gl.GL_TEXTURE_2D, tex)
-    gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_R8, w, h, 0, gl.GL_RED, gl.GL_UNSIGNED_SHORT, None)
+    gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_R16, w, h, 0, gl.GL_RED, gl.GL_UNSIGNED_SHORT, None)
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST)
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST)
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE)
@@ -387,7 +387,7 @@ class TileCacheMasked:
         # Layer constants:
         self._LAYER_BG = 0  # reserved background in mask
         self._LAYER_MIN = 1  # first valid layer for views
-        self._LAYER_MAX = 254  # leave 255 free if needed (rank packs layer << 8 | rect)
+        self._LAYER_MAX = 2048  # keep 255 free if needed (rank packs layer << 8 | order)
 
         self.offscreen_debug_mode: OffscreenDebugMode = OffscreenDebugMode.OFF
         self.offscreen_scale = 200.0
@@ -1133,7 +1133,7 @@ class TileCacheMasked:
                 gl.glViewport(ix0, iy0, iw, ih)
 
                 # pack rank = (layer<<8)|order  in [0..65535]
-                rank = ((r.layer & 0xFF) << 8) | (r.order & 0xFF)
+                rank = r.layer
                 gl.glUniform1f(loc_rank_norm, float(rank) / 65535.0)
 
                 gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
@@ -1195,7 +1195,8 @@ class TileCacheMasked:
                     gl.glViewport(ix0, iy0, iw, ih)
 
                     # same rank packing
-                    rank = ((r.layer & 0xFF) << 8) | (r.order & 0xFF)
+                    rank = r.layer
+
                     gl.glUniform1f(loc_rank_norm, float(rank) / 65535.0)
 
                     gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)

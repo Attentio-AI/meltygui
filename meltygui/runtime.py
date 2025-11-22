@@ -7,6 +7,8 @@ import imgui
 import libcst as cst
 from src.lsd.gl_gui.model.core_model.core_enums import generate_id
 from src.lsd.gl_gui.view.core_views.blit_offscreen import *
+from src.lsd.gl_gui.view.core_views.core_decoration import global_hotkeys
+
 
 class Action:
 
@@ -688,7 +690,10 @@ class ManagedWindow:
 
 class Melty:
 
-    overlays = []
+    # list, full with 32 Nones
+    max_layer = 32
+    layers = []
+    active_layer = 0
 
     windows = []
     glfw_window = None
@@ -752,6 +757,7 @@ class Melty:
     bg_color_stack = []
     draw_state_stack = []
     input_value_stack = [None]
+    window_enabled = True
     cache = TileCacheMasked()
     dirty_objects = set()
     all_dirty = False
@@ -769,9 +775,94 @@ class Melty:
 
     @classmethod
     def begin_frame(cls):
+        Melty.bg_stack = [(0, 0, 0)]
+
+
+        Melty.active_layer = 0
         cls.frame_count += 1
         cls.blocker_hovered = False
-        cls.overlays = []
+
+        cls.layers.clear()
+        for _ in range(cls.max_layer):
+            cls.layers.append([])
+        # Handle global hotkeys
+        for hotkey, target in global_hotkeys.items():
+            if Melty.is_key_pressed(hotkey.key):
+                if callable(target):
+                    target()
+
+        Melty.all_uniques = set()
+
+        Melty.hovered_drawstate_pending = set()
+
+        Melty.clip_stack = []
+        # cls._root_by_module[module_id] = root
+        # cls._gen_by_module.setdefault(module_id, 0)
+        # cls._path_stack.clear()
+        fb_w, fb_h = map(int, imgui.get_io().display_size)  # Get: true GL FB size for HiDPI
+        cls.cache.mask_begin_frame((fb_w, fb_h))
+
+        from src.lsd.gl_gui.view.core_views.core_render import clear_floating_text_cache
+        clear_floating_text_cache()
+
+    @classmethod
+    def end_frame(cls):
+
+        for idx, layer in enumerate(Melty.layers):
+            if Melty.channels_split:
+                # Flatten layers into single canvas
+                imgui.set_cursor_screen_pos((0,0))
+                imgui.get_window_draw_list().channels_merge()
+
+            imgui.get_window_draw_list().channels_split(Melty.max_depth)
+            imgui.get_window_draw_list().channels_set_current(0)
+            Melty.channels_split = True
+            Melty.active_layer = idx
+
+            for view in layer:
+                if view is not None:
+                    imgui.set_cursor_screen_pos((0,0))
+
+                    view_func = view[0]
+                    args = view[1]
+                    kwargs = view[2]
+
+                    return_val = view_func(*args, **kwargs)
+
+        if Melty.depth == 0:
+            from src.lsd.gl_gui.view.core_views.core_render import get_melty_state
+            melty = get_melty_state(0)
+            melty.last_mouse_pos = imgui.get_mouse_pos()
+            # Did not move
+            if len(melty.hover_stack) > 0:
+                last = melty.hover_stack[0]
+                hovered_draw_state = Melty.vis.root.draw_state_registry.get(last, None)
+                if hovered_draw_state is not None:
+                    hovered_draw_state._hovered = True
+                    Melty.hovered_drawstate_pending.add(hovered_draw_state.id)
+
+            if len(melty.hotkey_stack) > 0:
+                last = melty.hotkey_stack[0]
+                hovered_draw_state = Melty.vis.root.draw_state_registry.get(last, None)
+                if hovered_draw_state is not None:
+                    hovered_draw_state.hotkey_receiver = True
+
+            melty.hover_stack = []
+            melty.hotkey_stack = []
+            melty.unique_stack = []
+            Melty.draw_state_stack = []
+
+            if not melty.nearest_drop_target is None:
+                melty.drag_drop_target = melty.nearest_drop_target
+                melty.drag_drop_target_tag = melty.nearest_drop_target_tag
+
+            while len(melty.items_to_delete) > 0:
+                key, collection = melty.items_to_delete.pop(0)
+                delete_from_collection(key, collection)
+                request_render()
+
+        Melty.hovered_drawstate = Melty.hovered_drawstate_pending
+
         # cls._root_by_module[module_id] = root
         # cls._gen_by_module.setdefault(module_id, 0)
         # cls._path_stack.clear()
@@ -949,9 +1040,10 @@ class Melty:
 
     @classmethod
     def is_window_enabled(cls):
-        if len(cls.window_stack) == 0:
-            return True
-        return cls.window_stack[-1][1]
+        return cls.window_enabled
+        # if len(cls.window_stack) == 0:
+        #     return True
+        # return cls.window_stack[-1][1]
 
     @classmethod
     def get_bg_color(cls, depth=None):

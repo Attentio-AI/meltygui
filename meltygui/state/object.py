@@ -874,7 +874,7 @@ class DictConversion(metaclass=FieldMeta):
             is_visible = True
             deep_refresh = True
 
-        if is_visible and not name.startswith('_') and name != "driver":
+        if is_visible and not name.startswith('_') and name != "driver" and Melty.frame_count > 3:
             current_val = object.__getattribute__(self, name) if hasattr(self, name) else None
             try:
                 if value != current_val:

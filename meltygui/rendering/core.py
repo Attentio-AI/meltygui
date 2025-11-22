@@ -23,14 +23,18 @@ from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
 
 melty_state_registry = {}
-
+static_melty = MeltyState()
 
 def get_melty_state(unique: int):
-    """Get or create a Melty state object for a widget ID."""
-    if unique not in melty_state_registry or melty_state_registry[unique] is None:
-        melty_state_registry[unique] = MeltyState()
 
-    return melty_state_registry[unique]
+    global melty_state_registry, static_melty
+    return static_melty
+    #
+    # """Get or create a Melty state object for a widget ID."""
+    # if unique not in melty_state_registry or melty_state_registry[unique] is None:
+    #     melty_state_registry[unique] = MeltyState()
+    #
+    # return melty_state_registry[unique]
 
 
 # Cache to track used space - key is snapped y position, value is left x used
@@ -43,6 +47,8 @@ def handle_actions(melty, unique, draw_state, func=None):
         melty.initial_scroll_offset = (0, 0)
         melty.initial_drag_offset = None
         melty.mouse_down_pos = None
+    else:
+        pass
 
     if (Melty.is_window_enabled() and (imgui.is_window_hovered() or melty.drag_in_progress)) or Melty.blocker_hovered:
         for m_btn in [0, 1, 2]:
@@ -802,18 +808,20 @@ def render_func(*args, **o_kwargs):
         if kwargs.get("bypass", False):
             kwargs.pop("bypass", None)
             return func(*args, **kwargs)
-
         return_extras = kwargs.get('return_extras', False)
-        kwargs['return_extras'] = False
+        active_layer = kwargs.get("active_layer", None)
+        if kwargs.get("layer", None) is not None:
+            layer = kwargs.pop("layer", None)
+            kwargs["active_layer"] = layer
+            Melty.layers[layer].append((wrapper, args, kwargs))
 
-        if kwargs.get("overlay", False):
-            kwargs.pop("overlay", None)
-            Melty.overlays.append((wrapper, kwargs))
             if return_extras:
                 return False, None, kwargs
             return False, None
 
-        o_kwargs.update(kwargs)
+        kwargs['return_extras'] = False
+        kwargs.update(o_kwargs)
+
         annotation = annotation_track(*args, wrapper=wrapper, **o_kwargs)
         if annotation is not None:
             return annotation
@@ -891,7 +899,6 @@ def render_func(*args, **o_kwargs):
             melty.nearest_drop_distance = melty.max_distance
             melty.nearest_drop_target = None
             melty.nearest_drop_target_tag = None
-            Melty.bg_stack = [(0, 0, 0)]
             Melty.indent_count = 0
             Melty.unindent_count = 0
 
@@ -925,10 +932,10 @@ def render_func(*args, **o_kwargs):
                     Melty.move_draw_state_pending = {}
 
         draw_state = get_draw_state(unique)
-        tile_id = strhash(str(computed_unique) + str(draw_state.id))
+        tile_id = strhash(str(computed_unique) + str(draw_state.id) + str(active_layer))
         draw_state._tile_id = tile_id
 
-        if Melty.frame_count > 3:
+        if Melty.frame_count > 2 and draw_state.frame_count > 2:
             if isinstance(input_value, (type(None), int, float, str, bool, tuple, set)):
                 if draw_state._input_value != input_value:
                     if kwargs.get("collection", None) is not None:
@@ -1252,9 +1259,13 @@ def render_func(*args, **o_kwargs):
 
                     start_pos = imgui.get_cursor_screen_pos()
                     imgui.set_cursor_screen_pos((pos_x, pos_y))
+                    kwargs['on_drag'] = False
+                    Melty.window_enabled = False
+
                     return_value = draw_inner_main(clean_args, draw_state, input_value, next_kwargs, melty, tile_id,
                                                    unique)
                     kwargs['on_drag'] = True
+                    Melty.window_enabled = True
                     Melty.redo_clip(unique)
 
                     Melty.depth = Melty.depth - 7
@@ -1378,35 +1389,7 @@ def render_func(*args, **o_kwargs):
 
                 hovered_draw_state = None
                 # Root view
-                if Melty.depth == 0:
-                    melty.last_mouse_pos = imgui.get_mouse_pos()
-                    # Did mouse move
-                    if len(melty.hover_stack) > 0:
-                        last = melty.hover_stack[0]
-                        hovered_draw_state = Melty.vis.root.draw_state_registry.get(last, None)
-                        if hovered_draw_state is not None:
-                            hovered_draw_state._hovered = True
-                            Melty.hovered_drawstate_pending.add(hovered_draw_state.id)
 
-                    if len(melty.hotkey_stack) > 0:
-                        last = melty.hotkey_stack[0]
-                        hovered_draw_state = Melty.vis.root.draw_state_registry.get(last, None)
-                        if hovered_draw_state is not None:
-                            hovered_draw_state.hotkey_receiver = True
-
-                    melty.hover_stack = []
-                    melty.hotkey_stack = []
-                    melty.unique_stack = []
-                    Melty.draw_state_stack = []
-
-                    if not melty.nearest_drop_target is None:
-                        melty.drag_drop_target = melty.nearest_drop_target
-                        melty.drag_drop_target_tag = melty.nearest_drop_target_tag
-
-                    while len(melty.items_to_delete) > 0:
-                        key, collection = melty.items_to_delete.pop(0)
-                        delete_from_collection(key, collection)
-                        request_render()
 
                 if melty_window:
                     Melty.melty_window_stack.pop()
@@ -1482,9 +1465,11 @@ def render_func(*args, **o_kwargs):
                 draw_list = imgui.get_window_draw_list()
                 draw_list.channels_set_current(min(offscreen_depth, Melty.max_depth - 1))
 
+
+            layer_and_depth = Melty.active_layer * Melty.max_depth + Melty.depth
             if Melty.cache.mark_start_offscreen(input_value=input_value, collection=collection,
                                                 draw_state=draw_state, key=tile_id, name=draw_state.name,
-                                                layer=Melty.depth, caller=func):
+                                                layer=layer_and_depth, caller=func):
                 return_value = func(**clean_args)
                 # Scroll position relative to view
                 draw_state._imgui_scroll_y = imgui.get_scroll_y()

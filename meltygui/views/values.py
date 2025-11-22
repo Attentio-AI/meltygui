@@ -102,17 +102,23 @@ def draw_melty_windows(vis):
     title = "main##window_melty"
     opened, _ = begin(title, closable=False, flags=flags)
 
+    Melty.begin_frame()
+
     draw_list = imgui.get_window_draw_list()
     draw_list.channels_split(Melty.max_depth)
     Melty.channels_split = True
     Melty.window_stack.append((title, True))
 
     draw_main(name="Main Window", vis=vis)
+    draw_window(test_obj, name="Layer 2", layer=2)
+
+    Melty.end_frame()
 
     # End frame ###############
     Melty.window_stack.pop()
     draw_list.channels_merge()
     Melty.channels_split = False
+
     end()
 
 @render_func(use_cache=False)
@@ -120,8 +126,7 @@ def draw_main(input_value, vis):
     global test_obj
 
     #
-    draw_window(test_obj, name="Test value")
-    draw_window(test_obj, name="Test value 1")
+    draw_window(test_obj, name="Layer 1")
 
     # draw_window(proxy, name="CST Proxy")
     draw_window(filesystem_proxy, name="Filesystem Test")
@@ -218,34 +223,13 @@ def draw_window(input_value, style_manager=None, *args, **kwargs):
     return return_val
 
 def draw(vis):
-    Melty.begin_frame()
 
-    # Handle global hotkeys
-    for hotkey, target in global_hotkeys.items():
-        if Melty.is_key_pressed(hotkey.key):
-            if callable(target):
-                target()
 
-    Melty.all_uniques = set()
-    clear_floating_text_cache()
-
-    Melty.hovered_drawstate_pending = set()
-
-    Melty.clip_stack = []
-
-    fb_w, fb_h = map(int, imgui.get_io().display_size)  # or your true GL FB size if HiDPI
-    Melty.cache.mask_begin_frame((fb_w, fb_h))
 
     draw_melty_windows(vis)
 
-    Melty.hovered_drawstate = Melty.hovered_drawstate_pending
 
 
-    # draw_window(export_code, name="Code Export")
-
-    # draw_any(vis.root.synth_colors, is_window=False)
-    # #
-    # draw_any("hello there", is_window=True)
 
 def export_code(test_param_2: int = 5):
     # print(f"hello {test_param_2}")
@@ -1141,7 +1125,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
         # if not show_name:
         #     enable_flow = False
 
-        if not melty_window and enable_flow:
+        if not melty_window and enable_flow and Melty.window_enabled:
             _, flow_spacing = draw_drag_drop_target(do_flow=True, enable_flow=enable_flow,
                                                     collection=collection, key=key, on_drag=False,
                                                     draw_state=draw_state, tag="top")
@@ -1596,10 +1580,11 @@ def draw_collection(input_value, draw_state, depth, style_manager,
     if hasattr(last_meta, 'tmp_draw_state'):
         last_draw_state = last_meta.tmp_draw_state if last_meta is not None else draw_state
 
-        # last_item = collection[last_key] if (isinstance(collection, dict) and last_key in collection) else None
-        _, flow_spacing = draw_drag_drop_target(do_flow=True, enable_flow=True, melty=melty, offset=0,
-                                                collection=ordered_driver, key=last_key, on_drag=False,
-                                                draw_state=last_draw_state, tag="bottom")
+        if Melty.window_enabled:
+            # last_item = collection[last_key] if (isinstance(collection, dict) and last_key in collection) else None
+            _, flow_spacing = draw_drag_drop_target(do_flow=True, enable_flow=True, melty=melty, offset=0,
+                                                    collection=ordered_driver, key=last_key, on_drag=False,
+                                                    draw_state=last_draw_state, tag="bottom")
     # ------------------ end spacing -----------
 
     if drew_any and len(keys) > 1:
@@ -1618,8 +1603,6 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
         return Melty.current_indent
 
     depth = len(Melty.bg_stack) * 2
-
-
     rounding = 5.0
 
     right =  left + width
@@ -1956,8 +1939,6 @@ def draw_header(input_value=None, name="", suffix="", closable=False, collection
             same_line(spacing=0.0)
 
     same_line(spacing=0.0)
-
-
 
     if is_tree:
         if not draw_state.expanded:
