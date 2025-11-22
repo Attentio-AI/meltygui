@@ -28,7 +28,7 @@ _SEGMENT_RE = re.compile(
     r'(?:[^.\[]+|\[[^\]]*\])+')  # matches a segment like: attr, attr[0], attr["a.b"][1], [0], ...
 _BRACKET_RE = re.compile(r'\[([^\]]*)\]')  # extracts inner text of each [...] in a segment
 
-@exclude(["tint", "hash", "id", "name", "prev_mouse_y", "prev_mouse_x"])
+@exclude(["tint", "hash", "id", "name", "prev_mouse_y", "prev_mouse_x", "pending_invalidate"])
 @deep_refresh("tint")
 class DictConversion(metaclass=FieldMeta):
 
@@ -385,7 +385,8 @@ class DictConversion(metaclass=FieldMeta):
     outliner_expanded_h = False
 
 
-    def compute_hash(self, exclude=None, memo=None, depth=0, do_print=False):
+    @staticmethod
+    def compute_hash(self, exclude=None, memo=None, depth=0, do_print=False, include_hidden=False):
         """
         Create a hash of the instance's content with custom attribute exclusions.
         Recursively handles DictConversion objects, collections, and primitive types.
@@ -399,6 +400,8 @@ class DictConversion(metaclass=FieldMeta):
         Returns:
             A 16-bit float value representing the instance's content.
         """
+        if exclude is None:
+            exclude = {}
         import hashlib
 
         if exclude is None:
@@ -408,9 +411,16 @@ class DictConversion(metaclass=FieldMeta):
             memo = {}
 
         # Check if self is already in memo to avoid infinite recursion
-        if id(self) in memo:
-            if memo[id(self)] != "processing":
-                return memo[id(self)]
+        if isinstance(self, (int, float, str, bool)):
+            return str(self)
+
+        try:
+            if id(self) in memo:
+                if memo[id(self)] != "processing":
+                    return memo[id(self)]
+        except Exception as e:
+            print(f"Error checking memo for id(self): {e}")
+            return None
 
         # Add self to memo temporarily with a temporary value
         # This is crucial to break recursion cycles
@@ -429,16 +439,21 @@ class DictConversion(metaclass=FieldMeta):
 
 
         # Add all non-excluded attributes to the string representation
-        for key, value in self.__dict__.items():
-            # Skip private attributes (starting with underscore)
-            key = str(key)
+        if hasattr(self, '__dict__'):
+            for key, value in self.__dict__.items():
+                # Skip private attributes (starting with underscore)
+                key = str(key)
 
-            if key.startswith('_') or key in excluded_attrs or value is None:
-                continue
-
-            # Get string representation of the value
-            value_str = self._hash_value_to_str(value, exclude, memo, depth, do_print)
-            content_str += f"{value_str}"
+                if not include_hidden:
+                    if key.startswith('_'):
+                        continue
+                if key in excluded_attrs or value is None:
+                    continue
+                # Get string representation of the value
+                value_str = DictConversion._hash_value_to_str(value, exclude, memo, depth, do_print, include_hidden=include_hidden)
+                content_str += f"{value_str}"
+        else:
+            content_str = DictConversion._hash_value_to_str(self, exclude, memo, depth, do_print, include_hidden=include_hidden)
 
         # Calculate hash
         hash_result = hashlib.sha256(content_str.encode('utf-8')).hexdigest()
@@ -458,10 +473,12 @@ class DictConversion(metaclass=FieldMeta):
             print(
                 f"Depth: {depth}, Class: {self.__class__.__name__}, Hash: {hash_result[:8]}..., Float16: {float_value}")
 
-        self.hash = float_value
+        if hasattr(self, 'hash'):
+            self.hash = float_value
         return float_value
 
-    def _hash_value_to_str(self, value, exclude=None, memo=None, depth=0, do_print=False):
+    @staticmethod
+    def _hash_value_to_str(value, exclude=None, memo=None, depth=0, do_print=False, include_hidden=False):
         """
         Helper method to convert a value to a string representation based on its type.
 
@@ -475,10 +492,19 @@ class DictConversion(metaclass=FieldMeta):
         Returns:
             A string representation of the value
         """
+        if exclude is None:
+            exclude = {}
         depth += 1
 
         if memo is None:
             memo = {}
+
+        # Check if hashable first
+        try:
+            standard_hash = hash(value)
+            return str(standard_hash)
+        except TypeError:
+            pass
 
         if do_print:
             if hasattr(torch, 'cuda') and torch.cuda.is_available():
@@ -518,9 +544,10 @@ class DictConversion(metaclass=FieldMeta):
             return module_repr
 
         # Handle DictConversion objects - pass the depth parameter correctly
-        if hasattr(value, "compute_hash"):
+        if hasattr(value, "compute_hash") and isinstance(value, DictConversion):
             memo[id(value)] = "processing"  # Add immediately to avoid recursion
-            result = value.compute_hash(exclude, memo, depth, do_print)
+            result = DictConversion.compute_hash(self=value, exclude=exclude, memo=memo, depth=depth,
+                                                 do_print=do_print, include_hidden=include_hidden)
             memo[id(value)] = result  # Update with actual result
             return str(result)
 
@@ -539,7 +566,8 @@ class DictConversion(metaclass=FieldMeta):
             memo[id(value)] = "list:processing"  # Add immediately to avoid recursion
             items_str = "["
             for item in value:
-                items_str += self._hash_value_to_str(item, exclude, memo, depth, do_print) + ","
+                items_str += DictConversion._hash_value_to_str(value=item, exclude=exclude, memo=memo, depth=depth, do_print=do_print,
+                                                               include_hidden=include_hidden) + ","
             items_str += "]"
             memo[id(value)] = items_str
             return items_str
@@ -549,7 +577,8 @@ class DictConversion(metaclass=FieldMeta):
             memo[id(value)] = "tuple:processing"  # Add immediately to avoid recursion
             items_str = "("
             for item in value:
-                items_str += self._hash_value_to_str(item, exclude, memo, depth, do_print) + ","
+                items_str += DictConversion._hash_value_to_str(value=item, exclude=exclude, memo=memo, depth=depth,
+                                                     do_print=do_print, include_hidden=include_hidden) + ","
             items_str += ")"
             memo[id(value)] = items_str
             return items_str
@@ -560,11 +589,14 @@ class DictConversion(metaclass=FieldMeta):
             items_str = "{"
             for k, v in value.items():
                 k = str(k)
-                if k.startswith('_') or k in exclude:
+                if not include_hidden and k.startswith('_'):
+                    continue
+                if k in exclude:
                     continue
                 # Convert the key to string representation
                 # Get value string representation
-                val_str = self._hash_value_to_str(v, exclude, memo, depth, do_print)
+                val_str = DictConversion._hash_value_to_str(value=v, exclude=exclude, memo=memo, depth=depth, do_print=do_print,
+                                                            include_hidden=include_hidden)
                 items_str += f"{val_str}"
             items_str += "}"
             memo[id(value)] = items_str
@@ -857,17 +889,17 @@ class DictConversion(metaclass=FieldMeta):
                         parent_class = self._input_value
                         parent_name = f"{parent_class.__name__}\n"
 
-                    if self.__class__.__name__ != "MouseState":
-                        if Melty.frame_count > 0:
-                            request_render()
-
-                        try:
-                            value_str = str(value)
-                        except:
-                            value_str = f"{value.__class__.__name__} object"
-                        Melty.last_invalid_attr = f"{parent_name}{self.__class__.__name__}.{str(name)} {value_str[:30]}"
-                        Melty.last_invalid.append(Melty.last_invalid_attr)
-                        Melty.cache.invalidate_up_by_obj(Melty.last_invalid)
+                    # if self.__class__.__name__ != "MouseManager":
+                    #     if Melty.frame_count > 0:
+                    #         request_render()
+                    #
+                    #     try:
+                    #         value_str = str(value)
+                    #     except:
+                    #         value_str = f"{value.__class__.__name__} object"
+                    #     Melty.last_invalid_attr = f"{parent_name}{self.__class__.__name__}.{str(name)} {value_str[:30]}"
+                    #     Melty.last_invalid.update(Melty.last_invalid_attr)
+                    #     Melty.cache.invalidate_up_by_obj(Melty.last_invalid)
 
             except Exception as e:
                 pass

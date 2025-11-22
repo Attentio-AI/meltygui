@@ -607,15 +607,12 @@ class CSTProxy:
     def __class__(self):
         return type(self._node)
 
-    # @property
-    # def unique_id(self):
-    #     finger_print = _hash_key_for_elem(self)
-    #     return str(finger_print)
-    #
-    # @property
-    # def name(self):
-    #     finger_print = _hash_key_for_elem(self)
-    #     return str(finger_print)
+    # make hashable
+    def __eq__(self, other):
+        if not isinstance(other, CSTProxy):
+            return False
+        return self.node == other.node
+
 
     # ---- error handling ----
     @property
@@ -641,6 +638,8 @@ class CSTProxy:
     #     # fingerprint
     #     finger_print = _hash_key_for_elem(self.node)
     #     return str(finger_print)
+    # def __hash__(self):
+    #     return hash(_hash_node_struct(self.node))
 
     def flush(self):
         if self._dirty:

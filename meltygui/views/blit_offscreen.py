@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import random
 from collections import deque
+from copy import copy
 from dataclasses import dataclass
 from math import ceil, floor
 from typing import Dict, List, Optional, Tuple, MutableMapping
@@ -40,6 +41,7 @@ class _Tile:
     dirty: bool = True
     last_clean_frame: int = -1
     last_invalidated_frame: int = 0
+    force_invalidate: bool = False
 
 
 @dataclass
@@ -376,6 +378,10 @@ void main() {
 # ==============================
 class TileCacheMasked:
     def __init__(self):
+
+        # Resting to previous value should cancel invalidate
+        self.initial_value = {}
+        self.did_deviate = {}
         self.enabled: bool = False
 
         # Layer constants:
@@ -405,7 +411,8 @@ class TileCacheMasked:
         self._tiles: Dict[str, _Tile] = {}
         self._sizes = {}  # resolved key -> (w,h)
         self._stack: List[_Ctx] = []
-        self._pending: List[_Pending] = []
+        self._key_to_ctx: Dict[str, _Ctx] = {}
+        self._pending: dict[str, _Pending] = {}
         self.all_keys = set()
 
         # mask/snapshot
@@ -470,17 +477,17 @@ class TileCacheMasked:
         #     return key
         # return f"{self._stack[-1].key}>{key}"
 
-    def invalidate_current(self):
+    def invalidate_current(self, force=False):
         if len(self._stack) == 0:
             return
 
-        self.invalidate(self._stack[-1].key)
+        self.invalidate(self._stack[-1].key, force=force)
 
-    def invalidate_up_current(self, max_depth=9):
+    def invalidate_up_current(self, max_depth=9, force=False):
         if len(self._stack) == 0:
             return
 
-        self.invalidate_up(self._stack[-1].key, max_depth=max_depth)
+        self.invalidate_up(self._stack[-1].key, max_depth=max_depth, force=force)
     # def invalidate_parent(self, obj):
     #     # if name is not None:
     #     #     keys = self.py_id_to_keys.get(f"{id(obj)}.{name}", None)
@@ -545,10 +552,9 @@ class TileCacheMasked:
         return all_keys
 
     # More expensive, redraws all children
-    def invalidate_up(self, k: str, max_depth=9) -> None:
+    def invalidate_up(self, k: str, max_depth=9, force=False) -> None:
         from src.lsd.gl_gui.melty import Melty
-
-        self.invalidate(k)
+        self.invalidate(k, force=force)
 
         # Defer parent invalidation to next frame as well
         child_keys = self.get_child_keys(k, max_depth=max_depth)
@@ -558,9 +564,23 @@ class TileCacheMasked:
                 if pt is not None:
                     pt.last_invalidated_frame = max(pt.last_invalidated_frame, self._frame_id + 1)
                     pt.dirty = self._is_dirty(pt)
+                    pt.force_invalidate = True
                     self.pending_invalid.append(pt)
 
-    def invalidate(self, key: str) -> None:
+    def get_hash(self, draw_state):
+        from src.lsd.gl_gui.model.dict_conversion import DictConversion
+
+        if hasattr(draw_state._input_value, "hash") or isinstance(draw_state._input_value, (dict, list, set, DictConversion,
+                                                                                            tuple, int, float, str, bool, type(None))):
+            input_val_hash = DictConversion.compute_hash(draw_state._input_value, exclude=draw_state.__excluded_attrs__, include_hidden=False)
+        else:
+            input_val_hash = 0
+
+        return (DictConversion.compute_hash(draw_state,
+                                            exclude=draw_state.__excluded_attrs__, include_hidden=False),
+                input_val_hash)
+
+    def invalidate(self, key: str, force=False) -> None:
         keys_to_touch = [self._resolve_key(key)]
 
         for k in keys_to_touch:
@@ -569,27 +589,46 @@ class TileCacheMasked:
                 target_frame = self._frame_id + 1
                 t.last_invalidated_frame = max(t.last_invalidated_frame, target_frame)
                 t.dirty = self._is_dirty(t)
-                self.pending_invalid.append(t)
+                draw_state = self.key_to_draw_state.get(k, None)
+                input_val_hash = self.get_hash(draw_state)
+                # if k in self.initial_value and self.initial_value[k] != input_val_hash:
+                #     self.did_deviate[k] = True
 
-            # Defer parent invalidation to next frame as well
+                if force:
+                    t.force_invalidate = True
+
+                if k in self.initial_value and self.initial_value[k] == input_val_hash:
+                    if not t.force_invalidate:
+                        # Resetting initial value cancels invalidate
+                        t.last_invalidated_frame = t.last_clean_frame
+                        t.dirty = False
+                else:
+                    self.pending_invalid.append(t)
+                            # Defer parent invalidation to next frame as well
+
+            # from src.lsd.gl_gui.melty import Melty
             parent_keys = self.get_parent_keys(k)
             for parent in parent_keys:
                 if parent and parent != k:
                     pt = self._tiles.get(parent)
+
                     if pt is not None:
+                        if force:
+                            pt.force_invalidate = True
                         pt.last_invalidated_frame = max(pt.last_invalidated_frame, self._frame_id + 1)
                         pt.dirty = self._is_dirty(pt)
                         self.pending_invalid.append(pt)
 
-            # Optional hard cancel for this frame (rarely needed):
-            # if self._recording:
-            #     self._cancelled_keys.add(k)
+                # Optional pre-cancel for this frame (rarely used):
+                # if self._recording:
+                #     self._cancelled_keys.add(k)
 
     def invalidate_all(self) -> None:
         # Defer everything to next frame
         for t in self._tiles.values():
             if t is not None:
                 t.last_invalidated_frame = max(t.last_invalidated_frame, self._frame_id + 1)
+                t.force_invalidate = True
                 self.pending_invalid.append(t)
         request_render()
 
@@ -856,7 +895,7 @@ class TileCacheMasked:
         has_area = size is not None and size[0] != 0 and size[1] != 0
 
         # Try to draw cached if we have a clean tile sized correctly
-        if size is not None and self.enabled:
+        if size is not None and self.enabled and draw_state.frame_count >= 2:
             t = self._tiles.get(rkey)
             use_image = t and has_area and (t.size == (size[0], size[1])) and (not self._is_dirty(t))
 
@@ -938,6 +977,7 @@ class TileCacheMasked:
         clip = self._get_current_clip_rect_screen()
         clipped = self._clip_rect(x, y, w, h, clip)
         fully_clipped = self._fully_clipped(x, y, w, h, clip)
+        self._key_to_ctx[ctx.key] = ctx
         if ctx.size:
             # clipped = False
             if clipped:
@@ -949,7 +989,7 @@ class TileCacheMasked:
                     self.mask_mark_view(ctx.layer, x, y, w, h, ctx.key)
 
         # If disabled or we used cached image, don't enqueue copy
-        if not self.enabled or ctx.drew_cached:
+        if not self.enabled or ctx.drew_cached or ctx.draw_state.frame_count < 2:
             # still keep sizes up to date
             self._sizes[ctx.key] = ctx.size
             return
@@ -964,9 +1004,25 @@ class TileCacheMasked:
                 self.invalidate(ctx.key)
                 self._tiles[ctx.key] = t
 
-            if self._is_dirty(t) and (ctx.key not in self._enq_copy_keys):
-                self._pending.append(_Pending(tile=t, pos=ctx.pos, size=ctx.size, layer=ctx.layer, key=ctx.key))
-                self._enq_copy_keys.add(ctx.key)
+            if self._is_dirty(t):
+                # parent_keys = self.get_parent_keys(ctx.key)
+                # for parent in parent_keys:
+                #     if parent and parent != ctx.key:
+                #         parent_ctx = self._key_to_ctx.get(parent, None)
+                #         parent_tile = self._tiles.get(parent, None)
+                #         if parent_tile is not None:
+                #             parent_tile.dirty = True
+                #             parent_tile.last_clean_frame = parent_tile.last_invalidated_frame
+                #             parent_tile.last_invalidated_frame = self._frame_id + 1
+                #             parent_tile.force_invalidate = True
+                #         if parent_tile is not None and parent_ctx is not None:
+                #             self._pending[parent] = _Pending(tile=parent_tile, pos=parent_ctx.pos,
+                #                                              size=parent_ctx.size, layer=parent_ctx.layer,
+                #                                               key=parent_ctx.key)
+
+
+                self._pending[ctx.key] = _Pending(tile=t, pos=ctx.pos, size=ctx.size, layer=ctx.layer, key=ctx.key)
+                t.force_invalidate = True
 
     # ----- Finalize (post-frame) -----
     def _ensure_programs(self):
@@ -1020,7 +1076,7 @@ class TileCacheMasked:
 
         # Freeze worklists (with versioning, we generally do NOT cancel mid-frame)
         local_mask_rects = self._mask_rects[:]
-        local_pending = self._pending[:]
+        local_pending = list(self._pending.values())[:]
 
         if not local_pending:
             self._pending.clear()
@@ -1190,6 +1246,12 @@ class TileCacheMasked:
                         # fallback (no queries) -> optimistic clean
                     p.tile.last_clean_frame = self._frame_id
                     p.tile.dirty = self._is_dirty(p.tile)
+                    p.tile.force_invalidate = False
+
+                    draw_state = self.key_to_draw_state.get(p.key)
+                    self.initial_value[p.key] = self.get_hash(draw_state)
+
+                    # self.initial_value.pop(p.key, None)
 
             gl.glUseProgram(0)
 
@@ -1233,3 +1295,5 @@ class TileCacheMasked:
             self._cancelled_keys.clear()
             self._recording = False
             self.apply_invalid()
+            # self.initial_value.clear()
+            self.did_deviate.clear()

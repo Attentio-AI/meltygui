@@ -169,7 +169,7 @@ def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, 
             window_draw_state.closed = True
 
 
-@render_func(use_cache=True, auto_resize=False, closeable=True, show_bg=True, melty_window=True, draggable=True)
+@render_func(use_cache=True, auto_resize=False, closable=True, show_bg=True, melty_window=True, draggable=True)
 def draw_window(input_value, style_manager=None, *args, **kwargs):
     window_name = kwargs.get('name', 'Managed Window')
 
@@ -850,7 +850,7 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
 
 @render_func
 def draw_header_end(global_style, unique, style_manager, show_search,
-                    on_search, draw_state, collection, key, closeable,
+                    on_search, draw_state, collection, key, closable,
                     melty, show_add_delete=True, parent_show_add_delete=False):
     push_id(f"header_end_{unique}")
     bg_style = {
@@ -890,7 +890,7 @@ def draw_header_end(global_style, unique, style_manager, show_search,
         end_x = imgui.get_cursor_screen_pos()[0] + padding
         pop_style_color(2)
 
-    if closeable:
+    if closable:
         imgui.same_line()
 
         cursor_start = imgui.get_cursor_screen_pos()
@@ -901,6 +901,7 @@ def draw_header_end(global_style, unique, style_manager, show_search,
         close_icon = "\uf00d"
         if button(f"{close_icon}", color=(1, 1, 1, 0))[0]:
             draw_state.closed = not draw_state.closed
+            Melty.cache.invalidate_up_by_obj(Melty.registered_windows)
         imgui.set_cursor_screen_pos(cursor_start)
 
     # if show_search or draw_state.search_active:
@@ -1768,7 +1769,7 @@ def button(input_value="", color=None, width=None, height=None, style_manager=No
 
 
 @render_func()
-def draw_header(input_value=None, name="", suffix="", closeable=False, collection=None, display_name=None, meta=None, unique=None, is_tree=True,
+def draw_header(input_value=None, name="", suffix="", closable=False, collection=None, display_name=None, meta=None, unique=None, is_tree=True,
                 show_name=True, name_func=None, show_type=False, show_unique=False,
                 on_search=False, trigger_collapse=False, trigger_expand=False,
                 draw_state=None, show_tint=True, opacity=1.0, show_add_delete=True,

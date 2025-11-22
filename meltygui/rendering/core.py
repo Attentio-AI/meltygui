@@ -924,14 +924,14 @@ def render_func(*args, **o_kwargs):
 
         draw_state = get_draw_state(unique)
 
-        if isinstance(input_value, (type(None), int, float, str, bool, tuple, set)):
-            if draw_state._input_value != input_value:
-                if kwargs.get("collection", None) is not None:
-                    Melty.cache.invalidate_up_by_obj(kwargs.get("collection"))
-                    print("old value:", draw_state._input_value, "new value:", input_value,)
-                    request_render()
+        # if isinstance(input_value, (type(None), int, float, str, bool, tuple, set)):
+        #     if draw_state._input_value != input_value:
+        #         if kwargs.get("collection", None) is not None:
+        #             Melty.cache.invalidate_all_by_obj(kwargs.get("collection"))
+        #             request_render()
 
         draw_state._input_value = input_value
+        draw_state.name = name
 
         # hashable_representation = tuple(sorted(input_value.items()))
         # sorted_dict_string = json.dumps(input_value, sort_keys=True).encode('utf-8')
@@ -962,7 +962,6 @@ def render_func(*args, **o_kwargs):
         melty_window = False
 
         try:
-
             meta = kwargs.get("meta", None)
             if meta is None:
                 # Use type meta as default if available
@@ -1180,7 +1179,7 @@ def render_func(*args, **o_kwargs):
                     Melty.registered_windows[name].name = kwargs.get('name', 'Managed Window')
 
 
-            if kwargs.get("closeable", False):
+            if kwargs.get("closable", False):
                 if draw_state.closed and not input_value == Melty.registered_windows:
                     if return_extras:
                         return False, None, kwargs
@@ -1281,6 +1280,7 @@ def render_func(*args, **o_kwargs):
             print_colored_traceback(*sys.exc_info())
         finally:
             def end_of_render():
+                draw_state.frame_count += 1
                 pop_style_var(2)
                 if Melty.imgui_crashed:
                     if return_extras:
@@ -1453,7 +1453,7 @@ def render_func(*args, **o_kwargs):
             inside_clip = Melty.inside_clip(rect=(start_cursor[0], start_cursor[1],
                                                   draw_state.width, draw_state.height))
             if inside_clip != draw_state.clipped and inside_clip:
-                Melty.cache.invalidate_by_obj(tile_id)
+                Melty.cache.invalidate(tile_id, force=True)
 
                 # Melty.cache.invalidate_by_obj(collection)
 
@@ -1466,7 +1466,7 @@ def render_func(*args, **o_kwargs):
 
             if (draw_state._bounding_hovered or hover_changed or draw_state._hovered or
                     draw_state.width is None or draw_state.height is None or draw_state._imgui_popover_open):
-                Melty.cache.invalidate(tile_id)
+                Melty.cache.invalidate(tile_id, force=True)
                 # Melty.cache.invalidate_by_obj(draw_state)
 
             #     request_render()
