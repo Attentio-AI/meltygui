@@ -544,7 +544,6 @@ class TileCacheMasked:
         # draw_state = self.key_to_draw_state.get(key, None)
         # if draw_state is not None and not draw_state.clipped:
         #     return set()
-
         child_keys = self.parent_key_to_child_keys.get(key, set())
         all_keys = set(child_keys)
         for ck in child_keys:
@@ -553,6 +552,8 @@ class TileCacheMasked:
 
     # More expensive, redraws all children
     def invalidate_up(self, k: str, max_depth=9, force=False) -> None:
+        if k not in self._tiles:
+            k = self.key_to_parent_key.get(k, None)
         from src.lsd.gl_gui.melty import Melty
         self.invalidate(k, force=force)
 
@@ -564,7 +565,6 @@ class TileCacheMasked:
                 if pt is not None:
                     pt.last_invalidated_frame = max(pt.last_invalidated_frame, self._frame_id + 1)
                     pt.dirty = self._is_dirty(pt)
-                    pt.force_invalidate = True
                     self.pending_invalid.append(pt)
 
     def get_hash(self, draw_state):
@@ -595,7 +595,7 @@ class TileCacheMasked:
                 #     self.did_deviate[k] = True
 
                 if force:
-                    t.force_invalidate = True
+                    t.force_invalidate = force
 
                 if k in self.initial_value and self.initial_value[k] == input_val_hash:
                     if not t.force_invalidate:
@@ -613,8 +613,7 @@ class TileCacheMasked:
                     pt = self._tiles.get(parent)
 
                     if pt is not None:
-                        if force:
-                            pt.force_invalidate = True
+                        pt.force_invalidate = True
                         pt.last_invalidated_frame = max(pt.last_invalidated_frame, self._frame_id + 1)
                         pt.dirty = self._is_dirty(pt)
                         self.pending_invalid.append(pt)
@@ -1022,7 +1021,6 @@ class TileCacheMasked:
 
 
                 self._pending[ctx.key] = _Pending(tile=t, pos=ctx.pos, size=ctx.size, layer=ctx.layer, key=ctx.key)
-                t.force_invalidate = True
 
     # ----- Finalize (post-frame) -----
     def _ensure_programs(self):

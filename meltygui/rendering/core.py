@@ -862,6 +862,8 @@ def render_func(*args, **o_kwargs):
 
         # Keep original behavior of always appending name (even if empty)
         suffix = f"{old_suffix}_{suffix}_{unique_name}_{key}"
+        if hasattr(input_value, 'id'):
+            suffix = f"{suffix}_{str(getattr(input_value, 'id'))}"
 
         if is_root:
             unique = ui_id(datatype=type(input_value), suffix=name + unique_name + str(key) + func.__name__)
@@ -923,12 +925,17 @@ def render_func(*args, **o_kwargs):
                     Melty.move_draw_state_pending = {}
 
         draw_state = get_draw_state(unique)
+        tile_id = strhash(str(computed_unique) + str(draw_state.id))
+        draw_state._tile_id = tile_id
 
-        # if isinstance(input_value, (type(None), int, float, str, bool, tuple, set)):
-        #     if draw_state._input_value != input_value:
-        #         if kwargs.get("collection", None) is not None:
-        #             Melty.cache.invalidate_all_by_obj(kwargs.get("collection"))
-        #             request_render()
+        if Melty.frame_count > 3:
+            if isinstance(input_value, (type(None), int, float, str, bool, tuple, set)):
+                if draw_state._input_value != input_value:
+                    if kwargs.get("collection", None) is not None:
+                        # print(name, "old value:", draw_state._input_value, "new value:", input_value)
+                        # print(name)
+                        Melty.cache.invalidate_up_by_obj(kwargs.get("collection", None), name)
+                        request_render()
 
         draw_state._input_value = input_value
         draw_state.name = name
@@ -944,8 +951,7 @@ def render_func(*args, **o_kwargs):
         draw_state._has_popup = kwargs.get("has_popup", False)
         draw_state.auto_resize = kwargs.get("auto_resize", False)
 
-        tile_id = strhash(str(computed_unique) + str(draw_state.id))
-        draw_state._tile_id = tile_id
+
 
         # if unique in Melty.all_uniques:
         #     print("[Unique] Warning: Duplicate key detected:", computed_unique, type(input_value).__name__, "in",
@@ -1477,7 +1483,7 @@ def render_func(*args, **o_kwargs):
                 draw_list.channels_set_current(min(offscreen_depth, Melty.max_depth - 1))
 
             if Melty.cache.mark_start_offscreen(input_value=input_value, collection=collection,
-                                                draw_state=draw_state, key=tile_id,
+                                                draw_state=draw_state, key=tile_id, name=draw_state.name,
                                                 layer=Melty.depth, caller=func):
                 return_value = func(**clean_args)
                 # Scroll position relative to view

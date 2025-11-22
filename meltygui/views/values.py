@@ -120,8 +120,8 @@ def draw_main(input_value, vis):
     global test_obj
 
     #
-    # draw_window(test_obj, name="Test value")
-    # draw_window(test_obj, name="Test value 1")
+    draw_window(test_obj, name="Test value")
+    draw_window(test_obj, name="Test value 1")
 
     # draw_window(proxy, name="CST Proxy")
     draw_window(filesystem_proxy, name="Filesystem Test")

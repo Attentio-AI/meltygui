@@ -366,7 +366,6 @@ class CSTDictProxy(dict):
             super().__setitem__(k, w)
 
         from src.lsd.gl_gui.model.core_model.core_enums import generate_id
-        self.id = generate_id()
 
 
     # @property
@@ -599,7 +598,6 @@ class CSTProxy:
         object.__setattr__(self, "_parent_field", None)
         object.__setattr__(self, "_error", None)  # ErrorState | None
         from src.lsd.gl_gui.model.core_model.core_enums import generate_id
-        self.id = generate_id()
         self._refresh_fields_from(node)
 
     # class spoofing so type-based routing works
