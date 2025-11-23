@@ -1060,7 +1060,7 @@ def render_func(*args, **o_kwargs):
                             kwargs.setdefault(hk_name, False)
             kwargs.setdefault('meta', meta)
 
-            # kwargs.update(meta.__dict__)
+            kwargs.update(meta.__dict__)
             for param in wanted_params:
                 if param not in kwargs and param != "kwargs" and param != 'args' and param != 'o_kwargs' and param != 'next_kwargs':
                     wanted_type = name_to_param_type.get(param, None)

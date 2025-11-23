@@ -769,12 +769,23 @@ class Melty:
 
     all_uniques = set()
 
+    live_attributes = {}
+
     @classmethod
     def to_apply(cls, action: CollectionAction):
         cls.actions_to_apply.append(action)
 
     @classmethod
     def begin_frame(cls):
+
+        # Check live attributes
+        for obj, attributes in cls.live_attributes.items():
+            for attrib in attributes:
+                try:
+                    new_value = getattr(obj, attrib)
+                except Exception:
+                    continue
+
         from src.lsd.gl_gui.view.events.event_manager import EventManager
         EventManager.mark_frame_start()
         Melty.bg_stack = [(0, 0, 0)]

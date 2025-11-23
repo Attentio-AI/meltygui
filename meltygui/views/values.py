@@ -1424,26 +1424,12 @@ def draw_collection(input_value, draw_state, depth, style_manager,
             collection = list(input_value)
 
     elif hasattr(input_value, "__dict__") and depth < Melty.max_depth:
-
-        if hasattr(input_value, "__all_attributes__") and not isinstance(input_value, DictConversion):
-            keys = input_value.__all_attributes__
-            instance_keys = input_value.__dict__.keys()
-
-            for k in instance_keys:
-                if k not in keys:
-                    keys.append(k)
-            collection = input_value.__dict__
-
-        elif hasattr(type(input_value), "__field_defaults__") and hasattr(input_value, 'to_dict'):
+        if hasattr(type(input_value), "__field_defaults__") and hasattr(input_value, 'to_dict'):
             type(input_value).__field_defaults__.update(input_value.__dict__)
             keys = type(input_value).__field_defaults__.keys()
-            collection = input_value.__dict__
         else:
             keys = input_value.__dict__.keys()
-            collection = input_value.__dict__
-
-        # hide private attributes
-        # keys = [k for k in collections_var if not k.startswith('_')]
+        collection = input_value.__dict__
         use_tint = False
         use_child_meta = True
         apply_change = True
@@ -1458,13 +1444,14 @@ def draw_collection(input_value, draw_state, depth, style_manager,
     all_meta = []
     content_height = 0.0
     start_cursor = imgui.get_cursor_pos()[1]
-
+    keys = list(keys)[:]
     for idx, key in enumerate(keys):
-        try:
-            item = getattr(input_value, key)
-        except Exception:
-            if isinstance(collection, dict) and key not in collection:
-                continue
+        if isinstance(collection, dict) and key not in collection:
+            continue
+
+        if hasattr(input_value, "__dict__"):
+            item = getattr(input_value, key, None)
+        else:
             item = collection[key]
 
         if callable(item):
@@ -2112,7 +2099,7 @@ def draw_any(input_value, indent_size=0, *args, **kwargs):
     return return_val
 
 
-@with_header_minimal(is_default_for=(NoneType))
+@with_header_minimal(header_same_line=True, is_default_for=(NoneType))
 def draw_none(input_value: NoneType):
     imgui.align_text_to_frame_padding()
     imgui.text("None")
@@ -2283,40 +2270,49 @@ def eval_function(input_value, draw_state):
     return changed, input_value
 
 @with_header(is_default_for=(types.FunctionType, types.MethodType),
-                     wraps=render_func, show_add_delete=False, header_same_line=True)
-def draw_function(input_value, draw_state, unique):
+                     wraps=render_func, show_add_delete=False, is_tree=False, show_name=False)
+def draw_function(input_value, name, draw_state, unique):
     signature = inspect.signature(input_value)
     params = signature.parameters
-    if len(params) > 0:
-        changed, new_val = draw_any(params, name="Parameters", show_add_delete=False)
-        if changed:
-            set_fn_defaults(input_value, new_val)
+    if len(draw_state.params) != len(params):
+        param_dict = {}
+        for name, param in params.items():
+            if param.default is not inspect.Parameter.empty:
+                param_dict[name] = param.default
+            else:
+                param_type = param.annotation
+                default_value = param.default
+                if default_value is not inspect.Parameter.empty:
+                    param_dict[name] = default_value
+                else:
+                    param_dict[name] = 0
 
-    push_style_var(imgui.STYLE_ITEM_SPACING, (2, 4))
+        draw_state.params = param_dict
+    if len(draw_state.params) > 0:
+        changed, new_val = draw_any(draw_state.params, name="Parameters", show_add_delete=False)
+        if changed:
+            draw_state.params = new_val
+
+    push_style_var(imgui.STYLE_ITEM_SPACING, (4, 0))
     push_style_var(imgui.STYLE_FRAME_PADDING, (6, 6))
-    push_style_var(imgui.STYLE_FRAME_ROUNDING, 6)
+    push_style_var(imgui.STYLE_FRAME_ROUNDING, 4)
 
     if imgui.button(f"{input_value.__name__}##{unique}"):
-        function_args = inspect.signature(input_value).parameters
-        kwargs = {}
-        for name, param in function_args.items():
-            if param.default is not inspect.Parameter.empty:
-                kwargs[name] = param.default
-            else:
-                kwargs[name] = None
         try:
-            draw_state._result = input_value(**kwargs)
+            draw_state.result = input_value(**draw_state.params)
+            Melty.cache.invalidate_up_current(force=True)
         except Exception as e:
             print(f"Error calling function '{input_value.__name__}': {e}")
-            print_colored_traceback(e)
+            print_colored_traceback(*sys.exc_info())
 
-    draw_any(draw_state._result, name="Result", header_same_line=True, show_header=False, show_add_delete=False)
+    if draw_state.result is not None:
+        draw_any(draw_state.result, name="Result", header_same_line=True, show_header=False, show_add_delete=False)
 
     pop_style_var(3)
 
     return False, input_value
 
-@with_header_minimal(is_default_for=(int), wraps=render_func)
+@with_header_minimal(is_default_for=(int), header_same_line=True, wraps=render_func)
 def draw_int(input_value: int, min_value=-100.0, max_value=100.0, speed=0.05):
     int_text_width = imgui.calc_text_size(str(input_value))[0]
 
@@ -2337,7 +2333,7 @@ def draw_int(input_value: int, min_value=-100.0, max_value=100.0, speed=0.05):
 def draw_debug_label(input_value:str):
     imgui.text(input_value)
 
-@with_header_minimal(is_default_for=Enum)
+@with_header_minimal(is_default_for=Enum, show_add_delete=False, header_same_line=True, wraps=render_func)
 def draw_enum(input_value:Enum, global_style=None, style_manager=None, enum_tint=(0.3, 0.3, 0.3)):
 
     unique = "enum"

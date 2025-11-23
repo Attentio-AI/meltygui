@@ -565,6 +565,7 @@ class TileCacheMasked:
                 if pt is not None:
                     pt.last_invalidated_frame = max(pt.last_invalidated_frame, self._frame_id + 1)
                     pt.dirty = self._is_dirty(pt)
+                    pt.force_invalidate = True
                     self.pending_invalid.append(pt)
 
     def get_hash(self, draw_state):

@@ -11,6 +11,8 @@ class Meta:
 
     @staticmethod
     def get_child_meta(cls, field_name, value=None):
+        if value is not None and value.__class__.__name__ == "RightMouse":
+            pass
         if value.__class__.__name__ == cst.Integer.__name__:
             pass
         child_meta = getattr(cls, f"{field_name}_meta", None)

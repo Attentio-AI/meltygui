@@ -18,21 +18,125 @@ def exclude(*args, **kwargs):
         return cls
     return decorator
 
+def defaults(*args, **kwargs):
+    def decorator(cls):
+        from src.lsd.gl_gui.view.core_views.core_meta import Meta
+        new_meta = Meta(**kwargs)
+        from src.lsd.gl_gui.melty import Melty
+        Melty.type_defaults[cls] = new_meta
+        return cls
+
+    return decorator
+
+
+def attribute(func):
+    """Decorator that makes a method appear in __dict__"""
+    func._add_to_dict = True
+    return func
+
+class auto_eval:
+    _add_to_dict = True  # Class attribute
+
+    def __init__(self, fget=None, fset=None, fdel=None):
+        self.fget = fget
+        self._add_to_dict = True  # Set on the instance
+        self.fset = fset
+        self.fdel = fdel
+        self.name = None
+        self.last_known_value = None
+
+
+    def __set_name__(self, owner, name):
+        self.name = name
+        self.private_name = f'_{name}'
+
+    def __get__(self, obj, objtype=None):
+        if obj is None:
+            self.last_known_value = None
+            return self
+
+        # Register on first access if not already registered
+        from src.lsd.gl_gui.melty import Melty
+        if obj not in Melty.live_attributes:
+            Melty.live_attributes[obj] = set()
+        if self.name not in Melty.live_attributes[obj]:
+            Melty.live_attributes[obj].add(self.name)
+
+        if self.fget is None:
+            new_val = obj.__dict__.get(self.private_name)
+            self._on_change(obj, self.last_known_value, new_val)
+            self.last_known_value = new_val
+            return new_val
+
+        new_val = self.fget(obj)
+        self._on_change(obj, self.last_known_value, new_val)
+        self.last_known_value = new_val
+        return new_val
+
+    def __set__(self, obj, value):
+        # Register on first set if not already registered
+        from src.lsd.gl_gui.melty import Melty
+        if obj not in Melty.live_attributes:
+            Melty.live_attributes[obj] = set()
+        if self.name not in Melty.live_attributes[obj]:
+            Melty.live_attributes[obj].add(self.name)
+
+        old_value = obj.__dict__.get(self.private_name)
+
+        if self.fset is None:
+            obj.__dict__[self.private_name] = value
+        else:
+            self.fset(obj, value)
+
+        # Your custom callback logic here
+        if old_value != value:
+            self._on_change(obj, old_value, value)
+
+    def __delete__(self, obj):
+        if self.fdel is None:
+            del obj.__dict__[self.private_name]
+        else:
+            self.fdel(obj)
+
+    def setter(self, fset):
+        return type(self)(self.fget, fset, self.fdel)
+
+    def deleter(self, fdel):
+        return type(self)(self.fget, self.fset, fdel)
+
+    def _on_change(self, obj, old_value, new_value):
+        excluded = getattr(obj, '__excluded_attrs__', set())
+        deep_refresh_names = getattr(self, '__deep_refresh__', set())
+        do_deep_refresh = self.name in deep_refresh_names
+        visible = self.name not in excluded
+        visible = visible or do_deep_refresh
+        from src.lsd.gl_gui.melty import Melty
+        if old_value != new_value:
+            if visible and not self.name.startswith('_') \
+                    and self.name != "driver" and Melty.frame_count > 3:
+                if do_deep_refresh:
+                    Melty.cache.invalidate_up_by_obj(obj=obj, name=self.name, max_depth=4, force=True)
+                    request_render()
+                else:
+                    Melty.cache.invalidate_up_by_obj(obj, self.name)
+                    request_render()
+
+        """Override this or add your universal callback logic here"""
+
+
+    def setter(self, fset):
+        return type(self)(self.fget, fset, self.fdel)
+
+    def deleter(self, fdel):
+        return type(self)(self.fget, self.fset, fdel)
+
+
 
 def live(cls):
     # Get excluded attributes from class (if defined)
     excluded = getattr(cls, '__excluded_attrs__', set())
 
     setattr(cls, '__melty__', True)
-
-    all_keys = []
-    for key in dir(cls):
-        if key.startswith('__') and key.endswith('__'):
-            continue
-
-        if key not in excluded:
-            all_keys.append(key)
-    setattr(cls, '__all_attributes__', all_keys)
 
     # Add internal flag to excluded set
     init_flag = f'__{cls.__name__}_initializing__'
@@ -76,7 +180,14 @@ def live(cls):
 
     @functools.wraps(original_init)
     def new_init(self, *args, **kwargs):
-
+        for name in dir(self.__class__):
+            attr = getattr(self.__class__, name, None)
+            if callable(attr) and getattr(attr, '_add_to_dict', False):
+                self.__dict__[name] = getattr(self, name)
+            else:
+                if isinstance(attr, auto_eval):
+                    self.__dict__[name] = attr.fget
+                    self.__dict__[name] = attr.fget.__get__(self, self.__class__)
         # Set initialization flag
         object.__setattr__(self, init_flag, True)
         try:
