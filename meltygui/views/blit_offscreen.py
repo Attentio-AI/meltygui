@@ -9,7 +9,7 @@ from math import ceil, floor
 from typing import Dict, List, Optional, Tuple, MutableMapping
 from OpenGL import GL as gl
 import imgui
-
+from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.model.core_model.core_enums import OffscreenDebugMode
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 
@@ -145,7 +145,6 @@ def _ensure_tile(existing: Optional[_Tile], w: int, h: int, frame_id: int = 0, t
     if existing:
         st = _GLState()
         try:
-            from src.lsd.gl_gui.melty import Melty
             bg_color = Melty.bg_color_stack[-1] if len(Melty.bg_color_stack) > 0 else (0, 0, 0, 1)
 
             gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, existing.fbo)
@@ -170,7 +169,6 @@ def _ensure_tile(existing: Optional[_Tile], w: int, h: int, frame_id: int = 0, t
             gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, new_fbo)
             gl.glViewport(0, 0, snap_int(w), snap_int(h))
             gl.glDisable(gl.GL_SCISSOR_TEST)
-            from src.lsd.gl_gui.melty import Melty
             bg_color = Melty.bg_color_stack[-1] if len(Melty.bg_color_stack) > 0 else (0, 0, 0, 1)
             # Darkened background for offscreen tiles
             gl.glClearColor(*bg_color[:3], 1.0)  # BG=0
@@ -517,11 +515,11 @@ class TileCacheMasked:
             if keys is not None:
                 for k in keys:
                     self.invalidate(k)
-
-        keys = self.py_id_to_keys.get(f"{id(obj)}", None)
-        if keys is not None:
-            for k in keys:
-                self.invalidate(k)
+        else:
+            keys = self.py_id_to_keys.get(f"{id(obj)}", None)
+            if keys is not None:
+                for k in keys:
+                    self.invalidate(k)
 
     def apply_invalid(self):
         for t in self.pending_invalid:
@@ -554,7 +552,6 @@ class TileCacheMasked:
     def invalidate_up(self, k: str, max_depth=9, force=False) -> None:
         if k not in self._tiles:
             k = self.key_to_parent_key.get(k, None)
-        from src.lsd.gl_gui.melty import Melty
         self.invalidate(k, force=force)
 
         # Defer parent invalidation to next frame as well
@@ -607,7 +604,6 @@ class TileCacheMasked:
                     self.pending_invalid.append(t)
                             # Defer parent invalidation to next frame as well
 
-            # from src.lsd.gl_gui.melty import Melty
             parent_keys = self.get_parent_keys(k)
             for parent in parent_keys:
                 if parent and parent != k:
@@ -754,7 +750,6 @@ class TileCacheMasked:
         # x1 = wx + crx1 - sx
         # y1 = wy + cry1 - sy
 
-        from src.lsd.gl_gui.melty import Melty
         clip = Melty.get_clip_rect()
 
         return clip
@@ -830,7 +825,6 @@ class TileCacheMasked:
     # ----- Begin/End with per-view layer (from depth) -----
     def mark_start_offscreen(self, input_value, collection, draw_state, key: str, layer: int, name="", caller=None) -> bool:
 
-        from src.lsd.gl_gui.melty import Melty
         Melty.tile_id_stack.append(key)
         x, y = imgui.get_cursor_screen_pos()
         # snap cursor to nearest pixel to avoid sub-pixel jitter during layout
@@ -942,7 +936,6 @@ class TileCacheMasked:
         from src.lsd.gl_gui.view.core_views.core_render import end_group
         end_group()
 
-        from src.lsd.gl_gui.melty import Melty
         Melty.tile_id_stack.pop()
 
         # ctx.draw_state.imgui_is_edited = imgui.is_item_edited()
@@ -1167,7 +1160,6 @@ class TileCacheMasked:
                 gl.glDisable(gl.GL_SCISSOR_TEST)
                 gl.glDisable(gl.GL_BLEND)
                 gl.glColorMask(gl.GL_TRUE, gl.GL_FALSE, gl.GL_FALSE, gl.GL_FALSE)
-                from src.lsd.gl_gui.melty import Melty
                 bg_color = Melty.bg_stack[-1] if len(Melty.bg_stack) > 0 else (0, 0, 0, 1)
                 gl.glClearColor(*bg_color[:3], 1.0)  # BG=0
 

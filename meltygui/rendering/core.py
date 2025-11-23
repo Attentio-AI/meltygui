@@ -22,6 +22,8 @@ from src.lsd.gl_gui.melty import Melty, ActionType, apply_collection_action, Mel
     delete_from_collection, ManagedWindow
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
+from src.lsd.gl_gui.view.core_views.core_meta import Meta
+from src.lsd.gl_gui.view.core_views.decoration.profile_decoration import profile
 from src.lsd.gl_gui.view.events.event_manager import EventManager
 
 melty_state_registry = {}
@@ -79,7 +81,7 @@ def handle_actions(melty, unique, draw_state, func=None):
                 btn_state.drag_released = False
 
             if draw_state.id in Melty.hovered_drawstate:
-                if global_mouse_down and btn_state._mouse_up:
+                if global_mouse_down and btn_state.mouse_up:
                     if not btn_state.mouse_down or melty.mouse_down_pos is None:
                         melty.total_drag_distance = 0.0
                         melty.total_drag_frames = 0
@@ -103,9 +105,9 @@ def handle_actions(melty, unique, draw_state, func=None):
                     btn_state.mouse_down = True
 
                 if not global_mouse_down:
-                    btn_state._mouse_up = True
+                    btn_state.mouse_up = True
             else:
-                btn_state._mouse_up = False
+                btn_state.mouse_up = False
             if was_mouse_down and not global_mouse_down:
                 btn_state._clicked = True
                 melty.mark_event(unique, m_btn, ActionType.CLICK)
@@ -426,12 +428,11 @@ def ui_id(datatype=None, suffix=None, idx=0) -> int:
     - max_depth: limit to avoid walking the whole interpreter stack
     """
     h = 0
-    frame = sys._getframe(2)  # skip ui_id itself
-    code = frame.f_code
-    func_name = code.co_name
+    # frame = sys._getframe(2)  # skip ui_id itself
+    code = None
+    func_name = ""
     cls_name = ""
-    if "self" in frame.f_locals:
-        cls_name = frame.f_locals["self"].__class__.__name__
+
     scope = f"{cls_name}.{func_name}" if cls_name else func_name
     h = combine(h, scope)
     datatype = datatype if datatype is not None else Any
@@ -602,7 +603,6 @@ def render_wrapper(*o_args, **o_kwargs):
 
         def add_default(value):
             kwargs.pop('is_default_for', None)
-            from src.lsd.gl_gui.view.core_views.core_presets import Meta
             new_meta = Meta()
             new_meta.view_function = wrapper(*args, **kwargs)
             # for k, v in param_defaults.items():
@@ -654,7 +654,6 @@ def render_wrapper(*o_args, **o_kwargs):
 
 def annotation_track(*args, wrapper, **kwargs):
     first_arg = args[0] if args else None
-    from src.lsd.gl_gui.view.core_views.core_presets import Meta
     if Melty.annotation_mode:
         # Class decoration mode, with args
         if 'for_type' in kwargs and not isinstance(first_arg, type):
@@ -864,8 +863,6 @@ def render_func(*args, **o_kwargs):
         if name == "" and not is_root:
             name = str(key) + input_value.__class__.__name__
 
-        from src.lsd.gl_gui.view.core_views.core_presets import Meta
-
         if Melty.depth > Melty.max_depth:
             if return_extras:
                 return False, None, kwargs
@@ -879,9 +876,10 @@ def render_func(*args, **o_kwargs):
         suffix = Melty.unique_stack[-1] if len(Melty.unique_stack) > 0 else (name or "")
 
         # Keep original behavior of always appending name (even if empty)
-        suffix = f"{old_suffix}_{suffix}_{unique_name}_{key}"
         if hasattr(input_value, 'id'):
             suffix = f"{suffix}_{str(getattr(input_value, 'id'))}"
+        else:
+            suffix = f"{old_suffix}_{suffix}_{unique_name}_{key}"
 
         if is_root:
             unique = ui_id(datatype=type(input_value), suffix=name + unique_name + str(key) + func.__name__)
@@ -1104,7 +1102,8 @@ def render_func(*args, **o_kwargs):
             # if kwargs.get("melty_window", False):
             #     imgui.set_cursor_screen_pos((0, 0))
 
-            if kwargs.get("melty_window", False) and kwargs.get("on_drag", False):
+            if ((kwargs.get("melty_window", False) or (not kwargs.get("auto_resize", True)) and draw_state.drag_mode == DragMode.RESIZE_BR)
+                    and kwargs.get("on_drag", False)):
                 window_drag = True
                 mouse_pos = imgui.get_mouse_pos()
 
@@ -1112,7 +1111,7 @@ def render_func(*args, **o_kwargs):
                 mouse_down_y = draw_state.mouse_btn_state[0].mouse_down_pos[1]
                 drag_delta = (mouse_pos[0] - mouse_down_x, mouse_pos[1] - mouse_down_y)
 
-                if draw_state.drag_mode == DragMode.WINDOW:
+                if draw_state.drag_mode == DragMode.WINDOW and kwargs.get("melty_window", False):
                     start_pos_x = draw_state.mouse_btn_state[0].initial_window_pos[0]
                     start_pos_y = draw_state.mouse_btn_state[0].initial_window_pos[1]
                     pos_x = start_pos_x + drag_delta[0]
@@ -1150,6 +1149,8 @@ def render_func(*args, **o_kwargs):
                 draw_state.window_pos = None
 
             kwargs['melty_window'] = False
+
+            Melty.size_stack.append((draw_state.width, draw_state.height))
 
             if len(Melty.melty_window_stack) > 0:
                 Melty.is_melty_window = True
@@ -1220,16 +1221,19 @@ def render_func(*args, **o_kwargs):
                 clean_args = {k: kwargs[k] for k in wanted_params if k in kwargs}
             ###########################################################
 
-            if melty_window:
+            if not kwargs.get("auto_resize", True):
                 draw_list = imgui.get_window_draw_list()
                 if Melty.channels_split:
                     draw_list.channels_set_current((Melty.max_depth - 2))
                 draw_resize_handle(draw_state)
+                if Melty.channels_split:
+                    draw_list.channels_set_current(Melty.depth)
             try:
                 on_drag = kwargs.get("on_drag", False)
                 kwargs['on_drag'] = False
                 if on_drag and not melty_window and not window_drag:
-
+                    #
+                    # from src.lsd.gl_gui.view.core_views.new_core_view import draw_drag_drop_target
                     from src.lsd.gl_gui.view.core_views.new_core_view import draw_drag_drop_target
                     _, flow_spacing = draw_drag_drop_target(do_flow=True, enable_flow=True,
                                                             collection=kwargs.get("collection", None), key=key,
@@ -1396,6 +1400,7 @@ def render_func(*args, **o_kwargs):
                     Melty.unique_stack.pop()
 
                 Melty.input_value_stack.pop()
+                Melty.size_stack.pop()
 
                 hovered_draw_state = None
                 # Root view

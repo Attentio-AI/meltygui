@@ -115,7 +115,7 @@ class auto_eval:
             if visible and not self.name.startswith('_') \
                     and self.name != "driver" and Melty.frame_count > 3:
                 if do_deep_refresh:
-                    Melty.cache.invalidate_up_by_obj(obj=obj, name=self.name, max_depth=4, force=True)
+                    Melty.cache.invalidate_up_by_obj(obj=obj, name=self.name, max_depth=3, force=True)
                     request_render()
                 else:
                     Melty.cache.invalidate_up_by_obj(obj, self.name)
@@ -130,78 +130,6 @@ class auto_eval:
     def deleter(self, fdel):
         return type(self)(self.fget, self.fset, fdel)
 
-
-
-def live(cls):
-    # Get excluded attributes from class (if defined)
-    excluded = getattr(cls, '__excluded_attrs__', set())
-
-    setattr(cls, '__melty__', True)
-
-    # Add internal flag to excluded set
-    init_flag = f'__{cls.__name__}_initializing__'
-    excluded = excluded | {init_flag}
-
-    # Store the original methods
-    original_setattr = cls.__setattr__ if hasattr(cls, '__setattr__') else object.__setattr__
-    original_init = cls.__init__
-
-    @functools.wraps(original_setattr)
-    def new_setattr(self, name: str, value: Any) -> None:
-        # Set the attribute using the original __setattr__
-        original_value = getattr(self, name, None)
-        if original_setattr == object.__setattr__:
-            object.__setattr__(self, name, value)
-        else:
-            original_setattr(self, name, value)
-
-        # Check if we're initializing
-        initializing = getattr(self, init_flag, False)
-
-        deep_refresh_names = getattr(self, '__deep_refresh__', set())
-        do_deep_refresh = name in deep_refresh_names
-        visible = name not in excluded
-        visible = visible or do_deep_refresh
-
-        # Call invalidate() if:
-        # - not currently initializing
-        # - attribute is not excluded
-        # - object has invalidate method
-        from src.lsd.gl_gui.melty import Melty
-        if value != original_value:
-            if not initializing and visible and not name.startswith('_')\
-                    and name != "driver" and Melty.frame_count > 3:
-                if do_deep_refresh:
-                    Melty.cache.invalidate_up_by_obj(obj=self, max_depth=4, force=True)
-                    request_render()
-                else:
-                    Melty.cache.invalidate_up_by_obj(self, name)
-
-
-    @functools.wraps(original_init)
-    def new_init(self, *args, **kwargs):
-        for name in dir(self.__class__):
-            attr = getattr(self.__class__, name, None)
-            if callable(attr) and getattr(attr, '_add_to_dict', False):
-                self.__dict__[name] = getattr(self, name)
-            else:
-                if isinstance(attr, auto_eval):
-                    self.__dict__[name] = attr.fget
-                    self.__dict__[name] = attr.fget.__get__(self, self.__class__)
-        # Set initialization flag
-        object.__setattr__(self, init_flag, True)
-        try:
-            # Call original __init__
-            original_init(self, *args, **kwargs)
-        finally:
-            # Clear initialization flag
-            object.__setattr__(self, init_flag, False)
-
-    # Monkey patch the class
-    cls.__setattr__ = new_setattr
-    cls.__init__ = new_init
-
-    return cls
 
 def deep_refresh(*args, **kwargs):
     def decorator(cls):

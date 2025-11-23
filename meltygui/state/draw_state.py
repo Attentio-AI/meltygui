@@ -6,7 +6,7 @@ import libcst as cst
 
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.view.core_views.core_decoration import no_save, exclude, deep_refresh
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import no_save, exclude, deep_refresh
 
 
 # class decoration
@@ -71,16 +71,15 @@ class DragMode(Enum):
          "render_time", "imgui_is_toggled_open", "z_pos", "content_height", "hotkey_receiver", "use_child", "cst", "search_text",
          "is_active", "is_focused", "drag_window_pos_x", "drag_window_pos_y", "drag_mode", "auto_resize", "clipped", "is_hovered_last",
          "z_pos", "draw_window_pos_x", "misc_used", "draw_window_pos_y", "drag_delta", "screen_pos", "imgui_is_item_activated")
-@exclude("render_time", "bounds_left", "bounds_top", "_input_value", "width", "flow_spacing",
-         "hovered", "_did_use_cache", "value_hash", "drag_window", "top", "left", "content_region",
+@exclude("render_time", "bounds_left", "bounds_top", "_input_value","flow_spacing",
+         "hovered", "_did_use_cache", "value_hash", "drag_window", "width", "top", "left", "content_region",
          "bounding_hovered", "delete_countdown", "z_pos", "scrolled", "is_hovered_last", "frame_count")
-@deep_refresh("expanded", 'content_height')
+@deep_refresh("expanded", 'content_height', 'window_size')
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
 
     def __init__(self):
         super().__init__()
-
         self.misc = {}
         self.misc_used = set()
         self.closed = False

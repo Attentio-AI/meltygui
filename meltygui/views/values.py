@@ -3,39 +3,37 @@ import os
 import shutil
 import sys
 import types
-from collections import deque
+from collections import deque, defaultdict
 from copy import copy
 from enum import Enum
-from functools import wraps
 from inspect import Parameter
 from math import sqrt
 from types import NoneType
 
 import glfw
-import imgui
 
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, tree, push_style_var, \
+from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_style_var, \
     push_style_color, pop_style_color, pop_style_var, end, begin
 from src.lsd.gl_gui.utils.glfw_utils import request_render
-from src.lsd.gl_gui.melty import Melty, CollectionAction, OperationType, apply_collection_action, add_to_collection, \
-    delete_from_collection, ManagedWindow
+from src.lsd.gl_gui.melty import Melty, CollectionAction, OperationType, add_to_collection, \
+    ManagedWindow
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
-from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int, TileCacheMasked
-from src.lsd.gl_gui.view.core_views.core_decoration import hotkey, global_hotkeys, live
-from src.lsd.gl_gui.view.core_views.core_render import render_func, tmp_undo_stack, redo_stack, push_id, pop_id, ui_id, \
-    render_wrapper, annotation_track, listens_for, get_draw_state, clear_floating_text_cache, handle_actions, \
-    begin_window, end_window, apply_drag_and_drop
-from src.lsd.gl_gui.model.core_model.new_core_model import KeyMod, Hotkey, DragMode, DrawState
+from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import hotkey
+from src.lsd.gl_gui.view.core_views.core_render import render_func, tmp_undo_stack, redo_stack, push_id, pop_id, \
+    render_wrapper, annotation_track, listens_for, begin_window, end_window
+from src.lsd.gl_gui.model.core_model.new_core_model import KeyMod, Hotkey
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
 import libcst as cst
 
+from src.lsd.gl_gui.view.core_views.decoration.invalidation_decoration import live
+from src.lsd.gl_gui.view.core_views.decoration.profile_decoration import profile
 from src.lsd.gl_gui.view.core_views.folders_proxy import FolderProxy
-from src.lsd.gl_gui.view.core_views.inspect_utils import get_params, set_fn_defaults
+from src.lsd.gl_gui.view.core_views.inspect_utils import set_fn_defaults
 from collections.abc import MutableMapping
 from src.lsd.gl_gui.view.core_views.codec_register import registry as FILE_CODECS
-from src.lsd.gl_gui.view.core_views.offscreen import Offscreen
 from src.lsd.gl_gui.view.events.event_manager import EventManager
 
 
@@ -125,8 +123,8 @@ def draw_melty_windows(vis):
 @render_func(use_cache=False)
 def draw_main(input_value, vis):
     global test_obj
+    draw_window(Melty.profiles_results, show_bg=True, name="Profile Results")
 
-    #
     draw_window(test_obj, name="Layer 1")
     draw_window(EventManager.input_sources, name="Input Sources")
 
@@ -135,6 +133,8 @@ def draw_main(input_value, vis):
     draw_window(vis.root.lora_collection, name="Test Window 1")
     draw_window(vis.root.lora_collection.loras, name="Test Window 2")
     draw_window(Melty.last_invalid, show_bg=True, name="Last Invalid")
+
+
     # draw_window(Melty.last_request_render, show_bg=True, name="Last Invalid")
 
     draw_window(Melty.registered_windows, indent_size=10, is_tree=True, show_add_delete=False, name="Window Manager")
@@ -1071,6 +1071,7 @@ def get_bg_color(depth, rounding, global_style, style_manager, auto_resize):
     bg_color = mix_colors(bg_color, bg_bleed, bleed_factor)
     return bg_color
 
+@profile
 def core_header(func, outer_func, render_func, input_value=None, melty_window=False, auto_resize=True,
                 collection=None, key=None, indent_size=10, depth=0, draw_state=None,
                 window_stack=None, is_tree=True, is_window=False, spacing=Melty.spacing, padding=Melty.padding, show_name=True,
@@ -1186,7 +1187,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
 
             else:
                 space_available = width - header_width
-                if (not isinstance(input_value, (dict, list, tuple)) and not hasattr(input_value, '__dict__')):
+                if (not isinstance(input_value, (dict, list, tuple, defaultdict)) and not hasattr(input_value, '__dict__')):
                     if draw_state.height is not None:
 
                         if draw_state.expanded_height is None:
@@ -1278,6 +1279,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                 func_changed, func_return_val = func(**next_kwargs)
 
                 inner_end_y = imgui.get_cursor_screen_pos()[1]
+
                 draw_state.content_height = inner_end_y - inner_start_y + header_height
 
                 current_cursor = imgui.get_cursor_screen_pos()
@@ -1296,7 +1298,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
 
             else:
                 if clip and use_child:
-                    rect = (d_left, d_top - header_height, d_left + d_width, d_top + d_height)
+                    rect = (d_left, d_top - header_height, d_left + d_width, d_top + d_height - 2)
                     Melty.push_clip(rect)
 
                 draw_list = imgui.get_window_draw_list()
@@ -1383,7 +1385,8 @@ def seperator(height):
     imgui.dummy(0, snap_int(height / 2))
 
 
-@with_header(is_default_for=(MutableMapping), use_cache=False)
+
+@with_header(is_default_for=(MutableMapping, defaultdict), use_cache=False)
 def draw_collection(input_value, draw_state, depth, style_manager,
                     meta, suffix, melty, show_search=True, on_collapse=False, on_drag_up=False, y_offset=0,
                     on_expand=False, width=None, indent_size=10, global_style=None, global_toggles=None, show_add_delete=True,
@@ -1391,6 +1394,8 @@ def draw_collection(input_value, draw_state, depth, style_manager,
     """
     Universal collection renderer
     """
+    if isinstance(input_value, defaultdict):
+        pass
     changed = False
     base_suffix = suffix  # keep original arg intact
     # ----- SIMPLE NORMALIZER (lowercase; remove spaces, '_' and '-') -----
@@ -1404,19 +1409,19 @@ def draw_collection(input_value, draw_state, depth, style_manager,
             s = ""
         return s.lower().translate(_TRANS)
 
-    if hasattr(input_value, 'children') and isinstance(input_value.children, (list, dict, deque)):
+    if hasattr(input_value, 'children') and isinstance(input_value.children, (list, dict, defaultdict, deque)):
         input_value = input_value.children
 
     search_token = norm_string(draw_state.search_text) if show_search else ""
 
     # --- configure per collection type ---
     ordered_driver = input_value
-    if isinstance(input_value, (dict, list, tuple, set, MutableMapping, deque)):
+    if isinstance(input_value, (dict, list, tuple, set, defaultdict, MutableMapping, deque)):
         use_tint = True
         use_child_meta = True
         apply_change = True
         parent_type = input_value.__class__
-        if isinstance(input_value, (dict, MutableMapping)):
+        if isinstance(input_value, (dict, defaultdict, MutableMapping)):
             keys = input_value.keys()
             collection = input_value
         else:
@@ -1506,11 +1511,11 @@ def draw_collection(input_value, draw_state, depth, style_manager,
         id_val = getattr(input_value, "unique_id", "")
 
         trigger_collapse = False
-        if isinstance(input_value, (dict, MutableMapping)) and on_collapse:
+        if isinstance(input_value, (dict, defaultdict, MutableMapping)) and on_collapse:
             trigger_collapse = True
 
         trigger_expand = False
-        if isinstance(input_value, (dict, MutableMapping)) and on_expand:
+        if isinstance(input_value, (dict, defaultdict, MutableMapping)) and on_expand:
             trigger_expand = True
 
         prev_tint = None
@@ -1552,7 +1557,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
                 item_changed, out_val = False, None
 
             if item_changed and apply_change and key is not None:
-                if isinstance(input_value, (dict, MutableMapping)):
+                if isinstance(input_value, (dict, defaultdict, MutableMapping)):
                     input_value[key] = out_val
                 elif isinstance(input_value, list):
                     input_value[key] = out_val
@@ -2003,7 +2008,7 @@ def draw_object(input_value=None, draw_state=None, meta=None, name="", style_man
                 depth=0, unique=0, suffix="", collection=None, key=None, *args, **kwargs):
     # if is_tree and not draw_state.expanded:
     #     return False, None
-    is_collection = isinstance(input_value, (dict, list, tuple, set)) or (
+    is_collection = isinstance(input_value, (dict, list, tuple, set, defaultdict, MutableMapping)) or (
             hasattr(input_value, "__dict__") and depth < Melty.max_depth)
     if is_collection:
 
@@ -2137,15 +2142,17 @@ def draw_str(input_value: str):
         space_from_top = cursor_y - clip_rect[1]
 
     show_controls = space_left_bottom > 0 and space_from_top > 0
+    width = max(Melty.get_space_left(), 150)
 
     if not show_controls:
         imgui.push_style_var(imgui.STYLE_ALPHA, 0)
 
     if line_count == 1:
+        imgui.set_next_item_width(width)
         changed, value = imgui.input_text("##str", input_value,
                                           flags=imgui.INPUT_TEXT_ENTER_RETURNS_TRUE)
     else:
-        changed, value = imgui.input_text_multiline("##str", input_value, height=height)
+        changed, value = imgui.input_text_multiline("##str", input_value, width=width, height=height)
 
     if not show_controls:
         imgui.pop_style_var(1)

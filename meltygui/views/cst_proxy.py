@@ -4,7 +4,7 @@ import hashlib
 import re
 import libcst as cst
 
-from src.lsd.gl_gui.view.core_views.core_decoration import exclude
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import exclude
 
 # ==============================
 # Formatting & whitespace constants
@@ -365,9 +365,6 @@ class CSTDictProxy(dict):
                 w._set_parent(parent, field_name)
             super().__setitem__(k, w)
 
-        from src.lsd.gl_gui.model.core_model.core_enums import generate_id
-
-
     # @property
     # def unique_id(self):
     #     return str(self.id)
@@ -597,7 +594,6 @@ class CSTProxy:
         object.__setattr__(self, "_parent", None)
         object.__setattr__(self, "_parent_field", None)
         object.__setattr__(self, "_error", None)  # ErrorState | None
-        from src.lsd.gl_gui.model.core_model.core_enums import generate_id
         self._refresh_fields_from(node)
 
     # class spoofing so type-based routing works

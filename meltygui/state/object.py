@@ -10,19 +10,17 @@ from copy import copy
 from enum import Enum
 from typing import Any, Dict, Optional, Union, List, Tuple
 
-import imgui
 import torch
 from torch import Tensor, nn
 from transformers import PreTrainedTokenizerBase, LlamaTokenizerFast
 
-from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.model.core_markers import FieldMeta
 from src.lsd.gl_gui.model.class_utill import ClassUtility
-from src.lsd.gl_gui.model.global_undo_redo_manager import TrackedList, TrackedDict, TrackedSet, GlobalUndoRedoManager
+from src.lsd.gl_gui.model.global_undo_redo_manager import TrackedList, TrackedDict, TrackedSet
 from src.lsd.gl_gui.model.core_model.core_enums import generate_id
 from src.lsd.gl_gui.model.model_enums import RelaxedEnum
-from src.lsd.gl_gui.view.app_view_utils import should_exclude
-from src.lsd.gl_gui.view.core_views.core_decoration import exclude, deep_refresh, live
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import exclude, deep_refresh
+from src.lsd.gl_gui.view.core_views.decoration.invalidation_decoration import live
 
 _SEGMENT_RE = re.compile(
     r'(?:[^.\[]+|\[[^\]]*\])+')  # matches a segment like: attr, attr[0], attr["a.b"][1], [0], ...
@@ -867,60 +865,56 @@ class DictConversion(metaclass=FieldMeta):
             return TrackedSet(self, attr_name, value)
         return value
 
-    def __setattr__(self, name: str, value: Any) -> None:
+    # def __setattr__(self, name: str, value: Any) -> None:
+    #
+    #     try:
+    #         wrapped_value = value
+    #         # Make the actual change
+    #         super().__setattr__(name, wrapped_value)
+    #
+    #     except Exception as e:
+    #         # If something goes wrong, still make the change
+    #         super().__setattr__(name, value)
+    #         raise
 
-        if name.startswith('_'):
-            super().__setattr__(name, value)
-            return
-
-        try:
-            wrapped_value = value
-            # Make the actual change
-            super().__setattr__(name, wrapped_value)
-
-        except Exception as e:
-            # If something goes wrong, still apply the change
-            super().__setattr__(name, value)
-            raise
-
-    def __getitem__(self, key: Union[str, int]) -> Any:
-        # First check if this key is directly in __dict__
-        if isinstance(key, str) and hasattr(self, key):
-            return getattr(self, key)
-
-        # Then check if it's in __dict__ as a list/sequence attribute
-        for attr_name, attr_value in self.__dict__.items():
-            if isinstance(attr_value, (list, tuple)) and isinstance(key, int):
-                if key < len(attr_value):
-                    return attr_value[key]
-                raise IndexError(f"Index {key} out of range for sequence of length {len(attr_value)}")
-            elif isinstance(attr_value, dict) and key in attr_value:
-                return attr_value[key]
-
-        raise TypeError(f"'{self.__class__.__name__}' object has no sequence or mapping with key/index '{key}'")
-
-    def __setitem__(self, key: Union[str, int], value: Any) -> None:
-        if isinstance(value, DictConversion):
-            value._parent = weakref.ref(self)
-            value._parent_key = f"['{key}']" if isinstance(key, str) else f"[{key}]"
-            self._children[key] = value
-
-        # Try to find appropriate sequence/mapping to set the item
-        for attr_name, attr_value in self.__dict__.items():
-            if isinstance(attr_value, (list, tuple)) and isinstance(key, int):
-                if isinstance(attr_value, tuple):
-                    # Convert tuple to list if needed
-                    setattr(self, attr_name, list(attr_value))
-                    attr_value = getattr(self, attr_name)
-                if key < len(attr_value):
-                    attr_value[key] = value
-                    return
-            elif isinstance(attr_value, dict) and key in attr_value:
-                attr_value[key] = value
-                return
-
-        # If we didn't find a place to set it, treat it as a new attribute
-        setattr(self, str(key), value)
+    # def __getitem__(self, key: Union[str, int]) -> Any:
+    #     # First check if this key is directly in __dict__
+    #     if isinstance(key, str) and hasattr(self, key):
+    #         return getattr(self, key)
+    #
+    #     # Then check if it's in __dict__ as a list/sequence attribute
+    #     for attr_name, attr_value in self.__dict__.items():
+    #         if isinstance(attr_value, (list, tuple)) and isinstance(key, int):
+    #             if key < len(attr_value):
+    #                 return attr_value[key]
+    #             raise IndexError(f"Index {key} out of range for sequence of length {len(attr_value)}")
+    #         elif isinstance(attr_value, dict) and key in attr_value:
+    #             return attr_value[key]
+    #
+    #     raise TypeError(f"'{self.__class__.__name__}' object has no sequence or mapping with the key '{key}'")
+    #
+    # def __setitem__(self, key: Union[str, int], value: Any) -> None:
+    #     if isinstance(value, DictConversion):
+    #         value._parent = weakref.ref(self)
+    #         value._parent_key = f"['{key}']" if isinstance(key, str) else f"[{key}]"
+    #         self._children[key] = value
+    #
+    #     # Try to find appropriate sequence/mapping to set the item
+    #     for attr_name, attr_value in self.__dict__.items():
+    #         if isinstance(attr_value, (list, tuple)) and isinstance(key, int):
+    #             if isinstance(attr_value, tuple):
+    #                 # Convert tuple to list if needed
+    #                 setattr(self, attr_name, list(attr_value))
+    #                 attr_value = getattr(self, attr_name)
+    #             if key < len(attr_value):
+    #                 attr_value[key] = value
+    #                 return
+    #         elif isinstance(attr_value, dict) and key in attr_value:
+    #             attr_value[key] = value
+    #             return
+    #
+    #     # If we didn't find a place to set it, treat it as a new attribute
+    #     setattr(self, str(key), value)
 
     def get(self, path: str) -> Any:
         """

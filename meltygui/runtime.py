@@ -1,4 +1,4 @@
-from collections import deque
+from collections import defaultdict, deque
 from enum import Enum
 from typing import MutableMapping
 
@@ -6,8 +6,8 @@ import glfw
 import imgui
 import libcst as cst
 from src.lsd.gl_gui.model.core_model.core_enums import generate_id
-from src.lsd.gl_gui.view.core_views.blit_offscreen import *
-from src.lsd.gl_gui.view.core_views.core_decoration import global_hotkeys
+from src.lsd.gl_gui.utils.glfw_utils import request_render
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import global_hotkeys
 
 
 class Action:
@@ -614,6 +614,8 @@ class MeltyState:
     def __init__(self):
         self.hover_stack = []
         self.hotkey_stack = []
+
+        self.size_stack = []
         self.triggered_actions = {}
 
         self.top_event_depth = {}
@@ -758,7 +760,6 @@ class Melty:
     draw_state_stack = []
     input_value_stack = [None]
     window_enabled = True
-    cache = TileCacheMasked()
     dirty_objects = set()
     all_dirty = False
     hovered_drawstate = set()
@@ -768,6 +769,7 @@ class Melty:
     blocker_hovered = False
 
     all_uniques = set()
+    profiles_results = {}
 
     live_attributes = {}
 
@@ -897,6 +899,16 @@ class Melty:
     @classmethod
     def push_clip(cls, rect):
         draw_list = imgui.get_window_draw_list()
+        current_clip = cls.get_clip_rect()
+        if current_clip is not None:
+            clip_new_rect = (
+                max(current_clip[0], rect[0]),
+                max(current_clip[1], rect[1]),
+                min(current_clip[2], rect[2]),
+                min(current_clip[3], rect[3]),
+            )
+            rect = clip_new_rect
+
         draw_list.push_clip_rect(*rect)
         cls.clip_stack.append(rect)
 
@@ -922,6 +934,24 @@ class Melty:
         width = rect[2] - rect[0]
         height = rect[3] - rect[1]
         return width, height
+
+    @classmethod
+    def get_parent_size(cls):
+        if len(cls.clip_stack) < 2:
+            return None, None
+        rect = cls.clip_stack[-2]
+        width = rect[2] - rect[0]
+        height = rect[3] - rect[1]
+        return width, height
+
+    @classmethod
+    def get_space_left(cls):
+        clip_rect = cls.get_clip_rect()
+        if clip_rect is None:
+            return 40
+        cursor_x, _ = imgui.get_cursor_screen_pos()
+        space_left = clip_rect[2] - cursor_x - 23
+        return space_left
 
     @classmethod
     def inside_clip(cls, draw_state=None, rect=None):
