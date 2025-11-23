@@ -760,6 +760,7 @@ class Melty:
     draw_state_stack = []
     input_value_stack = [None]
     window_enabled = True
+    cache = None
     dirty_objects = set()
     all_dirty = False
     hovered_drawstate = set()

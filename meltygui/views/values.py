@@ -834,10 +834,10 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
 
     return False, flow_spacing
 
-@render_func
 def draw_header_end(global_style, unique, style_manager, show_search,
                     on_search, draw_state, collection, key, closable,
-                    melty, show_add_delete=True, parent_show_add_delete=False):
+                    melty, show_add_delete=True, parent_show_add_delete=False,
+                    **kwargs):
     push_id(f"header_end_{unique}")
     bg_style = {
         "value": 0.01,
@@ -1071,11 +1071,11 @@ def get_bg_color(depth, rounding, global_style, style_manager, auto_resize):
     bg_color = mix_colors(bg_color, bg_bleed, bleed_factor)
     return bg_color
 
-@profile
 def core_header(func, outer_func, render_func, input_value=None, melty_window=False, auto_resize=True,
                 collection=None, key=None, indent_size=10, depth=0, draw_state=None,
                 window_stack=None, is_tree=True, is_window=False, spacing=Melty.spacing, padding=Melty.padding, show_name=True,
-                on_scroll=None, on_mouse_down=False, no_measure=False,
+                on_scroll=None, on_mouse_down=False, no_measure=False, show_search=False, on_search=False,
+                closable=False,
                 show_header=True, show_bg=True, unique=0, name="", style_manager=None, global_style=None, parent_show_add_delete=True,
                 selected_views=None, on_drag=False, on_drag_up=False, do_flow=True, melty=None, enable_flow=True, header_same_line=False,
                 on_hover=False, next_kwargs=None, meta=None, on_same_line=False, y_offset=0, width=None, min_width=1, enable_scroll=True, **kwargs):
@@ -1172,12 +1172,18 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             next_kwargs.pop('padding', None)
             next_kwargs.pop('melty_window', False)
 
+            next_kwargs['input_value'] = input_value
+            next_kwargs['spacing'] =(spacing[0], Melty.spacing[1])
+            next_kwargs['padding'] = (padding[0], Melty.padding[1])
+            next_kwargs['show_search'] = show_search
+            next_kwargs['on_search'] = on_search
+            next_kwargs['key'] = key
+            next_kwargs['collection'] = collection
+            next_kwargs['closable'] = closable
+
             # ------------------ HEADER -----------------
             if (not on_drag) or melty_window:
-                changed, return_value = draw_header(input_value, read_only=False,
-                    spacing=(spacing[0], Melty.spacing[1]),
-                                              padding=(padding[0], Melty.padding[1] + 1),
-                                              **next_kwargs)
+                changed, return_value = draw_header(**next_kwargs)
             rect_size = imgui.get_item_rect_size()
             header_width = rect_size[0]
 
@@ -1203,7 +1209,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             if not header_same_line and (not on_drag or melty_window):
                 # ----------------- end header for collections ---------------
                 # This is the version with an indent, probably a dict header
-                draw_header_end(input_value, **next_kwargs)
+                draw_header_end(**next_kwargs)
 
         bg_color = (0, 0, 0, 1)
         if show_bg:
@@ -1327,8 +1333,6 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
 
         if not on_drag:
             imgui.dummy(0, 1)
-
-
 
         same_line(spacing=0)
         imgui.dummy(0, snap_int(y_margin))
@@ -1765,13 +1769,12 @@ def button(input_value="", color=None, width=None, height=None, style_manager=No
     return clicked, input_value
 
 
-@render_func()
 def draw_header(input_value=None, name="", suffix="", closable=False, collection=None, display_name=None, meta=None, unique=None, is_tree=True,
                 show_name=True, name_func=None, show_type=False, show_unique=False,
                 on_search=False, trigger_collapse=False, trigger_expand=False,
                 draw_state=None, show_tint=True, opacity=1.0, show_add_delete=True,
                 on_drag=False, on_action=None, style_manager=None,
-                global_style=None, global_toggles=None):
+                global_style=None, global_toggles=None, **kwargs):
 
     if display_name is not None:
         name = display_name
