@@ -410,7 +410,7 @@ class TileCacheMasked:
         self._sizes = {}  # resolved key -> (w,h)
         self._stack: List[_Ctx] = []
         self._key_to_ctx: Dict[str, _Ctx] = {}
-        self._pending: dict[str, _Pending] = {}
+        self._pending: List[_Pending] = []
         self.all_keys = set()
 
         # mask/snapshot
@@ -593,9 +593,8 @@ class TileCacheMasked:
                 #     self.did_deviate[k] = True
 
                 if force:
-                    t.force_invalidate = force
-
-                if k in self.initial_value and self.initial_value[k] == input_val_hash:
+                    t.force_invalidate |= force
+                if not t.force_invalidate and k in self.initial_value and self.initial_value[k] == input_val_hash:
                     if not t.force_invalidate:
                         # Resetting initial value cancels invalidate
                         t.last_invalidated_frame = t.last_clean_frame
@@ -997,7 +996,7 @@ class TileCacheMasked:
                 self.invalidate(ctx.key)
                 self._tiles[ctx.key] = t
 
-            if self._is_dirty(t):
+            if self._is_dirty(t) and (ctx.key not in self._enq_copy_keys):
                 # parent_keys = self.get_parent_keys(ctx.key)
                 # for parent in parent_keys:
                 #     if parent and parent != ctx.key:
@@ -1012,9 +1011,10 @@ class TileCacheMasked:
                 #             self._pending[parent] = _Pending(tile=parent_tile, pos=parent_ctx.pos,
                 #                                              size=parent_ctx.size, layer=parent_ctx.layer,
                 #                                               key=parent_ctx.key)
+                self._pending.append(_Pending(tile=t, pos=ctx.pos, size=ctx.size, layer=ctx.layer, key=ctx.key))
+                self._enq_copy_keys.add(ctx.key)
 
-
-                self._pending[ctx.key] = _Pending(tile=t, pos=ctx.pos, size=ctx.size, layer=ctx.layer, key=ctx.key)
+                # self._pending[ctx.key] = _Pending(tile=t, pos=ctx.pos, size=ctx.size, layer=ctx.layer, key=ctx.key)
 
     # ----- Finalize (post-frame) -----
     def _ensure_programs(self):
@@ -1068,7 +1068,7 @@ class TileCacheMasked:
 
         # Freeze worklists (with versioning, we generally do NOT cancel mid-frame)
         local_mask_rects = self._mask_rects[:]
-        local_pending = list(self._pending.values())[:]
+        local_pending = self._pending[:]
 
         if not local_pending:
             self._pending.clear()

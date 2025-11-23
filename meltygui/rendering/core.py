@@ -171,13 +171,13 @@ def handle_actions(melty, unique, draw_state, func=None):
 
 def floating_text(text: str, x_offset: float = 0, line_height: float = None, tint: tuple = (1, 1, 1, 1),
                   max_width: float = 200):
-    cursor_pos = imgui.get_cursor_pos()
+    cursor_pos = imgui.get_cursor_screen_pos()
 
     inside_window = len(Melty.window_stack) > 0
 
     # Get draw list - only use overlay
     draw_list = imgui.get_overlay_draw_list()
-    window_pos = imgui.get_window_position()
+    window_pos = Melty.melty_window_stack[-1][0] if len(Melty.melty_window_stack) else imgui.get_window_position()
 
     # Get current window ID to track space per-window
     window_id = Melty.window_stack[-1] if len(Melty.window_stack) > 0 else 0
@@ -196,8 +196,8 @@ def floating_text(text: str, x_offset: float = 0, line_height: float = None, tin
         return
 
     # Starting point (cursor position in absolute coordinates, adjusted for scrolling)
-    start_x = window_pos.x + cursor_pos[0] - scroll_x
-    start_y = window_pos.y + cursor_pos[1] - scroll_y
+    start_x = cursor_pos[0] - scroll_x
+    start_y = cursor_pos[1] - scroll_y
 
     padding = 4
     spacing = 8
@@ -256,10 +256,11 @@ def floating_text(text: str, x_offset: float = 0, line_height: float = None, tin
         else:
             actual_y += line_height  # default height if not set
 
-    snapped_y = window_pos.y + actual_y
+    snapped_y = actual_y
 
     # Track max label height for this line in current frame
-    cache_key = (window_id, line_index)
+    window_key = Melty.melty_window_stack[-1][2] if len(Melty.melty_window_stack) > 0 else 0
+    cache_key = (window_key, line_index)
     if cache_key in _floating_text_cache:
         cache_data = _floating_text_cache[cache_key]
         cache_data['max_height'] = max(cache_data.get('max_height', 0), label_height)
@@ -272,7 +273,7 @@ def floating_text(text: str, x_offset: float = 0, line_height: float = None, tin
         left_x = float('inf')
 
     # Calculate x position relative to window (right edge of label)
-    current_x_right = window_pos.x + x_offset
+    current_x_right = window_pos[0] + x_offset
 
     # Check for horizontal overlap at this y position
     if current_x_right >= left_x:
@@ -320,8 +321,6 @@ def floating_text(text: str, x_offset: float = 0, line_height: float = None, tin
         dot_color = imgui.get_color_u32_rgba(tint[0], tint[1], tint[2], tint[3])
         line_thickness = 1.0
 
-    if inside_window:
-        draw_list.channels_set_current(line_channel)
     draw_list.add_bezier_cubic(
         start_x, start_y,
         cp1_x, cp1_y,
@@ -339,10 +338,6 @@ def floating_text(text: str, x_offset: float = 0, line_height: float = None, tin
         dot_color,
         12
     )
-
-    # Draw boxes on front channel
-    if inside_window:
-        draw_list.channels_set_current(1)
 
     # Draw background rectangle
     draw_list.add_rect_filled(
@@ -1132,7 +1127,7 @@ def render_func(*args, **o_kwargs):
 
             if kwargs.get("melty_window", False):
                 melty_window = True
-                Melty.melty_window_stack.append(unique)
+                Melty.melty_window_stack.append((draw_state.window_pos, draw_state.window_size, unique))
                 cursor_pos = imgui.get_cursor_screen_pos()
 
                 if draw_state.window_pos is None and draw_state.width is not None:
@@ -1270,6 +1265,9 @@ def render_func(*args, **o_kwargs):
                     pos_y = drag_delta[1] + draw_state.bounds_top + delta_sy
 
                     Melty.undo_clip(unique)
+                    Melty.push_clip((pos_x, pos_y,
+                                     pos_x + draw_state.width,
+                                     pos_y + draw_state.height))
 
                     start_pos = imgui.get_cursor_screen_pos()
                     imgui.set_cursor_screen_pos((pos_x, pos_y))
@@ -1278,8 +1276,11 @@ def render_func(*args, **o_kwargs):
 
                     return_value = draw_inner_main(clean_args, draw_state, input_value, next_kwargs, melty, tile_id,
                                                    unique)
+
                     kwargs['on_drag'] = True
                     Melty.window_enabled = True
+
+                    Melty.pop_clip()
                     Melty.redo_clip(unique)
 
                     Melty.depth = Melty.depth - 7
@@ -1333,7 +1334,10 @@ def render_func(*args, **o_kwargs):
                 item_rect = imgui.get_item_rect_size()
                 if len(Melty.clip_stack) > 0:
                     clip_width = Melty.clip_stack[-1][2] - Melty.clip_stack[-1][0]
+                    clip_height = Melty.clip_stack[-1][3] - Melty.clip_stack[-1][1]
                     item_rect = (min(item_rect[0], clip_width), item_rect[1])
+
+
                 original_width_b = draw_state.bounding_width
                 original_height_b = draw_state.bounding_height
                 # if kwargs.get("auto_resize", True):
@@ -1360,6 +1364,13 @@ def render_func(*args, **o_kwargs):
                     draw_state.height = draw_state.window_size[1]
                     draw_state.bounding_width = draw_state.window_size[0]
                     draw_state.bounding_height = draw_state.window_size[1]
+
+                    if not melty_window and draw_state.content_height > draw_state.height:
+
+                        clip_width = Melty.clip_stack[-1][2] - Melty.clip_stack[-1][0]
+                        clip_height = Melty.clip_stack[-1][3] - Melty.clip_stack[-1][1]
+                        draw_state.width, draw_state.height = (min(draw_state.window_size[0], clip_width),
+                                                               min(clip_height, draw_state.window_size[1]))
                 else:
                     draw_state.bounding_width = snap_int(item_rect[0])
                     draw_state.bounding_height = snap_int(item_rect[1])

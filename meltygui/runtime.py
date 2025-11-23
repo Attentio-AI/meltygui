@@ -954,6 +954,8 @@ class Melty:
         space_left = clip_rect[2] - cursor_x - 23
         return space_left
 
+
+
     @classmethod
     def inside_clip(cls, draw_state=None, rect=None):
         clip_rect = cls.get_clip_rect()

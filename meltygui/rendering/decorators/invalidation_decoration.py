@@ -9,6 +9,8 @@ from src.lsd.gl_gui.view.core_views.decoration.core_decoration import auto_eval
 def live(cls):
     # Get excluded attrs from class (if defined)
     excluded = getattr(cls, '__excluded_attrs__', set())
+    deep_refresh_names = getattr(cls, '__deep_refresh__', set())
+    invalidate_all = getattr(cls, '__invalidate_all__', set())
 
     setattr(cls, '__melty__', True)
 
@@ -32,10 +34,18 @@ def live(cls):
         # Check if we're initializing
         initializing = getattr(self, init_flag, False)
 
+        excluded = getattr(self, '__excluded_attrs__', set())
         deep_refresh_names = getattr(self, '__deep_refresh__', set())
+        invalidate_all = getattr(self, '__invalidate_all__', set())
+
         do_deep_refresh = name in deep_refresh_names
         visible = name not in excluded
         visible = visible or do_deep_refresh
+        #
+        if name in invalidate_all:
+            print(f"Invalidate all called due to change in {name}")
+            Melty.cache.invalidate_all()
+            return
 
         # Call invalidate() if:
         # - not currently initializing

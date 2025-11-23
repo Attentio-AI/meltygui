@@ -107,10 +107,19 @@ class auto_eval:
     def _on_change(self, obj, old_value, new_value):
         excluded = getattr(obj, '__excluded_attrs__', set())
         deep_refresh_names = getattr(self, '__deep_refresh__', set())
+        invalidate_all_flag = getattr(self, '__invalidate_all__', set())
+
         do_deep_refresh = self.name in deep_refresh_names
         visible = self.name not in excluded
         visible = visible or do_deep_refresh
         from src.lsd.gl_gui.melty import Melty
+
+        if self.name in invalidate_all_flag:
+            print(f"Invalidate all called due to change in {self.name}")
+            Melty.cache.invalidate_all()
+            request_render()
+            return
+
         if old_value != new_value:
             if visible and not self.name.startswith('_') \
                     and self.name != "driver" and Melty.frame_count > 3:
@@ -142,6 +151,22 @@ def deep_refresh(*args, **kwargs):
         merged_names = merged_names.union(from_args)
 
         setattr(cls, '__deep_refresh__', merged_names)
+        return cls
+
+    return decorator
+
+
+def invalidate_all(*args, **kwargs):
+    def decorator(cls):
+        if len(args) == 1 and isinstance(args[0], (list, set, tuple)):
+            from_args = args[0]
+        else:
+            from_args = set(args)
+        already_excluded = getattr(cls, '__invalidate_all__', set())
+        merged_names = already_excluded.union(set(from_args))
+        merged_names = merged_names.union(from_args)
+
+        setattr(cls, '__invalidate_all__', merged_names)
         return cls
 
     return decorator
