@@ -69,12 +69,12 @@ class DragMode(Enum):
 @no_save("mouse_btn_state", "mouse_up", "mouse_down", "bounding_width", "bounding_height", "unique", "search_active",
          "drag_released","clicked", "dragged", "dragged", "top", "left", "bounds_top", "bounds_left", "name", "expanded_height",
          "render_time", "imgui_is_toggled_open", "z_pos", "content_height", "hotkey_receiver", "use_child", "cst", "search_text",
-         "is_active", "is_focused", "drag_window_pos_x", "drag_window_pos_y", "drag_mode", "auto_resize", "clipped", "is_hovered_last",
+         "is_active", "did_render", "is_focused", "drag_window_pos_x", "drag_window_pos_y", "drag_mode", "auto_resize", "clipped", "is_hovered_last",
          "z_pos", "draw_window_pos_x", "misc_used", "draw_window_pos_y", "drag_delta", "screen_pos", "imgui_is_item_activated")
-@exclude("render_time", "bounds_left", "bounds_top", "_input_value","flow_spacing", "content_height",
-         "hovered", "_did_use_cache", "value_hash", "drag_window", "top", "left", "content_region",
+@exclude("render_time", "bounds_left", "bounds_top", "_input_value","flow_spacing",
+         "hovered", "_did_use_cache", "value_hash", "drag_window", "top", "left", "content_region", "did_render",
          "bounding_hovered", "delete_countdown", "z_pos", "scrolled", "is_hovered_last", "frame_count")
-@deep_refresh("expanded", 'content_height', 'window_size')
+@deep_refresh("expanded", 'window_size')
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
 
@@ -141,7 +141,7 @@ class DrawState(DictConversion):
         self._name_edit = False
         self._screen_pos = (0, 0)
         self._did_use_cache = False
-
+        self.did_render = False
         self.track_mouse = False
 
         self.mouse_btn_state = {0: MouseState(),
@@ -163,8 +163,8 @@ class DrawState(DictConversion):
 
         self.result = None
         self.params = {}
-        self.bounds_left = None
-        self.bounds_top = None
+        self.bounds_left = 0
+        self.bounds_top = 0
 
         self.delete_countdown = Melty.save_draw_state_for
 

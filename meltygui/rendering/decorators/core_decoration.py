@@ -115,7 +115,6 @@ class auto_eval:
         from src.lsd.gl_gui.melty import Melty
 
         if self.name in invalidate_all_flag:
-            print(f"Invalidate all called due to change in {self.name}")
             Melty.cache.invalidate_all()
             request_render()
             return

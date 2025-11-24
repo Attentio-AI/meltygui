@@ -705,6 +705,10 @@ class Melty:
     scroll_stack = []
     tile_id_stack = []
 
+    content_height_stack = []
+
+    cursor = (0, 0)
+
     last_request_render = ""
 
     actions_to_apply = []
@@ -818,7 +822,7 @@ class Melty:
         fb_w, fb_h = map(int, imgui.get_io().display_size)  # Get: true GL FB size for HiDPI
         cls.cache.mask_begin_frame((fb_w, fb_h))
 
-        from src.lsd.gl_gui.view.core_views.core_render import clear_floating_text_cache
+        from lsd.gl_gui.view.core_views.core_render_helpers import clear_floating_text_cache
         clear_floating_text_cache()
 
     @classmethod
@@ -847,7 +851,7 @@ class Melty:
 
         if Melty.depth == 0:
             from src.lsd.gl_gui.view.core_views.core_render import get_melty_state
-            melty = get_melty_state(0)
+            melty = get_melty_state()
             melty.last_mouse_pos = imgui.get_mouse_pos()
             # Did not move
             if len(melty.hover_stack) > 0:
@@ -930,7 +934,8 @@ class Melty:
     @classmethod
     def get_clip_size(cls):
         if len(cls.clip_stack) == 0:
-            return None, None
+            display_size = imgui.get_io().display_size
+            return int(display_size[0]) - 1, int(display_size[1]) - 1
         rect = cls.clip_stack[-1]
         width = rect[2] - rect[0]
         height = rect[3] - rect[1]

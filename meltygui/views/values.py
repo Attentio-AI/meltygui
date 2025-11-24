@@ -145,7 +145,7 @@ def draw_main(input_value, vis):
     # draw_window(Melty.last_request_render, show_bg=True, name="Last Invalid")
 
 
-@with_header(is_default_for=uint32, show_bg=True, use_cache=True, show_add_delete=False)
+@with_header(is_default_for=uint32, show_bg=True, use_cache=False, show_add_delete=False, enable_scroll=True)
 def draw_texture(input_value:uint32, draw_state):
     texture_id = input_value
     # Check if opengl texture ID is valid
@@ -227,7 +227,7 @@ def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, 
             window_draw_state.closed = True
 
 
-@render_func(use_cache=True, auto_resize=False, closable=True, show_bg=True, melty_window=True, draggable=True)
+@render_func(use_cache=True, enable_scroll=False, auto_resize=False, closable=True, show_bg=True, melty_window=True, draggable=True)
 def draw_window(input_value, inner_func=None, style_manager=None, *args, **kwargs):
     window_name = kwargs.get('name', 'Managed Window')
 
@@ -963,28 +963,12 @@ def get_bg_color(depth, rounding, global_style, style_manager, auto_resize):
 def core_header(func, outer_func, render_func, input_value=None, melty_window=False, auto_resize=True,
                 collection=None, key=None, indent_size=10, depth=0, draw_state=None,
                 window_stack=None, is_tree=True, is_window=False, spacing=Melty.spacing, padding=Melty.padding, show_name=True,
-                on_scroll=None, on_mouse_down=False, no_measure=False, show_search=False, on_search=False,
+                on_mouse_down=False, no_measure=False, show_search=False, on_search=False,
                 closable=False,
                 show_header=True, show_bg=True, unique=0, name="", style_manager=None, global_style=None, parent_show_add_delete=True,
                 selected_views=None, on_drag=False, on_drag_up=False, do_flow=True, melty=None, enable_flow=True, header_same_line=False,
-                on_hover=False, next_kwargs=None, meta=None, on_same_line=False, y_offset=0, width=None, min_width=1, enable_scroll=True, **kwargs):
+                on_hover=False, next_kwargs=None, meta=None, on_same_line=False, y_offset=0, width=None, min_width=1, **kwargs):
 
-        if on_scroll is not None:
-            needs_scroll = draw_state.content_height > draw_state.height if draw_state.height is not None else False
-            if needs_scroll:
-                scroll_offset = draw_state.scroll_offset
-                current_x = scroll_offset[0]
-                current_y = scroll_offset[1]
-                direction = -1
-                scroll_speed = 100.0
-                new_offset_y = current_y + on_scroll * direction * scroll_speed
-
-                min_scroll_y = 0
-                max_scroll_y = max(0, draw_state.content_height - draw_state.height)
-                draw_state.scroll_offset = (current_x,
-                                            max(min_scroll_y, min(new_offset_y, max_scroll_y)))
-
-                Melty.cache.invalidate_up_current(max_depth=1)
 
         initial_cursor_pos = imgui.get_cursor_screen_pos()
 
@@ -1053,6 +1037,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             draw_state.top = start_y_pos
             draw_state.left = start_x_pos
 
+        current_cursor = imgui.get_cursor_screen_pos()
         if show_header:
             next_kwargs['highlight'] = on_hover
             if on_drag and not melty_window:
@@ -1075,6 +1060,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                 changed, return_value = draw_header(**next_kwargs)
             rect_size = imgui.get_item_rect_size()
             header_width = rect_size[0]
+
 
             # Auto indent is decided here
             if header_same_line:
@@ -1099,6 +1085,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                 # ----------------- end header for collections ---------------
                 # This is the version with an indent, probably a dict header
                 draw_header_end(**next_kwargs)
+
 
         bg_color = (0, 0, 0, 1)
         if show_bg:
@@ -1131,78 +1118,37 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             current_cursor = imgui.get_cursor_screen_pos()
             header_height = current_cursor[1] - start_y_pos
             draw_state._header_height = header_height
-            has_width_height = draw_state.width is not None and draw_state.height is not None
-            use_child = (not auto_resize)
-            draw_state.use_child = use_child
-
-            has_size = (draw_state.width is not None and draw_state.height is not None and
-                        draw_state.left is not None and draw_state.top is not None)
-
-            needs_scroll = draw_state.content_height > draw_state.height if draw_state.height is not None else False
-            if not needs_scroll:
-                draw_state.scroll_offset = (0, 0)
-
-            if needs_scroll:
-                Melty.scroll_stack.append(draw_state.scroll_offset)
-
-            d_left = draw_state.left
-            d_top = draw_state.top
-            d_width = draw_state.width
-            d_height = draw_state.height
 
             if not header_same_line:
                 Melty.indent(indent_size)
-            scrollbar_width = 4.0
-            scroll_bar_margin = 1.0
-            if use_child and has_size and needs_scroll:
-                draw_list = imgui.get_window_draw_list()
-                if Melty.channels_split and show_bg:
-                    draw_list.channels_set_current(min(Melty.max_depth - 1, Melty.depth))
 
-                current_cursor = imgui.get_cursor_screen_pos()
-                imgui.set_cursor_screen_pos((current_cursor[0], current_cursor[1] - draw_state.scroll_offset[1]))
-                inner_start_y = imgui.get_cursor_screen_pos()[1]
+            draw_list = imgui.get_window_draw_list()
 
-                func_changed, func_return_val = func(**next_kwargs)
-
-                inner_end_y = imgui.get_cursor_screen_pos()[1]
-
-                # draw_state.content_height = inner_end_y - inner_start_y + header_height
-
-                current_cursor = imgui.get_cursor_screen_pos()
-                imgui.set_cursor_screen_pos((current_cursor[0], current_cursor[1] + draw_state.scroll_offset[1]))
-
-
-                draw_list.channels_set_current(Melty.depth)
-
-                scroll_bar_offset = header_height - 5
-                draw_vertical_scrollbar(draw_state.content_height, view_height=d_height - scroll_bar_offset, view_width=d_width,
-                                        scroll_offset=draw_state.scroll_offset[1], scrollbar_width=scrollbar_width, left=d_left,
-                                        top=d_top + scroll_bar_offset)
+            if Melty.channels_split and show_bg:
                 draw_list.channels_set_current(min(Melty.max_depth - 1, Melty.depth))
-
-            else:
-
-                draw_list = imgui.get_window_draw_list()
-                if Melty.channels_split and show_bg:
-                    draw_list.channels_set_current(min(Melty.max_depth - 1, Melty.depth))
-                func_changed, func_return_val = func(**next_kwargs)
+            clip_start = imgui.get_cursor_screen_pos()
+            Melty.push_clip((clip_start[0], clip_start[1],
+                             clip_start[0] + draw_state.width - 5, clip_start[1] + draw_state.height))
+            return_val = func(**next_kwargs)
 
             if not header_same_line:
                 Melty.unindent(indent_size)
 
-            if needs_scroll:
-                Melty.scroll_stack.pop()
-
             ############### END MAIN FUNC CALL #############################
-            if func_changed:
-                return_value = func_return_val
-            changed |= func_changed
+            if return_val is not None and len(return_val) == 2:
+                func_changed, func_return_val = return_val
+
+                if func_changed:
+                    return_value = func_return_val
+                changed |= func_changed
 
             if header_same_line and show_header:
                 # ----------------- end header single item---------------
                 # This is the version for single items probably
                 draw_header_end(**next_kwargs)
+
+
+            Melty.pop_clip()
 
         if not on_drag:
             imgui.dummy(0, 1)
@@ -1213,6 +1159,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
         background_width = width
         background_height = draw_state.height  if draw_state.height is not None else 0
         draw_list = imgui.get_window_draw_list()
+
 
         if Melty.channels_split:
             if show_bg:
@@ -1238,9 +1185,9 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
         if not on_drag or melty_window:
             next_kwargs['do_flow'] = True
 
-        if melty_window:
-            imgui.set_cursor_screen_pos((initial_cursor_pos[0],
-                                         initial_cursor_pos[1]))
+        # if melty_window:
+        #     imgui.set_cursor_screen_pos((initial_cursor_pos[0],
+        #                                  initial_cursor_pos[1]))
         if prev_tint is not None:
             style_manager.set_imgui_tint(*prev_tint)
         if on_drag_up and not melty_window:
@@ -1263,7 +1210,7 @@ def seperator(height):
 
 
 
-@with_header(is_default_for=(MutableMapping, defaultdict), use_cache=False)
+@with_header(is_default_for=(MutableMapping, defaultdict), use_cache=False, enable_scroll=True)
 def draw_collection(input_value, draw_state, depth, style_manager,
                     meta, suffix, melty, show_search=True, on_collapse=False, on_drag_up=False, y_offset=0,
                     on_expand=False, width=None, indent_size=10, global_style=None, global_toggles=None, show_add_delete=True,
@@ -1324,6 +1271,10 @@ def draw_collection(input_value, draw_state, depth, style_manager,
     collection_spacing = 0
     all_meta = []
     content_height = 0.0
+
+    current_cursor = imgui.get_cursor_screen_pos()
+    # imgui.set_cursor_screen_pos((current_cursor[0], current_cursor[1] - draw_state.scroll_offset[1]))
+
     start_cursor = imgui.get_cursor_pos()[1]
     keys = list(keys)[:]
     for idx, key in enumerate(keys):
@@ -1422,13 +1373,13 @@ def draw_collection(input_value, draw_state, depth, style_manager,
                         if space_left < 0:
                             imgui.new_line()
 
+            item_start_cursor = imgui.get_cursor_screen_pos()
             item_changed, out_val, extras = draw_any(item, return_extras=True, indent_size=10, key=key,
                                                      meta=item_meta, trigger_collapse=trigger_collapse,
                              trigger_expand=trigger_expand, y_offset=y_offset, on_collapse=on_collapse, on_expand=on_expand,
                              collection=ordered_driver, name=key_str, display_name=display_name,
                                              parent_show_add_delete=show_add_delete,
                                              show_add_delete=show_add_delete)
-
 
             if isinstance(out_val, CollectionAction):
                 # perform the move; this should mutate the plain dicts you attached
@@ -1452,7 +1403,6 @@ def draw_collection(input_value, draw_state, depth, style_manager,
             changed |= item_changed
             drew_any = True
 
-            # draw_state.content_height = max(draw_state.content_height, imgui.get_cursor_pos()[1] - prev_cursor)
         except Exception as e:
             print(f"Error rendering field '{key_str}' of {type(input_value).__name__}: {e}")
             print_colored_traceback(*sys.exc_info())
@@ -1461,7 +1411,13 @@ def draw_collection(input_value, draw_state, depth, style_manager,
             if prev_tint is not None:
                 style_manager.set_imgui_tint(*prev_tint)
 
-    # draw_state.content_height = content_height
+    end_pos = imgui.get_cursor_pos()[1]
+    content_height = end_pos - start_cursor
+
+    # imgui.set_cursor_screen_pos((current_cursor[0], current_cursor[1] + draw_state.scroll_offset[1]))
+    # current_cursor = imgui.get_cursor_screen_pos()
+
+    draw_state.content_height = content_height
 
     # ----------------- top spacing -----------
     last_key = list(keys)[-1] if len(keys) > 0 else None
@@ -1813,10 +1769,6 @@ def draw_header(input_value=None, name="", suffix="", closable=False, collection
 
     if show_add_delete and isinstance(input_value, (list, dict)) or hasattr(input_value, "__dict__"):
         bg_style = global_style.get_global_constant("bg_style", default=None, folder="bg_styles")
-        text_color = (style_manager.
-                      make_color_style_value(input=bg_style, saturation=0.2,
-                                             value=1.0))
-        # imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + 2)
         if show_add_delete:
             if imgui.button(f"\uf067##add", width=20):
                 # Use str as default hinted type
@@ -1949,7 +1901,7 @@ def draw_bool(input_value: bool):
     return False, None
 
 
-@with_header_minimal(is_default_for=(str), use_cache=False)
+@with_header_minimal(is_default_for=(str))
 def draw_str(input_value: str):
     line_count = input_value.count('\n') + 1
     line_height = imgui.get_text_line_height_with_spacing()
@@ -1974,7 +1926,7 @@ def draw_str(input_value: str):
     start_x = imgui.get_cursor_screen_pos()[0]
     start_offset = start_x - left_edge
 
-    show_controls = space_left_bottom > 0 and space_from_top > 0
+    show_controls = True
     width = min(Melty.get_space_left(), 400 - start_offset)
 
     if not show_controls:

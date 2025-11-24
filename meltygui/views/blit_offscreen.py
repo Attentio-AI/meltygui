@@ -881,12 +881,10 @@ class TileCacheMasked:
 
         imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
         imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
-        from src.lsd.gl_gui.view.core_views.core_render import push_id
 
-        push_id(f"{rkey}_offscreen")  # UI id to keep based on caller-provided key
+        imgui.push_id(f"{rkey}_offscreen")  # unique id: keep based on caller-provided key
 
-        from src.lsd.gl_gui.view.core_views.core_render import begin_group
-        begin_group()
+        imgui.begin_group()
         imgui.pop_style_var(2)
 
         has_area = size is not None and size[0] != 0 and size[1] != 0
@@ -937,10 +935,8 @@ class TileCacheMasked:
 
         ctx = self._stack.pop()
 
-        from src.lsd.gl_gui.view.core_views.core_render import pop_id
-        pop_id()
-        from src.lsd.gl_gui.view.core_views.core_render import end_group
-        end_group()
+        imgui.pop_id()
+        imgui.end_group()
 
         Melty.tile_id_stack.pop()
 
