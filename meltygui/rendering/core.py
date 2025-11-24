@@ -1087,8 +1087,6 @@ def render_func(*args, **o_kwargs):
 
             ############################# WINDOW SETUP #####################################################
             window_drag = False
-            # if kwargs.get("melty_window", False):
-            #     imgui.set_cursor_screen_pos((0, 0))
 
             if ((kwargs.get("melty_window", False) or (not kwargs.get("auto_resize", True)) and draw_state.drag_mode == DragMode.RESIZE_BR)
                     and kwargs.get("on_drag", False)):
@@ -1132,8 +1130,8 @@ def render_func(*args, **o_kwargs):
                                                 Melty.init_window_cursor[1])
 
                 if draw_state.window_pos is not None:
-                    imgui.set_cursor_screen_pos((snap_int(cursor_pos[0] + draw_state.window_pos[0]),
-                                                 snap_int(cursor_pos[1] + draw_state.window_pos[1])))
+                    imgui.set_cursor_screen_pos((snap_int(draw_state.window_pos[0]),
+                                                 snap_int(draw_state.window_pos[1])))
             else:
                 draw_state.window_pos = None
 
@@ -1173,9 +1171,11 @@ def render_func(*args, **o_kwargs):
                         if imgui.button(f"Fix Type##{unique}"):
                             return True, expected_type()
                         same_line()
+                        type_class_path = f"{expected_type.__module__}.{expected_type.__name__}"
+                        actual_type_class_path = f"{type(input_value).__module__}.{type(input_value).__name__}"
                         imgui.text_colored(f"Type mismatch in {func.__name__}\n"
-                                           f"Expected {expected_type.__name__}, "
-                                           f"got {type(input_value).__name__}", *yellow)
+                                           f"Expected {type_class_path}, "
+                                           f"got {actual_type_class_path}", *yellow)
                         return False, None
 
 
@@ -1282,8 +1282,22 @@ def render_func(*args, **o_kwargs):
                     imgui.set_cursor_screen_pos(start_pos)
 
                 else:
+                    clip = not kwargs.get("auto_resize", True)
+                    if (draw_state.left is None or draw_state.top is None or
+                            draw_state.width is None or draw_state.height is None):
+                        clip = False
+
                     #### MAIN CALL #######################################################
+                    if clip:
+                        cursor_pos = imgui.get_cursor_screen_pos()
+                        Melty.push_clip((cursor_pos[0], cursor_pos[1],
+                                         cursor_pos[0] + draw_state.width + 1,
+                                         cursor_pos[1] + draw_state.height))
                     return_value = draw_inner_main(clean_args, draw_state, input_value, kwargs, melty, tile_id, unique)
+
+                    if clip:
+                        Melty.pop_clip()
+
                     #######################
 
                 draw_state._imgui_is_edited = imgui.is_item_edited()
@@ -1326,6 +1340,9 @@ def render_func(*args, **o_kwargs):
                         imgui.set_cursor_screen_pos((start_cursor[0],
                                                      start_cursor[1] + draw_state.height))
                 item_rect = imgui.get_item_rect_size()
+                # draw_state.content_height = item_rect[1]
+
+
                 if len(Melty.clip_stack) > 0:
                     clip_width = Melty.clip_stack[-1][2] - Melty.clip_stack[-1][0]
                     clip_height = Melty.clip_stack[-1][3] - Melty.clip_stack[-1][1]
@@ -1360,11 +1377,11 @@ def render_func(*args, **o_kwargs):
                     draw_state.bounding_height = draw_state.window_size[1]
 
                     if not melty_window and draw_state.content_height > draw_state.height:
-
-                        clip_width = Melty.clip_stack[-1][2] - Melty.clip_stack[-1][0]
-                        clip_height = Melty.clip_stack[-1][3] - Melty.clip_stack[-1][1]
-                        draw_state.width, draw_state.height = (min(draw_state.window_size[0], clip_width),
-                                                               min(clip_height, draw_state.window_size[1]))
+                        if len(Melty.clip_stack) > 0:
+                            clip_width = Melty.clip_stack[-1][2] - Melty.clip_stack[-1][0]
+                            clip_height = Melty.clip_stack[-1][3] - Melty.clip_stack[-1][1]
+                            draw_state.width, draw_state.height = (min(draw_state.window_size[0], clip_width),
+                                                                   min(clip_height, draw_state.window_size[1]))
                 else:
                     draw_state.bounding_width = snap_int(item_rect[0])
                     draw_state.bounding_height = snap_int(item_rect[1])
@@ -1414,11 +1431,13 @@ def render_func(*args, **o_kwargs):
                 if melty_window:
                     Melty.melty_window_stack.pop()
 
-                if melty_window:
-                    imgui.set_cursor_screen_pos((0, 0))
+                # if melty_window:
+                #     imgui.set_cursor_screen_pos((0, 0))
 
                 # if kwargs.get("on_drag", False):
                 #     imgui.set_cursor_screen_pos((draw_state.cursor_left, draw_state.cursor_top))
+
+
 
                 # Melty.vis._frame_id += 1
 
@@ -1448,7 +1467,7 @@ def render_func(*args, **o_kwargs):
     def draw_inner_main(clean_args, draw_state, input_value, kwargs, melty, tile_id, unique):
         return_value = None
         start_cursor = imgui.get_cursor_screen_pos()
-        use_cache = kwargs.get("use_cache", False)
+        use_cache = kwargs.get("use_cache", False) and Melty.cache.enabled
         collection = kwargs.get("collection", None)
         global_toggles = kwargs.get("global_toggles", {})
         if global_toggles.offscreen_debug:
@@ -1466,7 +1485,7 @@ def render_func(*args, **o_kwargs):
 
             draw_state.clipped = inside_clip
 
-        if use_cache and Melty.cache.enabled:
+        if use_cache:
             last_bounding_hovered = draw_state.is_bounding_hovered()
             draw_state._bounding_hovered = last_bounding_hovered
             hover_changed = last_bounding_hovered != draw_state._bounding_hovered
@@ -1475,33 +1494,22 @@ def render_func(*args, **o_kwargs):
                     draw_state.width is None or draw_state.height is None or draw_state._imgui_popover_open):
                 Melty.cache.invalidate(tile_id, force=True)
 
-            #     request_render()
             offscreen_depth = Melty.depth
-
             if Melty.channels_split:
                 draw_list = imgui.get_window_draw_list()
                 draw_list.channels_set_current(min(offscreen_depth, Melty.max_depth - 1))
 
-
-            layer_and_depth = Melty.active_layer * Melty.max_depth + Melty.depth
-            if Melty.cache.mark_start_offscreen(input_value=input_value, collection=collection,
-                                                draw_state=draw_state, key=tile_id, name=draw_state.name,
-                                                layer=layer_and_depth, caller=func):
-                return_value = func(**clean_args)
-                # Scroll position relative to view
-                draw_state._imgui_scroll_y = imgui.get_scroll_y()
-            else:
-                pass
-                # left, top = imgui.get_item_rect_min()
-                # width, height = imgui.get_item_rect_size()
-                # Melty.cache.cache_mark_rect(Melty.layer, left, top, width, height,
-                #                            key=f"{unique}_mask")
-
-            Melty.cache.mark_end_offscreen()
-        else:
-
-            Melty.cache.mark_uncached(input_value, key=tile_id)
+        layer_and_depth = Melty.active_layer * Melty.max_depth + Melty.depth
+        if not use_cache or Melty.cache.mark_start_offscreen(input_value=input_value, collection=collection,
+                                            draw_state=draw_state, key=tile_id, name=draw_state.name,
+                                            layer=layer_and_depth, caller=func):
             return_value = func(**clean_args)
+            item_rect = imgui.get_item_rect_size()
+            draw_state.content_height = item_rect[1]
+            draw_state._imgui_scroll_y = imgui.get_scroll_y()
+
+        if use_cache:
+            Melty.cache.mark_end_offscreen()
 
         return return_value
 

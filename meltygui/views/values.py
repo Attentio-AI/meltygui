@@ -9,8 +9,10 @@ from enum import Enum
 from inspect import Parameter
 from math import sqrt
 from types import NoneType
+from OpenGL import GL as gl
 
 import glfw
+from numpy import uint32
 
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
@@ -138,10 +140,57 @@ def draw_main(input_value, vis):
     draw_window(Melty.last_invalid, show_bg=True, name="Last Invalid")
     draw_window(Melty.registered_windows, indent_size=10, is_tree=True, show_add_delete=False, name="Another widnow manager")
 
+    draw_window(Melty.cache.snapshot_tex, show_bg=True, name="Snapshot Texture")
+
     # draw_window(Melty.last_request_render, show_bg=True, name="Last Invalid")
 
 
+@with_header(is_default_for=uint32, show_bg=True, use_cache=True, show_add_delete=False)
+def draw_texture(input_value:uint32, draw_state):
+    texture_id = input_value
+    # Check if opengl texture ID is valid
+    if not gl.glIsTexture(texture_id):
+        imgui.text(f"Error: {texture_id} is not a valid texture")
+        return False, None
 
+        # Bind the texture to query its properties
+    original_binding = gl.glGetIntegerv(gl.GL_TEXTURE_BINDING_2D)
+    gl.glBindTexture(gl.GL_TEXTURE_2D, texture_id)
+
+    # Get texture dimensions
+    width = gl.glGetTexLevelParameteriv(gl.GL_TEXTURE_2D, 0, gl.GL_TEXTURE_WIDTH)
+    height = gl.glGetTexLevelParameteriv(gl.GL_TEXTURE_2D, 0, gl.GL_TEXTURE_HEIGHT)
+
+    # Get internal format
+    internal_format = gl.glGetTexLevelParameteriv(gl.GL_TEXTURE_2D, 0, gl.GL_TEXTURE_INTERNAL_FORMAT)
+
+    # Get other useful properties
+    red_size = gl.glGetTexLevelParameteriv(gl.GL_TEXTURE_2D, 0, gl.GL_TEXTURE_RED_SIZE)
+    green_size = gl.glGetTexLevelParameteriv(gl.GL_TEXTURE_2D, 0, gl.GL_TEXTURE_GREEN_SIZE)
+    blue_size = gl.glGetTexLevelParameteriv(gl.GL_TEXTURE_2D, 0, gl.GL_TEXTURE_BLUE_SIZE)
+    alpha_size = gl.glGetTexLevelParameteriv(gl.GL_TEXTURE_2D, 0, gl.GL_TEXTURE_ALPHA_SIZE)
+
+
+    view_width = draw_state.width
+    view_height = int((height / width) * view_width)
+
+    # Maintain ratio but fit in view
+    if view_height > draw_state.height:
+        view_height = draw_state.height
+        view_width = int((width / height) * view_height)
+
+    # Unbind
+    gl.glBindTexture(gl.GL_TEXTURE_2D, original_binding)
+
+    imgui.image(input_value, view_width, view_height)
+
+    # imgui.text("Texture Properties:")
+    # imgui.text(f" - Texture ID: {texture_id}")
+    # imgui.text(f" - Resolution: {width}x{height}")
+    # imgui.text(f" - Internal Format: {internal_format}")
+    # imgui.text(f" - Channel Sizes - R:{red_size} G:{green_size} B:{blue_size} A:{alpha_size}")
+
+    # draw_window(Melty.last_request_render, show_bg=True, name="Last Invalid")
 @with_header(is_default_for=ManagedWindow, is_tree=False,
              show_bg=True, show_add_delete=False)
 def draw_debug(input_value, melty, *args, **kwargs):
@@ -179,7 +228,7 @@ def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, 
 
 
 @render_func(use_cache=True, auto_resize=False, closable=True, show_bg=True, melty_window=True, draggable=True)
-def draw_window(input_value, style_manager=None, *args, **kwargs):
+def draw_window(input_value, inner_func=None, style_manager=None, *args, **kwargs):
     window_name = kwargs.get('name', 'Managed Window')
 
     draw_state = kwargs.get('draw_state', None)
@@ -212,8 +261,12 @@ def draw_window(input_value, style_manager=None, *args, **kwargs):
         if hasattr(Meta, 'get_child_meta'):
             meta = Meta.get_child_meta(None, field_name=kwargs.get("name", ''), value=input_value)
 
-    if meta.view_function is None or 'draw_any' in meta.view_function.__name__:
-        meta.view_function = draw_collection
+    if inner_func is None:
+        if meta.view_function is None or 'draw_any' in meta.view_function.__name__:
+            meta.view_function = draw_collection
+    else:
+        meta.view_function = inner_func
+
     return_val = meta.view_function(input_value, *args, **kwargs)
 
     if hasattr(input_value, 'tint'):
@@ -1079,7 +1132,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             header_height = current_cursor[1] - start_y_pos
             draw_state._header_height = header_height
             has_width_height = draw_state.width is not None and draw_state.height is not None
-            use_child = (not auto_resize and enable_scroll)
+            use_child = (not auto_resize)
             draw_state.use_child = use_child
 
             has_size = (draw_state.width is not None and draw_state.height is not None and
@@ -1096,10 +1149,6 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             d_top = draw_state.top
             d_width = draw_state.width
             d_height = draw_state.height
-            clip = True
-            if (draw_state.left is None or draw_state.top is None or
-                    draw_state.width is None or draw_state.height is None):
-                clip = False
 
             if not header_same_line:
                 Melty.indent(indent_size)
@@ -1110,10 +1159,6 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                 if Melty.channels_split and show_bg:
                     draw_list.channels_set_current(min(Melty.max_depth - 1, Melty.depth))
 
-                if clip:
-                    rect = (d_left, d_top + header_height, d_left + d_width - (scrollbar_width + scroll_bar_margin), d_top + d_height - 2)
-                    Melty.push_clip(rect)
-
                 current_cursor = imgui.get_cursor_screen_pos()
                 imgui.set_cursor_screen_pos((current_cursor[0], current_cursor[1] - draw_state.scroll_offset[1]))
                 inner_start_y = imgui.get_cursor_screen_pos()[1]
@@ -1122,13 +1167,11 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
 
                 inner_end_y = imgui.get_cursor_screen_pos()[1]
 
-                draw_state.content_height = inner_end_y - inner_start_y + header_height
+                # draw_state.content_height = inner_end_y - inner_start_y + header_height
 
                 current_cursor = imgui.get_cursor_screen_pos()
                 imgui.set_cursor_screen_pos((current_cursor[0], current_cursor[1] + draw_state.scroll_offset[1]))
 
-                if clip:
-                    Melty.pop_clip()
 
                 draw_list.channels_set_current(Melty.depth)
 
@@ -1139,17 +1182,11 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                 draw_list.channels_set_current(min(Melty.max_depth - 1, Melty.depth))
 
             else:
-                if clip and use_child:
-                    rect = (d_left, d_top - header_height, d_left + d_width - (scrollbar_width + scroll_bar_margin), d_top + d_height - 2)
-                    Melty.push_clip(rect)
 
                 draw_list = imgui.get_window_draw_list()
                 if Melty.channels_split and show_bg:
                     draw_list.channels_set_current(min(Melty.max_depth - 1, Melty.depth))
                 func_changed, func_return_val = func(**next_kwargs)
-
-                if clip and use_child:
-                    Melty.pop_clip()
 
             if not header_same_line:
                 Melty.unindent(indent_size)
@@ -1415,7 +1452,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
             changed |= item_changed
             drew_any = True
 
-            draw_state.content_height = max(draw_state.content_height, imgui.get_cursor_pos()[1] - start_cursor)
+            # draw_state.content_height = max(draw_state.content_height, imgui.get_cursor_pos()[1] - prev_cursor)
         except Exception as e:
             print(f"Error rendering field '{key_str}' of {type(input_value).__name__}: {e}")
             print_colored_traceback(*sys.exc_info())

@@ -33,7 +33,7 @@ Key features:
 # Small structs
 # ==============================
 @dataclass
-class _Tile:
+class Tile:
     fbo: int
     tex: int
     rbo: Optional[int]
@@ -57,7 +57,7 @@ class _Ctx:
 
 @dataclass
 class _Pending:
-    tile: _Tile
+    tile: Tile
     pos: Tuple[float, float]
     size: Tuple[int, int]
     layer: int
@@ -83,8 +83,8 @@ def _create_color_tex(w: int, h: int, internal_format=gl.GL_RGB8) -> int:
     tex = gl.glGenTextures(1)
     gl.glBindTexture(gl.GL_TEXTURE_2D, tex)
     gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, internal_format, w, h, 0, gl.GL_RGB, gl.GL_UNSIGNED_BYTE, None)
-    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST)
-    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST)
+    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
+    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE)
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)
     gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
@@ -99,8 +99,8 @@ def _create_mask_tex(w: int, h: int) -> int:
     tex = gl.glGenTextures(1)
     gl.glBindTexture(gl.GL_TEXTURE_2D, tex)
     gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_R16, w, h, 0, gl.GL_RED, gl.GL_UNSIGNED_SHORT, None)
-    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST)
-    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST)
+    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
+    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE)
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)
     gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
@@ -130,7 +130,7 @@ def _create_fbo_with_tex(tex: int, depth_stencil: bool, w, h) -> Tuple[int, Opti
     return fbo, rbo
 
 
-def _ensure_tile(existing: Optional[_Tile], w: int, h: int, frame_id: int = 0, tile_id=None) -> Optional[_Tile]:
+def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, tile_id=None) -> Optional[Tile]:
     if existing and existing.size == (w, h):
         return existing
 
@@ -176,7 +176,7 @@ def _ensure_tile(existing: Optional[_Tile], w: int, h: int, frame_id: int = 0, t
         finally:
             st.restore()
 
-    t = _Tile(fbo=new_fbo, tex=new_tex, rbo=new_rbo, size=(w, h), dirty=True)
+    t = Tile(fbo=new_fbo, tex=new_tex, rbo=new_rbo, size=(w, h), dirty=True)
 
     t.last_invalidated_frame = frame_id  # requires a copy to become clean
     return t
@@ -406,7 +406,7 @@ class TileCacheMasked:
         self.parent_key_to_child_keys: Dict[str, set] = {}
         self.key_to_draw_state: Dict[str, any] = {}
 
-        self._tiles: Dict[str, _Tile] = {}
+        self._tiles: Dict[str, Tile] = {}
         self._sizes = {}  # resolved key -> (w,h)
         self._stack: List[_Ctx] = []
         self._key_to_ctx: Dict[str, _Ctx] = {}
@@ -419,7 +419,7 @@ class TileCacheMasked:
         self._mask_fbo: Optional[int] = None
         self._sub_mask_tex: Optional[int] = None
         self._sub_mask_fbo: Optional[int] = None
-        self._snapshot_tex: Optional[int] = None
+        self.snapshot_tex: Optional[int] = None
         self._snapshot_fbo: Optional[int] = None
         self._mask_rects: List[_Rect] = []
 
@@ -446,7 +446,7 @@ class TileCacheMasked:
         self.pending_invalid = []
 
     # ----- Helpers -----
-    def _is_dirty(self, t: Optional[_Tile]) -> bool:
+    def _is_dirty(self, t: Optional[Tile]) -> bool:
         if t is None:
             return True
         return t.last_clean_frame < t.last_invalidated_frame
@@ -656,9 +656,9 @@ class TileCacheMasked:
         if self._snapshot_fbo:
             gl.glDeleteFramebuffers(1, [self._snapshot_fbo]);
             self._snapshot_fbo = None
-        if self._snapshot_tex:
-            gl.glDeleteTextures(1, [self._snapshot_tex]);
-            self._snapshot_tex = None
+        if self.snapshot_tex:
+            gl.glDeleteTextures(1, [self.snapshot_tex]);
+            self.snapshot_tex = None
         if self._prog_mask:
             gl.glDeleteProgram(self._prog_mask);
             self._prog_mask = None
@@ -700,9 +700,9 @@ class TileCacheMasked:
             if self._sub_mask_fbo:
                 gl.glDeleteFramebuffers(1, [self._sub_mask_fbo]);
                 self._sub_mask_fbo = None
-            if self._snapshot_tex:
-                gl.glDeleteTextures(1, [self._snapshot_tex]);
-                self._snapshot_tex = None
+            if self.snapshot_tex:
+                gl.glDeleteTextures(1, [self.snapshot_tex]);
+                self.snapshot_tex = None
             if self._snapshot_fbo:
                 gl.glDeleteFramebuffers(1, [self._snapshot_fbo]);
                 self._snapshot_fbo = None
@@ -713,8 +713,8 @@ class TileCacheMasked:
             self._sub_mask_tex = _create_mask_tex(fb_w, fb_h)
             self._sub_mask_fbo, _ = _create_fbo_with_tex(self._sub_mask_tex, False, fb_w, fb_h)
 
-            self._snapshot_tex = _create_color_tex(fb_w, fb_h)
-            self._snapshot_fbo, _ = _create_fbo_with_tex(self._snapshot_tex, False, fb_w, fb_h)
+            self.snapshot_tex = _create_color_tex(fb_w, fb_h)
+            self._snapshot_fbo, _ = _create_fbo_with_tex(self.snapshot_tex, False, fb_w, fb_h)
 
         self._mask_rects.clear()
         self._rect_seq = 0  # restart submission order each frame
@@ -825,6 +825,9 @@ class TileCacheMasked:
     # ----- Begin/End with per-view layer (from depth) -----
     def mark_start_offscreen(self, input_value, collection, draw_state, key: str, layer: int, name="", caller=None) -> bool:
 
+        if not self.enabled:
+            return True
+
         Melty.tile_id_stack.append(key)
         x, y = imgui.get_cursor_screen_pos()
         # snap cursor to nearest pixel to avoid sub-pixel jitter during layout
@@ -929,6 +932,9 @@ class TileCacheMasked:
         return True
 
     def mark_end_offscreen(self) -> None:
+        if not self.enabled:
+            return
+
         ctx = self._stack.pop()
 
         from src.lsd.gl_gui.view.core_views.core_render import pop_id
@@ -1142,7 +1148,7 @@ class TileCacheMasked:
             # 3) For each pending tile, build SUBTREE mask (max rank inside its subtree) + copy
             gl.glUseProgram(self._prog_copy)
             gl.glActiveTexture(gl.GL_TEXTURE0);
-            gl.glBindTexture(gl.GL_TEXTURE_2D, self._snapshot_tex)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, self.snapshot_tex)
             gl.glUniform1i(self._loc_uSrc, 0)
             gl.glActiveTexture(gl.GL_TEXTURE1);
             gl.glBindTexture(gl.GL_TEXTURE_2D, self._mask_tex)

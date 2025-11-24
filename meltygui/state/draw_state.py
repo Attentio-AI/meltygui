@@ -71,7 +71,7 @@ class DragMode(Enum):
          "render_time", "imgui_is_toggled_open", "z_pos", "content_height", "hotkey_receiver", "use_child", "cst", "search_text",
          "is_active", "is_focused", "drag_window_pos_x", "drag_window_pos_y", "drag_mode", "auto_resize", "clipped", "is_hovered_last",
          "z_pos", "draw_window_pos_x", "misc_used", "draw_window_pos_y", "drag_delta", "screen_pos", "imgui_is_item_activated")
-@exclude("render_time", "bounds_left", "bounds_top", "_input_value","flow_spacing",
+@exclude("render_time", "bounds_left", "bounds_top", "_input_value","flow_spacing", "content_height",
          "hovered", "_did_use_cache", "value_hash", "drag_window", "top", "left", "content_region",
          "bounding_hovered", "delete_countdown", "z_pos", "scrolled", "is_hovered_last", "frame_count")
 @deep_refresh("expanded", 'content_height', 'window_size')

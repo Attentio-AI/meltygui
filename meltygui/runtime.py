@@ -934,7 +934,7 @@ class Melty:
         rect = cls.clip_stack[-1]
         width = rect[2] - rect[0]
         height = rect[3] - rect[1]
-        return width, height
+        return width - 1, height - 1
 
     @classmethod
     def get_parent_size(cls):
@@ -957,8 +957,6 @@ class Melty:
     @classmethod
     def init_complete(cls):
         return cls.frame_count > 2
-
-
 
     @classmethod
     def inside_clip(cls, draw_state=None, rect=None):
