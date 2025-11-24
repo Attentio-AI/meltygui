@@ -813,7 +813,20 @@ def render_func(*args, **o_kwargs):
             kwargs.pop("bypass", None)
             return func(*args, **kwargs)
         return_extras = kwargs.get('return_extras', False)
+        name = kwargs.get("name", "")
         active_layer = kwargs.get("active_layer", None)
+
+        return_value = None
+        is_root = Melty.depth == 0
+        first_arg = args[0] if args else None
+        input_value = kwargs.get("input_value", first_arg)
+        window_key = f"{name}_window"
+
+        if active_layer is None:
+            window_z_pos = list(Melty.registered_windows.keys()).index(window_key) \
+                if window_key in Melty.registered_windows else None
+            kwargs['layer'] = window_z_pos
+
         if kwargs.get("layer", None) is not None:
             layer = kwargs.pop("layer", None)
             kwargs["active_layer"] = layer
@@ -830,11 +843,6 @@ def render_func(*args, **o_kwargs):
         if annotation is not None:
             return annotation
 
-        return_value = None
-        is_root = Melty.depth == 0
-        first_arg = args[0] if args else None
-        input_value = kwargs.get("input_value", first_arg)
-        name = kwargs.get("name", "")
 
         if header_defaults is not None:
             kwargs.update(header_defaults)
@@ -885,8 +893,6 @@ def render_func(*args, **o_kwargs):
 
         computed_unique = unique
 
-        # if 'unique' in kwargs:
-        #     unique = kwargs.get("unique", None)
         # -------------------------------------------------------------------------
         start_cursor = imgui.get_cursor_pos()
 
@@ -950,22 +956,9 @@ def render_func(*args, **o_kwargs):
         draw_state._input_value = input_value
         draw_state.name = name
 
-        # hashable_representation = tuple(sorted(input_value.items()))
-        # sorted_dict_string = json.dumps(input_value, sort_keys=True).encode('utf-8')
-        # try:
-        #     draw_state.value_hash = stable_hash(input_value)
-        # except Exception as e:
-        #     print("[Unique] Warning: Could not compute stable hash for object of type", type(input_value).__name__,
-        #             "with unique", unique, name, "due to:", e)
-
         draw_state._has_popup = kwargs.get("has_popup", False)
         draw_state.auto_resize = kwargs.get("auto_resize", False)
 
-
-
-        # if unique in Melty.all_uniques:
-        #     print("[Unique] Warning: Duplicate key detected:", computed_unique, type(input_value).__name__, "in",
-        #           type(kwargs.get('collection', object)).__name__, "with name", name,"with func:", func.__name__)
         Melty.all_uniques.add(unique)
 
         is_initial_draw_state = True
@@ -1101,6 +1094,7 @@ def render_func(*args, **o_kwargs):
                     and kwargs.get("on_drag", False)):
                 window_drag = True
                 mouse_pos = imgui.get_mouse_pos()
+                # kwargs['z_pos'] = Melty.depth + 2
 
                 mouse_down_x = draw_state.mouse_btn_state[0].mouse_down_pos[0]
                 mouse_down_y = draw_state.mouse_btn_state[0].mouse_down_pos[1]
@@ -1186,16 +1180,16 @@ def render_func(*args, **o_kwargs):
 
 
             if melty_window:
-                if name not in Melty.registered_windows:
-                    Melty.registered_windows[name] = ManagedWindow(input_value=input_value,
+                if window_key not in Melty.registered_windows:
+                    Melty.registered_windows[window_key] = ManagedWindow(input_value=input_value,
                                                                           draw_state=kwargs.get('draw_state', None),
                                                                           window_args=kwargs,
                                                                           name=kwargs.get('name', 'Managed Window'))
                 else:
-                    Melty.registered_windows[name].input_value = input_value
-                    Melty.registered_windows[name].draw_state = kwargs.get('draw_state', None)
-                    Melty.registered_windows[name].window_args = kwargs
-                    Melty.registered_windows[name].name = kwargs.get('name', 'Managed Window')
+                    Melty.registered_windows[window_key].input_value = input_value
+                    Melty.registered_windows[window_key].draw_state = kwargs.get('draw_state', None)
+                    Melty.registered_windows[window_key].window_args = kwargs
+                    Melty.registered_windows[window_key].name = kwargs.get('name', 'Managed Window')
 
 
             if kwargs.get("closable", False):

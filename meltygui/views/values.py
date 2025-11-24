@@ -126,6 +126,7 @@ def draw_melty_windows(vis):
 def draw_main(input_value, vis):
     global test_obj
     draw_window(Melty.profiles_results, show_bg=True, name="Profile Results")
+    draw_window(Melty.registered_windows, indent_size=10, is_tree=True, show_add_delete=False, name="Window Manager")
 
     draw_window(test_obj, name="Layer 1")
     draw_window(EventManager.input_sources, name="Input Sources")
@@ -135,11 +136,10 @@ def draw_main(input_value, vis):
     draw_window(vis.root.lora_collection, name="Test Window 1")
     draw_window(vis.root.lora_collection.loras, name="Test Window 2")
     draw_window(Melty.last_invalid, show_bg=True, name="Last Invalid")
-
+    draw_window(Melty.registered_windows, indent_size=10, is_tree=True, show_add_delete=False, name="Another widnow manager")
 
     # draw_window(Melty.last_request_render, show_bg=True, name="Last Invalid")
 
-    draw_window(Melty.registered_windows, indent_size=10, is_tree=True, show_add_delete=False, name="Window Manager")
 
 
 @with_header(is_default_for=ManagedWindow, is_tree=False,
@@ -182,9 +182,6 @@ def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, 
 def draw_window(input_value, style_manager=None, *args, **kwargs):
     window_name = kwargs.get('name', 'Managed Window')
 
-    window_z_pos = list(Melty.registered_windows.keys()).index(window_name)
-    kwargs['z_pos'] = window_z_pos + 2
-
     draw_state = kwargs.get('draw_state', None)
 
     if draw_state.width is not None and draw_state.height is not None and draw_state.expanded:
@@ -194,7 +191,7 @@ def draw_window(input_value, style_manager=None, *args, **kwargs):
         alpha = 0.25
         icon_cursor = imgui.get_cursor_screen_pos()
         icon_x = icon_cursor[0] + draw_state.width - 20
-        icon_y = icon_cursor[1] + draw_state.height - 20
+        icon_y = icon_cursor[1] + draw_state.height - 10
         if (Melty.frame_count // frame_spacing) % 2 == 0:
             draw_list = imgui.get_overlay_draw_list()
             draw_list.add_text(icon_x, icon_y,
@@ -513,168 +510,6 @@ def draw_cst_int(input_value, width=None):
 #         input_value.value = str(new_val)
 
 ####################### libCST END ##########################
-
-def core_draw_melty_window(input_value, *args, **kwargs):
-
-    # tmp_undo_stack(unique)
-    # undo_child_stack(unique)
-    changed, new_value = False, input_value
-    # cursor_pos = imgui.get_cursor_screen_pos()
-    # # changed, new_value = False, input_value
-    # #
-    # # # kwargs['imgui_window'] = (pos_x, pos_y)
-    # changed, new_value = window_func(melty_window=True,
-    #                                  window_pos=(pos_x, pos_y),
-    #                                  *args, **kwargs)
-    # #
-    # imgui.set_cursor_screen_pos(cursor_pos)
-
-    # redo_stack(unique)
-
-
-    return changed, new_value
-
-
-def queue_melty_window(input_value, *args, **kwargs):
-    kwargs['z_pos'] = Melty.depth + 6
-    draw_state = kwargs.get('draw_state', None)
-    if draw_state is not None:
-        Melty.cache.invalidate_by_obj(input_value)
-    Melty.windows.append((input_value, args, kwargs))
-
-    return False, input_value
-
-
-def core_draw_window(input_value, name, unique, window_func,
-                     window_stack, style_manager, draw_state,
-                     args, kwargs, indent_size=10, width=0, height=0, pos_x=None, pos_y=None,
-                     decorations=True, focus=False, enable=True):
-    tmp_undo_stack(unique)
-    title = name or input_value.__class__.__name__
-    padding_fudge = imgui.get_style().frame_padding.y + 2
-    padding_x = imgui.get_style().frame_padding.x
-    fudge_x = 3
-
-    if focus:
-        imgui.set_next_window_focus()
-
-    if width is not None:
-        if width > 0 and height > 0:
-            imgui.set_next_window_size(width, height)
-
-    if not decorations:
-        if pos_x is not None and pos_y is not None:
-            imgui.set_next_window_position(pos_x - indent_size,
-                                           pos_y)
-            imgui.set_next_window_size(width + indent_size, height + padding_fudge)
-
-    else:
-        if pos_x is not None and pos_y is not None:
-            imgui.set_next_window_position(pos_x, pos_y)
-
-    previous_tint = style_manager.get_tint()
-    if hasattr(input_value, 'tint') and input_value.tint is not None:
-        style_manager.set_imgui_tint(*input_value.tint)
-    closable = True
-    flags = 0
-    if not decorations:
-        closable = False
-        flags = (imgui.WINDOW_NO_BACKGROUND | imgui.WINDOW_NO_TITLE_BAR | imgui.WINDOW_NO_RESIZE |
-                 imgui.WINDOW_NO_MOVE | imgui.WINDOW_NO_SCROLLBAR | imgui.WINDOW_NO_NAV_FOCUS |
-                 imgui.WINDOW_NO_COLLAPSE | imgui.WINDOW_NO_SAVED_SETTINGS)
-        push_style_var(imgui.STYLE_WINDOW_PADDING, (fudge_x, padding_fudge))
-
-    window_title = f"{title}##window_{str(unique)}"
-
-    push_style_var(imgui.STYLE_WINDOW_PADDING, (0, 0))
-
-    # Bring to front without focusing
-    opened, _ = begin_window(f"{title}##window_{str(unique)}", closable, flags=flags)
-    try:
-        # if not decorations:
-        #     imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + 2)
-
-        window_size = imgui.get_window_size()
-        window_pos = imgui.get_window_position()
-        window_rect = (window_pos[0], window_pos[1],
-                       window_pos[0] + window_size[0],
-                       window_pos[1] + window_size[1])
-
-        Melty.window_hovered = imgui.is_mouse_hovering_rect(*window_rect)
-
-        Melty.window_stack.append((window_title, enable))
-
-        # draw_list = imgui.get_window_draw_list()
-        # draw_list.channels_split(Melty.max_depth)
-
-        kwargs['imgui_window'] = (pos_x, pos_y)
-        changed, new_value = window_func(*args, **kwargs)
-        Melty.window_stack.pop()
-        if not decorations:
-            pop_style_var(1)
-
-        # draw_list.channels_merge()
-    except Exception as e:
-        print_colored_traceback()
-        changed, new_value = False, input_value
-
-    end_window(unique)
-
-    pop_style_var()
-
-    if hasattr(input_value, 'tint'):
-        style_manager.set_imgui_tint(*previous_tint)
-
-    redo_stack(unique)
-
-    return changed, new_value
-
-
-@render_func(use_cache=False)
-def draw_melty_window(input_value, window_stack=None, style_manager=None,
-                indent_size=0, name="", draw_state=None, unique=0, *args, **kwargs):
-    kwargs['input_value'] = input_value
-    kwargs['style_manager'] = style_manager
-    kwargs['window_stack'] = window_stack
-    kwargs['show_header'] = False
-    kwargs['show_bg'] = False
-    kwargs['name'] = name
-    kwargs['indent_size'] = 0
-
-    type_default_meta = Melty.type_defaults.get(input_value.__class__, None)
-    if type_default_meta is not None and hasattr(type_default_meta, 'view_function'):
-        window_func = type_default_meta.view_function
-    else:
-        window_func = draw_any
-    tmp_undo_stack(unique)
-    return_val = core_draw_melty_window(window_func=window_func, input_value=input_value, window_stack=window_stack,
-                            style_manager=style_manager, name=name, indent_size=indent_size, draw_state=draw_state,
-                            focus=False,
-                            unique=unique, args=args, kwargs=kwargs)
-    redo_stack(unique)
-    return return_val
-
-
-@render_func(use_cache=True)
-def draw_imgui_window(input_value, window_stack=None, style_manager=None,
-                      indent_size=0, name="", draw_state=None, unique=0, *args, **kwargs):
-    kwargs['input_value'] = input_value
-    kwargs['style_manager'] = style_manager
-    kwargs['window_stack'] = window_stack
-    kwargs['show_header'] = False
-    kwargs['show_bg'] = False
-    kwargs['name'] = name
-    kwargs['indent_size'] = 0
-
-    type_default_meta = Melty.type_defaults.get(input_value.__class__, None)
-    if type_default_meta is not None and hasattr(type_default_meta, 'view_function'):
-        window_func = type_default_meta.view_function
-    else:
-        window_func = draw_any
-    return core_draw_window(window_func=window_func, input_value=input_value, window_stack=window_stack,
-                     style_manager=style_manager, name=name, indent_size=indent_size, draw_state=draw_state,
-                            focus=False,
-                     unique=unique, args=args, kwargs=kwargs)
 
 
 @render_wrapper(wraps=render_func)
@@ -1482,10 +1317,13 @@ def draw_collection(input_value, draw_state, depth, style_manager,
         display_name = None
 
         # apply global skip to all types
-        if isinstance(key, (int, float, Enum, NoneType)):
+        if isinstance(key, (float, Enum, NoneType)):
             key_str = f"{input_value.__class__.__name__}"
+        elif isinstance(key, int):
+            key_str = f"{key}"
         else:
             key_str = str(key)
+
 
         if ((key_str.startswith("__") and key_str.endswith("__")) or
                 key_str.endswith("meta") or key_str.startswith("_")):
@@ -1547,7 +1385,8 @@ def draw_collection(input_value, draw_state, depth, style_manager,
                         if space_left < 0:
                             imgui.new_line()
 
-            item_changed, out_val, extras = draw_any(item, return_extras=True, indent_size=10, key=key, meta=item_meta, trigger_collapse=trigger_collapse,
+            item_changed, out_val, extras = draw_any(item, return_extras=True, indent_size=10, key=key,
+                                                     meta=item_meta, trigger_collapse=trigger_collapse,
                              trigger_expand=trigger_expand, y_offset=y_offset, on_collapse=on_collapse, on_expand=on_expand,
                              collection=ordered_driver, name=key_str, display_name=display_name,
                                              parent_show_add_delete=show_add_delete,

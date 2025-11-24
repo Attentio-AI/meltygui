@@ -954,6 +954,10 @@ class Melty:
         space_left = clip_rect[2] - cursor_x - 23
         return space_left
 
+    @classmethod
+    def init_complete(cls):
+        return cls.frame_count > 2
+
 
 
     @classmethod

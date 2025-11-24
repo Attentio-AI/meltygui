@@ -591,17 +591,18 @@ class TileCacheMasked:
                 input_val_hash = self.get_hash(draw_state)
                 # if k in self.initial_value and self.initial_value[k] != input_val_hash:
                 #     self.did_deviate[k] = True
+                self.pending_invalid.append(t)
 
                 if force:
                     t.force_invalidate |= force
-                if not t.force_invalidate and k in self.initial_value and self.initial_value[k] == input_val_hash:
-                    if not t.force_invalidate:
-                        # Resetting initial value cancels invalidate
-                        t.last_invalidated_frame = t.last_clean_frame
-                        t.dirty = False
-                else:
-                    self.pending_invalid.append(t)
-                            # Defer parent invalidation to next frame as well
+                # if not t.force_invalidate and k in self.initial_value and self.initial_value[k] == input_val_hash:
+                #     if not t.force_invalidate:
+                #         # Returning to initial value cancels invalidate
+                #         t.last_invalidated_frame = t.last_clean_frame
+                #         t.dirty = False
+                # else:
+                #     self.pending_invalid.append(t)
+                #             # Defer parent invalidation to next frame as well
 
             parent_keys = self.get_parent_keys(k)
             for parent in parent_keys:

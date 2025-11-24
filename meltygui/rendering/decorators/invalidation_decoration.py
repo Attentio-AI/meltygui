@@ -43,9 +43,10 @@ def live(cls):
         visible = visible or do_deep_refresh
         #
         if name in invalidate_all:
-            print(f"Invalidate all called due to change in {name}")
-            Melty.cache.invalidate_all()
-            return
+            if Melty.init_complete():
+                print(f"Invalidate all called due to change in {name}")
+                Melty.cache.invalidate_all()
+                return
 
         # Call invalidate() if:
         # - not currently initializing
