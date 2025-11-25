@@ -100,7 +100,7 @@ def generate_filter_stub(output_path: str = None) -> str:
         method_lines = [
             f'    def {shader_name}(',
             '        self,',
-            '        texture_id: int,',
+            '        texture_id: int = 0,',
             '        in_place: bool = False,',
         ]
 
@@ -108,6 +108,8 @@ def generate_filter_stub(output_path: str = None) -> str:
         method_lines.extend(uniform_params)
 
         method_lines.append('        output_texture: Optional[int] = None,')
+        method_lines.append('        output_framebuffer: Optional[int] = None,')
+        method_lines.append('        input_framebuffer: Optional[int] = None,')
 
         # Close signature
         method_lines.append('    ) -> int:')
@@ -115,12 +117,11 @@ def generate_filter_stub(output_path: str = None) -> str:
         # Add docstring
         method_lines.extend([
             '        """',
-            f'        Apply {shader_name} shader to a texture.',
+            f'        Apply {shader_name} shader to a texture or framebuffer.',
             '        ',
             '        Args:',
-            '            texture_id: Input texture ID',
+            '            texture_id: Input texture ID (ignored if input_framebuffer set)',
             '            in_place: If True, modify the input texture directly',
-            '            output_texture: Optional specific output texture to render to',
         ])
 
         # Add uniform documentation
@@ -128,9 +129,12 @@ def generate_filter_stub(output_path: str = None) -> str:
             method_lines.extend(uniform_docs)
 
         method_lines.extend([
+            '            output_texture: Optional specific output texture to render to',
+            '            output_framebuffer: Optional framebuffer to render to (e.g., 0 for main screen)',
+            '            input_framebuffer: Optional framebuffer to read from (e.g., 0 for main screen)',
             '        ',
             '        Returns:',
-            '            Output texture ID',
+            '            Output texture ID (0 if rendering to framebuffer)',
             '        """',
             '        ...',
             '    ',

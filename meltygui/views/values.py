@@ -136,7 +136,7 @@ def draw_main(input_value, vis):
     draw_window(test_obj, name="Layer 1")
     draw_window(EventManager.input_sources, name="Input Sources")
 
-    # draw_window(proxy, name="CST Proxy")
+    draw_window(proxy, name="CST Proxy")
     draw_window(filesystem_proxy, name="Filesystem Test")
     draw_window(vis.root.lora_collection, name="Test Window 1")
     draw_window(vis.root.lora_collection.loras, name="Test Window 2")
@@ -661,7 +661,7 @@ def draw_cst_dict(input_value: CSTDictProxy, **kwargs):
             show_indices = True
     # kwargs['show_name'] = False
 
-    draw_collection(input_value, header_same_line=True, show_bg=False,
+    draw_collection(input_value, header_same_line=True, show_bg=False, enable_scroll=False,
                     show_name=False, show_indices=show_indices, indent_size=0)
 
 
@@ -1366,8 +1366,10 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             if Melty.channels_split and show_bg:
                 draw_list.channels_set_current(min(Melty.max_depth - 1, Melty.depth))
             clip_start = imgui.get_cursor_screen_pos()
-            Melty.push_clip((clip_start[0], clip_start[1],
-                             clip_start[0] + draw_state.width - 1, clip_start[1] + draw_state.height))
+
+            if draw_state.width > 0 and draw_state.height > 0:
+                Melty.push_clip((clip_start[0], clip_start[1],
+                                 clip_start[0] + draw_state.width - 1, clip_start[1] + draw_state.height - 1))
             next_kwargs['header_height'] = header_height
             return_val = func(**next_kwargs)
 
@@ -1387,8 +1389,8 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                 # This is the version for single items probably
                 draw_header_end(**next_kwargs)
 
-
-            Melty.pop_clip()
+            if draw_state.width > 0 and draw_state.height > 0:
+                Melty.pop_clip()
 
         if not on_drag:
             imgui.dummy(0, 1)

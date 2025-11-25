@@ -178,6 +178,73 @@ def basic_usage_example():
     Melty.cleanup()
 
 
+def direct_to_screen_example():
+    """Demonstrate rendering filters directly to the main framebuffer (screen)."""
+
+    texture_id = 1  # Placeholder
+
+    # Apply filter directly to main framebuffer (0) - no off-screen buffer!
+    # This is perfect for final post-processing effects
+    Melty.filter.vignette(
+        texture_id,
+        output_framebuffer=0,  # Render to main screen
+        radius=0.8,
+        amount=0.4
+    )
+
+    # The filter is applied directly to the screen
+    # No texture is created - returns 0
+
+    # You can also render to a custom framebuffer
+    custom_fbo = 5  # Your framebuffer ID
+    Melty.filter.gaussian_blur(
+        texture_id,
+        output_framebuffer=custom_fbo,
+        radius=5.0
+    )
+
+    Melty.cleanup()
+
+
+def framebuffer_input_example():
+    """Demonstrate using framebuffers as input (e.g., apply filters to screen contents)."""
+
+    # Apply a filter to whatever is currently rendered on screen!
+    # Reads from framebuffer 0 (main screen) and outputs to a texture
+    result_texture = Melty.filter.vignette(
+        input_framebuffer=0,  # Read from main screen
+        radius=0.8,
+        amount=0.5
+    )
+    # Returns a texture with the filtered screen contents
+
+    # You can also do screen-to-screen filtering (both input and output are framebuffers)
+    Melty.filter.gaussian_blur(
+        input_framebuffer=0,   # Read from main screen
+        output_framebuffer=0,  # Write back to main screen
+        radius=5.0
+    )
+    # This applies the blur directly to the screen in-place!
+
+    # Read from custom framebuffer and output to texture
+    custom_fbo = 5  # Your framebuffer ID
+    result = Melty.filter.brightness_contrast(
+        input_framebuffer=custom_fbo,
+        brightness=0.2,
+        contrast=1.3
+    )
+
+    # Read from custom framebuffer and write to another framebuffer
+    output_fbo = 6
+    Melty.filter.sepia(
+        input_framebuffer=custom_fbo,
+        output_framebuffer=output_fbo,
+        amount=0.8
+    )
+
+    Melty.cleanup()
+
+
 def chaining_example():
     """Demonstrate filter chaining."""
 

@@ -93,19 +93,27 @@ class FilterExecutor:
     
     def execute(self, program: CompiledProgram, texture_id: int,
                 uniforms: Dict[str, Any], in_place: bool = False,
-                output_texture: Optional[int] = None) -> int:
+                output_texture: Optional[int] = None,
+                output_framebuffer: Optional[int] = None,
+                input_framebuffer: Optional[int] = None) -> int:
         """
-        Execute a shader filter on a texture.
-        
+        Execute a shader filter on a texture or framebuffer.
+
         Args:
             program: The compiled shader program
-            texture_id: Input texture ID
+            texture_id: Input texture ID (ignored if input_framebuffer is set)
             uniforms: Uniform values to pass to the shader
             in_place: If True, render back to the input texture
             output_texture: Optional output texture ID (creates new if None and not in_place)
-            
+            output_framebuffer: Optional framebuffer to render to (e.g., 0 for main screen).
+                               If set, renders directly to this framebuffer instead of creating
+                               an output texture. Returns 0 when using this mode.
+            input_framebuffer: Optional framebuffer to read from (e.g., 0 for main screen).
+                              If set, reads from this framebuffer instead of texture_id.
+                              Will attempt to use the framebuffer's texture attachment if available.
+
         Returns:
-            The output texture ID
+            The output texture ID (or 0 if rendering to output_framebuffer)
         """
         self._ensure_initialized()
         GL = _get_gl()
@@ -114,32 +122,44 @@ class FilterExecutor:
         original_texture = GL.glGetIntegerv(GL.GL_TEXTURE_BINDING_2D)
         original_program = GL.glGetIntegerv(GL.GL_CURRENT_PROGRAM)
         original_vao = GL.glGetIntegerv(GL.GL_VERTEX_ARRAY_BINDING)
-        
-        # Get texture dimensions
-        GL.glBindTexture(GL.GL_TEXTURE_2D, texture_id)
-        width = GL.glGetTexLevelParameteriv(GL.GL_TEXTURE_2D, 0, GL.GL_TEXTURE_WIDTH)
-        height = GL.glGetTexLevelParameteriv(GL.GL_TEXTURE_2D, 0, GL.GL_TEXTURE_HEIGHT)
 
-        # Get or create FBO and temp texture for this size
-        fbo, temp_texture = self._get_fbo(width, height)
-
-        # Determine output texture
-        if in_place:
-            # We need to render to a temp texture, then copy back
-            out_tex = temp_texture
-        elif output_texture is not None:
-            out_tex = output_texture
+        # Handle input framebuffer - get texture from framebuffer if specified
+        if input_framebuffer is not None:
+            texture_id, width, height = self._get_texture_from_framebuffer(input_framebuffer)
         else:
-            # Get cached output texture for this input (automatic per-texture caching)
-            out_tex = self._get_cached_texture(texture_id, width, height)
+            # Get texture dimensions from texture_id
+            GL.glBindTexture(GL.GL_TEXTURE_2D, texture_id)
+            width = GL.glGetTexLevelParameteriv(GL.GL_TEXTURE_2D, 0, GL.GL_TEXTURE_WIDTH)
+            height = GL.glGetTexLevelParameteriv(GL.GL_TEXTURE_2D, 0, GL.GL_TEXTURE_HEIGHT)
 
-        # Bind FBO and output texture
-        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, fbo)
-        GL.glFramebufferTexture2D(GL.GL_FRAMEBUFFER, GL.GL_COLOR_ATTACHMENT0,
-                                   GL.GL_TEXTURE_2D, out_tex, 0)
-        
-        # Set viewport
-        GL.glViewport(0, 0, width, height)
+        # Handle direct framebuffer rendering (e.g., to main screen)
+        if output_framebuffer is not None:
+            # Render directly to the specified framebuffer
+            GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, output_framebuffer)
+            GL.glViewport(0, 0, width, height)
+            out_tex = 0  # No output texture when rendering to framebuffer
+        else:
+            # Normal texture-based rendering
+            # Get or create FBO and temp texture for this size
+            fbo, temp_texture = self._get_fbo(width, height)
+
+            # Determine output texture
+            if in_place:
+                # We need to render to a temp texture, then copy back
+                out_tex = temp_texture
+            elif output_texture is not None:
+                out_tex = output_texture
+            else:
+                # Get cached output texture for this input (automatic per-texture caching)
+                out_tex = self._get_cached_texture(texture_id, width, height)
+
+            # Bind FBO with output texture
+            GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, fbo)
+            GL.glFramebufferTexture2D(GL.GL_FRAMEBUFFER, GL.GL_COLOR_ATTACHMENT0,
+                                       GL.GL_TEXTURE_2D, out_tex, 0)
+
+            # Set viewport
+            GL.glViewport(0, 0, width, height)
         
         # Clear
         GL.glClear(GL.GL_COLOR_BUFFER_BIT)
@@ -169,14 +189,16 @@ class FilterExecutor:
         GL.glBindTexture(GL.GL_TEXTURE_2D, original_texture)
         GL.glUseProgram(original_program)
         GL.glBindVertexArray(original_vao)
-        
+
+        # If rendering to framebuffer directly, we're done
+        if output_framebuffer is not None:
+            return 0
+
         # If in_place, copy result back to input texture
         if in_place:
             self._copy_texture(out_tex, texture_id, width, height)
             return texture_id
 
-
-        
         return out_tex
     
     def _set_uniforms(self, program: CompiledProgram, uniforms: Dict[str, Any]) -> None:
@@ -285,6 +307,81 @@ class FilterExecutor:
         self._texture_cache[input_texture_id] = (new_texture, width, height)
         return new_texture
 
+    def _get_texture_from_framebuffer(self, framebuffer_id: int) -> Tuple[int, int, int]:
+        """
+        Get a texture from a framebuffer's color attachment, or create one from its contents.
+
+        Args:
+            framebuffer_id: The framebuffer to read from (0 for main screen)
+
+        Returns:
+            Tuple of (texture_id, width, height)
+        """
+        GL = _get_gl()
+
+        # Save current bindings
+        original_fbo = GL.glGetIntegerv(GL.GL_FRAMEBUFFER_BINDING)
+        original_read_fbo = GL.glGetIntegerv(GL.GL_READ_FRAMEBUFFER_BINDING)
+
+        # Bind the framebuffer
+        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, framebuffer_id)
+
+        # Get viewport dimensions (works for both 0 and FBOs)
+        viewport = GL.glGetIntegerv(GL.GL_VIEWPORT)
+        width = viewport[2]
+        height = viewport[3]
+
+        # Try to get the texture attachment (for non-zero FBOs)
+        texture_id = None
+        if framebuffer_id != 0:
+            try:
+                # Check what's attached to COLOR_ATTACHMENT0
+                attachment_type = GL.glGetFramebufferAttachmentParameteriv(
+                    GL.GL_FRAMEBUFFER,
+                    GL.GL_COLOR_ATTACHMENT0,
+                    GL.GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE
+                )
+
+                # If it's a texture, get the texture name
+                if attachment_type == GL.GL_TEXTURE:
+                    texture_id = GL.glGetFramebufferAttachmentParameteriv(
+                        GL.GL_FRAMEBUFFER,
+                        GL.GL_COLOR_ATTACHMENT0,
+                        GL.GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME
+                    )
+            except:
+                # Attachment query failed, we'll copy instead
+                texture_id = None
+
+        # If we got a texture attachment, use it directly
+        if texture_id is not None:
+            GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, original_fbo)
+            GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, original_read_fbo)
+            return (texture_id, width, height)
+
+        # Otherwise, copy framebuffer contents to a temporary texture
+        # Create or reuse temp texture for this size
+        cache_key = f"fbo_input_{framebuffer_id}_{width}_{height}"
+        if not hasattr(self, '_fbo_input_cache'):
+            self._fbo_input_cache = {}
+
+        if cache_key in self._fbo_input_cache:
+            temp_texture = self._fbo_input_cache[cache_key]
+        else:
+            temp_texture = self._create_texture(width, height)
+            self._fbo_input_cache[cache_key] = temp_texture
+
+        # Copy framebuffer contents to the texture
+        GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, framebuffer_id)
+        GL.glBindTexture(GL.GL_TEXTURE_2D, temp_texture)
+        GL.glCopyTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA8, 0, 0, width, height, 0)
+
+        # Restore bindings
+        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, original_fbo)
+        GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, original_read_fbo)
+
+        return (temp_texture, width, height)
+
     def clear_texture_cache(self) -> None:
         """Clear all cached output textures."""
         GL = _get_gl()
@@ -341,6 +438,12 @@ class FilterExecutor:
                 GL.glDeleteVertexArrays(1, [self._quad_vao])
             if self._quad_vbo is not None:
                 GL.glDeleteBuffers(1, [self._quad_vbo])
+
+        # Clean up input framebuffer cache
+        if hasattr(self, '_fbo_input_cache'):
+            for texture_id in self._fbo_input_cache.values():
+                GL.glDeleteTextures(1, [texture_id])
+            self._fbo_input_cache.clear()
 
         # Clean up all caches
         self.clear_fbo_cache()

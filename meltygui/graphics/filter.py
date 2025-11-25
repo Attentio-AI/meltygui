@@ -151,24 +151,28 @@ class Filter:
             # Create a closure to capture shader_name
             def make_method(name: str):
                 def shader_method(
-                    texture_id: int,
+                    texture_id: int = 0,
                     in_place: bool = False,
                     output_texture: Optional[int] = None,
+                    output_framebuffer: Optional[int] = None,
+                    input_framebuffer: Optional[int] = None,
                     **uniforms
                 ) -> int:
                     """
-                    Apply this shader filter to a texture.
+                    Apply this shader filter to a texture or framebuffer.
 
                     Args:
-                        texture_id: Input texture ID
+                        texture_id: Input texture ID (ignored if input_framebuffer is set)
                         in_place: If True, modify the input texture directly
                         output_texture: Optional specific output texture to render to
+                        output_framebuffer: Optional framebuffer to render to (e.g., 0 for main screen)
+                        input_framebuffer: Optional framebuffer to read from (e.g., 0 for main screen)
                         **uniforms: Uniform values to pass to the shader
 
                     Returns:
-                        The output texture ID (same as input if in_place=True)
+                        The output texture ID (same as input if in_place=True, 0 if output_framebuffer)
                     """
-                    return self.apply(name, texture_id, in_place, output_texture, **uniforms)
+                    return self.apply(name, texture_id, in_place, output_texture, output_framebuffer, input_framebuffer, **uniforms)
 
                 # Set the method name for better debugging
                 shader_method.__name__ = name
@@ -198,22 +202,28 @@ class Filter:
         # Return a callable that applies this filter
         return partial(self.apply, name)
     
-    def apply(self, shader_name: str, texture_id: int,
+    def apply(self, shader_name: str, texture_id: int = 0,
               in_place: bool = False,
               output_texture: Optional[int] = None,
+              output_framebuffer: Optional[int] = None,
+              input_framebuffer: Optional[int] = None,
               **uniforms) -> int:
         """
-        Apply a shader filter to a texture.
-        
+        Apply a shader filter to a texture or framebuffer.
+
         Args:
             shader_name: Name of the shader to apply
-            texture_id: Input texture ID
+            texture_id: Input texture ID (ignored if input_framebuffer is set)
             in_place: If True, modify the input texture directly
             output_texture: Optional specific output texture to render to
+            output_framebuffer: Optional framebuffer to render to (e.g., 0 for main screen).
+                               If set, renders directly to framebuffer instead of creating output texture.
+            input_framebuffer: Optional framebuffer to read from (e.g., 0 for main screen).
+                              If set, reads from this framebuffer instead of texture_id.
             **uniforms: Uniform values to pass to the shader
-            
+
         Returns:
-            The output texture ID (same as input if in_place=True)
+            The output texture ID (same as input if in_place=True, 0 if output_framebuffer)
         """
         program = self._get_compiled(shader_name)
         if program is None:
@@ -228,7 +238,9 @@ class Filter:
         
         return self._executor.execute(
             program, texture_id, full_uniforms,
-            in_place=in_place, output_texture=output_texture
+            in_place=in_place, output_texture=output_texture,
+            output_framebuffer=output_framebuffer,
+            input_framebuffer=input_framebuffer
         )
     
     def chain(self) -> FilterChain:
