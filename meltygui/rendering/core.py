@@ -362,7 +362,6 @@ def render_func(*args, **o_kwargs):
             set_default("on_drag", melty.check_event(unique, 0, ActionType.DRAG))
             set_default("on_drag_up", melty.check_event(unique, 0, ActionType.DRAG_UP))
             set_default("on_mouse_down", melty.check_event(unique, 0, ActionType.DOWN))
-
             set_default("on_hover", melty.check_event(unique, 0, ActionType.HOVERED))
 
             if melty.top_event.get(ActionType.SCROLL, None) == unique:

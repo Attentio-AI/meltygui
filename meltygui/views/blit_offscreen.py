@@ -40,7 +40,7 @@ class Tile:
     size: Tuple[int, int]
     dirty: bool = True
     last_clean_frame: int = -1
-    last_invalidated_frame: int = 0
+    last_invalidated_frame: int = 3
     force_invalidate: bool = False
 
 
@@ -178,7 +178,8 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, ti
 
     t = Tile(fbo=new_fbo, tex=new_tex, rbo=new_rbo, size=(w, h), dirty=True)
 
-    t.last_invalidated_frame = frame_id  # requires a copy to become clean
+    t.last_invalidated_frame = frame_id + 1
+    request_render()# requires a copy to become clean
     return t
 
 

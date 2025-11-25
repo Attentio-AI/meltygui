@@ -52,13 +52,16 @@ def live(cls):
         # - not currently initializing
         # - attribute is not excluded
         # - object has invalidate method
-        if value != original_value:
-            if not initializing and visible and not name.startswith('_') \
-                    and name != "driver" and Melty.frame_count > 3:
-                if do_deep_refresh:
-                    Melty.cache.invalidate_up_by_obj(obj=self, max_depth=3, force=True)
-                else:
-                    Melty.cache.invalidate_by_obj(self, name)
+        try:
+            if value != original_value:
+                if not initializing and visible and not name.startswith('_') \
+                        and name != "driver" and Melty.frame_count > 3:
+                    if do_deep_refresh:
+                        Melty.cache.invalidate_up_by_obj(obj=self, max_depth=3, force=True)
+                    else:
+                        Melty.cache.invalidate_by_obj(self, name)
+        except Exception as e:
+            print(f"Error during live setattr invalidation for {self}.{name}: {e}")
 
     @functools.wraps(original_init)
     def new_init(self, *args, **kwargs):

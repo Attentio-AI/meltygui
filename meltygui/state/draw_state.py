@@ -66,6 +66,19 @@ class DragMode(Enum):
     RESIZE_BR = 'resize_br'
 
 
+class ZoomState(DictConversion):
+    def __init__(self):
+        super().__init__()
+        self.zoom_level = 1.0
+        self.offset_x = 0.0
+        self.offset_y = 0.0
+
+        self.center_u = 0.5
+        self.center_v = 0.5
+        self.zoom = 1.0
+        self.brightness = 1.0
+        self.contrast = 1.0
+
 @no_save("mouse_btn_state", "mouse_up", "mouse_down", "bounding_width", "bounding_height", "unique", "search_active",
          "drag_released","clicked", "dragged", "dragged", "top", "left", "bounds_top", "bounds_left", "name", "expanded_height",
          "render_time", "imgui_is_toggled_open", "z_pos", "content_height", "hotkey_receiver", "use_child", "cst", "search_text",

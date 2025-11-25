@@ -5,6 +5,8 @@ from typing import MutableMapping
 import glfw
 import imgui
 import libcst as cst
+
+from src.lsd.gl_gui.shader_library import Filter
 from src.lsd.gl_gui.model.core_model.core_enums import generate_id
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import global_hotkeys
@@ -692,6 +694,8 @@ class ManagedWindow:
 
 class Melty:
 
+    filter = Filter()
+
     # list, full with 32 Nones
     max_layer = 32
     layers = []
@@ -781,6 +785,10 @@ class Melty:
     @classmethod
     def to_apply(cls, action: CollectionAction):
         cls.actions_to_apply.append(action)
+
+    @classmethod
+    def cleanup(cls):
+        cls.filter.cleanup()
 
     @classmethod
     def begin_frame(cls):

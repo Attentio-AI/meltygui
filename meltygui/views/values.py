@@ -9,9 +9,12 @@ from enum import Enum
 from inspect import Parameter
 from math import sqrt
 from types import NoneType
+
+import numpy
 from OpenGL import GL as gl
 
 import glfw
+from imgui.core import _DrawList
 from numpy import uint32
 
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
@@ -27,7 +30,7 @@ from src.lsd.gl_gui.view.core_views.core_meta import Meta
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import hotkey
 from src.lsd.gl_gui.view.core_views.core_render import render_func, tmp_undo_stack, redo_stack, push_id, pop_id, \
     render_wrapper, annotation_track, listens_for, begin_window, end_window
-from src.lsd.gl_gui.model.core_model.new_core_model import KeyMod, Hotkey
+from src.lsd.gl_gui.model.core_model.new_core_model import KeyMod, Hotkey, ZoomState
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
 import libcst as cst
 
@@ -141,54 +144,284 @@ def draw_main(input_value, vis):
     draw_window(Melty.registered_windows, indent_size=10, is_tree=True, show_add_delete=False, name="Another widnow manager")
 
     draw_window(Melty.cache.snapshot_tex, show_bg=True, name="Snapshot Texture")
+    draw_window(Melty.cache._sub_mask_tex, show_bg=True, max_contrast=30,
+                max_brightness=30, name="Submask Texture")
 
     # draw_window(Melty.last_request_render, show_bg=True, name="Last Invalid")
 
 
-@with_header(is_default_for=uint32, show_bg=True, use_cache=False, show_add_delete=False, enable_scroll=True)
-def draw_texture(input_value:uint32, draw_state):
+import imgui
+import OpenGL.GL as gl
+import numpy
+
+import imgui
+import OpenGL.GL as gl
+import numpy
+
+
+@with_header(is_default_for=numpy.uint32, show_bg=True,
+             use_cache=False, show_add_delete=False,
+             indent_size=1,
+             enable_scroll=True, zoom_speed=0.2)
+def draw_texture(input_value: numpy.uint32, zoom_state: ZoomState, zoom_speed, header_height=0, min_zoom=0.1,
+                 max_zoom=50.0, style_manager=None, max_brightness=5.0, max_contrast=5.0,
+                 on_scroll=0, draw_state=None):
+
+    original_id = input_value
     texture_id = input_value
+
+    # Ensure we have valid state if this is the first run
+    if not hasattr(zoom_state, 'zoom'):
+        zoom_state.zoom = 1.0
+        zoom_state.center_u = 0.5
+        zoom_state.center_v = 0.5
+
     # Check if opengl texture ID is valid
     if not gl.glIsTexture(texture_id):
         imgui.text(f"Error: {texture_id} is not a valid texture")
         return False, None
 
-        # Bind the texture to query its properties
+    # 1. Query Texture Properties
     original_binding = gl.glGetIntegerv(gl.GL_TEXTURE_BINDING_2D)
     gl.glBindTexture(gl.GL_TEXTURE_2D, texture_id)
 
-    # Get texture dimensions
     width = gl.glGetTexLevelParameteriv(gl.GL_TEXTURE_2D, 0, gl.GL_TEXTURE_WIDTH)
     height = gl.glGetTexLevelParameteriv(gl.GL_TEXTURE_2D, 0, gl.GL_TEXTURE_HEIGHT)
 
-    # Get internal format
-    internal_format = gl.glGetTexLevelParameteriv(gl.GL_TEXTURE_2D, 0, gl.GL_TEXTURE_INTERNAL_FORMAT)
-
-    # Get other useful properties
-    red_size = gl.glGetTexLevelParameteriv(gl.GL_TEXTURE_2D, 0, gl.GL_TEXTURE_RED_SIZE)
-    green_size = gl.glGetTexLevelParameteriv(gl.GL_TEXTURE_2D, 0, gl.GL_TEXTURE_GREEN_SIZE)
-    blue_size = gl.glGetTexLevelParameteriv(gl.GL_TEXTURE_2D, 0, gl.GL_TEXTURE_BLUE_SIZE)
-    alpha_size = gl.glGetTexLevelParameteriv(gl.GL_TEXTURE_2D, 0, gl.GL_TEXTURE_ALPHA_SIZE)
-
-
-    view_width = draw_state.width
-    view_height = int((height / width) * view_width)
-
-    # Maintain ratio but fit in view
-    if view_height > draw_state.height:
-        view_height = draw_state.height
-        view_width = int((width / height) * view_height)
-
-    # Unbind
     gl.glBindTexture(gl.GL_TEXTURE_2D, original_binding)
 
-    imgui.image(input_value, view_width, view_height)
+    if width == 0 or height == 0:
+        return False, None
 
-    # imgui.text("Texture Properties:")
-    # imgui.text(f" - Texture ID: {texture_id}")
-    # imgui.text(f" - Resolution: {width}x{height}")
-    # imgui.text(f" - Internal Format: {internal_format}")
-    # imgui.text(f" - Channel Sizes - R:{red_size} G:{green_size} B:{blue_size} A:{alpha_size}")
+    # 2. Canvas Setup (Fill available space)
+    view_width = max(1, draw_state.width - 2)
+    view_height = max(1, draw_state.height - header_height - 2)
+
+    # 3. Calculate Aspect Ratio Corrections
+    tex_aspect = width / height
+    view_aspect = view_width / view_height
+
+    # Calculate the visible UV width/height based on zoom and aspect ratio.
+    if view_aspect > tex_aspect:
+        # View is wider: Fit to Height
+        uv_height_size = 1.0 / zoom_state.zoom
+        uv_width_size = uv_height_size * (view_aspect / tex_aspect)
+    else:
+        # View is taller: Fit to Width
+        uv_width_size = 1.0 / zoom_state.zoom
+        uv_height_size = uv_width_size * (tex_aspect / view_aspect)
+
+    # 4. Handle Input and Interaction
+    imgui.invisible_button(f"##text_interact", view_width, view_height,
+                           flags=(imgui.BUTTON_MOUSE_BUTTON_MIDDLE | imgui.BUTTON_MOUSE_BUTTON_RIGHT))
+    mixed_color = (1, 1, 1, 1)
+    highlight_color = (1, 1, 1, 1)
+
+    if style_manager is not None:
+        mixed_color = style_manager.make_color_rgb(*mixed_color[:3],
+                                                   value=0.1, factor=0.9, saturation_scale=1.0, alpha=1.0)
+        highlight_color = style_manager.make_color_rgb(*mixed_color[:3],
+                                                   value=1.0, factor=0.9, saturation_scale=1.0, alpha=1.0)
+    io = imgui.get_io()
+    is_hovered = imgui.is_item_hovered()
+    is_active = imgui.is_item_active()
+    overlay:_DrawList = imgui.get_overlay_draw_list()
+
+    if imgui.is_mouse_down(1) and (is_hovered or is_active):
+        b_str = f"{zoom_state.brightness:.3f}"
+        overlay.add_text(imgui.get_mouse_pos()[0], imgui.get_mouse_pos()[1] - 30,
+                           col=imgui.get_color_u32_rgba(*highlight_color[:3], 1),
+                          text=f"brightness:{zoom_state.brightness:.3}\ncontrast:{zoom_state.contrast:.3}" )
+        if io.key_shift:
+            zoom_state.brightness += io.mouse_delta.x * 0.001
+            zoom_state.contrast -= io.mouse_delta.y * 0.001
+        else:
+            zoom_state.brightness += io.mouse_delta.x * 0.005
+            zoom_state.contrast -= io.mouse_delta.y * 0.005
+
+        zoom_state.brightness = max(0.0, min(max_brightness, zoom_state.brightness))
+        zoom_state.contrast = max(0.0, min(max_contrast, zoom_state.contrast))
+
+    texture_id = Melty.filter.brightness_contrast(
+        input_value,
+        brightness=zoom_state.brightness,
+        contrast=zoom_state.contrast
+    )
+
+    p_min = (imgui.get_item_rect_min()[0], imgui.get_item_rect_min()[1])
+    p_max = (imgui.get_item_rect_max()[0], imgui.get_item_rect_max()[1])
+    p_min_x, p_min_y = p_min[0], p_min[1]
+
+
+    scroll_delta = on_scroll if on_scroll != 0 else io.mouse_wheel
+
+    # --- Logic: Zoom and Pan ---
+
+    zoom_delta = 0.0
+
+    # 4a. Handle Zoom Triggers (Scroll & Keyboard)
+
+    # Keyboard Shortcuts (1, 2, 3, 4)
+    forced_zoom = -1.0
+    if is_hovered:
+        if imgui.is_key_pressed(49):  # Key '1'
+            forced_zoom = 1.0
+            # Reset Pan to Center
+            zoom_state.center_u = 0.5
+            zoom_state.center_v = 0.5
+        elif imgui.is_key_pressed(50):  # Key '2'
+            forced_zoom = 0.5
+        elif imgui.is_key_pressed(51):  # Key '3'
+            forced_zoom = 0.25
+        elif imgui.is_key_pressed(52):  # Key '4'
+            forced_zoom = 0.125
+
+    if forced_zoom > 0:
+        zoom_state.zoom = forced_zoom
+        # Recalculate uv_size immediately for consistent bounding this frame
+        if view_aspect > tex_aspect:
+            uv_height_size = 1.0 / zoom_state.zoom
+            uv_width_size = uv_height_size * (view_aspect / tex_aspect)
+        else:
+            uv_width_size = 1.0 / zoom_state.zoom
+            uv_height_size = uv_width_size * (tex_aspect / view_aspect)
+
+    # Scroll Logic
+    if is_hovered and scroll_delta != 0:
+        if io.key_shift:
+            zoom_delta = scroll_delta * zoom_speed * 0.3
+        else:
+            zoom_delta = scroll_delta * zoom_speed
+    elif io.key_ctrl and imgui.is_mouse_down(2) and is_active:
+        zoom_delta = io.mouse_delta.y * -0.008
+
+    # 4b. Handle Pan (Middle Click Drag)
+    if imgui.is_mouse_down(2) and not io.key_ctrl and (is_hovered or is_active):
+        u_scale = uv_width_size / view_width
+        v_scale = uv_height_size / view_height
+        if io.key_shift:
+            zoom_state.center_u -= io.mouse_delta.x * u_scale * 0.5
+            zoom_state.center_v += io.mouse_delta.y * v_scale * 0.5
+        else:
+            zoom_state.center_u -= io.mouse_delta.x * u_scale
+            zoom_state.center_v += io.mouse_delta.y * v_scale
+
+
+
+
+
+    # 4c. Apply Zoom Logic (Zoom to Cursor)
+    if zoom_delta != 0.0:
+        zoom_factor = 1.0 + zoom_delta
+        new_zoom = max(min_zoom, min(zoom_state.zoom * zoom_factor, max_zoom))
+
+        if new_zoom != zoom_state.zoom:
+            mouse_pos = imgui.get_mouse_pos()
+
+            if io.key_ctrl:
+                mouse_u_ratio, mouse_v_ratio = (0.5, 0.5)
+            else:
+                mouse_u_ratio = (mouse_pos[0] - p_min_x) / view_width
+                mouse_v_ratio = (mouse_pos[1] - p_min_y) / view_height
+
+            curr_uv_w = uv_width_size
+            curr_uv_h = uv_height_size
+
+            # Recalculate new UV dimensions
+            if view_aspect > tex_aspect:
+                new_uv_h = 1.0 / new_zoom
+                new_uv_w = new_uv_h * (view_aspect / tex_aspect)
+            else:
+                new_uv_w = 1.0 / new_zoom
+                new_uv_h = new_uv_w * (tex_aspect / view_aspect)
+
+            diff_w = curr_uv_w - new_uv_w
+            diff_h = curr_uv_h - new_uv_h
+
+            zoom_state.center_u += diff_w * (mouse_u_ratio - 0.5)
+            zoom_state.center_v += diff_h * (0.5 - mouse_v_ratio)
+
+            zoom_state.zoom = new_zoom
+
+            # Use these for Step 5
+            uv_width_size = new_uv_w
+            uv_height_size = new_uv_h
+
+    # 5. Calculate Final UVs and Clamp to Bounds
+    half_uv_w = uv_width_size * 0.5
+    half_uv_h = uv_height_size * 0.5
+
+    # --- Bounding Logic Start ---
+    margin_px = 20.0
+
+    pixel_u = uv_width_size / view_width
+    pixel_v = uv_height_size / view_height
+    margin_u = margin_px * pixel_u
+    margin_v = margin_px * pixel_v
+
+    min_u = -half_uv_w + margin_u
+    max_u = 1.0 + half_uv_w - margin_u
+
+    if min_u > max_u:
+        zoom_state.center_u = 0.5
+    else:
+        zoom_state.center_u = max(min_u, min(zoom_state.center_u, max_u))
+
+    min_v = -half_uv_h + margin_v
+    max_v = 1.0 + half_uv_h - margin_v
+
+    if min_v > max_v:
+        zoom_state.center_v = 0.5
+    else:
+        zoom_state.center_v = max(min_v, min(zoom_state.center_v, max_v))
+    # --- Bounding Logic End ---
+
+    uv_x_min = zoom_state.center_u - half_uv_w
+    uv_x_max = zoom_state.center_u + half_uv_w
+    uv_y_min = zoom_state.center_v - half_uv_h
+    uv_y_max = zoom_state.center_v + half_uv_h
+
+    uv_a = (uv_x_min, uv_y_max)
+    uv_b = (uv_x_max, uv_y_min)
+
+    # 6. Project and Draw
+    scale_u_px = view_width / uv_width_size
+    scale_v_px = view_height / uv_height_size
+
+    # Project Texture Edges
+    raw_img_left = p_min_x + (0.0 - uv_x_min) * scale_u_px
+    raw_img_right = p_min_x + (1.0 - uv_x_min) * scale_u_px
+    raw_img_top = p_min_y + (uv_y_max - 1.0) * scale_v_px
+    raw_img_bottom = p_min_y + (uv_y_max - 0.0) * scale_v_px
+
+    # Intersect with Viewport
+    clip_left = max(p_min_x, raw_img_left)
+    clip_right = min(p_max[0], raw_img_right)
+    clip_top = max(p_min_y, raw_img_top)
+    clip_bottom = min(p_max[1], raw_img_bottom)
+
+    draw_list:_DrawList = imgui.get_window_draw_list()
+
+    Melty.push_clip((clip_left, clip_top, clip_right, clip_bottom))
+    draw_list.add_image_rounded(texture_id,
+                                a=p_min,
+                                b=p_max,
+                                uv_a=uv_a,
+                                uv_b=uv_b,
+                                rounding=5.0)
+
+    Melty.pop_clip()
+
+    draw_list.add_rect(raw_img_left - 1, raw_img_top - 1, raw_img_right + 1, raw_img_bottom + 1,
+                       imgui.get_color_u32_rgba(*mixed_color[:3], 1.0),
+                       0.0, 0, 1.0)
+
+    line_height = imgui.get_text_line_height()
+    draw_list.add_text(max(p_min_x + 5, raw_img_left), clip_top - line_height - 5,
+                       imgui.get_color_u32_rgba(*mixed_color[:3],1.0),
+                       text=f"{original_id} - {texture_id} - {width}x{height} - Zoom: {zoom_state.zoom:.2f}x")
+
+    return True, draw_state
 
     # draw_window(Melty.last_request_render, show_bg=True, name="Last Invalid")
 @with_header(is_default_for=ManagedWindow, is_tree=False,
@@ -240,7 +473,7 @@ def draw_window(input_value, inner_func=None, style_manager=None, *args, **kwarg
         alpha = 0.25
         icon_cursor = imgui.get_cursor_screen_pos()
         icon_x = icon_cursor[0] + draw_state.width - 20
-        icon_y = icon_cursor[1] + draw_state.height - 10
+        icon_y = icon_cursor[1] + draw_state.height - 15
         if (Melty.frame_count // frame_spacing) % 2 == 0:
             draw_list = imgui.get_overlay_draw_list()
             draw_list.add_text(icon_x, icon_y,
@@ -1128,7 +1361,8 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                 draw_list.channels_set_current(min(Melty.max_depth - 1, Melty.depth))
             clip_start = imgui.get_cursor_screen_pos()
             Melty.push_clip((clip_start[0], clip_start[1],
-                             clip_start[0] + draw_state.width - 5, clip_start[1] + draw_state.height))
+                             clip_start[0] + draw_state.width - 1, clip_start[1] + draw_state.height))
+            next_kwargs['header_height'] = header_height
             return_val = func(**next_kwargs)
 
             if not header_same_line:
@@ -1166,7 +1400,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                 channel = max(0, min(Melty.max_depth - 2, Melty.depth - 1))
                 draw_list.channels_set_current(channel)
 
-                _, bg_color = draw_bg(bypass=True, left=start_x_pos, top=y_margin + start_y_pos, bg_color=bg_color,
+                _, bg_color = draw_bg(bypass=True, left=start_x_pos, top=y_margin + start_y_pos + 1, bg_color=bg_color,
                         width=background_width, height=(background_height - Melty.spacing[1] / 2.0 - y_offset),
                         tint=bg_tint, depth=Melty.depth, selected=bg_selected, global_style=global_style,
                         style_manager=style_manager, auto_resize=auto_resize)
