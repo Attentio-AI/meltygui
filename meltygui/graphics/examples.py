@@ -180,10 +180,11 @@ def basic_usage_example():
 
 def chaining_example():
     """Demonstrate filter chaining."""
-    
+
     texture_id = 1  # Placeholder
-    
+
     # Create a filter chain
+    # Note: texture_size is automatically detected - no need to pass it!
     result = (Melty.filter.chain()
         .brightness_contrast(brightness=0.1, contrast=1.2)
         .hue_saturation(saturation=1.2)
@@ -284,8 +285,9 @@ def cache_benefits_example():
         # Apply multiple filters
         # Each intermediate result automatically gets its own cached texture
         temp1 = f.brightness_contrast(texture_id, brightness=0.1)
-        temp2 = f.gaussian_blur_h(temp1, radius=5.0, texture_size=(width, height))
-        final = f.gaussian_blur_v(temp2, radius=5.0, texture_size=(width, height))
+        # Note: texture_size is automatically detected from the texture!
+        temp2 = f.gaussian_blur_h(temp1, radius=5.0)
+        final = f.gaussian_blur_v(temp2, radius=5.0)
 
         # Use final result...
         # No manual release needed!

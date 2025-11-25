@@ -126,7 +126,7 @@ class Filter:
     def __init__(self, auto_compile: bool = True):
         """
         Initialize the Filter manager.
-        
+
         Args:
             auto_compile: If True, compile shaders on first use.
         """
@@ -135,25 +135,66 @@ class Filter:
         self._compiler = ProgramCompiler()
         self._executor = FilterExecutor(self._compiler)
         self._compiled: Dict[str, CompiledProgram] = {}
-    
+
+        # Dynamically generate methods for all registered shaders
+        # This enables IDE autocomplete and type hints
+        self._generate_shader_methods()
+
+    def _generate_shader_methods(self) -> None:
+        """
+        Dynamically generate methods for all registered shaders.
+
+        This creates actual methods on the instance for each shader,
+        enabling IDE autocomplete and type hints.
+        """
+        for shader_name in self._registry.shaders.keys():
+            # Create a closure to capture shader_name
+            def make_method(name: str):
+                def shader_method(
+                    texture_id: int,
+                    in_place: bool = False,
+                    output_texture: Optional[int] = None,
+                    **uniforms
+                ) -> int:
+                    """
+                    Apply this shader filter to a texture.
+
+                    Args:
+                        texture_id: Input texture ID
+                        in_place: If True, modify the input texture directly
+                        output_texture: Optional specific output texture to render to
+                        **uniforms: Uniform values to pass to the shader
+
+                    Returns:
+                        The output texture ID (same as input if in_place=True)
+                    """
+                    return self.apply(name, texture_id, in_place, output_texture, **uniforms)
+
+                # Set the method name for better debugging
+                shader_method.__name__ = name
+                return shader_method
+
+            # Attach the method to this instance
+            setattr(self, shader_name, make_method(shader_name))
+
     def __getattr__(self, name: str):
         """
-        Get a filter method by name.
-        
-        This allows attribute-style access to registered shaders:
-            filter.brightness_contrast(texture_id, brightness=0.5)
+        Fallback attribute access for dynamically registered shaders.
+
+        Note: Most shaders have real methods generated at __init__ time.
+        This fallback handles edge cases like shaders registered after init.
         """
         # Don't intercept private attributes
         if name.startswith('_'):
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
-        
+
         # Check if this shader exists
         if not self.has_shader(name):
             available = ', '.join(self.list_shaders())
             raise AttributeError(
                 f"No shader named '{name}'. Available shaders: {available}"
             )
-        
+
         # Return a callable that applies this filter
         return partial(self.apply, name)
     

@@ -53,6 +53,7 @@ class ShaderRegistry:
 
 
 # Global registry instance
+
 _registry = ShaderRegistry()
 
 

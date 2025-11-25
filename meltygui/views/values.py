@@ -248,6 +248,12 @@ def draw_texture(input_value: numpy.uint32, zoom_state: ZoomState, zoom_speed, h
         contrast=zoom_state.contrast
     )
 
+    # texture_id = Melty.filter.swirl(
+    #     texture_id,
+    #     angle=zoom_state.brightness,
+    #     radius=zoom_state.contrast
+    # )
+
     p_min = (imgui.get_item_rect_min()[0], imgui.get_item_rect_min()[1])
     p_max = (imgui.get_item_rect_max()[0], imgui.get_item_rect_max()[1])
     p_min_x, p_min_y = p_min[0], p_min[1]

@@ -55,6 +55,7 @@ void main() {
 """
 
 
+
 @register_shader_type
 class Transformed:
     """
@@ -349,6 +350,37 @@ void main() {
         total += w;
     }
     
+    fragColor = sum / total;
+}
+"""
+
+
+@register_shader
+class GaussianBlur:
+    """Combined Gaussian blur (both horizontal and vertical in one pass)."""
+    shader_type = 'standard'
+    uniforms = {
+        'radius': (GLType.FLOAT, 4.0),
+        'texture_size': (GLType.VEC2, None),
+    }
+    fragment_code = """
+void main() {
+    vec2 texel = 1.0 / texture_size;
+
+    vec4 sum = vec4(0.0);
+    float total = 0.0;
+    int r = int(radius);
+
+    // 2D Gaussian blur - sample in both directions
+    for (int x = -r; x <= r; x++) {
+        for (int y = -r; y <= r; y++) {
+            float dist = float(x*x + y*y);
+            float w = exp(-dist / (2.0 * radius * radius / 9.0));
+            sum += texture(u_texture, v_texcoord + vec2(float(x), float(y)) * texel) * w;
+            total += w;
+        }
+    }
+
     fragColor = sum / total;
 }
 """

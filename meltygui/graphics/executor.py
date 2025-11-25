@@ -151,7 +151,11 @@ class FilterExecutor:
         GL.glActiveTexture(GL.GL_TEXTURE0)
         GL.glBindTexture(GL.GL_TEXTURE_2D, texture_id)
         GL.glUniform1i(program.uniform_locations['u_texture'], 0)
-        
+
+        # Auto-populate texture_size if it's a required uniform and not explicitly provided
+        if 'texture_size' in program.shader.uniforms and 'texture_size' not in uniforms:
+            uniforms = {**uniforms, 'texture_size': (float(width), float(height))}
+
         # Set uniforms
         self._set_uniforms(program, uniforms)
         

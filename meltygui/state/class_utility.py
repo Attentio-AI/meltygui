@@ -180,7 +180,7 @@ class ClassUtility:
                         pass
                     try:
                         # Import the module
-                        module = importlib.import_module(module_name)
+                        module = sys.modules.get(module_name)
                         # importlib.reload(module)
 
                         # Find top-level classes in this module and add them
