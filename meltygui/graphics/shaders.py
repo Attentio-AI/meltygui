@@ -596,13 +596,84 @@ class Bulge:
 void main() {
     vec2 coord = v_texcoord - center;
     float dist = length(coord);
-    
+
     if (dist < radius) {
         float percent = dist / radius;
         float distortion = pow(percent, 1.0 - strength);
         coord = coord * distortion;
     }
-    
+
     fragColor = texture(u_texture, coord + center);
+}
+"""
+
+
+# =============================================================================
+# NORMALIZATION
+# =============================================================================
+
+@register_shader
+class MinMaxReduction:
+    """
+    Reduction shader for finding min/max values in a texture.
+
+    Each output pixel represents the min/max of a 2x2 block from the input.
+    This is used internally by the normalize() method for parallel reduction.
+
+    Output format: R=min_value, G=max_value (across all RGB channels)
+    """
+    shader_type = 'standard'
+    uniforms = {
+        'texture_size': (GLType.VEC2, None),
+    }
+    fragment_code = """
+void main() {
+    vec2 texel = 1.0 / texture_size;
+
+    // Sample 2x2 block
+    vec3 s00 = texture(u_texture, v_texcoord + vec2(0.0, 0.0) * texel).rgb;
+    vec3 s10 = texture(u_texture, v_texcoord + vec2(1.0, 0.0) * texel).rgb;
+    vec3 s01 = texture(u_texture, v_texcoord + vec2(0.0, 1.0) * texel).rgb;
+    vec3 s11 = texture(u_texture, v_texcoord + vec2(1.0, 1.0) * texel).rgb;
+
+    // Find min and max across all channels in the 2x2 block
+    float min_val = min(min(min(s00.r, s00.g), min(s00.b, s10.r)),
+                       min(min(s10.g, s10.b), min(s01.r, s01.g)));
+    min_val = min(min_val, min(min(s01.b, s11.r), min(s11.g, s11.b)));
+
+    float max_val = max(max(max(s00.r, s00.g), max(s00.b, s10.r)),
+                       max(max(s10.g, s10.b), max(s01.r, s01.g)));
+    max_val = max(max_val, max(max(s01.b, s11.r), max(s11.g, s11.b)));
+
+    // Store min in R, max in G
+    fragColor = vec4(min_val, max_val, 0.0, 1.0);
+}
+"""
+
+
+@register_shader
+class NormalizeRemap:
+    """
+    Remaps texture values from [min, max] to [0, 1].
+
+    Used internally by the normalize() method after min/max calculation.
+    """
+    shader_type = 'standard'
+    uniforms = {
+        'min_value': (GLType.FLOAT, 0.0),
+        'max_value': (GLType.FLOAT, 1.0),
+    }
+    fragment_code = """
+void main() {
+    vec4 color = texture(u_texture, v_texcoord);
+
+    // Avoid division by zero
+    float range = max(max_value - min_value, 0.0001);
+
+    // Remap from [min, max] to [0, 1]
+    color.rgb = (color.rgb - min_value) / range;
+    color.rgb = clamp(color.rgb, 0.0, 1.0);
+
+    fragColor = color;
 }
 """

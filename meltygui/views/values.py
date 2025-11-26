@@ -143,8 +143,12 @@ def draw_main(input_value, vis):
     draw_window(Melty.last_invalid, show_bg=True, name="Last Invalid")
     draw_window(Melty.registered_windows, indent_size=10, is_tree=True, show_add_delete=False, name="Another widnow manager")
 
+    snapshot_tex = Melty.filter.normalize(Melty.cache.snapshot_tex)
     draw_window(Melty.cache.snapshot_tex, show_bg=True, name="Snapshot Texture")
-    draw_window(Melty.cache._sub_mask_tex, show_bg=True, max_contrast=30,
+
+
+    normalized_submask = Melty.filter.normalize(Melty.cache._sub_mask_tex)
+    draw_window(normalized_submask, show_bg=True, max_contrast=30,
                 max_brightness=30, name="Submask Texture")
 
     # draw_window(Melty.last_request_render, show_bg=True, name="Last Invalid")

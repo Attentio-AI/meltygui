@@ -61,7 +61,7 @@ def live(cls):
                     else:
                         Melty.cache.invalidate_by_obj(self, name)
         except Exception as e:
-            print(f"Error during live setattr invalidation for {self}.{name}: {e}")
+            pass
 
     @functools.wraps(original_init)
     def new_init(self, *args, **kwargs):

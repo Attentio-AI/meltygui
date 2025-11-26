@@ -6,6 +6,8 @@ from typing import Dict, Any, Optional, List, Tuple
 from contextlib import contextmanager
 from functools import partial
 
+import numpy as np
+
 from .registry import get_registry, ShaderRegistry
 from .compiler import ProgramCompiler, CompiledProgram, ShaderCompilationError
 from .executor import FilterExecutor
@@ -378,6 +380,56 @@ class Filter:
         """
         self._executor.clear_fbo_cache()
 
+    def normalize(self, texture_id: int, in_place: bool = False,
+                  output_texture: Optional[int] = None) -> int:
+        """
+        Normalize texture values to [0, 1] range by calculating min/max.
+
+        This uses GPU-based parallel reduction to efficiently find the global
+        min and max values without reading all pixels. The texture is progressively
+        downsampled until reaching a 1x1 pixel, then that single pixel is read
+        to get the min/max values.
+
+        Args:
+            texture_id: Input texture ID
+            in_place: If True, modify the input texture directly
+            output_texture: Optional specific output texture to render to
+
+        Returns:
+            The output texture ID (same as input if in_place=True)
+        """
+        # Lazy import to avoid requiring OpenGL at import time
+        def _get_gl():
+            from OpenGL import GL
+            return GL
+
+        GL = _get_gl()
+
+        # Get texture dimensions
+        GL.glBindTexture(GL.GL_TEXTURE_2D, texture_id)
+        reduction_textures = []  # Track temporary textures for cleanup
+
+        try:
+            pixel_data = np.frombuffer(texture_id, dtype=np.float32)
+            max_value = np.max(pixel_data)
+            min_value = np.min(pixel_data)
+
+            # Apply normalization remap
+            result = self.apply(
+                'normalize_remap',
+                texture_id,
+                in_place=in_place,
+                output_texture=output_texture,
+                min_value=min_value,
+                max_value=max_value
+            )
+            return result
+
+        finally:
+            # Clean up temporary reduction textures
+            if reduction_textures:
+                GL.glDeleteTextures(len(reduction_textures), reduction_textures)
+
     def get_cache_stats(self) -> Dict[str, Any]:
         """
         Get statistics about all caches.
@@ -419,7 +471,7 @@ class Filter:
         return (list(self._registry.shaders.keys()) +
                 ['apply', 'chain', 'compile_shader', 'compile_all',
                  'has_shader', 'list_shaders', 'list_shader_types',
-                 'get_shader_info', 'use_shader',
+                 'get_shader_info', 'use_shader', 'normalize',
                  'clear_texture_cache', 'clear_fbo_cache', 'get_cache_stats', 'cleanup'])
     
     def __repr__(self) -> str:

@@ -413,6 +413,37 @@ def multi_size_caching_example():
     f.cleanup()
 
 
+def normalize_example():
+    """
+    Demonstrate GPU-accelerated texture normalization.
+
+    The normalize filter efficiently calculates the min/max values
+    using parallel reduction on the GPU, then remaps all values to [0, 1].
+    """
+
+    f = Filter()
+
+    texture_id = 1  # Placeholder input texture that may have non-normalized values
+
+    # Normalize the texture - automatically finds min/max and remaps to [0, 1]
+    # This uses GPU parallel reduction - much faster than reading all pixels!
+    result = f.normalize(texture_id)
+
+    # Can also normalize in-place (modifies original texture)
+    f.normalize(texture_id, in_place=True)
+
+    # How normalization works under the hood:
+    # 1. Progressively downsamples the texture using min/max reduction shader
+    #    - 1024x1024 -> 512x512 -> 256x256 -> ... -> 1x1
+    # 2. Reads the final 1x1 pixel (only 4 float values!) to get min/max
+    # 3. Applies normalization remap shader with calculated min/max
+    #
+    # For a 1024x1024 texture, this reads ~10 reduction passes + 1 pixel
+    # instead of reading 1 million pixels on the CPU!
+
+    f.cleanup()
+
+
 # =============================================================================
 # PYGAME INTEGRATION EXAMPLE
 # =============================================================================

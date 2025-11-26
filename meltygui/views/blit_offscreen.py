@@ -111,6 +111,7 @@ def snap_int(v: float) -> int:
     return int(v)
 
 def _create_fbo_with_tex(tex: int, depth_stencil: bool, w, h) -> Tuple[int, Optional[int]]:
+    gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
     fbo = gl.glGenFramebuffers(1)
     gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, fbo)
     gl.glFramebufferTexture2D(gl.GL_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT0, gl.GL_TEXTURE_2D, tex, 0)
@@ -198,6 +199,7 @@ class _GLState:
         self.blend_src_a = gl.glGetIntegerv(gl.GL_BLEND_SRC_ALPHA)
         self.blend_dst_a = gl.glGetIntegerv(gl.GL_BLEND_DST_ALPHA)
         self.color_mask = tuple(gl.glGetBooleanv(gl.GL_COLOR_WRITEMASK))
+
 
     def restore(self):
         gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, self.draw_fbo)
@@ -436,7 +438,7 @@ class TileCacheMasked:
         self._loc_uSubMask = None
         self._loc_uFBSize = None
         self._loc_uSrcRectPx = None
-
+        self._dummy_vao: Optional[int] = None  # Required for glDrawArrays in core profile
         # Frame-atomic bookkeeping
         self._recording: bool = False
         self._cancelled_keys: set[str] = set()  # unused normally w/ version control
@@ -1022,6 +1024,17 @@ class TileCacheMasked:
 
     # ----- Finalize (post-frame) -----
     def _ensure_programs(self):
+        # Create dummy VAO (required for glDrawArrays in core profile, even with no attributes)
+        if self._dummy_vao is None:
+            vao = gl.glGenVertexArrays(1)
+            # Handle PyOpenGL returning different types
+            if isinstance(vao, (list, tuple)):
+                vao = vao[0]
+            self._dummy_vao = int(vao)
+
+        # Always bind VAO before any draw calls
+        gl.glBindVertexArray(self._dummy_vao)
+
         if self._prog_mask is None:
             vs = _compile(gl.GL_VERTEX_SHADER, _FULLSCREEN_VS)
             fs = _compile(gl.GL_FRAGMENT_SHADER, _MASK_FS)
@@ -1115,6 +1128,8 @@ class TileCacheMasked:
 
             gl.glUseProgram(self._prog_mask)
             loc_rank_norm = gl.glGetUniformLocation(self._prog_mask, "uRankNorm")
+            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
+
             for r in local_mask_rects:
                 x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y, fb_h)
 
@@ -1125,15 +1140,15 @@ class TileCacheMasked:
                 iw = max(0, ix1 - ix0)
                 ih = max(0, iy1 - iy0)
 
-                # if iw <= 0 or ih <= 0:
-                #     continue
+                if iw <= 0 or ih <= 0:
+                    continue
 
                 gl.glViewport(ix0, iy0, iw, ih)
 
                 # pack rank = (layer<<8)|order  in [0..65535]
                 rank = r.layer
                 gl.glUniform1f(loc_rank_norm, float(rank) / 65535.0)
-
+                gl.glBindVertexArray(self._dummy_vao)
                 gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
 
             # restore state in the FBO
