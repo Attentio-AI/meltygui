@@ -6,6 +6,8 @@ import glfw
 import imgui
 import libcst as cst
 
+from src.lsd.gl_gui.view.events.input_handler import InputHandler
+from src.lsd.gl_gui.view.events.pynput_backend import PynputBackend
 from src.lsd.gl_gui.shader_library import Filter
 from src.lsd.gl_gui.model.core_model.core_enums import generate_id
 from src.lsd.gl_gui.utils.glfw_utils import request_render
@@ -779,8 +781,12 @@ class Melty:
 
     all_uniques = set()
     profiles_results = {}
-
     live_attributes = {}
+
+    event_handler = InputHandler()
+    backend = PynputBackend(event_handler)
+    backend.start()
+    events = {}
 
     @classmethod
     def to_apply(cls, action: CollectionAction):
@@ -792,6 +798,9 @@ class Melty:
 
     @classmethod
     def begin_frame(cls):
+        cls.backend.pump()
+        cls.events = cls.event_handler.process_frame()
+        cls.event_handler.clear_pending()
 
         # Check live attributes
         for obj, attributes in cls.live_attributes.items():
@@ -801,10 +810,7 @@ class Melty:
                 except Exception:
                     continue
 
-        from src.lsd.gl_gui.view.events.event_manager import EventManager
-        EventManager.mark_frame_start()
         Melty.bg_stack = [(0, 0, 0)]
-
 
         Melty.active_layer = 0
         cls.frame_count += 1

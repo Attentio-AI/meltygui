@@ -1,0 +1,233 @@
+"""
+Low-latency input event handler.
+
+No callbacks - single method returns {view_id: [events]}.
+Device-agnostic actions auto-parsed from subscription names.
+"""
+
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import Any
+import time
+
+
+class Action:
+    DOWN = "down"
+    UP = "up"
+    DRAGGED = "dragged"
+    CLICKED = "clicked"
+    DOUBLE_CLICKED = "double_clicked"
+    CHANGED = "changed"
+    MOVED = "moved"
+
+
+ACTION_ALIASES = {
+    "pressed": Action.DOWN,
+    "released": Action.UP,
+    "drag": Action.DRAGGED,
+    "click": Action.CLICKED,
+    "double_click": Action.DOUBLE_CLICKED,
+}
+
+ALL_ACTIONS = frozenset({
+    Action.DOWN, Action.UP, Action.DRAGGED, Action.CLICKED,
+    Action.DOUBLE_CLICKED, Action.CHANGED, Action.MOVED,
+    *ACTION_ALIASES.keys()
+})
+_SORTED_ACTIONS = tuple(sorted(ALL_ACTIONS, key=len, reverse=True))
+
+DOUBLE_CLICK_WINDOW = 0.3
+CLICK_MAX_DURATION = 0.25
+CLICK_MAX_DISTANCE = 5.0
+
+
+@dataclass(slots=True)
+class InputEvent:
+    input_id: str
+    action: str
+    x: float = 0.0
+    y: float = 0.0
+    dx: float = 0.0
+    dy: float = 0.0
+    value: float = 0.0
+    timestamp: float = 0.0
+    modifiers: int = 0
+    
+    @property
+    def shift(self) -> bool: return bool(self.modifiers & 1)
+    @property
+    def ctrl(self) -> bool: return bool(self.modifiers & 2)
+    @property
+    def alt(self) -> bool: return bool(self.modifiers & 4)
+    @property
+    def meta(self) -> bool: return bool(self.modifiers & 8)
+
+
+@dataclass(slots=True)
+class _InputState:
+    is_down: bool = False
+    down_time: float = 0.0
+    down_x: float = 0.0
+    down_y: float = 0.0
+    last_up_time: float = 0.0
+    click_count: int = 0
+
+
+_parse_cache: dict[str, tuple[str, str]] = {}
+
+def parse_event_name(name: str) -> tuple[str, str]:
+    """Parse "left_mouse_up" → ("left_mouse", "up")"""
+    if name in _parse_cache:
+        return _parse_cache[name]
+    
+    original = name
+    if name.startswith("on_"):
+        name = name[3:]
+    
+    for action in _SORTED_ACTIONS:
+        if name.endswith(f"_{action}"):
+            input_id = name[:-(len(action) + 1)]
+            if input_id.endswith("_key"):
+                input_id = input_id[:-4]
+            canonical = ACTION_ALIASES.get(action, action)
+            _parse_cache[original] = (input_id, canonical)
+            return (input_id, canonical)
+    
+    _parse_cache[original] = (name, "")
+    return (name, "")
+
+
+class InputHandler:
+    """
+    Usage:
+        handler = InputHandler()
+        
+        handler.begin_frame()
+        handler.register_hovered("btn", 0, ["left_mouse_clicked"])
+        handler.register_hovered("panel", 1, ["left_mouse_dragged"])
+        
+        # Feed from backend
+        handler.feed_down("left_mouse", x, y)
+        handler.feed_move(x, y)
+        handler.feed_up("left_mouse", x, y)
+        
+        events = handler.process_frame()
+        # {"btn": [InputEvent(...)], "panel": [...]}
+    """
+    
+    __slots__ = ('_states', '_hovered', '_pending', '_cursor_x', '_cursor_y', '_modifiers')
+    
+    def __init__(self):
+        self._states: dict[str, _InputState] = {}
+        self._hovered: list[tuple[Any, int, frozenset]] = []
+        self._pending: list[InputEvent] = []
+        self._cursor_x = 0.0
+        self._cursor_y = 0.0
+        self._modifiers = 0
+    
+    def _state(self, input_id: str) -> _InputState:
+        s = self._states.get(input_id)
+        if s is None:
+            s = _InputState()
+            self._states[input_id] = s
+        return s
+    
+    def set_modifiers(self, shift=False, ctrl=False, alt=False, meta=False):
+        self._modifiers = (shift and 1) | (ctrl and 2) | (alt and 4) | (meta and 8)
+    
+    def clear_pending(self):
+        self._hovered.clear()
+        self._pending.clear()
+    
+    def register_hovered(self, view_id: Any, priority: int, subscribed: list[str]):
+        """Register hovered view. Priority 0 = topmost."""
+        subs = frozenset(parse_event_name(s) for s in subscribed)
+        self._hovered.append((view_id, priority, subs))
+    
+    def _emit(self, input_id: str, action: str, x: float, y: float,
+              dx: float = 0, dy: float = 0, value: float = 0, t: float = None):
+        self._pending.append(InputEvent(
+            input_id, action, x, y, dx, dy, value,
+            t or time.perf_counter(), self._modifiers
+        ))
+    
+    def feed_down(self, input_id: str, x: float = None, y: float = None, t: float = None):
+        t = t or time.perf_counter()
+        x = self._cursor_x if x is None else x
+        y = self._cursor_y if y is None else y
+        
+        state = self._state(input_id)
+        state.is_down = True
+        state.down_time = t
+        state.down_x = x
+        state.down_y = y
+        
+        self._emit(input_id, Action.DOWN, x, y, t=t)
+    
+    def feed_up(self, input_id: str, x: float = None, y: float = None, t: float = None):
+        t = t or time.perf_counter()
+        x = self._cursor_x if x is None else x
+        y = self._cursor_y if y is None else y
+        
+        state = self._state(input_id)
+        was_down = state.is_down
+        state.is_down = False
+        
+        self._emit(input_id, Action.UP, x, y, t=t)
+        
+        if was_down:
+            dur = t - state.down_time
+            dist = ((x - state.down_x)**2 + (y - state.down_y)**2) ** 0.5
+            
+            if dur <= CLICK_MAX_DURATION and dist <= CLICK_MAX_DISTANCE:
+                if t - state.last_up_time <= DOUBLE_CLICK_WINDOW:
+                    state.click_count += 1
+                    if state.click_count >= 2:
+                        self._emit(input_id, Action.DOUBLE_CLICKED, x, y, t=t)
+                        state.click_count = 0
+                else:
+                    state.click_count = 1
+                self._emit(input_id, Action.CLICKED, x, y, t=t)
+            else:
+                state.click_count = 0
+        
+        state.last_up_time = t
+    
+    def feed_move(self, x: float, y: float, dx: float = None, dy: float = None, t: float = None):
+        t = t or time.perf_counter()
+        dx = x - self._cursor_x if dx is None else dx
+        dy = y - self._cursor_y if dy is None else dy
+        self._cursor_x, self._cursor_y = x, y
+        
+        for input_id, state in self._states.items():
+            if state.is_down:
+                self._emit(input_id, Action.DRAGGED, x, y, dx, dy, t=t)
+        
+        self._emit("cursor", Action.MOVED, x, y, dx, dy, t=t)
+    
+    def feed_change(self, input_id: str, value: float, t: float = None):
+        self._emit(input_id, Action.CHANGED, self._cursor_x, self._cursor_y, value=value, t=t)
+    
+    def process_frame(self) -> dict[Any, list[InputEvent]]:
+        """Returns {view_id: [events]} for all matched subscriptions."""
+        self._hovered.sort(key=lambda x: x[1])
+        
+        result: dict[Any, list[InputEvent]] = {}
+        
+        for event in self._pending:
+            key = (event.input_id, event.action)
+            for view_id, _, subs in self._hovered:
+                if key in subs:
+                    if view_id not in result:
+                        result[view_id] = []
+                    result[view_id].append(event)
+                    break
+        
+        return result
+    
+    def is_down(self, input_id: str) -> bool:
+        s = self._states.get(input_id)
+        return s.is_down if s else False
+    
+    def cursor(self) -> tuple[float, float]:
+        return (self._cursor_x, self._cursor_y)

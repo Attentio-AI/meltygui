@@ -40,7 +40,6 @@ from src.lsd.gl_gui.view.core_views.folders_proxy import FolderProxy
 from src.lsd.gl_gui.view.core_views.inspect_utils import set_fn_defaults
 from collections.abc import MutableMapping
 from src.lsd.gl_gui.view.core_views.codec_register import registry as FILE_CODECS
-from src.lsd.gl_gui.view.events.event_manager import EventManager
 
 
 @render_wrapper(wraps=render_func, use_cache=False)
@@ -134,7 +133,6 @@ def draw_main(input_value, vis):
     draw_window(Melty.registered_windows, indent_size=10, is_tree=True, show_add_delete=False, name="Window Manager")
 
     draw_window(test_obj, name="Layer 1")
-    draw_window(EventManager.input_sources, name="Input Sources")
 
     draw_window(proxy, name="CST Proxy")
     draw_window(filesystem_proxy, name="Filesystem Test")

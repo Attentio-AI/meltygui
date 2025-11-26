@@ -24,7 +24,6 @@ from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
 from src.lsd.gl_gui.view.core_views.core_meta import Meta
 from src.lsd.gl_gui.view.core_views.decoration.profile_decoration import profile
-from src.lsd.gl_gui.view.events.event_manager import EventManager
 
 melty_state_registry = {}
 static_melty = MeltyState()
@@ -1011,8 +1010,6 @@ def get_melty_state():
 
 
 def handle_actions(melty, unique, draw_state, func=None):
-
-    input_sources = EventManager.input_sources
 
     if not imgui.is_mouse_down():
         melty.initial_scroll_offset = (0, 0)
