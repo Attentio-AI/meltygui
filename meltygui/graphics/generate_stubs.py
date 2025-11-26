@@ -18,7 +18,7 @@ from shader_library import Filter
 from shader_library.shader_manager.stub_generator import generate_filter_stub
 
 # Generate the stub file
-stub_path = os.path.join(os.path.dirname(__file__), 'shader_manager', 'filter.pyi')
+stub_path = os.path.join(os.path.dirname(__file__), '', 'filter.pyi')
 content = generate_filter_stub(stub_path)
 
 lines = len(content.splitlines())

@@ -6,9 +6,9 @@ import glfw
 import imgui
 import libcst as cst
 
+from src.shader_library.shader_manager.filter import Filter
 from src.lsd.gl_gui.view.events.input_handler import InputHandler
 from src.lsd.gl_gui.view.events.pynput_backend import PynputBackend
-from src.lsd.gl_gui.shader_library import Filter
 from src.lsd.gl_gui.model.core_model.core_enums import generate_id
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import global_hotkeys
