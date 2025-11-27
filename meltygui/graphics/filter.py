@@ -8,10 +8,9 @@ from functools import partial
 
 import numpy as np
 
-from .registry import get_registry, ShaderRegistry
-from .compiler import ProgramCompiler, CompiledProgram, ShaderCompilationError
-from .executor import FilterExecutor
-from .base import Shader, ShaderType
+from src.shader_library.shader_manager.compiler import ProgramCompiler, CompiledProgram, ShaderCompilationError
+from src.shader_library.shader_manager.executor import FilterExecutor
+from src.shader_library.shader_manager.registry import get_registry
 
 
 class FilterChain:

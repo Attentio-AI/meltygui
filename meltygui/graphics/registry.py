@@ -4,7 +4,8 @@ Shader and shader type registry with decorator-based registration.
 
 from typing import Dict, Type, Any, Optional, Callable
 from dataclasses import dataclass, field
-from .base import ShaderType, Shader, GLType, camel_to_snake
+
+from src.shader_library.shader_manager.base import ShaderType, Shader, camel_to_snake, GLType
 
 
 class ShaderRegistry:

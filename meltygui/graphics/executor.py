@@ -5,8 +5,8 @@ Filter execution engine - applies shaders to textures.
 from typing import Dict, Any, Optional, Tuple
 import ctypes
 
-from .compiler import CompiledProgram, ProgramCompiler
-from .base import GLType
+from src.shader_library.shader_manager.base import GLType
+from src.shader_library.shader_manager.compiler import ProgramCompiler, CompiledProgram
 
 
 def _get_gl():

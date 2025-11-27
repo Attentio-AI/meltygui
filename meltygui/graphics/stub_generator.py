@@ -4,11 +4,11 @@ Generate type stub files (.pyi) for IDE autocomplete support.
 This module generates stub files that IDEs can read to provide
 autocomplete and type hints for dynamically generated shader methods.
 """
-
-from typing import Dict, Any, Tuple
 from pathlib import Path
-from .registry import ShaderRegistry, get_registry
-from .base import GLType
+from typing import Any
+
+from src.shader_library.shader_manager.base import GLType
+from src.shader_library.shader_manager.registry import get_registry
 
 
 def _gltype_to_python_type(gltype: GLType) -> str:

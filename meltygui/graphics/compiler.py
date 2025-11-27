@@ -6,8 +6,7 @@ from typing import Dict, Optional, Any, Tuple
 from dataclasses import dataclass
 import ctypes
 
-from .base import ShaderType, Shader, GLType
-
+from src.shader_library.shader_manager.base import ShaderType, Shader
 
 # GLSL version header
 GLSL_VERSION = "#version 330 core\n"

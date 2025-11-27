@@ -4,8 +4,8 @@ Built-in shader types and common shaders.
 These are automatically registered when importing melty.
 """
 
-from shader_library.shader_manager.registry import register_shader_type, register_shader
-from shader_library.shader_manager.base import GLType
+from src.shader_library.shader_manager.registry import register_shader_type, register_shader
+from src.shader_library.shader_manager.base import GLType
 
 
 # =============================================================================

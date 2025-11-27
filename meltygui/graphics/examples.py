@@ -8,8 +8,9 @@ This demonstrates:
 4. Custom shader types
 """
 from lsd.gl_gui.melty import Melty
-from lsd.gl_gui.shader_library import register_shader, GLType, register_shader_type, Filter
-from lsd.gl_gui.shader_library.shader_manager.registry import get_registry
+from src.shader_library.shader_manager.base import GLType
+from src.shader_library.shader_manager.filter import Filter
+from src.shader_library.shader_manager.registry import register_shader, register_shader_type, get_registry
 
 
 # =============================================================================
