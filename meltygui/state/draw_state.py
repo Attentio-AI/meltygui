@@ -76,7 +76,7 @@ class ZoomState(DictConversion):
         self.center_u = 0.5
         self.center_v = 0.5
         self.zoom = 1.0
-        self.brightness = 1.0
+        self.brightness = 0.0
         self.contrast = 1.0
 
 @no_save("mouse_btn_state", "mouse_up", "mouse_down", "bounding_width", "bounding_height", "unique", "search_active",

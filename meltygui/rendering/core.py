@@ -302,6 +302,12 @@ def render_func(*args, **o_kwargs):
         draw_state._has_popup = kwargs.get("has_popup", False)
         draw_state.auto_resize = kwargs.get("auto_resize", False)
 
+        if draw_state.width is None and kwargs.get("min_width", None) is not None:
+            draw_state.width = kwargs.get("min_width", None)
+
+        if draw_state.height is None and kwargs.get("min_height", None) is not None:
+            draw_state.height = kwargs.get("min_height", None)
+
         if draw_state.auto_resize:
             if passed_width is not None:
                 draw_state.width = passed_width
@@ -479,6 +485,11 @@ def render_func(*args, **o_kwargs):
                     size_w = start_pos_x + drag_delta[0]
                     size_h = start_pos_y + drag_delta[1]
                     draw_state.width, draw_state.height = (max(size_w, 25), max(size_h, 24))
+                    min_width = kwargs.get('min_width', 25)
+                    min_height = kwargs.get('min_height', 24)
+                    draw_state.width = max(draw_state.width, min_width)
+                    draw_state.height = max(draw_state.height, min_height)
+
                     draw_state.window_size = (draw_state.width, draw_state.height)
                     draw_state.expanded = True
 
@@ -1311,10 +1322,9 @@ def draw_resize_handle(a_ds):
         return
 
     current_cursor = imgui.get_cursor_screen_pos()
-    # if a_ds.expanded:
-    #     imgui.set_cursor_screen_pos((rect_br[0], rect_br[1]))
-    #     imgui.invisible_button(str(a_ds.unique) + "resize_btn", width, height)
-    #     imgui.same_line(0)
+    if a_ds.expanded:
+        imgui.set_cursor_screen_pos((rect_br[0], rect_br[1]))
+        imgui.invisible_button(str(a_ds.unique) + "resize_btn", width, height)
 
     alpha = 0.0
     if imgui.is_mouse_hovering_rect(rect_br[0], rect_br[1], rect_br[2], rect_br[3]):
@@ -1339,8 +1349,8 @@ def draw_resize_handle(a_ds):
                                    rect_br[2] - arrow_size - margin - 1,
                                    rect_br[3] - margin - arrow_size, arrow_size, arrow_size,
                                    key=str(a_ds.unique) + "resize")
-    # if a_ds.expanded:
-    #     imgui.set_cursor_screen_pos(current_cursor)
+    if a_ds.expanded:
+        imgui.set_cursor_screen_pos(current_cursor)
 
 
 def get_drag_mode(a_ds):

@@ -162,14 +162,16 @@ import OpenGL.GL as gl
 import numpy
 
 
-@render_func(is_default_for=PendingTexture, use_cache=False, enable_scroll=False)
+@with_header(is_default_for=PendingTexture, use_cache=False, enable_scroll=False,
+             min_width=100, min_height=100, indent_size=0)
 def draw_pending_texture(input_value:PendingTexture):
     draw_texture(input_value.texture_id, name=f"{input_value.name[:30]}",
-                 auto_resize=False, width=input_value.tex_width, height=input_value.tex_height)
+                 auto_resize=False, show_header=False, indent_size=0,
+                 width=input_value.tex_width, height=input_value.tex_height)
 
 @with_header(is_default_for=numpy.uint32, show_bg=True,
              use_cache=False, show_add_delete=False,
-             indent_size=1,
+             indent_size=1, min_width=100, min_height=100,
              enable_scroll=True, zoom_speed=0.2)
 def draw_texture(input_value: numpy.uint32, zoom_state: ZoomState, zoom_speed, header_height=0, min_zoom=0.1,
                  max_zoom=50.0, style_manager=None, max_brightness=5.0, max_contrast=5.0,
@@ -236,7 +238,7 @@ def draw_texture(input_value: numpy.uint32, zoom_state: ZoomState, zoom_speed, h
 
     if style_manager is not None:
         mixed_color = style_manager.make_color_rgb(*mixed_color[:3],
-                                                   value=0.1, factor=0.9, saturation_scale=1.0, alpha=1.0)
+                                                   value=0.3, factor=0.9, saturation_scale=1.0, alpha=1.0)
         highlight_color = style_manager.make_color_rgb(*mixed_color[:3],
                                                    value=1.0, factor=0.9, saturation_scale=1.0, alpha=1.0)
     io = imgui.get_io()
@@ -1675,7 +1677,8 @@ def draw_collection(input_value, draw_state, depth, style_manager,
     # imgui.set_cursor_screen_pos((current_cursor[0], current_cursor[1] + draw_state.scroll_offset[1]))
     # current_cursor = imgui.get_cursor_screen_pos()
 
-    draw_state.content_height = content_height
+    if not melty.drag_in_progress:
+        draw_state.content_height = content_height
 
     # ----------------- top spacing -----------
     last_key = list(keys)[-1] if len(keys) > 0 else None
