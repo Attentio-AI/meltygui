@@ -82,6 +82,8 @@ class _Rect:
 def _create_color_tex(w: int, h: int, internal_format=gl.GL_RGB8) -> int:
     tex = gl.glGenTextures(1)
     gl.glBindTexture(gl.GL_TEXTURE_2D, tex)
+    if w > 10000 or h > 10000:
+        pass
     gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, internal_format, w, h, 0, gl.GL_RGB, gl.GL_UNSIGNED_BYTE, None)
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
@@ -997,6 +999,16 @@ class TileCacheMasked:
         if ctx.size and ctx.size[0] > 0 and ctx.size[1] > 0:
             t = self._tiles.get(ctx.key)
             # Allocate/resize tile only if we need to copy (dirty or size changed)
+            if self._dummy_vao is None:
+                vao = gl.glGenVertexArrays(1)
+                # Handle PyOpenGL returning different types
+                if isinstance(vao, (list, tuple)):
+                    vao = vao[0]
+                self._dummy_vao = int(vao)
+
+            # Always bind VAO before any draw calls
+            gl.glBindVertexArray(self._dummy_vao)
+
             if (t is None) or (t.size != (ctx.size[0], ctx.size[1])):
                 t = _ensure_tile(t, ctx.size[0], ctx.size[1], frame_id=self._frame_id)
                 self.invalidate(ctx.key)

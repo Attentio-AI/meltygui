@@ -13,7 +13,7 @@ import glfw
 import imgui
 
 from lsd.gl_gui.view.core_views.core_render_helpers import draw_vertical_scrollbar, floating_text
-from src.lsd.gl_gui.model.core_model.new_core_model import DrawState, Hotkey, DragMode
+from src.lsd.gl_gui.model.core_model.draw_state import DrawState, Hotkey, DragMode
 from src.lsd.gl_gui.model.core_model.stable_hash import stable_hash
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, print_stack_trace, \
     push_style_var, pop_style_var
@@ -274,9 +274,16 @@ def render_func(*args, **o_kwargs):
                     # FIX: ensure to reset the same dict we read from
                     Melty.move_draw_state_pending = {}
 
-        draw_state = get_draw_state(unique)
+        draw_state: DrawState = get_draw_state(unique)
         tile_id = strhash(str(computed_unique) + str(draw_state.id) + str(active_layer))
         draw_state._tile_id = tile_id
+
+        if not draw_state.expanded:
+            kwargs.pop("width", None)
+            kwargs.pop("height", None)
+
+        passed_width = kwargs.get('width', None)
+        passed_height = kwargs.get('height', None)
 
         # Check untracked object invalidation
         if not hasattr(input_value, "__melty__"):
@@ -294,6 +301,12 @@ def render_func(*args, **o_kwargs):
 
         draw_state._has_popup = kwargs.get("has_popup", False)
         draw_state.auto_resize = kwargs.get("auto_resize", False)
+
+        if draw_state.auto_resize:
+            if passed_width is not None:
+                draw_state.width = passed_width
+            if passed_height is not None:
+                draw_state.height = passed_height
 
         Melty.all_uniques.add(unique)
 
@@ -687,109 +700,122 @@ def render_func(*args, **o_kwargs):
             end_group()
             pop_style_var(2)
 
-            if "with_header" not in func.__name__:
-                # height = scroll_cursor_end[1] - scroll_cursor_start[1]
+            # height = scroll_cursor_end[1] - scroll_cursor_start[1]
 
-                # if draw_state.did_render:
-                #     content_height = scroll_cursor_end[1] - scroll_cursor_start[1]
-                #     draw_state.content_height = (content_height)
+            # if draw_state.did_render:
+            #     content_height = scroll_cursor_end[1] - scroll_cursor_start[1]
+            #     draw_state.content_height = (content_height)
 
-                if draw_state.left is not None and draw_state.top is not None:
-                    if draw_state.width is not None and draw_state.height is not None:
-                        imgui.set_cursor_screen_pos((start_cursor[0],
-                                                     start_cursor[1] + draw_state.height))
-                item_rect = imgui.get_item_rect_size()
+            if draw_state.left is not None and draw_state.top is not None:
+                if draw_state.width is not None and draw_state.height is not None:
+                    imgui.set_cursor_screen_pos((start_cursor[0],
+                                                 start_cursor[1] + draw_state.height))
+            item_rect = imgui.get_item_rect_size()
 
-                # # draw_state.content_height = item_rect[1]
-                #
-                #
-                # if len(Melty.clip_stack) > 0:
-                #     clip_width = Melty.clip_stack[-1][2] - Melty.clip_stack[-1][0]
-                #     clip_height = Melty.clip_stack[-1][3] - Melty.clip_stack[-1][1]
-                #     item_rect = (min(item_rect[0], clip_width), item_rect[1])
+            # # draw_state.content_height = item_rect[1]
+            #
+            #
+            # if len(Melty.clip_stack) > 0:
+            #     clip_width = Melty.clip_stack[-1][2] - Melty.clip_stack[-1][0]
+            #     clip_height = Melty.clip_stack[-1][3] - Melty.clip_stack[-1][1]
+            #     item_rect = (min(item_rect[0], clip_width), item_rect[1])
 
-                original_width_b = draw_state.bounding_width
-                original_height_b = draw_state.bounding_height
-                # if kwargs.get("auto_resize", True):
-                #     draw_state.window_size = None
+            original_width_b = draw_state.bounding_width
+            original_height_b = draw_state.bounding_height
+            # if kwargs.get("auto_resize", True):
+            #     draw_state.window_size = None
 
-                draw_state.bounds_left = snap_int(start_cursor[0])
-                draw_state.bounds_top = snap_int(start_cursor[1])
+            draw_state.bounds_left = snap_int(start_cursor[0])
+            draw_state.bounds_top = snap_int(start_cursor[1])
 
-                    # if kwargs.get("auto_resize", True) or draw_state.window_size is not None:
-                    #     draw_state.width = snap_int(item_rect[0])
-                    #     draw_state.height = snap_int(item_rect[1])
-                if not kwargs.get("auto_resize", True) and draw_state.window_size is not None:
-                    margin = 250
+                # if kwargs.get("auto_resize", True) or draw_state.window_size is not None:
+                #     draw_state.width = snap_int(item_rect[0])
+                #     draw_state.height = snap_int(item_rect[1])
+            if not kwargs.get("auto_resize", True) and draw_state.window_size is not None:
+                margin = 250
 
-                    display_size = imgui.get_io().display_size
-                    clamped_size = (
-                        min(draw_state.window_size[0], display_size[0]),
-                        min(draw_state.window_size[1], display_size[1] - margin)
-                    )
-                    draw_state.window_size = clamped_size
-                    draw_state.width = draw_state.window_size[0]
-                    draw_state.height = draw_state.window_size[1]
-                    draw_state.bounding_width = draw_state.window_size[0]
-                    draw_state.bounding_height = draw_state.window_size[1]
+                display_size = imgui.get_io().display_size
+                clamped_size = (
+                    min(draw_state.window_size[0], display_size[0]),
+                    min(draw_state.window_size[1], display_size[1] - margin)
+                )
+                draw_state.window_size = clamped_size
+                draw_state.width = draw_state.window_size[0]
+                draw_state.height = draw_state.window_size[1]
+                draw_state.bounding_width = draw_state.window_size[0]
+                draw_state.bounding_height = draw_state.window_size[1]
 
-                    # if not melty_window and draw_state.content_height > draw_state.height:
-                    #     if len(Melty.clip_stack) > 0:
-                    #         clip_width = Melty.clip_stack[-1][2] - Melty.clip_stack[-1][0]
-                    #         clip_height = Melty.clip_stack[-1][3] - Melty.clip_stack[-1][1]
-                    #         draw_state.width, draw_state.height = (min(draw_state.window_size[0], clip_width),
-                    #                                                min(clip_height, draw_state.window_size[1]))
-                else:
-                    if draw_state.did_render:
-                        draw_state.bounding_width = snap_int(item_rect[0])
-                    draw_state.bounding_height = snap_int(item_rect[1])
+                # if not melty_window and draw_state.content_height > draw_state.height:
+                #     if len(Melty.clip_stack) > 0:
+                #         clip_width = Melty.clip_stack[-1][2] - Melty.clip_stack[-1][0]
+                #         clip_height = Melty.clip_stack[-1][3] - Melty.clip_stack[-1][1]
+                #         draw_state.width, draw_state.height = (min(draw_state.window_size[0], clip_width),
+                #                                                  min(clip_height, draw_state.window_size[1]))
+            else:
+                if draw_state.did_render:
+                    draw_state.bounding_width = snap_int(item_rect[0])
+                draw_state.bounding_height = snap_int(item_rect[1])
 
-                    if (draw_state.bounding_width != original_width_b or
-                            draw_state.bounding_height != original_height_b):
-                        request_render()
+                if (draw_state.bounding_width != original_width_b or
+                        draw_state.bounding_height != original_height_b):
+                    request_render()
 
-                    if draw_state.window_size is None and melty_window:
-                        window_margin = 8
-                        draw_state.window_size = snap_int(item_rect[0]) + window_margin, snap_int(item_rect[1])
+                if draw_state.window_size is None and melty_window:
+                    window_margin = 8
+                    draw_state.window_size = snap_int(item_rect[0]) + window_margin, snap_int(item_rect[1])
 
+                if passed_width is None:
                     draw_state.width = snap_int(item_rect[0])
+                else:
+                    draw_state.width = kwargs.get("width", draw_state.width)
+
+                if passed_height is None:
                     draw_state.height = snap_int(item_rect[1])
+                else:
+                    draw_state.height = kwargs.get("height", draw_state.height)
 
-                ################################# SCROLL ########################
-                # if kwargs.get("enable_scroll", False):
-                #     draw_state.content_height = item_rect[1]
+            if draw_state.width > 10000:
+                draw_state.width = 10000
+            if draw_state.height > 10000:
+                draw_state.height = 10000
 
-                d_left = draw_state.bounds_left
-                d_top = draw_state.bounds_top
-                d_width = draw_state.width
-                d_height = draw_state.height
-                scroll_bar_offset = 30
-                scrollbar_width = 4.0
 
-                # if kwargs.get("enable_scroll", False):
-                clip_height = Melty.get_clip_size()[1]
-                needs_scroll = draw_state.content_height > draw_state.height if draw_state.height is not None else False
+            ################################# SCROLLING
+            # if kwargs.get("enable_scroll", False):
+            #     draw_state.content_height = item_rect[1]
 
-                if needs_scroll:
-                    draw_vertical_scrollbar(draw_state.content_height, view_height=d_height,
-                                            view_width=d_width,
-                                            scroll_offset=draw_state.scroll_offset[1], scrollbar_width=scrollbar_width,
-                                            left=d_left,
-                                            top=d_top)
+            d_left = draw_state.bounds_left
+            d_top = draw_state.bounds_top
+            d_width = draw_state.width
+            d_height = draw_state.height
+            scroll_bar_offset = 30
+            scrollbar_width = 4.0
 
-                ######################################## HANDLE ACTIONS #######################
-                is_hovered = draw_state.is_hovered()
+            # if kwargs.get("enable_scroll", False):
+            clip_height = Melty.get_clip_size()[1]
+            needs_scroll = draw_state.content_height > draw_state.height if draw_state.height is not None else False
+            draw_state.scroll_visible = needs_scroll
 
-                melty.triggered_actions.pop(unique, None)
-                handle_actions(melty, unique, draw_state, func)
+            if needs_scroll:
+                draw_vertical_scrollbar(draw_state.content_height, view_height=d_height,
+                                        view_width=d_width,
+                                        scroll_offset=draw_state.scroll_offset[1], scrollbar_width=scrollbar_width,
+                                        left=d_left,
+                                        top=d_top)
 
-                draw_state._hovered = False
-                draw_state.hotkey_receiver = False
-                if is_hovered:
-                    melty.hover_stack.append(unique)
+            ########################################### ACTIONS #######################
+            is_hovered = draw_state.is_hovered()
 
-                if is_hovered and func in Melty.hotkey_registry:
-                    melty.hotkey_stack.append(unique)
+            melty.triggered_actions.pop(unique, None)
+            handle_actions(melty, unique, draw_state, func)
+
+            draw_state._hovered = False
+            draw_state.hotkey_receiver = False
+            if is_hovered:
+                melty.hover_stack.append(unique)
+
+            if is_hovered and func in Melty.hotkey_registry:
+                melty.hotkey_stack.append(unique)
 
             ###############################################################################
             if depth_to_restore is not None:
@@ -850,13 +876,15 @@ def render_func(*args, **o_kwargs):
         if draw_state._has_popup:
             draw_state._imgui_popover_open = Melty.imgui_popup_open
 
-        if draw_state.width > 0 and draw_state.height > 0:
-            inside_clip = Melty.inside_clip(rect=(start_cursor[0], start_cursor[1],
-                                                  draw_state.width, draw_state.height))
-            if inside_clip != draw_state.clipped and inside_clip:
-                Melty.cache.invalidate(tile_id, force=True)
 
-            draw_state.clipped = inside_clip
+        if draw_state.width is not None and draw_state.height is not None:
+            if draw_state.width > 0 and draw_state.height > 0:
+                inside_clip = Melty.inside_clip(rect=(start_cursor[0], start_cursor[1],
+                                                      draw_state.width, draw_state.height))
+                if inside_clip != draw_state.clipped and inside_clip:
+                    Melty.cache.invalidate(tile_id, force=True)
+
+                draw_state.clipped = inside_clip
 
         if use_cache:
             last_bounding_hovered = draw_state.is_bounding_hovered()
@@ -1283,10 +1311,10 @@ def draw_resize_handle(a_ds):
         return
 
     current_cursor = imgui.get_cursor_screen_pos()
-    if a_ds.expanded:
-        imgui.set_cursor_screen_pos((rect_br[0], rect_br[1]))
-        imgui.invisible_button(str(a_ds.unique) + "resize_btn", width, height)
-        imgui.same_line(0)
+    # if a_ds.expanded:
+    #     imgui.set_cursor_screen_pos((rect_br[0], rect_br[1]))
+    #     imgui.invisible_button(str(a_ds.unique) + "resize_btn", width, height)
+    #     imgui.same_line(0)
 
     alpha = 0.0
     if imgui.is_mouse_hovering_rect(rect_br[0], rect_br[1], rect_br[2], rect_br[3]):
@@ -1311,8 +1339,8 @@ def draw_resize_handle(a_ds):
                                    rect_br[2] - arrow_size - margin - 1,
                                    rect_br[3] - margin - arrow_size, arrow_size, arrow_size,
                                    key=str(a_ds.unique) + "resize")
-    if a_ds.expanded:
-        imgui.set_cursor_screen_pos(current_cursor)
+    # if a_ds.expanded:
+    #     imgui.set_cursor_screen_pos(current_cursor)
 
 
 def get_drag_mode(a_ds):

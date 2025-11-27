@@ -201,7 +201,7 @@ def hotkey(key):
         params = sig.parameters
 
         if isinstance(key, int):
-            from src.lsd.gl_gui.model.core_model.new_core_model import Hotkey
+            from src.lsd.gl_gui.model.core_model.draw_state import Hotkey
             the_hotkey = Hotkey(key=key)
         else:
             the_hotkey = key

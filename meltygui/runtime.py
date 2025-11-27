@@ -6,6 +6,7 @@ import glfw
 import imgui
 import libcst as cst
 
+from src.shader_library.shader_manager.texture_manager import TextureManager
 from src.shader_library.shader_manager.filter import Filter
 from src.lsd.gl_gui.view.events.input_handler import InputHandler
 from src.lsd.gl_gui.view.events.pynput_backend import PynputBackend
@@ -788,6 +789,8 @@ class Melty:
     backend.start()
     events = {}
 
+    texture_manager = TextureManager()
+
     @classmethod
     def to_apply(cls, action: CollectionAction):
         cls.actions_to_apply.append(action)
@@ -795,12 +798,14 @@ class Melty:
     @classmethod
     def cleanup(cls):
         cls.filter.cleanup()
+        cls.texture_manager.clear()
 
     @classmethod
     def begin_frame(cls):
         cls.backend.pump()
         cls.events = cls.event_handler.process_frame()
         cls.event_handler.clear_pending()
+        cls.texture_manager.upload_pending()
 
         # Check live attributes
         for obj, attributes in cls.live_attributes.items():

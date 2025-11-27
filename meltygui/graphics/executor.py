@@ -122,6 +122,7 @@ class FilterExecutor:
         original_texture = GL.glGetIntegerv(GL.GL_TEXTURE_BINDING_2D)
         original_program = GL.glGetIntegerv(GL.GL_CURRENT_PROGRAM)
         original_vao = GL.glGetIntegerv(GL.GL_VERTEX_ARRAY_BINDING)
+        original_viewport = GL.glGetIntegerv(GL.GL_VIEWPORT)
 
         # Handle input framebuffer - get texture from framebuffer if specified
         if input_framebuffer is not None:
@@ -189,6 +190,9 @@ class FilterExecutor:
         GL.glBindTexture(GL.GL_TEXTURE_2D, original_texture)
         GL.glUseProgram(original_program)
         GL.glBindVertexArray(original_vao)
+
+        GL.glViewport(original_viewport[0], original_viewport[1],
+                        original_viewport[2], original_viewport[3])
 
         # If rendering to framebuffer directly, we're done
         if output_framebuffer is not None:

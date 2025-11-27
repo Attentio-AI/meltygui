@@ -17,6 +17,7 @@ import glfw
 from imgui.core import _DrawList
 from numpy import uint32
 
+from shader_library.shader_manager.texture_manager import PendingTexture
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_style_var, \
@@ -30,7 +31,7 @@ from src.lsd.gl_gui.view.core_views.core_meta import Meta
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import hotkey
 from src.lsd.gl_gui.view.core_views.core_render import render_func, tmp_undo_stack, redo_stack, push_id, pop_id, \
     render_wrapper, annotation_track, listens_for, begin_window, end_window
-from src.lsd.gl_gui.model.core_model.new_core_model import KeyMod, Hotkey, ZoomState
+from src.lsd.gl_gui.model.core_model.draw_state import KeyMod, Hotkey, ZoomState
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
 import libcst as cst
 
@@ -161,6 +162,11 @@ import OpenGL.GL as gl
 import numpy
 
 
+@render_func(is_default_for=PendingTexture, use_cache=False, enable_scroll=False)
+def draw_pending_texture(input_value:PendingTexture):
+    draw_texture(input_value.texture_id, name=f"{input_value.name[:30]}",
+                 auto_resize=False, width=input_value.tex_width, height=input_value.tex_height)
+
 @with_header(is_default_for=numpy.uint32, show_bg=True,
              use_cache=False, show_add_delete=False,
              indent_size=1,
@@ -184,13 +190,22 @@ def draw_texture(input_value: numpy.uint32, zoom_state: ZoomState, zoom_speed, h
         return False, None
 
     # 1. Query Texture Properties
-    original_binding = gl.glGetIntegerv(gl.GL_TEXTURE_BINDING_2D)
     gl.glBindTexture(gl.GL_TEXTURE_2D, texture_id)
 
     width = gl.glGetTexLevelParameteriv(gl.GL_TEXTURE_2D, 0, gl.GL_TEXTURE_WIDTH)
     height = gl.glGetTexLevelParameteriv(gl.GL_TEXTURE_2D, 0, gl.GL_TEXTURE_HEIGHT)
+    gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
 
-    gl.glBindTexture(gl.GL_TEXTURE_2D, original_binding)
+    # if draw_state.width is None:
+    #     draw_state.width = width
+    #
+    # if draw_state.height is None:
+    #     draw_state.height = height
+
+
+    if width > 16384 or height > 16384:
+        imgui.text(f"Error: Texture size {width}x{height} exceeds maximum supported size.")
+        return False, None
 
     if width == 0 or height == 0:
         return False, None
@@ -244,11 +259,12 @@ def draw_texture(input_value: numpy.uint32, zoom_state: ZoomState, zoom_speed, h
         zoom_state.brightness = max(0.0, min(max_brightness, zoom_state.brightness))
         zoom_state.contrast = max(0.0, min(max_contrast, zoom_state.contrast))
 
-    texture_id = Melty.filter.brightness_contrast(
-        input_value,
-        brightness=zoom_state.brightness,
-        contrast=zoom_state.contrast
-    )
+    if zoom_state.brightness != 0.0 or zoom_state.contrast != 1.0:
+        texture_id = Melty.filter.brightness_contrast(
+            input_value,
+            brightness=zoom_state.brightness,
+            contrast=zoom_state.contrast
+        )
 
     # texture_id = Melty.filter.swirl(
     #     texture_id,
@@ -313,10 +329,6 @@ def draw_texture(input_value: numpy.uint32, zoom_state: ZoomState, zoom_speed, h
         else:
             zoom_state.center_u -= io.mouse_delta.x * u_scale
             zoom_state.center_v += io.mouse_delta.y * v_scale
-
-
-
-
 
     # 4c. Apply Zoom Logic (Zoom to Cursor)
     if zoom_delta != 0.0:
@@ -857,7 +869,7 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
         if melty.dragged_item is None:
             melty.drag_in_progress = False
 
-        elif melty.dragged_item._input_value == collection:
+        elif id(melty.dragged_item._input_value)== id(collection):
             return False, 0.0
 
     if melty.drag_in_progress and do_flow and not on_drag and mouse_over_window:
@@ -1230,7 +1242,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
         if not show_bg:
             y_offset = 0
         prev_tint = None
-        if hasattr(input_value, "tint") and show_bg:
+        if hasattr(input_value, "tint") and input_value.tint is not None and show_bg:
             prev_tint = style_manager.get_tint()
             style_manager.set_imgui_tint(*input_value.tint)
         elif draw_state.tint is not None and show_bg:
@@ -1247,19 +1259,20 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                                                     collection=collection, key=key, on_drag=False,
                                                     draw_state=draw_state, tag="top")
         # ------------------ end spacing -----------
-        if width is None:
-            if draw_state.width is not None and draw_state.width > 0:
-                width = draw_state.width
-            else:
-                width = min_width
-                # draw_state.width = min_width
-        else:
-            if min_width == 0:
-                min_width = 1e9
-            # draw_state.width = max(width, min_width)
-
-        content_region = draw_state.content_region[0]
-        width = min(width, content_region)
+        width = draw_state.width
+        # if width is None:
+        #     if draw_state.width is not None and draw_state.width > 0:
+        #         width = draw_state.width
+        #     else:
+        #         width = min_width
+        #     # draw_state.width = min_width
+        # else:
+        #     if min_width == 0:
+        #         min_width = 1e9
+        #     # draw_state.width = max(width, min_width)
+        #
+        # content_region = draw_state.content_region[0]
+        # width = min(width, content_region)
         draw_state.content_region = imgui.get_content_region_available()
         draw_state._left_rel = imgui.get_cursor_pos()[0]
 
@@ -1368,10 +1381,12 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             if Melty.channels_split and show_bg:
                 draw_list.channels_set_current(min(Melty.max_depth - 1, Melty.depth))
             clip_start = imgui.get_cursor_screen_pos()
-
-            if draw_state.width > 0 and draw_state.height > 0:
-                Melty.push_clip((clip_start[0], clip_start[1],
-                                 clip_start[0] + draw_state.width - 1, clip_start[1] + draw_state.height - 1))
+            clipped = False
+            if draw_state.width is not None and draw_state.height is not None:
+                if draw_state.width > 0 and draw_state.height > 0:
+                    clipped = True
+                    Melty.push_clip((clip_start[0], clip_start[1],
+                                     clip_start[0] + draw_state.width - 1, clip_start[1] + draw_state.height - 1))
             next_kwargs['header_height'] = header_height
             return_val = func(**next_kwargs)
 
@@ -1390,8 +1405,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                 # ----------------- end header single item---------------
                 # This is the version for single items probably
                 draw_header_end(**next_kwargs)
-
-            if draw_state.width > 0 and draw_state.height > 0:
+            if clipped:
                 Melty.pop_clip()
 
         if not on_drag:
@@ -2003,7 +2017,7 @@ def draw_header(input_value=None, name="", suffix="", closable=False, collection
         same_line()
         imgui.set_item_allow_overlap()
 
-    if show_tint and hasattr(input_value, "tint"):
+    if show_tint and hasattr(input_value, "tint") and input_value.tint is not None:
         draw_state._has_popup = True
         tint_changed, tint_value = draw_tuple(input_value.tint, show_header=False)
         if tint_changed:

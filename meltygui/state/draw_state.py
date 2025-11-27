@@ -114,6 +114,7 @@ class DrawState(DictConversion):
         self._imgui_popover_open = False
         self.imgui_is_item_activated = False
         self.clipped = True
+        self.scroll_visible = False
 
         self.cst = None
         self.window_pos = None
