@@ -149,12 +149,10 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, ti
         st = _GLState()
         try:
             bg_color = Melty.bg_color_stack[-1] if len(Melty.bg_color_stack) > 0 else (0, 0, 0, 1)
-
             gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, existing.fbo)
             gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, new_fbo)
             gl.glClearColor(*bg_color[:3], 1.0)  # BG=0
             gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT | gl.GL_STENCIL_BUFFER_BIT)
-
             gl.glBlitFramebuffer(0, 0, snap_int(existing.size[0]), snap_int(existing.size[1]), 0, 0,
                                  snap_int(w), snap_int(h), gl.GL_COLOR_BUFFER_BIT, gl.GL_NEAREST)
         finally:
@@ -1142,6 +1140,7 @@ class TileCacheMasked:
             loc_rank_norm = gl.glGetUniformLocation(self._prog_mask, "uRankNorm")
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
 
+            print(f"{len(local_mask_rects)} mask rects, {len(local_pending)} pending tiles")
             for r in local_mask_rects:
                 x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y, fb_h)
 
@@ -1317,6 +1316,6 @@ class TileCacheMasked:
             self._enq_copy_keys.clear()
             self._cancelled_keys.clear()
             self._recording = False
-            self.apply_invalid()
+            # self.apply.clear()
             # self.initial_value.clear()
             self.did_deviate.clear()

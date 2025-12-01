@@ -154,6 +154,14 @@ def deep_refresh(*args, **kwargs):
 
     return decorator
 
+def tint(*args, **kwargs):
+    def decorator(cls):
+        if len(args) == 1 and isinstance(args[0], (list, set, tuple, dict)):
+            from_args = args[0]
+            setattr(cls, '__tint__', from_args)
+        return cls
+
+    return decorator
 
 def invalidate_all(*args, **kwargs):
     def decorator(cls):

@@ -22,7 +22,7 @@ from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_style_var, \
     push_style_color, pop_style_color, pop_style_var, end, begin
-from src.lsd.gl_gui.utils.glfw_utils import request_render
+from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
 from src.lsd.gl_gui.melty import Melty, CollectionAction, OperationType, add_to_collection, \
     ManagedWindow
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
@@ -531,12 +531,7 @@ def draw_window(input_value, inner_func=None, style_manager=None, *args, **kwarg
     return return_val
 
 def draw(vis):
-
-
-
     draw_melty_windows(vis)
-
-
 
 
 def export_code(test_param_2: int = 5):
@@ -1250,6 +1245,12 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
         elif draw_state.tint is not None and show_bg:
             prev_tint = style_manager.get_tint()
             style_manager.set_imgui_tint(*draw_state.tint)
+        elif hasattr(collection, "__tint__") and collection.__tint__ is not None and show_bg:
+            print(collection.__tint__)
+            if name in collection.__tint__:
+                prev_tint = style_manager.get_tint()
+                style_manager.set_imgui_tint(*collection.__tint__[name])
+
         start_x_pos = imgui.get_cursor_screen_pos()[0]
         start_y_pos = imgui.get_cursor_screen_pos()[1]
         # ----------------- top spacing -----------
@@ -1609,16 +1610,16 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
         prev_tint = None
         try:
-            show_bg = getattr(item_meta, "show_bg", False)
-            # if hasattr(item, "tint") or show_bg:
-            #     prev_tint = style_manager.get_tint()
-            #     style_manager.set_imgui_tint(*item.tint)
-
             if isinstance(collection, FolderProxy):
                 codec = FILE_CODECS.for_name(key)
                 if codec is not None and hasattr(codec, 'tint'):
                     prev_tint = style_manager.get_tint()
                     style_manager.set_imgui_tint(*codec.tint)
+
+            if hasattr(input_value, "__tint__") and getattr(input_value, "__tint__"):
+                if key in input_value.__tint__:
+                    prev_tint = style_manager.get_tint()
+                    style_manager.set_imgui_tint(*input_value.__tint__[key])
 
             y_offset = Melty.collection_spacing
             all_meta.append(item_meta)
@@ -1633,7 +1634,6 @@ def draw_collection(input_value, draw_state, depth, style_manager,
                         if space_left < 0:
                             imgui.new_line()
 
-            item_start_cursor = imgui.get_cursor_screen_pos()
             item_changed, out_val, extras = draw_any(item, return_extras=True, indent_size=10, key=key,
                                                      meta=item_meta, trigger_collapse=trigger_collapse,
                              trigger_expand=trigger_expand, y_offset=y_offset, on_collapse=on_collapse, on_expand=on_expand,

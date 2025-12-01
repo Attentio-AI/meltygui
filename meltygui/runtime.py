@@ -841,7 +841,7 @@ class Melty:
         fb_w, fb_h = map(int, imgui.get_io().display_size)  # Get: true GL FB size for HiDPI
         cls.cache.mask_begin_frame((fb_w, fb_h))
 
-        from lsd.gl_gui.view.core_views.core_render_helpers import clear_floating_text_cache
+        from src.lsd.gl_gui.view.core_views.core_render_helpers import clear_floating_text_cache
         clear_floating_text_cache()
 
     @classmethod
