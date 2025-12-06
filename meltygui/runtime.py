@@ -805,7 +805,7 @@ class Melty:
         cls.backend.pump()
         cls.events = cls.event_handler.process_frame()
         cls.event_handler.clear_pending()
-        cls.texture_manager.upload_pending()
+        # cls.texture_manager.upload_pending()
 
         # Check live attributes
         for obj, attributes in cls.live_attributes.items():

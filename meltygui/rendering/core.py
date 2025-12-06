@@ -667,6 +667,12 @@ def render_func(*args, **o_kwargs):
                     draw_state.width is None or draw_state.height is None):
                 clip = False
 
+            ## texture upload
+
+            if hasattr(input_value, 'pending_upload') and callable(getattr(input_value, 'pending_upload')):
+                if input_value.pending_upload():
+                    request_render()
+
             #### MAIN CALL #######################################################
             if clip:
                 cursor_pos = imgui.get_cursor_screen_pos()

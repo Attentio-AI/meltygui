@@ -43,6 +43,18 @@ class PendingTexture:
     data: bytes
     texture_id: numpy.uint32 | None = None  # Filled after upload
 
+    def pending_upload(self) -> int:
+        if self.texture_id is not None:
+            return False
+
+        """Upload using Melty library. MUST be called from GL thread."""
+        print(id(self), "Pending texture self upload:", self.tex_width, self.tex_height)
+        # Texture manager singleton
+        texture_manager = TextureManager()
+        texture_id = texture_manager.upload_to_gl(self)
+        self.texture_id = texture_id
+        return True
+
 class TextureManager:
     """Manages GL texture lifecycle with path-based caching and deferred uploads."""
 
@@ -58,38 +70,11 @@ class TextureManager:
             cls._instance._lock = threading.Lock()
         return cls._instance
 
-    def upload_pending(self) -> int:
-        """
-        Upload all pending textures to GL. Call at start of each frame from GL thread.
-        Returns the number of textures uploaded.
-        """
-        with self._lock:
-            to_upload = dict(self._pending)
-            self._pending.clear()
-
-        count = 0
-        for path, pending in to_upload.items():
-            with self._lock:
-                if path in self._cache:
-                    continue  # Already uploaded by another path
-
-            texture_id = self._upload_to_gl(pending)
-            pending.texture_id = texture_id
-
-            with self._lock:
-                self._cache[path] = texture_id
-                self._metadata[path] = (pending.tex_width, pending.tex_height, pending.gl_format)
-                self._ref_counts[path] = self._ref_counts.get(path, 0) + 1
-
-            count += 1
-
-        return count
-
-    def _upload_to_gl(self, pending: PendingTexture) -> int:
+    def upload_to_gl(self, pending: PendingTexture) -> int:
         """Create the GL texture. MUST be called from GL thread."""
         texture_id = glGenTextures(1)
         glBindTexture(GL_TEXTURE_2D, texture_id)
-
+        print(f"Uploading texture '{pending.name}' ({pending.tex_width}x{pending.tex_height}) as ID {texture_id}")
         glTexImage2D(
             GL_TEXTURE_2D, 0, pending.gl_format,
             pending.tex_width, pending.tex_height, 0,
@@ -101,6 +86,8 @@ class TextureManager:
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
 
         glBindTexture(GL_TEXTURE_2D, 0)
+        pending.texture_id = texture_id
+        print(id(pending), "Uploaded texture ID:", texture_id)
 
         return texture_id
 
@@ -113,6 +100,7 @@ class TextureManager:
         """Queue decoded image data for later GL upload. Thread-safe."""
         with self._lock:
             if path in self._cache:
+                pending.texture_id = self._cache[path]
                 return
             self._pending[path] = pending
 

@@ -163,8 +163,12 @@ import numpy
 
 
 @with_header(is_default_for=PendingTexture, use_cache=False, enable_scroll=False,
-             min_width=100, min_height=100, indent_size=0)
+             auto_resize=False, indent_size=0)
 def draw_pending_texture(input_value:PendingTexture):
+    imgui.text("pending texture")
+    if input_value.texture_id is None:
+        imgui.text(f"Uploading... {id(input_value)}")
+        return
     draw_texture(input_value.texture_id, name=f"{input_value.name[:30]}",
                  auto_resize=False, show_header=False, indent_size=0,
                  width=input_value.tex_width, height=input_value.tex_height)

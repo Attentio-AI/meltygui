@@ -1140,7 +1140,6 @@ class TileCacheMasked:
             loc_rank_norm = gl.glGetUniformLocation(self._prog_mask, "uRankNorm")
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
 
-            print(f"{len(local_mask_rects)} mask rects, {len(local_pending)} pending tiles")
             for r in local_mask_rects:
                 x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y, fb_h)
 
