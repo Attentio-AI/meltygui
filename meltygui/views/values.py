@@ -842,7 +842,7 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
 
     if Melty.active_layer == Melty.drag_layer:
         return False, 0.0
-    
+
     cursor_y_screen = imgui.get_cursor_screen_pos()[1]
 
     if collection == input_value or not Melty.is_window_enabled():
@@ -989,7 +989,7 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
     return False, flow_spacing
 
 def draw_header_end(global_style, unique, style_manager, show_search,
-                    on_search, draw_state, collection, key, closable,
+                    on_search, draw_state, collection, key, closable, is_tree,
                     melty, show_add_delete=True, parent_show_add_delete=False,
                     **kwargs):
     push_id(f"header_end_{unique}")
@@ -1004,12 +1004,6 @@ def draw_header_end(global_style, unique, style_manager, show_search,
                     make_color_style_value(input=bg_style, saturation=0.7,
                                            value=1.0))
 
-    # if draw_state._left_rel is not None:
-    #     cursor_pos = imgui.get_cursor_pos()
-    #     # imgui.set_cursor_pos((draw_state._left_rel, cursor_pos[1]))
-    #     # imgui.dummy(draw_state.width - draw_state._end_header_size[0],0)
-    #     imgui.same_line()
-    start_x, end_x = 0, 0
 
     push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
     push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
@@ -1019,20 +1013,16 @@ def draw_header_end(global_style, unique, style_manager, show_search,
 
     if parent_show_add_delete:
         imgui.same_line()
-        start_x = imgui.get_cursor_screen_pos()[0]
         push_style_color(imgui.COLOR_TEXT, *search_color)
         push_style_color(imgui.COLOR_BUTTON, *(0.0, 0.0, 0.0, 0.0))
         if imgui.button(f"\uf1f8##del"):
             melty.to_delete(key, collection)
             print("No selected_views or remove_view method")
         same_line(spacing=0.0)
-        padding = imgui.get_style().frame_padding.x
-        end_x = imgui.get_cursor_screen_pos()[0] + padding
         pop_style_color(2)
 
     if closable:
         imgui.same_line()
-
         cursor_start = imgui.get_cursor_screen_pos()
         if draw_state.width is not None and draw_state.left is not None and draw_state.expanded:
             imgui.set_cursor_screen_pos((draw_state.left + draw_state.width - 20 + imgui.get_window_position()[0],
@@ -1043,6 +1033,11 @@ def draw_header_end(global_style, unique, style_manager, show_search,
             draw_state.closed = not draw_state.closed
             Melty.cache.invalidate_up_by_obj(Melty.registered_windows)
         imgui.set_cursor_screen_pos(cursor_start)
+
+    if is_tree:
+        if not draw_state.expanded:
+            imgui.same_line()
+            imgui.dummy(20, 1)
 
     # if show_search or draw_state.search_active:
     #     imgui.same_line()
@@ -1073,7 +1068,6 @@ def draw_header_end(global_style, unique, style_manager, show_search,
     push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
     push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
     imgui.end_group()
-    draw_state._end_header_size = (end_x - start_x, imgui.get_item_rect_size()[1])
 
     pop_id()
     pop_style_var(2)
@@ -1317,6 +1311,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             next_kwargs.pop('spacing', None)
             next_kwargs.pop('padding', None)
             next_kwargs.pop('melty_window', False)
+            next_kwargs['is_tree'] = is_tree
 
             next_kwargs['input_value'] = input_value
             next_kwargs['spacing'] =(spacing[0], Melty.spacing[1])
@@ -1334,7 +1329,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             header_width = rect_size[0]
 
 
-            # Auto indent is decided here
+            # # Auto indent is decided here
             if header_same_line:
                 same_line(spacing=0.0)
 
@@ -1352,10 +1347,10 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                             if (space_available > cutoff and draw_state.expanded) or on_same_line:
                                 header_same_line = True
                                 same_line(spacing=0.0)
-
+            #
             if not header_same_line and (not on_drag or melty_window):
-                # ----------------- end header for collections ---------------
-                # This is the version with an indent, probably a dict header
+                # # ----------------- end header for collections ---------------
+                # # This is the version with auto indent, probably a dict header
                 draw_header_end(**next_kwargs)
 
 
@@ -1373,26 +1368,28 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             next_kwargs.pop('spacing', None)
             next_kwargs.pop('padding', None)
 
-            end_header_with = draw_state._end_header_size[0]
+            # end_header_with = draw_state._end_header_size[0]
 
             current_x = imgui.get_cursor_screen_pos()[0]
-            space_used = max(0, current_x - start_x_pos)
-            space_available = width - space_used
+            # space_used = max(0, current_x - start_x_pos)
+            # space_available = width - space_used
 
-            padding_x = imgui.get_style().frame_padding.x
-            request_width = space_available - end_header_with - padding_x - 7
-            min_width = min(imgui.get_content_region_available()[0],
-                            min_width - space_used)
-            min_width = max(min_width, request_width)
-            imgui.set_next_item_width(min_width)
+            # padding_x = imgui.get_style().frame_padding.x
+            # request_width = space_available - end_header_with - padding_x - 7
+            # min_width = min(imgui.get_content_region_available()[0],
+            #                 min_width - space_used)
+            # min_width = max(min_width, request_width)
+
+            parent_rect = Melty.get_clip_rect()
+            imgui.set_next_item_width(200)
 
             ######################## MAIN FUNC CALL ########################
             current_cursor = imgui.get_cursor_screen_pos()
             header_height = current_cursor[1] - start_y_pos
             draw_state._header_height = header_height
-
-            if not header_same_line:
-                Melty.indent(indent_size)
+            #
+            # if not header_same_line:
+            #     Melty.indent(indent_size)
 
             draw_list = imgui.get_window_draw_list()
 
@@ -1408,8 +1405,8 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             next_kwargs['header_height'] = header_height
             return_val = func(**next_kwargs)
 
-            if not header_same_line:
-                Melty.unindent(indent_size)
+            # if not header_same_line:
+            #     Melty.unindent(indent_size)
 
             ############### END MAIN FUNC CALL #############################
             if return_val is not None and len(return_val) == 2:
@@ -1419,10 +1416,10 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                     return_value = func_return_val
                 changed |= func_changed
 
-            if header_same_line and show_header:
-                # ----------------- end header single item---------------
-                # This is the version for single items probably
-                draw_header_end(**next_kwargs)
+            # if header_same_line and show_bg:
+            #     # ----------------- end header single item---------------
+            #     # This is the version for single items probably
+            #     draw_header_end(**next_kwargs)
             if clipped:
                 Melty.pop_clip()
 
@@ -2058,11 +2055,6 @@ def draw_header(input_value=None, name="", suffix="", closable=False, collection
             same_line(spacing=0.0)
 
     same_line(spacing=0.0)
-
-    if is_tree:
-        if not draw_state.expanded:
-            imgui.same_line()
-            imgui.dummy(40, 1)
 
     do_profile = global_toggles.profiler == ProfileMode.ON
     if do_profile:

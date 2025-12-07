@@ -465,6 +465,8 @@ def render_func(*args, **o_kwargs):
                 melty.hover_stack.append(unique)
 
             ############################# WINDOW SETUP #####################################################
+            window_drag = False
+
             window_drag = active_layer == Melty.drag_layer and melty.drag_in_progress
 
             if window_drag:
@@ -483,6 +485,7 @@ def render_func(*args, **o_kwargs):
             if ((kwargs.get("melty_window", False) or (
             not kwargs.get("auto_resize", True)) and draw_state.drag_mode == DragMode.RESIZE_BR)
                     and kwargs.get("on_drag", False)):
+                window_drag = True
                 mouse_pos = imgui.get_mouse_pos()
                 # kwargs['z_pos'] = Melty.depth + 2
 
@@ -982,8 +985,8 @@ def render_func(*args, **o_kwargs):
             # draw_state.content_height = height
 
             if "with_header" not in func.__name__:
-                if enable_scroll:
-                    if clip_height < height:
+                if clip_height < height:
+                    if enable_scroll:
                         clean_args.pop("enable_scroll", None)
 
                         # if Melty.channels_split:
@@ -1012,6 +1015,7 @@ def render_func(*args, **o_kwargs):
                         max_scroll_y = max(0, draw_state.content_height - clip_height)
                         draw_state.scroll_offset = (current_x,
                                                     max(min_scroll_y, min(new_offset_y, max_scroll_y)))
+                        print("herrrrr:", min_scroll_y, max_scroll_y)
                     else:
                         draw_state.scroll_offset = (0, 0)
 
