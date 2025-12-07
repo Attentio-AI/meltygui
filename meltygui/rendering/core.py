@@ -391,12 +391,12 @@ def render_func(*args, **o_kwargs):
             set_default("on_mouse_down", melty.check_event(unique, 0, ActionType.DOWN))
             set_default("on_hover", melty.check_event(unique, 0, ActionType.HOVERED))
 
-            if melty.top_event.get(ActionType.SCROLL, None) == unique:
-                on_scroll = melty.check_event_value(unique, -1, ActionType.SCROLL)
-                print("on_scroll:", on_scroll, "name:", name)
-                set_default("on_scroll", on_scroll)
-                melty.top_event.pop(ActionType.SCROLL, None)
-                melty.top_event_depth.pop(ActionType.SCROLL, None)
+            # if melty.top_event.get(ActionType.SCROLL, None) == unique:
+            #     on_scroll = melty.check_event_value(unique, -1, ActionType.SCROLL)
+            #     print("on_scroll:", on_scroll, "name:", name)
+            #     set_default("on_scroll", on_scroll)
+            #     melty.top_event.pop(ActionType.SCROLL, None)
+            #     melty.top_event_depth.pop(ActionType.SCROLL, None)
 
                 # needs_scroll = draw_state.content_height > draw_state.height if draw_state.height is not None else False
                 # if needs_scroll:
@@ -667,7 +667,11 @@ def render_func(*args, **o_kwargs):
                 layer_and_depth = Melty.active_layer * Melty.max_depth + Melty.depth
                 priority = max_layer_depth - layer_and_depth
                 event_names = copy(wanted_params)
-                event_names.extend(['hovered', "scroll_y"])
+                # event_names.extend(['hover_event', "scroll_y_changed"])
+
+                if kwargs.get("enable_scroll", False):
+                    event_names.extend(["scroll_y_changed"])
+
                 Melty.event_handler.register_hovered(str(tile_id), priority, event_names)
 
             ######################################################
@@ -969,18 +973,22 @@ def render_func(*args, **o_kwargs):
                         # if Melty.channels_split:
                         #     draw_list = imgui.get_window_draw_list()
                         #     draw_list.channels_set_current(min(Melty.depth, Melty.max_depth - 2))
+                        if str(tile_id) in Melty.events:
+                            scroll_y_changed = Melty.events[str(tile_id)].get("scroll_y_changed", None)
+                            scroll_delta = 0
+                            if scroll_y_changed is not None:
+                                scroll_delta = scroll_y_changed.value
+                            scroll_offset = draw_state.scroll_offset
+                            current_x = scroll_offset[0]
+                            current_y = scroll_offset[1]
+                            direction = -1
+                            scroll_speed = 100.0
+                            new_offset_y = current_y + scroll_delta * direction * scroll_speed
 
-                        scroll_offset = draw_state.scroll_offset
-                        current_x = scroll_offset[0]
-                        current_y = scroll_offset[1]
-                        direction = -1
-                        scroll_speed = 100.0
-                        new_offset_y = current_y + kwargs.get("on_scroll", 0) * direction * scroll_speed
-
-                        min_scroll_y = 0
-                        max_scroll_y = max(0, draw_state.content_height - clip_height)
-                        draw_state.scroll_offset = (current_x,
-                                                    max(min_scroll_y, min(new_offset_y, max_scroll_y)))
+                            min_scroll_y = 0
+                            max_scroll_y = max(0, draw_state.content_height - clip_height)
+                            draw_state.scroll_offset = (current_x,
+                                                        max(min_scroll_y, min(new_offset_y, max_scroll_y)))
                     else:
                         draw_state.scroll_offset = (0, 0)
 
