@@ -869,7 +869,7 @@ class Melty:
                     view_func = view[0]
                     args = view[1]
                     kwargs = view[2]
-                    draw_state = view[3]
+                    # draw_state = view[3]
 
                     fill_original = kwargs.get("start_pos", None) is not None
                     if fill_original:
@@ -877,8 +877,8 @@ class Melty:
 
                     return_val = view_func(*args, **kwargs)
 
-                    if return_val is not None:
-                        cls.returned_values[draw_state.id] = return_val
+                    # if return_val is not None:
+                    #     cls.returned_values[draw_state.id] = return_val
 
         cls.layers = []
 

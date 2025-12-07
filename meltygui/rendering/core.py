@@ -168,9 +168,10 @@ def render_func(*args, **o_kwargs):
 
         kwargs['return_extras'] = False
 
-        if header_defaults is not None:
-            kwargs = header_defaults | o_kwargs | kwargs
+        kwargs = o_kwargs | kwargs
 
+        if header_defaults is not None:
+            kwargs.update(header_defaults)
 
         if name == "" and is_root:
             Melty.wrapped_depth = 0
@@ -213,11 +214,8 @@ def render_func(*args, **o_kwargs):
             unique = ui_id(datatype=type(input_value), suffix=name + unique_name + str(key) + func.__name__)
             suffix = f"{unique_name}_{func.__name__}_{unique}_{key}"
         else:
-            # if active_layer is None or active_layer == 0:
             unique = ui_id(datatype=type(input_value), suffix=suffix + unique_name + str(key) + func.__name__,
                            idx=index)
-            # else:
-            #     unique = kwargs.get("draw_state", None).unique
 
         computed_unique = unique
         # -------------------------------------------------------------------------
@@ -472,6 +470,8 @@ def render_func(*args, **o_kwargs):
             if window_drag:
                 if Melty.depth == 1:
                     mouse_pos = imgui.get_mouse_pos()
+                    if melty.mouse_down_pos is None:
+                        melty.mouse_down_pos = mouse_pos
                     mouse_down_x = melty.mouse_down_pos[0]
                     mouse_down_y = melty.mouse_down_pos[1]
                     drag_delta = (mouse_pos[0] - mouse_down_x, mouse_pos[1] - mouse_down_y)
@@ -566,6 +566,7 @@ def render_func(*args, **o_kwargs):
                                                                              kwargs.get("min_height", None)))
 
             ######################## ERROR HANDLING FOR TYPES ########################
+
             cursor_pos = imgui.get_cursor_pos()
             imgui.set_cursor_pos((snap_int(cursor_pos[0]), snap_int(cursor_pos[1])))
             spacing = kwargs.get('spacing', Melty.spacing)
@@ -703,11 +704,6 @@ def render_func(*args, **o_kwargs):
             #     imgui.set_cursor_screen_pos(start_pos)
             #
             # else:
-
-            # layer = kwargs.get("layer", None)
-
-
-
             clip = not kwargs.get("auto_resize", True)
             if (draw_state.left is None or draw_state.top is None or
                     draw_state.width is None or draw_state.height is None):
@@ -985,8 +981,8 @@ def render_func(*args, **o_kwargs):
             # draw_state.content_height = height
 
             if "with_header" not in func.__name__:
-                if clip_height < height:
-                    if enable_scroll:
+                if enable_scroll:
+                    if clip_height < height:
                         clean_args.pop("enable_scroll", None)
 
                         # if Melty.channels_split:
@@ -1015,7 +1011,6 @@ def render_func(*args, **o_kwargs):
                         max_scroll_y = max(0, draw_state.content_height - clip_height)
                         draw_state.scroll_offset = (current_x,
                                                     max(min_scroll_y, min(new_offset_y, max_scroll_y)))
-                        print("herrrrr:", min_scroll_y, max_scroll_y)
                     else:
                         draw_state.scroll_offset = (0, 0)
 
