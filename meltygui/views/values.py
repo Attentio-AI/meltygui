@@ -1383,7 +1383,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             # min_width = max(min_width, request_width)
 
             parent_rect = Melty.get_clip_rect()
-            imgui.set_next_item_width(200)
+            imgui.set_next_item_width(120)
 
             ######################## MAIN FUNC CALL ########################
             current_cursor = imgui.get_cursor_screen_pos()

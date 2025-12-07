@@ -809,6 +809,8 @@ class Melty:
         cls.event_handler.clear_pending()
         # cls.texture_manager.upload_pending()
 
+
+
         # Check live attributes
         for obj, attributes in cls.live_attributes.items():
             for attrib in attributes:
@@ -880,6 +882,9 @@ class Melty:
                         cls.returned_values[draw_state.id] = return_val
 
         cls.layers = []
+
+        is_popup_open = imgui.is_popup_open("", flags=imgui.POPUP_ANY_POPUP)
+        Melty.imgui_popup_open = is_popup_open
 
         if Melty.depth == 0:
             from src.lsd.gl_gui.view.core_views.core_render import get_melty_state
