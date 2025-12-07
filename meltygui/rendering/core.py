@@ -165,25 +165,12 @@ def render_func(*args, **o_kwargs):
         input_value = kwargs.get("input_value", first_arg)
         window_key = f"{name}_window"
 
-        if active_layer is None:
-            window_z_pos = list(Melty.registered_windows.keys()).index(window_key) \
-                if window_key in Melty.registered_windows else None
-            kwargs['layer'] = window_z_pos
-
-        if kwargs.get("layer", None) is not None:
-            layer = kwargs.pop("layer", None)
-            kwargs["active_layer"] = layer
-            Melty.layers[layer].append((wrapper, args, kwargs))
-
-            if return_extras:
-                return False, None, kwargs
-            return False, None
 
         kwargs['return_extras'] = False
-        kwargs.update(o_kwargs)
 
         if header_defaults is not None:
-            kwargs.update(header_defaults)
+            kwargs = header_defaults | o_kwargs | kwargs
+
 
         if name == "" and is_root:
             Melty.wrapped_depth = 0
@@ -226,8 +213,11 @@ def render_func(*args, **o_kwargs):
             unique = ui_id(datatype=type(input_value), suffix=name + unique_name + str(key) + func.__name__)
             suffix = f"{unique_name}_{func.__name__}_{unique}_{key}"
         else:
+            # if active_layer is None or active_layer == 0:
             unique = ui_id(datatype=type(input_value), suffix=suffix + unique_name + str(key) + func.__name__,
                            idx=index)
+            # else:
+            #     unique = kwargs.get("draw_state", None).unique
 
         computed_unique = unique
         # -------------------------------------------------------------------------
@@ -275,8 +265,30 @@ def render_func(*args, **o_kwargs):
                     Melty.move_draw_state_pending = {}
 
         draw_state: DrawState = get_draw_state(unique)
-        tile_id = strhash(str(computed_unique) + str(draw_state.id) + str(active_layer))
+        tile_id = strhash(str(computed_unique) + str(draw_state.id))
         draw_state._tile_id = tile_id
+
+        if active_layer is None:
+            if (melty.dragged_item is not None and melty.drag_in_progress and
+                    draw_state is not None and melty.dragged_item.id == draw_state.id):
+                kwargs['layer'] = Melty.drag_layer
+                kwargs['start_pos'] = imgui.get_cursor_screen_pos()
+            else:
+                window_z_pos = list(Melty.registered_windows.keys()).index(window_key) \
+                    if window_key in Melty.registered_windows else None
+                kwargs['layer'] = window_z_pos
+
+        if kwargs.get("layer", None) is not None:
+            layer = kwargs.pop("layer", None)
+            kwargs["active_layer"] = layer
+            Melty.layers[layer].append((wrapper, args, kwargs, draw_state))
+            return_value = (False, None)
+            if draw_state.id in Melty.returned_values:
+                return_value = Melty.returned_values.pop(draw_state.id)
+
+            if return_extras:
+                return *return_value, kwargs
+            return return_value
 
         if not draw_state.expanded:
             kwargs.pop("width", None)
@@ -301,12 +313,6 @@ def render_func(*args, **o_kwargs):
 
         draw_state._has_popup = kwargs.get("has_popup", False)
         draw_state.auto_resize = kwargs.get("auto_resize", False)
-
-        if draw_state.width is None and kwargs.get("min_width", None) is not None:
-            draw_state.width = kwargs.get("min_width", None)
-
-        if draw_state.height is None and kwargs.get("min_height", None) is not None:
-            draw_state.height = kwargs.get("min_height", None)
 
         if draw_state.auto_resize:
             if passed_width is not None:
@@ -367,7 +373,7 @@ def render_func(*args, **o_kwargs):
 
                 kwargs.setdefault(key, default_value)
 
-            kwargs.update(Melty.global_attrs)
+            kwargs = Melty.global_attrs | kwargs
 
             set_default("input_value", input_value)
             set_default("draw_state", draw_state)
@@ -419,7 +425,7 @@ def render_func(*args, **o_kwargs):
                             kwargs.setdefault(hk_name, False)
             kwargs.setdefault('meta', meta)
 
-            kwargs.update(meta.__dict__)
+            kwargs = meta.__dict__ | kwargs
             for param in wanted_params:
                 if param not in kwargs and param != "kwargs" and param != 'args' and param != 'o_kwargs' and param != 'next_kwargs':
                     wanted_type = name_to_param_type.get(param, None)
@@ -459,12 +465,24 @@ def render_func(*args, **o_kwargs):
                 melty.hover_stack.append(unique)
 
             ############################# WINDOW SETUP #####################################################
-            window_drag = False
+            window_drag = active_layer == Melty.drag_layer and melty.drag_in_progress
+
+            if window_drag:
+                if Melty.depth == 1:
+                    mouse_pos = imgui.get_mouse_pos()
+                    mouse_down_x = melty.mouse_down_pos[0]
+                    mouse_down_y = melty.mouse_down_pos[1]
+                    drag_delta = (mouse_pos[0] - mouse_down_x, mouse_pos[1] - mouse_down_y)
+                    current_sx, current_sy = Melty.scroll_stack[-1] if len(Melty.scroll_stack) > 0 else (0, 0)
+                    current_pos = imgui.get_cursor_screen_pos()
+
+                    pos_x = current_pos[0] + drag_delta[0]
+                    pos_y = current_pos[1] + drag_delta[1]
+                    imgui.set_cursor_screen_pos((pos_x, pos_y))
 
             if ((kwargs.get("melty_window", False) or (
             not kwargs.get("auto_resize", True)) and draw_state.drag_mode == DragMode.RESIZE_BR)
                     and kwargs.get("on_drag", False)):
-                window_drag = True
                 mouse_pos = imgui.get_mouse_pos()
                 # kwargs['z_pos'] = Melty.depth + 2
 
@@ -523,8 +541,28 @@ def render_func(*args, **o_kwargs):
             else:
                 Melty.is_melty_window = False
 
-            ######################## ERROR HANDLING FOR TYPES ########################
+            draw_state.min_width = kwargs.get("min_width", draw_state.min_width)
+            draw_state.min_height = kwargs.get("min_height", draw_state.min_height)
 
+            if draw_state.width is None and kwargs.get("min_width", None) is not None:
+                draw_state.width = kwargs.get("min_width", None)
+
+            if draw_state.width is not None and kwargs.get("min_width", None) is not None:
+                draw_state.width = max(draw_state.width, kwargs.get("min_width", None))
+                if draw_state.window_size is not None:
+                    draw_state.window_size = (max(draw_state.window_size[0], kwargs.get("min_width", None)),
+                                                draw_state.window_size[1])
+
+            if draw_state.height is None and kwargs.get("min_height", None) is not None:
+                draw_state.height = kwargs.get("min_height", None)
+
+            if draw_state.height is not None and kwargs.get("min_height", None) is not None:
+                draw_state.height = max(draw_state.height, kwargs.get("min_height", None))
+                if draw_state.window_size is not None:
+                    draw_state.window_size = (draw_state.window_size[0], max(draw_state.window_size[1],
+                                                                             kwargs.get("min_height", None)))
+
+            ######################## ERROR HANDLING FOR TYPES ########################
             cursor_pos = imgui.get_cursor_pos()
             imgui.set_cursor_pos((snap_int(cursor_pos[0]), snap_int(cursor_pos[1])))
             spacing = kwargs.get('spacing', Melty.spacing)
@@ -662,6 +700,11 @@ def render_func(*args, **o_kwargs):
             #     imgui.set_cursor_screen_pos(start_pos)
             #
             # else:
+
+            # layer = kwargs.get("layer", None)
+
+
+
             clip = not kwargs.get("auto_resize", True)
             if (draw_state.left is None or draw_state.top is None or
                     draw_state.width is None or draw_state.height is None):
@@ -1097,7 +1140,7 @@ def handle_actions(melty, unique, draw_state, func=None):
                         btn_state.initial_screen_pos = (draw_state.left, draw_state.top)
                         btn_state.initial_window_pos = draw_state.window_pos
                         btn_state.initial_window_size = (draw_state.width, draw_state.height)
-                        draw_state.drag_mode = get_drag_mode(draw_state)
+                        draw_state.drag_mode = draw_state.get_drag_mode()
 
                         if draw_state.left is not None and draw_state.top is not None:
                             melty.initial_drag_offset = (current_mouse_pos[0] - draw_state.left,
@@ -1166,9 +1209,9 @@ def handle_actions(melty, unique, draw_state, func=None):
                     melty.mark_event(unique, scroll_y,
                                      ActionType.SCROLL, value=scroll_y)
 
-        # global_mouse_down = glfw.get_mouse_button(Melty.glfw_window, 0) == glfw.PRESS
-        # if not global_mouse_down:
-        #     melty.drag_in_progress = False
+        global_mouse_down = glfw.get_mouse_button(Melty.glfw_window, 0) == glfw.PRESS
+        if not global_mouse_down:
+            melty.drag_in_progress = False
 
 
 def get_draw_state(unique: int) -> DrawState:
@@ -1357,19 +1400,6 @@ def draw_resize_handle(a_ds):
                                    key=str(a_ds.unique) + "resize")
     if a_ds.expanded:
         imgui.set_cursor_screen_pos(current_cursor)
-
-
-def get_drag_mode(a_ds):
-    mx, my = imgui.get_mouse_pos()
-    rect_br = get_resize_handle(a_ds)
-    inside_br = (rect_br[0] <= mx <= rect_br[2] and rect_br[1] <= my <= rect_br[3])
-
-    # Bottom corner
-    if inside_br:
-        return DragMode.RESIZE_BR
-
-    return DragMode.WINDOW
-
 
 def jet_color(val: float):
     # jet color function

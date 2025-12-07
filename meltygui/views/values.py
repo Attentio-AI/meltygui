@@ -53,8 +53,8 @@ def with_header_minimal(func, *args, **o_kwargs):
         next_kwargs['func'] = func
         next_kwargs['outer_func'] = wrapper
         next_kwargs['y_offset'] = 0
-        next_kwargs['show_bg'] = False
-        next_kwargs['is_tree'] = False
+        next_kwargs['show_bg'] = kwargs.get("show_bg", False)
+        next_kwargs['is_tree'] = kwargs.get("is_tree", False)
         next_kwargs['min_width'] = kwargs.get('min_width', 200)
         return core_header(**next_kwargs)
 
@@ -145,6 +145,9 @@ def draw_main(input_value, vis):
     snapshot_tex = Melty.filter.normalize(Melty.cache.snapshot_tex)
     draw_window(Melty.cache.snapshot_tex, show_bg=True, name="Snapshot Texture")
 
+    changed, new_val = draw_window(0.0, layer=31, name="Test return")
+    if changed:
+        print("Value changed:", new_val)
 
     normalized_submask = Melty.filter.normalize(Melty.cache._sub_mask_tex)
     draw_window(normalized_submask, show_bg=True, max_contrast=30,
@@ -152,24 +155,18 @@ def draw_main(input_value, vis):
 
     # draw_window(Melty.last_request_render, show_bg=True, name="Last Invalid")
 
-
-import imgui
-import OpenGL.GL as gl
-import numpy
-
-import imgui
 import OpenGL.GL as gl
 import numpy
 
 
 @with_header(is_default_for=PendingTexture, use_cache=False, enable_scroll=False,
-             auto_resize=False, indent_size=0)
+             auto_resize=True, indent_size=0)
 def draw_pending_texture(input_value:PendingTexture):
-    imgui.text("pending texture")
     if input_value.texture_id is None:
         imgui.text(f"Uploading... {id(input_value)}")
-        return
-    draw_texture(input_value.texture_id, name=f"{input_value.name[:30]}",
+        return False, None
+
+    return draw_texture(input_value.texture_id, name=f"{input_value.name[:30]}",
                  auto_resize=False, show_header=False, indent_size=0,
                  width=input_value.tex_width, height=input_value.tex_height)
 
@@ -293,18 +290,28 @@ def draw_texture(input_value: numpy.uint32, zoom_state: ZoomState, zoom_speed, h
 
     # Keyboard Shortcuts (1, 2, 3, 4)
     forced_zoom = -1.0
+    key_1 = 49
+    numpad_key_1 = 321
     if is_hovered:
-        if imgui.is_key_pressed(49):  # Key '1'
+        if imgui.is_key_pressed(key_1) or imgui.is_key_pressed(numpad_key_1):  # Key '1'
             forced_zoom = 1.0
             # Reset Pan to Center
             zoom_state.center_u = 0.5
             zoom_state.center_v = 0.5
+            zoom_state.brightness = 0.0
+            zoom_state.contrast = 1.0
         elif imgui.is_key_pressed(50):  # Key '2'
             forced_zoom = 0.5
+            zoom_state.brightness = 0.0
+            zoom_state.contrast = 1.0
         elif imgui.is_key_pressed(51):  # Key '3'
             forced_zoom = 0.25
+            zoom_state.brightness = 0.0
+            zoom_state.contrast = 1.0
         elif imgui.is_key_pressed(52):  # Key '4'
             forced_zoom = 0.125
+            zoom_state.brightness = 0.0
+            zoom_state.contrast = 1.0
 
     if forced_zoom > 0:
         zoom_state.zoom = forced_zoom
@@ -832,6 +839,10 @@ def render_with_foo(func, *args, **kwargs):
 def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
                           collection, key, melty, y_offset, enable_flow, min_width,
                           unique, tag, style_manager, global_style, offset=0, indent_size=10):
+
+    if Melty.active_layer == Melty.drag_layer:
+        return False, 0.0
+    
     cursor_y_screen = imgui.get_cursor_screen_pos()[1]
 
     if collection == input_value or not Melty.is_window_enabled():
@@ -2198,7 +2209,7 @@ def draw_str(input_value: str):
         imgui.push_style_var(imgui.STYLE_ALPHA, 0)
 
     if line_count == 1:
-        imgui.set_next_item_width(width)
+        # imgui.set_next_item_width(width)
         changed, value = imgui.input_text("##str", input_value,
                                           flags=imgui.INPUT_TEXT_ENTER_RETURNS_TRUE)
     else:

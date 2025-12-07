@@ -41,6 +41,7 @@ class PendingTexture:
     tex_height: int
     gl_format: int
     data: bytes
+    tint: tuple[float, float, float] = (1.0, 1.0, 1.0)
     texture_id: numpy.uint32 | None = None  # Filled after upload
 
     def pending_upload(self) -> int:

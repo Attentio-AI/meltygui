@@ -82,7 +82,7 @@ class ZoomState(DictConversion):
 @no_save("mouse_btn_state", "mouse_up", "mouse_down", "bounding_width", "bounding_height", "unique", "search_active",
          "drag_released","clicked", "dragged", "dragged", "top", "left", "bounds_top", "bounds_left", "name", "expanded_height",
          "render_time", "imgui_is_toggled_open", "z_pos", "content_height", "hotkey_receiver", "use_child", "cst", "search_text",
-         "is_active", "did_render", "is_focused", "drag_window_pos_x", "drag_window_pos_y", "drag_mode", "auto_resize", "clipped", "is_hovered_last",
+         "is_active", "min_width", "min_height", "did_render", "is_focused", "drag_window_pos_x", "drag_window_pos_y", "drag_mode", "auto_resize", "clipped", "is_hovered_last",
          "z_pos", "draw_window_pos_x", "misc_used", "draw_window_pos_y", "drag_delta", "screen_pos", "imgui_is_item_activated")
 @exclude("render_time", "bounds_left", "bounds_top", "_input_value","flow_spacing",
          "hovered", "_did_use_cache", "value_hash", "drag_window", "top", "left", "content_region", "did_render",
@@ -136,6 +136,8 @@ class DrawState(DictConversion):
         self.height = 0
         self.expanded_height = None
         self.width = 0
+        self.min_width = 0
+        self.min_height = 0
         self.bounding_width = 0
         self.bounding_height = 0
         self.drag_window = False
@@ -211,6 +213,9 @@ class DrawState(DictConversion):
         return (right - margin, bottom - margin, right, bottom)
 
     def get_drag_mode(self):
+        if self.auto_resize:
+            return DragMode.WINDOW
+
         mx, my = imgui.get_mouse_pos()
         rect_br = self.get_resize_handle()
         inside_br = (rect_br[0] <= mx <= rect_br[2] and rect_br[1] <= my <= rect_br[3])
@@ -235,7 +240,6 @@ class DrawState(DictConversion):
         #     return False
         if self._imgui_is_active or self._imgui_is_edited:
             return True
-
 
 
         if self.left is None or self.top is None or self.width is None or self.height is None:
@@ -263,8 +267,6 @@ class DrawState(DictConversion):
         if self.bounds_top is None or self.bounds_left is None or self.width is None or self.height is None:
             return False
         rect = (self.bounds_left, self.bounds_top, self.width, self.height + 10)
-
-
 
         if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
             if imgui.is_window_hovered() or Melty.imgui_popup_open:

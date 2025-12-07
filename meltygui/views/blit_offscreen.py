@@ -843,6 +843,9 @@ class TileCacheMasked:
         rkey = self._resolve_key(key)
         size = self._sizes.get(rkey, None)
 
+
+        # --- Always record bounding rects (even if we drew cached) and paren
+
         if key in self.all_keys:
             print("[TileCacheMasked] Warning: Duplicate key detected:", key, type(input_value).__name__)
         self.all_keys.add(rkey)
@@ -850,6 +853,17 @@ class TileCacheMasked:
         if not draw_state.auto_resize and draw_state.width is not None and draw_state.height is not None:
             size = snap_int(draw_state.width), snap_int(draw_state.height)
             self._sizes[rkey] = size
+
+        if size is not None:
+            min_width = draw_state.min_width
+            min_height = draw_state.min_height
+            if min_width is not None and size[0] < min_width:
+                size = (snap_int(min_width), size[1])
+            if min_height is not None and size[1] < min_height:
+                size = (size[0], snap_int(min_height))
+
+            self._sizes[rkey] = size
+
         # if not draw_state.auto_resize and draw_state.window_size is not None:
         #     size = (snap_int(draw_state.window_size[0]), snap_int(ctx.draw_state.window_size[1]))
 
@@ -968,6 +982,13 @@ class TileCacheMasked:
 
         ctx.pos = (float(minx), float(miny))
         ctx.size = size[0], size[1]
+
+        min_width = ctx.draw_state.min_width
+        min_height = ctx.draw_state.min_height
+        if min_width is not None and ctx.size[0] < min_width:
+            ctx.size = (snap_int(min_width), ctx.size[1])
+        if min_height is not None and ctx.size[1] < min_height:
+            ctx.size = (ctx.size[0], snap_int(min_height))
 
         # --- Always record mask rects (even if we drew cached) so parents' subtree masks include children ---
         x, y = ctx.pos

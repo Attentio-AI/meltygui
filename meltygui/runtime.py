@@ -701,6 +701,7 @@ class Melty:
 
     # list, full with 32 Nones
     max_layer = 32
+    drag_layer = 31
     layers = []
     active_layer = 0
 
@@ -790,6 +791,7 @@ class Melty:
     events = {}
 
     texture_manager = TextureManager()
+    returned_values = {}
 
     @classmethod
     def to_apply(cls, action: CollectionAction):
@@ -847,6 +849,8 @@ class Melty:
     @classmethod
     def end_frame(cls):
 
+        cls.returned_values = {}
+
         for idx, layer in enumerate(Melty.layers):
             if Melty.channels_split:
                 # Flatten layers into single canvas
@@ -865,8 +869,18 @@ class Melty:
                     view_func = view[0]
                     args = view[1]
                     kwargs = view[2]
+                    draw_state = view[3]
+
+                    fill_original = kwargs.get("start_pos", None) is not None
+                    if fill_original:
+                        imgui.set_cursor_screen_pos(kwargs["start_pos"])
 
                     return_val = view_func(*args, **kwargs)
+
+                    if return_val is not None:
+                        cls.returned_values[draw_state.id] = return_val
+
+        cls.layers = []
 
         if Melty.depth == 0:
             from src.lsd.gl_gui.view.core_views.core_render import get_melty_state
