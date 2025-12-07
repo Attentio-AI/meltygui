@@ -970,7 +970,7 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
             top = cursor_top - 1
             bottom = max(cursor_top, cursor_bottom - 1)
             left = cursor_left + offset
-            right = cursor_left + draw_state.width - indent_size
+            right = cursor_left + draw_state.width
             width = right - left
             height = bottom - top
 

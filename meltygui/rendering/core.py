@@ -220,6 +220,7 @@ def render_func(*args, **o_kwargs):
         computed_unique = unique
         # -------------------------------------------------------------------------
 
+
         start_cursor = imgui.get_cursor_screen_pos()
         end_cursor = imgui.get_cursor_screen_pos()
 
@@ -283,6 +284,11 @@ def render_func(*args, **o_kwargs):
             return_value = (False, None)
             if draw_state.id in Melty.returned_values:
                 return_value = Melty.returned_values.pop(draw_state.id)
+
+            if draw_state.left is not None and draw_state.top is not None:
+                if draw_state.width is not None and draw_state.height is not None:
+                    imgui.set_cursor_screen_pos((start_cursor[0],
+                                                 start_cursor[1] + draw_state.height))
 
             if return_extras:
                 return *return_value, kwargs
@@ -520,8 +526,6 @@ def render_func(*args, **o_kwargs):
             if kwargs.get("melty_window", False):
                 melty_window = True
                 Melty.melty_window_stack.append((draw_state.window_pos, draw_state.window_size, unique))
-                cursor_pos = imgui.get_cursor_screen_pos()
-
                 if draw_state.window_pos is None and draw_state.width is not None:
                     draw_state.window_pos = Melty.init_window_cursor
                     cursor_spacing = 5
@@ -639,71 +643,7 @@ def render_func(*args, **o_kwargs):
                 draw_resize_handle(draw_state)
                 if Melty.channels_split:
                     draw_list.channels_set_current(Melty.depth)
-            on_drag = kwargs.get("on_drag", False)
             kwargs['on_drag'] = False
-            scroll_cursor_start = imgui.get_cursor_pos()
-
-            # if on_drag and not melty_window and not window_drag and not draw_state.drag_mode == DragMode.RESIZE_BR:
-            #
-            #     from src.lsd.gl_gui.view.core_views.input_core_views import draw_drag_drop_target
-            #     _, flow_spacing = draw_drag_drop_target(do_flow=True, enable_flow=True,
-            #                                             collection=kwargs.get("collection", None), key=key,
-            #                                             on_drag=False,
-            #                                             draw_state=draw_state, tag="drag")
-            #
-            #     next_kwargs = kwargs['next_kwargs']
-            #     mouse_pos = imgui.get_mouse_pos()
-            #     mouse_down_x = draw_state.mouse_btn_state[0].mouse_down_pos[0]
-            #     mouse_down_y = draw_state.mouse_btn_state[0].mouse_down_pos[1]
-            #     drag_delta = (mouse_pos[0] - mouse_down_x, mouse_pos[1] - mouse_down_y)
-            #
-            #     next_kwargs['opacity'] = 1.0
-            #     next_kwargs['do_flow'] = False
-            #     next_kwargs['melty_window'] = melty_window
-            #     next_kwargs['on_drag'] = False
-            #     next_kwargs['no_measure'] = True
-            #     next_kwargs['auto_resize'] = True
-            #     next_kwargs['enable_scroll'] = False
-            #     next_kwargs['full_window'] = False
-            #     next_kwargs['enable_flow'] = False
-            #     # next_kwargs['enable_drag'] = False
-            #     next_kwargs['z_pos'] = Melty.depth + 7
-            #     Melty.depth = Melty.depth + 7
-            #     #
-            #     # if draw_state.mouse_btn_state[0].last_window_pos is None:
-            #     #     draw_state.mouse_btn_state[0].prev_window_pos = (0, 0)
-            #
-            #     initial_sx, initial_sy = melty.initial_scroll_offset
-            #     current_sx, current_sy = Melty.scroll_stack[-1] if len(Melty.scroll_stack) > 0 else (0, 0)
-            #     delta_sx = current_sx
-            #     delta_sy = current_sy
-            #     pos_x = drag_delta[0] + draw_state.bounds_left + delta_sx
-            #     pos_y = drag_delta[1] + draw_state.bounds_top + delta_sy
-            #
-            #     Melty.undo_clip(unique)
-            #     Melty.push_clip((pos_x, pos_y,
-            #                      pos_x + draw_state.width,
-            #                      pos_y + draw_state.height))
-            #
-            #     start_pos = imgui.get_cursor_screen_pos()
-            #     imgui.set_cursor_screen_pos((pos_x, pos_y))
-            #     kwargs['on_drag'] = False
-            #     Melty.window_enabled = False
-            #
-            #     return_value = draw_inner_main(clean_args, draw_state, input_value, next_kwargs, melty, tile_id,
-            #                                    unique)
-            #
-            #     kwargs['on_drag'] = True
-            #     Melty.window_enabled = True
-            #
-            #     Melty.pop_clip()
-            #     Melty.redo_clip(unique)
-            #
-            #     Melty.depth = Melty.depth - 7
-            #
-            #     imgui.set_cursor_screen_pos(start_pos)
-            #
-            # else:
             clip = not kwargs.get("auto_resize", True)
             if (draw_state.left is None or draw_state.top is None or
                     draw_state.width is None or draw_state.height is None):
@@ -936,21 +876,21 @@ def render_func(*args, **o_kwargs):
             draw_state._imgui_popover_open = Melty.imgui_popup_open
 
 
-        if draw_state.width is not None and draw_state.height is not None:
-            if draw_state.width > 0 and draw_state.height > 0:
-                inside_clip = Melty.inside_clip(rect=(start_cursor[0], start_cursor[1],
-                                                      draw_state.width, draw_state.height))
-                if inside_clip != draw_state.clipped and inside_clip:
-                    Melty.cache.invalidate(tile_id, force=True)
-
-                draw_state.clipped = inside_clip
+        # if draw_state.width is not None and draw_state.height is not None:
+        #     if draw_state.width > 0 and draw_state.height > 0:
+        #         inside_clip = Melty.inside_clip(rect=(start_cursor[0], start_cursor[1],
+        #                                               draw_state.width, draw_state.height))
+        #         # if inside_clip != draw_state.clipped and inside_clip:
+        #         #     Melty.cache.invalidate(tile_id, force=True)
+        #
+        #         draw_state.clipped = inside_clip
 
         if use_cache:
             last_bounding_hovered = draw_state.is_bounding_hovered()
             draw_state._bounding_hovered = last_bounding_hovered
             hover_changed = last_bounding_hovered != draw_state._bounding_hovered
 
-            if (draw_state._bounding_hovered or hover_changed or draw_state._hovered or
+            if (draw_state._hovered or
                     draw_state.width is None or draw_state.height is None or draw_state._imgui_popover_open):
                 Melty.cache.invalidate(tile_id, force=True)
 
@@ -965,10 +905,13 @@ def render_func(*args, **o_kwargs):
         enable_scroll = kwargs.get("enable_scroll", False)
         draw_state = kwargs.get("draw_state", draw_state)
         do_scroll = enable_scroll and clip_height < draw_state.content_height and "with_header" not in func.__name__
-        if do_scroll:
+        indent_x = kwargs.get("indent_size", 0)
+        # indent_x = 0
+        scroll_offset = draw_state.scroll_offset if do_scroll else (0, 0)
+        if do_scroll or indent_x > 0:
             start_cursor = imgui.get_cursor_screen_pos()
-            imgui.set_cursor_screen_pos((start_cursor[0],
-                                         start_cursor[1] - draw_state.scroll_offset[1]))
+            imgui.set_cursor_screen_pos((start_cursor[0] + indent_x,
+                                         start_cursor[1] - scroll_offset[1]))
 
         if not use_cache or Melty.cache.mark_start_offscreen(input_value=input_value, collection=collection,
                                                              draw_state=draw_state, key=tile_id, name=draw_state.name,
@@ -1022,10 +965,10 @@ def render_func(*args, **o_kwargs):
         if use_cache:
             Melty.cache.mark_end_offscreen()
 
-        if do_scroll:
+        if do_scroll or indent_x > 0:
             start_cursor = imgui.get_cursor_screen_pos()
-            imgui.set_cursor_screen_pos((start_cursor[0],
-                                         start_cursor[1] + draw_state.scroll_offset[1]))
+            imgui.set_cursor_screen_pos((start_cursor[0] - indent_x,
+                                         start_cursor[1] + scroll_offset[1]))
 
         return return_value
 
