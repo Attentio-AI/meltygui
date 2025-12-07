@@ -9,7 +9,7 @@ import libcst as cst
 from src.shader_library.shader_manager.texture_manager import TextureManager
 from src.shader_library.shader_manager.filter import Filter
 from src.lsd.gl_gui.view.events.input_handler import InputHandler
-from src.lsd.gl_gui.view.events.pynput_backend import PynputBackend
+from src.lsd.gl_gui.view.events.pynput_backend import PynputBackend, ImGuiBackend
 from src.lsd.gl_gui.model.core_model.core_enums import generate_id
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import global_hotkeys
@@ -786,8 +786,7 @@ class Melty:
     live_attributes = {}
 
     event_handler = InputHandler()
-    backend = PynputBackend(event_handler)
-    backend.start()
+    backend = ImGuiBackend(event_handler)
     events = {}
 
     texture_manager = TextureManager()
@@ -804,9 +803,12 @@ class Melty:
 
     @classmethod
     def begin_frame(cls):
-        cls.backend.pump()
         cls.events = cls.event_handler.process_frame()
-        cls.event_handler.clear_pending()
+        #
+        # for view_id, evts in cls.events.items():
+        #     for e in evts:
+        #         print(f"Event {view_id}: {e.input_id}:{e.action}")
+
         # cls.texture_manager.upload_pending()
 
         # # Check live attributes
@@ -848,6 +850,8 @@ class Melty:
 
     @classmethod
     def end_frame(cls):
+        cls.event_handler.clear_pending()
+        cls.backend.pump()
 
         cls.returned_values = {}
 
@@ -1161,8 +1165,12 @@ class Melty:
         for key, value in kwargs.items():
             setattr(cls, key, value)
             cls.global_attrs[key] = value
-
         cls.annotation_mode = False
+
+    @classmethod
+    def init_ui(cls, **kwargs):
+        pass
+        # cls.backend.init()
 
     @classmethod
     def is_key_pressed(cls, key=glfw.KEY_ESCAPE):

@@ -240,6 +240,8 @@ class PynputBackend:
     def _on_click(self, x: int, y: int, button, pressed: bool):
         t = time.perf_counter()
         input_id = _button_to_id(button)
+
+        print(f"_on_click: {input_id} {'DOWN' if pressed else 'UP'} @ ({x}, {y})")
         
         with self._lock:
             self._cursor_x = float(x)
@@ -510,3 +512,184 @@ class PygameBackend:
     def pump(self):
         """Transfer events to handler."""
         self._json.pump()
+
+
+"""
+Dear ImGui input backend.
+
+Works with pyimgui or the imgui bundle (imgui[glfw], imgui[sdl2], etc.)
+
+Requirements:
+    pip install imgui[glfw]  # or imgui[sdl2], pyimgui, etc.
+
+Note: ImGui receives input from a windowing backend (GLFW, SDL2, etc.)
+      This backend reads ImGui's IO state and converts it to InputHandler events.
+"""
+
+from typing import TYPE_CHECKING
+import time
+
+try:
+    import imgui
+
+    HAS_IMGUI = True
+except ImportError:
+    HAS_IMGUI = False
+    imgui = None
+
+if TYPE_CHECKING:
+    from input_handler import InputHandler
+
+
+# =============================================================================
+# ImGui Backend (State-based)
+# =============================================================================
+
+class ImGuiBackend:
+    """
+    Backend that reads Dear ImGui's IO state.
+
+    ImGui maintains input state rather than emitting events, so this backend
+    tracks state changes between frames and generates corresponding events.
+
+    Usage:
+        handler = InputHandler()
+        backend = ImGuiBackend(handler)
+
+        while running:
+            imgui.new_frame()  # ImGui updates IO state here
+
+            handler.begin_frame()
+            handler.register_hovered(...)
+
+            backend.pump()  # Read IO state, generate events
+
+            events = handler.process_frame()
+
+            # ... render imgui ...
+            imgui.render()
+    """
+
+    # ImGui mouse button indices
+    MOUSE_BUTTONS = {
+        0: "left_mouse",
+        1: "right_mouse",
+        2: "middle_mouse",
+        3: "mouse_4",
+        4: "mouse_5",
+    }
+
+    # ImGui key indices (imgui.KEY_*)
+    # This mapping covers common keys; extend as needed
+    KEY_NAMES = {
+        imgui.KEY_TAB: "tab",
+        imgui.KEY_LEFT_ARROW: "left",
+        imgui.KEY_RIGHT_ARROW: "right",
+        imgui.KEY_UP_ARROW: "up",
+        imgui.KEY_DOWN_ARROW: "down",
+        imgui.KEY_PAGE_UP: "page_up",
+        imgui.KEY_PAGE_DOWN: "page_down",
+        imgui.KEY_HOME: "home",
+        imgui.KEY_END: "end",
+        imgui.KEY_INSERT: "insert",
+        imgui.KEY_DELETE: "delete",
+        imgui.KEY_BACKSPACE: "backspace",
+        imgui.KEY_SPACE: "space",
+        imgui.KEY_ENTER: "enter",
+        imgui.KEY_ESCAPE: "escape",
+        imgui.KEY_A: "a",
+        imgui.KEY_C: "c",
+        imgui.KEY_V: "v",
+        imgui.KEY_X: "x",
+        imgui.KEY_Y: "y",
+        imgui.KEY_Z: "z",
+    } if HAS_IMGUI else {}
+
+    def __init__(self, handler: InputHandler):
+        if not HAS_IMGUI:
+            raise ImportError("pip install imgui[glfw]  # or imgui[sdl2], pyimgui")
+
+        self.handler = handler
+
+        # Previous frame state for change detection
+        self._prev_mouse_pos = (0.0, 0.0)
+        self._prev_mouse_down = [False] * 5
+        self._prev_keys_down: set[int] = set()
+        self._prev_scroll = (0.0, 0.0)
+
+    def pump(self):
+        """
+        Read ImGui IO state and generate events for state changes.
+        Call once per frame after imgui.new_frame().
+        """
+        io = imgui.get_io()
+        t = time.perf_counter()
+
+        # --- Mouse Position ---
+        mx, my = io.mouse_pos
+        px, py = self._prev_mouse_pos
+
+        if (mx, my) != (px, py) and mx >= 0 and my >= 0:
+            dx, dy = mx - px, my - py
+            self.handler.feed_move(mx, my, dx, dy, t)
+
+        self._prev_mouse_pos = (mx, my)
+
+        # --- Mouse Buttons ---
+        for i in range(5):
+            input_id = self.MOUSE_BUTTONS.get(i, f"mouse_{i}")
+            is_down = io.mouse_down[i]
+            was_down = self._prev_mouse_down[i]
+
+            if is_down and not was_down:
+                self.handler.feed_down(input_id, mx, my, t)
+            elif not is_down and was_down:
+                self.handler.feed_up(input_id, mx, my, t)
+
+            self._prev_mouse_down[i] = is_down
+
+        # --- Mouse Wheel ---
+        wheel_x = io.mouse_wheel_horizontal
+        wheel_y = io.mouse_wheel
+
+        if wheel_y != 0:
+            self.handler.feed_change("scroll_y", wheel_y, t)
+        if wheel_x != 0:
+            self.handler.feed_change("scroll_x", wheel_x, t)
+
+        # --- Keyboard ---
+        current_keys: set[int] = set()
+
+        for key_index, key_name in self.KEY_NAMES.items():
+            if io.keys_down[key_index]:
+                current_keys.add(key_index)
+
+        # Keys pressed this frame
+        for key_index in current_keys - self._prev_keys_down:
+            key_name = self.KEY_NAMES.get(key_index, f"key_{key_index}")
+            self.handler.feed_down(key_name, mx, my, t)
+
+        # Keys released this frame
+        for key_index in self._prev_keys_down - current_keys:
+            key_name = self.KEY_NAMES.get(key_index, f"key_{key_index}")
+            self.handler.feed_up(key_name, mx, my, t)
+
+        self._prev_keys_down = current_keys
+
+        # --- Modifiers ---
+        self.handler.set_modifiers(
+            shift=io.key_shift,
+            ctrl=io.key_ctrl,
+            alt=io.key_alt,
+            meta=io.key_super,
+        )
+
+    @property
+    def want_capture_mouse(self) -> bool:
+        """True if ImGui wants to handle mouse input (hovering a window)."""
+        return imgui.get_io().want_capture_mouse
+
+    @property
+    def want_capture_keyboard(self) -> bool:
+        """True if ImGui wants to handle keyboard input (text field active)."""
+        return imgui.get_io().want_capture_keyboard

@@ -177,11 +177,14 @@ def draw_pending_texture(input_value:PendingTexture):
              indent_size=1, min_width=100, min_height=100,
              enable_scroll=True, zoom_speed=0.2)
 def draw_texture(input_value: numpy.uint32, zoom_state: ZoomState, zoom_speed, header_height=0, min_zoom=0.1,
-                 max_zoom=50.0, style_manager=None, max_brightness=5.0, max_contrast=5.0,
+                 max_zoom=50.0, style_manager=None, left_mouse_clicked=False, max_brightness=5.0, max_contrast=5.0,
                  on_scroll=0, draw_state=None):
 
     original_id = input_value
     texture_id = input_value
+
+    if left_mouse_clicked:
+        print(f"Texture {texture_id} clicked")
 
     # Ensure we have valid state if this is the first run
     if not hasattr(zoom_state, 'zoom'):

@@ -646,7 +646,20 @@ def render_func(*args, **o_kwargs):
                     draw_state.width is None or draw_state.height is None):
                 clip = False
 
-            ## texture upload
+
+            ##### Register With event handler #########################
+            is_hovered = draw_state.is_bounding_hovered()
+            if is_hovered:
+                max_layer_depth = Melty.max_depth * Melty.max_layer
+                layer_and_depth = Melty.active_layer * Melty.max_depth + Melty.depth
+
+                event_names = copy(wanted_params)
+                event_names.extend(['hovered'])
+
+                Melty.event_handler.register_hovered(str(tile_id), max_layer_depth - layer_and_depth, event_names)
+
+            ######################################################
+
 
             if hasattr(input_value, 'pending_upload') and callable(getattr(input_value, 'pending_upload')):
                 if input_value.pending_upload():
