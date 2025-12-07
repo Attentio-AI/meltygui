@@ -383,6 +383,8 @@ def render_func(*args, **o_kwargs):
             set_default("unique", unique)
             set_default("suffix", suffix)
             set_default("window_stack", Melty.window_stack)
+
+            ############ LEGACY EVENT HANDLERS ############
             set_default("on_click", melty.check_event(unique, 0, ActionType.CLICK))
             set_default("on_drag", melty.check_event(unique, 0, ActionType.DRAG))
             set_default("on_drag_up", melty.check_event(unique, 0, ActionType.DRAG_UP))
@@ -425,6 +427,17 @@ def render_func(*args, **o_kwargs):
                         else:
                             kwargs.setdefault(hk_name, False)
             kwargs.setdefault('meta', meta)
+
+            ###################### END LEGACY EVENT HANDLERS ############
+
+            ########## New event handler system ##########
+            unique_events = Melty.events.get(str(tile_id), {})
+            kwargs = unique_events | kwargs
+
+            for key, event in unique_events.items():
+                print(f"  {key}{name}: {event.input_id}:{event.action}")
+
+            ##############################################
 
             kwargs = meta.__dict__ | kwargs
             for param in wanted_params:
@@ -648,15 +661,14 @@ def render_func(*args, **o_kwargs):
 
 
             ##### Register With event handler #########################
-            is_hovered = draw_state.is_bounding_hovered()
-            if is_hovered:
-                max_layer_depth = Melty.max_depth * Melty.max_layer
+            hover_eligible = draw_state.hover_eligible()
+            if hover_eligible:
+                max_layer_depth = Melty.max_depth * Melty.max_layer + Melty.max_depth
                 layer_and_depth = Melty.active_layer * Melty.max_depth + Melty.depth
-
+                priority = max_layer_depth - layer_and_depth
                 event_names = copy(wanted_params)
-                event_names.extend(['hovered'])
-
-                Melty.event_handler.register_hovered(str(tile_id), max_layer_depth - layer_and_depth, event_names)
+                event_names.extend(['hovered', "scroll_y"])
+                Melty.event_handler.register_hovered(str(tile_id), priority, event_names)
 
             ######################################################
 
@@ -1177,7 +1189,7 @@ def get_draw_state(unique: int) -> DrawState:
         Melty.vis.root.draw_state_registry[unique] = DrawState()
         Melty.vis.root.draw_state_registry[unique].unique = unique
 
-    Melty.vis.root.draw_state_registry[unique].delete_countdown = Melty.save_draw_state_for
+    Melty.vis.root.draw_state_registry[unique].dlt_count = Melty.save_draw_state_for
     return Melty.vis.root.draw_state_registry[unique]
 
 

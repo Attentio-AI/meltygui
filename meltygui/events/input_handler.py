@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from typing import Any
 import time
 
-
 class Action:
     DOWN = "down"
     UP = "up"
@@ -19,9 +18,9 @@ class Action:
     DOUBLE_CLICKED = "double_clicked"
     CHANGED = "changed"
     MOVED = "moved"
-    HOVERED = "hovered"
-    HOVER_ENTER = "hover_enter"
-    HOVER_EXIT = "hover_exit"
+    HOVERED = "hovered"  # Continuous - fires every frame while hovered
+    HOVER_ENTER = "hover_enter"  # Once - when hover starts
+    HOVER_EXIT = "hover_exit"  # Once - when hover ends
 
 
 ACTION_ALIASES = {
@@ -30,9 +29,14 @@ ACTION_ALIASES = {
     "drag": Action.DRAGGED,
     "click": Action.CLICKED,
     "double_click": Action.DOUBLE_CLICKED,
+    # Continuous hover
     "hover": Action.HOVERED,
-    "enter": Action.HOVER_ENTER,
-    "exit": Action.HOVER_EXIT,
+    "on_hover": Action.HOVERED,
+    # Enter/exit
+    "on_hover_enter": Action.HOVER_ENTER,
+    "on_hover_exit": Action.HOVER_EXIT,
+    "unhovered": Action.HOVER_EXIT,
+    "unhover": Action.HOVER_EXIT,
 }
 
 ALL_ACTIONS = frozenset({
@@ -42,12 +46,6 @@ ALL_ACTIONS = frozenset({
     *ACTION_ALIASES.keys()
 })
 _SORTED_ACTIONS = tuple(sorted(ALL_ACTIONS, key=len, reverse=True))
-
-# Standalone actions (no input name prefix required)
-_BARE_ACTIONS = frozenset({
-    Action.HOVERED, Action.HOVER_ENTER, Action.HOVER_EXIT, Action.MOVED,
-    "hover", "enter", "exit",
-})
 
 DOUBLE_CLICK_WINDOW = 0.3
 CLICK_MAX_DURATION = 0.25
@@ -90,10 +88,10 @@ class _InputState:
 
 
 _parse_cache: dict[str, tuple[str, str]] = {}
-
+_view_id_names_cache: dict[str, dict[Any, str]] = {}
 
 def parse_event_name(name: str) -> tuple[str, str]:
-    """Parse "left_mouse_up" → ("left_mouse", "up"), "hovered" → ("", "hovered")"""
+    """Parse "left_mouse_up" → ("left_mouse", "up")"""
     if name in _parse_cache:
         return _parse_cache[name]
 
@@ -101,13 +99,13 @@ def parse_event_name(name: str) -> tuple[str, str]:
     if name.startswith("on_"):
         name = name[3:]
 
-    # Check for bare action names first (e.g., "hovered", "hover_enter")
-    canonical = ACTION_ALIASES.get(name, name)
-    if canonical in _BARE_ACTIONS:
-        _parse_cache[original] = ("", canonical)
-        return ("", canonical)
+    # Check if the name itself is an action (e.g., "hovered", "clicked")
+    if name in ALL_ACTIONS:
+        canonical = ACTION_ALIASES.get(name, name)
+        _parse_cache[original] = ("cursor", canonical)
+        return ("cursor", canonical)
 
-    # Check for prefixed actions (e.g., "left_mouse_up")
+    # Check for action suffix
     for action in _SORTED_ACTIONS:
         if name.endswith(f"_{action}"):
             input_id = name[:-(len(action) + 1)]
@@ -127,8 +125,8 @@ class InputHandler:
         handler = InputHandler()
 
         handler.begin_frame()
-        handler.register_hovered("btn", 0, ["left_mouse_clicked", "hover_enter"])
-        handler.register_hovered("panel", 1, ["left_mouse_dragged", "hovered"])
+        handler.register_hovered("btn", 0, ["left_mouse_clicked"])
+        handler.register_hovered("panel", 1, ["left_mouse_dragged"])
 
         # Feed from backend
         handler.feed_down("left_mouse", x, y)
@@ -139,20 +137,16 @@ class InputHandler:
         # {"btn": [InputEvent(...)], "panel": [...]}
     """
 
-    __slots__ = (
-        '_states', '_hovered', '_pending', '_cursor_x', '_cursor_y', '_modifiers',
-        '_last_hovered_views', '_current_hovered_views'
-    )
+    __slots__ = ('_states', '_hovered', '_prev_hovered', '_pending', '_cursor_x', '_cursor_y', '_modifiers')
 
     def __init__(self):
         self._states: dict[str, _InputState] = {}
         self._hovered: list[tuple[Any, int, frozenset]] = []
+        self._prev_hovered: dict[Any, tuple[int, frozenset]] = {}  # view_id → (priority, subscriptions)
         self._pending: list[InputEvent] = []
         self._cursor_x = 0.0
         self._cursor_y = 0.0
         self._modifiers = 0
-        self._last_hovered_views: set[Any] = set()
-        self._current_hovered_views: set[Any] = set()
 
     def _state(self, input_id: str) -> _InputState:
         s = self._states.get(input_id)
@@ -165,22 +159,23 @@ class InputHandler:
         self._modifiers = (shift and 1) | (ctrl and 2) | (alt and 4) | (meta and 8)
 
     def begin_frame(self):
-        """Call at start of frame before registering hovered views."""
-        self._hovered.clear()
-        self._pending.clear()
-        self._last_hovered_views = self._current_hovered_views
-        self._current_hovered_views = set()
-
-    def clear_pending(self):
-        """Legacy method - prefer begin_frame()."""
         self._hovered.clear()
         self._pending.clear()
 
     def register_hovered(self, view_id: Any, priority: int, subscribed: list[str]):
         """Register hovered view. Priority 0 = topmost."""
-        subs = frozenset(parse_event_name(s) for s in subscribed)
-        self._hovered.append((view_id, priority, subs))
-        self._current_hovered_views.add(view_id)
+
+        subs = set()
+        for s in subscribed:
+            sub = parse_event_name(s)
+            parsed_name = sub[1]
+
+            if view_id not in _view_id_names_cache:
+                _view_id_names_cache[view_id] = {}
+            _view_id_names_cache[view_id][sub] = s
+            subs.add(sub)
+
+        self._hovered.append((view_id, priority, frozenset(subs)))
 
     def _emit(self, input_id: str, action: str, x: float, y: float,
               dx: float = 0, dy: float = 0, value: float = 0, t: float = None):
@@ -241,82 +236,63 @@ class InputHandler:
             if state.is_down:
                 self._emit(input_id, Action.DRAGGED, x, y, dx, dy, t=t)
 
-        self._emit("", Action.MOVED, x, y, dx, dy, t=t)
+        self._emit("cursor", Action.MOVED, x, y, dx, dy, t=t)
 
     def feed_change(self, input_id: str, value: float, t: float = None):
         self._emit(input_id, Action.CHANGED, self._cursor_x, self._cursor_y, value=value, t=t)
 
-    def _emit_hover_events(self, t: float):
-        """Generate hover enter/exit/hovered events based on view registration changes."""
-        entered = self._current_hovered_views - self._last_hovered_views
-        exited = self._last_hovered_views - self._current_hovered_views
-
-        for view_id in entered:
-            self._pending.append(InputEvent(
-                "", Action.HOVER_ENTER,
-                self._cursor_x, self._cursor_y,
-                0, 0, 0, t, self._modifiers
-            ))
-
-        for view_id in exited:
-            self._pending.append(InputEvent(
-                "", Action.HOVER_EXIT,
-                self._cursor_x, self._cursor_y,
-                0, 0, 0, t, self._modifiers
-            ))
-
-        if self._current_hovered_views:
-            self._pending.append(InputEvent(
-                "", Action.HOVERED,
-                self._cursor_x, self._cursor_y,
-                0, 0, 0, t, self._modifiers
-            ))
-
-    def process_frame(self) -> dict[Any, list[InputEvent]]:
+    def process_frame(self) -> dict[Any, dict[str, InputEvent]]:
         """Returns {view_id: [events]} for all matched subscriptions."""
-        t = time.perf_counter()
-
-        self._emit_hover_events(t)
         self._hovered.sort(key=lambda x: x[1])
 
-        result: dict[Any, list[InputEvent]] = {}
-        claimed: set[tuple[str, str]] = set()
+        result: dict[Any, dict[str, InputEvent]] = {}
+        t = time.perf_counter()
 
+        # Build current hover dict with priorities
+        current_hovered: dict[Any, tuple[int, frozenset]] = {
+            view_id: (priority, subs) for view_id, priority, subs in self._hovered
+        }
+
+        hover_enter_key = ("cursor", Action.HOVER_ENTER)
+        hovered_key = ("cursor", Action.HOVERED)
+        hover_exit_key = ("cursor", Action.HOVER_EXIT)
+
+        # Find top subscriber for each hover event type
+        top_enter = next((v for v, _, s in self._hovered if v not in self._prev_hovered and hover_enter_key in s), None)
+        top_hovered = next((v for v, _, s in self._hovered if hovered_key in s), None)
+
+        # For exit, sort exited views by their stored priority
+        exited = sorted(
+            ((v, p, s) for v, (p, s) in self._prev_hovered.items() if v not in current_hovered),
+            key=lambda x: x[1]
+        )
+        top_exit = next((v for v, _, s in exited if hover_exit_key in s), None)
+
+        # Emit hover events
+        def emit(view_id, action):
+            if view_id is not None:
+                if view_id not in result:
+                    result[view_id] = {}
+                result[view_id][_view_id_names_cache[view_id][("cursor", str(action))]] = InputEvent(
+                    "cursor", action, self._cursor_x, self._cursor_y,
+                    0, 0, 0, t, self._modifiers
+                )
+
+        emit(top_enter, Action.HOVER_ENTER)
+        emit(top_hovered, Action.HOVERED)
+        emit(top_exit, Action.HOVER_EXIT)
+
+        # Update previous hover for next frame
+        self._prev_hovered = current_hovered
+
+        # Process regular events: top priority subscriber gets each event
         for event in self._pending:
             key = (event.input_id, event.action)
-
-            # Hover enter: only to top-priority view that just entered
-            if event.action == Action.HOVER_ENTER:
-                target_views = self._current_hovered_views - self._last_hovered_views
-                for view_id, _, subs in self._hovered:
-                    if view_id in target_views and key in subs:
-                        if view_id not in result:
-                            result[view_id] = []
-                        result[view_id].append(event)
-                        break  # top priority only
-                continue
-
-            # Hover exit: only to top-priority view that just exited
-            if event.action == Action.HOVER_EXIT:
-                target_views = self._last_hovered_views - self._current_hovered_views
-                for view_id in target_views:
-                    if view_id not in result:
-                        result[view_id] = []
-                    result[view_id].append(event)
-                    break  # top priority only
-                continue
-
-            # All other events (including hovered), first come claims
-            if key in claimed:
-                continue
-
-            for view_id, _, subs in self._hovered:
-                if key in subs:
-                    if view_id not in result:
-                        result[view_id] = []
-                    result[view_id].append(event)
-                    claimed.add(key)
-                    break
+            top = next((v for v, _, s in self._hovered if key in s), None)
+            if top is not None:
+                if top not in result:
+                    result[top] = {}
+                result[top][_view_id_names_cache[top][key]] = event
 
         return result
 
@@ -326,12 +302,3 @@ class InputHandler:
 
     def cursor(self) -> tuple[float, float]:
         return (self._cursor_x, self._cursor_y)
-
-    def is_hovered(self, view_id: Any) -> bool:
-        return view_id in self._current_hovered_views
-
-    def just_entered(self, view_id: Any) -> bool:
-        return view_id in self._current_hovered_views and view_id not in self._last_hovered_views
-
-    def just_exited(self, view_id: Any) -> bool:
-        return view_id not in self._current_hovered_views and view_id in self._last_hovered_views

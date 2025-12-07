@@ -740,6 +740,7 @@ class Melty:
     unindent_count = 0
 
     imgui_popup_open = False
+    imgui_any_item_hovered = False
 
     max_indent = 0
     hotkey_registry = {}
@@ -804,6 +805,8 @@ class Melty:
     @classmethod
     def begin_frame(cls):
         cls.events = cls.event_handler.process_frame()
+        cls.event_handler.begin_frame()
+
         #
         # for view_id, evts in cls.events.items():
         #     for e in evts:
@@ -850,8 +853,6 @@ class Melty:
 
     @classmethod
     def end_frame(cls):
-        cls.event_handler.clear_pending()
-        cls.backend.pump()
 
         cls.returned_values = {}
 
@@ -884,9 +885,11 @@ class Melty:
                         cls.returned_values[draw_state.id] = return_val
 
         cls.layers = []
+        cls.backend.pump()
 
         is_popup_open = imgui.is_popup_open("", flags=imgui.POPUP_ANY_POPUP)
         Melty.imgui_popup_open = is_popup_open
+        Melty.imgui_any_item_hovered = imgui.is_any_item_hovered()
 
         from src.lsd.gl_gui.view.core_views.core_render import get_melty_state
         melty = get_melty_state()

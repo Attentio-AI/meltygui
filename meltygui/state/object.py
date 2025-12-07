@@ -250,11 +250,11 @@ class DictConversion(metaclass=FieldMeta):
             if isinstance(self, DynamicObj):
                 pass
 
-            if 'delete_countdown' in shallow_parse:
-                if shallow_parse['delete_countdown'] <= 0:
+            if 'dlt_count' in shallow_parse:
+                if shallow_parse['dlt_count'] <= 0:
                     # print(f"Skipping object due delete_countdown. id: {self.id}")
                     return None
-                shallow_parse['delete_countdown'] = shallow_parse['delete_countdown'] - 1
+                shallow_parse['dlt_count'] = shallow_parse['dlt_count'] - 1
 
             # Class path
             if hasattr(self, 'id'):
@@ -281,7 +281,7 @@ class DictConversion(metaclass=FieldMeta):
             if key.startswith('_') or (excluded and key in excluded):
                 continue
 
-            if key != "delete_countdown":
+            if key != "dlt_count":
                 if isinstance(value, (int, float, str, bool, bytes, Enum, RelaxedEnum, tuple, type(None))):
                     if hasattr(default_instance, key):
                         default_value = getattr(default_instance, key)

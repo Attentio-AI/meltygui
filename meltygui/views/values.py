@@ -99,7 +99,7 @@ test_obj = TestObj()
 def draw_melty_windows(vis):
     flags = (imgui.WINDOW_NO_BACKGROUND | imgui.WINDOW_NO_TITLE_BAR | imgui.WINDOW_NO_RESIZE |
              imgui.WINDOW_NO_MOVE | imgui.WINDOW_NO_SCROLLBAR | imgui.WINDOW_NO_NAV_FOCUS |
-            imgui.WINDOW_NO_BRING_TO_FRONT_ON_FOCUS | imgui.SELECTABLE_ALLOW_ITEM_OVERLAP |
+            imgui.WINDOW_NO_BRING_TO_FRONT_ON_FOCUS |
              imgui.WINDOW_NO_COLLAPSE | imgui.WINDOW_NO_SAVED_SETTINGS)
 
     imgui.set_next_window_position(0,0)
@@ -2038,7 +2038,7 @@ def draw_header(input_value=None, name="", suffix="", closable=False, collection
         same_line()
     if show_name and name != "":
         same_line()
-        imgui.set_item_allow_overlap()
+        # imgui.set_item_allow_overlap()
 
     if show_tint and hasattr(input_value, "tint") and input_value.tint is not None:
         draw_state._has_popup = True

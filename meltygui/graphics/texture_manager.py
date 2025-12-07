@@ -88,7 +88,6 @@ class TextureManager:
 
         glBindTexture(GL_TEXTURE_2D, 0)
         pending.texture_id = texture_id
-        print(id(pending), "Uploaded texture ID:", texture_id)
 
         return texture_id
 

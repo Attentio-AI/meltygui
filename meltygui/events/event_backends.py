@@ -240,9 +240,6 @@ class PynputBackend:
     def _on_click(self, x: int, y: int, button, pressed: bool):
         t = time.perf_counter()
         input_id = _button_to_id(button)
-
-        print(f"_on_click: {input_id} {'DOWN' if pressed else 'UP'} @ ({x}, {y})")
-        
         with self._lock:
             self._cursor_x = float(x)
             self._cursor_y = float(y)
@@ -312,6 +309,11 @@ class PynputBackend:
         with self._lock:
             self._cursor_x = x
             self._cursor_y = y
+
+    @property
+    def allow_hovering(self) -> bool:
+        """True if ImGui allows hovering (not blocking input)."""
+        return True
 
 
 # =============================================================================
@@ -401,6 +403,11 @@ class JsonBackend:
             elif e["type"] == "scroll":
                 self.handler.feed_change(e["input"], e.get("value", 0), t)
 
+    @property
+    def allow_hovering(self) -> bool:
+        """True if ImGui allows hovering (not blocking input)."""
+        return True
+
 
 # =============================================================================
 # Pygame Integration Backe
@@ -472,6 +479,8 @@ class PygameBackend:
             self._update_mods(event)
     
     def _key_name(self, event) -> str:
+
+        # Wrapper for pygame
         import pygame
         name = pygame.key.name(event.key)
         
@@ -512,6 +521,11 @@ class PygameBackend:
     def pump(self):
         """Transfer events to handler."""
         self._json.pump()
+
+    @property
+    def allow_hovering(self) -> bool:
+        """True if ImGui allows hovering (not blocking input)."""
+        return True
 
 
 """
@@ -617,7 +631,10 @@ class ImGuiBackend:
         self._prev_keys_down: set[int] = set()
         self._prev_scroll = (0.0, 0.0)
 
+
+
     def pump(self):
+
         """
         Read ImGui IO state and generate events for state changes.
         Call once per frame after imgui.new_frame().
@@ -685,11 +702,7 @@ class ImGuiBackend:
         )
 
     @property
-    def want_capture_mouse(self) -> bool:
-        """True if ImGui wants to handle mouse input (hovering a window)."""
-        return imgui.get_io().want_capture_mouse
+    def allow_hovering(self) -> bool:
+        """True if ImGui allows hovering (not blocking input)."""
+        return not imgui.is_window_hovered()
 
-    @property
-    def want_capture_keyboard(self) -> bool:
-        """True if ImGui wants to handle keyboard input (text field active)."""
-        return imgui.get_io().want_capture_keyboard
