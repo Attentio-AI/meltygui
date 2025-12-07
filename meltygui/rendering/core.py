@@ -321,7 +321,7 @@ def render_func(*args, **o_kwargs):
             if passed_height is not None:
                 draw_state.height = passed_height
 
-        Melty.all_uniques.add(unique)
+        # Melty.all_uniques.add(unique)
 
         is_initial_draw_state = True
         # nested_call = input_value == Melty.input_value_stack[-1] if len(Melty.input_value_stack) > 0 else False
@@ -667,9 +667,9 @@ def render_func(*args, **o_kwargs):
             draw_state._imgui_is_edited = imgui.is_item_edited()
             draw_state._imgui_is_active = imgui.is_item_active()
             draw_state._imgui_is_focused = imgui.is_item_focused()
-            draw_state._imgui_scroll_y = imgui.get_scroll_y()
+            # draw_state._imgui_scroll_y = imgui.get_scroll_y()
             draw_state._imgui_is_hovered = imgui.is_item_hovered()
-            draw_state._imgui_scroll_y = imgui.get_scroll_y()
+            # draw_state._imgui_scroll_y = imgui.get_scroll_y()
 
             if draw_state._has_popup:
                 is_popup_open = Melty.imgui_popup_open
@@ -874,6 +874,7 @@ def render_func(*args, **o_kwargs):
             floating_text(f"{func.__name__} w:{Melty.wrapped_depth}", tint=jet)
         if draw_state._has_popup:
             draw_state._imgui_popover_open = Melty.imgui_popup_open
+
 
         if draw_state.width is not None and draw_state.height is not None:
             if draw_state.width > 0 and draw_state.height > 0:

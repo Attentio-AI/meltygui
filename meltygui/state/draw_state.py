@@ -261,6 +261,7 @@ class DrawState(DictConversion):
         mouse_x, mouse_y = imgui.get_mouse_pos()
         if not Melty.inside_clip(rect=(mouse_x, mouse_y, 1, 1)):
             return False
+
         if Melty.imgui_popup_open:
             rect = (self.bounds_left, self.bounds_top, self.width, self.height + 10)
             if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):

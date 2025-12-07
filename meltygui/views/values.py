@@ -565,7 +565,7 @@ def cst_header(func, *args, **o_kwargs):
         next_kwargs['outer_func'] = wrapper
         next_kwargs['show_add_delete'] = False
         next_kwargs['show_bg'] = kwargs.get('show_bg', True)
-        next_kwargs['is_tree'] = False
+        next_kwargs['is_tree'] = kwargs.get('is_tree', True)
         next_kwargs['y_offset'] = Melty.collection_spacing
 
         return core_header(**next_kwargs)
@@ -1913,8 +1913,6 @@ def draw_header(input_value=None, name="", suffix="", closable=False, collection
     outline_color = (style_manager.
                    make_color_style_value(input=bg_style, saturation=0.8, alpha=1.0,
                                           value=0.9))
-
-
     if is_tree:
         if trigger_collapse:
             draw_state.expanded = False
@@ -2050,7 +2048,7 @@ def draw_header(input_value=None, name="", suffix="", closable=False, collection
     if show_add_delete and isinstance(input_value, (list, dict)) or hasattr(input_value, "__dict__"):
         bg_style = global_style.get_global_constant("bg_style", default=None, folder="bg_styles")
         if show_add_delete:
-            if imgui.button(f"\uf067##add", width=20):
+            if imgui.button(f"\uf067##add{unique}", width=20):
                 # Use str as default hinted type
                 hinted_type = NoneType
                 if meta.field_type is not None and hasattr(meta.field_type, "__args__"):

@@ -11,7 +11,7 @@ from OpenGL import GL as gl
 import imgui
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.model.core_model.core_enums import OffscreenDebugMode
-from src.lsd.gl_gui.utils.glfw_utils import request_render
+from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
 
 """
 Per-view tile caching with a post-frame mask (no ImGui draw-list replay).
@@ -500,7 +500,6 @@ class TileCacheMasked:
     #     self.invalidate_up(parent_key, max_depth=2)
 
     def invalidate_up_by_obj(self, obj, name=None, max_depth=9, force=False):
-
         if name is not None:
             keys = self.py_id_to_keys.get(f"{id(obj)}.{name}", None)
             if keys is not None:
@@ -553,10 +552,10 @@ class TileCacheMasked:
 
     # More expensive, redraws all children
     def invalidate_up(self, k: str, max_depth=9, force=False) -> None:
+
         if k not in self._tiles:
             k = self.key_to_parent_key.get(k, None)
         self.invalidate(k, force=force)
-
         # Defer parent invalidation to next frame as well
         child_keys = self.get_child_keys(k, max_depth=max_depth)
         for child in child_keys:
@@ -846,9 +845,9 @@ class TileCacheMasked:
 
         # --- Always record bounding rects (even if we drew cached) and paren
 
-        if key in self.all_keys:
-            print("[TileCacheMasked] Warning: Duplicate key detected:", key, type(input_value).__name__)
-        self.all_keys.add(rkey)
+        # if key in self.all_keys:
+        #     print("[TileCacheStacked] Warning: Duplicate key detected:", key, type(input_value).__name__)
+        # self.all_keys.add(rkey)
 
         if not draw_state.auto_resize and draw_state.width is not None and draw_state.height is not None:
             size = snap_int(draw_state.width), snap_int(draw_state.height)
