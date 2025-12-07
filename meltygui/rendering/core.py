@@ -804,9 +804,6 @@ def render_func(*args, **o_kwargs):
 
             ########################################### ACTIONS #######################
             is_hovered = draw_state.is_hovered()
-            last_bounding_hovered = draw_state.is_bounding_hovered()
-            hover_changed = last_bounding_hovered != draw_state._bounding_hovered
-            draw_state._bounding_hovered = draw_state.is_bounding_hovered()
 
             melty.triggered_actions.pop(unique, None)
             handle_actions(melty, unique, draw_state, func)
@@ -879,21 +876,22 @@ def render_func(*args, **o_kwargs):
             draw_state._imgui_popover_open = Melty.imgui_popup_open
 
 
-        # if draw_state.width is not None and draw_state.height is not None:
-        #     if draw_state.width > 0 and draw_state.height > 0:
-        #         inside_clip = Melty.inside_clip(rect=(start_cursor[0], start_cursor[1],
-        #                                               draw_state.width, draw_state.height))
-        #         # if inside_clip != draw_state.clipped and inside_clip:
-        #         #     Melty.cache.invalidate(tile_id, force=True)
-        #
-        #         draw_state.clipped = inside_clip
-        not_header = "with_header" not in func.__name__
-        if use_cache and not_header:
-            last_bounding_hovered = draw_state.is_bounding_hovered()
-            hover_changed = last_bounding_hovered != draw_state._bounding_hovered
-            draw_state._bounding_hovered = last_bounding_hovered
+        if draw_state.width is not None and draw_state.height is not None:
+            if draw_state.width > 0 and draw_state.height > 0:
+                inside_clip = Melty.inside_clip(rect=(start_cursor[0], start_cursor[1],
+                                                      draw_state.width, draw_state.height))
+                if inside_clip != draw_state.clipped and inside_clip:
+                    Melty.cache.invalidate(tile_id, force=True)
 
-            if not_header and (draw_state._hovered or draw_state._bounding_hovered or draw_state._imgui_popover_open):
+                draw_state.clipped = inside_clip
+
+        if use_cache:
+            last_bounding_hovered = draw_state.is_bounding_hovered()
+            draw_state._bounding_hovered = last_bounding_hovered
+            hover_changed = last_bounding_hovered != draw_state._bounding_hovered
+
+            if (draw_state._bounding_hovered or hover_changed or draw_state._hovered or
+                    draw_state.width is None or draw_state.height is None or draw_state._imgui_popover_open):
                 Melty.cache.invalidate(tile_id, force=True)
 
             offscreen_depth = Melty.depth
@@ -906,9 +904,9 @@ def render_func(*args, **o_kwargs):
 
         enable_scroll = kwargs.get("enable_scroll", False)
         draw_state = kwargs.get("draw_state", draw_state)
-        do_scroll = enable_scroll and clip_height < draw_state.content_height and not_header
+        do_scroll = enable_scroll and clip_height < draw_state.content_height and "with_header" not in func.__name__
         indent_x = kwargs.get("indent_size", 0)
-        # indent_x = 0
+        indent_x = 0
         scroll_offset = draw_state.scroll_offset if do_scroll else (0, 0)
         if do_scroll or indent_x > 0:
             start_cursor = imgui.get_cursor_screen_pos()

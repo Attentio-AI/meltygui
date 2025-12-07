@@ -71,7 +71,9 @@ def with_header(func, *args, **o_kwargs):
             if annotation is not None: return annotation
         next_kwargs['func'] = func
         next_kwargs['outer_func'] = wrapper
-        return core_header(**next_kwargs)
+        return_val = core_header(**next_kwargs)
+
+        return return_val
 
     setattr(wrapper, '__name__', f"{func.__name__} --- with_header ")
 
@@ -970,7 +972,7 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
             top = cursor_top - 1
             bottom = max(cursor_top, cursor_bottom - 1)
             left = cursor_left + offset
-            right = cursor_left + draw_state.width
+            right = cursor_left + draw_state.width - indent_size
             width = right - left
             height = bottom - top
 
@@ -1403,7 +1405,12 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                     Melty.push_clip((clip_start[0], clip_start[1],
                                      clip_start[0] + draw_state.width - 1, clip_start[1] + draw_state.height - 1))
             next_kwargs['header_height'] = header_height
+
+            imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + indent_size)
+
             return_val = func(**next_kwargs)
+
+            imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() - indent_size)
 
             # if not header_same_line:
             #     Melty.unindent(indent_size)
