@@ -256,7 +256,7 @@ class DrawState(DictConversion):
         return False
 
     def is_bounding_hovered(self):
-        if (self._imgui_is_active or self._imgui_is_edited or self._imgui_popover_open):
+        if (self._imgui_is_active or self._imgui_is_edited or self._imgui_is_hovered or self._imgui_popover_open):
             return True
         mouse_x, mouse_y = imgui.get_mouse_pos()
         if not Melty.inside_clip(rect=(mouse_x, mouse_y, 1, 1)):

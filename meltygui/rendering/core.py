@@ -801,9 +801,9 @@ def render_func(*args, **o_kwargs):
 
             ########################################### ACTIONS #######################
             is_hovered = draw_state.is_hovered()
-            last_bounding_hovered = draw_state.is_bounding_hovered()
-            hover_changed = last_bounding_hovered != draw_state._bounding_hovered
-            draw_state._bounding_hovered = draw_state.is_bounding_hovered()
+            # last_bounding_hovered = draw_state.is_bounding_hovered()
+            # hover_changed = last_bounding_hovered != draw_state._bounding_hovered
+            # draw_state._bounding_hovered = draw_state.is_bounding_hovered()
 
             melty.triggered_actions.pop(unique, None)
             handle_actions(melty, unique, draw_state, func)
@@ -874,7 +874,6 @@ def render_func(*args, **o_kwargs):
             floating_text(f"{func.__name__} w:{Melty.wrapped_depth}", tint=jet)
         if draw_state._has_popup:
             draw_state._imgui_popover_open = Melty.imgui_popup_open
-
 
         if draw_state.width is not None and draw_state.height is not None:
             if draw_state.width > 0 and draw_state.height > 0:

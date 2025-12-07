@@ -809,15 +809,13 @@ class Melty:
         cls.event_handler.clear_pending()
         # cls.texture_manager.upload_pending()
 
-
-
-        # Check live attributes
-        for obj, attributes in cls.live_attributes.items():
-            for attrib in attributes:
-                try:
-                    new_value = getattr(obj, attrib)
-                except Exception:
-                    continue
+        # # Check live attributes
+        # for obj, attributes in cls.live_attributes.items():
+        #     for attrib in attributes:
+        #         try:
+        #             new_value = getattr(obj, attrib)
+        #         except Exception:
+        #             continue
 
         Melty.bg_stack = [(0, 0, 0)]
 
@@ -886,37 +884,36 @@ class Melty:
         is_popup_open = imgui.is_popup_open("", flags=imgui.POPUP_ANY_POPUP)
         Melty.imgui_popup_open = is_popup_open
 
-        if Melty.depth == 0:
-            from src.lsd.gl_gui.view.core_views.core_render import get_melty_state
-            melty = get_melty_state()
-            melty.last_mouse_pos = imgui.get_mouse_pos()
-            # Did not move
-            if len(melty.hover_stack) > 0:
-                last = melty.hover_stack[0]
-                hovered_draw_state = Melty.vis.root.draw_state_registry.get(last, None)
-                if hovered_draw_state is not None:
-                    hovered_draw_state._hovered = True
-                    Melty.hovered_drawstate_pending.add(hovered_draw_state.id)
+        from src.lsd.gl_gui.view.core_views.core_render import get_melty_state
+        melty = get_melty_state()
+        melty.last_mouse_pos = imgui.get_mouse_pos()
+        # Check mouse move
+        if len(melty.hover_stack) > 0:
+            last = melty.hover_stack[0]
+            hovered_draw_state = Melty.vis.root.draw_state_registry.get(last, None)
+            if hovered_draw_state is not None:
+                hovered_draw_state._hovered = True
+                Melty.hovered_drawstate_pending.add(hovered_draw_state.id)
 
-            if len(melty.hotkey_stack) > 0:
-                last = melty.hotkey_stack[0]
-                hovered_draw_state = Melty.vis.root.draw_state_registry.get(last, None)
-                if hovered_draw_state is not None:
-                    hovered_draw_state.hotkey_receiver = True
+        if len(melty.hotkey_stack) > 0:
+            last = melty.hotkey_stack[0]
+            hovered_draw_state = Melty.vis.root.draw_state_registry.get(last, None)
+            if hovered_draw_state is not None:
+                hovered_draw_state.hotkey_receiver = True
 
-            melty.hover_stack = []
-            melty.hotkey_stack = []
-            melty.unique_stack = []
-            Melty.draw_state_stack = []
+        melty.hover_stack = []
+        melty.hotkey_stack = []
+        melty.unique_stack = []
+        Melty.draw_state_stack = []
 
-            if not melty.nearest_drop_target is None:
-                melty.drag_drop_target = melty.nearest_drop_target
-                melty.drag_drop_target_tag = melty.nearest_drop_target_tag
+        if not melty.nearest_drop_target is None:
+            melty.drag_drop_target = melty.nearest_drop_target
+            melty.drag_drop_target_tag = melty.nearest_drop_target_tag
 
-            while len(melty.items_to_delete) > 0:
-                key, collection = melty.items_to_delete.pop(0)
-                delete_from_collection(key, collection)
-                request_render()
+        while len(melty.items_to_delete) > 0:
+            key, collection = melty.items_to_delete.pop(0)
+            delete_from_collection(key, collection)
+            request_render()
 
         Melty.hovered_drawstate = Melty.hovered_drawstate_pending
 
