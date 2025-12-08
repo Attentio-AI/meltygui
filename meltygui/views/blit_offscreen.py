@@ -580,46 +580,45 @@ class TileCacheMasked:
                                             exclude=draw_state.__excluded_attrs__, include_hidden=False),
                 input_val_hash)
 
-    def invalidate(self, key: str, force=False) -> None:
-        keys_to_touch = [self._resolve_key(key)]
+    def invalidate(self, k: str, force=False) -> None:
 
-        for k in keys_to_touch:
-            t = self._tiles.get(k)
-            if t is not None:
-                target_frame = self._frame_id + 1
-                t.last_invalidated_frame = max(t.last_invalidated_frame, target_frame)
-                t.dirty = self._is_dirty(t)
-                draw_state = self.key_to_draw_state.get(k, None)
-                input_val_hash = self.get_hash(draw_state)
-                # if k in self.initial_value and self.initial_value[k] != input_val_hash:
-                #     self.did_deviate[k] = True
-                self.pending_invalid.append(t)
+        t = self._tiles.get(k)
+        if t is not None:
+            target_frame = self._frame_id + 1
+            t.last_invalidated_frame = max(t.last_invalidated_frame, target_frame)
+            t.dirty = self._is_dirty(t)
+            draw_state = self.key_to_draw_state.get(k, None)
+            input_val_hash = self.get_hash(draw_state)
+            # if k in self.initial_value and self.initial_value[k] != input_val_hash:
+            #     self.did_deviate[k] = True
+            self.pending_invalid.append(t)
 
-                if force:
-                    t.force_invalidate |= force
-                # if not t.force_invalidate and k in self.initial_value and self.initial_value[k] == input_val_hash:
-                #     if not t.force_invalidate:
-                #         # Returning to initial value cancels invalidate
-                #         t.last_invalidated_frame = t.last_clean_frame
-                #         t.dirty = False
-                # else:
-                #     self.pending_invalid.append(t)
-                #             # Defer parent invalidation to next frame as well
+            if force:
+                t.force_invalidate = True
+            # if not t.force_invalidate and k in self.initial_value and self.initial_value[k] == input_val_hash:
+            #     if not t.force_invalidate:
+            #         # Reset to initial value cancels invalidate
+            #         t.last_invalidated_frame = t.last_draw_frame
+            #         t.dirty = False
+            # else:
+            #     self.pending_invalid.append(t)
+            #             # Defer parent invalidation to next frame as well
 
-            parent_keys = self.get_parent_keys(k)
-            for parent in parent_keys:
-                if parent and parent != k:
-                    pt = self._tiles.get(parent)
+        parent_keys = self.get_parent_keys(k)
 
-                    if pt is not None:
-                        pt.force_invalidate = True
-                        pt.last_invalidated_frame = max(pt.last_invalidated_frame, self._frame_id + 1)
-                        pt.dirty = self._is_dirty(pt)
-                        self.pending_invalid.append(pt)
+        for parent in parent_keys:
+            if parent and parent != k:
+                pt = self._tiles.get(parent)
 
-                # Optional pre-cancel for this frame (rarely used):
-                # if self._recording:
-                #     self._cancelled_keys.add(k)
+                if pt is not None:
+                    pt.force_invalidate = True
+                    pt.last_invalidated_frame = max(pt.last_invalidated_frame, self._frame_id + 1)
+                    pt.dirty = self._is_dirty(pt)
+                    self.pending_invalid.append(pt)
+
+            # Optional hard-cancel for this frame (rarely needed):
+            # if self._recording:
+            #     self._cancelled_keys.add(k)
 
     def invalidate_all(self) -> None:
         # Defer everything to next frame
@@ -887,7 +886,11 @@ class TileCacheMasked:
         if isinstance(input_value, (list, dict, set, deque, MutableMapping)) or hasattr(input_value, '__dict__'):
             self.py_id_to_keys.setdefault(f"{id(input_value)}", set()).add(rkey)
 
-        self.py_id_to_keys.setdefault(f"{id(draw_state)}", set()).add(rkey)
+        if f"{id(draw_state)}" not in self.py_id_to_keys:
+            self.py_id_to_keys[f"{id(draw_state)}"] = set()
+
+        self.py_id_to_keys[f"{id(draw_state)}"].add(rkey)
+
         try:
             self.py_id_to_keys.setdefault(f"{id(draw_state.mouse_btn_state[0])}", set()).add(rkey)
             self.py_id_to_keys.setdefault(f"{id(draw_state.mouse_btn_state[1])}", set()).add(rkey)
@@ -1287,7 +1290,7 @@ class TileCacheMasked:
                         # fallback (no queries) -> optimistic clean
                     p.tile.last_clean_frame = self._frame_id
                     p.tile.dirty = self._is_dirty(p.tile)
-                    p.tile.force_invalidate = False
+                    # p.tile.did_invalidate = False
 
                     draw_state = self.key_to_draw_state.get(p.key)
                     self.initial_value[p.key] = self.get_hash(draw_state)
@@ -1335,6 +1338,6 @@ class TileCacheMasked:
             self._enq_copy_keys.clear()
             self._cancelled_keys.clear()
             self._recording = False
-            # self.apply.clear()
+            self.apply_invalid()
             # self.initial_value.clear()
             self.did_deviate.clear()

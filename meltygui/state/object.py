@@ -346,6 +346,10 @@ class DictConversion(metaclass=FieldMeta):
             return True
         return super().__eq__(other)
 
+    # Make hashable
+    def __hash__(self):
+        return hash(self.id)
+
     @staticmethod
     def load(cls, path: str):
         """

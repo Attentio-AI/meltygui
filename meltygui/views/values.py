@@ -2039,7 +2039,7 @@ def draw_header(input_value=None, name="", suffix="", closable=False, collection
         same_line()
     if show_name and name != "":
         same_line()
-        # imgui.set_item_allow_overlap()
+        imgui.set_item_allow_overlap()
 
     if show_tint and hasattr(input_value, "tint") and input_value.tint is not None:
         draw_state._has_popup = True

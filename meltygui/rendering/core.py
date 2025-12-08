@@ -309,7 +309,13 @@ def render_func(*args, **o_kwargs):
                             Melty.cache.invalidate_up_by_obj(kwargs.get("collection", None), name)
                             request_render()
 
+        collection = kwargs.get("collection", None)
+        has_collection = collection is not None and not isinstance(collection, tuple)
+        if has_collection:
+            Melty.collection_stack.append(collection)
+
         draw_state._input_value = input_value
+        draw_state._collection = Melty.collection_stack[-1] if len(Melty.collection_stack) > 0 else None
         draw_state.name = name
 
         draw_state._has_popup = kwargs.get("has_popup", False)
@@ -479,6 +485,7 @@ def render_func(*args, **o_kwargs):
                 melty.hover_stack.append(unique)
 
             ############################# WINDOW SETUP #####################################################
+
             window_drag = False
 
             window_drag = active_layer == Melty.drag_layer and melty.drag_in_progress
@@ -672,10 +679,11 @@ def render_func(*args, **o_kwargs):
                 if kwargs.get("enable_scroll", False):
                     event_names.extend(["scroll_y_changed"])
 
+                event_names.extend(["left_mouse_click"])
+
                 Melty.event_handler.register_hovered(str(tile_id), priority, event_names)
 
             ######################################################
-
 
             if hasattr(input_value, 'pending_upload') and callable(getattr(input_value, 'pending_upload')):
                 if input_value.pending_upload():
@@ -692,6 +700,7 @@ def render_func(*args, **o_kwargs):
             if clip:
                 Melty.pop_clip()
             #######################
+
 
             draw_state._imgui_is_edited = imgui.is_item_edited()
             draw_state._imgui_is_active = imgui.is_item_active()
@@ -715,6 +724,9 @@ def render_func(*args, **o_kwargs):
                 if return_extras:
                     return False, None, kwargs
                 return False, None
+
+            if has_collection:
+                Melty.collection_stack.pop()
 
             # Has to go after mouse down check
             push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
@@ -804,6 +816,31 @@ def render_func(*args, **o_kwargs):
             if draw_state.height > 10000:
                 draw_state.height = 10000
 
+
+            ############# HANDLE SELECTION
+            left_mouse_click = Melty.on("left_mouse_click", tile_id)
+            if left_mouse_click.action == "clicked":
+
+                previous_select = copy(Melty.selected)
+                Melty.selected = set()
+                Melty.selected.add(draw_state)
+
+                for prev_select in previous_select:
+                    print("deselecting=====================:", prev_select.name)
+                    print(str(prev_select._tile_id))
+                    Melty.cache.invalidate(prev_select._tile_id)
+
+                    print(prev_select._collection.__class__.__name__, name)
+                    Melty.cache.invalidate_up_by_obj(obj=prev_select._collection, force=True)
+                    # Melty.cache.invalidate_up_by_obj(obj=prev_select._input_value, force=True)
+                    print("deselecting=====================:", prev_select.name)
+                    request_render()
+
+                print("clicked on=====================:", name)
+
+            if draw_state in Melty.selected:
+                # Draw rounded rectangle overlay to indicate selection
+                draw_state.draw_rect(rounding=5.0)
 
             ################################# SCROLLING
             # if kwargs.get("enable_scroll", False):

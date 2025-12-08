@@ -174,6 +174,7 @@ class DrawState(DictConversion):
         self._screen_pos = (0, 0)
         self.drag_delta = (0, 0)
         self._input_value = None
+        self._collection = None
         self._has_popup = False
         self.is_hovered_last = False
 
@@ -256,10 +257,27 @@ class DrawState(DictConversion):
         return False
 
 
+    def get_rect(self):
+
+        if self.bounds_left is None or self.bounds_top is None or self.bounding_width is None or self.bounding_height is None:
+            return (0,0,0,0)
+
+        width = self.width
+        height = self.height
+
+        return (self.bounds_left, self.bounds_top, self.bounds_left + width,
+                self.bounds_top + height)
+
+    def draw_rect(self, rounding=0):
+        draw_list = imgui.get_overlay_draw_list()
+        rect = self.get_rect()
+        draw_list.add_rect(rect[0], rect[1], rect[2], rect[3],
+                           imgui.get_color_u32_rgba(1, 1, 0, 1),
+                           rounding=rounding, thickness=1.0)
+
     def hover_eligible(self):
         if self._imgui_is_active or self._imgui_is_edited or self._imgui_is_hovered or self._imgui_is_focused:
             return True
-
 
         mouse_x, mouse_y = imgui.get_mouse_pos()
         # if Melty.imgui_any_item_hovered:
@@ -271,7 +289,7 @@ class DrawState(DictConversion):
         if self.bounds_top is None or self.bounds_left is None or self.width is None or self.height is None:
             return False
 
-        rect = (self.bounds_left, self.bounds_top, self.width, self.height + 10)
+        rect = (self.bounds_left, self.bounds_top, self.width, self.height)
 
         if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
             if imgui.is_window_hovered() or Melty.imgui_popup_open:
@@ -283,6 +301,7 @@ class DrawState(DictConversion):
 
         if (self._imgui_is_active or self._imgui_is_edited or self._imgui_is_hovered or self._imgui_popover_open):
             return True
+
         mouse_x, mouse_y = imgui.get_mouse_pos()
         if not Melty.inside_clip(rect=(mouse_x, mouse_y, 1, 1)):
             return False

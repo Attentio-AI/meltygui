@@ -1,6 +1,6 @@
 from collections import defaultdict, deque
 from enum import Enum
-from typing import MutableMapping
+from typing import MutableMapping, Optional
 
 import glfw
 import imgui
@@ -8,7 +8,7 @@ import libcst as cst
 
 from src.shader_library.shader_manager.texture_manager import TextureManager
 from src.shader_library.shader_manager.filter import Filter
-from src.lsd.gl_gui.view.events.input_handler import InputHandler
+from src.lsd.gl_gui.view.events.input_handler import InputHandler, InputEvent
 from src.lsd.gl_gui.view.events.pynput_backend import PynputBackend, ImGuiBackend
 from src.lsd.gl_gui.model.core_model.core_enums import generate_id
 from src.lsd.gl_gui.utils.glfw_utils import request_render
@@ -697,6 +697,8 @@ class ManagedWindow:
 
 class Melty:
 
+    selected = set()
+
     filter = Filter()
 
     # list, full with 32 Nones
@@ -706,6 +708,7 @@ class Melty:
     active_layer = 0
 
     windows = []
+    collection_stack = []
     glfw_window = None
     clip_stack = []
     clip_stack_holder = {}
@@ -792,6 +795,16 @@ class Melty:
 
     texture_manager = TextureManager()
     returned_values = {}
+
+    empty_event = InputEvent(input_id="", action="")
+
+    @classmethod
+    def on(cls, event_name, tile_id) -> Optional[InputEvent]:
+        id_str = str(tile_id)
+        if id_str in cls.events:
+            if event_name in cls.events[id_str]:
+                return cls.events[id_str][event_name]
+        return cls.empty_event
 
     @classmethod
     def to_apply(cls, action: CollectionAction):
@@ -889,7 +902,7 @@ class Melty:
 
         is_popup_open = imgui.is_popup_open("", flags=imgui.POPUP_ANY_POPUP)
         Melty.imgui_popup_open = is_popup_open
-        Melty.imgui_any_item_hovered = imgui.is_any_item_hovered()
+        # Melty.imgui_any_item_hovered = imgui.is_any_item_hovered()
 
         from src.lsd.gl_gui.view.core_views.core_render import get_melty_state
         melty = get_melty_state()
