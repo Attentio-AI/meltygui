@@ -1561,6 +1561,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
     start_cursor = imgui.get_cursor_pos()[1]
     keys = list(keys)[:]
+    children_draw_states = []
     for idx, key in enumerate(keys):
         if isinstance(collection, dict) and key not in collection:
             continue
@@ -1664,6 +1665,10 @@ def draw_collection(input_value, draw_state, depth, style_manager,
                                              parent_show_add_delete=show_add_delete,
                                              show_add_delete=show_add_delete)
 
+            if 'draw_state' in extras:
+                children_draw_states.append(extras['draw_state'])
+                extras['draw_state']._parent = draw_state
+
             if isinstance(out_val, CollectionAction):
                 # perform the move; this should mutate the plain dicts you attached
                 result = Melty.to_apply(out_val)
@@ -1696,6 +1701,8 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
     end_pos = imgui.get_cursor_pos()[1]
     content_height = end_pos - start_cursor
+
+    draw_state._children = children_draw_states
 
     # imgui.set_cursor_screen_pos((current_cursor[0], current_cursor[1] + draw_state.scroll_offset[1]))
     # current_cursor = imgui.get_cursor_screen_pos()

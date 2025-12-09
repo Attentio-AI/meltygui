@@ -93,6 +93,8 @@ class DrawState(DictConversion):
 
     def __init__(self):
         super().__init__()
+        self._children = []
+        self._parent = None
         self.misc = {}
         self.misc_used = set()
         self.closed = False
@@ -269,11 +271,19 @@ class DrawState(DictConversion):
                 self.bounds_top + height)
 
     def draw_rect(self, rounding=0):
-        draw_list = imgui.get_overlay_draw_list()
+        if Melty.channels_split:
+            draw_list = imgui.get_window_draw_list()
+            draw_list.channels_set_current(Melty.depth + 1)
+
+        draw_list = imgui.get_window_draw_list()
         rect = self.get_rect()
         draw_list.add_rect(rect[0], rect[1], rect[2], rect[3],
                            imgui.get_color_u32_rgba(1, 1, 0, 1),
                            rounding=rounding, thickness=1.0)
+
+        if Melty.channels_split:
+            draw_list = imgui.get_window_draw_list()
+            draw_list.channels_set_current(Melty.depth)
 
     def hover_eligible(self):
         if self._imgui_is_active or self._imgui_is_edited or self._imgui_is_hovered or self._imgui_is_focused:

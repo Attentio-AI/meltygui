@@ -264,6 +264,16 @@ def render_func(*args, **o_kwargs):
         tile_id = strhash(str(computed_unique) + str(draw_state.id))
         draw_state._tile_id = tile_id
 
+        def move_window_to_front(possible_window_name):
+            window_key = f"{possible_window_name}_window"
+            if window_key in Melty.registered_windows:
+                # Remove and re-add to move to end (top)
+                window = Melty.registered_windows.pop(window_key)
+                Melty.registered_windows[window_key] = window
+
+            Melty.cache.invalidate_by_obj(input_value)
+            Melty.cache.invalidate_up_by_obj(Melty.registered_windows)
+
         if active_layer is None:
             if (melty.dragged_item is not None and melty.drag_in_progress and
                     draw_state is not None and melty.dragged_item.id == draw_state.id):
@@ -439,10 +449,6 @@ def render_func(*args, **o_kwargs):
             ########## New event handler system ##########
             unique_events = Melty.events.get(str(tile_id), {})
             kwargs = unique_events | kwargs
-
-            for key, event in unique_events.items():
-                print(f"  {key}{name}: {event.input_id}:{event.action}")
-
             ##############################################
 
             kwargs = meta.__dict__ | kwargs
@@ -679,8 +685,6 @@ def render_func(*args, **o_kwargs):
                 if kwargs.get("enable_scroll", False):
                     event_names.extend(["scroll_y_changed"])
 
-                event_names.extend(["left_mouse_click"])
-
                 Melty.event_handler.register_hovered(str(tile_id), priority, event_names)
 
             ######################################################
@@ -688,6 +692,8 @@ def render_func(*args, **o_kwargs):
             if hasattr(input_value, 'pending_upload') and callable(getattr(input_value, 'pending_upload')):
                 if input_value.pending_upload():
                     request_render()
+
+
 
             #### MAIN CALL #######################################################
             if clip:
@@ -705,9 +711,7 @@ def render_func(*args, **o_kwargs):
             draw_state._imgui_is_edited = imgui.is_item_edited()
             draw_state._imgui_is_active = imgui.is_item_active()
             draw_state._imgui_is_focused = imgui.is_item_focused()
-            # draw_state._imgui_scroll_y = imgui.get_scroll_y()
             draw_state._imgui_is_hovered = imgui.is_item_hovered()
-            # draw_state._imgui_scroll_y = imgui.get_scroll_y()
 
             if draw_state._has_popup:
                 is_popup_open = Melty.imgui_popup_open
@@ -816,32 +820,6 @@ def render_func(*args, **o_kwargs):
             if draw_state.height > 10000:
                 draw_state.height = 10000
 
-
-            ############# HANDLE SELECTION
-            left_mouse_click = Melty.on("left_mouse_click", tile_id)
-            if left_mouse_click.action == "clicked":
-
-                previous_select = copy(Melty.selected)
-                Melty.selected = set()
-                Melty.selected.add(draw_state)
-
-                for prev_select in previous_select:
-                    print("deselecting=====================:", prev_select.name)
-                    print(str(prev_select._tile_id))
-                    Melty.cache.invalidate(prev_select._tile_id)
-
-                    print(prev_select._collection.__class__.__name__, name)
-                    Melty.cache.invalidate_up_by_obj(obj=prev_select._collection, force=True)
-                    # Melty.cache.invalidate_up_by_obj(obj=prev_select._input_value, force=True)
-                    print("deselecting=====================:", prev_select.name)
-                    request_render()
-
-                print("clicked on=====================:", name)
-
-            if draw_state in Melty.selected:
-                # Draw rounded rectangle overlay to indicate selection
-                draw_state.draw_rect(rounding=5.0)
-
             ################################# SCROLLING
             # if kwargs.get("enable_scroll", False):
             #     draw_state.content_height = item_rect[1]
@@ -864,6 +842,55 @@ def render_func(*args, **o_kwargs):
                                         scroll_offset=draw_state.scroll_offset[1], scrollbar_width=scrollbar_width,
                                         left=d_left,
                                         top=d_top)
+
+            ############# HANDLE SELECTION
+            max_layer_depth = Melty.max_depth * Melty.max_layer + Melty.max_depth
+            layer_and_depth = Melty.active_layer * Melty.max_depth + Melty.depth
+            priority = max_layer_depth - layer_and_depth
+
+            if draw_state.hover_eligible():
+                Melty.event_handler.register_hovered(str(tile_id), priority, ["left_mouse_down"])
+            click = Melty.on("left_mouse_down", tile_id)
+
+            if click.action == "down":
+                previous_select = copy(Melty.selected)
+                if not click.modifiers:
+                    Melty.selected = set()
+                    Melty.selected.add(draw_state)
+                    Melty.last_selected = draw_state
+
+                    move_window_to_front(draw_state.name)
+                    for prev_select in previous_select:
+                        Melty.cache.invalidate(prev_select._tile_id)
+                        Melty.cache.invalidate_up_by_obj(obj=prev_select._collection, force=True)
+                        Melty.cache.invalidate_up_by_obj(obj=prev_select._input_value, force=True)
+                        request_render()
+
+                elif click.modifiers == glfw.MOD_CONTROL and click.action == "down":
+                    if draw_state in Melty.selected:
+                        Melty.selected.remove(draw_state)
+                    else:
+                        Melty.selected.add(draw_state)
+
+                    Melty.cache.invalidate(draw_state._tile_id)
+                    Melty.cache.invalidate_up_by_obj(obj=draw_state._collection, force=True)
+                    request_render()
+                elif click.modifiers == glfw.MOD_SHIFT and click.action == "down":
+                    new_select = draw_state
+                    last_select = Melty.last_selected
+
+                    if draw_state in Melty.selected:
+                        Melty.selected.remove(draw_state)
+                    else:
+                        Melty.selected.add(draw_state)
+
+                    Melty.cache.invalidate(draw_state._tile_id)
+                    Melty.cache.invalidate_up_by_obj(obj=draw_state._collection, force=True)
+                    request_render()
+
+            if draw_state in Melty.selected:
+                # Draw rounded rectangle overlay to show selection
+                draw_state.draw_rect(rounding=5.0)
 
             ########################################### ACTIONS #######################
             is_hovered = draw_state.is_hovered()
@@ -972,6 +999,7 @@ def render_func(*args, **o_kwargs):
 
         enable_scroll = kwargs.get("enable_scroll", False)
         draw_state = kwargs.get("draw_state", draw_state)
+
         do_scroll = enable_scroll and clip_height < draw_state.content_height and not_header
         indent_x = kwargs.get("indent_size", 0)
         indent_x = 0
@@ -980,6 +1008,7 @@ def render_func(*args, **o_kwargs):
             start_cursor = imgui.get_cursor_screen_pos()
             imgui.set_cursor_screen_pos((start_cursor[0] + indent_x,
                                          start_cursor[1] - scroll_offset[1]))
+
 
         if not use_cache or Melty.cache.mark_start_offscreen(input_value=input_value, collection=collection,
                                                              draw_state=draw_state, key=tile_id, name=draw_state.name,
@@ -1036,6 +1065,7 @@ def render_func(*args, **o_kwargs):
             draw_state.did_render = False
         if use_cache:
             Melty.cache.mark_end_offscreen()
+
 
         if do_scroll or indent_x > 0:
             start_cursor = imgui.get_cursor_screen_pos()

@@ -698,6 +698,9 @@ class ManagedWindow:
 class Melty:
 
     selected = set()
+    last_selected = None
+
+    draw_state_stack = []
 
     filter = Filter()
 
