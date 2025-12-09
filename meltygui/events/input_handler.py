@@ -7,7 +7,7 @@ Device-agnostic actions auto-parsed from subscription names.
 
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 import time
 
 
@@ -170,7 +170,7 @@ class InputHandler:
         self._last_dx = 0.0
         self._last_dy = 0.0
 
-    def register_hovered(self, view_id: Any, priority: int, subscribed: list[str]):
+    def register_hovered(self, view_id: Any, subscribed: list[str], priority: Optional[int]=0):
         """Register hovered view. Priority 0 = topmost.
 
         Multiple calls with the same view_id will merge subscriptions,
@@ -196,6 +196,7 @@ class InputHandler:
 
         # New view
         self._hovered.append((view_id, priority, frozenset(new_subs)))
+
 
     def _emit(self, input_id: str, action: str, x: float, y: float,
               dx: float = 0, dy: float = 0, value: float = 0, t: float = None):

@@ -430,18 +430,18 @@ def render_func(*args, **o_kwargs):
 
                     # Melty.cache.invalidate_up_current(max_depth=1)
 
-            set_default("on_action", melty.triggered_actions.get(unique, None))
+            # set_default("on_action", melty.triggered_actions.get(unique, None))
             set_default("func", func)
             set_default("render_func", wrapper)
 
-            if func in Melty.hotkey_registry:
-                hotkey_actions = Melty.hotkey_registry.get(func, {})
-                for hk_name, hk in hotkey_actions.items():
-                    if draw_state.hotkey_receiver or (not hk.scoped and Melty.window_hovered):
-                        if hk.mod_active() and Melty.is_key_pressed(hk.key):
-                            kwargs.setdefault(hk_name, True)
-                        else:
-                            kwargs.setdefault(hk_name, False)
+            # if func in Melty.hotkey_registry:
+            #     hotkey_actions = Melty.hotkey_registry.get(func, {})
+            #     for hk_name, hk in hotkey_actions.items():
+            #         if draw_state.hotkey_receiver or (not hk.scoped and Melty.window_hovered):
+            #             if hk.is_active() and Melty.is_key_pressed(hk.key):
+            #                 kwargs.setdefault(hk_name, True)
+            #             else:
+            #                 kwargs.setdefault(hk_name, False)
             kwargs.setdefault('meta', meta)
 
             ###################### END LEGACY EVENT HANDLERS ############
@@ -492,75 +492,135 @@ def render_func(*args, **o_kwargs):
 
             ############################# WINDOW SETUP #####################################################
 
+            max_layer_depth = Melty.max_depth * Melty.max_layer + Melty.max_depth
+            layer_and_depth = Melty.active_layer * Melty.max_depth + Melty.depth
+            priority = max_layer_depth - layer_and_depth
+
             window_drag = False
 
             window_drag = active_layer == Melty.drag_layer and melty.drag_in_progress
 
-            if window_drag:
-                if Melty.depth == 1:
-                    mouse_pos = imgui.get_mouse_pos()
-                    if melty.mouse_down_pos is None:
-                        melty.mouse_down_pos = mouse_pos
-                    mouse_down_x = melty.mouse_down_pos[0]
-                    mouse_down_y = melty.mouse_down_pos[1]
-                    drag_delta = (mouse_pos[0] - mouse_down_x, mouse_pos[1] - mouse_down_y)
-                    current_sx, current_sy = Melty.scroll_stack[-1] if len(Melty.scroll_stack) > 0 else (0, 0)
-                    current_pos = imgui.get_cursor_screen_pos()
+            # if window_drag:
+            #     if Melty.depth == 1:
+            #         mouse_pos = imgui.get_mouse_pos()
+            #         if melty.mouse_down_pos is None:
+            #             melty.mouse_down_pos = mouse_pos
+            #         mouse_down_x = melty.mouse_down_pos[0]
+            #         mouse_down_y = melty.mouse_down_pos[1]
+            #         drag_delta = (mouse_pos[0] - mouse_down_x, mouse_pos[1] - mouse_down_y)
+            #         current_sx, current_sy = Melty.scroll_stack[-1] if len(Melty.scroll_stack) > 0 else (0, 0)
+            #         current_pos = imgui.get_cursor_screen_pos()
+            #
+            #         pos_x = current_pos[0] + drag_delta[0]
+            #         pos_y = current_pos[1] + drag_delta[1]
+            #         imgui.set_cursor_screen_pos((pos_x, pos_y))
 
-                    pos_x = current_pos[0] + drag_delta[0]
-                    pos_y = current_pos[1] + drag_delta[1]
-                    imgui.set_cursor_screen_pos((pos_x, pos_y))
+            # if draw_state.hover_eligible():
+            #     max_layer_depth = Melty.max_depth * Melty.max_layer + Melty.max_depth
+            #     layer_and_depth = Melty.active_layer * Melty.max_depth + Melty.depth
+            #     priority = max_layer_depth - layer_and_depth
+            #     Melty.event_handler.on_hovered(f"{tile_id}_window", subscribed=["left_mouse_drag"], priority=priority)
 
-            if ((kwargs.get("melty_window", False) or (
-            not kwargs.get("auto_resize", True)) and draw_state.drag_mode == DragMode.RESIZE_BR)
-                    and kwargs.get("on_drag", False)):
-                window_drag = True
-                mouse_pos = imgui.get_mouse_pos()
-                # kwargs['z_pos'] = Melty.depth + 2
 
-                mouse_down_x = draw_state.mouse_btn_state[0].mouse_down_pos[0]
-                mouse_down_y = draw_state.mouse_btn_state[0].mouse_down_pos[1]
-                drag_delta = (mouse_pos[0] - mouse_down_x, mouse_pos[1] - mouse_down_y)
+            ############ HANDLE WINDOW DRAGGING ########################
+            is_header = "with_header" in func.__name__
+            auto_resize = kwargs.get("auto_resize", True)
+            melty_window = kwargs.get("melty_window", False) and not is_header
 
-                if draw_state.drag_mode == DragMode.WINDOW and kwargs.get("melty_window", False):
-                    start_pos_x = draw_state.mouse_btn_state[0].initial_window_pos[0]
-                    start_pos_y = draw_state.mouse_btn_state[0].initial_window_pos[1]
-                    pos_x = start_pos_x + drag_delta[0]
-                    pos_y = start_pos_y + drag_delta[1]
-                    draw_state.window_pos = (pos_x, pos_y)
-                    request_render()
-                elif draw_state.drag_mode == DragMode.RESIZE_BR:
-                    start_pos_x = draw_state.mouse_btn_state[0].initial_window_size[0]
-                    start_pos_y = draw_state.mouse_btn_state[0].initial_window_size[1]
-                    size_w = start_pos_x + drag_delta[0]
-                    size_h = start_pos_y + drag_delta[1]
-                    draw_state.width, draw_state.height = (max(size_w, 25), max(size_h, 24))
-                    min_width = kwargs.get('min_width', 25)
-                    min_height = kwargs.get('min_height', 24)
-                    draw_state.width = max(draw_state.width, min_width)
-                    draw_state.height = max(draw_state.height, min_height)
-
-                    draw_state.window_size = (draw_state.width, draw_state.height)
-                    draw_state.expanded = True
-
-            if kwargs.get("window_pos", None) is not None:
-                draw_state.window_pos = kwargs.get("window_pos", None)
-
-            if kwargs.get("melty_window", False):
-                melty_window = True
+            if melty_window:
                 Melty.melty_window_stack.append((draw_state.window_pos, draw_state.window_size, unique))
                 if draw_state.window_pos is None and draw_state.width is not None:
                     draw_state.window_pos = Melty.init_window_cursor
-                    cursor_spacing = 5
-                    Melty.init_window_cursor = (Melty.init_window_cursor[0] +
-                                                300 + cursor_spacing,
-                                                Melty.init_window_cursor[1])
+            if not auto_resize:
 
-                if draw_state.window_pos is not None:
-                    imgui.set_cursor_screen_pos((snap_int(draw_state.window_pos[0]),
-                                                 snap_int(draw_state.window_pos[1])))
-            else:
-                draw_state.window_pos = None
+
+                # corner_drag = draw_state.on_action("right_mouse_drag", priority_delta=-2)
+                corner_rect = get_resize_handle(draw_state)
+                handle_drag = draw_state.on_action("left_mouse_drag", view_id="window_resize",
+                                                   rect=corner_rect, priority_delta=1)
+                # if handle_drag is None:
+                #     handle_drag = corner_drag
+
+                if handle_drag and not auto_resize:
+                    if draw_state.window_size is None:
+                        draw_state.window_size = (draw_state.width, draw_state.height)
+                    size_w = draw_state.window_size[0] + handle_drag.dx
+                    size_h = draw_state.window_size[1] + handle_drag.dy
+                    draw_state.width, draw_state.height = (max(size_w, 25), max(size_h, 24))
+                    min_width = kwargs.get('min_width', 25)
+                    min_height = kwargs.get('min_height', 24)
+                    # draw_state.width = max(draw_state.width, min_width)
+                    # draw_state.height = max(draw_state.height, min_height)
+                    draw_state.window_size = (draw_state.width, draw_state.height)
+                    draw_state.expanded = True
+
+            if draw_state.window_pos is not None:
+                on_drag = draw_state.on_action("left_mouse_drag")
+                if on_drag:
+                    print("Dragging window:", name, "to pos:", draw_state.window_pos)
+                    pos_x = draw_state.window_pos[0] + on_drag.dx
+                    pos_y = draw_state.window_pos[1] + on_drag.dy
+                    draw_state.window_pos = (pos_x, pos_y)
+
+                imgui.set_cursor_screen_pos((snap_int(draw_state.window_pos[0]),
+                                             snap_int(draw_state.window_pos[1])))
+
+
+
+
+
+
+            # # Is melty window or resizable
+            # if ((kwargs.get("melty_window", False) or (not kwargs.get("auto_resize", True)) and
+            #      draw_state.drag_mode == DragMode.RESIZE_BR)
+            #         and kwargs.get("on_drag", False)):
+            #     window_drag = True
+            #     mouse_pos = imgui.get_mouse_pos()
+            #     # kwargs['z_index'] = Melty.depth + 2
+            #
+            #     mouse_down_x = draw_state.mouse_btn_state[0].mouse_down_pos[0]
+            #     mouse_down_y = draw_state.mouse_btn_state[0].mouse_down_pos[1]
+            #     drag_delta = (mouse_pos[0] - mouse_down_x, mouse_pos[1] - mouse_down_y)
+            #
+            #     if draw_state.drag_mode == DragMode.WINDOW and kwargs.get("melty_window", False):
+            #         start_pos_x = draw_state.mouse_btn_state[0].initial_window_pos[0]
+            #         start_pos_y = draw_state.mouse_btn_state[0].initial_window_pos[1]
+            #         pos_x = start_pos_x + drag_delta[0]
+            #         pos_y = start_pos_y + drag_delta[1]
+            #         draw_state.window_pos = (pos_x, pos_y)
+            #         stop_render()
+            #     elif draw_state.drag_mode == DragMode.RESIZE_BR:
+            #         start_pos_x = draw_state.mouse_btn_state[0].initial_window_size[0]
+            #         start_pos_y = draw_state.mouse_btn_state[0].initial_window_size[1]
+            #         size_w = start_pos_x + drag_delta[0]
+            #         size_h = start_pos_y + drag_delta[1]
+            #         draw_state.width, draw_state.height = (max(size_w, 25), max(size_h, 24))
+            #         min_width = kwargs.get('min_width', 25)
+            #         min_height = kwargs.get('min_height', 24)
+            #         draw_state.width = max(draw_state.width, min_width)
+            #         draw_state.height = max(draw_state.height, min_height)
+            #
+            #         draw_state.window_size = (draw_state.width, draw_state.height)
+            #         draw_state.expanded = True
+
+            # if kwargs.get("window_pos", None) is not None:
+            #     draw_state.window_pos = kwargs.get("window_pos", None)
+            #
+            # if kwargs.get("melty_window", False):
+            #     melty_window = True
+            #     Melty.melty_window_stack.append((draw_state.window_pos, draw_state.window_size, unique))
+            #     if draw_state.window_pos is None and draw_state.width is not None:
+            #         draw_state.window_pos = Melty.init_window_cursor
+            #         cursor_spacing = 5
+            #         Melty.init_window_cursor = (Melty.init_window_cursor[0] +
+            #                                     300 + cursor_spacing,
+            #                                     Melty.init_window_cursor[1])
+            #
+            #     if draw_state.window_pos is not None:
+            #         imgui.set_cursor_screen_pos((snap_int(draw_state.window_pos[0]),
+            #                                      snap_int(draw_state.window_pos[1])))
+            # else:
+            #     draw_state.window_pos = None
 
             kwargs['melty_window'] = False
 
@@ -681,11 +741,15 @@ def render_func(*args, **o_kwargs):
                 priority = max_layer_depth - layer_and_depth
                 event_names = copy(wanted_params)
                 # event_names.extend(['hover_event', "scroll_y_changed"])
+                not_header = "with_header" not in func.__name__
+                clip_height = Melty.get_clip_size()[1]
+                enable_scroll = kwargs.get("enable_scroll", False)
+                do_scroll = enable_scroll and clip_height < draw_state.content_height and not_header
 
-                if kwargs.get("enable_scroll", False):
+                if do_scroll:
                     event_names.extend(["scroll_y_changed"])
-                event_names.extend(["left_mouse_down"])
-                Melty.event_handler.register_hovered(str(tile_id), priority, event_names)
+                # event_names.extend(["left_click_down"])
+                Melty.event_handler.register_hovered(str(tile_id), event_names, priority)
 
             ######################################################
 
@@ -847,12 +911,11 @@ def render_func(*args, **o_kwargs):
             max_layer_depth = Melty.max_depth * Melty.max_layer + Melty.max_depth
             layer_and_depth = Melty.active_layer * Melty.max_depth + Melty.depth
             priority = max_layer_depth - layer_and_depth
-
-            # if draw_state.hover_eligible():
-            #     Melty.event_handler.add_hovered(str(tile_id), priority, ["left_mouse_down"])
+            if draw_state.hover_eligible():
+                Melty.event_handler.register_hovered(str(tile_id), ["left_mouse_down"], priority)
             click = Melty.on("left_mouse_down", tile_id)
 
-            if click.action == "down":
+            if click:
                 previous_select = copy(Melty.selected)
                 if not click.modifiers:
                     Melty.selected = set()
@@ -898,8 +961,8 @@ def render_func(*args, **o_kwargs):
             # hover_changed = last_bounding_hovered != draw_state._bounding_hovered
             # draw_state._bounding_hovered = draw_state.is_bounding_hovered()
 
-            melty.triggered_actions.pop(unique, None)
-            handle_actions(melty, unique, draw_state, func)
+            # Melty.triggered_actions.pop(unique, None)
+            # handle_actions(melty, unique, draw_state, func)
 
             draw_state._hovered = False
             draw_state.hotkey_receiver = False
@@ -1141,121 +1204,121 @@ def get_melty_state():
     return static_melty
 
 
-def handle_actions(melty, unique, draw_state, func=None):
-
-    if not imgui.is_mouse_down():
-        melty.initial_scroll_offset = (0, 0)
-        melty.initial_drag_offset = None
-        melty.mouse_down_pos = None
-    else:
-        pass
-
-    if (Melty.is_window_enabled() and (imgui.is_window_hovered() or melty.drag_in_progress)) or Melty.blocker_hovered:
-        for m_btn in [0, 1, 2]:
-            btn_state = draw_state.mouse_btn_state[m_btn]
-
-            if btn_state.drag_released:
-                btn_state.drag_released = False
-                melty.dragged_item = None
-                melty.dragged_tile = None
-
-            was_mouse_down = btn_state.mouse_down
-            btn_state._clicked = False
-
-            # Mouse down from glfw
-            global_mouse_down = imgui.is_mouse_down(m_btn)
-            mouse_pos = imgui.get_mouse_pos()
-
-            if btn_state.drag_released:
-                btn_state.drag_released = False
-
-            if draw_state.id in Melty.hovered_drawstate:
-                if global_mouse_down and btn_state.mouse_up:
-                    if not btn_state.mouse_down or melty.mouse_down_pos is None:
-                        melty.total_drag_distance = 0.0
-                        melty.total_drag_frames = 0
-                        current_mouse_pos = mouse_pos
-                        btn_state.mouse_down_pos = mouse_pos
-                        btn_state.initial_scroll_offset = Melty.scroll_stack[-1] if len(Melty.scroll_stack) > 0 else (
-                        0, 0)
-                        melty.initial_scroll_offset = Melty.scroll_stack[-1] if len(Melty.scroll_stack) > 0 else (0, 0)
-
-                        melty.mouse_down_pos = mouse_pos
-                        btn_state.initial_screen_pos = (draw_state.left, draw_state.top)
-                        btn_state.initial_window_pos = draw_state.window_pos
-                        btn_state.initial_window_size = (draw_state.width, draw_state.height)
-                        draw_state.drag_mode = draw_state.get_drag_mode()
-
-                        if draw_state.left is not None and draw_state.top is not None:
-                            melty.initial_drag_offset = (current_mouse_pos[0] - draw_state.left,
-                                                         current_mouse_pos[1] - draw_state.top)
-                            melty.mark_event(unique, m_btn, ActionType.DOWN)
-
-                    btn_state.mouse_down = True
-
-                if not global_mouse_down:
-                    btn_state.mouse_up = True
-            else:
-                btn_state.mouse_up = False
-            if was_mouse_down and not global_mouse_down:
-                btn_state._clicked = True
-                melty.mark_event(unique, m_btn, ActionType.CLICK)
-
-            if not global_mouse_down:
-                btn_state.mouse_down = False
-                if btn_state.dragged:
-                    melty.total_drag_distance = 0.0
-                    melty.total_drag_frames = 0
-                    btn_state.drag_released = True
-                    melty.initial_scroll_offset = (0, 0)
-                    btn_state.initial_scroll_offset = None
-                    melty.initial_drag_offset = None
-                    btn_state.initial_screen_pos = None
-                    melty.mouse_down_pos = None
-                    melty.mark_event(unique, m_btn, ActionType.DRAG_UP)
-
-                btn_state.dragged = False
-
-            if btn_state.mouse_down:
-                current_mouse_pos = mouse_pos
-                distance = math.sqrt((current_mouse_pos[0] - btn_state.mouse_down_pos[0]) ** 2 +
-                                     (current_mouse_pos[1] - btn_state.mouse_down_pos[1]) ** 2)
-                btn_state.drag_delta = (current_mouse_pos[0] - btn_state.mouse_down_pos[0],
-                                        current_mouse_pos[1] - btn_state.mouse_down_pos[1])
-
-                if melty.last_mouse_pos is not None:
-                    this_m = mouse_pos
-                    last_m = melty.last_mouse_pos
-                    frame_drag_distance = math.sqrt(
-                        (this_m[0] - last_m[0]) ** 2 + (this_m[1] - last_m[1]) ** 2)
-                    melty.total_drag_distance += frame_drag_distance
-                    melty.total_drag_frames += 1
-                if melty.total_drag_distance >= 2 or btn_state.dragged:
-                    btn_state.dragged = True
-                    melty.drag_in_progress = True
-
-                    if draw_state.window_pos is None:
-                        melty.dragged_item = draw_state
-                        melty.dragged_tile = Melty.get_tile_id()
-                    melty.mark_event(unique, m_btn, ActionType.DRAG)
-                    melty.drag_delta = btn_state.drag_delta
-
-        if draw_state.id in Melty.hovered_drawstate:
-            if unique not in melty.triggered_actions:
-                melty.mark_event(unique, 0, ActionType.HOVERED)
-
-        # Handle scroll
-        was_scrolled = False
-        if draw_state.height is not None and draw_state.is_hovered():
-            if draw_state.content_height > draw_state.height:
-                scroll_y = imgui.get_io().mouse_wheel
-                if scroll_y != 0.0:
-                    melty.mark_event(unique, scroll_y,
-                                     ActionType.SCROLL, value=scroll_y)
-
-        global_mouse_down = glfw.get_mouse_button(Melty.glfw_window, 0) == glfw.PRESS
-        if not global_mouse_down:
-            melty.drag_in_progress = False
+# def handle_actions(melty, unique, draw_state, func_name):
+#
+#     if not imgui.is_mouse_down():
+#         melty.initial_scroll_offset = (0, 0)
+#         melty.initial_drag_offset = None
+#         melty.mouse_down_pos = None
+#     else:
+#         pass
+#
+#     if (Melty.is_window_enabled() and (imgui.is_window_hovered() or melty.drag_in_progress)) or Melty.blocker_hovered:
+#         for m_btn in [0, 1, 2]:
+#             btn_state = draw_state.mouse_btn_state[m_btn]
+#
+#             if btn_state.drag_released:
+#                 btn_state.drag_released = False
+#                 melty.dragged_item = None
+#                 melty.dragged_tile = None
+#
+#             was_mouse_down = btn_state.mouse_down
+#             btn_state._clicked = False
+#
+#             # Mouse down from glfw
+#             global_mouse_down = imgui.is_mouse_down(m_btn)
+#             mouse_pos = imgui.get_mouse_pos()
+#
+#             if btn_state.drag_released:
+#                 btn_state.drag_released = False
+#
+#             if draw_state.id in Melty.hovered_drawstate:
+#                 if global_mouse_down and btn_state.mouse_up:
+#                     if not btn_state.mouse_down or melty.mouse_down_pos is None:
+#                         melty.total_drag_distance = 0.0
+#                         melty.total_drag_frames = 0
+#                         current_mouse_pos = mouse_pos
+#                         btn_state.mouse_down_pos = mouse_pos
+#                         btn_state.initial_scroll_offset = Melty.scroll_stack[-1] if len(Melty.scroll_stack) > 0 else (
+#                         0, 0)
+#                         melty.initial_scroll_offset = Melty.scroll_stack[-1] if len(Melty.scroll_stack) > 0 else (0, 0)
+#
+#                         melty.mouse_down_pos = mouse_pos
+#                         btn_state.initial_screen_pos = (draw_state.left, draw_state.top)
+#                         btn_state.initial_window_pos = draw_state.window_pos
+#                         btn_state.initial_window_size = (draw_state.width, draw_state.height)
+#                         mel_state.drag_mode = draw_state.get_drag_mode()
+#
+#                         if draw_state.left is not None and draw_state.top is not None:
+#                             melty.initial_drag_offset = (current_mouse_pos[0] - draw_state.left,
+#                                                           current_mouse_pos[1] - draw_state.top)
+#                             melty.mark_event(unique, m_btn, ActionType.DOWN)
+#
+#                     btn_state.mouse_down = True
+#
+#                 if not global_mouse_down:
+#                     btn_state.mouse_up = True
+#             else:
+#                 btn_state.mouse_up = True
+#             if was_mouse_down and not global_mouse_down:
+#                 btn_state._clicked = True
+#                 melty.mark_event(unique, m_btn, ActionType.CLICK)
+#
+#             if not global_mouse_down:
+#                 btn_state.mouse_down = False
+#                 if btn_state.dragged:
+#                     melty.total_drag_distance = 0.0
+#                     melty.total_drag_frames = 0
+#                     btn_state.drag_released = True
+#                     melty.initial_scroll_offset = (0, 0)
+#                     btn_state.initial_scroll_offset = None
+#                     melty.initial_drag_offset = None
+#                     btn_state.initial_screen_pos = None
+#                     melty.mouse_down_pos = None
+#                     melty.mark_event(unique, m_btn, ActionType.DRAG_UP)
+#
+#                 btn_state.dragged = False
+#
+#             if btn_state.mouse_down:
+#                 current_mouse_pos = mouse_pos
+#                 distance = math.sqrt((current_mouse_pos[0] - btn_state.mouse_down_pos[0]) ** 2 +
+#                                      (current_mouse_pos[1] - btn_state.mouse_down_pos[1]) ** 2)
+#                 btn_state.drag_delta = (current_mouse_pos[0] - btn_state.mouse_down_pos[0],
+#                                         current_mouse_pos[1] - btn_state.mouse_down_pos[1])
+#
+#                 if melty.last_mouse_pos is not None:
+#                     this_m = mouse_pos
+#                     last_m = melty.last_mouse_pos
+#                     frame_drag_distance = math.sqrt(
+#                         (this_m[0] - last_m[0]) ** 2 + (this_m[1] - last_m[1]) ** 2)
+#                     melty.total_drag_distance += frame_drag_distance
+#                     melty.total_drag_frames += 1
+#                 if melty.total_drag_frames >= 2 or btn_state.dragged:
+#                     btn_state.dragged = True
+#                     melty.drag_in_progress = True
+#
+#                     if draw_state.window_id is None:
+#                         melty.dragged_item = draw_state
+#                         melty.dragged_tile = Melty.get_current_tile()
+#                     melty.mark_event(unique, m_btn, ActionType.DRAG)
+#                     melty.drag_delta = btn_state.drag_delta
+#
+#         # if draw_state.id in Melty.hovered_drawstate:
+#         #     if unique not in melty.triggered_actions:
+#         #         melty.mark_event(unique, 0, ActionType.HOVERED)
+#
+#         # Handle scroll
+#         was_scrolled = False
+#         if draw_state.height is not None and draw_state.is_hovered():
+#             if draw_state.max_height > draw_state.height:
+#                 scroll_y = imgui.get_io().mouse_wheel
+#                 if scroll_y != 0.0:
+#                     melty.mark_event(unique, scroll_y,
+#                                      ActionType.SCROLL, value=scroll_y)
+#
+#         global_mouse_down = glfw.get_mouse_button(Melty.glfw_window, 0) == glfw.PRESS
+#         if not global_mouse_down:
+#             melty.drag_in_progress = False
 
 
 def get_draw_state(unique: int) -> DrawState:

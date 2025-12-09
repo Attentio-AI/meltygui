@@ -807,7 +807,7 @@ class Melty:
         if id_str in cls.events:
             if event_name in cls.events[id_str]:
                 return cls.events[id_str][event_name]
-        return cls.empty_event
+        return None
 
     @classmethod
     def to_apply(cls, action: CollectionAction):

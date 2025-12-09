@@ -260,7 +260,6 @@ class DrawState(DictConversion):
 
 
     def get_rect(self):
-
         if self.bounds_left is None or self.bounds_top is None or self.bounding_width is None or self.bounding_height is None:
             return (0,0,0,0)
 
@@ -285,27 +284,60 @@ class DrawState(DictConversion):
             draw_list = imgui.get_window_draw_list()
             draw_list.channels_set_current(Melty.depth)
 
-    def hover_eligible(self):
-        if self._imgui_is_active or self._imgui_is_edited or self._imgui_is_hovered or self._imgui_is_focused:
-            return True
+    def hover_eligible(self, rect=None):
+        if (self._imgui_is_active or self._imgui_is_edited or self.imgui_is_item_activated or
+                self._imgui_is_focused or self._imgui_popover_open):
+            return False
 
         mouse_x, mouse_y = imgui.get_mouse_pos()
         # if Melty.imgui_any_item_hovered:
         #     return False
-
         if not Melty.inside_clip(rect=(mouse_x, mouse_y, 1, 1)):
             return False
 
-        if self.bounds_top is None or self.bounds_left is None or self.width is None or self.height is None:
-            return False
-
-        rect = (self.bounds_left, self.bounds_top, self.width, self.height)
-
-        if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
-            if imgui.is_window_hovered() or Melty.imgui_popup_open:
+        if rect is None:
+            if self.bounds_top is None or self.bounds_left is None or self.width is None or self.height is None:
+                return False
+            rect = (self.bounds_left, self.bounds_top, self.width, self.height)
+            if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]) and imgui.is_window_hovered():
+                return True
+        else:
+            if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[2], rect[3]) and imgui.is_window_hovered():
                 return True
 
+
         return False
+
+    def on_action(self, event_names, view_id=None, priority=None, priority_delta=0, rect=None):
+        if view_id is None:
+            view_id = str(self._tile_id)
+        else:
+            view_id = str(self._tile_id) + "_" + str(view_id)
+
+        single_event = False
+        if isinstance(event_names, str):
+            event_names = [event_names]
+            single_event = True
+
+        if self.hover_eligible(rect):
+            if priority is None:
+                max_layer_depth = Melty.max_depth * Melty.max_layer + Melty.max_depth
+                layer_and_depth = Melty.active_layer * Melty.max_depth + Melty.depth
+                priority = max_layer_depth - layer_and_depth
+
+            Melty.event_handler.register_hovered(str(view_id), event_names,
+                                                 priority=priority - priority_delta)
+
+        if single_event:
+            if view_id in Melty.events:
+                return Melty.events.get(view_id, None).get(event_names[0], None)
+            return None
+
+        return_events = {}
+        if view_id in Melty.events:
+            for event_name in Melty.events[view_id]:
+                return_events[event_name] = Melty.events[view_id][event_name]
+        return return_events
 
     def is_bounding_hovered(self):
 
