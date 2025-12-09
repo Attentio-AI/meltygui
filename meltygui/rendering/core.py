@@ -272,7 +272,7 @@ def render_func(*args, **o_kwargs):
                 Melty.registered_windows[window_key] = window
 
             Melty.cache.invalidate_by_obj(input_value)
-            Melty.cache.invalidate_up_by_obj(Melty.registered_windows)
+            Melty.cache.invalidate_by_obj(Melty.registered_windows)
 
         if active_layer is None:
             if (melty.dragged_item is not None and melty.drag_in_progress and
