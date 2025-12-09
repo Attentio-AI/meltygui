@@ -176,7 +176,7 @@ def draw_pending_texture(input_value:PendingTexture):
              use_cache=False, show_add_delete=False,
              indent_size=1, min_width=100, min_height=100,
              enable_scroll=True, zoom_speed=0.2)
-def draw_texture(input_value: numpy.uint32, scroll_y_changed, zoom_state: ZoomState, zoom_speed, header_height=0, min_zoom=0.1,
+def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mouse_drag, right_mouse_drag, zoom_state: ZoomState, zoom_speed, header_height=0, min_zoom=0.1,
                  max_zoom=50.0, style_manager=None, left_mouse_clicked=False, max_brightness=5.0, max_contrast=5.0,
                  on_scroll=0, draw_state=None):
 
@@ -185,6 +185,9 @@ def draw_texture(input_value: numpy.uint32, scroll_y_changed, zoom_state: ZoomSt
 
     if left_mouse_clicked:
         print(f"Texture {texture_id} clicked")
+
+    if right_mouse_drag:
+        print(f"Texture {right_mouse_drag} right mouse drag")
 
     # Ensure we have valid state if this is the first run
     if not hasattr(zoom_state, 'zoom'):
@@ -237,8 +240,8 @@ def draw_texture(input_value: numpy.uint32, scroll_y_changed, zoom_state: ZoomSt
         uv_height_size = uv_width_size * (tex_aspect / view_aspect)
 
     # 4. Handle Input and Interaction
-    imgui.invisible_button(f"##text_interact", view_width, view_height,
-                           flags=(imgui.BUTTON_MOUSE_BUTTON_MIDDLE | imgui.BUTTON_MOUSE_BUTTON_RIGHT))
+    imgui.dummy(view_width, view_height)
+
     mixed_color = (1, 1, 1, 1)
     highlight_color = (1, 1, 1, 1)
 
@@ -248,21 +251,19 @@ def draw_texture(input_value: numpy.uint32, scroll_y_changed, zoom_state: ZoomSt
         highlight_color = style_manager.make_color_rgb(*mixed_color[:3],
                                                    value=1.0, factor=0.9, saturation_scale=1.0, alpha=1.0)
     io = imgui.get_io()
-    is_hovered = imgui.is_item_hovered()
-    is_active = imgui.is_item_active()
     overlay:_DrawList = imgui.get_overlay_draw_list()
 
-    if imgui.is_mouse_down(1) and (is_hovered or is_active):
+    if right_mouse_drag and not right_mouse_drag.modifiers:
         b_str = f"{zoom_state.brightness:.3f}"
-        overlay.add_text(imgui.get_mouse_pos()[0], imgui.get_mouse_pos()[1] - 30,
+        overlay.add_text(right_mouse_drag.x, right_mouse_drag.y - 30,
                            col=imgui.get_color_u32_rgba(*highlight_color[:3], 1),
                           text=f"brightness:{zoom_state.brightness:.3}\ncontrast:{zoom_state.contrast:.3}" )
         if io.key_shift:
-            zoom_state.brightness += io.mouse_delta.x * 0.001
-            zoom_state.contrast -= io.mouse_delta.y * 0.001
+            zoom_state.brightness += right_mouse_drag.dx * 0.001
+            zoom_state.contrast -= right_mouse_drag.dy * 0.001
         else:
-            zoom_state.brightness += io.mouse_delta.x * 0.005
-            zoom_state.contrast -= io.mouse_delta.y * 0.005
+            zoom_state.brightness += right_mouse_drag.dx * 0.005
+            zoom_state.contrast -= right_mouse_drag.dy * 0.005
 
         zoom_state.brightness = max(0.0, min(max_brightness, zoom_state.brightness))
         zoom_state.contrast = max(0.0, min(max_contrast, zoom_state.contrast))
@@ -298,7 +299,7 @@ def draw_texture(input_value: numpy.uint32, scroll_y_changed, zoom_state: ZoomSt
     forced_zoom = -1.0
     key_1 = 49
     numpad_key_1 = 321
-    if is_hovered:
+    if hovered:
         if imgui.is_key_pressed(key_1) or imgui.is_key_pressed(numpad_key_1):  # Key '1'
             forced_zoom = 1.0
             # Reset Pan to Center
@@ -330,24 +331,24 @@ def draw_texture(input_value: numpy.uint32, scroll_y_changed, zoom_state: ZoomSt
             uv_height_size = uv_width_size * (tex_aspect / view_aspect)
 
     # Scroll Logic
-    if is_hovered and scroll_delta != 0:
+    if scroll_delta != 0:
         if io.key_shift:
             zoom_delta = scroll_delta * zoom_speed * 0.3
         else:
             zoom_delta = scroll_delta * zoom_speed
-    elif io.key_ctrl and imgui.is_mouse_down(2) and is_active:
+    elif middle_mouse_drag and middle_mouse_drag.modifiers == glfw.MOD_CONTROL:
         zoom_delta = io.mouse_delta.y * -0.008
 
     # 4b. Handle Pan (Middle Click Drag)
-    if imgui.is_mouse_down(2) and not io.key_ctrl and (is_hovered or is_active):
+    if middle_mouse_drag and middle_mouse_drag.modifiers != glfw.MOD_CONTROL:
         u_scale = uv_width_size / view_width
         v_scale = uv_height_size / view_height
-        if io.key_shift:
-            zoom_state.center_u -= io.mouse_delta.x * u_scale * 0.5
-            zoom_state.center_v += io.mouse_delta.y * v_scale * 0.5
+        if middle_mouse_drag.modifiers == glfw.MOD_SHIFT:
+            zoom_state.center_u -= middle_mouse_drag.dx * u_scale * 0.5
+            zoom_state.center_v += middle_mouse_drag.dy * v_scale * 0.5
         else:
-            zoom_state.center_u -= io.mouse_delta.x * u_scale
-            zoom_state.center_v += io.mouse_delta.y * v_scale
+            zoom_state.center_u -= middle_mouse_drag.dx * u_scale
+            zoom_state.center_v += middle_mouse_drag.dy * v_scale
 
     # 4c. Apply Zoom Logic (Zoom to Cursor)
     if zoom_delta != 0.0:

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 import time
 
+
 class Action:
     DOWN = "down"
     UP = "up"
@@ -48,7 +49,6 @@ ALL_ACTIONS = frozenset({
 _SORTED_ACTIONS = tuple(sorted(ALL_ACTIONS, key=len, reverse=True))
 
 DOUBLE_CLICK_WINDOW = 0.3
-CLICK_MAX_DURATION = 0.25
 CLICK_MAX_DISTANCE = 5.0
 
 
@@ -89,6 +89,7 @@ class _InputState:
 
 _parse_cache: dict[str, tuple[str, str]] = {}
 _view_id_names_cache: dict[str, dict[Any, str]] = {}
+
 
 def parse_event_name(name: str) -> tuple[str, str]:
     """Parse "left_mouse_up" → ("left_mouse", "up")"""
@@ -137,7 +138,9 @@ class InputHandler:
         # {"btn": [InputEvent(...)], "panel": [...]}
     """
 
-    __slots__ = ('_states', '_hovered', '_prev_hovered', '_pending', '_cursor_x', '_cursor_y', '_modifiers')
+    __slots__ = (
+    '_states', '_hovered', '_prev_hovered', '_pending', '_cursor_x', '_cursor_y', '_modifiers', '_last_dx', '_last_dy',
+    '_drag_capture')
 
     def __init__(self):
         self._states: dict[str, _InputState] = {}
@@ -147,6 +150,9 @@ class InputHandler:
         self._cursor_x = 0.0
         self._cursor_y = 0.0
         self._modifiers = 0
+        self._last_dx = 0.0
+        self._last_dy = 0.0
+        self._drag_capture: dict[str, Any] = {}  # input_id -> view_id that captured it on down
 
     def _state(self, input_id: str) -> _InputState:
         s = self._states.get(input_id)
@@ -161,21 +167,35 @@ class InputHandler:
     def begin_frame(self):
         self._hovered.clear()
         self._pending.clear()
+        self._last_dx = 0.0
+        self._last_dy = 0.0
 
     def register_hovered(self, view_id: Any, priority: int, subscribed: list[str]):
-        """Register hovered view. Priority 0 = topmost."""
+        """Register hovered view. Priority 0 = topmost.
 
-        subs = set()
+        Multiple calls with the same view_id will merge subscriptions,
+        using the lowest (best) priority.
+        """
+        # Parse new subscriptions
+        new_subs = set()
         for s in subscribed:
             sub = parse_event_name(s)
-            parsed_name = sub[1]
-
             if view_id not in _view_id_names_cache:
                 _view_id_names_cache[view_id] = {}
             _view_id_names_cache[view_id][sub] = s
-            subs.add(sub)
+            new_subs.add(sub)
 
-        self._hovered.append((view_id, priority, frozenset(subs)))
+        # Check if view already registered this frame - merge if so
+        for i, (vid, pri, subs) in enumerate(self._hovered):
+            if vid == view_id:
+                # Merge subscriptions, keep lowest priority
+                merged_subs = subs | frozenset(new_subs)
+                merged_priority = min(pri, priority)
+                self._hovered[i] = (view_id, merged_priority, merged_subs)
+                return
+
+        # New view
+        self._hovered.append((view_id, priority, frozenset(new_subs)))
 
     def _emit(self, input_id: str, action: str, x: float, y: float,
               dx: float = 0, dy: float = 0, value: float = 0, t: float = None):
@@ -209,10 +229,10 @@ class InputHandler:
         self._emit(input_id, Action.UP, x, y, t=t)
 
         if was_down:
-            dur = t - state.down_time
             dist = ((x - state.down_x) ** 2 + (y - state.down_y) ** 2) ** 0.5
 
-            if dur <= CLICK_MAX_DURATION and dist <= CLICK_MAX_DISTANCE:
+            # Click if didn't move too far (no duration limit)
+            if dist <= CLICK_MAX_DISTANCE:
                 if t - state.last_up_time <= DOUBLE_CLICK_WINDOW:
                     state.click_count += 1
                     if state.click_count >= 2:
@@ -231,10 +251,8 @@ class InputHandler:
         dx = x - self._cursor_x if dx is None else dx
         dy = y - self._cursor_y if dy is None else dy
         self._cursor_x, self._cursor_y = x, y
-
-        for input_id, state in self._states.items():
-            if state.is_down:
-                self._emit(input_id, Action.DRAGGED, x, y, dx, dy, t=t)
+        self._last_dx = dx
+        self._last_dy = dy
 
         self._emit("cursor", Action.MOVED, x, y, dx, dy, t=t)
 
@@ -242,7 +260,7 @@ class InputHandler:
         self._emit(input_id, Action.CHANGED, self._cursor_x, self._cursor_y, value=value, t=t)
 
     def process_frame(self) -> dict[Any, dict[str, InputEvent]]:
-        """Returns {view_id: [events]} for all matched subscriptions."""
+        """Returns {view_id: {event_name: event}} for all matched subscriptions."""
         self._hovered.sort(key=lambda x: x[1])
 
         result: dict[Any, dict[str, InputEvent]] = {}
@@ -286,13 +304,41 @@ class InputHandler:
         self._prev_hovered = current_hovered
 
         # Process regular events: top priority subscriber gets each event
+        # Also handle drag capture on DOWN and release on UP
         for event in self._pending:
             key = (event.input_id, event.action)
+
+            # On DOWN, capture drag target (top hovered view subscribed to drag)
+            if event.action == Action.DOWN:
+                drag_key = (event.input_id, Action.DRAGGED)
+                capture_view = next((v for v, _, s in self._hovered if drag_key in s), None)
+                if capture_view is not None:
+                    self._drag_capture[event.input_id] = capture_view
+
+            # On UP, release drag capture
+            elif event.action == Action.UP:
+                self._drag_capture.pop(event.input_id, None)
+
             top = next((v for v, _, s in self._hovered if key in s), None)
             if top is not None:
                 if top not in result:
                     result[top] = {}
                 result[top][_view_id_names_cache[top][key]] = event
+
+        # Emit continuous drag events only to captured views
+        for input_id, state in self._states.items():
+            if state.is_down:
+                captured_view = self._drag_capture.get(input_id)
+                if captured_view is not None:
+                    drag_key = (input_id, Action.DRAGGED)
+                    # Ensure the captured view still has the subscription
+                    if captured_view in _view_id_names_cache and drag_key in _view_id_names_cache[captured_view]:
+                        if captured_view not in result:
+                            result[captured_view] = {}
+                        result[captured_view][_view_id_names_cache[captured_view][drag_key]] = InputEvent(
+                            input_id, Action.DRAGGED, self._cursor_x, self._cursor_y,
+                            self._last_dx, self._last_dy, 0, t, self._modifiers
+                        )
 
         return result
 

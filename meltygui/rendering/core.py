@@ -684,7 +684,7 @@ def render_func(*args, **o_kwargs):
 
                 if kwargs.get("enable_scroll", False):
                     event_names.extend(["scroll_y_changed"])
-
+                event_names.extend(["left_mouse_down"])
                 Melty.event_handler.register_hovered(str(tile_id), priority, event_names)
 
             ######################################################
@@ -848,8 +848,8 @@ def render_func(*args, **o_kwargs):
             layer_and_depth = Melty.active_layer * Melty.max_depth + Melty.depth
             priority = max_layer_depth - layer_and_depth
 
-            if draw_state.hover_eligible():
-                Melty.event_handler.register_hovered(str(tile_id), priority, ["left_mouse_down"])
+            # if draw_state.hover_eligible():
+            #     Melty.event_handler.add_hovered(str(tile_id), priority, ["left_mouse_down"])
             click = Melty.on("left_mouse_down", tile_id)
 
             if click.action == "down":

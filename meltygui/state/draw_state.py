@@ -278,7 +278,7 @@ class DrawState(DictConversion):
         draw_list = imgui.get_window_draw_list()
         rect = self.get_rect()
         draw_list.add_rect(rect[0], rect[1], rect[2], rect[3],
-                           imgui.get_color_u32_rgba(1, 1, 0, 1),
+                           imgui.get_color_u32_rgba(0, 0.5, 1.0, 1.0),
                            rounding=rounding, thickness=1.0)
 
         if Melty.channels_split:
