@@ -110,6 +110,7 @@ class DrawState(DictConversion):
         self.content_region = (0, 0)
         self.scroll_offset = (0, 0)
         self._imgui_is_active = False
+        self._imgui_is_activated = False
         self._imgui_is_focused = False
         self._imgui_is_hovered = False
         self._imgui_is_edited = False
@@ -117,6 +118,7 @@ class DrawState(DictConversion):
         self.imgui_is_item_activated = False
         self.clipped = True
         self.scroll_visible = False
+        self._unmanaged_window = False
 
         self.cst = None
         self.window_pos = None
@@ -272,7 +274,7 @@ class DrawState(DictConversion):
     def draw_rect(self, rounding=0):
         if Melty.channels_split:
             draw_list = imgui.get_window_draw_list()
-            draw_list.channels_set_current(Melty.depth + 1)
+            draw_list.channels_set_current(Melty.get_channel() + 1)
 
         draw_list = imgui.get_window_draw_list()
         rect = self.get_rect()
@@ -282,12 +284,12 @@ class DrawState(DictConversion):
 
         if Melty.channels_split:
             draw_list = imgui.get_window_draw_list()
-            draw_list.channels_set_current(Melty.depth)
+            draw_list.channels_set_current(Melty.get_channel())
 
     def hover_eligible(self, rect=None):
-        if (self._imgui_is_active or self._imgui_is_edited or self.imgui_is_item_activated or
-                self._imgui_is_focused or self._imgui_popover_open):
-            return False
+        # if (self._imgui_is_active or self._imgui_is_edited or self._imgui_is_activated or
+        #         self._imgui_is_focused or self._imgui_popover_open):
+        #     return False
 
         mouse_x, mouse_y = imgui.get_mouse_pos()
         # if Melty.imgui_any_item_hovered:
@@ -299,10 +301,10 @@ class DrawState(DictConversion):
             if self.bounds_top is None or self.bounds_left is None or self.width is None or self.height is None:
                 return False
             rect = (self.bounds_left, self.bounds_top, self.width, self.height)
-            if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]) and imgui.is_window_hovered():
+            if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
                 return True
         else:
-            if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[2], rect[3]) and imgui.is_window_hovered():
+            if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[2], rect[3]):
                 return True
 
 
@@ -310,7 +312,7 @@ class DrawState(DictConversion):
 
     def on_action(self, event_names, view_id=None, priority=None, priority_delta=0, rect=None):
         if view_id is None:
-            view_id = str(self._tile_id)
+            view_id = self._tile_id
         else:
             view_id = str(self._tile_id) + "_" + str(view_id)
 
@@ -325,7 +327,7 @@ class DrawState(DictConversion):
                 layer_and_depth = Melty.active_layer * Melty.max_depth + Melty.depth
                 priority = max_layer_depth - layer_and_depth
 
-            Melty.event_handler.register_hovered(str(view_id), event_names,
+            Melty.event_handler.register_hovered(view_id, event_names,
                                                  priority=priority - priority_delta)
 
         if single_event:

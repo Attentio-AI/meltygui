@@ -284,22 +284,22 @@ def render_func(*args, **o_kwargs):
                     if window_key in Melty.registered_windows else None
                 kwargs['layer'] = window_z_pos
 
-        if kwargs.get("layer", None) is not None:
-            layer = kwargs.pop("layer", None)
-            kwargs["active_layer"] = layer
-            Melty.layers[layer].append((wrapper, args, kwargs, draw_state))
-            return_value = (False, None)
-            if draw_state.id in Melty.returned_values:
-                return_value = Melty.returned_values.pop(draw_state.id)
+            if kwargs.get("layer", None) is not None:
+                layer = kwargs.pop("layer", None)
+                kwargs["active_layer"] = layer
+                Melty.layers[layer].append((wrapper, args, kwargs, draw_state))
+                return_value = (False, None)
+                if draw_state.id in Melty.returned_values:
+                    return_value = Melty.returned_values.pop(draw_state.id)
 
-            if draw_state.left is not None and draw_state.top is not None:
-                if draw_state.width is not None and draw_state.height is not None:
-                    imgui.set_cursor_screen_pos((start_cursor[0],
-                                                 start_cursor[1] + draw_state.height))
+                if draw_state.left is not None and draw_state.top is not None:
+                    if draw_state.width is not None and draw_state.height is not None:
+                        imgui.set_cursor_screen_pos((start_cursor[0],
+                                                     start_cursor[1] + draw_state.height))
 
-            if return_extras:
-                return *return_value, kwargs
-            return return_value
+                if return_extras:
+                    return *return_value, kwargs
+                return return_value
 
         if not draw_state.expanded:
             kwargs.pop("width", None)
@@ -447,7 +447,7 @@ def render_func(*args, **o_kwargs):
             ###################### END LEGACY EVENT HANDLERS ############
 
             ########## New event handler system ##########
-            unique_events = Melty.events.get(str(tile_id), {})
+            unique_events = Melty.events.get(tile_id, {})
             kwargs = unique_events | kwargs
             ##############################################
 
@@ -476,13 +476,13 @@ def render_func(*args, **o_kwargs):
 
             Melty.depth = Melty.depth + 1
 
-            requested_z = kwargs.get("z_pos", None)
-            if requested_z is not None:
-                depth_to_restore = Melty.depth
-                wrapped_depth_to_restore = Melty.wrapped_depth
-                Melty.depth = requested_z
-                relative_change = abs(requested_z - Melty.wrapped_depth)
-                Melty.wrapped_depth = Melty.wrapped_depth + relative_change
+            # requested_z = kwargs.get("z_pos", None)
+            # if requested_z is not None:
+            #     depth_to_restore = Melty.depth
+            #     wrapped_depth_to_restore = Melty.wrapped_depth
+            #     Melty.depth = requested_z
+            #     relative_change = abs(requested_z - Melty.wrapped_depth)
+            #     Melty.wrapped_depth = Melty.wrapped_depth + relative_change
 
             kwargs['depth'] = Melty.depth
             draw_state._draggable = kwargs.get("draggable", False)
@@ -528,18 +528,22 @@ def render_func(*args, **o_kwargs):
             melty_window = kwargs.get("melty_window", False) and not is_header
 
             if melty_window:
-                Melty.melty_window_stack.append((draw_state.window_pos, draw_state.window_size, unique))
+                melty_hovered = draw_state.on_action("on_hover", view_id="window_hover", priority_delta=1)
+
+                Melty.melty_window_stack.append((draw_state.window_pos, draw_state.window_size, unique, melty_hovered))
                 if draw_state.window_pos is None and draw_state.width is not None:
                     draw_state.window_pos = Melty.init_window_cursor
+
             if not auto_resize:
-
-
-                # corner_drag = draw_state.on_action("right_mouse_drag", priority_delta=-2)
                 corner_rect = get_resize_handle(draw_state)
                 handle_drag = draw_state.on_action("left_mouse_drag", view_id="window_resize",
-                                                   rect=corner_rect, priority_delta=1)
-                # if handle_drag is None:
-                #     handle_drag = corner_drag
+                                                   rect=corner_rect, priority_delta=2)
+
+                if melty_window:
+                    corner_drag = draw_state.on_action("right_mouse_drag", priority_delta=-2)
+
+                    if handle_drag is None:
+                        handle_drag = corner_drag
 
                 if handle_drag and not auto_resize:
                     if draw_state.window_size is None:
@@ -557,18 +561,12 @@ def render_func(*args, **o_kwargs):
             if draw_state.window_pos is not None:
                 on_drag = draw_state.on_action("left_mouse_drag")
                 if on_drag:
-                    print("Dragging window:", name, "to pos:", draw_state.window_pos)
                     pos_x = draw_state.window_pos[0] + on_drag.dx
                     pos_y = draw_state.window_pos[1] + on_drag.dy
                     draw_state.window_pos = (pos_x, pos_y)
 
                 imgui.set_cursor_screen_pos((snap_int(draw_state.window_pos[0]),
                                              snap_int(draw_state.window_pos[1])))
-
-
-
-
-
 
             # # Is melty window or resizable
             # if ((kwargs.get("melty_window", False) or (not kwargs.get("auto_resize", True)) and
@@ -722,10 +720,10 @@ def render_func(*args, **o_kwargs):
             if not kwargs.get("auto_resize", True):
                 draw_list = imgui.get_window_draw_list()
                 if Melty.channels_split:
-                    draw_list.channels_set_current((Melty.max_depth - 2))
+                    draw_list.channels_set_current((Melty.get_channel() + 1))
                 draw_resize_handle(draw_state)
                 if Melty.channels_split:
-                    draw_list.channels_set_current(Melty.depth)
+                    draw_list.channels_set_current(Melty.get_channel())
             kwargs['on_drag'] = False
             clip = not kwargs.get("auto_resize", True)
             if (draw_state.left is None or draw_state.top is None or
@@ -749,7 +747,7 @@ def render_func(*args, **o_kwargs):
                 if do_scroll:
                     event_names.extend(["scroll_y_changed"])
                 # event_names.extend(["left_click_down"])
-                Melty.event_handler.register_hovered(str(tile_id), event_names, priority)
+                Melty.event_handler.register_hovered(tile_id, event_names, priority)
 
             ######################################################
 
@@ -771,11 +769,15 @@ def render_func(*args, **o_kwargs):
                 Melty.pop_clip()
             #######################
 
-
+            # if len(Melty.melty_window_stack) > 0:
+            #     window_hovered = Melty.melty_window_stack[-1][3]
+            # else:
+            #     window_hovered = False
             draw_state._imgui_is_edited = imgui.is_item_edited()
+            draw_state._imgui_is_activated = imgui.is_item_activated()
             draw_state._imgui_is_active = imgui.is_item_active()
             draw_state._imgui_is_focused = imgui.is_item_focused()
-            draw_state._imgui_is_hovered = imgui.is_item_hovered()
+            # draw_state._imgui_is_hovered = imgui.is_item_hovered()
 
             if draw_state._has_popup:
                 is_popup_open = Melty.imgui_popup_open
@@ -910,9 +912,10 @@ def render_func(*args, **o_kwargs):
             ############# HANDLE SELECTION
             max_layer_depth = Melty.max_depth * Melty.max_layer + Melty.max_depth
             layer_and_depth = Melty.active_layer * Melty.max_depth + Melty.depth
+
             priority = max_layer_depth - layer_and_depth
             if draw_state.hover_eligible():
-                Melty.event_handler.register_hovered(str(tile_id), ["left_mouse_down"], priority)
+                Melty.event_handler.register_hovered(tile_id, ["left_mouse_down"], priority)
             click = Melty.on("left_mouse_down", tile_id)
 
             if click:
@@ -973,9 +976,9 @@ def render_func(*args, **o_kwargs):
                 melty.hotkey_stack.append(unique)
 
             ###############################################################################
-            if depth_to_restore is not None:
-                Melty.depth = depth_to_restore
-                Melty.wrapped_depth = wrapped_depth_to_restore
+            # if depth_to_restore is not None:
+            #     Melty.depth = depth_to_restore
+            #     Melty.wrapped_depth = wrapped_depth_to_restore
 
             if inc_depth:
                 Melty.depth = Melty.depth - 1
@@ -1031,7 +1034,6 @@ def render_func(*args, **o_kwargs):
         if draw_state._has_popup:
             draw_state._imgui_popover_open = Melty.imgui_popup_open
 
-
         if draw_state.width is not None and draw_state.height is not None:
             if draw_state.width > 0 and draw_state.height > 0:
                 inside_clip = Melty.inside_clip(rect=(start_cursor[0], start_cursor[1],
@@ -1045,18 +1047,22 @@ def render_func(*args, **o_kwargs):
         new_bounding_hovered = draw_state.is_bounding_hovered()
         hover_changed = last_bounding_hovered != new_bounding_hovered
         draw_state._bounding_hovered = new_bounding_hovered
-        # last_bounding_hovered = draw_state.is_bounding_hovered()
-
         if use_cache:
+            # hovered = Melty.on("hovered", str(tile_id))
+            # is_dragged = Melty.on("left_mouse_drag", tile_id)
+            # is_middle_dragged = Melty.on("middle_mouse_drag", tile_id)
+
             if (draw_state.width is None or draw_state.height is None or
                                draw_state._hovered or hover_changed or draw_state._bounding_hovered or draw_state._imgui_popover_open):
                 Melty.cache.invalidate(tile_id, force=True)
 
-            offscreen_depth = Melty.depth
+            offscreen_depth = Melty.get_channel()
             if Melty.channels_split:
                 draw_list = imgui.get_window_draw_list()
                 draw_list.channels_set_current(min(offscreen_depth, Melty.max_depth - 1))
 
+        if Melty.active_layer != 0:
+            pass
         layer_and_depth = Melty.active_layer * Melty.max_depth + Melty.depth
         clip_height = Melty.get_clip_size()[1]
 
@@ -1079,6 +1085,7 @@ def render_func(*args, **o_kwargs):
 
             cursor_start = imgui.get_cursor_screen_pos()
             return_value = func(**clean_args)
+            imgui.set_item_allow_overlap()
             cursor_end = imgui.get_cursor_screen_pos()
             height = cursor_end[1] - cursor_start[1]
             # draw_state.content_height = height
@@ -1102,8 +1109,8 @@ def render_func(*args, **o_kwargs):
                         # if Melty.channels_split:
                         #     draw_list = imgui.get_window_draw_list()
                         #     draw_list.channels_set_current(min(Melty.depth, Melty.max_depth - 2))
-                        if str(tile_id) in Melty.events:
-                            scroll_y_changed = Melty.events[str(tile_id)].get("scroll_y_changed", None)
+                        if tile_id in Melty.events:
+                            scroll_y_changed = Melty.events[tile_id].get("scroll_y_changed", None)
                             scroll_delta = 0
                             if scroll_y_changed is not None:
                                 scroll_delta = scroll_y_changed.value
@@ -1478,14 +1485,14 @@ def draw_resize_handle(a_ds):
         return
 
     current_cursor = imgui.get_cursor_screen_pos()
-    if a_ds.expanded:
-        imgui.set_cursor_screen_pos((rect_br[0], rect_br[1]))
-        imgui.invisible_button(str(a_ds.unique) + "resize_btn", width, height)
+    # if a_ds.expanded:
+    #     imgui.set_cursor_screen_pos((rect_br[0], rect_br[1]))
+    #     imgui.invisible_button(str(a_ds.unique) + "resize_handle", width, height)
 
     alpha = 0.0
-    if imgui.is_mouse_hovering_rect(rect_br[0], rect_br[1], rect_br[2], rect_br[3]):
-        Melty.blocker_hovered = True
-        alpha = 0.5
+    # if imgui.is_mouse_hovering_rect(rect_br[0], rect_br[1], rect_br[2], rect_br[3]):
+    #     Melty.blocker_hovered = True
+    #     alpha = 0.5
 
     # draw_list.add_rect_filled(rect_br[0], rect_br[1], rect_br[2], rect_br[3],
     #                           imgui.get_color_u32_rgba(0.8, 0.8, 0.2, 0.3))
@@ -1505,8 +1512,8 @@ def draw_resize_handle(a_ds):
                                    rect_br[2] - arrow_size - margin - 1,
                                    rect_br[3] - margin - arrow_size, arrow_size, arrow_size,
                                    key=str(a_ds.unique) + "resize")
-    if a_ds.expanded:
-        imgui.set_cursor_screen_pos(current_cursor)
+    # if a_ds.expanded:
+    #     imgui.set_cursor_screen_pos(current_cursor)
 
 def jet_color(val: float):
     # jet color function

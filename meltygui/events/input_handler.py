@@ -88,7 +88,7 @@ class _InputState:
 
 
 _parse_cache: dict[str, tuple[str, str]] = {}
-_view_id_names_cache: dict[str, dict[Any, str]] = {}
+_view_id_names_cache: dict[Any, dict[tuple[str, str], str]] = {}
 
 
 def parse_event_name(name: str) -> tuple[str, str]:
@@ -126,8 +126,8 @@ class InputHandler:
         handler = InputHandler()
 
         handler.begin_frame()
-        handler.register_hovered("btn", 0, ["left_mouse_clicked"])
-        handler.register_hovered("panel", 1, ["left_mouse_dragged"])
+        handler.register_hovered("btn", ["left_mouse_clicked"])
+        handler.register_hovered("panel", ["left_mouse_dragged"], priority=1)
 
         # Feed from backend
         handler.feed_down("left_mouse", x, y)
@@ -135,7 +135,7 @@ class InputHandler:
         handler.feed_up("left_mouse", x, y)
 
         events = handler.process_frame()
-        # {"btn": [InputEvent(...)], "panel": [...]}
+        # {"btn": {"left_mouse_clicked": InputEvent(...)}, ...}
     """
 
     __slots__ = (
@@ -170,7 +170,7 @@ class InputHandler:
         self._last_dx = 0.0
         self._last_dy = 0.0
 
-    def register_hovered(self, view_id: Any, subscribed: list[str], priority: Optional[int]=0):
+    def register_hovered(self, view_id: Any, subscribed: list[str], priority: int = 0):
         """Register hovered view. Priority 0 = topmost.
 
         Multiple calls with the same view_id will merge subscriptions,
@@ -196,7 +196,6 @@ class InputHandler:
 
         # New view
         self._hovered.append((view_id, priority, frozenset(new_subs)))
-
 
     def _emit(self, input_id: str, action: str, x: float, y: float,
               dx: float = 0, dy: float = 0, value: float = 0, t: float = None):
@@ -276,6 +275,20 @@ class InputHandler:
         hovered_key = ("cursor", Action.HOVERED)
         hover_exit_key = ("cursor", Action.HOVER_EXIT)
 
+        def add_event(view_id: Any, key: tuple[str, str], event: InputEvent):
+            """Safely add event to result using cached subscription name."""
+            if view_id is None:
+                return
+            cache = _view_id_names_cache.get(view_id)
+            if cache is None:
+                return
+            event_name = cache.get(key)
+            if event_name is None:
+                return
+            if view_id not in result:
+                result[view_id] = {}
+            result[view_id][event_name] = event
+
         # Find top subscriber for each hover event type
         top_enter = next((v for v, _, s in self._hovered if v not in self._prev_hovered and hover_enter_key in s), None)
         top_hovered = next((v for v, _, s in self._hovered if hovered_key in s), None)
@@ -288,24 +301,17 @@ class InputHandler:
         top_exit = next((v for v, _, s in exited if hover_exit_key in s), None)
 
         # Emit hover events
-        def emit(view_id, action):
-            if view_id is not None:
-                if view_id not in result:
-                    result[view_id] = {}
-                result[view_id][_view_id_names_cache[view_id][("cursor", str(action))]] = InputEvent(
-                    "cursor", action, self._cursor_x, self._cursor_y,
-                    0, 0, 0, t, self._modifiers
-                )
+        def make_hover_event(action: str) -> InputEvent:
+            return InputEvent("cursor", action, self._cursor_x, self._cursor_y, 0, 0, 0, t, self._modifiers)
 
-        emit(top_enter, Action.HOVER_ENTER)
-        emit(top_hovered, Action.HOVERED)
-        emit(top_exit, Action.HOVER_EXIT)
+        add_event(top_enter, hover_enter_key, make_hover_event(Action.HOVER_ENTER))
+        add_event(top_hovered, hovered_key, make_hover_event(Action.HOVERED))
+        add_event(top_exit, hover_exit_key, make_hover_event(Action.HOVER_EXIT))
 
         # Update previous hover for next frame
         self._prev_hovered = current_hovered
 
         # Process regular events: top priority subscriber gets each event
-        # Also handle drag capture on DOWN and release on UP
         for event in self._pending:
             key = (event.input_id, event.action)
 
@@ -321,10 +327,7 @@ class InputHandler:
                 self._drag_capture.pop(event.input_id, None)
 
             top = next((v for v, _, s in self._hovered if key in s), None)
-            if top is not None:
-                if top not in result:
-                    result[top] = {}
-                result[top][_view_id_names_cache[top][key]] = event
+            add_event(top, key, event)
 
         # Emit continuous drag events only to captured views
         for input_id, state in self._states.items():
@@ -332,14 +335,11 @@ class InputHandler:
                 captured_view = self._drag_capture.get(input_id)
                 if captured_view is not None:
                     drag_key = (input_id, Action.DRAGGED)
-                    # Ensure the captured view still has the subscription
-                    if captured_view in _view_id_names_cache and drag_key in _view_id_names_cache[captured_view]:
-                        if captured_view not in result:
-                            result[captured_view] = {}
-                        result[captured_view][_view_id_names_cache[captured_view][drag_key]] = InputEvent(
-                            input_id, Action.DRAGGED, self._cursor_x, self._cursor_y,
-                            self._last_dx, self._last_dy, 0, t, self._modifiers
-                        )
+                    drag_event = InputEvent(
+                        input_id, Action.DRAGGED, self._cursor_x, self._cursor_y,
+                        self._last_dx, self._last_dy, 0, t, self._modifiers
+                    )
+                    add_event(captured_view, drag_key, drag_event)
 
         return result
 

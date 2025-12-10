@@ -503,8 +503,22 @@ def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, 
 @render_func(use_cache=True, enable_scroll=False, auto_resize=False, closable=True, show_bg=True, melty_window=True, draggable=True)
 def draw_window(input_value, inner_func=None, style_manager=None, *args, **kwargs):
     window_name = kwargs.get('name', 'Managed Window')
-
     draw_state = kwargs.get('draw_state', None)
+    cursor_pos = imgui.get_cursor_screen_pos()
+    if draw_state.bounding_width is not None and draw_state.width > 0 and draw_state.height > 0:
+        imgui.set_cursor_screen_pos(cursor_pos)
+
+        if draw_state.expanded:
+            if Melty.channels_split:
+                draw_list = imgui.get_window_draw_list()
+                draw_list.channels_set_current(Melty.get_channel())
+            imgui.invisible_button("##", width=draw_state.width, height=draw_state.height)
+            imgui.set_cursor_screen_pos(cursor_pos)
+            imgui.set_item_allow_overlap()
+        # else:
+        #     imgui.button("##", width=draw_state.width, height=20)
+        #     imgui.set_cursor_screen_pos(cursor_pos)
+        #     imgui.set_item_allow_overlap()
 
     if draw_state.width is not None and draw_state.height is not None and draw_state.expanded:
         loading_icon_0 = "\uf00d"
@@ -542,8 +556,10 @@ def draw_window(input_value, inner_func=None, style_manager=None, *args, **kwarg
 
     return_val = meta.view_function(input_value, *args, **kwargs)
 
+
     if hasattr(input_value, 'tint'):
         style_manager.set_imgui_tint(*previous_tint)
+
 
 
     return return_val
@@ -902,8 +918,8 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
         # imgui.set_cursor_pos_y(imgui.get_cursor_pos()[1] + (flow_spacing))
 
     draw_list = imgui.get_window_draw_list()
-    if Melty.channels_split:
-        draw_list.channels_set_current(min(Melty.max_depth - 1, depth + 2))
+    # if Melty.channels_split:
+    #     draw_list.channels_set_current(min(Melty.max_depth - 1, depth + 2))
 
     # line_width = imgui.get_style().frame_padding.y * 2.0
     # color = style_manager.make_color_rgb(*(1.0, 1.0, 1.0), factor=1.0,
@@ -924,10 +940,10 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
                            and tag == melty.drag_drop_target_tag)
 
             if Melty.channels_split:
-                draw_list.channels_set_current(min(depth + 1, Melty.max_depth - 1))
+                draw_list.channels_set_current(min(Melty.get_channel() + 1, Melty.max_depth - 1))
 
                 if active_drop:
-                    draw_list.channels_set_current(min(depth + 2, Melty.max_depth - 1))
+                    draw_list.channels_set_current(min(Melty.get_channel() + 2, Melty.max_depth - 1))
                     cursor_bottom += ((1.0 - drag_delta_curve) * drop_gap)
 
             if distance_to_mouse < melty.nearest_drop_distance:
@@ -1250,7 +1266,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
         draw_list = imgui.get_window_draw_list()
 
         if Melty.channels_split and show_bg:
-            draw_list.channels_set_current(min(Melty.max_depth - 1, Melty.depth))
+            draw_list.channels_set_current(min(Melty.max_depth - 1, Melty.get_channel()))
 
         if not show_bg:
             y_offset = 0
@@ -1401,7 +1417,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             draw_list = imgui.get_window_draw_list()
 
             if Melty.channels_split and show_bg:
-                draw_list.channels_set_current(min(Melty.max_depth - 1, Melty.depth))
+                draw_list.channels_set_current(min(Melty.max_depth - 1, Melty.get_channel()))
             clip_start = imgui.get_cursor_screen_pos()
             clipped = False
             if draw_state.width is not None and draw_state.height is not None:
@@ -1448,7 +1464,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
 
         if Melty.channels_split:
             if show_bg:
-                channel = max(0, min(Melty.max_depth - 2, Melty.depth - 1))
+                channel = max(0, min(Melty.max_depth - 2, Melty.get_channel() - 1))
                 draw_list.channels_set_current(channel)
 
                 _, bg_color = draw_bg(bypass=True, left=start_x_pos, top=y_margin + start_y_pos + 1, bg_color=bg_color,
@@ -2281,6 +2297,7 @@ class TestClass(DictConversion):
 
 @with_header_minimal(is_default_for=float, use_cache=False)
 def draw_float(input_value:float, min_value=-100.0, max_value=100.0, speed=0.01, unique=0, draw_state=None):
+
     changed, value = imgui.drag_float("##float", input_value,
                                       change_speed=speed,
                                       min_value=min_value,

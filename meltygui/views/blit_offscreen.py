@@ -901,7 +901,7 @@ class TileCacheMasked:
         imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
         imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
 
-        imgui.push_id(f"{rkey}_offscreen")  # unique id: keep based on caller-provided key
+        imgui.push_id(f"{rkey}{layer}_offscreen")  # UI id: keep based on caller-provided id
 
         imgui.begin_group()
         imgui.pop_style_var(2)

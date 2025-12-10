@@ -803,7 +803,7 @@ class Melty:
 
     @classmethod
     def on(cls, event_name, tile_id) -> Optional[InputEvent]:
-        id_str = str(tile_id)
+        id_str = tile_id
         if id_str in cls.events:
             if event_name in cls.events[id_str]:
                 return cls.events[id_str][event_name]
@@ -817,6 +817,11 @@ class Melty:
     def cleanup(cls):
         cls.filter.cleanup()
         cls.texture_manager.clear()
+
+    @classmethod
+    def get_channel(cls):
+        return cls.depth
+        # return max(min(cls.max_depth - 3, cls.depth), 0)
 
     @classmethod
     def begin_frame(cls):
@@ -848,10 +853,10 @@ class Melty:
         for _ in range(cls.max_layer):
             cls.layers.append([])
         # Handle global hotkeys
-        for hotkey, target in global_hotkeys.items():
-            if Melty.is_key_pressed(hotkey.key):
-                if callable(target):
-                    target()
+        # for hotkey, target in global_hotkeys.items():
+        #     if melty.is_key_pressed(hotkey.key):
+        #         if callable(target):
+        #             target()
 
         Melty.all_uniques = set()
 
@@ -872,25 +877,27 @@ class Melty:
 
         cls.returned_values = {}
 
-        for idx, layer in enumerate(Melty.layers):
-            if Melty.channels_split:
-                # Flatten layers into single canvas
-                imgui.set_cursor_screen_pos((0,0))
-                imgui.get_window_draw_list().channels_merge()
-
-            imgui.get_window_draw_list().channels_split(Melty.max_depth)
-            imgui.get_window_draw_list().channels_set_current(0)
-            Melty.channels_split = True
+        for idx in range(len(cls.layers)):
+            r_idx = len(cls.layers) - 1 - idx
+            layer = cls.layers[idx]
+            imgui.set_cursor_screen_pos((0, 0))
             Melty.active_layer = idx
+
+            if not Melty.channels_split:
+                imgui.get_window_draw_list().channels_split(Melty.max_depth)
+                imgui.get_window_draw_list().channels_set_current(Melty.max_depth- 1)
+                Melty.channels_split = True
+
+            imgui.push_id(f"melty_layer_{idx}")
+
 
             for view in layer:
                 if view is not None:
+                    draw_state = view[3]
                     imgui.set_cursor_screen_pos((0,0))
-
                     view_func = view[0]
                     args = view[1]
                     kwargs = view[2]
-                    draw_state = view[3]
 
                     fill_original = kwargs.get("start_pos", None) is not None
                     if fill_original:
@@ -899,6 +906,15 @@ class Melty:
                     return_val = view_func(*args, **kwargs)
                     if return_val is not None:
                         cls.returned_values[draw_state.id] = return_val
+            #
+            if Melty.channels_split:
+                # Merge layers into single channel
+                imgui.get_window_draw_list().channels_set_current(0)
+                imgui.get_window_draw_list().channels_merge()
+                Melty.channels_split = False
+
+            imgui.pop_id()
+
 
         cls.layers = []
         cls.backend.pump()
@@ -906,23 +922,23 @@ class Melty:
         is_popup_open = imgui.is_popup_open("", flags=imgui.POPUP_ANY_POPUP)
         Melty.imgui_popup_open = is_popup_open
         # Melty.imgui_any_item_hovered = imgui.is_any_item_hovered()
-
+        #
         from src.lsd.gl_gui.view.core_views.core_render import get_melty_state
         melty = get_melty_state()
-        melty.last_mouse_pos = imgui.get_mouse_pos()
-        # Check mouse move
-        if len(melty.hover_stack) > 0:
-            last = melty.hover_stack[0]
-            hovered_draw_state = Melty.vis.root.draw_state_registry.get(last, None)
-            if hovered_draw_state is not None:
-                hovered_draw_state._hovered = True
-                Melty.hovered_drawstate_pending.add(hovered_draw_state.id)
-
-        if len(melty.hotkey_stack) > 0:
-            last = melty.hotkey_stack[0]
-            hovered_draw_state = Melty.vis.root.draw_state_registry.get(last, None)
-            if hovered_draw_state is not None:
-                hovered_draw_state.hotkey_receiver = True
+        # melty.last_mouse_pos = imgui.get_mouse_pos()
+        # # Did mouse move
+        # if len(melty.hover_stack) > 0:
+        #     last = melty.hover_stack[0]
+        #     hovered_draw_state = Melty.vis.root.draw_state_registry.get(last, None)
+        #     if hovered_draw_state is not None:
+        #         hovered_draw_state._hovered = True
+        #         Melty.hovered_drawstate_pending.add(hovered_draw_state.id)
+        #
+        # if len(melty.hotkey_stack) > 0:
+        #     last = melty.hotkey_stack[0]
+        #     hovered_draw_state = Melty.vis.root.draw_state_registry.get(last, None)
+        #     if hovered_draw_state is not None:
+        #         hovered_draw_state.hotkey_receiver = True
 
         melty.hover_stack = []
         melty.hotkey_stack = []
