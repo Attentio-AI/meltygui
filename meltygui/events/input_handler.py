@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from typing import Any, Optional
 import time
 
+import imgui
+
 
 class Action:
     DOWN = "down"

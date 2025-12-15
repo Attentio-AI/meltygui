@@ -1,7 +1,7 @@
 """
 Example: InputHandler with various backends.
 """
-from lsd.gl_gui.view.events.input_handler import InputHandler
+from src.lsd.gl_gui.view.events.input_handler import InputHandler
 
 
 def demo_basic():

@@ -113,6 +113,9 @@ class DrawState(DictConversion):
         self._imgui_is_activated = False
         self._imgui_is_focused = False
         self._imgui_is_hovered = False
+        self._imgui_is_item_hovered = False
+
+        self._imgui_block_hovered = False
         self._imgui_is_edited = False
         self._imgui_popover_open = False
         self.imgui_is_item_activated = False
@@ -240,26 +243,6 @@ class DrawState(DictConversion):
             return True
         return False
 
-    def is_hovered(self):
-        # if not self._draggable:
-        #     return False
-        if self._imgui_is_active or self._imgui_is_edited or self._imgui_is_hovered or self._imgui_is_focused:
-            return True
-
-        if self.left is None or self.top is None or self.width is None or self.height is None:
-            return False
-
-        mouse_x, mouse_y = imgui.get_mouse_pos()
-        if not Melty.inside_clip(rect=(mouse_x, mouse_y, 1, 1)):
-            return False
-
-        rect = (self.left, self.top - 5, self.width, self.height + 10)
-
-        if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
-            if imgui.is_window_hovered():
-                return True
-        return False
-
 
     def get_rect(self):
         if self.bounds_left is None or self.bounds_top is None or self.bounding_width is None or self.bounding_height is None:
@@ -289,6 +272,10 @@ class DrawState(DictConversion):
     def hover_eligible(self, rect=None):
         # if (self._imgui_is_active or self._imgui_is_edited or self._imgui_is_activated or
         #         self._imgui_is_focused or self._imgui_popover_open):
+        #     return False
+
+        # if (Melty.imgui_any_item_hovered or self._imgui_is_active or
+        #         self._imgui_is_edited or self._imgui_is_activated):
         #     return False
 
         mouse_x, mouse_y = imgui.get_mouse_pos()
@@ -343,7 +330,7 @@ class DrawState(DictConversion):
 
     def is_bounding_hovered(self):
 
-        if (self._imgui_is_active or self._imgui_is_edited or self._imgui_is_hovered or self._imgui_popover_open):
+        if (self._imgui_is_active or self._imgui_is_edited or self._imgui_is_item_hovered or self._imgui_popover_open):
             return True
 
         mouse_x, mouse_y = imgui.get_mouse_pos()
@@ -358,8 +345,6 @@ class DrawState(DictConversion):
             if imgui.is_window_hovered() or Melty.imgui_popup_open:
                 return True
         return False
-
-
 
 class KeyMod(Enum):
     CTRL = 'ctrl'

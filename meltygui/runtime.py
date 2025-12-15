@@ -746,7 +746,9 @@ class Melty:
     unindent_count = 0
 
     imgui_popup_open = False
-    imgui_any_item_hovered = False
+    imgui_active = False
+    imgui_any_item_active = False
+    imgui_active_pending = False
 
     max_indent = 0
     hotkey_registry = {}
@@ -801,6 +803,20 @@ class Melty:
 
     empty_event = InputEvent(input_id="", action="")
 
+    pending_blockers = [None] * max_layer
+    imgui_blockers = [None] * max_layer
+
+    @classmethod
+    def report_imgui_active(cls):
+        cls.imgui_active_pending = True
+        cls.imgui_active = True
+
+    @classmethod
+    def add_blocker(cls, rect, layer=None):
+        if layer is None:
+            layer = cls.active_layer
+        cls.pending_blockers[layer] = rect
+
     @classmethod
     def on(cls, event_name, tile_id) -> Optional[InputEvent]:
         id_str = tile_id
@@ -825,6 +841,15 @@ class Melty:
 
     @classmethod
     def begin_frame(cls):
+        cls.backend.pump()
+
+        cls.imgui_active = cls.imgui_active_pending
+        cls.imgui_active_pending = False
+
+        cls.imgui_blockers = cls.pending_blockers
+        cls.pending_blockers = [None] * cls.max_layer
+
+
         cls.events = cls.event_handler.process_frame()
         cls.event_handler.begin_frame()
 
@@ -873,12 +898,33 @@ class Melty:
         clear_floating_text_cache()
 
     @classmethod
+    def draw_blockers_to(cls):
+        # Draw blocking buttons for each
+        current_pos = imgui.get_cursor_screen_pos()
+        blockers_rev = reversed(cls.imgui_blockers[:])
+        for layer, rect in enumerate(blockers_rev):
+            if rect is not None:
+                imgui.set_cursor_screen_pos((rect[0], rect[1]))
+                imgui.button(f"melty_blocker_{layer}",
+                                       rect[2]-rect[0],
+                                       rect[3]-rect[1])
+
+        imgui.set_cursor_screen_pos(current_pos)
+
+    @classmethod
+    def set_channel(cls, layer_idx):
+        if cls.channels_split:
+            imgui.get_window_draw_list().channels_set_current(layer_idx)
+
+    @classmethod
     def end_frame(cls):
 
         cls.returned_values = {}
 
+
+        # cls.draw_blockers_to()
+
         for idx in range(len(cls.layers)):
-            r_idx = len(cls.layers) - 1 - idx
             layer = cls.layers[idx]
             imgui.set_cursor_screen_pos((0, 0))
             Melty.active_layer = idx
@@ -896,14 +942,14 @@ class Melty:
                     draw_state = view[3]
                     imgui.set_cursor_screen_pos((0,0))
                     view_func = view[0]
-                    args = view[1]
+                    input_value = view[1]
                     kwargs = view[2]
 
                     fill_original = kwargs.get("start_pos", None) is not None
                     if fill_original:
                         imgui.set_cursor_screen_pos(kwargs["start_pos"])
 
-                    return_val = view_func(*args, **kwargs)
+                    return_val = view_func(input_value, **kwargs)
                     if return_val is not None:
                         cls.returned_values[draw_state.id] = return_val
             #
@@ -917,11 +963,9 @@ class Melty:
 
 
         cls.layers = []
-        cls.backend.pump()
 
         is_popup_open = imgui.is_popup_open("", flags=imgui.POPUP_ANY_POPUP)
         Melty.imgui_popup_open = is_popup_open
-        # Melty.imgui_any_item_hovered = imgui.is_any_item_hovered()
         #
         from src.lsd.gl_gui.view.core_views.core_render import get_melty_state
         melty = get_melty_state()
@@ -955,6 +999,7 @@ class Melty:
             request_render()
 
         Melty.hovered_drawstate = Melty.hovered_drawstate_pending
+        Melty.imgui_any_item_active = imgui.is_any_item_active()
 
         # cls._root_by_module[module_id] = root
         # cls._gen_by_module.setdefault(module_id, 0)

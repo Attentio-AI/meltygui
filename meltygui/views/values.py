@@ -44,10 +44,10 @@ from src.lsd.gl_gui.view.core_views.codec_register import registry as FILE_CODEC
 
 
 @render_wrapper(wraps=render_func, use_cache=False)
-def with_header_minimal(func, *args, **o_kwargs):
+def with_header_minimal(func, **o_kwargs):
     def wrapper(next_kwargs=None, **kwargs):
         if Melty.annotation_mode:
-            annotation = annotation_track(*args, wrapper=wrapper, **o_kwargs)
+            annotation = annotation_track( wrapper=wrapper, **o_kwargs)
             if annotation is not None: return annotation
 
         next_kwargs['func'] = func
@@ -64,10 +64,10 @@ def with_header_minimal(func, *args, **o_kwargs):
 
 
 @render_wrapper(wraps=render_func, use_cache=False)
-def with_header(func, *args, **o_kwargs):
+def with_header(func, **o_kwargs):
     def wrapper(next_kwargs=None, draw_state=None, **kwargs):
         if Melty.annotation_mode:
-            annotation = annotation_track(*args, wrapper=wrapper, **o_kwargs)
+            annotation = annotation_track( wrapper=wrapper, **o_kwargs)
             if annotation is not None: return annotation
         next_kwargs['func'] = func
         next_kwargs['outer_func'] = wrapper
@@ -99,7 +99,7 @@ test_obj = TestObj()
 def draw_melty_windows(vis):
     flags = (imgui.WINDOW_NO_BACKGROUND | imgui.WINDOW_NO_TITLE_BAR | imgui.WINDOW_NO_RESIZE |
              imgui.WINDOW_NO_MOVE | imgui.WINDOW_NO_SCROLLBAR | imgui.WINDOW_NO_NAV_FOCUS |
-            imgui.WINDOW_NO_BRING_TO_FRONT_ON_FOCUS |
+            imgui.WINDOW_NO_BRING_TO_FRONT_ON_FOCUS | imgui.WINDOW_NO_NAV_INPUTS | imgui.WINDOW_NO_NAV |
              imgui.WINDOW_NO_COLLAPSE | imgui.WINDOW_NO_SAVED_SETTINGS)
 
     imgui.set_next_window_position(0,0)
@@ -111,6 +111,10 @@ def draw_melty_windows(vis):
     opened, _ = begin(title, closable=False, flags=flags)
 
     Melty.begin_frame()
+
+    imgui.invisible_button("window_blocker", width=fb_w, height=fb_h)
+    imgui.set_cursor_screen_pos((0,0))
+    imgui.set_item_allow_overlap()
 
     draw_list = imgui.get_window_draw_list()
     draw_list.channels_split(Melty.max_depth)
@@ -137,7 +141,7 @@ def draw_main(input_value, vis):
 
     draw_window(test_obj, name="Layer 1")
 
-    draw_window(proxy, name="CST Proxy")
+    draw_window(input_value=proxy, name="CST Proxy")
     draw_window(filesystem_proxy, name="Filesystem Test")
     draw_window(vis.root.lora_collection, name="Test Window 1")
     draw_window(vis.root.lora_collection.loras, name="Test Window 2")
@@ -466,12 +470,12 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
     # draw_window(Melty.last_request_render, show_bg=True, name="Last Invalid")
 @with_header(is_default_for=ManagedWindow, is_tree=False,
              show_bg=True, show_add_delete=False)
-def draw_debug(input_value, melty, *args, **kwargs):
+def draw_debug(input_value, melty):
     draw_any(melty)
 
 @with_header(is_default_for=ManagedWindow, is_tree=False, show_name=False,
              show_bg=True, show_add_delete=False)
-def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, mouse_down=False, *args, **kwargs):
+def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, mouse_down=False, **kwargs):
 
     window_input_value = input_value.input_value
     if hasattr(window_input_value, 'tint') and window_input_value.tint is not None:
@@ -501,21 +505,21 @@ def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, 
 
 
 @render_func(use_cache=True, enable_scroll=False, auto_resize=False, closable=True, show_bg=True, melty_window=True, draggable=True)
-def draw_window(input_value, inner_func=None, style_manager=None, *args, **kwargs):
+def draw_window(input_value, unique, inner_func=None, style_manager=None, **kwargs):
     window_name = kwargs.get('name', 'Managed Window')
     draw_state = kwargs.get('draw_state', None)
     cursor_pos = imgui.get_cursor_screen_pos()
     if draw_state.bounding_width is not None and draw_state.width > 0 and draw_state.height > 0:
         imgui.set_cursor_screen_pos(cursor_pos)
 
-        if draw_state.expanded:
-            if Melty.channels_split:
-                draw_list = imgui.get_window_draw_list()
-                draw_list.channels_set_current(Melty.get_channel())
-            imgui.invisible_button("##", width=draw_state.width, height=draw_state.height)
-            imgui.set_cursor_screen_pos(cursor_pos)
-            imgui.set_item_allow_overlap()
-        # else:
+        # if draw_state.expanded:
+        #     if Melty.channels_split:
+        #         draw_list = imgui.get_window_draw_list()
+        #         draw_list.channels_set_current(Melty.get_channel() + 1)
+        #     imgui.invisible_button(str(unique) + "window_blocker", width=draw_state.width, height=draw_state.height)
+        #     imgui.set_cursor_screen_pos(cursor_pos)
+        #     imgui.set_item_allow_overlap()
+        # # else:
         #     imgui.button("##", width=draw_state.width, height=20)
         #     imgui.set_cursor_screen_pos(cursor_pos)
         #     imgui.set_item_allow_overlap()
@@ -554,13 +558,11 @@ def draw_window(input_value, inner_func=None, style_manager=None, *args, **kwarg
     else:
         meta.view_function = inner_func
 
-    return_val = meta.view_function(input_value, *args, **kwargs)
+    return_val = meta.view_function(input_value, **kwargs)
 
 
     if hasattr(input_value, 'tint'):
         style_manager.set_imgui_tint(*previous_tint)
-
-
 
     return return_val
 
@@ -577,10 +579,11 @@ def export_code(test_param_2: int = 5):
 ######################## libCST START ##########################
 
 @render_wrapper(wraps=render_func)
-def cst_header(func, *args, **o_kwargs):
+def cst_header(func, **o_kwargs):
     def wrapper(next_kwargs=None, draw_state=None, **kwargs):
-        annotation = annotation_track(*args, wrapper=wrapper, **o_kwargs)
-        if annotation is not None: return annotation
+        if Melty.annotation_mode:
+            annotation = annotation_track( wrapper=wrapper, **o_kwargs)
+            if annotation is not None: return annotation
 
         next_kwargs['func'] = func
         next_kwargs['outer_func'] = wrapper
@@ -596,7 +599,7 @@ def cst_header(func, *args, **o_kwargs):
     return wrapper
 
 @cst_header(is_default_for=cst.SimpleStatementLine, header_same_line=True)
-def draw_cst_single_line(input_value: cst.SimpleStatementLine, **kwargs):
+def draw_cst_single_line(input_value: cst.SimpleStatementLine):
     # An Assign has one or more targets, an AssignEqual token, and a value
     draw_any(input_value.body)
 
@@ -607,7 +610,7 @@ def draw_comment(input_value: cst.Comment, **kwargs):
     pass
 
 @cst_header(is_default_for=cst.SimpleWhitespace, header_same_line=True, show_name=False)
-def draw_cst_simple_whitespace(input_value: cst.SimpleWhitespace, **kwargs):
+def draw_cst_simple_whitespace(input_value: cst.SimpleWhitespace):
     # An Assign has one or more targets, an AssignEqual token, and a value
     # imgui.same_line()
     pass
@@ -632,7 +635,7 @@ def assign_name(input_value: cst.Assign):
         return "Multiple Targets"
 
 @cst_header(is_default_for=cst.Assign, header_same_line=True, name_func=assign_name)
-def draw_cst_assign(input_value: cst.Assign, **kwargs):
+def draw_cst_assign(input_value: cst.Assign):
     # An Assign has one or more targets, an AssignEqual token, and a value
     # draw_collection(input_value.targets)
     imgui.text_colored("=", *(1, 1.1, 1, 0.5))
@@ -697,7 +700,7 @@ def draw_cst_list(input_value: cst.List):
 
 @render_func(is_default_for=CSTDictProxy, header_same_line=True,
              show_bg=False, indent_size=0, draggable=True)
-def draw_cst_dict(input_value: CSTDictProxy, **kwargs):
+def draw_cst_dict(input_value: CSTDictProxy):
     show_indices = False
 
     if len(input_value) > 0:
@@ -850,11 +853,11 @@ def draw_cst_int(input_value, width=None):
 
 
 @render_wrapper(wraps=render_func)
-def render_with_foo(func, *args, **kwargs):
+def render_with_foo(func, **kwargs):
 
-    def wrapper(window_stack=None, *args, **kwargs):
+    def wrapper(window_stack=None, **kwargs):
         imgui.text("Some wrapper")
-        return func(skfs=False, *args, **kwargs)
+        return func(skfs=False, **kwargs)
 
     return wrapper
 
@@ -1250,12 +1253,6 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                 show_header=True, show_bg=True, unique=0, name="", style_manager=None, global_style=None, parent_show_add_delete=True,
                 selected_views=None, on_drag=False, on_drag_up=False, do_flow=True, melty=None, enable_flow=True, header_same_line=False,
                 on_hover=False, next_kwargs=None, meta=None, on_same_line=False, y_offset=0, width=None, min_width=1, **kwargs):
-
-
-        initial_cursor_pos = imgui.get_cursor_screen_pos()
-
-        if window_stack is None or len(window_stack) == 0:
-            pass
 
         return_value = None
         changed = False
@@ -2020,7 +2017,7 @@ def draw_header(input_value=None, name="", suffix="", closable=False, collection
             rect_min = imgui.get_item_rect_min()
             if imgui.is_mouse_double_clicked(0) and imgui.is_item_hovered():
                 draw_state._name_edit = True
-                imgui.set_keyboard_focus_here(0)
+                # imgui.set_keyboard_focus_here(0)
 
             pop_style_color(4)
             pop_style_var(2)
@@ -2165,7 +2162,7 @@ def render_profiler_time(input_value=None, brief=False, style_manager=None,
 
 
 @render_func(use_cache=True)
-def draw_any(input_value, indent_size=0, *args, **kwargs):
+def draw_any(input_value, indent_size=0, **kwargs):
 
     # # meta handlin
     meta = kwargs.get("meta", None)
@@ -2181,7 +2178,7 @@ def draw_any(input_value, indent_size=0, *args, **kwargs):
     if kwargs['global_toggles'].force_show_unique and hasattr(meta, 'unique'):
         imgui.text_colored(f"[{Melty.get_tile_id()}]", 0.8, 0.5, 0.9)
 
-    return_val = meta.view_function(input_value, *args, **kwargs)
+    return_val = meta.view_function(input_value, **kwargs)
 
     return return_val
 
