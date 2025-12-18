@@ -226,17 +226,24 @@ def draw_vertical_scrollbar(content_height: float,
                             left: float = 0.0,
                             top: float = 0.0,
                             *,
-                            pad: float = 0.0,
+                            pad: float = 1.0,
                             rounding: float = 3.0,
+                            tint=None,
+                            bar_top_margin: float = 15.0,
                             min_grab_size: float | None = None):
     # Style & colors
     style = imgui.get_style()
+
     if min_grab_size is None:
         min_grab_size = float(style.grab_min_size)
 
-    col_track = imgui.get_color_u32_rgba(0, 0, 0, 0.1)
-    col_grab = imgui.get_color_u32_rgba(1, 1, 1, 0.3)
+    if tint is not None:
+        col_grab = imgui.get_color_u32_rgba(*tint[:3], 0.5)
+    else:
+        col_grab = imgui.get_color_u32(imgui.COLOR_SCROLLBAR_GRAB)
     col_border = imgui.get_color_u32(imgui.COLOR_BORDER)
+
+
 
     # Early clamps & deriveds
     view_height = max(0.0, float(view_height))
@@ -255,7 +262,7 @@ def draw_vertical_scrollbar(content_height: float,
 
     # Compute geometry (stick it to the right side of the container)
     track_w = min(scrollbar_width, view_width)
-    track_h = view_height
+    track_h = view_height - bar_top_margin
     track_x1 = origin_x + (view_width - track_w) - bar_margin_x
     track_y1 = origin_y + bar_margin
     track_x2 = track_x1 + track_w - bar_margin_x
@@ -286,15 +293,13 @@ def draw_vertical_scrollbar(content_height: float,
     inner_y2 = track_y2 - pad
     grab_x1 = inner_x1
     grab_x2 = inner_x2
-    grab_y1 = max(inner_y1, min(grab_y1, inner_y2 - (grab_y2 - grab_y1)))
+    grab_y1 = max(inner_y1, min(grab_y1, inner_y2 - (grab_y2 - grab_y1))) + bar_top_margin
     grab_y2 = grab_y1 + max(0.0, min(grab_h, inner_y2 - inner_y1))
 
     # Draw
     dl = imgui.get_window_draw_list()
     # Track
-    track_w = track_x2 - track_x1
-    track_h = track_y2 - track_y1
-    dl.add_rect_filled(track_x1, track_y1, track_x2, track_y2, col_track, rounding)
+
     # Melty.engine.mask_mark_rect(Melty.depth, track_x1, track_y1, track_w, track_h,
     #                             key=str(Melty.unique_stack[-1]) + "scrollbar")
 
@@ -304,14 +309,7 @@ def draw_vertical_scrollbar(content_height: float,
         dl.add_rect_filled(grab_x1, grab_y1, grab_x2, grab_y2, col_grab, rounding)
         dl.add_rect(grab_x1, grab_y1, grab_x2, grab_y2, col_border, rounding)
 
-    return {
-        "offset": scroll_offset,
-        "track_min": (track_x1, track_y1),
-        "track_max": (track_x2, track_y2),
-        "grab_min": (grab_x1, grab_y1),
-        "grab_max": (grab_x2, grab_y2),
-        "visible": content_height > view_height
-    }
+    return None
 
 
 def clear_floating_text_cache():

@@ -173,8 +173,7 @@ def draw_pending_texture(input_value:PendingTexture):
         return False, None
 
     return draw_texture(input_value.texture_id, name=f"{input_value.name[:30]}",
-                 auto_resize=False, show_header=False, indent_size=0,
-                 width=input_value.tex_width, height=input_value.tex_height)
+                 auto_resize=False, show_header=False, indent_size=0)
 
 @with_header(is_default_for=numpy.uint32, show_bg=True,
              use_cache=False, show_add_delete=False,
@@ -1713,8 +1712,10 @@ def draw_collection(input_value, draw_state, depth, style_manager,
             if prev_tint is not None:
                 style_manager.set_imgui_tint(*prev_tint)
 
+    header_height =  draw_state.wrapped_top - draw_state.top
+    print(draw_state.header_height)
     end_pos = imgui.get_cursor_pos()[1]
-    content_height = end_pos - start_cursor
+    content_height = (end_pos - start_cursor) + draw_state.header_height
 
     draw_state._children = children_draw_states
 

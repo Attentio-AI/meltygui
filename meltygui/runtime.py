@@ -807,6 +807,10 @@ class Melty:
     imgui_blockers = [None] * max_layer
 
     @classmethod
+    def get_latest_mouse(cls):
+        return imgui.get_io().mouse_pos
+
+    @classmethod
     def report_imgui_active(cls):
         cls.imgui_active_pending = True
         cls.imgui_active = True

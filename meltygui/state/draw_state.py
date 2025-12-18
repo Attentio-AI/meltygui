@@ -80,13 +80,14 @@ class ZoomState(DictConversion):
         self.contrast = 1.0
 
 @no_save("mouse_btn_state", "mouse_up", "mouse_down", "bounding_width", "bounding_height", "unique", "search_active",
-         "drag_released","clicked", "dragged", "dragged", "top", "left", "bounds_top", "bounds_left", "name", "expanded_height",
+         "drag_released","clicked", "dragged", "header_height", "dragged", "top", "left", "bounds_top", "bounds_left", "name", "expanded_height",
          "render_time", "imgui_is_toggled_open", "z_pos", "content_height", "hotkey_receiver", "use_child", "cst", "search_text",
-         "is_active", "min_width", "height", "min_height", "did_render", "is_focused", "drag_window_pos_x", "drag_window_pos_y", "drag_mode", "auto_resize", "clipped", "is_hovered_last",
+         "is_active", "wrapped_top", "wrapped_left", "min_width", "height", "min_height", "did_render", "is_focused", "drag_window_pos_x", "drag_window_pos_y", "drag_mode", "auto_resize", "clipped", "is_hovered_last",
          "z_pos", "draw_window_pos_x", "misc_used", "draw_window_pos_y", "drag_delta", "screen_pos", "imgui_is_item_activated", "frame_count")
 @exclude("render_time", "bounds_left", "bounds_top", "_input_value","flow_spacing",
-         "hovered", "_did_use_cache", "value_hash", "drag_window", "top", "left", "content_region", "did_render",
-         "bounding_hovered", "dlt_count", "z_pos", "scrolled", "is_hovered_last", "frame_count")
+         "hovered", "wrapped_top", "wrapped_left", "_did_use_cache", "value_hash", "drag_window", "top", "left", "content_region", "did_render",
+         "bounding_hovered", "dlt_count", "header_height", "z_pos", "scrolled", "is_hovered_last", "frame_count")
+
 @deep_refresh("expanded", 'window_size')
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
@@ -126,6 +127,8 @@ class DrawState(DictConversion):
         self.cst = None
         self.window_pos = None
         self.window_size = None
+        self._initial_window_pos = None
+        self._initial_window_size = None
         self.drag_mode = DragMode.NONE
         self.use_child = False
         self.z_pos = None
@@ -189,6 +192,9 @@ class DrawState(DictConversion):
         self.params = {}
         self.bounds_left = 0
         self.bounds_top = 0
+        self.wrapped_top = 0
+        self.wrapped_left = 0
+        self.header_height = 0
 
         self.dlt_count = Melty.save_draw_state_for
 
@@ -254,16 +260,20 @@ class DrawState(DictConversion):
         return (self.bounds_left, self.bounds_top, self.bounds_left + width,
                 self.bounds_top + height)
 
-    def draw_rect(self, rounding=0):
+    def draw_rect(self, rounding=0, tint=None):
         if Melty.channels_split:
             draw_list = imgui.get_window_draw_list()
             draw_list.channels_set_current(Melty.get_channel() + 1)
 
+        if tint is None:
+            tint = getattr(self._input_value, 'tint', None)
+
         draw_list = imgui.get_window_draw_list()
         rect = self.get_rect()
-        draw_list.add_rect(rect[0], rect[1], rect[2], rect[3],
-                           imgui.get_color_u32_rgba(0, 0.5, 1.0, 1.0),
-                           rounding=rounding, thickness=1.0)
+        draw_list.add_rect(rect[0], rect[1] + 1, rect[2], rect[3],
+                           imgui.get_color_u32_rgba(*tint[:3], 1.0) if tint is not None else
+                           imgui.get_color_u32_rgba(1, 1, 1, 1),
+                           rounding=rounding, thickness=2.0)
 
         if Melty.channels_split:
             draw_list = imgui.get_window_draw_list()

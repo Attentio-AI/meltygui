@@ -17,6 +17,7 @@ class Action:
     DOWN = "down"
     UP = "up"
     DRAGGED = "dragged"
+    DRAG_RELEASED = "drag_released"
     CLICKED = "clicked"
     DOUBLE_CLICKED = "double_clicked"
     CHANGED = "changed"
@@ -30,6 +31,7 @@ ACTION_ALIASES = {
     "pressed": Action.DOWN,
     "released": Action.UP,
     "drag": Action.DRAGGED,
+    "drag_release": Action.DRAG_RELEASED,
     "click": Action.CLICKED,
     "double_click": Action.DOUBLE_CLICKED,
     # Continuous hover
@@ -43,7 +45,7 @@ ACTION_ALIASES = {
 }
 
 ALL_ACTIONS = frozenset({
-    Action.DOWN, Action.UP, Action.DRAGGED, Action.CLICKED,
+    Action.DOWN, Action.UP, Action.DRAGGED, Action.DRAG_RELEASED, Action.CLICKED,
     Action.DOUBLE_CLICKED, Action.CHANGED, Action.MOVED,
     Action.HOVERED, Action.HOVER_ENTER, Action.HOVER_EXIT,
     *ACTION_ALIASES.keys()
@@ -65,6 +67,8 @@ class InputEvent:
     value: float = 0.0
     timestamp: float = 0.0
     modifiers: int = 0
+    total_dx: float = 0.0
+    total_dy: float = 0.0
 
     @property
     def shift(self) -> bool: return bool(self.modifiers & 1)
@@ -141,8 +145,9 @@ class InputHandler:
     """
 
     __slots__ = (
-    '_states', '_hovered', '_prev_hovered', '_pending', '_cursor_x', '_cursor_y', '_modifiers', '_last_dx', '_last_dy',
-    '_drag_capture')
+        '_states', '_hovered', '_prev_hovered', '_pending', '_cursor_x', '_cursor_y',
+        '_modifiers', '_last_dx', '_last_dy', '_drag_capture'
+    )
 
     def __init__(self):
         self._states: dict[str, _InputState] = {}
@@ -324,9 +329,29 @@ class InputHandler:
                 if capture_view is not None:
                     self._drag_capture[event.input_id] = capture_view
 
-            # On UP, release drag capture
+            # On UP, emit drag_released to captured view, then release capture
             elif event.action == Action.UP:
-                self._drag_capture.pop(event.input_id, None)
+                captured_view = self._drag_capture.pop(event.input_id, None)
+                if captured_view is not None:
+                    drag_released_key = (event.input_id, Action.DRAG_RELEASED)
+
+                    from src.lsd.gl_gui.melty import Melty
+                    lx, ly = Melty.get_latest_mouse()
+                    state = self._states.get(event.input_id)
+                    total_dx = lx - state.down_x if state else 0.0
+                    total_dy = ly - state.down_y if state else 0.0
+
+                    release_event = InputEvent(
+                        event.input_id, Action.DRAG_RELEASED, lx, ly,
+                        self._last_dx, self._last_dy, 0, t, self._modifiers, total_dx, total_dy
+                    )
+                    add_event(captured_view, drag_released_key, release_event)
+
+                    # Reset initial drag state
+                    if state:
+                        state.down_x = 0.0
+                        state.down_y = 0.0
+                        state.down_time = 0.0
 
             top = next((v for v, _, s in self._hovered if key in s), None)
             add_event(top, key, event)
@@ -337,9 +362,17 @@ class InputHandler:
                 captured_view = self._drag_capture.get(input_id)
                 if captured_view is not None:
                     drag_key = (input_id, Action.DRAGGED)
+
+                    # JIT: get latest mouse position right before dispatch
+                    from src.lsd.gl_gui.melty import Melty
+                    lx, ly = Melty.get_latest_mouse()
+
+                    total_dx = lx - state.down_x
+                    total_dy = ly - state.down_y
+
                     drag_event = InputEvent(
-                        input_id, Action.DRAGGED, self._cursor_x, self._cursor_y,
-                        self._last_dx, self._last_dy, 0, t, self._modifiers
+                        input_id, Action.DRAGGED, lx, ly,
+                        self._last_dx, self._last_dy, 0, t, self._modifiers, total_dx, total_dy
                     )
                     add_event(captured_view, drag_key, drag_event)
 
