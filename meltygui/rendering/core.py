@@ -276,6 +276,7 @@ def render_func(*args, **o_kwargs):
             Melty.cache.invalidate_by_obj(Melty.registered_windows)
 
         if active_layer is None:
+
             if (melty.dragged_item is not None and melty.drag_in_progress and
                     draw_state is not None and melty.dragged_item.id == draw_state.id):
                 kwargs['layer'] = Melty.drag_layer
@@ -297,6 +298,9 @@ def render_func(*args, **o_kwargs):
                     if draw_state.width is not None and draw_state.height is not None:
                         imgui.set_cursor_screen_pos((start_cursor[0],
                                                      start_cursor[1] + draw_state.height))
+
+                collection = kwargs.get("collection", None)
+                Melty.cache.mark_uncached(input_value, tile_id)
 
                 if return_extras:
                     return *return_value, kwargs
