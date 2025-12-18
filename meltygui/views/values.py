@@ -186,12 +186,6 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
     original_id = input_value
     texture_id = input_value
 
-    # if left_mouse_clicked:
-    #     print(f"Texture {texture_id} clicked")
-
-    if right_mouse_drag:
-        print(f"Texture {right_mouse_drag} right mouse drag")
-
     # Ensure we have valid state if this is the first run
     if not hasattr(zoom_state, 'zoom'):
         zoom_state.zoom = 1.0
@@ -1318,10 +1312,6 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
         bg_tint = None
         bg_selected = False
 
-        if (not on_drag and not kwargs.get("drag_window", False)) or melty_window:
-            draw_state.top = start_y_pos
-            draw_state.left = start_x_pos
-
         current_cursor = imgui.get_cursor_screen_pos()
         if show_header:
             next_kwargs['highlight'] = on_hover
@@ -1342,11 +1332,10 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             next_kwargs['closable'] = closable
 
             # ------------------ HEADER -----------------
-            if (not on_drag) or melty_window:
-                changed, return_value = draw_header(**next_kwargs)
+
+            changed, return_value = draw_header(**next_kwargs)
             rect_size = imgui.get_item_rect_size()
             header_width = rect_size[0]
-
 
             # # Auto indent is decided here
             if header_same_line:
@@ -1712,8 +1701,6 @@ def draw_collection(input_value, draw_state, depth, style_manager,
             if prev_tint is not None:
                 style_manager.set_imgui_tint(*prev_tint)
 
-    header_height =  draw_state.wrapped_top - draw_state.top
-    print(draw_state.header_height)
     end_pos = imgui.get_cursor_pos()[1]
     content_height = (end_pos - start_cursor) + draw_state.header_height
 
@@ -1940,10 +1927,10 @@ def draw_header(input_value=None, name="", suffix="", closable=False, collection
                    make_color_style_value(input=bg_style, saturation=0.8, alpha=1.0,
                                           value=0.9))
     if is_tree:
-        if trigger_collapse:
-            draw_state.expanded = False
-        if trigger_expand:
-            draw_state.expanded = True
+        # if trigger_collapse:
+        #     draw_state.expanded = False
+        # if trigger_expand:
+        #     draw_state.expanded = True
 
         push_style_color(imgui.COLOR_TEXT, *outline_color)
         push_style_var(imgui.STYLE_FRAME_PADDING, (2,4))
@@ -1952,9 +1939,12 @@ def draw_header(input_value=None, name="", suffix="", closable=False, collection
         # no background
         imgui.push_style_color(imgui.COLOR_BUTTON, *(0.0, 0.0, 0.0, 0.0))
         imgui.push_style_color(imgui.COLOR_BUTTON_HOVERED, *(0.0, 0.0, 0.0, 0.0))
-        if imgui.arrow_button(f"##tree", imgui.DIRECTION_DOWN if draw_state.expanded else imgui.DIRECTION_RIGHT):
+        imgui.set_item_allow_overlap()
+
+        if imgui.arrow_button(f"##tree{unique}", imgui.DIRECTION_DOWN if draw_state.expanded else imgui.DIRECTION_RIGHT):
             draw_state.expanded = not draw_state.expanded
             request_render()
+        imgui.set_item_allow_overlap()
         imgui.pop_style_color(2)
 
         # draw_state.expanded = tree(f"{down_icon}##tree", draw_state.expanded, width=50)

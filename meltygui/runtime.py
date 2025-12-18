@@ -744,7 +744,7 @@ class Melty:
     current_indent = 0
     indent_count = 0
     unindent_count = 0
-
+    pending_move_to_front = None
     imgui_popup_open = False
     imgui_active = False
     imgui_any_item_active = False
@@ -842,6 +842,28 @@ class Melty:
     def get_channel(cls):
         return cls.depth
         # return max(min(cls.max_depth - 3, cls.depth), 0)
+
+    @classmethod
+    def move_window_to_front(cls, name, input_value):
+        cls.pending_move_to_front = (name, input_value)
+
+    @classmethod
+    def apply_move_to_front(cls):
+        if imgui.is_mouse_down(0) and not imgui.is_mouse_dragging(0):
+            return
+
+        if cls.pending_move_to_front is None:
+            return
+
+        window_key = f"{cls.pending_move_to_front[0]}_window"
+        if window_key in Melty.registered_windows:
+            # Remove and re-insert to move to front (top)
+            window = Melty.registered_windows.pop(window_key)
+            Melty.registered_windows[window_key] = window
+
+        Melty.cache.invalidate_by_obj(cls.pending_move_to_front[1])
+        Melty.cache.invalidate_by_obj(Melty.registered_windows)
+        cls.pending_move_to_front = None
 
     @classmethod
     def begin_frame(cls):
@@ -1004,6 +1026,8 @@ class Melty:
 
         Melty.hovered_drawstate = Melty.hovered_drawstate_pending
         Melty.imgui_any_item_active = imgui.is_any_item_active()
+
+        cls.apply_move_to_front()
 
         # cls._root_by_module[module_id] = root
         # cls._gen_by_module.setdefault(module_id, 0)

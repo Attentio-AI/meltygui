@@ -328,6 +328,9 @@ def render_func(*args, **o_kwargs):
         draw_state._input_value = input_value
         draw_state._collection = Melty.collection_stack[-1] if len(Melty.collection_stack) > 0 else None
         draw_state.name = name
+        if not draw_state.expanded:
+            kwargs["auto_resize"] = True
+            auto_resize = True
 
         draw_state._has_popup = kwargs.get("has_popup", False)
         draw_state.auto_resize = kwargs.get("auto_resize", True)
@@ -440,7 +443,7 @@ def render_func(*args, **o_kwargs):
             melty_window = kwargs.get("melty_window", False) and not is_header
             imgui_active = Melty.imgui_active or Melty.imgui_popup_open
 
-            if draw_state.window_size is not None and not auto_resize:
+            if draw_state.window_size is not None and not auto_resize and draw_state.expanded:
                 draw_state.width = draw_state.window_size[0]
                 draw_state.height = draw_state.window_size[1]
                 draw_state.bounding_width = draw_state.window_size[0]
@@ -477,7 +480,6 @@ def render_func(*args, **o_kwargs):
                         draw_state._initial_window_size = \
                             (draw_state.window_size[0], draw_state.window_size[1])
 
-                    print(f"{handle_drag.total_dx}, {handle_drag.total_dy}")
                     if draw_state.window_size is None:
                         draw_state.window_size = (draw_state.width, draw_state.height)
                     size_w = draw_state._initial_window_size[0] + handle_drag.total_dx
@@ -550,9 +552,9 @@ def render_func(*args, **o_kwargs):
             push_style_var(imgui.STYLE_FRAME_PADDING, padding)
 
             draw_state.left, draw_state.top = imgui.get_cursor_screen_pos()
+            draw_state.left = snap_int(draw_state.left)
+            draw_state.top = snap_int(draw_state.top)
 
-            if not draw_state.expanded:
-                kwargs["auto_resize"] = True
 
             if not is_header and (draw_state.left is not None and draw_state.top is not None and
                     draw_state.width is not None and draw_state.height is not None) and melty_window:
@@ -567,6 +569,7 @@ def render_func(*args, **o_kwargs):
             push_id(unique)
 
             start_cursor = imgui.get_cursor_screen_pos()
+            start_cursor = (snap_int(start_cursor[0]), snap_int(start_cursor[1]))
 
             expected_type = param_types[wanted_params.index("input_value")] if "input_value" in wanted_params else None
             annotation_empty = expected_type == inspect.Parameter.empty
@@ -764,7 +767,7 @@ def render_func(*args, **o_kwargs):
             scrollbar_width = 5.0
 
             is_header = "with_header" in func.__name__
-            needs_scroll = draw_state.content_height > draw_state.height if (
+            needs_scroll = (draw_state.content_height > draw_state.height or draw_state.scroll_offset[1] > 0) if (
                     draw_state.height is not None) else False
             draw_state.scroll_visible = needs_scroll
             scroll_delta = 0.0
@@ -792,25 +795,28 @@ def render_func(*args, **o_kwargs):
                 if hasattr(input_value, 'tint'):
                     current_tint = input_value.tint
 
-                draw_vertical_scrollbar(draw_state.content_height, view_height=d_height,
-                                        view_width=d_width,
-                                        scroll_offset=draw_state.scroll_offset[1], scrollbar_width=scrollbar_width,
-                                        left=d_left,
-                                        top=d_top,
-                                        tint=current_tint),
-            elif not imgui.is_mouse_down(0):
-                draw_state.scroll_offset = (0, 0)
+                if not draw_state.closed:
+
+                    draw_vertical_scrollbar(draw_state.content_height, view_height=d_height,
+                                            view_width=d_width,
+                                            scroll_offset=draw_state.scroll_offset[1], scrollbar_width=scrollbar_width,
+                                            left=d_left,
+                                            top=d_top,
+                                            tint=current_tint),
+            # elif not imgui.is_mouse_down(0):
+            #     draw_state.scroll_offset = (0, 0)
 
             ############# HANDLE SELECTION
             max_layer_depth = Melty.max_depth * Melty.max_layer + Melty.max_depth
             layer_and_depth = Melty.active_layer * Melty.max_depth + Melty.depth
 
             is_header = "with_header" in func.__name__
-            if is_header:
+            if not is_header:
                 priority = max_layer_depth - layer_and_depth
-                if draw_state.hover_eligible():
-                    Melty.event_handler.register_hovered(tile_id, ["left_mouse_down"], priority)
-                click = Melty.on("left_mouse_down", tile_id)
+                # if draw_state.hover_eligible():
+                #     Melty.event_handler.register_hovered(tile_id, ["left_mouse_down", "left_mouse_clicked"], priority)
+                click = draw_state.on_action("left_mouse_down")
+
 
                 if click:
                     previous_select = copy(Melty.selected)
@@ -819,7 +825,7 @@ def render_func(*args, **o_kwargs):
                         Melty.selected.add(draw_state)
                         Melty.last_selected = draw_state
 
-                        move_window_to_front(draw_state.name)
+                        Melty.move_window_to_front(draw_state.name, input_value)
                         for prev_select in previous_select:
                             Melty.cache.invalidate(prev_select._tile_id)
                             Melty.cache.invalidate_up_by_obj(obj=prev_select._collection, force=True, max_depth=2)
@@ -833,7 +839,7 @@ def render_func(*args, **o_kwargs):
                             Melty.selected.add(draw_state)
 
                         Melty.cache.invalidate(draw_state._tile_id)
-                        Melty.cache.invalidate_up_by_obj(obj=draw_state._collection, force=True)
+                        Melty.cache.invalidate_up_by_obj(obj=draw_state._collection, force=True, max_depth=2)
                         request_render()
                     elif click.modifiers == glfw.MOD_SHIFT and click.action == "down":
                         new_select = draw_state
@@ -929,7 +935,7 @@ def render_func(*args, **o_kwargs):
         enable_scroll = kwargs.get("enable_scroll", False)
         draw_state = kwargs.get("draw_state", draw_state)
 
-        do_scroll = enable_scroll and clip_height < draw_state.content_height and not_header
+        do_scroll = enable_scroll and (clip_height < draw_state.content_height or draw_state.scroll_offset[1] > 0) and not_header
         indent_x = kwargs.get("indent_size", 0)
         indent_x = 0
 

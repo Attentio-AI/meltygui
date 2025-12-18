@@ -270,7 +270,7 @@ class DrawState(DictConversion):
 
         draw_list = imgui.get_window_draw_list()
         rect = self.get_rect()
-        draw_list.add_rect(rect[0], rect[1] + 1, rect[2], rect[3],
+        draw_list.add_rect(rect[0] + 1, rect[1] + 1, rect[2] - 1, rect[3] - 1,
                            imgui.get_color_u32_rgba(*tint[:3], 1.0) if tint is not None else
                            imgui.get_color_u32_rgba(1, 1, 1, 1),
                            rounding=rounding, thickness=2.0)
@@ -280,6 +280,8 @@ class DrawState(DictConversion):
             draw_list.channels_set_current(Melty.get_channel())
 
     def hover_eligible(self, rect=None):
+        if self.closed:
+            return False
         # if (self._imgui_is_active or self._imgui_is_edited or self._imgui_is_activated or
         #         self._imgui_is_focused or self._imgui_popover_open):
         #     return False
