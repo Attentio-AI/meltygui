@@ -341,7 +341,7 @@ def render_func(*args, **o_kwargs):
             if passed_width is not None:
                 draw_state.width = passed_width
             if passed_height is not None:
-                draw_state.height = passed_height
+                draw_state.height = snap_int(passed_height)
 
         Melty.input_value_stack.append(input_value)
         inc_depth = False
@@ -445,9 +445,9 @@ def render_func(*args, **o_kwargs):
 
             if draw_state.window_size is not None and not auto_resize and draw_state.expanded:
                 draw_state.width = draw_state.window_size[0]
-                draw_state.height = draw_state.window_size[1]
+                draw_state.height = snap_int(draw_state.window_size[1])
                 draw_state.bounding_width = draw_state.window_size[0]
-                draw_state.bounding_height = draw_state.window_size[1]
+                draw_state.bounding_height = snap_int(draw_state.window_size[1])
 
             if melty_window:
                 # melty_hovered = draw_state.on_action("on_hover", view_id="window_hover", priority_delta=1)
@@ -484,7 +484,7 @@ def render_func(*args, **o_kwargs):
                         draw_state.window_size = (draw_state.width, draw_state.height)
                     size_w = draw_state._initial_window_size[0] + handle_drag.total_dx
                     size_h = draw_state._initial_window_size[1] + handle_drag.total_dy
-                    draw_state.width, draw_state.height = (max(size_w, 25), max(size_h, 24))
+                    draw_state.width, draw_state.height = (max(size_w, 25), snap_int(max(size_h, 24)))
                     min_width = kwargs.get('min_width', 25)
                     min_height = kwargs.get('min_height', 24)
                     # draw_state.width = max(draw_state.width, min_width)

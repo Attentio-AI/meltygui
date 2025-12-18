@@ -760,10 +760,10 @@ class Melty:
     _gen_by_module: dict[str, int] = {}
 
     save_draw_state_for = 1
-    spacing = (3, 1)
-    padding = (3, 3)
-    end_collection_spacing = 5
-    collection_spacing = 3
+    spacing = (2, 1)
+    padding = (2, 2)
+    end_collection_spacing = 4
+    collection_spacing = 2
     header_indent = 150
 
     vis = None

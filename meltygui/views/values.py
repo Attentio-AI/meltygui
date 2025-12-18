@@ -1710,7 +1710,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
     # current_cursor = imgui.get_cursor_screen_pos()
 
     if not melty.drag_in_progress:
-        draw_state.content_height = content_height
+        draw_state.content_height = snap_int(content_height)
 
     # ----------------- top spacing -----------
     last_key = list(keys)[-1] if len(keys) > 0 else None
@@ -1729,8 +1729,8 @@ def draw_collection(input_value, draw_state, depth, style_manager,
                                                     draw_state=last_draw_state, tag="bottom")
     # ------------------ end spacing -----------
 
-    if drew_any and len(keys) > 1:
-        imgui.dummy(0, snap_int(Melty.end_collection_spacing))
+    # if drew_any and len(keys) == 1:
+    #     imgui.dummy(0, 2)
 
     return changed, input_value
 
