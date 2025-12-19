@@ -110,6 +110,8 @@ def draw_melty_windows(vis):
     title = "main##window_melty"
     opened, _ = begin(title, closable=False, flags=flags)
 
+    Melty.imgui_main_window_hovered = imgui.is_window_hovered()
+
     Melty.begin_frame()
 
     imgui.invisible_button("window_blocker", width=fb_w, height=fb_h)
@@ -1564,6 +1566,16 @@ def draw_collection(input_value, draw_state, depth, style_manager,
     start_cursor = imgui.get_cursor_pos()[1]
     keys = list(keys)[:]
     children_draw_states = []
+    rect = Melty.get_clip_rect()
+
+    needs_content_height = draw_state.content_height < draw_state.height if draw_state.height is not None else True
+
+    # draw_list = imgui.get_window_draw_list()
+    # if rect is not None:
+    #     draw_list.add_rect(rect[0] + 1, rect[1] + 1, rect[2] - 1, rect[3] - 1,
+    #                        imgui.get_color_u32_rgba(1,1,1, 1.0),
+    #                        rounding=2.0, thickness=2.0)
+    premature_break = False
     for idx, key in enumerate(keys):
         if isinstance(collection, dict) and key not in collection:
             continue
@@ -1670,6 +1682,11 @@ def draw_collection(input_value, draw_state, depth, style_manager,
             if 'draw_state' in extras:
                 children_draw_states.append(extras['draw_state'])
                 extras['draw_state']._parent = draw_state
+                if rect is not None:
+                    if cursor_pos[1] > Melty.get_clip_rect()[3] and not needs_content_height and Melty.frame_count > 2:
+                        premature_break = True
+                        break
+
 
             if isinstance(out_val, CollectionAction):
                 # perform the move; this should mutate the plain dicts you attached
@@ -1709,7 +1726,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
     # imgui.set_cursor_screen_pos((current_cursor[0], current_cursor[1] + draw_state.scroll_offset[1]))
     # current_cursor = imgui.get_cursor_screen_pos()
 
-    if not melty.drag_in_progress:
+    if not melty.drag_in_progress and not premature_break:
         draw_state.content_height = snap_int(content_height)
 
     # ----------------- top spacing -----------

@@ -697,11 +697,11 @@ def render_func(*args, **o_kwargs):
             pop_id()
             end_group()
             pop_style_var(2)
-
-            if draw_state.left is not None and draw_state.top is not None:
-                if draw_state.width is not None and draw_state.height is not None:
-                    imgui.set_cursor_screen_pos((start_cursor[0],
-                                                 start_cursor[1] + draw_state.height))
+            #
+            # if draw_state.left is not None and draw_state.top is not None:
+            #     if draw_state.width is not None and draw_state.height is not None:
+            #         imgui.set_cursor_screen_pos((start_cursor[0],
+            #                                      start_cursor[1] + draw_state.height))
             item_rect = imgui.get_item_rect_size()
 
             original_width_b = draw_state.bounding_width
@@ -821,39 +821,42 @@ def render_func(*args, **o_kwargs):
                 #     Melty.event_handler.register_hovered(tile_id, ["left_mouse_down", "left_mouse_clicked"], priority)
                 click = draw_state.on_action("left_mouse_down")
 
-
                 if click:
-                    previous_select = copy(Melty.selected)
-                    if not click.modifiers:
-                        Melty.selected = set()
-                        Melty.selected.add(draw_state)
-                        Melty.last_selected = draw_state
+                    if not melty_window:
+                        previous_select = copy(Melty.selected)
+                        if not click.modifiers:
+                            Melty.selected = set()
+                            Melty.selected.add(draw_state)
+                            Melty.last_selected = draw_state
 
-                        Melty.move_window_to_front(draw_state.name, input_value)
-                        for prev_select in previous_select:
-                            Melty.cache.invalidate(prev_select._tile_id)
-                            Melty.cache.invalidate_up_by_obj(obj=prev_select._collection, force=True, max_depth=2)
-                            Melty.cache.invalidate_up_by_obj(obj=prev_select._input_value, force=True, max_depth=2)
+                            for prev_select in previous_select:
+                                Melty.cache.invalidate(prev_select._tile_id)
+                                # Melty.cache.invalidate_up_by_obj(obj=prev_select._collection, force=True, max_depth=2)
+                                Melty.cache.invalidate_up_by_obj(obj=prev_select._input_value, force=True, max_depth=2)
+                                request_render()
+
+                        elif click.modifiers == glfw.MOD_CONTROL and click.action == "down":
+                            if draw_state in Melty.selected:
+                                Melty.selected.remove(draw_state)
+                            else:
+                                Melty.selected.add(draw_state)
+
+                            Melty.cache.invalidate(draw_state._tile_id)
+                            Melty.cache.invalidate_up_by_obj(obj=draw_state._collection, force=True, max_depth=2)
+                            request_render()
+                        elif click.modifiers == glfw.MOD_SHIFT and click.action == "down":
+                            new_select = draw_state
+                            last_select = Melty.last_selected
+
+                            if draw_state in Melty.selected:
+                                Melty.selected.remove(draw_state)
+                            else:
+                                Melty.selected.add(draw_state)
                             request_render()
 
-                    elif click.modifiers == glfw.MOD_CONTROL and click.action == "down":
-                        if draw_state in Melty.selected:
-                            Melty.selected.remove(draw_state)
-                        else:
-                            Melty.selected.add(draw_state)
+                    if melty_window:
+                        Melty.move_window_to_front(draw_state.name, input_value)
 
-                        Melty.cache.invalidate(draw_state._tile_id)
-                        Melty.cache.invalidate_up_by_obj(obj=draw_state._collection, force=True, max_depth=2)
-                        request_render()
-                    elif click.modifiers == glfw.MOD_SHIFT and click.action == "down":
-                        new_select = draw_state
-                        last_select = Melty.last_selected
-
-                        if draw_state in Melty.selected:
-                            Melty.selected.remove(draw_state)
-                        else:
-                            Melty.selected.add(draw_state)
-                        request_render()
 
             if draw_state in Melty.selected:
                 draw_state.draw_rect(rounding=5.0)

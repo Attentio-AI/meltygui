@@ -749,6 +749,7 @@ class Melty:
     imgui_active = False
     imgui_any_item_active = False
     imgui_active_pending = False
+    imgui_main_window_hovered = False
 
     max_indent = 0
     hotkey_registry = {}
@@ -849,8 +850,6 @@ class Melty:
 
     @classmethod
     def apply_move_to_front(cls):
-        if imgui.is_mouse_down(0) and not imgui.is_mouse_dragging(0):
-            return
 
         if cls.pending_move_to_front is None:
             return
@@ -874,7 +873,6 @@ class Melty:
 
         cls.imgui_blockers = cls.pending_blockers
         cls.pending_blockers = [None] * cls.max_layer
-
 
         cls.events = cls.event_handler.process_frame()
         cls.event_handler.begin_frame()
