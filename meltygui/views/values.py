@@ -124,7 +124,7 @@ def draw_melty_windows(vis):
     Melty.window_stack.append((title, True))
 
     draw_main(name="Main Window", vis=vis)
-    draw_window(test_obj, name="Layer 2", layer=2)
+    draw_window(test_obj, name="Layer Main", layer=2)
 
     Melty.end_frame()
 

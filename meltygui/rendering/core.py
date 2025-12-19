@@ -106,7 +106,8 @@ def render_wrapper(*o_args, **o_kwargs):
                 func = wrap_func(func, header_defaults=kwargs, param_defaults=param_defaults, **kwargs)
 
 
-            out_func = r_func(func, am_a_header=kwargs.get('am_a_header', False), param_types=param_types, wanted_params=wanted_params,
+            out_func = r_func(func, am_a_header=kwargs.get('am_a_header', False),
+                              param_types=param_types, wanted_params=wanted_params,
                               wanted_params_inner=wrap_defaults, header_defaults=kwargs,
                               param_defaults=param_defaults, name_to_param_type=name_to_param_type,
                               **o_kwargs)
