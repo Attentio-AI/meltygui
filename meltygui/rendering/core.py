@@ -300,7 +300,7 @@ def render_func(*args, **o_kwargs):
                                                      start_cursor[1] + draw_state.height))
 
                 collection = kwargs.get("collection", None)
-                Melty.cache.mark_uncached(input_value, tile_id)
+                Melty.cache.mark_uncached(name, input_value, collection, tile_id, draw_state)
 
                 if return_extras:
                     return *return_value, kwargs
@@ -321,7 +321,7 @@ def render_func(*args, **o_kwargs):
                         if kwargs.get("collection", None) is not None:
                             # print(name, "old value:", draw_state._input_value, "new value:", input_value)
                             # print(name)
-                            Melty.cache.invalidate_up_by_obj(kwargs.get("collection", None), name)
+                            Melty.cache.invalidate_by_obj(kwargs.get("collection", None), name)
                             request_render()
 
         collection = kwargs.get("collection", None)
@@ -455,7 +455,7 @@ def render_func(*args, **o_kwargs):
 
             if melty_window:
                 # melty_hovered = draw_state.on_action("on_hover", view_id="window_hover", priority_delta=1)
-                Melty.melty_window_stack.append((draw_state.window_pos, draw_state.window_size, unique, False))
+                Melty.melty_window_stack.append((draw_state.window_pos, draw_state.window_size, unique, False, draw_state))
                 if draw_state.window_pos is None and draw_state.width is not None:
                     draw_state.window_pos = Melty.init_window_cursor
 
@@ -658,6 +658,8 @@ def render_func(*args, **o_kwargs):
                                  cursor_pos[0] + draw_state.width + 1,
                                  cursor_pos[1] + draw_state.height))
 
+            draw_state.clip_rect = Melty.clip_stack[-1] if len(Melty.clip_stack) > 0 else None
+
             return_value = draw_inner_main(clean_args, draw_state, input_value, kwargs, melty, tile_id, unique)
             if clip:
                 Melty.pop_clip()
@@ -736,8 +738,7 @@ def render_func(*args, **o_kwargs):
                 #         draw_state.width, draw_state.height = (min(draw_state.window_size[0], clip_width),
                 #                                                  min(clip_height, draw_state.window_size[1]))
             else:
-                if draw_state.did_render:
-                    draw_state.bounding_width = snap_int(item_rect[0])
+                draw_state.bounding_width = snap_int(item_rect[0])
                 draw_state.bounding_height = snap_int(item_rect[1])
 
                 if (draw_state.bounding_width != original_width_b or
@@ -822,6 +823,8 @@ def render_func(*args, **o_kwargs):
                 click = draw_state.on_action("left_mouse_down")
 
                 if click:
+                    Melty.move_window_to_front()
+
                     if not melty_window:
                         previous_select = copy(Melty.selected)
                         if not click.modifiers:
@@ -830,10 +833,9 @@ def render_func(*args, **o_kwargs):
                             Melty.last_selected = draw_state
 
                             for prev_select in previous_select:
-                                Melty.cache.invalidate(prev_select._tile_id)
+                                # Melty.cache.invalidate(prev_select._tile_id)
                                 # Melty.cache.invalidate_up_by_obj(obj=prev_select._collection, force=True, max_depth=2)
-                                Melty.cache.invalidate_up_by_obj(obj=prev_select._input_value, force=True, max_depth=2)
-                                request_render()
+                                Melty.cache.invalidate_by_obj(obj=prev_select._input_value)
 
                         elif click.modifiers == glfw.MOD_CONTROL and click.action == "down":
                             if draw_state in Melty.selected:
@@ -841,8 +843,9 @@ def render_func(*args, **o_kwargs):
                             else:
                                 Melty.selected.add(draw_state)
 
-                            Melty.cache.invalidate(draw_state._tile_id)
-                            Melty.cache.invalidate_up_by_obj(obj=draw_state._collection, force=True, max_depth=2)
+                            Melty.cache.invalidate_by_obj(obj=input_value)
+
+
                             request_render()
                         elif click.modifiers == glfw.MOD_SHIFT and click.action == "down":
                             new_select = draw_state
@@ -853,9 +856,6 @@ def render_func(*args, **o_kwargs):
                             else:
                                 Melty.selected.add(draw_state)
                             request_render()
-
-                    if melty_window:
-                        Melty.move_window_to_front(draw_state.name, input_value)
 
 
             if draw_state in Melty.selected:
@@ -968,13 +968,12 @@ def render_func(*args, **o_kwargs):
             imgui.set_item_allow_overlap()
 
             draw_state._imgui_scroll_y = imgui.get_scroll_y()
-            draw_state.did_render = True
 
-        else:
-            draw_state.did_render = False
+        if not use_cache:
+            Melty.cache.mark_uncached(draw_state.name, input_value, collection, tile_id, draw_state)
+
         if use_cache:
             Melty.cache.mark_end_offscreen()
-
 
         if do_scroll or indent_x > 0:
             start_cursor = imgui.get_cursor_screen_pos()

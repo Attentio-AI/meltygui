@@ -555,17 +555,21 @@ class TileCacheMasked:
 
         if k not in self._tiles:
             k = self.key_to_parent_key.get(k, None)
+
+        parent_draw_state = self.key_to_draw_state.get(k, None)
         self.invalidate(k, force=force)
         # Defer parent invalidation to next frame as well
         child_keys = self.get_child_keys(k, max_depth=max_depth)
         for child in child_keys:
-            if child and child != k:
-                pt = self._tiles.get(child)
-                if pt is not None:
-                    pt.last_invalidated_frame = max(pt.last_invalidated_frame, self._frame_id + 1)
-                    pt.dirty = self._is_dirty(pt)
-                    pt.force_invalidate = True
-                    self.pending_invalid.append(pt)
+            child_draw_state = self.key_to_draw_state.get(child, None)
+            if parent_draw_state.inside_clip(child_draw_state):
+                if child and child != k:
+                    pt = self._tiles.get(child)
+                    if pt is not None:
+                        pt.last_invalidated_frame = max(pt.last_invalidated_frame, self._frame_id + 1)
+                        pt.dirty = self._is_dirty(pt)
+                        pt.force_invalidate = True
+                        self.pending_invalid.append(pt)
 
     def get_hash(self, draw_state):
         from src.lsd.gl_gui.model.dict_conversion import DictConversion
@@ -817,10 +821,35 @@ class TileCacheMasked:
                 k = parent_of.get(k)
         return subtree
 
-    def mark_uncached(self, input_value, key: str) -> None:
-        rkey = self._resolve_key(key)
+    def mark_uncached(self, name, input_value, collection, key: str, draw_state) -> None:
+        rkey = key
         parent_ctx = self._stack[-1] if self._stack else None
+
+        self.key_to_draw_state[rkey] = draw_state
+
+        # track child keys for parent
+        parent_key = parent_ctx.key if parent_ctx else None
+        if parent_key is not None:
+            if parent_key not in self.parent_key_to_child_keys:
+                self.parent_key_to_child_keys[parent_key] = set()
+            self.parent_key_to_child_keys[parent_key].add(rkey)
+
+        if name is not None:
+            name_key = f"{id(collection)}.{name}"
+            self.py_id_to_keys.setdefault(name_key, set()).add(rkey)
+
+        if isinstance(input_value, (list, dict, set, deque, MutableMapping)) or hasattr(input_value, '__dict__'):
+            self.py_id_to_keys.setdefault(f"{id(input_value)}", set()).add(rkey)
+
+        if f"{id(draw_state)}" not in self.py_id_to_keys:
+            self.py_id_to_keys[f"{id(draw_state)}"] = set()
+
+        self.py_id_to_keys[f"{id(draw_state)}"].add(rkey)
+
+        rkey = self._resolve_key(key)
         self.py_id_to_keys.setdefault(f"{id(input_value)}", set()).add(rkey)
+        self.py_id_to_keys.setdefault(f"{id(collection)}", set()).add(rkey)
+
         self.key_to_parent_key[rkey] = parent_ctx.key if parent_ctx else None
 
     # ----- Begin/End with per-view layer (from depth) -----

@@ -82,9 +82,9 @@ class ZoomState(DictConversion):
 @no_save("mouse_btn_state", "mouse_up", "mouse_down", "bounding_width", "bounding_height", "unique", "search_active",
          "drag_released","clicked", "dragged", "header_height", "dragged", "top", "left", "bounds_top", "bounds_left", "name", "expanded_height",
          "render_time", "imgui_is_toggled_open", "z_pos", "content_height", "hotkey_receiver", "use_child", "cst", "search_text",
-         "is_active", "wrapped_top", "wrapped_left", "min_width", "height", "min_height", "did_render", "is_focused", "drag_window_pos_x", "drag_window_pos_y", "drag_mode", "auto_resize", "clipped", "is_hovered_last",
+         "is_active", "clip_rect", "wrapped_top", "wrapped_left", "min_width", "height", "min_height", "is_focused", "drag_window_pos_x", "drag_window_pos_y", "drag_mode", "auto_resize", "clipped", "is_hovered_last",
          "z_pos", "draw_window_pos_x", "misc_used", "draw_window_pos_y", "drag_delta", "screen_pos", "imgui_is_item_activated", "frame_count")
-@exclude("render_time", "bounds_left", "bounds_top", "_input_value","flow_spacing",
+@exclude("render_time", "clip_rect", "bounds_left", "bounds_top", "_input_value","flow_spacing",
          "hovered", "wrapped_top", "wrapped_left", "_did_use_cache", "value_hash", "drag_window", "top", "left", "content_region", "did_render",
          "bounding_hovered", "dlt_count", "header_height", "z_pos", "scrolled", "is_hovered_last", "frame_count")
 
@@ -167,7 +167,6 @@ class DrawState(DictConversion):
         self._name_edit = False
         self._screen_pos = (0, 0)
         self._did_use_cache = False
-        self.did_render = False
         self.track_mouse = False
 
         self.mouse_btn_state = {0: MouseState(),
@@ -195,7 +194,7 @@ class DrawState(DictConversion):
         self.wrapped_top = 0
         self.wrapped_left = 0
         self.header_height = 0
-
+        self.clip_rect = None
         self.dlt_count = Melty.save_draw_state_for
 
         # Profiling
@@ -280,6 +279,30 @@ class DrawState(DictConversion):
             draw_list = imgui.get_window_draw_list()
             draw_list.channels_set_current(Melty.get_channel())
 
+    def inside_clip(self, child_draw_state=None):
+        clip_rect = self.clip_rect
+
+        if clip_rect is None:
+            return True
+
+        clip_left, clip_top, clip_right, clip_bottom = clip_rect
+
+        if child_draw_state is not None:
+            left = child_draw_state.left
+            top = child_draw_state.top
+            width = child_draw_state.width
+            height = child_draw_state.height
+
+            if top is None or left is None:
+                return True
+
+            if width is None or height is None:
+                return True
+
+            if (left + width < clip_left or left > clip_right or
+                    top + height < clip_top or top > clip_bottom):
+                return False
+        return True
     def hover_eligible(self, rect=None):
         if self.closed or not Melty.imgui_main_window_hovered:
             return False

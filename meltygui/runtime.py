@@ -845,14 +845,27 @@ class Melty:
         # return max(min(cls.max_depth - 3, cls.depth), 0)
 
     @classmethod
-    def move_window_to_front(cls, name, input_value):
+    def move_window_to_front(cls, name=None, input_value=None):
+        if name is None:
+            window_info = cls.melty_window_stack[-1] if len(cls.melty_window_stack) > 0 else None
+            if window_info is None:
+                return
+
+            name = window_info[4].name if len(cls.melty_window_stack) > 0 else "main"
+            input_value = window_info[4]._input_value
         cls.pending_move_to_front = (name, input_value)
+
 
     @classmethod
     def apply_move_to_front(cls):
+        if cls.imgui_active:
+            return
 
         if cls.pending_move_to_front is None:
             return
+
+        Melty.cache.invalidate_by_obj(cls.pending_move_to_front[1])
+        Melty.cache.invalidate_by_obj(Melty.registered_windows)
 
         window_key = f"{cls.pending_move_to_front[0]}_window"
         if window_key in Melty.registered_windows:
@@ -860,8 +873,6 @@ class Melty:
             window = Melty.registered_windows.pop(window_key)
             Melty.registered_windows[window_key] = window
 
-        Melty.cache.invalidate_by_obj(cls.pending_move_to_front[1])
-        Melty.cache.invalidate_by_obj(Melty.registered_windows)
         cls.pending_move_to_front = None
 
     @classmethod
