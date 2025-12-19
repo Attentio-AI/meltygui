@@ -499,7 +499,7 @@ def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, 
             window_draw_state.closed = True
 
 
-@render_func(use_cache=True, enable_scroll=False, auto_resize=False, closable=True, show_bg=True, melty_window=True, draggable=True)
+@render_func(use_cache=True, auto_resize=False, closable=True, show_bg=True, melty_window=True, draggable=True)
 def draw_window(input_value, unique, inner_func=None, style_manager=None, **kwargs):
     window_name = kwargs.get('name', 'Managed Window')
     draw_state = kwargs.get('draw_state', None)
@@ -1270,7 +1270,6 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             prev_tint = style_manager.get_tint()
             style_manager.set_imgui_tint(*draw_state.tint)
         elif hasattr(collection, "__tint__") and collection.__tint__ is not None and show_bg:
-            print(collection.__tint__)
             if name in collection.__tint__:
                 prev_tint = style_manager.get_tint()
                 style_manager.set_imgui_tint(*collection.__tint__[name])
@@ -1909,7 +1908,7 @@ def button(input_value="", color=None, width=None, height=None, style_manager=No
     return clicked, input_value
 
 
-def draw_header(input_value=None, name="", suffix="", closable=False, collection=None, display_name=None, meta=None, unique=None, is_tree=True,
+def draw_header(input_value=None, name="", suffix="", collection=None, display_name=None, meta=None, unique=None, is_tree=True,
                 show_name=True, name_func=None, show_type=False, show_unique=False,
                 on_search=False, trigger_collapse=False, trigger_expand=False,
                 draw_state=None, show_tint=True, opacity=1.0, show_add_delete=True,
@@ -2412,10 +2411,12 @@ def draw_function(input_value, name, draw_state, unique):
     return False, input_value
 
 @with_header_minimal(is_default_for=(int), header_same_line=True, wraps=render_func)
-def draw_int(input_value: int, min_value=-100.0, max_value=100.0, speed=0.05):
+def draw_int(input_value: int, min_value=-100.0, max_value=100.0, speed=0.05, unique=0):
     int_text_width = imgui.calc_text_size(str(input_value))[0]
 
     imgui.set_next_item_width(int_text_width + 20)
+
+    # draw_window("hello", name=f"{unique}testset", closable=False)
     max_int = 2147483647
     if input_value < max_int:
         changed, value = imgui.drag_int("##int", input_value,

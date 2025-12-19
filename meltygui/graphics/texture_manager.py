@@ -49,7 +49,6 @@ class PendingTexture:
             return False
 
         """Upload using Melty library. MUST be called from GL thread."""
-        print(id(self), "Pending texture self upload:", self.tex_width, self.tex_height)
         # Texture manager singleton
         texture_manager = TextureManager()
         texture_id = texture_manager.upload_to_gl(self)
@@ -75,7 +74,6 @@ class TextureManager:
         """Create the GL texture. MUST be called from GL thread."""
         texture_id = glGenTextures(1)
         glBindTexture(GL_TEXTURE_2D, texture_id)
-        print(f"Uploading texture '{pending.name}' ({pending.tex_width}x{pending.tex_height}) as ID {texture_id}")
         glTexImage2D(
             GL_TEXTURE_2D, 0, pending.gl_format,
             pending.tex_width, pending.tex_height, 0,

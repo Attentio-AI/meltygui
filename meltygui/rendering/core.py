@@ -172,7 +172,7 @@ def render_func(*args, **o_kwargs):
         kwargs = o_kwargs | kwargs
 
         if header_defaults is not None:
-            kwargs.update(header_defaults)
+            kwargs = header_defaults | kwargs
 
         if name == "" and is_root:
             Melty.wrapped_depth = 0
@@ -265,16 +265,6 @@ def render_func(*args, **o_kwargs):
         tile_id = strhash(str(computed_unique) + str(draw_state.id))
         draw_state._tile_id = tile_id
 
-        def move_window_to_front(possible_window_name):
-            window_key = f"{possible_window_name}_window"
-            if window_key in Melty.registered_windows:
-                # Remove and re-add to move to end (top)
-                window = Melty.registered_windows.pop(window_key)
-                Melty.registered_windows[window_key] = window
-
-            Melty.cache.invalidate_by_obj(input_value)
-            Melty.cache.invalidate_by_obj(Melty.registered_windows)
-
         if active_layer is None:
 
             if (melty.dragged_item is not None and melty.drag_in_progress and
@@ -286,8 +276,10 @@ def render_func(*args, **o_kwargs):
                     if window_key in Melty.registered_windows else None
                 kwargs['layer'] = window_z_pos
 
-            if kwargs.get("layer", None) is not None:
+            if kwargs.get("layer", None) is not None and len(Melty.layers) > 0:
                 layer = kwargs.pop("layer", None)
+                if layer >= len(Melty.layers):
+                    layer = len(Melty.layers) - 1
                 kwargs["active_layer"] = layer
                 Melty.layers[layer].append((wrapper, input_value, kwargs, draw_state))
                 return_value = (False, None)
@@ -591,7 +583,7 @@ def render_func(*args, **o_kwargs):
                                            f"got {actual_type_class_path}", *yellow)
                         return False, None
 
-            if melty_window:
+            if melty_window and kwargs.get("closable", True):
                 if window_key not in Melty.registered_windows:
                     Melty.registered_windows[window_key] = ManagedWindow(input_value=input_value,
                                                                          draw_state=kwargs.get('draw_state', None),
