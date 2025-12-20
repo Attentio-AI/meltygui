@@ -407,6 +407,7 @@ class TileCacheMasked:
         self.py_id_to_keys: Dict[str, set] = {}
         self.key_to_parent_key: Dict[str, str] = {}
         self.parent_key_to_child_keys: Dict[str, set] = {}
+        self.parent_key_to_child_keys_last: Dict[str, set] = {}
         self.key_to_draw_state: Dict[str, any] = {}
 
         self._tiles: Dict[str, Tile] = {}
@@ -499,7 +500,7 @@ class TileCacheMasked:
     #     parent_key = self.key_to_parent_key.get(self._stack[-1].key, None)
     #     self.invalidate_up(parent_key, max_depth=2)
 
-    def invalidate_up_by_obj(self, obj, name=None, max_depth=9, force=False):
+    def invalidate_up_by_obj(self, obj, name=None, max_depth=4, force=False):
         if name is not None:
             keys = self.py_id_to_keys.get(f"{id(obj)}.{name}", None)
             if keys is not None:
@@ -541,17 +542,15 @@ class TileCacheMasked:
         if depth >= max_depth:
             return set()
 
-        # draw_state = self.key_to_draw_state.get(key, None)
-        # if draw_state is not None and not draw_state.clipped:
-        #     return set()
         child_keys = self.parent_key_to_child_keys.get(key, set())
         all_keys = set(child_keys)
         for ck in child_keys:
             all_keys.update(self.get_child_keys(ck, depth + 1, max_depth=max_depth))
+
         return all_keys
 
     # More expensive, redraws all children
-    def invalidate_up(self, k: str, max_depth=9, force=False) -> None:
+    def invalidate_up(self, k: str, max_depth=4, force=False) -> None:
 
         if k not in self._tiles:
             k = self.key_to_parent_key.get(k, None)
@@ -560,16 +559,31 @@ class TileCacheMasked:
         self.invalidate(k, force=force)
         # Defer parent invalidation to next frame as well
         child_keys = self.get_child_keys(k, max_depth=max_depth)
-        for child in child_keys:
+        # Sort based on draw_state.top
+
+        # Child keys is set, convert to list of (top, child)
+        child_keys_list = list(child_keys)
+        child_keys_list.sort()
+
+        for top, height, child, clip_rect, inside_clip in child_keys_list:
             child_draw_state = self.key_to_draw_state.get(child, None)
-            if parent_draw_state.inside_clip(child_draw_state):
+            inside_clip, below, above = parent_draw_state.inside_clip(child_draw_state)
+            if above:
+                continue
+            if below:
+                return
+            if inside_clip:
                 if child and child != k:
-                    pt = self._tiles.get(child)
-                    if pt is not None:
-                        pt.last_invalidated_frame = max(pt.last_invalidated_frame, self._frame_id + 1)
-                        pt.dirty = self._is_dirty(pt)
-                        pt.force_invalidate = True
-                        self.pending_invalid.append(pt)
+                        pt = self._tiles.get(child)
+                        if pt is not None:
+                            pt.last_invalidated_frame = max(pt.last_invalidated_frame, self._frame_id + 1)
+                            pt.dirty = self._is_dirty(pt)
+                            pt.force_invalidate = True
+                            self.pending_invalid.append(pt)
+
+            # if below:
+            #     # No need to go deeper
+            #     return
 
     def get_hash(self, draw_state):
         from src.lsd.gl_gui.model.dict_conversion import DictConversion
@@ -585,7 +599,6 @@ class TileCacheMasked:
                 input_val_hash)
 
     def invalidate(self, k: str, force=False) -> None:
-
         t = self._tiles.get(k)
         if t is not None:
             target_frame = self._frame_id + 1
@@ -613,7 +626,6 @@ class TileCacheMasked:
         for parent in parent_keys:
             if parent and parent != k:
                 pt = self._tiles.get(parent)
-
                 if pt is not None:
                     pt.force_invalidate = True
                     pt.last_invalidated_frame = max(pt.last_invalidated_frame, self._frame_id + 1)
@@ -829,10 +841,13 @@ class TileCacheMasked:
 
         # track child keys for parent
         parent_key = parent_ctx.key if parent_ctx else None
-        if parent_key is not None:
-            if parent_key not in self.parent_key_to_child_keys:
-                self.parent_key_to_child_keys[parent_key] = set()
-            self.parent_key_to_child_keys[parent_key].add(rkey)
+        # if parent_key is not None:
+        #     if parent_key not in self.parent_key_to_child_keys:
+        #         self.parent_key_to_child_keys[parent_key] = set()
+        #
+        #     clip_rect = Melty.get_clip_rect()
+        #     draw_state_top = draw_state.top if draw_state is not None else 0
+        #     self.parent_key_to_child_keys[parent_key].add((draw_state_top, rkey, clip_rect))
 
         if name is not None:
             name_key = f"{id(collection)}.{name}"
@@ -905,8 +920,12 @@ class TileCacheMasked:
         parent_key = parent_ctx.key if parent_ctx else None
         if parent_key is not None:
             if parent_key not in self.parent_key_to_child_keys:
-                self.parent_key_to_child_keys[parent_key] = set()
-            self.parent_key_to_child_keys[parent_key].add(rkey)
+                self.parent_key_to_child_keys[parent_key]  = set()
+
+            clip_rect = Melty.get_clip_rect()
+            entry = draw_state.top, draw_state.height, rkey, clip_rect, draw_state.clipped
+            if draw_state.clipped:
+                self.parent_key_to_child_keys[parent_key].add(entry)
 
         if name is not None:
             name_key = f"{id(collection)}.{name}"
@@ -920,12 +939,12 @@ class TileCacheMasked:
 
         self.py_id_to_keys[f"{id(draw_state)}"].add(rkey)
 
-        try:
-            self.py_id_to_keys.setdefault(f"{id(draw_state.mouse_btn_state[0])}", set()).add(rkey)
-            self.py_id_to_keys.setdefault(f"{id(draw_state.mouse_btn_state[1])}", set()).add(rkey)
-            self.py_id_to_keys.setdefault(f"{id(draw_state.mouse_btn_state[2])}", set()).add(rkey)
-        except Exception:
-            pass
+        # try:
+        #     self.py_id_to_keys.setdefault(f"{id(draw_state.mouse_btn_state[0])}", set()).add(rkey)
+        #     self.py_id_to_keys.setdefault(f"{id(draw_state.mouse_btn_state[1])}", set()).add(rkey)
+        #     self.py_id_to_keys.setdefault(f"{id(draw_state.mouse_btn_state[2])}", set()).add(rkey)
+        # except Exception:
+        #     pass
 
         imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
         imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
@@ -1322,8 +1341,8 @@ class TileCacheMasked:
                     p.tile.dirty = self._is_dirty(p.tile)
                     # p.tile.did_invalidate = False
 
-                    draw_state = self.key_to_draw_state.get(p.key)
-                    self.initial_value[p.key] = self.get_hash(draw_state)
+                    # draw_state = self.key_to_draw_state.get(p.key)
+                    # self.initial_value[p.key] = self.get_hash(draw_state)
 
                     # self.initial_value.pop(p.key, None)
 
@@ -1371,3 +1390,5 @@ class TileCacheMasked:
             self.apply_invalid()
             # self.initial_value.clear()
             self.did_deviate.clear()
+            # self.parent_key_to_child_keys_last = copy(self.parent_key_to_child_keys)
+            # self.parent_key_to_child_keys.clear()

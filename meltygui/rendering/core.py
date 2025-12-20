@@ -669,7 +669,7 @@ def render_func(*args, **o_kwargs):
             if draw_state._has_popup:
                 is_popup_open = Melty.imgui_popup_open
                 if is_popup_open != draw_state._imgui_popover_open and not is_popup_open:
-                    Melty.cache.invalidate_up_by_obj(input_value)
+                    Melty.cache.invalidate_up_by_obj(input_value, max_depth=8)
 
                 draw_state._imgui_popover_open = Melty.imgui_popup_open
         except Exception as e:
@@ -906,18 +906,21 @@ def render_func(*args, **o_kwargs):
 
         if draw_state.width is not None and draw_state.height is not None:
             if draw_state.width > 0 and draw_state.height > 0:
-                inside_clip = Melty.fully_inside_clip(rect=(start_cursor[0], start_cursor[1],
+                inside_clip = Melty.fully_inside_clip(rect=(draw_state.left, draw_state.top,
                                                       draw_state.width, draw_state.height))
+                needs_invalidate = False
                 if inside_clip != draw_state.fully_clipped and inside_clip:
-                    Melty.cache.invalidate_up(tile_id)
-
+                    needs_invalidate = True
                 draw_state.fully_clipped = inside_clip
 
-                inside_clip = Melty.inside_clip(rect=(start_cursor[0], start_cursor[1],
+                inside_clip = Melty.inside_clip(rect=(draw_state.left, draw_state.top,
                                                             draw_state.width, draw_state.height))
                 if inside_clip != draw_state.clipped and inside_clip:
-                    Melty.cache.invalidate_up(tile_id)
+                    needs_invalidate = True
                 draw_state.clipped = inside_clip
+
+                if needs_invalidate:
+                    Melty.cache.invalidate(tile_id, force=True)
 
         last_bounding_hovered = draw_state._bounding_hovered
         new_bounding_hovered = draw_state.is_bounding_hovered()
@@ -1279,10 +1282,10 @@ def apply_drag_and_drop():
         result = apply_collection_action(action)
 
         if action.source_collection == action.target_collection:
-            Melty.cache.invalidate_up_by_obj(action.source_collection, max_depth=2)
+            Melty.cache.invalidate_up_by_obj(action.source_collection, max_depth=8)
         else:
-            Melty.cache.invalidate_up_by_obj(action.source_collection, max_depth=2)
-            Melty.cache.invalidate_up_by_obj(action.target_collection, max_depth=2)
+            Melty.cache.invalidate_up_by_obj(action.source_collection, max_depth=8)
+            Melty.cache.invalidate_up_by_obj(action.target_collection, max_depth=8)
         did_apply = True
 
     Melty.actions_to_apply = []

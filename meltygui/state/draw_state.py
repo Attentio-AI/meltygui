@@ -82,12 +82,12 @@ class ZoomState(DictConversion):
 @no_save("mouse_btn_state", "mouse_up", "mouse_down", "bounding_width", "bounding_height", "unique", "search_active",
          "drag_released","clicked", "dragged", "header_height", "dragged", "top", "left", "bounds_top", "bounds_left", "name", "expanded_height",
          "render_time", "imgui_is_toggled_open", "z_pos", "content_height", "hotkey_receiver", "use_child", "cst", "search_text",
-         "is_active", "clip_rect", "wrapped_top", "wrapped_left", "min_width", "height", "min_height", "is_focused", "drag_window_pos_x", "drag_window_pos_y", "drag_mode", "auto_resize", "clipped", "is_hovered_last",
+         "is_active", "clip_rect", "wrapped_top", "wrapped_left", "min_width", "height", "min_height", "is_focused", "drag_window_pos_x", "drag_window_pos_y", "drag_mode", "auto_resize", "is_hovered_last",
          "z_pos", "draw_window_pos_x", "misc_used", "draw_window_pos_y", "drag_delta", "screen_pos", "imgui_is_item_activated", "frame_count")
-@exclude("render_time", "clip_rect", "bounds_left", "bounds_top", "_input_value", "flow_spacing",
+@exclude("render_time", "clip_rect", "bounds_left", "bounds_top", "_input_value", "flow_spacing", "clipped", "fully_clipped", 'width',
          "hovered", "wrapped_top", "wrapped_left", "_did_use_cache", "value_hash", "drag_window", "top", "left", "content_region", "did_render",
          "bounding_hovered", "dlt_count", "header_height", "z_pos", "scrolled", "is_hovered_last", "frame_count")
-@deep_refresh("expanded", 'window_size', "scroll_offset")
+@deep_refresh("expanded", 'window_size', 'scroll_offset')
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
 
@@ -282,27 +282,35 @@ class DrawState(DictConversion):
     def inside_clip(self, child_draw_state=None):
         clip_rect = self.clip_rect
 
+        if child_draw_state is None:
+            child_draw_state = self
+
         if clip_rect is None:
-            return True
+            return True, False, False
 
         clip_left, clip_top, clip_right, clip_bottom = clip_rect
 
         if child_draw_state is not None:
             left = child_draw_state.left
             top = child_draw_state.top
-            width = child_draw_state.width
-            height = child_draw_state.height
+            width = child_draw_state.bounding_width
+            height = child_draw_state.bounding_height
 
             if top is None or left is None:
-                return True
+                return True, False, False
 
             if width is None or height is None:
-                return True
+                return True, False, False
 
             if (left + width < clip_left or left > clip_right or
                     top + height < clip_top or top > clip_bottom):
-                return False
-        return True
+                if top > clip_bottom:
+                    return False, True, False
+                else:
+                    return False, False, False
+        return True, False, False
+
+
     def hover_eligible(self, rect=None):
         if self.closed or not Melty.imgui_main_window_hovered:
             return False

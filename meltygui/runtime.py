@@ -1139,8 +1139,7 @@ class Melty:
         if width is None or height is None:
             return True
 
-        if (left + width < clip_left or left > clip_right or
-            top + height < clip_top or top > clip_bottom):
+        if (top + height < clip_top or top > clip_bottom):
             return False
         return True
 
