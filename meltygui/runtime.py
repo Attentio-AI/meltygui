@@ -6,6 +6,7 @@ import glfw
 import imgui
 import libcst as cst
 
+from src.lsd.gl_gui.collection_action import CollectionAction
 from src.shader_library.shader_manager.texture_manager import TextureManager
 from src.shader_library.shader_manager.filter import Filter
 from src.lsd.gl_gui.view.events.input_handler import InputHandler, InputEvent
@@ -13,6 +14,650 @@ from src.lsd.gl_gui.view.events.pynput_backend import PynputBackend, ImGuiBacken
 from src.lsd.gl_gui.model.core_model.core_enums import generate_id
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import global_hotkeys
+
+
+class Melty:
+    selected = set()
+    last_selected = None
+
+    draw_state_stack = []
+
+    filter = Filter()
+
+    on_drag = False
+    on_scroll = False
+    on_scroll_buffer = deque(maxlen=5)
+
+    # list, full with 32 Nones
+    max_layer = 32
+    drag_layer = 31
+    layers = []
+    active_layer = 0
+
+    windows = []
+    collection_stack = []
+    glfw_window = None
+    clip_stack = []
+    clip_stack_holder = {}
+    registered_windows = {}
+    scroll_stack = []
+    tile_id_stack = []
+
+    content_height_stack = []
+
+    cursor = (0, 0)
+
+    last_request_render = ""
+
+    actions_to_apply = []
+
+    init_window_cursor = (350, 350)
+
+    last_invalid_attr = ""
+    last_invalid = deque(maxlen=10)
+
+    channels_split = False
+    is_melty_window = False
+    melty_window_stack = []
+    default_font = None
+    max_depth = 40
+    indent_size = 10
+    annotation_mode = True
+    depth = 0
+    wrapped_depth = 0
+    current_indent = 0
+    indent_count = 0
+    unindent_count = 0
+    pending_move_to_front = None
+    imgui_popup_open = False
+    imgui_active = False
+    imgui_any_item_active = False
+    imgui_active_pending = False
+    imgui_main_window_hovered = False
+
+    max_indent = 0
+    hotkey_registry = {}
+    move_draw_state_pending = {}
+
+    # LibCST tracking -----------------------------------------
+    _path_stack: list[tuple[str, int | None]] = []  # (field, idx)
+    _root_by_module: dict[str, cst.Module] = {}
+    _gen_by_module: dict[str, int] = {}
+
+    save_draw_state_for = 1
+    spacing = (2, 1)
+    padding = (2, 2)
+    end_collection_spacing = 4
+    collection_spacing = 2
+    header_indent = 150
+
+    vis = None
+    imgui_crashed = False
+    type_defaults = {}
+    unique_stack = [0] * max_depth
+    size_stack = []
+    window_stack = []
+    window_hovered = False
+    global_attrs = {}
+    depth_state_stack = []
+    flow_spacing = 0.0
+    bg_stack = []
+    bg_color_stack = []
+    draw_state_stack = []
+    input_value_stack = [None]
+    window_enabled = True
+    cache = None
+    dirty_objects = set()
+    all_dirty = False
+    hovered_drawstate = set()
+    hovered_drawstate_pending = set()
+    frame_count = 0
+
+    blocker_hovered = False
+
+    all_uniques = set()
+    profiles_results = {}
+    live_attributes = {}
+
+    event_handler = InputHandler()
+    backend = ImGuiBackend(event_handler)
+    events = {}
+
+    texture_manager = TextureManager()
+    returned_values = {}
+
+    empty_event = InputEvent(input_id="", action="")
+    events_by_type = {}
+    pending_blockers = [None] * max_layer
+    imgui_blockers = [None] * max_layer
+
+    @classmethod
+    def begin_frame(cls):
+        cls.backend.pump()
+
+        cls.imgui_active = cls.imgui_active_pending
+        cls.imgui_active_pending = False
+
+        cls.imgui_blockers = cls.pending_blockers
+        cls.pending_blockers = [None] * cls.max_layer
+
+        cls.events, cls.events_by_type = cls.event_handler.process_frame()
+        cls.event_handler.begin_frame()
+
+        cls.on_drag = ("left_mouse_drag" in cls.events_by_type) and not cls.imgui_active
+
+        event_keys = list(cls.events.keys())
+        # To string
+        event_keys_str = [str(k) for k in event_keys]
+        concat_names = "_".join(event_keys_str)
+
+        cls.on_scroll_buffer.append("scroll_y_changed" in cls.events_by_type and "view_scroll" in concat_names)
+        cls.on_scroll = any(cls.on_scroll_buffer)
+
+        # for view_id, evts in cls.events.items():
+        #     for e in evts:
+        #         print(f"  {view_id}: {e.input_id}:{e.action}")
+
+        # cls.texture_manager.upload_pending()
+
+        # # Check live attributes
+        # for obj, attributes in cls.live_attributes.items():
+        #     for attrib in attributes:
+        #         try:
+        #             new_value = getattr(obj, attrib)
+        #         except Exception:
+        #             continue
+
+        Melty.bg_stack = [(0, 0, 0)]
+
+        Melty.active_layer = 0
+        cls.frame_count += 1
+        cls.blocker_hovered = False
+
+        cls.layers.clear()
+        for _ in range(cls.max_layer):
+            cls.layers.append([])
+        # Handle global hotkeys
+        # for hotkey, target in global_hotkeys.items():
+        #     if Melty.is_key_pressed(hotkey.key):
+        #         if callable(target):
+        #             target()
+        # for view_id, evts in cls.events.items():
+        #     first_event = list(evts.values())[0]
+        #     if first_event.tile_id is not None and not cls.on_drag:
+        #         Melty.cache.clear(first_event.tile_id, force=True)
+
+        Melty.all_uniques = set()
+
+        Melty.hovered_drawstate_pending = set()
+
+        Melty.clip_stack = []
+        # cls._root_by_module[module_id] = root
+        # cls._gen_by_module.setdefault(module_id, 0)
+        # cls._path_stack.clear()
+        fb_w, fb_h = map(int, imgui.get_io().display_size)  # or your true GL FB size if HiDPI
+        cls.cache.mask_begin_frame((fb_w, fb_h))
+
+
+        from src.lsd.gl_gui.view.core_views.core_render_helpers import clear_floating_text_cache
+        clear_floating_text_cache()
+
+    @classmethod
+    def end_frame(cls):
+
+        cls.returned_values = {}
+
+        # cls.draw_blockers_to()
+
+        for idx in range(len(cls.layers)):
+            layer = cls.layers[idx]
+            imgui.set_cursor_screen_pos((0, 0))
+            Melty.active_layer = idx
+
+            if not Melty.channels_split:
+                imgui.get_window_draw_list().channels_split(Melty.max_depth)
+                imgui.get_window_draw_list().channels_set_current(Melty.max_depth - 1)
+                Melty.channels_split = True
+
+            imgui.push_id(f"melty_layer_{idx}")
+
+            for view in layer:
+                if view is not None:
+                    draw_state = view[3]
+                    imgui.set_cursor_screen_pos((0, 0))
+                    view_func = view[0]
+                    input_value = view[1]
+                    kwargs = view[2]
+
+                    fill_original = kwargs.get("start_pos", None) is not None
+                    if fill_original:
+                        imgui.set_cursor_screen_pos(kwargs["start_pos"])
+
+                    return_val = view_func(input_value, **kwargs)
+                    if return_val is not None:
+                        cls.returned_values[draw_state.id] = return_val
+            #
+            if Melty.channels_split:
+                # Flatten layers into single channel
+                imgui.get_window_draw_list().channels_set_current(0)
+                imgui.get_window_draw_list().channels_merge()
+                Melty.channels_split = False
+
+            imgui.pop_id()
+
+        cls.layers = []
+
+        is_popup_open = imgui.is_popup_open("", flags=imgui.POPUP_ANY_POPUP)
+        Melty.imgui_popup_open = is_popup_open
+        #
+        from src.lsd.gl_gui.view.core_views.core_render import get_melty_state
+        melty = get_melty_state()
+
+        if not cls.on_drag:
+            cls.apply_move_to_front()
+        # melty.last_mouse_pos = imgui.get_mouse_pos()
+        # # Did mouse move
+        # if len(melty.hover_stack) > 0:
+        #     last = melty.hover_stack[0]
+        #     hovered_draw_state = Melty.vis.root.draw_state_registry.get(last, None)
+        #     if hovered_draw_state is not None:
+        #         hovered_draw_state._hovered = True
+        #         Melty.hovered_drawstate_pending.add(hovered_draw_state.id)
+        #
+        # if len(melty.hotkey_stack) > 0:
+        #     last = melty.hotkey_stack[0]
+        #     hovered_draw_state = Melty.vis.root.draw_state_registry.get(last, None)
+        #     if hovered_draw_state is not None:
+        #         hovered_draw_state.hotkey_receiver = True
+
+        melty.hover_stack = []
+        melty.hotkey_stack = []
+        melty.unique_stack = []
+        Melty.draw_state_stack = []
+
+
+        if not melty.nearest_drop_target is None:
+            melty.drag_drop_target = melty.nearest_drop_target
+            melty.drag_drop_target_tag = melty.nearest_drop_target_tag
+
+        while len(melty.items_to_delete) > 0:
+            key, collection = melty.items_to_delete.pop(0)
+            delete_from_collection(key, collection)
+            request_render()
+
+        Melty.hovered_drawstate = Melty.hovered_drawstate_pending
+        Melty.imgui_any_item_active = imgui.is_any_item_active()
+
+
+        # cls._root_by_module[module_id] = root
+        # cls._gen_by_module.setdefault(module_id, 0)
+        # cls._path_stack.clear()
+
+    @classmethod
+    def get_latest_mouse(cls):
+        return imgui.get_io().mouse_pos
+
+    @classmethod
+    def report_imgui_active(cls):
+        cls.imgui_active_pending = True
+        cls.imgui_active = True
+
+    @classmethod
+    def add_blocker(cls, rect, layer=None):
+        if layer is None:
+            layer = cls.active_layer
+        cls.pending_blockers[layer] = rect
+
+    @classmethod
+    def on(cls, event_name, tile_id) -> Optional[InputEvent]:
+        id_str = tile_id
+        if id_str in cls.events:
+            if event_name in cls.events[id_str]:
+                return cls.events[id_str][event_name]
+        return None
+
+    @classmethod
+    def to_apply(cls, action: CollectionAction):
+        cls.actions_to_apply.append(action)
+
+    @classmethod
+    def cleanup(cls):
+        cls.filter.cleanup()
+        cls.texture_manager.clear()
+
+    @classmethod
+    def get_channel(cls):
+        return cls.depth
+        # return max(min(cls.max_depth - 3, cls.depth), 0)
+
+    @classmethod
+    def move_window_to_front(cls, name=None, input_value=None, tile_id=None):
+        if name is None:
+            window_info = cls.melty_window_stack[-1] if len(cls.melty_window_stack) > 0 else None
+            if window_info is None:
+                return
+            name = window_info[4].name if len(cls.melty_window_stack) > 0 else "main"
+            input_value = window_info[4]._input_value
+            tile_id = window_info[4]._tile_id
+
+            window_key = f"{name}_window"
+            cls.pending_move_to_front = (name, input_value, tile_id)
+
+            if window_key in Melty.registered_windows:
+                # Remove and re-insert to move to end (top)
+                window = Melty.registered_windows.pop(window_key)
+                Melty.registered_windows[window_key] = window
+
+        # Melty.cache.invalidate_up(tile_id)
+
+    @classmethod
+    def apply_move_to_front(cls):
+        if cls.imgui_active:
+            return
+
+        if cls.pending_move_to_front is None:
+            return
+        Melty.cache.invalidate_by_obj(Melty.registered_windows)
+        Melty.cache.invalidate_up(cls.pending_move_to_front[2], max_depth=6, force=True)
+
+        cls.pending_move_to_front = None
+
+    @classmethod
+    def draw_blockers_to(cls):
+        # Draw invisible buttons for each
+        current_pos = imgui.get_cursor_screen_pos()
+        blockers_rev = reversed(cls.imgui_blockers[:])
+        for layer, rect in enumerate(blockers_rev):
+            if rect is not None:
+                imgui.set_cursor_screen_pos((rect[0], rect[1]))
+                imgui.button(f"melty_blocker_{layer}",
+                             rect[2] - rect[0],
+                             rect[3] - rect[1])
+
+        imgui.set_cursor_screen_pos(current_pos)
+
+    @classmethod
+    def set_channel(cls, layer_idx):
+        if cls.channels_split:
+            imgui.get_window_draw_list().channels_set_current(layer_idx)
+
+
+    @classmethod
+    def get_tile_id(cls):
+        if len(cls.tile_id_stack) > 0:
+            return cls.tile_id_stack[-1]
+        else:
+            return ""
+
+    @classmethod
+    def get_parent_tile_id(cls):
+        if len(cls.tile_id_stack) > 1:
+            return cls.tile_id_stack[-2]
+        else:
+            return None
+
+    @classmethod
+    def push_clip(cls, rect):
+        draw_list = imgui.get_window_draw_list()
+        current_clip = cls.get_clip_rect()
+        if current_clip is not None:
+            clip_new_rect = (
+                max(current_clip[0], rect[0]),
+                max(current_clip[1], rect[1]),
+                min(current_clip[2], rect[2]),
+                min(current_clip[3], rect[3]),
+            )
+            rect = clip_new_rect
+
+        draw_list.push_clip_rect(*rect)
+        cls.clip_stack.append(rect)
+
+    @classmethod
+    def pop_clip(cls):
+        if len(cls.clip_stack) == 0:
+            return
+        draw_list = imgui.get_window_draw_list()
+        draw_list.pop_clip_rect()
+        cls.clip_stack.pop()
+
+    @classmethod
+    def get_clip_rect(cls):
+        if len(cls.clip_stack) == 0:
+            return None
+        return cls.clip_stack[-1]
+
+    @classmethod
+    def get_clip_size(cls):
+        if len(cls.clip_stack) == 0:
+            display_size = imgui.get_io().display_size
+            return int(display_size[0]) - 1, int(display_size[1]) - 1
+        rect = cls.clip_stack[-1]
+        width = rect[2] - rect[0]
+        height = rect[3] - rect[1]
+        return width - 1, height - 1
+
+    @classmethod
+    def get_parent_size(cls):
+        if len(cls.clip_stack) < 2:
+            return None, None
+        rect = cls.clip_stack[-2]
+        width = rect[2] - rect[0]
+        height = rect[3] - rect[1]
+        return width, height
+
+    @classmethod
+    def get_space_left(cls):
+        clip_rect = cls.get_clip_rect()
+        if clip_rect is None:
+            return 40
+        cursor_x, _ = imgui.get_cursor_screen_pos()
+        space_left = clip_rect[2] - cursor_x - 23
+        return space_left
+
+    @classmethod
+    def init_complete(cls):
+        return cls.frame_count > 2
+
+    @classmethod
+    def inside_clip(cls, draw_state=None, rect=None):
+        clip_rect = cls.get_clip_rect()
+        if clip_rect is None:
+            return True
+        clip_left, clip_top, clip_right, clip_bottom = clip_rect
+
+        if draw_state is not None:
+            left = draw_state.left
+            top = draw_state.top
+            width = draw_state.width
+            height = draw_state.height
+        else:
+            left, top, width, height = rect
+
+        if top is None or left is None:
+            return True
+
+        if width is None or height is None:
+            return True
+
+        if (top + height < clip_top or top > clip_bottom):
+            return False
+        return True
+
+    @classmethod
+    def fully_inside_clip(cls, draw_state=None, rect=None):
+        clip_rect = cls.get_clip_rect()
+        if clip_rect is None:
+            return True
+        clip_left, clip_top, clip_right, clip_bottom = clip_rect
+
+        if draw_state is not None:
+            left = draw_state.left
+            top = draw_state.top
+            width = draw_state.width
+            height = draw_state.height
+        else:
+            left, top, width, height = rect
+
+        if top is None or left is None:
+            return True
+
+        if width is None or height is None:
+            return True
+
+        if (top < clip_top or top + height > clip_bottom):
+            return False
+
+        return True
+
+    @classmethod
+    def undo_clip(cls, undo_point_id):
+        """Context manager to temporarily clear the ID stack."""
+        cls.clip_stack_holder[undo_point_id] = cls.clip_stack[:]
+        for _ in cls.clip_stack_holder[undo_point_id]:
+            draw_list = imgui.get_window_draw_list()
+            draw_list.pop_clip_rect()
+        cls.clip_stack = []
+
+    @classmethod
+    def redo_clip(cls, undo_point_id):
+        """Restore the ID stack to a previously saved state."""
+        if undo_point_id in cls.clip_stack_holder:
+            saved_stack = cls.clip_stack_holder.pop(undo_point_id)
+            for rect in saved_stack:
+                draw_list = imgui.get_window_draw_list()
+                draw_list.push_clip_rect(*rect)
+            cls.clip_stack = saved_stack
+
+    @classmethod
+    def invalidate(cls, parent=None, value=None, attr_name=None):
+        # if len(cls.dirty_objects) > 1000:
+        #     cls.all_dirty = True
+        #     cls.dirty_objects.clear()
+        #     return
+        cls.last_invalid_attr = f"{parent.__class__.__name__} {str(attr_name)}"
+        cls.last_invalid.append(cls.last_invalid_attr)
+        Melty.cache.invalidate_by_obj(cls.last_invalid)
+        Melty.cache.invalidate_by_obj(value)
+
+        if attr_name is not None:
+            Melty.cache.invalidate_by_obj(parent, attr_name)
+
+        else:
+            if value is not None and (hasattr(value, "__dict__") or isinstance(value, (dict, list, set))):
+                Melty.cache.invalidate_by_obj(value)
+
+            elif parent is not None:
+                Melty.cache.invalidate_by_obj(parent)
+
+    @classmethod
+    def current_path(cls) -> tuple[tuple[str, int | None], ...]:
+        return tuple(cls._path_stack)
+
+    @classmethod
+    def push_slot(cls, field: str, idx: int | None):
+        cls._path_stack.append((field, idx))
+
+    @classmethod
+    def pop_slot(cls):
+        cls._path_stack.pop()
+
+    @classmethod
+    def current_root(cls, module_id: str) -> cst.Module:
+        return cls._root_by_module[module_id]
+
+    @classmethod
+    def bump_gen(cls, module_id: str):
+        cls._gen_by_module[module_id] += 1
+
+    @classmethod
+    def current_gen(cls, module_id: str) -> int:
+        return cls._gen_by_module[module_id]
+
+    # LibCST tracking---------------------------------------------------------
+
+    @classmethod
+    def indent(cls, amount):
+        if amount == 0:
+            return
+        cls.indent_count += 1
+        cls.current_indent += amount
+        cls.max_indent = max(cls.max_indent, cls.current_indent)
+        imgui.indent(amount)
+
+    @classmethod
+    def unindent(cls, amount):
+        if amount == 0:
+            return
+        cls.current_indent -= amount
+        imgui.unindent(amount)
+        cls.unindent_count += 1
+
+    @classmethod
+    def inside_window(cls):
+        return len(cls.window_stack) > 0
+
+    @classmethod
+    def shift_down(cls):
+        return (glfw.get_key(cls.vis.window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS or
+                glfw.get_key(cls.vis.window, glfw.KEY_RIGHT_SHIFT) == glfw.PRESS)
+
+    @classmethod
+    def is_window_enabled(cls):
+        return cls.window_enabled
+        # if len(cls.window_stack) == 0:
+        #     return True
+        # return cls.window_stack[-1][1]
+
+    @classmethod
+    def get_bg_color(cls, depth=None):
+        if depth is None:
+            depth = cls.depth
+        if len(cls.bg_stack) == 0:
+            return 0, 0, 0
+
+        # Allow for negative index from end, but clamp to available range
+        if depth < 0:
+            depth = len(cls.bg_stack) + depth
+        depth = max(0, min(depth, len(cls.bg_stack) - 1))
+        return cls.bg_stack[depth][0:3]
+
+    @classmethod
+    def shift_key(cls):
+        return (glfw.get_key(cls.vis.window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS or
+                glfw.get_key(cls.vis.window, glfw.KEY_RIGHT_SHIFT) == glfw.PRESS)
+
+    @classmethod
+    def ctrl_key(cls, ):
+        return (glfw.get_key(cls.vis.window, glfw.KEY_LEFT_CONTROL) == glfw.PRESS or
+                glfw.get_key(cls.vis.window, glfw.KEY_RIGHT_CONTROL) == glfw.PRESS)
+
+    @classmethod
+    def init(cls, **kwargs):
+        for key, value in kwargs.items():
+            setattr(cls, key, value)
+            cls.global_attrs[key] = value
+        cls.annotation_mode = False
+
+    @classmethod
+    def init_ui(cls, **kwargs):
+        pass
+        # cls.backend.start()
+
+    @classmethod
+    def is_key_pressed(cls, key=glfw.KEY_ESCAPE):
+        if imgui.is_any_item_focused() or imgui.is_any_item_active():
+            if not cls.ctrl_key():
+                # If any item is focused or active, we don't want to capture key presses
+                return False
+
+        if key not in cls.vis.tracked_keys:
+            cls.vis.tracked_keys.append(key)
+            cls.vis.first_frame_keys.add(key)
+
+        if glfw.get_key(cls.vis.window, key) == glfw.PRESS:
+            if key in cls.vis.first_frame_keys:
+                return True
+        return False
 
 
 class Action:
@@ -45,47 +690,6 @@ class MouseAction:
         self.button = button
         self.value = value
 
-class OperationType(Enum):
-    COPY = 'copy'
-    MOVE = 'move'
-    ADD = 'add'
-    DELETE = 'delete'
-    NAME_CHANGE = 'name_change'
-
-class CollectionAction:
-    def __init__(self,
-                 target_unique = None,
-                 source_unique=None,
-                 target_tag=None,
-                 target_key=None,
-                 source_key=None,
-                 source_collection=None,
-                 target_collection=None,
-                 operation=OperationType.MOVE):
-        self.target_unique = target_unique
-        self.target_key = target_key
-        self.target_tag = target_tag
-        self.target_collection = target_collection
-        self.target_draw_state = None
-
-        self.source_unique = source_unique
-        self.source_key = source_key
-        self.source_collection = source_collection
-        self.source_draw_state = None
-
-        self.operation = operation
-        self.class_move = False
-        self.target_class = None
-
-    def print(self):
-        print(f"CollectionAction: op {self.operation}\n"
-              f"source_key {self.source_key}\n"
-              f"source_unique {self.source_unique}\n"
-              f"target_key {self.target_key}\n"
-              f"target_unique {self.target_unique}\n"
-              f"target_tag {self.target_tag}\n"
-              f"source collection {type(self.source_collection).__name__}\n"
-              f"target collection {type(self.target_collection).__name__}")
 
 
 from enum import Enum
@@ -695,637 +1299,3 @@ class ManagedWindow:
         self.window_args = window_args
         self.name = name
 
-class Melty:
-
-    selected = set()
-    last_selected = None
-
-    draw_state_stack = []
-
-    filter = Filter()
-
-    # list, full with 32 Nones
-    max_layer = 32
-    drag_layer = 31
-    layers = []
-    active_layer = 0
-
-    windows = []
-    collection_stack = []
-    glfw_window = None
-    clip_stack = []
-    clip_stack_holder = {}
-    registered_windows = {}
-    scroll_stack = []
-    tile_id_stack = []
-
-    content_height_stack = []
-
-    cursor = (0, 0)
-
-    last_request_render = ""
-
-    actions_to_apply = []
-
-    init_window_cursor = (350, 350)
-
-    last_invalid_attr = ""
-    last_invalid = deque(maxlen=10)
-
-    channels_split = False
-    is_melty_window = False
-    melty_window_stack = []
-    default_font = None
-    max_depth = 40
-    indent_size = 10
-    annotation_mode = True
-    depth = 0
-    wrapped_depth = 0
-    current_indent = 0
-    indent_count = 0
-    unindent_count = 0
-    pending_move_to_front = None
-    imgui_popup_open = False
-    imgui_active = False
-    imgui_any_item_active = False
-    imgui_active_pending = False
-    imgui_main_window_hovered = False
-
-    max_indent = 0
-    hotkey_registry = {}
-    move_draw_state_pending = {}
-
-    # LibCST tracking -----------------------------------------
-    _path_stack: list[tuple[str, int | None]] = []  # (field, idx)
-    _root_by_module: dict[str, cst.Module] = {}
-    _gen_by_module: dict[str, int] = {}
-
-    save_draw_state_for = 1
-    spacing = (2, 1)
-    padding = (2, 2)
-    end_collection_spacing = 4
-    collection_spacing = 2
-    header_indent = 150
-
-    vis = None
-    imgui_crashed = False
-    type_defaults = {}
-    unique_stack = [0] * max_depth
-    size_stack = []
-    window_stack = []
-    window_hovered = False
-    global_attrs = {}
-    depth_state_stack = []
-    flow_spacing = 0.0
-    bg_stack = []
-    bg_color_stack = []
-    draw_state_stack = []
-    input_value_stack = [None]
-    window_enabled = True
-    cache = None
-    dirty_objects = set()
-    all_dirty = False
-    hovered_drawstate = set()
-    hovered_drawstate_pending = set()
-    frame_count = 0
-
-    blocker_hovered = False
-
-    all_uniques = set()
-    profiles_results = {}
-    live_attributes = {}
-
-    event_handler = InputHandler()
-    backend = ImGuiBackend(event_handler)
-    events = {}
-
-    texture_manager = TextureManager()
-    returned_values = {}
-
-    empty_event = InputEvent(input_id="", action="")
-
-    pending_blockers = [None] * max_layer
-    imgui_blockers = [None] * max_layer
-
-    @classmethod
-    def get_latest_mouse(cls):
-        return imgui.get_io().mouse_pos
-
-    @classmethod
-    def report_imgui_active(cls):
-        cls.imgui_active_pending = True
-        cls.imgui_active = True
-
-    @classmethod
-    def add_blocker(cls, rect, layer=None):
-        if layer is None:
-            layer = cls.active_layer
-        cls.pending_blockers[layer] = rect
-
-    @classmethod
-    def on(cls, event_name, tile_id) -> Optional[InputEvent]:
-        id_str = tile_id
-        if id_str in cls.events:
-            if event_name in cls.events[id_str]:
-                return cls.events[id_str][event_name]
-        return None
-
-    @classmethod
-    def to_apply(cls, action: CollectionAction):
-        cls.actions_to_apply.append(action)
-
-    @classmethod
-    def cleanup(cls):
-        cls.filter.cleanup()
-        cls.texture_manager.clear()
-
-    @classmethod
-    def get_channel(cls):
-        return cls.depth
-        # return max(min(cls.max_depth - 3, cls.depth), 0)
-
-    @classmethod
-    def move_window_to_front(cls, name=None, input_value=None):
-        if name is None:
-            window_info = cls.melty_window_stack[-1] if len(cls.melty_window_stack) > 0 else None
-            if window_info is None:
-                return
-
-            name = window_info[4].name if len(cls.melty_window_stack) > 0 else "main"
-            input_value = window_info[4]._input_value
-        cls.pending_move_to_front = (name, input_value)
-
-
-    @classmethod
-    def apply_move_to_front(cls):
-        if cls.imgui_active:
-            return
-
-        if cls.pending_move_to_front is None:
-            return
-
-        Melty.cache.invalidate_by_obj(cls.pending_move_to_front[1])
-        Melty.cache.invalidate_by_obj(Melty.registered_windows)
-
-        window_key = f"{cls.pending_move_to_front[0]}_window"
-        if window_key in Melty.registered_windows:
-            # Remove and re-insert to move to front (top)
-            window = Melty.registered_windows.pop(window_key)
-            Melty.registered_windows[window_key] = window
-
-        cls.pending_move_to_front = None
-
-    @classmethod
-    def begin_frame(cls):
-        cls.backend.pump()
-
-        cls.imgui_active = cls.imgui_active_pending
-        cls.imgui_active_pending = False
-
-        cls.imgui_blockers = cls.pending_blockers
-        cls.pending_blockers = [None] * cls.max_layer
-
-        cls.events = cls.event_handler.process_frame()
-        cls.event_handler.begin_frame()
-
-        #
-        # for view_id, evts in cls.events.items():
-        #     for e in evts:
-        #         print(f"Event {view_id}: {e.input_id}:{e.action}")
-
-        # cls.texture_manager.upload_pending()
-
-        # # Check live attributes
-        # for obj, attributes in cls.live_attributes.items():
-        #     for attrib in attributes:
-        #         try:
-        #             new_value = getattr(obj, attrib)
-        #         except Exception:
-        #             continue
-
-        Melty.bg_stack = [(0, 0, 0)]
-
-        Melty.active_layer = 0
-        cls.frame_count += 1
-        cls.blocker_hovered = False
-
-        cls.layers.clear()
-        for _ in range(cls.max_layer):
-            cls.layers.append([])
-        # Handle global hotkeys
-        # for hotkey, target in global_hotkeys.items():
-        #     if melty.is_key_pressed(hotkey.key):
-        #         if callable(target):
-        #             target()
-
-        Melty.all_uniques = set()
-
-        Melty.hovered_drawstate_pending = set()
-
-        Melty.clip_stack = []
-        # cls._root_by_module[module_id] = root
-        # cls._gen_by_module.setdefault(module_id, 0)
-        # cls._path_stack.clear()
-        fb_w, fb_h = map(int, imgui.get_io().display_size)  # Get: true GL FB size for HiDPI
-        cls.cache.mask_begin_frame((fb_w, fb_h))
-
-        from src.lsd.gl_gui.view.core_views.core_render_helpers import clear_floating_text_cache
-        clear_floating_text_cache()
-
-    @classmethod
-    def draw_blockers_to(cls):
-        # Draw blocking buttons for each
-        current_pos = imgui.get_cursor_screen_pos()
-        blockers_rev = reversed(cls.imgui_blockers[:])
-        for layer, rect in enumerate(blockers_rev):
-            if rect is not None:
-                imgui.set_cursor_screen_pos((rect[0], rect[1]))
-                imgui.button(f"melty_blocker_{layer}",
-                                       rect[2]-rect[0],
-                                       rect[3]-rect[1])
-
-        imgui.set_cursor_screen_pos(current_pos)
-
-    @classmethod
-    def set_channel(cls, layer_idx):
-        if cls.channels_split:
-            imgui.get_window_draw_list().channels_set_current(layer_idx)
-
-    @classmethod
-    def end_frame(cls):
-
-        cls.returned_values = {}
-
-
-        # cls.draw_blockers_to()
-
-        for idx in range(len(cls.layers)):
-            layer = cls.layers[idx]
-            imgui.set_cursor_screen_pos((0, 0))
-            Melty.active_layer = idx
-
-            if not Melty.channels_split:
-                imgui.get_window_draw_list().channels_split(Melty.max_depth)
-                imgui.get_window_draw_list().channels_set_current(Melty.max_depth- 1)
-                Melty.channels_split = True
-
-            imgui.push_id(f"melty_layer_{idx}")
-
-
-            for view in layer:
-                if view is not None:
-                    draw_state = view[3]
-                    imgui.set_cursor_screen_pos((0,0))
-                    view_func = view[0]
-                    input_value = view[1]
-                    kwargs = view[2]
-
-                    fill_original = kwargs.get("start_pos", None) is not None
-                    if fill_original:
-                        imgui.set_cursor_screen_pos(kwargs["start_pos"])
-
-                    return_val = view_func(input_value, **kwargs)
-                    if return_val is not None:
-                        cls.returned_values[draw_state.id] = return_val
-            #
-            if Melty.channels_split:
-                # Merge layers into single channel
-                imgui.get_window_draw_list().channels_set_current(0)
-                imgui.get_window_draw_list().channels_merge()
-                Melty.channels_split = False
-
-            imgui.pop_id()
-
-
-        cls.layers = []
-
-        is_popup_open = imgui.is_popup_open("", flags=imgui.POPUP_ANY_POPUP)
-        Melty.imgui_popup_open = is_popup_open
-        #
-        from src.lsd.gl_gui.view.core_views.core_render import get_melty_state
-        melty = get_melty_state()
-        # melty.last_mouse_pos = imgui.get_mouse_pos()
-        # # Did mouse move
-        # if len(melty.hover_stack) > 0:
-        #     last = melty.hover_stack[0]
-        #     hovered_draw_state = Melty.vis.root.draw_state_registry.get(last, None)
-        #     if hovered_draw_state is not None:
-        #         hovered_draw_state._hovered = True
-        #         Melty.hovered_drawstate_pending.add(hovered_draw_state.id)
-        #
-        # if len(melty.hotkey_stack) > 0:
-        #     last = melty.hotkey_stack[0]
-        #     hovered_draw_state = Melty.vis.root.draw_state_registry.get(last, None)
-        #     if hovered_draw_state is not None:
-        #         hovered_draw_state.hotkey_receiver = True
-
-        melty.hover_stack = []
-        melty.hotkey_stack = []
-        melty.unique_stack = []
-        Melty.draw_state_stack = []
-
-        if not melty.nearest_drop_target is None:
-            melty.drag_drop_target = melty.nearest_drop_target
-            melty.drag_drop_target_tag = melty.nearest_drop_target_tag
-
-        while len(melty.items_to_delete) > 0:
-            key, collection = melty.items_to_delete.pop(0)
-            delete_from_collection(key, collection)
-            request_render()
-
-        Melty.hovered_drawstate = Melty.hovered_drawstate_pending
-        Melty.imgui_any_item_active = imgui.is_any_item_active()
-
-        cls.apply_move_to_front()
-
-        # cls._root_by_module[module_id] = root
-        # cls._gen_by_module.setdefault(module_id, 0)
-        # cls._path_stack.clear()
-
-    @classmethod
-    def get_tile_id(cls):
-        if len(cls.tile_id_stack) > 0:
-            return cls.tile_id_stack[-1]
-        else:
-            return ""
-
-    @classmethod
-    def get_parent_tile_id(cls):
-        if len(cls.tile_id_stack) > 1:
-            return cls.tile_id_stack[-2]
-        else:
-            return None
-
-    @classmethod
-    def push_clip(cls, rect):
-        draw_list = imgui.get_window_draw_list()
-        current_clip = cls.get_clip_rect()
-        if current_clip is not None:
-            clip_new_rect = (
-                max(current_clip[0], rect[0]),
-                max(current_clip[1], rect[1]),
-                min(current_clip[2], rect[2]),
-                min(current_clip[3], rect[3]),
-            )
-            rect = clip_new_rect
-
-        draw_list.push_clip_rect(*rect)
-        cls.clip_stack.append(rect)
-
-    @classmethod
-    def pop_clip(cls):
-        if len(cls.clip_stack) == 0:
-            return
-        draw_list = imgui.get_window_draw_list()
-        draw_list.pop_clip_rect()
-        cls.clip_stack.pop()
-
-    @classmethod
-    def get_clip_rect(cls):
-        if len(cls.clip_stack) == 0:
-            return None
-        return cls.clip_stack[-1]
-
-    @classmethod
-    def get_clip_size(cls):
-        if len(cls.clip_stack) == 0:
-            display_size = imgui.get_io().display_size
-            return int(display_size[0]) - 1, int(display_size[1]) - 1
-        rect = cls.clip_stack[-1]
-        width = rect[2] - rect[0]
-        height = rect[3] - rect[1]
-        return width - 1, height - 1
-
-    @classmethod
-    def get_parent_size(cls):
-        if len(cls.clip_stack) < 2:
-            return None, None
-        rect = cls.clip_stack[-2]
-        width = rect[2] - rect[0]
-        height = rect[3] - rect[1]
-        return width, height
-
-    @classmethod
-    def get_space_left(cls):
-        clip_rect = cls.get_clip_rect()
-        if clip_rect is None:
-            return 40
-        cursor_x, _ = imgui.get_cursor_screen_pos()
-        space_left = clip_rect[2] - cursor_x - 23
-        return space_left
-
-    @classmethod
-    def init_complete(cls):
-        return cls.frame_count > 2
-
-    @classmethod
-    def inside_clip(cls, draw_state=None, rect=None):
-        clip_rect = cls.get_clip_rect()
-        if clip_rect is None:
-            return True
-        clip_left, clip_top, clip_right, clip_bottom = clip_rect
-
-        if draw_state is not None:
-            left = draw_state.left
-            top = draw_state.top
-            width = draw_state.width
-            height = draw_state.height
-        else:
-            left, top, width, height = rect
-
-        if top is None or left is None:
-            return True
-
-        if width is None or height is None:
-            return True
-
-        if (top + height < clip_top or top > clip_bottom):
-            return False
-        return True
-
-    @classmethod
-    def fully_inside_clip(cls, draw_state=None, rect=None):
-        clip_rect = cls.get_clip_rect()
-        if clip_rect is None:
-            return True
-        clip_left, clip_top, clip_right, clip_bottom = clip_rect
-
-        if draw_state is not None:
-            left = draw_state.left
-            top = draw_state.top
-            width = draw_state.width
-            height = draw_state.height
-        else:
-            left, top, width, height = rect
-
-        if top is None or left is None:
-            return True
-
-        if width is None or height is None:
-            return True
-
-        if (top < clip_top or top + height > clip_bottom):
-            return False
-
-        return True
-
-
-    @classmethod
-    def undo_clip(cls, undo_point_id):
-        """Context manager to temporarily clear the ID stack."""
-        cls.clip_stack_holder[undo_point_id] = cls.clip_stack[:]
-        for _ in cls.clip_stack_holder[undo_point_id]:
-            draw_list = imgui.get_window_draw_list()
-            draw_list.pop_clip_rect()
-        cls.clip_stack = []
-
-    @classmethod
-    def redo_clip(cls, undo_point_id):
-        """Restore the ID stack to a previously saved state."""
-        if undo_point_id in cls.clip_stack_holder:
-            saved_stack = cls.clip_stack_holder.pop(undo_point_id)
-            for rect in saved_stack:
-                draw_list = imgui.get_window_draw_list()
-                draw_list.push_clip_rect(*rect)
-            cls.clip_stack = saved_stack
-
-
-    @classmethod
-    def invalidate(cls, parent=None, value=None, attr_name=None):
-        # if len(cls.dirty_objects) > 1000:
-        #     cls.all_dirty = True
-        #     cls.dirty_objects.clear()
-        #     return
-        cls.last_invalid_attr = f"{parent.__class__.__name__} {str(attr_name)}"
-        cls.last_invalid.append(cls.last_invalid_attr)
-        Melty.cache.invalidate_by_obj(cls.last_invalid)
-        Melty.cache.invalidate_by_obj(value)
-
-        if attr_name is not None:
-            Melty.cache.invalidate_by_obj(parent, attr_name)
-
-        else:
-            if value is not None and (hasattr(value, "__dict__") or isinstance(value, (dict, list, set))):
-                Melty.cache.invalidate_by_obj(value)
-
-            elif parent is not None:
-                Melty.cache.invalidate_by_obj(parent)
-
-
-
-    @classmethod
-    def current_path(cls) -> tuple[tuple[str, int | None], ...]:
-        return tuple(cls._path_stack)
-
-    @classmethod
-    def push_slot(cls, field: str, idx: int | None):
-        cls._path_stack.append((field, idx))
-
-    @classmethod
-    def pop_slot(cls):
-        cls._path_stack.pop()
-
-    @classmethod
-    def current_root(cls, module_id: str) -> cst.Module:
-        return cls._root_by_module[module_id]
-
-    @classmethod
-    def bump_gen(cls, module_id: str):
-        cls._gen_by_module[module_id] += 1
-
-    @classmethod
-    def current_gen(cls, module_id: str) -> int:
-        return cls._gen_by_module[module_id]
-
-
-
-    # LibCST tracking -----------------------------------------
-
-
-
-    @classmethod
-    def indent(cls, amount):
-        if amount == 0:
-            return
-        cls.indent_count += 1
-        cls.current_indent += amount
-        cls.max_indent = max(cls.max_indent, cls.current_indent)
-        imgui.indent(amount)
-
-    @classmethod
-    def unindent(cls, amount):
-        if amount == 0:
-            return
-        cls.current_indent -= amount
-        imgui.unindent(amount)
-        cls.unindent_count += 1
-
-    @classmethod
-    def inside_window(cls):
-        return len(cls.window_stack) > 0
-
-    @classmethod
-    def shift_down(cls):
-        return (glfw.get_key(cls.vis.window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS or
-                     glfw.get_key(cls.vis.window, glfw.KEY_RIGHT_SHIFT) == glfw.PRESS)
-
-
-
-    @classmethod
-    def is_window_enabled(cls):
-        return cls.window_enabled
-        # if len(cls.window_stack) == 0:
-        #     return True
-        # return cls.window_stack[-1][1]
-
-    @classmethod
-    def get_bg_color(cls, depth=None):
-        if depth is None:
-            depth = cls.depth
-        if len(cls.bg_stack) == 0:
-            return 0, 0, 0
-
-        # Allow for negative index from end, but clamp to available range
-        if depth < 0:
-            depth = len(cls.bg_stack) + depth
-        depth = max(0, min(depth, len(cls.bg_stack) - 1))
-        return cls.bg_stack[depth][0:3]
-
-    @classmethod
-    def shift_key(cls):
-        return (glfw.get_key(cls.vis.window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS or
-                glfw.get_key(cls.vis.window, glfw.KEY_RIGHT_SHIFT) == glfw.PRESS)
-
-    @classmethod
-    def ctrl_key(cls,):
-        return (glfw.get_key(cls.vis.window, glfw.KEY_LEFT_CONTROL) == glfw.PRESS or
-                glfw.get_key(cls.vis.window, glfw.KEY_RIGHT_CONTROL) == glfw.PRESS)
-
-
-    @classmethod
-    def init(cls, **kwargs):
-        for key, value in kwargs.items():
-            setattr(cls, key, value)
-            cls.global_attrs[key] = value
-        cls.annotation_mode = False
-
-    @classmethod
-    def init_ui(cls, **kwargs):
-        pass
-        # cls.backend.init()
-
-    @classmethod
-    def is_key_pressed(cls, key=glfw.KEY_ESCAPE):
-        if imgui.is_any_item_focused() or imgui.is_any_item_active():
-            if not cls.ctrl_key():
-            # If any item is focused or active, we don't want to capture key presses
-                return False
-
-        if key not in cls.vis.tracked_keys:
-            cls.vis.tracked_keys.append(key)
-            cls.vis.first_frame_keys.add(key)
-
-        if glfw.get_key(cls.vis.window, key) == glfw.PRESS:
-            if key in cls.vis.first_frame_keys:
-                return True
-        return False

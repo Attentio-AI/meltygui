@@ -219,6 +219,9 @@ def render_func(*args, **o_kwargs):
             unique = ui_id(datatype=type(input_value), suffix=suffix + unique_name + str(key) + func.__name__,
                            idx=index)
 
+        # if active_layer is not None:
+        #     unique = kwargs.get("unique", unique)
+
         computed_unique = unique
         # -------------------------------------------------------------------------
 
@@ -282,6 +285,7 @@ def render_func(*args, **o_kwargs):
                 if layer >= len(Melty.layers):
                     layer = len(Melty.layers) - 1
                 kwargs["active_layer"] = layer
+                # kwargs['unique'] = unique
                 Melty.layers[layer].append((wrapper, input_value, kwargs, draw_state))
                 return_value = (False, None)
                 if draw_state.id in Melty.returned_values:
@@ -312,9 +316,7 @@ def render_func(*args, **o_kwargs):
                 if isinstance(input_value, (type(None), int, float, str, bool, tuple, set)):
                     if draw_state._input_value != input_value:
                         if kwargs.get("collection", None) is not None:
-                            # print(name, "old value:", draw_state._input_value, "new value:", input_value)
-                            # print(name)
-                            Melty.cache.invalidate_by_obj(kwargs.get("collection", None), name)
+                            Melty.cache.invalidate(tile_id)
                             request_render()
 
         collection = kwargs.get("collection", None)
@@ -644,6 +646,7 @@ def render_func(*args, **o_kwargs):
 
             is_hovered = draw_state.on_action("cursor_hover", view_id="test") is not None
 
+
             #### MAIN CALL #######################################################
             if clip:
                 cursor_pos = imgui.get_cursor_screen_pos()
@@ -651,11 +654,13 @@ def render_func(*args, **o_kwargs):
                                  cursor_pos[0] + draw_state.width + 1,
                                  cursor_pos[1] + draw_state.height))
 
-            draw_state.clip_rect = Melty.clip_stack[-1] if len(Melty.clip_stack) > 0 else None
 
-            return_value = draw_inner_main(clean_args, draw_state, input_value, kwargs, melty, tile_id, unique)
+            return_value = draw_inner_main(clean_args, draw_state, input_value, kwargs, melty, tile_id, unique, melty_window)
+            draw_state.clip_rect = Melty.get_clip_rect()
+
             if clip:
                 Melty.pop_clip()
+
             #######################
             if imgui.is_item_active() or imgui.is_item_activated():
                 Melty.report_imgui_active()
@@ -669,7 +674,7 @@ def render_func(*args, **o_kwargs):
             if draw_state._has_popup:
                 is_popup_open = Melty.imgui_popup_open
                 if is_popup_open != draw_state._imgui_popover_open and not is_popup_open:
-                    Melty.cache.invalidate_up_by_obj(input_value, max_depth=8)
+                    Melty.cache.invalidate_up_by_obj(input_value, max_depth=6)
 
                 draw_state._imgui_popover_open = Melty.imgui_popup_open
         except Exception as e:
@@ -692,18 +697,11 @@ def render_func(*args, **o_kwargs):
             pop_id()
             end_group()
             pop_style_var(2)
-            #
-            # if draw_state.left is not None and draw_state.top is not None:
-            #     if draw_state.width is not None and draw_state.height is not None:
-            #         imgui.set_cursor_screen_pos((start_cursor[0],
-            #                                      start_cursor[1] + draw_state.height))
+
             item_rect = imgui.get_item_rect_size()
 
             original_width_b = draw_state.bounding_width
             original_height_b = draw_state.bounding_height
-            # if kwargs.get("auto_resize", True):
-            #     draw_state.window_size = None
-            is_header = "with_header" in func.__name__
 
             draw_state.bounds_left = snap_int(start_cursor[0])
             draw_state.bounds_top = snap_int(start_cursor[1])
@@ -725,18 +723,14 @@ def render_func(*args, **o_kwargs):
                 draw_state.bounding_width = draw_state.window_size[0]
                 draw_state.bounding_height = draw_state.window_size[1]
 
-                # if not melty_window and draw_state.content_height > draw_state.height:
-                #     if len(Melty.clip_stack) > 0:
-                #         clip_width = Melty.clip_stack[-1][2] - Melty.clip_stack[-1][0]
-                #         clip_height = Melty.clip_stack[-1][3] - Melty.clip_stack[-1][1]
-                #         draw_state.width, draw_state.height = (min(draw_state.window_size[0], clip_width),
-                #                                                  min(clip_height, draw_state.window_size[1]))
             else:
                 draw_state.bounding_width = snap_int(item_rect[0])
                 draw_state.bounding_height = snap_int(item_rect[1])
 
                 if (draw_state.bounding_width != original_width_b or
                         draw_state.bounding_height != original_height_b):
+                    if draw_state._parent is not None:
+                        draw_state._parent.invalid_content_height = True
                     request_render()
 
                 if draw_state.window_size is None and melty_window:
@@ -805,14 +799,9 @@ def render_func(*args, **o_kwargs):
             #     draw_state.scroll_offset = (0, 0)
 
             ############# HANDLE SELECTION
-            max_layer_depth = Melty.max_depth * Melty.max_layer + Melty.max_depth
-            layer_and_depth = Melty.active_layer * Melty.max_depth + Melty.depth
 
             is_header = "with_header" in func.__name__
             if not is_header:
-                priority = max_layer_depth - layer_and_depth
-                # if draw_state.hover_eligible():
-                #     Melty.event_handler.register_hovered(tile_id, ["left_mouse_down", "left_mouse_clicked"], priority)
                 click = draw_state.on_action("left_mouse_down")
 
                 if click:
@@ -828,7 +817,7 @@ def render_func(*args, **o_kwargs):
                             for prev_select in previous_select:
                                 # Melty.cache.invalidate(prev_select._tile_id)
                                 # Melty.cache.invalidate_up_by_obj(obj=prev_select._collection, force=True, max_depth=2)
-                                Melty.cache.invalidate_by_obj(obj=prev_select._input_value)
+                                Melty.cache.invalidate(prev_select._tile_id)
 
                         elif click.modifiers == glfw.MOD_CONTROL and click.action == "down":
                             if draw_state in Melty.selected:
@@ -836,9 +825,7 @@ def render_func(*args, **o_kwargs):
                             else:
                                 Melty.selected.add(draw_state)
 
-                            Melty.cache.invalidate_by_obj(obj=input_value)
-
-
+                            Melty.cache.invalidate(tile_id)
                             request_render()
                         elif click.modifiers == glfw.MOD_SHIFT and click.action == "down":
                             new_select = draw_state
@@ -888,7 +875,7 @@ def render_func(*args, **o_kwargs):
                 return changed, new_value, kwargs
             return changed, new_value
 
-    def draw_inner_main(clean_args, draw_state, input_value, kwargs, melty, tile_id, unique):
+    def draw_inner_main(clean_args, draw_state, input_value, kwargs, melty, tile_id, unique, melty_window):
         return_value = None
         start_cursor = imgui.get_cursor_screen_pos()
         is_header = "with_header" in func.__name__
@@ -928,7 +915,8 @@ def render_func(*args, **o_kwargs):
         draw_state._bounding_hovered = new_bounding_hovered
         if (draw_state.width is None or draw_state.height is None or hover_changed or
                 draw_state._bounding_hovered or draw_state._imgui_popover_open):
-            Melty.cache.invalidate(tile_id, force=True)
+            if not Melty.on_drag and not Melty.on_scroll:
+                Melty.cache.invalidate(tile_id, force=True)
 
         if use_cache:
             offscreen_depth = Melty.get_channel()
@@ -936,8 +924,6 @@ def render_func(*args, **o_kwargs):
                 draw_list = imgui.get_window_draw_list()
                 draw_list.channels_set_current(min(offscreen_depth, Melty.max_depth - 1))
 
-        if Melty.active_layer != 0:
-            pass
         layer_and_depth = Melty.active_layer * Melty.max_depth + Melty.depth
         clip_height = Melty.get_clip_size()[1]
 
@@ -959,7 +945,6 @@ def render_func(*args, **o_kwargs):
             start_cursor = imgui.get_cursor_screen_pos()
             imgui.set_cursor_screen_pos((start_cursor[0] + indent_x,
                                          start_cursor[1] - scroll_offset[1]))
-
 
         if not use_cache or Melty.cache.mark_start_offscreen(input_value=input_value, collection=collection,
                                                              draw_state=draw_state, key=tile_id, name=draw_state.name,

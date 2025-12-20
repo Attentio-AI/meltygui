@@ -23,7 +23,7 @@ from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_style_var, \
     push_style_color, pop_style_color, pop_style_var, end, begin
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
-from src.lsd.gl_gui.melty import Melty, CollectionAction, OperationType, add_to_collection, \
+from src.lsd.gl_gui.melty import Melty, CollectionAction, add_to_collection, \
     ManagedWindow
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
@@ -1567,7 +1567,8 @@ def draw_collection(input_value, draw_state, depth, style_manager,
     children_draw_states = []
     rect = Melty.get_clip_rect()
 
-    needs_content_height = draw_state.content_height < draw_state.height if draw_state.height is not None else True
+    needs_content_height = ((draw_state.content_height < draw_state.height if draw_state.height is not None else True) or
+                            draw_state.invalid_content_height)
 
     # draw_list = imgui.get_window_draw_list()
     # if rect is not None:
@@ -1682,7 +1683,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
                 children_draw_states.append(extras['draw_state'])
                 extras['draw_state']._parent = draw_state
                 if rect is not None:
-                    if cursor_pos[1] > Melty.get_clip_rect()[3] and not needs_content_height and Melty.frame_count > 2:
+                    if (cursor_pos[1] > Melty.get_clip_rect()[3] and not needs_content_height and Melty.frame_count > 2):
                         premature_break = True
                         break
 
@@ -1727,6 +1728,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
     if not melty.drag_in_progress and not premature_break:
         draw_state.content_height = snap_int(content_height)
+        draw_state.invalid_content_height = False
 
     # ----------------- top spacing -----------
     last_key = list(keys)[-1] if len(keys) > 0 else None

@@ -60,6 +60,7 @@ CLICK_MAX_DISTANCE = 5.0
 class InputEvent:
     input_id: str
     action: str
+    tile_id: str = None
     x: float = 0.0
     y: float = 0.0
     dx: float = 0.0
@@ -95,6 +96,7 @@ class _InputState:
 
 _parse_cache: dict[str, tuple[str, str]] = {}
 _view_id_names_cache: dict[Any, dict[tuple[str, str], str]] = {}
+_view_id_to_tile_id: dict[str, str] = {}
 
 
 def parse_event_name(name: str) -> tuple[str, str]:
@@ -177,7 +179,7 @@ class InputHandler:
         self._last_dx = 0.0
         self._last_dy = 0.0
 
-    def register_hovered(self, view_id: Any, subscribed: list[str], priority: int = 0):
+    def register_hovered(self, view_id: Any, subscribed: list[str], priority: int = 0, tile_id=None):
         """Register hovered view. Priority 0 = topmost.
 
         Multiple calls with the same view_id will merge subscriptions,
@@ -190,6 +192,7 @@ class InputHandler:
             if view_id not in _view_id_names_cache:
                 _view_id_names_cache[view_id] = {}
             _view_id_names_cache[view_id][sub] = s
+            _view_id_to_tile_id[view_id] = tile_id
             new_subs.add(sub)
 
         # Check if view already registered this frame - merge if so
@@ -206,8 +209,9 @@ class InputHandler:
 
     def _emit(self, input_id: str, action: str, x: float, y: float,
               dx: float = 0, dy: float = 0, value: float = 0, t: float = None):
+        tile_id = _view_id_to_tile_id.get(input_id, None)
         self._pending.append(InputEvent(
-            input_id, action, x, y, dx, dy, value,
+            input_id, action, tile_id, x, y, dx, dy, value,
             t or time.perf_counter(), self._modifiers
         ))
 
@@ -266,11 +270,13 @@ class InputHandler:
     def feed_change(self, input_id: str, value: float, t: float = None):
         self._emit(input_id, Action.CHANGED, self._cursor_x, self._cursor_y, value=value, t=t)
 
-    def process_frame(self) -> dict[Any, dict[str, InputEvent]]:
+    def process_frame(self):
         """Returns {view_id: {event_name: event}} for all matched subscriptions."""
         self._hovered.sort(key=lambda x: x[1])
 
         result: dict[Any, dict[str, InputEvent]] = {}
+        result_by_type: dict[Any, dict[str, InputEvent]] = {}
+
         t = time.perf_counter()
 
         # Build current hover dict with priorities
@@ -294,7 +300,12 @@ class InputHandler:
                 return
             if view_id not in result:
                 result[view_id] = {}
+
+            if event_name not in result_by_type:
+                result_by_type[event_name] = {}
+
             result[view_id][event_name] = event
+            result_by_type[event_name][view_id] = event
 
         # Find top subscriber for each hover event type
         top_enter = next((v for v, _, s in self._hovered if v not in self._prev_hovered and hover_enter_key in s), None)
@@ -309,7 +320,7 @@ class InputHandler:
 
         # Emit hover events
         def make_hover_event(action: str) -> InputEvent:
-            return InputEvent("cursor", action, self._cursor_x, self._cursor_y, 0, 0, 0, t, self._modifiers)
+            return InputEvent("cursor", None, action, self._cursor_x, self._cursor_y, 0, 0, 0, t, self._modifiers)
 
         add_event(top_enter, hover_enter_key, make_hover_event(Action.HOVER_ENTER))
         add_event(top_hovered, hovered_key, make_hover_event(Action.HOVERED))
@@ -342,7 +353,7 @@ class InputHandler:
                     total_dy = ly - state.down_y if state else 0.0
 
                     release_event = InputEvent(
-                        event.input_id, Action.DRAG_RELEASED, lx, ly,
+                        event.input_id, Action.DRAG_RELEASED, event.tile_id, lx, ly,
                         self._last_dx, self._last_dy, 0, t, self._modifiers, total_dx, total_dy
                     )
                     add_event(captured_view, drag_released_key, release_event)
@@ -370,13 +381,14 @@ class InputHandler:
                     total_dx = lx - state.down_x
                     total_dy = ly - state.down_y
 
+                    tile_id = _view_id_to_tile_id.get(captured_view, None)
                     drag_event = InputEvent(
-                        input_id, Action.DRAGGED, lx, ly,
+                        input_id, Action.DRAGGED, tile_id, lx, ly,
                         self._last_dx, self._last_dy, 0, t, self._modifiers, total_dx, total_dy
                     )
                     add_event(captured_view, drag_key, drag_event)
 
-        return result
+        return result, result_by_type
 
     def is_down(self, input_id: str) -> bool:
         s = self._states.get(input_id)

@@ -116,6 +116,7 @@ class auto_eval:
 
         if self.name in invalidate_all_flag:
             Melty.cache.invalidate_all()
+            print(f"Invalidate all called due to change in {self.name}")
             request_render()
             return
 
@@ -123,10 +124,10 @@ class auto_eval:
             if visible and not self.name.startswith('_') \
                     and self.name != "driver" and Melty.frame_count > 3:
                 if do_deep_refresh:
-                    Melty.cache.invalidate_up_by_obj(obj=obj, name=self.name, max_depth=4, force=True)
+                    Melty.cache.invalidate_up_by_obj(obj=obj, name=self.name, max_depth=3, force=True)
                     request_render()
                 else:
-                    Melty.cache.invalidate_up_by_obj(obj, self.name)
+                    Melty.cache.invalidate_up_by_obj(obj, self.name, max_depth=3)
                     request_render()
 
         """Override this or add your universal callback logic here"""
