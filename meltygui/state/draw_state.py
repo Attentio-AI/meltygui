@@ -87,7 +87,7 @@ class ZoomState(DictConversion):
 @exclude("render_time", "clip_rect", "bounds_left", "bounds_top", "_input_value", "flow_spacing", "clipped", "fully_clipped", 'width', 'height',
          "hovered", "wrapped_top", "wrapped_left", "_did_use_cache", "content_height", "content_region", "value_hash", "drag_window", "top", "left", "content_region", "did_render",
          "bounding_hovered", "dlt_count", "header_height", "z_pos", "scrolled", "is_hovered_last", "frame_count")
-@deep_refresh( 'window_size', 'scroll_offset')
+@deep_refresh( 'scroll_offset')
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
 
@@ -294,8 +294,8 @@ class DrawState(DictConversion):
         if child_draw_state is not None:
             left = child_draw_state.left
             top = child_draw_state.top
-            width = child_draw_state.bounding_width
-            height = child_draw_state.bounding_height
+            width = child_draw_state.width
+            height = child_draw_state.height
 
             if top is None or left is None:
                 return True, False, False
@@ -303,8 +303,7 @@ class DrawState(DictConversion):
             if width is None or height is None:
                 return True, False, False
 
-            if (left + width < clip_left or left > clip_right or
-                    top + height < clip_top or top > clip_bottom):
+            if (top + height < clip_top or top > clip_bottom):
                 if top > clip_bottom:
                     return False, True, False
                 else:

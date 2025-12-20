@@ -454,6 +454,24 @@ def render_func(*args, **o_kwargs):
                 if draw_state.window_pos is None and draw_state.width is not None:
                     draw_state.window_pos = Melty.init_window_cursor
 
+            if draw_state.width is None and kwargs.get("min_width", None) is not None:
+                draw_state.width = kwargs.get("min_width", None)
+
+            if draw_state.width is not None and kwargs.get("min_width", None) is not None:
+                draw_state.width = max(draw_state.width, kwargs.get("min_width", None))
+                # if draw_state.window_size is not None:
+                #     draw_state.window_size = (max(draw_state.window_size[0], kwargs.get("min_width", None)),
+                #                                 draw_state.window_size[1])
+
+            if draw_state.height is None and kwargs.get("min_height", None) is not None:
+                draw_state.height = kwargs.get("min_height", None)
+
+            if draw_state.height is not None and kwargs.get("min_height", None) is not None:
+                draw_state.height = max(draw_state.height, kwargs.get("min_height", None))
+                # if draw_state.window_size is not None:
+                #     draw_state.window_size = (draw_state.window_size[0], max(draw_state.window_size[1],
+                #                                                              kwargs.get("min_height", None)))
+
             if not auto_resize:
                 corner_rect = get_resize_handle(draw_state)
 
@@ -521,23 +539,7 @@ def render_func(*args, **o_kwargs):
             draw_state.min_width = kwargs.get("min_width", draw_state.min_width)
             draw_state.min_height = kwargs.get("min_height", draw_state.min_height)
 
-            if draw_state.width is None and kwargs.get("min_width", None) is not None:
-                draw_state.width = kwargs.get("min_width", None)
 
-            if draw_state.width is not None and kwargs.get("min_width", None) is not None:
-                draw_state.width = max(draw_state.width, kwargs.get("min_width", None))
-                if draw_state.window_size is not None:
-                    draw_state.window_size = (max(draw_state.window_size[0], kwargs.get("min_width", None)),
-                                                draw_state.window_size[1])
-
-            if draw_state.height is None and kwargs.get("min_height", None) is not None:
-                draw_state.height = kwargs.get("min_height", None)
-
-            if draw_state.height is not None and kwargs.get("min_height", None) is not None:
-                draw_state.height = max(draw_state.height, kwargs.get("min_height", None))
-                if draw_state.window_size is not None:
-                    draw_state.window_size = (draw_state.window_size[0], max(draw_state.window_size[1],
-                                                                             kwargs.get("min_height", None)))
 
 
 
@@ -553,7 +555,7 @@ def render_func(*args, **o_kwargs):
             draw_state.left, draw_state.top = imgui.get_cursor_screen_pos()
             draw_state.left = snap_int(draw_state.left)
             draw_state.top = snap_int(draw_state.top)
-
+            draw_state.clip_rect = Melty.get_clip_rect()
 
             if not is_header and (draw_state.left is not None and draw_state.top is not None and
                     draw_state.width is not None and draw_state.height is not None) and melty_window:
@@ -656,7 +658,6 @@ def render_func(*args, **o_kwargs):
 
 
             return_value = draw_inner_main(clean_args, draw_state, input_value, kwargs, melty, tile_id, unique, melty_window)
-            draw_state.clip_rect = Melty.get_clip_rect()
 
             if clip:
                 Melty.pop_clip()
@@ -712,14 +713,14 @@ def render_func(*args, **o_kwargs):
             if not auto_resize and draw_state.window_size is not None:
                 margin = 250
 
-                display_size = imgui.get_io().display_size
-                clamped_size = (
-                    min(draw_state.window_size[0], display_size[0]),
-                    min(draw_state.window_size[1], display_size[1] - margin)
-                )
-                draw_state.window_size = clamped_size
-                draw_state.width = draw_state.window_size[0]
-                draw_state.height = draw_state.window_size[1]
+                # display_size = imgui.get_io().display_size
+                # clamped_size = (
+                #     min(draw_state.window_size[0], display_size[0]),
+                #     min(draw_state.window_size[1], display_size[1] - margin)
+                # )
+                # draw_state.window_size = clamped_size
+                # draw_state.width = draw_state.window_size[0]
+                # draw_state.height = draw_state.window_size[1]
                 draw_state.bounding_width = draw_state.window_size[0]
                 draw_state.bounding_height = draw_state.window_size[1]
 
@@ -733,9 +734,9 @@ def render_func(*args, **o_kwargs):
                         draw_state._parent.invalid_content_height = True
                     request_render()
 
-                if draw_state.window_size is None and melty_window:
-                    window_margin = 8
-                    draw_state.window_size = snap_int(item_rect[0]) + window_margin, snap_int(item_rect[1])
+                # if draw_state.window_size is None and melty_window:
+                #     window_margin = 8
+                #     draw_state.window_size = snap_int(item_rect[0]) + window_margin, snap_int(item_rect[1])
 
                 if passed_width is None:
                     draw_state.width = snap_int(item_rect[0])

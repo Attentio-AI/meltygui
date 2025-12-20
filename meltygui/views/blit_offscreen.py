@@ -560,14 +560,16 @@ class TileCacheMasked:
         child_keys_list = list(child_keys)
         child_keys_list.sort(key=lambda x: x[0])  # sort by top
 
-        for top, child, child_draw_state in child_keys_list:
-            # inside_clip, below, above = parent_draw_state.inside_clip(child_draw_state)
+        parent_draw_state = self.key_to_draw_state.get(k, None)
 
+        for top, child, child_draw_state in child_keys_list:
+            inside_clip, below, above = parent_draw_state.inside_clip(child_draw_state)
+            # if child_draw_state.top > child_draw_state.clip_rect[3]:
+            #     continue
             # if child_draw_state.top + child_draw_state.height < parent_draw_state.clip_rect[1]:
             #     continue
-            # # if above:
-            #     continue
-            if child_draw_state.clipped:
+
+            if child_draw_state.clipped and inside_clip:
                 if child != k:
                     pt = self._tiles.get(child)
                     if pt is not None:
@@ -575,6 +577,11 @@ class TileCacheMasked:
                         pt.dirty = self._is_dirty(pt)
                         pt.force_invalidate = True
                         self.pending_invalid.append(pt)
+
+            if above:
+                continue
+            if below:
+                return
 
     def get_hash(self, draw_state):
         from src.lsd.gl_gui.model.dict_conversion import DictConversion
