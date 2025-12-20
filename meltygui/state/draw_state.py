@@ -84,11 +84,10 @@ class ZoomState(DictConversion):
          "render_time", "imgui_is_toggled_open", "z_pos", "content_height", "hotkey_receiver", "use_child", "cst", "search_text",
          "is_active", "clip_rect", "wrapped_top", "wrapped_left", "min_width", "height", "min_height", "is_focused", "drag_window_pos_x", "drag_window_pos_y", "drag_mode", "auto_resize", "clipped", "is_hovered_last",
          "z_pos", "draw_window_pos_x", "misc_used", "draw_window_pos_y", "drag_delta", "screen_pos", "imgui_is_item_activated", "frame_count")
-@exclude("render_time", "clip_rect", "bounds_left", "bounds_top", "_input_value","flow_spacing",
+@exclude("render_time", "clip_rect", "bounds_left", "bounds_top", "_input_value", "flow_spacing",
          "hovered", "wrapped_top", "wrapped_left", "_did_use_cache", "value_hash", "drag_window", "top", "left", "content_region", "did_render",
          "bounding_hovered", "dlt_count", "header_height", "z_pos", "scrolled", "is_hovered_last", "frame_count")
-
-@deep_refresh("expanded", 'window_size')
+@deep_refresh("expanded", 'window_size', "scroll_offset")
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
 
@@ -121,6 +120,7 @@ class DrawState(DictConversion):
         self._imgui_popover_open = False
         self.imgui_is_item_activated = False
         self.clipped = True
+        self.fully_clipped = True
         self.scroll_visible = False
         self._unmanaged_window = False
 
@@ -368,14 +368,16 @@ class DrawState(DictConversion):
 
         if (self._imgui_is_active or self._imgui_is_edited or self._imgui_is_item_hovered or self._imgui_popover_open):
             return True
-
         mouse_x, mouse_y = imgui.get_mouse_pos()
         if not Melty.inside_clip(rect=(mouse_x, mouse_y, 1, 1)):
             return False
 
-        if self.bounds_top is None or self.bounds_left is None or self.width is None or self.height is None:
-            return False
-        rect = (self.bounds_left, self.bounds_top, self.width, self.height + 10)
+        if not self.auto_resize and self.window_pos is not None and self.window_size is not None:
+            rect = (self.window_pos[0], self.window_pos[1], self.window_size[0], self.window_size[1])
+        else:
+            if self.bounds_top is None or self.bounds_left is None or self.width is None or self.height is None:
+                return False
+            rect = (self.left, self.top, self.width, self.height + 10)
 
         if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
             if imgui.is_window_hovered() or Melty.imgui_popup_open:

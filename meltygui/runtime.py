@@ -1144,6 +1144,32 @@ class Melty:
             return False
         return True
 
+    @classmethod
+    def fully_inside_clip(cls, draw_state=None, rect=None):
+        clip_rect = cls.get_clip_rect()
+        if clip_rect is None:
+            return True
+        clip_left, clip_top, clip_right, clip_bottom = clip_rect
+
+        if draw_state is not None:
+            left = draw_state.left
+            top = draw_state.top
+            width = draw_state.width
+            height = draw_state.height
+        else:
+            left, top, width, height = rect
+
+        if top is None or left is None:
+            return True
+
+        if width is None or height is None:
+            return True
+
+        if (top < clip_top or top + height > clip_bottom):
+            return False
+
+        return True
+
 
     @classmethod
     def undo_clip(cls, undo_point_id):

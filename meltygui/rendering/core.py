@@ -703,6 +703,7 @@ def render_func(*args, **o_kwargs):
             original_height_b = draw_state.bounding_height
             # if kwargs.get("auto_resize", True):
             #     draw_state.window_size = None
+            is_header = "with_header" in func.__name__
 
             draw_state.bounds_left = snap_int(start_cursor[0])
             draw_state.bounds_top = snap_int(start_cursor[1])
@@ -764,7 +765,6 @@ def render_func(*args, **o_kwargs):
             d_height = draw_state.height
             scrollbar_width = 5.0
 
-            is_header = "with_header" in func.__name__
             needs_scroll = (draw_state.content_height > draw_state.height or draw_state.scroll_offset[1] > 0) if (
                     draw_state.height is not None) else False
             draw_state.scroll_visible = needs_scroll
@@ -906,19 +906,25 @@ def render_func(*args, **o_kwargs):
 
         if draw_state.width is not None and draw_state.height is not None:
             if draw_state.width > 0 and draw_state.height > 0:
-                inside_clip = Melty.inside_clip(rect=(start_cursor[0], start_cursor[1],
+                inside_clip = Melty.fully_inside_clip(rect=(start_cursor[0], start_cursor[1],
                                                       draw_state.width, draw_state.height))
+                if inside_clip != draw_state.fully_clipped and inside_clip:
+                    Melty.cache.invalidate_up(tile_id)
+
+                draw_state.fully_clipped = inside_clip
+
+                inside_clip = Melty.inside_clip(rect=(start_cursor[0], start_cursor[1],
+                                                            draw_state.width, draw_state.height))
                 if inside_clip != draw_state.clipped and inside_clip:
-                    Melty.cache.invalidate(tile_id, force=True)
-
+                    Melty.cache.invalidate_up(tile_id)
                 draw_state.clipped = inside_clip
-
 
         last_bounding_hovered = draw_state._bounding_hovered
         new_bounding_hovered = draw_state.is_bounding_hovered()
         hover_changed = last_bounding_hovered != new_bounding_hovered
         draw_state._bounding_hovered = new_bounding_hovered
-        if (draw_state.width is None or draw_state.height is None or hover_changed or draw_state._bounding_hovered or draw_state._imgui_popover_open):
+        if (draw_state.width is None or draw_state.height is None or hover_changed or
+                draw_state._bounding_hovered or draw_state._imgui_popover_open):
             Melty.cache.invalidate(tile_id, force=True)
 
         if use_cache:
