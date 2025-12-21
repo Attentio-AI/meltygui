@@ -108,11 +108,11 @@ class auto_eval:
         excluded = getattr(obj, '__excluded_attrs__', set())
         deep_refresh_names = getattr(self, '__deep_refresh__', set())
         invalidate_all_flag = getattr(self, '__invalidate_all__', set())
+        from src.lsd.gl_gui.melty import Melty
 
-        do_deep_refresh = self.name in deep_refresh_names
+        do_deep_refresh = self.name in deep_refresh_names and not Melty.on_drag
         visible = self.name not in excluded
         visible = visible or do_deep_refresh
-        from src.lsd.gl_gui.melty import Melty
 
         if self.name in invalidate_all_flag:
             Melty.cache.invalidate_all()
@@ -124,7 +124,7 @@ class auto_eval:
             if visible and not self.name.startswith('_') \
                     and self.name != "driver" and Melty.frame_count > 3:
                 if do_deep_refresh:
-                    Melty.cache.invalidate_up_by_obj(obj=obj, name=self.name, max_depth=2, force=True)
+                    Melty.cache.invalidate_up_by_obj(obj=obj, name=self.name, max_depth=3, force=True)
                     request_render()
                 else:
                     Melty.cache.invalidate_up_by_obj(obj, self.name, max_depth=3)

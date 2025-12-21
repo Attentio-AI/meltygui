@@ -12,6 +12,7 @@ from typing import Any
 import glfw
 import imgui
 
+from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
 from src.lsd.gl_gui.view.core_views.core_render_helpers import draw_vertical_scrollbar, floating_text
 from src.lsd.gl_gui.model.core_model.draw_state import DrawState, Hotkey, DragMode
 from src.lsd.gl_gui.model.core_model.stable_hash import stable_hash
@@ -166,8 +167,6 @@ def render_func(*args, **o_kwargs):
         # first_arg = args[0] if args else None
         input_value = kwargs.get("input_value", input_value)
         window_key = f"{name}_window"
-
-
         kwargs['return_extras'] = False
 
         kwargs = o_kwargs | kwargs
@@ -188,6 +187,16 @@ def render_func(*args, **o_kwargs):
                     name = str(name)
             except Exception as e:
                 name = str(f"{e}")
+
+        style = imgui.get_style()
+        original_spacing = style.item_spacing
+        original_window_padding = style.window_padding
+        original_frame_padding = style.frame_padding
+
+        if Melty.depth == 0:
+            style.item_spacing = (4, 0)
+            style.window_padding = (3, 0)
+            style.frame_padding = (4, 1)
 
         key = kwargs.get("key", None)
         key = key if key is not None else ""
@@ -212,11 +221,12 @@ def render_func(*args, **o_kwargs):
         else:
             suffix = f"{old_suffix}_{suffix}_{unique_name}_{key}"
 
+        root_window_name = Melty.melty_window_stack[-1][4].name if len(Melty.melty_window_stack) > 0 else "Root"
         if is_root:
             unique = ui_id(datatype=type(input_value), suffix=name + unique_name + str(key) + func.__name__)
             suffix = f"{unique_name}_{func.__name__}_{unique}_{key}"
         else:
-            unique = ui_id(datatype=type(input_value), suffix=suffix + unique_name + str(key) + func.__name__,
+            unique = ui_id(datatype=type(input_value), suffix=suffix + unique_name + root_window_name + str(key) + func.__name__,
                            idx=index)
 
         # if active_layer is not None:
@@ -329,7 +339,6 @@ def render_func(*args, **o_kwargs):
         draw_state.name = name
         if not draw_state.expanded:
             kwargs["auto_resize"] = True
-            auto_resize = True
 
         draw_state._has_popup = kwargs.get("has_popup", False)
         draw_state.auto_resize = kwargs.get("auto_resize", True)
@@ -539,18 +548,13 @@ def render_func(*args, **o_kwargs):
             draw_state.min_width = kwargs.get("min_width", draw_state.min_width)
             draw_state.min_height = kwargs.get("min_height", draw_state.min_height)
 
-
-
-
-
-
             ######################## ERROR HANDLING FOR TYPES ########################
             cursor_pos = imgui.get_cursor_pos()
             imgui.set_cursor_pos((snap_int(cursor_pos[0]), snap_int(cursor_pos[1])))
-            spacing = kwargs.get('spacing', Melty.spacing)
-            padding = kwargs.get('padding', Melty.padding)
-            push_style_var(imgui.STYLE_ITEM_SPACING, spacing)
-            push_style_var(imgui.STYLE_FRAME_PADDING, padding)
+            # spacing = kwargs.get('spacing', Melty.spacing)
+            # padding = kwargs.get('padding', Melty.padding)
+            # push_style_var(imgui.STYLE_ITEM_SPACING, spacing)
+            # push_style_var(imgui.STYLE_FRAME_PADDING, padding)
 
             draw_state.left, draw_state.top = imgui.get_cursor_screen_pos()
             draw_state.left = snap_int(draw_state.left)
@@ -682,7 +686,7 @@ def render_func(*args, **o_kwargs):
             print_colored_traceback(*sys.exc_info())
         finally:
             draw_state.frame_count += 1
-            pop_style_var(2)
+            # pop_style_var(2)
             if Melty.imgui_crashed:
                 if return_extras:
                     return False, None, kwargs
@@ -692,12 +696,12 @@ def render_func(*args, **o_kwargs):
                 Melty.collection_stack.pop()
 
             # Has to go after mouse down check
-            push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
-            push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
+            # push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
+            # push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
 
             pop_id()
             end_group()
-            pop_style_var(2)
+            # pop_style_var(2)
 
             item_rect = imgui.get_item_rect_size()
 
@@ -734,9 +738,9 @@ def render_func(*args, **o_kwargs):
                         draw_state._parent.invalid_content_height = True
                     request_render()
 
-                # if draw_state.window_size is None and melty_window:
-                #     window_margin = 8
-                #     draw_state.window_size = snap_int(item_rect[0]) + window_margin, snap_int(item_rect[1])
+                if draw_state.window_size is None and melty_window:
+                    window_margin = 8
+                    draw_state.window_size = snap_int(item_rect[0]) + window_margin, snap_int(item_rect[1])
 
                 if passed_width is None:
                     draw_state.width = snap_int(item_rect[0])
@@ -754,8 +758,8 @@ def render_func(*args, **o_kwargs):
                 draw_state.height = 10000
 
             ################################# SCROLLING
-            d_left = draw_state.bounds_left
-            d_top = draw_state.bounds_top
+            d_left = draw_state.left
+            d_top = draw_state.top
             d_width = draw_state.width
             d_height = draw_state.height
             scrollbar_width = 5.0
@@ -802,41 +806,39 @@ def render_func(*args, **o_kwargs):
             ############# HANDLE SELECTION
 
             is_header = "with_header" in func.__name__
-            if not is_header:
+            if (is_header and not melty_window) or (not is_header and melty_window):
                 click = draw_state.on_action("left_mouse_down")
-
                 if click:
                     Melty.move_window_to_front()
+                    previous_select = copy(Melty.selected)
 
-                    if not melty_window:
-                        previous_select = copy(Melty.selected)
-                        if not click.modifiers:
-                            Melty.selected = set()
+                    if not click.modifiers:
+                        Melty.selected = set()
+                        Melty.selected.add(draw_state)
+                        Melty.last_selected = draw_state
+                        Melty.cache.invalidate(tile_id)
+
+                        for prev_select in previous_select:
+                            Melty.cache.invalidate(prev_select._tile_id)
+                            # Melty.cache.invalidate_up_by_obj(obj=prev_select._collection, force=True, max_depth=2)
+
+                    elif click.modifiers == glfw.MOD_CONTROL and click.action == "down":
+                        if draw_state in Melty.selected:
+                            Melty.selected.remove(draw_state)
+                        else:
                             Melty.selected.add(draw_state)
-                            Melty.last_selected = draw_state
 
-                            for prev_select in previous_select:
-                                # Melty.cache.invalidate(prev_select._tile_id)
-                                # Melty.cache.invalidate_up_by_obj(obj=prev_select._collection, force=True, max_depth=2)
-                                Melty.cache.invalidate(prev_select._tile_id)
+                        Melty.cache.invalidate(tile_id)
+                        request_render()
+                    elif click.modifiers == glfw.MOD_SHIFT and click.action == "down":
+                        new_select = draw_state
+                        last_select = Melty.last_selected
 
-                        elif click.modifiers == glfw.MOD_CONTROL and click.action == "down":
-                            if draw_state in Melty.selected:
-                                Melty.selected.remove(draw_state)
-                            else:
-                                Melty.selected.add(draw_state)
-
-                            Melty.cache.invalidate(tile_id)
-                            request_render()
-                        elif click.modifiers == glfw.MOD_SHIFT and click.action == "down":
-                            new_select = draw_state
-                            last_select = Melty.last_selected
-
-                            if draw_state in Melty.selected:
-                                Melty.selected.remove(draw_state)
-                            else:
-                                Melty.selected.add(draw_state)
-                            request_render()
+                        if draw_state in Melty.selected:
+                            Melty.selected.remove(draw_state)
+                        else:
+                            Melty.selected.add(draw_state)
+                        request_render()
 
 
             if draw_state in Melty.selected:
@@ -870,8 +872,40 @@ def render_func(*args, **o_kwargs):
             Melty.wrapped_depth = Melty.wrapped_depth - 1
 
             end_time = time.time()
+            # if not "with_header" in func.__name__:
             draw_state.render_time = end_time - start_time
 
+            if Melty.depth == 0:
+                style.item_spacing = original_spacing
+                style.window_padding = original_window_padding
+                style.frame_padding = original_frame_padding
+            # over_header_end_time = time.time()
+            #
+            # overhead_time = (over_header_end_time - over_header_start_time)
+            #
+
+            # imgui.same_line()
+            # imgui.begin_group()
+            # global_toggles = kwargs.get("global_toggles", {})
+            # do_profile = global_toggles.profiler == ProfileMode.ON
+            # style_manager = kwargs.get("style_manager", None)
+            # global_style = kwargs.get("global_style", None)
+            # profile_overhead = global_toggles.profiler == ProfileMode.OVERHEAD
+            # if do_profile:
+            #     imgui.text(func.__name__)
+            #     imgui.same_line()
+            #     profile_time = end_time - start_time
+            #     from src.lsd.gl_gui.view.core_views.new_core_view import render_profiler_time
+            #     render_profiler_time(input_value=profile_time, brief=True,
+            #                          style_manager=style_manager, global_style=global_style)
+            # elif profile_overhead:
+            #     imgui.text(func.__name__)
+            #     imgui.same_line()
+            #     profile_time = overhead_time
+            #     from src.lsd.gl_gui.view.core_views.new_core_view import render_profiler_time
+            #     render_profiler_time(input_value=profile_time, brief=True,
+            #                          style_manager=style_manager, global_style=global_style)
+            # imgui.end_group()
             if return_extras:
                 return changed, new_value, kwargs
             return changed, new_value
@@ -881,7 +915,7 @@ def render_func(*args, **o_kwargs):
         start_cursor = imgui.get_cursor_screen_pos()
         is_header = "with_header" in func.__name__
         not_header = "with_header" not in func.__name__
-        use_cache = kwargs.get("use_cache", False) and Melty.cache.enabled and not is_header
+        use_cache = kwargs.get("use_cache", False) and Melty.cache.enabled
         kwargs.pop("use_cache", None)
         collection = kwargs.get("collection", None)
         global_toggles = kwargs.get("global_toggles", {})
@@ -951,7 +985,6 @@ def render_func(*args, **o_kwargs):
                                                              draw_state=draw_state, key=tile_id, name=draw_state.name,
                                                              layer=layer_and_depth, caller=func):
 
-            cursor_start = imgui.get_cursor_screen_pos()
             return_value = func(**clean_args)
             imgui.set_item_allow_overlap()
 
@@ -1266,7 +1299,6 @@ def apply_drag_and_drop():
     while len(Melty.actions_to_apply) > 0:
         action = Melty.actions_to_apply.pop(0)
         result = apply_collection_action(action)
-
         if action.source_collection == action.target_collection:
             Melty.cache.invalidate_up_by_obj(action.source_collection, max_depth=8)
         else:
@@ -1295,7 +1327,7 @@ def draw_resize_handle(a_ds):
         return
     if a_ds.height is None:
         return
-    if a_ds.bounds_left is None:
+    if a_ds.left is None:
         return
 
     rect_br = get_resize_handle(a_ds)

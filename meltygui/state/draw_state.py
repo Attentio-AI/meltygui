@@ -80,14 +80,14 @@ class ZoomState(DictConversion):
         self.contrast = 1.0
 
 @no_save("mouse_btn_state", "mouse_up", "mouse_down", "bounding_width", "bounding_height", "unique", "search_active",
-         "drag_released","clicked", "dragged", "header_height", "dragged", "top", "left", "bounds_top", "bounds_left", "name", "expanded_height",
-         "render_time", "imgui_is_toggled_open", "z_pos", "content_height", "hotkey_receiver", "use_child", "cst", "search_text",
-         "is_active", "clip_rect", "wrapped_top", "wrapped_left", "min_width", "height", "min_height", "is_focused", "drag_window_pos_x", "drag_window_pos_y", "drag_mode", "auto_resize", "is_hovered_last",
+         "drag_released","clicked", "dragged", "header_height", "dragged", "name", "expanded_height",
+         "render_time", "overhead_time", "imgui_is_toggled_open", "z_pos", "hotkey_receiver", "use_child", "cst", "search_text",
+         "is_active", "clip_rect", "wrapped_top", "wrapped_left", "min_width", "min_height", "is_focused", "drag_window_pos_x", "drag_window_pos_y", "drag_mode", "is_hovered_last",
          "z_pos", "draw_window_pos_x", "misc_used", "draw_window_pos_y", "drag_delta", "screen_pos", "imgui_is_item_activated", "frame_count")
-@exclude("render_time", "clip_rect", "bounds_left", "bounds_top", "_input_value", "flow_spacing", "clipped", "fully_clipped", 'width', 'height',
+@exclude("render_time","overhead_time", "clip_rect", "bounds_left", "bounds_top", "_input_value", "flow_spacing", 'width',
          "hovered", "wrapped_top", "wrapped_left", "_did_use_cache", "content_height", "content_region", "value_hash", "drag_window", "top", "left", "content_region", "did_render",
          "bounding_hovered", "dlt_count", "header_height", "z_pos", "scrolled", "is_hovered_last", "frame_count")
-@deep_refresh( 'scroll_offset')
+@deep_refresh('scroll_offset', 'window_size')
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
 
@@ -200,6 +200,8 @@ class DrawState(DictConversion):
 
         # Profiling
         self.render_time = 0.0
+        self.overhead_time = 0.0
+
         # add more per-widget state as needed
 
     def init_cst_state(self, node, module_id: str):
@@ -251,14 +253,36 @@ class DrawState(DictConversion):
 
 
     def get_rect(self):
-        if self.bounds_left is None or self.bounds_top is None or self.bounding_width is None or self.bounding_height is None:
+        if self.left is None or self.top is None or self.width is None or self.height is None:
             return (0,0,0,0)
 
         width = self.width
         height = self.height
 
-        return (self.bounds_left, self.bounds_top, self.bounds_left + width,
-                self.bounds_top + height)
+        top = self.top
+        left = self.left
+
+        if self.window_pos is not None and self.window_size is not None:
+            width = self.window_size[0]
+            height = self.window_size[1]
+            top = self.window_pos[1]
+            left = self.window_pos[0]
+
+        right = left + width
+        bottom = top + height
+
+        # do clipping
+        if self.clip_rect is not None:
+            left = max(left, self.clip_rect[0])
+            top = max(top, self.clip_rect[1])
+            right = min(right, self.clip_rect[2])
+            bottom = min(bottom, self.clip_rect[3])
+
+        is_outside = left >= right or top >= bottom
+        if is_outside:
+            return (0, 0, 0, 0)
+
+        return (left, top, right, bottom)
 
     def draw_rect(self, rounding=0, tint=None, rect=None):
         if Melty.channels_split:
@@ -271,10 +295,10 @@ class DrawState(DictConversion):
         draw_list = imgui.get_window_draw_list()
         if rect is None:
             rect = self.get_rect()
-        draw_list.add_rect(rect[0] + 1, rect[1] + 1, rect[2] - 1, rect[3] - 1,
+        draw_list.add_rect(rect[0], rect[1], rect[2], rect[3],
                            imgui.get_color_u32_rgba(*tint[:3], 1.0) if tint is not None else
                            imgui.get_color_u32_rgba(1, 1, 1, 1),
-                           rounding=rounding, thickness=2.0)
+                           rounding=rounding, thickness=1.5)
 
         if Melty.channels_split:
             draw_list = imgui.get_window_draw_list()

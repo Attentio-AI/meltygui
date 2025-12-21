@@ -37,7 +37,7 @@ def live(cls):
         excluded = getattr(self, '__excluded_attrs__', set())
         deep_refresh_names = getattr(self, '__deep_refresh__', set())
         invalidate_all = getattr(self, '__invalidate_all__', set())
-
+        from src.lsd.gl_gui.melty import Melty
         do_deep_refresh = name in deep_refresh_names
         visible = name not in excluded
         visible = visible or do_deep_refresh
@@ -57,7 +57,7 @@ def live(cls):
                 if not initializing and visible and not name.startswith('_') \
                         and name != "driver" and Melty.frame_count > 3:
                     if do_deep_refresh:
-                        Melty.cache.invalidate_up_by_obj(obj=self, max_depth=2, force=True)
+                        Melty.cache.invalidate_up_by_obj(obj=self, max_depth=1, force=True)
                     else:
                         Melty.cache.invalidate_by_obj(self, name)
         except Exception as e:

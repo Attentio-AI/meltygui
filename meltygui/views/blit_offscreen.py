@@ -599,6 +599,8 @@ class TileCacheMasked:
                 input_val_hash)
 
     def invalidate(self, k: str, force=False) -> None:
+
+        # print_stack_trace(5)
         t = self._tiles.get(k)
         if t is not None:
             target_frame = self._frame_id + 1
@@ -828,13 +830,13 @@ class TileCacheMasked:
 
         self.key_to_draw_state[rkey] = draw_state
 
-        # # track child keys for parent
-        # parent_key = parent_ctx.key if parent_ctx else None
-        # if parent_key is not None:
-        #     if parent_key not in self.parent_key_to_child_keys:
-        #         self.parent_key_to_child_keys[parent_key] = {}
-        #
-        #     self.parent_key_to_child_keys[parent_key][rkey] = (draw_state.top, rkey, draw_state)
+        # track child keys for parent
+        parent_key = parent_ctx.key if parent_ctx else None
+        if parent_key is not None:
+            if parent_key not in self.parent_key_to_child_keys:
+                self.parent_key_to_child_keys[parent_key] = {}
+
+            self.parent_key_to_child_keys[parent_key][rkey] = (draw_state.top, rkey, draw_state)
 
         if name is not None:
             name_key = f"{id(collection)}.{name}"
@@ -934,13 +936,10 @@ class TileCacheMasked:
         # except Exception:
         #     pass
 
-        imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
-        imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
 
         imgui.push_id(f"{rkey}{layer}_offscreen")  # UI id: keep based on caller-provided id
 
         imgui.begin_group()
-        imgui.pop_style_var(2)
 
         has_area = size is not None and size[0] != 0 and size[1] != 0
 
