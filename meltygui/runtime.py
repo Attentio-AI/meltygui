@@ -344,7 +344,7 @@ class Melty:
 
     @classmethod
     def get_channel(cls):
-        return cls.depth
+        return cls.depth + 3
         # return max(min(cls.max_depth - 3, cls.depth), 0)
 
     @classmethod
@@ -535,23 +535,52 @@ class Melty:
         return True
 
     @classmethod
-    def undo_clip(cls, undo_point_id):
-        """Context manager to temporarily clear the ID stack."""
-        cls.clip_stack_holder[undo_point_id] = cls.clip_stack[:]
-        for _ in cls.clip_stack_holder[undo_point_id]:
-            draw_list = imgui.get_window_draw_list()
+    def undo_clip_n(cls, undo_point_id, n: int):
+        """Undo (pop) only the last `n` clip rects and remember them for redo."""
+        if not isinstance(n, int):
+            raise TypeError("n must be an int")
+        if n <= 0:
+            return
+
+        if not cls.clip_stack:
+            cls.clip_stack_holder[undo_point_id] = []
+            return
+
+        n = min(n, len(cls.clip_stack))
+        popped = cls.clip_stack[-n:]  # tail in original push order
+
+        # Save only what we popped so redo can reapply just those.
+        cls.clip_stack_holder[undo_point_id] = popped
+
+        draw_list = imgui.get_window_draw_list()
+        for _ in range(n):
             draw_list.pop_clip_rect()
-        cls.clip_stack = []
+
+        # Keep the remaining stack
+        cls.clip_stack = cls.clip_stack[:-n]
+
+    @classmethod
+    def redo_clip_n(cls, undo_point_id):
+        """Redo (push) the clip rects saved by undo_clip_n()."""
+        popped = cls.clip_stack_holder.pop(undo_point_id, None)
+        if not popped:
+            return
+
+        draw_list = imgui.get_window_draw_list()
+        for rect in popped:
+            draw_list.push_clip_rect(*rect)
+
+        cls.clip_stack.extend(popped)
+
+    @classmethod
+    def undo_clip(cls, undo_point_id, n: int | None = None):
+        if n is None:
+            n = len(cls.clip_stack)
+        return cls.undo_clip_n(undo_point_id, n)
 
     @classmethod
     def redo_clip(cls, undo_point_id):
-        """Restore the ID stack to a previously saved state."""
-        if undo_point_id in cls.clip_stack_holder:
-            saved_stack = cls.clip_stack_holder.pop(undo_point_id)
-            for rect in saved_stack:
-                draw_list = imgui.get_window_draw_list()
-                draw_list.push_clip_rect(*rect)
-            cls.clip_stack = saved_stack
+        return cls.redo_clip_n(undo_point_id)
 
     @classmethod
     def invalidate(cls, parent=None, value=None, attr_name=None):

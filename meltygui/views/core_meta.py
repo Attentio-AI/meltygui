@@ -31,6 +31,9 @@ class Meta:
                     type_default = Melty.type_defaults.get(field_name, None)
                 else:
                     type_default = Melty.type_defaults.get(value.__class__, None)
+                    if type_default is None:
+                        # Try string name instead
+                        type_default = Melty.type_defaults.get(str(value.__class__.__name__), None)
             child_meta = Meta.get_new_defaults(value=value)
             child_meta.name = field_name
             if type_default is not None:

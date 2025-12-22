@@ -18,7 +18,8 @@ import glfw
 from imgui.core import _DrawList
 from numpy import uint32
 
-from shader_library.shader_manager.texture_manager import PendingTexture
+import OpenGL.GL as gl
+import numpy
 
 from src.lsd.gl_gui.collection_action import OperationType
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
@@ -44,6 +45,7 @@ from src.lsd.gl_gui.view.core_views.folders_proxy import FolderProxy
 from src.lsd.gl_gui.view.core_views.inspect_utils import set_fn_defaults
 from collections.abc import MutableMapping
 from src.lsd.gl_gui.view.core_views.codec_register import registry as FILE_CODECS
+from src.shader_library.shader_manager.texture_manager import PendingTexture
 
 
 @render_wrapper(wraps=render_func, use_cache=False)
@@ -68,12 +70,31 @@ def with_header_minimal(func, **o_kwargs):
 
 @render_wrapper(wraps=render_func, use_cache=False)
 def with_header(func, **o_kwargs):
-    def wrapper(next_kwargs=None, draw_state=None, **kwargs):
+    def wrapper(next_kwargs=None, top=0, left=0, draw_state=None, **kwargs):
         if Melty.annotation_mode:
             annotation = annotation_track( wrapper=wrapper, **o_kwargs)
             if annotation is not None: return annotation
+
+        header_top = imgui.get_cursor_screen_pos()[1]
+        header_left = imgui.get_cursor_screen_pos()[0]
+        added_width = draw_state.left - header_left - imgui.get_style().item_spacing.x
+        added_height = draw_state.top - header_top - imgui.get_style().item_spacing.y
+        header_width = added_width
+        header_height = added_height
+
+        header_width = draw_state.width
+        header_height = draw_state.height
+
         next_kwargs['func'] = func
         next_kwargs['outer_func'] = wrapper
+        next_kwargs['show_bg'] = kwargs.get("show_bg", True)
+        next_kwargs['header_top'] = header_top
+        next_kwargs['header_left'] = header_left
+        next_kwargs['header_width'] = header_width
+        next_kwargs['header_height'] = header_height
+
+        next_kwargs['draw_state'].header_top = header_top
+
         return_val = core_header(**next_kwargs)
 
         return return_val
@@ -140,20 +161,29 @@ def draw_melty_windows(vis):
 
     end()
 
-@render_func(use_cache=False)
+@render_func
+def test_widget(input_value):
+
+    imgui.text("Test Widget")
+
+@render_func(use_cache=True)
 def draw_main(input_value, vis):
+
     global test_obj
     draw_window(Melty.profiles_results, show_bg=True, name="Profile Results")
     draw_window(Melty.registered_windows, indent_size=10, is_tree=True, show_add_delete=False, name="Window Manager")
-
     draw_window(test_obj, name="Layer 1")
+    draw_window(draw_main, name="Draw Main Function")
 
     draw_window(input_value=proxy, name="CST Proxy")
     draw_window(filesystem_proxy, name="Filesystem Test")
     draw_window(vis.root.lora_collection, name="Test Window 1")
     draw_window(vis.root.lora_collection.loras, name="Test Window 2")
     draw_window(Melty.last_invalid, show_bg=True, name="Last Invalid")
-    draw_window(Melty.registered_windows, indent_size=10, is_tree=True, show_add_delete=False, name="Another widnow manager")
+    draw_window(Melty.registered_windows, indent_size=10, is_tree=True,
+                show_add_delete=False, name="Another window manager")
+
+    draw_window("test", name="Test Widget Window")
 
     snapshot_tex = Melty.filter.normalize(Melty.cache.snapshot_tex)
     draw_window(Melty.cache.snapshot_tex, show_bg=True, name="Snapshot Texture")
@@ -162,14 +192,12 @@ def draw_main(input_value, vis):
     if changed:
         print("Value changed:", new_val)
 
-    normalized_submask = Melty.filter.normalize(Melty.cache._sub_mask_tex)
-    draw_window(normalized_submask, show_bg=True, max_contrast=30,
+    normalized_sub_mask = Melty.filter.normalize(Melty.cache._sub_mask_tex)
+    draw_window(normalized_sub_mask, show_bg=True, max_contrast=30,
                 max_brightness=30, name="Submask Texture")
 
-    # draw_window(Melty.last_request_render, show_bg=True, name="Last Invalid")
 
-import OpenGL.GL as gl
-import numpy
+    # draw_window(Melty.last_request_render, show_bg=True, name="Last Invalid")
 
 
 @with_header(is_default_for=PendingTexture, use_cache=False, enable_scroll=False,
@@ -539,6 +567,7 @@ def draw_window(input_value, unique, inner_func=None, style_manager=None, **kwar
     window_name = kwargs.get('name', 'Managed Window')
     draw_state = kwargs.get('draw_state', None)
     cursor_pos = imgui.get_cursor_screen_pos()
+
     if draw_state.width > 0 and draw_state.height > 0:
         imgui.set_cursor_screen_pos(cursor_pos)
 
@@ -573,10 +602,6 @@ def draw_window(input_value, unique, inner_func=None, style_manager=None, **kwar
                                imgui.get_color_u32_rgba(1, 1, 1, alpha),
                                loading_icon_1)
 
-    previous_tint = style_manager.get_tint()
-    if hasattr(input_value, 'tint') and getattr(input_value, "tint") is not None:
-        style_manager.set_imgui_tint(*getattr(input_value, "tint"))
-
     meta = kwargs.get("meta", None)
     if meta is None:
         if hasattr(Meta, 'get_child_meta'):
@@ -588,11 +613,8 @@ def draw_window(input_value, unique, inner_func=None, style_manager=None, **kwar
     else:
         meta.view_function = inner_func
 
+    kwargs['show_bg'] = False
     return_val = meta.view_function(input_value, **kwargs)
-
-    if hasattr(input_value, 'tint'):
-        style_manager.set_imgui_tint(*previous_tint)
-
     return return_val
 
 def draw(vis):
@@ -1442,7 +1464,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                 if draw_state.width > 0 and draw_state.height > 0:
                     clipped = True
                     Melty.push_clip((clip_start[0], clip_start[1],
-                                     clip_start[0] + draw_state.width - 1, clip_start[1] + draw_state.height - 1))
+                                     clip_start[0] + draw_state.width - 3, clip_start[1] + draw_state.height - 3))
             next_kwargs['header_height'] = header_height
 
             imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + indent_size)
@@ -1479,17 +1501,17 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
         background_height = draw_state.height  if draw_state.height is not None else 0
         draw_list = imgui.get_window_draw_list()
 
-
-        if Melty.channels_split:
-            if show_bg:
-                channel = max(0, min(Melty.max_depth - 2, Melty.get_channel() - 1))
-                draw_list.channels_set_current(channel)
-
-                _, bg_color = draw_bg(bypass=True, left=start_x_pos, top=y_margin + start_y_pos, bg_color=bg_color,
-                        width=background_width, height=(background_height - Melty.spacing[1] / 2.0),
-                        tint=bg_tint, depth=Melty.depth, selected=bg_selected, global_style=global_style,
-                        style_manager=style_manager, auto_resize=auto_resize)
-                draw_state.bg_color = bg_color
+        #
+        # if Melty.channels_split:
+        #     if show_bg:
+        #         channel = max(0, min(Melty.max_depth - 2, Melty.get_channel() - 1))
+        #         draw_list.channels_set_current(channel)
+        #
+        #         _, bg_color = draw_bg(bypass=True, left=start_x_pos, top=y_margin + start_y_pos, bg_color=bg_color,
+        #                 width=background_width, height=(background_height - Melty.spacing[1] / 2.0),
+        #                 tint=bg_tint, depth=Melty.depth, selected=bg_selected, global_style=global_style,
+        #                 style_manager=style_manager, auto_resize=auto_resize)
+        #         draw_state.bg_color = bg_color
 
 
         if show_bg:
@@ -1603,9 +1625,6 @@ def draw_collection(input_value, draw_state, depth, style_manager,
             item = getattr(input_value, key, None)
         else:
             item = collection[key]
-
-        if callable(item):
-            pass
 
         # Snap cursor to nearest pixel
         cursor_pos = imgui.get_cursor_screen_pos()
@@ -1746,10 +1765,11 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
     # imgui.set_cursor_screen_pos((current_cursor[0], current_cursor[1] + draw_state.scroll_offset[1]))
     # current_cursor = imgui.get_cursor_screen_pos()
-
-    if not melty.drag_in_progress and not premature_break:
+    if not imgui.is_mouse_down(0) and not premature_break:
         draw_state.content_height = snap_int(content_height)
         draw_state.invalid_content_height = False
+
+    draw_state.premature_break = premature_break
 
     # ----------------- top spacing -----------
     last_key = list(keys)[-1] if len(keys) > 0 else None
@@ -1844,10 +1864,15 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
     #     outline_color = imgui.get_color_u32_rgba(*tint)
 
     if outline:
-        outline_color = imgui.get_color_u32_rgba(*outline_color, 1.0)
+        outline_color = imgui.get_color_u32_rgba(*outline_color[:3], 1.0)
 
         if outline_tint is not None:
-            outline_color = imgui.get_color_u32_rgba(*outline_tint)
+            outline_color = imgui.get_color_u32_rgba(*outline_tint[:3], 1.0)
+        if Melty.channels_split:
+            draw_list = imgui.get_window_draw_list()
+            channel = max(0, min(Melty.max_depth - 2, Melty.get_channel()))
+            draw_list.channels_set_current(channel)
+
         imgui.get_window_draw_list().add_rect(*rect_outline, col=outline_color, rounding=rounding, thickness=2.0)
 
     if bg_color is None:
@@ -1859,7 +1884,12 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
     imgui_bg_color = imgui.get_color_u32_rgba(bg_color[0], bg_color[1], bg_color[2], 1.0)
 
     if tint is not None:
-        imgui_bg_color = imgui.get_color_u32_rgba(*tint)
+        imgui_bg_color = imgui.get_color_u32_rgba(*tint[:3], 1.0)
+
+    if Melty.channels_split:
+        draw_list = imgui.get_window_draw_list()
+        channel = max(0, min(Melty.max_depth - 2, Melty.get_channel() - 2))
+        draw_list.channels_set_current(channel)
 
     imgui.get_window_draw_list().add_rect_filled(*rect, col=imgui_bg_color, rounding=rounding)
 
@@ -2407,6 +2437,11 @@ def eval_function(input_value, draw_state):
 
     return changed, input_value
 
+@with_header(is_default_for="LSDStudio", show_bg=True, tint=(0.6, 0.2, 0.8))
+def draw_vis(input_val):
+    imgui.text("An LSD Studio Instance")
+
+
 @with_header(is_default_for=(types.FunctionType, types.MethodType),
                      wraps=render_func, show_add_delete=False, is_tree=False, show_name=False)
 def draw_function(input_value, name, draw_state, unique):
@@ -2423,7 +2458,8 @@ def draw_function(input_value, name, draw_state, unique):
                 if default_value is not inspect.Parameter.empty:
                     param_dict[name] = default_value
                 else:
-                    param_dict[name] = 0
+                    if name in Melty.global_attrs:
+                        param_dict[name] = Melty.global_attrs[name]
 
         draw_state.params = param_dict
     if len(draw_state.params) > 0:

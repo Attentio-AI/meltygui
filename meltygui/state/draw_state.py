@@ -86,8 +86,8 @@ class ZoomState(DictConversion):
          "render_time", "overhead_time", "imgui_is_toggled_open", "z_pos", "hotkey_receiver", "use_child", "cst", "search_text", "bg_color",
          "is_active", "clip_rect", "wrapped_top", "wrapped_left", "min_width", "min_height", "is_focused", "drag_window_pos_x", "drag_window_pos_y", "drag_mode", "is_hovered_last",
          "z_pos", "draw_window_pos_x", "misc_used", "draw_window_pos_y", "drag_delta", "screen_pos", "imgui_is_item_activated", "frame_count")
-@exclude("render_time","overhead_time", "clip_rect", "_input_value", "flow_spacing", 'width',
-         "hovered", "wrapped_top", "wrapped_left", "_did_use_cache", "content_height", "content_region", "value_hash", "drag_window", "top", "left", "content_region", "did_render",
+@exclude("render_time","overhead_time", "premature_break","clip_rect", "_input_value", "flow_spacing", 'width',
+         "hovered", "wrapped_top", "params", "premature_break", "wrapped_left", "_did_use_cache", "content_height", "content_region", "value_hash", "drag_window", "top", "left", "content_region", "did_render",
          "bounding_hovered", "dlt_count", "header_height", "z_pos", "scrolled", "is_hovered_last", "frame_count")
 @deep_refresh('scroll_offset')
 class DrawState(DictConversion):
@@ -192,8 +192,10 @@ class DrawState(DictConversion):
         self.wrapped_top = 0
         self.wrapped_left = 0
         self.header_height = 0
+        self.header_top = None
         self.clip_rect = None
         self.dlt_count = Melty.save_draw_state_for
+        self.premature_break = False
 
         # Profiling
         self.render_time = 0.0
@@ -275,7 +277,7 @@ class DrawState(DictConversion):
         if is_outside:
             return (0, 0, 0, 0)
 
-        return (left, top, right, bottom)
+        return (left, top, right - 1, bottom - 1)
 
     def draw_rect(self, rounding=0, tint=None, rect=None):
         if Melty.channels_split:
@@ -285,13 +287,13 @@ class DrawState(DictConversion):
         if tint is None:
             tint = getattr(self._input_value, 'tint', None)
 
-        draw_list = imgui.get_window_draw_list()
+        draw_list = imgui.get_overlay_draw_list()
         if rect is None:
             rect = self.get_rect()
         draw_list.add_rect(rect[0], rect[1], rect[2], rect[3],
                            imgui.get_color_u32_rgba(*tint[:3], 1.0) if tint is not None else
                            imgui.get_color_u32_rgba(1, 1, 1, 1),
-                           rounding=rounding, thickness=1.5)
+                           rounding=rounding, thickness=1)
 
         if Melty.channels_split:
             draw_list = imgui.get_window_draw_list()

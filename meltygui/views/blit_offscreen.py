@@ -558,7 +558,7 @@ class TileCacheMasked:
         # Defer parent invalidation to next frame as well
         child_keys = self.get_child_keys(k, max_depth=max_depth).values()
         child_keys_list = list(child_keys)
-        child_keys_list.sort(key=lambda x: x[0])  # sort by top
+        child_keys_list.sort(key=lambda x: x[0] if x[0] is not None else 0)  # sort by top
 
         parent_draw_state = self.key_to_draw_state.get(k, None)
 
@@ -878,11 +878,6 @@ class TileCacheMasked:
         size = self._sizes.get(rkey, None)
 
         # --- Always record bounding rects (even if we drew cached) and paren
-
-        # if key in self.all_keys:
-        #     print("[TileCacheStacked] Warning: Duplicate key detected:", key, type(input_value).__name__)
-        # self.all_keys.add(rkey)
-
         if not draw_state.auto_resize and draw_state.width is not None and draw_state.height is not None:
             size = snap_int(draw_state.width), snap_int(draw_state.height)
             self._sizes[rkey] = size
@@ -897,13 +892,6 @@ class TileCacheMasked:
 
             self._sizes[rkey] = size
 
-        # if not draw_state.auto_resize and draw_state.window_size is not None:
-        #     size = (snap_int(draw_state.window_size[0]), snap_int(ctx.draw_state.window_size[1]))
-
-        # if not draw_state.auto_resize and draw_state.width is not None and draw_state.height is not None:
-        #     size = snap_int(draw_state.width), snap_int(draw_state.height)
-        # if not draw_state.auto_resize:
-        #     size = (snap_int(draw_state.bounding_width), snap_int(draw_state.bounding_height))
         self.key_to_parent_key[rkey] = parent_ctx.key if parent_ctx else None
         self.key_to_draw_state[rkey] = draw_state
 
@@ -914,7 +902,8 @@ class TileCacheMasked:
                 self.parent_key_to_child_keys[parent_key] = {}
 
             if draw_state.clipped:
-                self.parent_key_to_child_keys[parent_key][rkey] = (draw_state.top, rkey, draw_state)
+                top = draw_state.top if draw_state.top is not None else 0
+                self.parent_key_to_child_keys[parent_key][rkey] = (top, rkey, draw_state)
             else:
                 # un-clipped views are always on top
                 self.parent_key_to_child_keys[parent_key][rkey] = (-1000, rkey, draw_state)
@@ -931,18 +920,8 @@ class TileCacheMasked:
 
         self.py_id_to_keys[f"{id(draw_state)}"].add(rkey)
 
-        # try:
-        #     self.py_id_to_keys.setdefault(f"{id(draw_state.mouse_btn_state[0])}", set()).add(rkey)
-        #     self.py_id_to_keys.setdefault(f"{id(draw_state.mouse_btn_state[1])}", set()).add(rkey)
-        #     self.py_id_to_keys.setdefault(f"{id(draw_state.mouse_btn_state[2])}", set()).add(rkey)
-        # except Exception:
-        #     pass
-
-
         imgui.push_id(f"{rkey}{layer}_offscreen")  # UI id: keep based on caller-provided id
-
         imgui.begin_group()
-
         has_area = size is not None and size[0] != 0 and size[1] != 0
 
         # Try to draw cached if we have a clean tile sized correctly
@@ -996,31 +975,15 @@ class TileCacheMasked:
 
         Melty.tile_id_stack.pop()
 
-        # ctx.draw_state.imgui_is_edited = imgui.is_item_edited()
-        # ctx.draw_state.imgui_is_active = imgui.is_item_active()
-        # ctx.draw_state.imgui_is_focused = imgui.is_item_focused()
-        # ctx.draw_state.imgui_scroll_y = imgui.get_scroll_y()
-        # ctx.draw_state.imgui_is_hovered = imgui.is_item_hovered()
-        # # if ctx.draw_state._has_popup:
-        # ctx.draw_state.imgui_popover_open = (
-        #     imgui.is_popup_open("", flags=imgui.POPUP_ANY_POPUP))
-
-        # if not self._stack:
-        #     return
-
-        # Always query the *final* item rect from ImGui (post-layout)
         minx, miny = imgui.get_item_rect_min()
 
         size = imgui.get_item_rect_size()
         if not ctx.auto_resize and ctx.draw_state.window_size is not None:
             size = snap_int(ctx.draw_state.width), snap_int(ctx.draw_state.height)
-        # if len(Melty.clip_stack) > 0:
-        #     clip_width = Melty.clip_stack[-1][2] - Melty.clip_stack[-1][0]
-        #     clip_height = Melty.clip_stack[-1][3] - Melty.clip_stack[-1][1]
-        #     siz = (min(siz[0], clip_width), min(siz[1], clip_height))
 
         ctx.pos = (float(minx), float(miny))
         ctx.size = size[0], size[1]
+        ctx.size = (ctx.draw_state.width, ctx.draw_state.height)
 
         min_width = ctx.draw_state.min_width
         min_height = ctx.draw_state.min_height
@@ -1034,7 +997,6 @@ class TileCacheMasked:
         w, h = ctx.size
         clip = self._get_current_clip_rect_screen()
         clipped = self._clip_rect(x, y, w, h, clip)
-        fully_clipped = self._fully_clipped(x, y, w, h, clip)
         self._key_to_ctx[ctx.key] = ctx
         if ctx.size:
             # clipped = False
@@ -1073,20 +1035,6 @@ class TileCacheMasked:
                 self._tiles[ctx.key] = t
 
             if self._is_dirty(t) and (ctx.key not in self._enq_copy_keys):
-                # parent_keys = self.get_parent_keys(ctx.key)
-                # for parent in parent_keys:
-                #     if parent and parent != ctx.key:
-                #         parent_ctx = self._key_to_ctx.get(parent, None)
-                #         parent_tile = self._tiles.get(parent, None)
-                #         if parent_tile is not None:
-                #             parent_tile.dirty = True
-                #             parent_tile.last_clean_frame = parent_tile.last_invalidated_frame
-                #             parent_tile.last_invalidated_frame = self._frame_id + 1
-                #             parent_tile.force_invalidate = True
-                #         if parent_tile is not None and parent_ctx is not None:
-                #             self._pending[parent] = _Pending(tile=parent_tile, pos=parent_ctx.pos,
-                #                                              size=parent_ctx.size, layer=parent_ctx.layer,
-                #                                               key=parent_ctx.key)
                 self._pending.append(_Pending(tile=t, pos=ctx.pos, size=ctx.size, layer=ctx.layer, key=ctx.key))
                 self._enq_copy_keys.add(ctx.key)
 
