@@ -124,6 +124,8 @@ class FilterExecutor:
         original_vao = GL.glGetIntegerv(GL.GL_VERTEX_ARRAY_BINDING)
         original_viewport = GL.glGetIntegerv(GL.GL_VIEWPORT)
 
+        GL.glDisable(GL.GL_DEPTH_TEST)
+
         # Handle input framebuffer - get texture from framebuffer if specified
         if input_framebuffer is not None:
             texture_id, width, height = self._get_texture_from_framebuffer(input_framebuffer)

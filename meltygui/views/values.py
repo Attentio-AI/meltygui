@@ -1461,7 +1461,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                 if draw_state.width > 0 and draw_state.height > 0:
                     clipped = True
                     Melty.push_clip((clip_start[0], clip_start[1],
-                                     clip_start[0] + draw_state.width - 3, clip_start[1] + draw_state.height - 3))
+                                     clip_start[0] + draw_state.width, clip_start[1] + draw_state.height - 3))
             next_kwargs['header_height'] = header_height
 
             imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + indent_size)
@@ -1868,7 +1868,7 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
             outline_color = imgui.get_color_u32_rgba(*outline_tint[:3], 1.0)
         if Melty.channels_split:
             draw_list = imgui.get_window_draw_list()
-            channel = max(0, min(Melty.max_depth - 2, Melty.get_channel() - 1))
+            channel = max(0, min(Melty.max_depth - 2, Melty.get_channel()))
             draw_list.channels_set_current(channel)
 
         # if selected:
@@ -2064,8 +2064,6 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
                 return_val = input_value
             same_line()
 
-
-
     min_text_width = 60
     if show_name and name != "" and name is not None and name != "None":
         if isinstance(input_value, (dict, MutableMapping)):
@@ -2115,19 +2113,19 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
             draw_list: _DrawList = imgui.get_window_draw_list()
             cursor_pos = imgui.get_cursor_screen_pos()
-
-            right_edge = Melty.get_clip_rect()[2]
-            space_left = right_edge - cursor_pos[0]
-            dummy_width = min(space_left - 30, text_width)
-            Melty.push_clip((snap_int(cursor_pos[0]),
-                             snap_int(cursor_pos[1]),
-                             snap_int(cursor_pos[0] + dummy_width),
-                             snap_int(cursor_pos[1] + imgui.get_frame_height())))
+            # Melty.push_clip((snap_int(cursor_pos[0]),
+            #                  snap_int(cursor_pos[1]),
+            #                  snap_int(cursor_pos[0] + name_width),
+            #                  snap_int(cursor_pos[1] + imgui.get_frame_height())))
 
             draw_list.add_text(cursor_pos[0], cursor_pos[1], imgui.get_color_u32_rgba(*name_color[:3], 1.0),
                                clipped_name)
-            imgui.dummy(dummy_width, imgui.get_frame_height())
-            Melty.pop_clip()
+
+            right_edge = Melty.get_clip_rect()[2]
+            space_left = right_edge - cursor_pos[0]
+            imgui.dummy(text_width, imgui.get_frame_height())
+
+            # Melty.pop_clip()
 
             # imgui.text_colored(name, *name_color)
 
@@ -2177,7 +2175,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         search_color = (style_manager.
                         make_color_style_value(input=bg_style, saturation=0.7,
                                                value=1.0))
-        imgui.same_line(spacing=0.0)
+        imgui.same_line()
         push_style_color(imgui.COLOR_TEXT, *search_color)
         push_style_color(imgui.COLOR_BUTTON, *(0.0, 0.0, 0.0, 0.0))
         if imgui.button(f"\uf1f8##del"):
