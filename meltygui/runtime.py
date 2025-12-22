@@ -491,10 +491,16 @@ class Melty:
         clip_left, clip_top, clip_right, clip_bottom = clip_rect
 
         if draw_state is not None:
-            left = draw_state.left
-            top = draw_state.top
-            width = draw_state.width
-            height = draw_state.height
+            if draw_state.bg_rect is not None:
+                left = draw_state.bg_rect[0]
+                top = draw_state.bg_rect[1]
+                width = draw_state.bg_rect[2]
+                height = draw_state.bg_rect[3]
+            else:
+                left = draw_state.left
+                top = draw_state.top
+                width = draw_state.width
+                height = draw_state.height
         else:
             left, top, width, height = rect
 

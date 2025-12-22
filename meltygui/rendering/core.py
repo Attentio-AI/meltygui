@@ -663,28 +663,72 @@ def render_func(*args, **o_kwargs):
 
             is_hovered = draw_state.on_action("cursor_hover", view_id="test") is not None
 
-            if kwargs.get("show_bg", False) :
+            ############# HANDLE SELECTION
+            top = kwargs.get("header_top", draw_state.top)
+            left = kwargs.get("header_left", draw_state.left)
+            width = kwargs.get("header_width", draw_state.width)
+            height = kwargs.get("header_height", draw_state.height)
+
+            header_height_diff = draw_state.top - top
+            header_width_diff = draw_state.left - left
+            c_width = draw_state.width + header_width_diff
+            c_height = draw_state.height + header_height_diff
+
+            # width = max(c_width, width)
+            height = max(c_height, height)
+
+            draw_state.bg_rect = (left, top, width, height)
+
+            if not is_header or melty_window:
+                click = draw_state.on_action("left_mouse_down")
+                if click:
+                    Melty.move_window_to_front()
+                    previous_select = copy(Melty.selected)
+
+                    if not click.modifiers:
+                        Melty.selected = set()
+                        Melty.selected.add(draw_state)
+                        Melty.last_selected = draw_state
+                        Melty.cache.invalidate(tile_id)
+
+                        for prev_select in previous_select:
+                            Melty.cache.invalidate(prev_select._tile_id)
+                            # Melty.cache.invalidate_up_by_obj(obj=prev_select._collection, recursive=True, max_depth=2)
+
+                    elif click.modifiers == glfw.MOD_CONTROL and click.action == "down":
+                        if draw_state in Melty.selected:
+                            Melty.selected.remove(draw_state)
+                        else:
+                            Melty.selected.add(draw_state)
+
+                        Melty.cache.invalidate(tile_id)
+                        request_render()
+                    elif click.modifiers == glfw.MOD_SHIFT and click.action == "down":
+                        new_select = draw_state
+                        last_select = Melty.last_selected
+
+                        if draw_state in Melty.selected:
+                            Melty.selected.remove(draw_state)
+                        else:
+                            Melty.selected.add(draw_state)
+                        request_render()
+
+            selected = False
+            if draw_state in Melty.selected:
+                selected = True
+                # draw_state.draw_rect(rounding=5.0)
+
+            show_bg = kwargs.get("show_bg", False)
+            if show_bg or selected:
                 from src.lsd.gl_gui.view.core_views.new_core_view import draw_bg
                 style_manager = Melty.global_attrs['style_manager']
                 global_style = Melty.global_attrs['global_style']
 
-                top = kwargs.get("header_top", draw_state.top)
-                left = kwargs.get("header_left", draw_state.left)
-                width = kwargs.get("header_width", draw_state.width)
-                height = kwargs.get("header_height", draw_state.height)
-
-                header_height_diff = draw_state.top - top
-                header_width_diff = draw_state.left - left
-                c_width = draw_state.width + header_width_diff
-                c_height =draw_state.height + header_height_diff
-
-                width = max(c_width, width)
-                height = max(c_height, height)
-
                 Melty.undo_clip(unique, 1)
                 _, bg_color = draw_bg(bypass=True, left=left, top=top,
                                       width=width - 1, height=height,
-                                      depth=Melty.depth, selected=False, global_style=global_style,
+                                      depth=Melty.depth, selected=draw_state in Melty.selected,
+                                      global_style=global_style, opacity=1.0 if show_bg else 0.0,
                                       style_manager=style_manager, auto_resize=auto_resize)
 
                 draw_state.bg_color = bg_color
@@ -821,45 +865,7 @@ def render_func(*args, **o_kwargs):
             # elif not imgui.is_mouse_down(0):
             #     draw_state.scroll_offset = (0, 0)
 
-            ############# HANDLE SELECTION
 
-            if (is_header and not melty_window) or (not is_header and melty_window):
-                click = draw_state.on_action("left_mouse_down")
-                if click:
-                    Melty.move_window_to_front()
-                    previous_select = copy(Melty.selected)
-
-                    if not click.modifiers:
-                        Melty.selected = set()
-                        Melty.selected.add(draw_state)
-                        Melty.last_selected = draw_state
-                        Melty.cache.invalidate(tile_id)
-
-                        for prev_select in previous_select:
-                            Melty.cache.invalidate(prev_select._tile_id)
-                            # Melty.cache.invalidate_up_by_obj(obj=prev_select._collection, force=True, max_depth=2)
-
-                    elif click.modifiers == glfw.MOD_CONTROL and click.action == "down":
-                        if draw_state in Melty.selected:
-                            Melty.selected.remove(draw_state)
-                        else:
-                            Melty.selected.add(draw_state)
-
-                        Melty.cache.invalidate(tile_id)
-                        request_render()
-                    elif click.modifiers == glfw.MOD_SHIFT and click.action == "down":
-                        new_select = draw_state
-                        last_select = Melty.last_selected
-
-                        if draw_state in Melty.selected:
-                            Melty.selected.remove(draw_state)
-                        else:
-                            Melty.selected.add(draw_state)
-                        request_render()
-
-
-            if draw_state in Melty.selected:
-                draw_state.draw_rect(rounding=5.0)
 
             ########################################### ACTIONS #######################
 

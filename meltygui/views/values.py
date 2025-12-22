@@ -50,10 +50,20 @@ from src.shader_library.shader_manager.texture_manager import PendingTexture
 
 @render_wrapper(wraps=render_func, use_cache=False)
 def with_header_minimal(func, **o_kwargs):
-    def wrapper(next_kwargs=None, **kwargs):
+    def wrapper(next_kwargs=None, draw_state=None, **kwargs):
         if Melty.annotation_mode:
             annotation = annotation_track( wrapper=wrapper, **o_kwargs)
             if annotation is not None: return annotation
+
+        header_top = imgui.get_cursor_screen_pos()[1]
+        header_left = imgui.get_cursor_screen_pos()[0]
+        header_width = draw_state.width
+        header_height = draw_state.height
+
+        next_kwargs['header_top'] = header_top
+        next_kwargs['header_left'] = header_left
+        next_kwargs['header_width'] = header_width
+        next_kwargs['header_height'] = header_height
 
         next_kwargs['func'] = func
         next_kwargs['outer_func'] = wrapper
@@ -77,11 +87,6 @@ def with_header(func, **o_kwargs):
 
         header_top = imgui.get_cursor_screen_pos()[1]
         header_left = imgui.get_cursor_screen_pos()[0]
-        added_width = draw_state.left - header_left - imgui.get_style().item_spacing.x
-        added_height = draw_state.top - header_top - imgui.get_style().item_spacing.y
-        header_width = added_width
-        header_height = added_height
-
         header_width = draw_state.width
         header_height = draw_state.height
 
@@ -1795,7 +1800,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
 
 def draw_bg(left=0, top=0, width=20, height=20, depth=0,
-            global_style=None, outline=True, bg_color=None,
+            global_style=None, outline=True, bg_color=None, opacity=1.0,
             style_manager=None, tint=None, outline_tint=None, selected=False,
             hovered=False, auto_resize=False, **kwargs):
     # Render background
@@ -1828,9 +1833,9 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
     }
     hovered_offset = 0.0
     if selected:
-        hovered_offset = 0.1
-    elif hovered:
-        hovered_offset = 0.3
+        hovered_offset = 0.6
+    # elif hovered:
+    #     hovered_offset = 0.6
 
     def mix_colors(c1, c2, fac):
         return (c1[0] * (1 - fac) + c2[0] * fac,
@@ -1858,7 +1863,8 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
 
     outline_color = (style_manager.
                      make_color_style_value(input=bg_style, saturation=outline_saturation,
-                                                  value=max(0, dynamic_value * outline_factor + outline_offset)))
+                                                  value=max(0, dynamic_value * outline_factor +
+                                                            outline_offset + hovered_offset)))
     outline_color = mix_colors(outline_color, bg_bleed, 0.01)
     # if tint is not None:
     #     outline_color = imgui.get_color_u32_rgba(*tint)
@@ -1873,25 +1879,29 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
             channel = max(0, min(Melty.max_depth - 2, Melty.get_channel()))
             draw_list.channels_set_current(channel)
 
+        # if selected:
+        #     outline_color = imgui.get_color_u32_rgba(1.0, 0.8, 0.2, 1.0)
+
         imgui.get_window_draw_list().add_rect(*rect_outline, col=outline_color, rounding=rounding, thickness=2.0)
 
     if bg_color is None:
         bg_color = (style_manager.
-                    make_color_style_value(input=bg_style, value=max(0, dynamic_value) + hovered_offset))
+                    make_color_style_value(input=bg_style, value=max(0, dynamic_value)))
 
         bg_color = mix_colors(bg_color, bg_bleed, bleed_factor)
 
     imgui_bg_color = imgui.get_color_u32_rgba(bg_color[0], bg_color[1], bg_color[2], 1.0)
 
     if tint is not None:
-        imgui_bg_color = imgui.get_color_u32_rgba(*tint[:3], 1.0)
+        imgui_bg_color = imgui.get_color_u32_rgba(*tint[:3], opacity)
 
     if Melty.channels_split:
         draw_list = imgui.get_window_draw_list()
         channel = max(0, min(Melty.max_depth - 2, Melty.get_channel() - 2))
         draw_list.channels_set_current(channel)
 
-    imgui.get_window_draw_list().add_rect_filled(*rect, col=imgui_bg_color, rounding=rounding)
+    if opacity > 0.0:
+        imgui.get_window_draw_list().add_rect_filled(*rect, col=imgui_bg_color, rounding=rounding)
 
     return False, bg_color
 

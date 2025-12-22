@@ -196,6 +196,7 @@ class DrawState(DictConversion):
         self.clip_rect = None
         self.dlt_count = Melty.save_draw_state_for
         self.premature_break = False
+        self.bg_rect = None
 
         # Profiling
         self.render_time = 0.0
@@ -250,6 +251,9 @@ class DrawState(DictConversion):
 
 
     def get_rect(self):
+        if self.bg_rect is not None:
+            return self.bg_rect
+
         if self.left is None or self.top is None or self.width is None or self.height is None:
             return (0,0,0,0)
 
@@ -344,15 +348,20 @@ class DrawState(DictConversion):
         mouse_x, mouse_y = imgui.get_mouse_pos()
         # if Melty.imgui_any_item_hovered:
         #     return False
-        if not Melty.inside_clip(rect=(mouse_x, mouse_y, 1, 1)):
-            return False
+        # if not Melty.inside_clip(rect=(mouse_x, mouse_y, 1, 1)):
+        #     return False
 
         if rect is None:
-            if self.top is None or self.left is None or self.width is None or self.height is None:
-                return False
-            rect = (self.left, self.top, self.width, self.height)
-            if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
-                return True
+            if self.bg_rect is not None:
+                rect = self.bg_rect
+                if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
+                    return True
+            else:
+                if self.top is None or self.left is None or self.width is None or self.height is None:
+                    return False
+                rect = (self.left, self.top, self.width, self.height)
+                if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
+                    return True
         else:
             if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[2], rect[3]):
                 return True
@@ -395,16 +404,19 @@ class DrawState(DictConversion):
     def is_bounding_hovered(self):
         if (self._imgui_is_active or self._imgui_is_edited or self._imgui_is_item_hovered or self._imgui_popover_open):
             return True
-        mouse_x, mouse_y = imgui.get_mouse_pos()
-        if not Melty.inside_clip(rect=(mouse_x, mouse_y, 1, 1)):
-            return False
 
-        if not self.auto_resize and self.window_pos is not None:
-            rect = (self.window_pos[0], self.window_pos[1], self.width, self.height)
+        if self.bg_rect is not None:
+            rect = self.bg_rect
         else:
-            if self.top is None or self.left is None or self.width is None or self.height is None:
+            mouse_x, mouse_y = imgui.get_mouse_pos()
+            if not Melty.inside_clip(rect=(mouse_x, mouse_y, 1, 1)):
                 return False
-            rect = (self.left, self.top, self.width, self.height + 10)
+            if not self.auto_resize and self.window_pos is not None:
+                rect = (self.window_pos[0], self.window_pos[1], self.width, self.height)
+            else:
+                if self.top is None or self.left is None or self.width is None or self.height is None:
+                    return False
+                rect = (self.left, self.top, self.width, self.height + 10)
 
         if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
             if imgui.is_window_hovered() or Melty.imgui_popup_open:
