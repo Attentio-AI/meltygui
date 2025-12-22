@@ -1091,15 +1091,7 @@ def draw_header_end(global_style, unique, style_manager, show_search,
     # push_style_var(imgui.STYLE_FRAME_PADDING, (4, 0))
     # push_style_var(imgui.STYLE_ITEM_SPACING, (4, 0))
 
-    if parent_show_add_delete:
-        imgui.same_line()
-        push_style_color(imgui.COLOR_TEXT, *search_color)
-        push_style_color(imgui.COLOR_BUTTON, *(0.0, 0.0, 0.0, 0.0))
-        if imgui.button(f"\uf1f8##del"):
-            melty.to_delete(key, collection)
-            print("No selected_views or remove_view method")
-        same_line(spacing=0.0)
-        pop_style_color(2)
+
 
     if closable:
         imgui.same_line()
@@ -1876,7 +1868,7 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
             outline_color = imgui.get_color_u32_rgba(*outline_tint[:3], 1.0)
         if Melty.channels_split:
             draw_list = imgui.get_window_draw_list()
-            channel = max(0, min(Melty.max_depth - 2, Melty.get_channel()))
+            channel = max(0, min(Melty.max_depth - 2, Melty.get_channel() - 1))
             draw_list.channels_set_current(channel)
 
         # if selected:
@@ -1971,7 +1963,7 @@ def button(input_value="", color=None, width=None, height=None, style_manager=No
     return clicked, input_value
 
 
-def draw_header(input_value=None, name="", suffix="", collection=None, display_name=None, meta=None, unique=None, is_tree=True,
+def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add_delete=False, width=0, suffix="", collection=None, display_name=None, meta=None, unique=None, is_tree=True,
                 show_name=True, name_func=None, show_type=False, show_unique=False,
                 on_search=False, trigger_collapse=False, trigger_expand=False,
                 draw_state=None, show_tint=True, opacity=1.0, show_add_delete=True,
@@ -2040,7 +2032,41 @@ def draw_header(input_value=None, name="", suffix="", collection=None, display_n
         same_line()
     else:
         imgui.same_line()
+    if show_type:
+        imgui.text_colored(f"({input_value.__class__.__name__})", *(0.8, 0.0, 0.5, 1.0))
+        same_line()
 
+    if show_unique:
+        imgui.text_colored(f"({str(Melty.get_tile_id())})", *(0.4, 0.0, 0.9, 1.0))
+        same_line()
+    if show_name and name != "":
+        same_line()
+        imgui.set_item_allow_overlap()
+
+    if show_tint and hasattr(input_value, "tint") and input_value.tint is not None:
+        draw_state._has_popup = True
+        tint_changed, tint_value = draw_tuple(input_value.tint, show_header=False)
+        if tint_changed:
+            input_value.tint = tint_value
+            # Melty.cache.refresh_by_obj(input_value, name)
+        same_line()
+
+    if show_add_delete and isinstance(input_value, (list, dict)) or hasattr(input_value, "__dict__"):
+        if show_add_delete:
+            if imgui.small_button(f"\uf067##add{unique}"):
+                # Use str as default hinted type
+                hinted_type = NoneType
+                if meta.field_type is not None and hasattr(meta.field_type, "__args__"):
+                    if len(meta.field_type.__args__) == 2:
+                        hinted_type = meta.field_type.__args__[1]
+                add_to_collection(input_value, hinted_type())
+                on_change = True
+                return_val = input_value
+            same_line()
+
+
+
+    min_text_width = 60
     if show_name and name != "" and name is not None and name != "None":
         if isinstance(input_value, (dict, MutableMapping)):
             folder_icon = "\uf07b"
@@ -2069,8 +2095,9 @@ def draw_header(input_value=None, name="", suffix="", collection=None, display_n
             pop_style_color(2)
             same_line()
 
+        clipped_name = name[:40]
         padding = imgui.get_style().frame_padding.x
-        text_width = imgui.calc_text_size(name)[0]
+        text_width = imgui.calc_text_size(clipped_name)[0]
         push_style_color(imgui.COLOR_BUTTON, *(0.0, 0.0, 0.0, 0.0))
         push_style_color(imgui.COLOR_TEXT, *name_color)
 
@@ -2081,16 +2108,26 @@ def draw_header(input_value=None, name="", suffix="", collection=None, display_n
 
         push_style_color(imgui.COLOR_BUTTON_ACTIVE, *hover_color)
         push_style_var(imgui.STYLE_FRAME_ROUNDING, 2.0)
-
-        min_name_width = 30.0
-        name_width = max(text_width + padding * 2, min_name_width)
+        name_width = min(text_width, min_text_width)
         if not draw_state._name_edit:
-            imgui.text_colored(name, *name_color)
+            # imgui.set_next_item_width(50)
+            # imgui.text_colored(name, *name_color)
 
-            # draw_list: _DrawList = imgui.get_window_draw_list()
-            # cursor_pos = imgui.get_cursor_screen_pos()
-            # draw_list.add_text(cursor_pos[0], cursor_pos[1] + 4, imgui.get_color_u32_rgba(*name_color[:3], 1.0), name)
-            # imgui.dummy(name_width, 0)
+            draw_list: _DrawList = imgui.get_window_draw_list()
+            cursor_pos = imgui.get_cursor_screen_pos()
+
+            right_edge = Melty.get_clip_rect()[2]
+            space_left = right_edge - cursor_pos[0]
+            dummy_width = min(space_left - 30, text_width)
+            Melty.push_clip((snap_int(cursor_pos[0]),
+                             snap_int(cursor_pos[1]),
+                             snap_int(cursor_pos[0] + dummy_width),
+                             snap_int(cursor_pos[1] + imgui.get_frame_height())))
+
+            draw_list.add_text(cursor_pos[0], cursor_pos[1], imgui.get_color_u32_rgba(*name_color[:3], 1.0),
+                               clipped_name)
+            imgui.dummy(dummy_width, imgui.get_frame_height())
+            Melty.pop_clip()
 
             # imgui.text_colored(name, *name_color)
 
@@ -2129,39 +2166,26 @@ def draw_header(input_value=None, name="", suffix="", collection=None, display_n
 
         same_line(spacing=3)
 
-    if show_type:
-        imgui.text_colored(f"({input_value.__class__.__name__})", *(0.8, 0.0, 0.5, 1.0))
-        same_line()
+    if parent_show_add_delete:
+        bg_style = {
+            "value": 0.01,
+            "saturation": 1.0,
+            "alpha": 1.0,
+            'max_value': 1.0
+        }
+        bg_style = global_style.get_global_constant("bg_style", default=bg_style, folder="bg_styles")
+        search_color = (style_manager.
+                        make_color_style_value(input=bg_style, saturation=0.7,
+                                               value=1.0))
+        imgui.same_line(spacing=0.0)
+        push_style_color(imgui.COLOR_TEXT, *search_color)
+        push_style_color(imgui.COLOR_BUTTON, *(0.0, 0.0, 0.0, 0.0))
+        if imgui.button(f"\uf1f8##del"):
+            melty.to_delete(key, collection)
+            print("No selected_views or remove_view method")
+        same_line(spacing=0.0)
+        pop_style_color(2)
 
-    if show_unique:
-        imgui.text_colored(f"({str(Melty.get_tile_id())})", *(0.4, 0.0, 0.9, 1.0))
-        same_line()
-    if show_name and name != "":
-        same_line()
-        imgui.set_item_allow_overlap()
-
-    if show_tint and hasattr(input_value, "tint") and input_value.tint is not None:
-        draw_state._has_popup = True
-        tint_changed, tint_value = draw_tuple(input_value.tint, show_header=False)
-        if tint_changed:
-            input_value.tint = tint_value
-            # Melty.cache.invalidate_by_obj(input_value, name)
-        same_line()
-
-    if show_add_delete and isinstance(input_value, (list, dict)) or hasattr(input_value, "__dict__"):
-        if show_add_delete:
-            if imgui.small_button(f"\uf067##add{unique}"):
-                # Use str as default hinted type
-                hinted_type = NoneType
-                if meta.field_type is not None and hasattr(meta.field_type, "__args__"):
-                    if len(meta.field_type.__args__) == 2:
-                        hinted_type = meta.field_type.__args__[1]
-                add_to_collection(input_value, hinted_type())
-                on_change = True
-                return_val = input_value
-            same_line()
-
-    same_line()
 
     do_profile = global_toggles.profiler == ProfileMode.ON
     if do_profile:
@@ -2323,7 +2347,7 @@ def draw_str(input_value: str):
     return changed, value
 
 
-@with_header_minimal(is_default_for=('tint'), has_popup=True, use_cache=False)
+@with_header_minimal(is_default_for=('tint'), has_popup=True, indent_size=0, use_cache=False)
 def draw_tuple(input_value: tuple, unique):
     if len(input_value) > 0 and isinstance(input_value[0], (float, int)):
         if len(input_value) == 4:

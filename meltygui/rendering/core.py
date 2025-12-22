@@ -641,7 +641,7 @@ def render_func(*args, **o_kwargs):
                 if Melty.channels_split:
                     draw_list.channels_set_current(Melty.get_channel())
             kwargs['on_drag'] = False
-            clip = not auto_resize
+            clip = True
             if (draw_state.left is None or draw_state.top is None or
                     draw_state.width is None or draw_state.height is None):
                 clip = False
@@ -679,7 +679,7 @@ def render_func(*args, **o_kwargs):
 
             draw_state.bg_rect = (left, top, width, height)
 
-            if not is_header or melty_window:
+            if not is_header:
                 click = draw_state.on_action("left_mouse_down")
                 if click:
                     Melty.move_window_to_front()
@@ -736,9 +736,9 @@ def render_func(*args, **o_kwargs):
             #### MAIN CALL #######################################################
             if clip:
                 cursor_pos = imgui.get_cursor_screen_pos()
-                Melty.push_clip((cursor_pos[0], cursor_pos[1],
-                                 cursor_pos[0] + draw_state.width,
-                                 cursor_pos[1] + draw_state.height))
+                Melty.push_clip((left, top,
+                                 left + width,
+                                 top + height))
 
             return_value = draw_inner_main(clean_args, draw_state, input_value, kwargs, melty, tile_id, unique, melty_window)
 
