@@ -863,6 +863,8 @@ class TileCacheMasked:
         if not self.enabled:
             return True
 
+        gl.glDisable(gl.GL_DEPTH_TEST)
+
         Melty.tile_id_stack.append(key)
         x, y = imgui.get_cursor_screen_pos()
         # snap cursor to nearest pixel to avoid sub-pixel jitter during layout

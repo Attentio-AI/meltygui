@@ -78,16 +78,18 @@ class ZoomState(DictConversion):
         self.zoom = 1.0
         self.brightness = 0.0
         self.contrast = 1.0
+        self.hue = 0.0
+        self.saturation = 1.0
 
-@no_save("mouse_btn_state", "mouse_up", "mouse_down", "bounding_width", "bounding_height", "unique", "search_active",
-         "drag_released","clicked", "dragged", "header_height", "dragged", "name", "expanded_height",
-         "render_time", "overhead_time", "imgui_is_toggled_open", "z_pos", "hotkey_receiver", "use_child", "cst", "search_text",
+@no_save("mouse_btn_state", "mouse_up", "mouse_down", "unique", "search_active", "content_height",
+         "drag_released","clicked", "dragged", "dragged", "name", "expanded_height", "clipped", "fully_clipped", "left", "top",
+         "render_time", "overhead_time", "imgui_is_toggled_open", "z_pos", "hotkey_receiver", "use_child", "cst", "search_text", "bg_color",
          "is_active", "clip_rect", "wrapped_top", "wrapped_left", "min_width", "min_height", "is_focused", "drag_window_pos_x", "drag_window_pos_y", "drag_mode", "is_hovered_last",
          "z_pos", "draw_window_pos_x", "misc_used", "draw_window_pos_y", "drag_delta", "screen_pos", "imgui_is_item_activated", "frame_count")
-@exclude("render_time","overhead_time", "clip_rect", "bounds_left", "bounds_top", "_input_value", "flow_spacing", 'width',
+@exclude("render_time","overhead_time", "clip_rect", "_input_value", "flow_spacing", 'width',
          "hovered", "wrapped_top", "wrapped_left", "_did_use_cache", "content_height", "content_region", "value_hash", "drag_window", "top", "left", "content_region", "did_render",
          "bounding_hovered", "dlt_count", "header_height", "z_pos", "scrolled", "is_hovered_last", "frame_count")
-@deep_refresh('scroll_offset', 'window_size')
+@deep_refresh('scroll_offset')
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
 
@@ -107,7 +109,6 @@ class DrawState(DictConversion):
         # Imgui state mirror
         self.is_active = False
         self.is_focused = False
-        self.content_region = (0, 0)
         self.scroll_offset = (0, 0)
         self._imgui_is_active = False
         self._imgui_is_activated = False
@@ -149,8 +150,6 @@ class DrawState(DictConversion):
         self.width = 0
         self.min_width = 0
         self.min_height = 0
-        self.bounding_width = 0
-        self.bounding_height = 0
         self.drag_window = False
         self._left_rel = None
         self._top_rel = None
@@ -190,8 +189,6 @@ class DrawState(DictConversion):
 
         self.result = None
         self.params = {}
-        self.bounds_left = 0
-        self.bounds_top = 0
         self.wrapped_top = 0
         self.wrapped_left = 0
         self.header_height = 0
@@ -201,8 +198,6 @@ class DrawState(DictConversion):
         # Profiling
         self.render_time = 0.0
         self.overhead_time = 0.0
-
-        # add more per-widget state as needed
 
     def init_cst_state(self, node, module_id: str):
         self.cst = CSTDrawBits()
@@ -262,9 +257,7 @@ class DrawState(DictConversion):
         top = self.top
         left = self.left
 
-        if self.window_pos is not None and self.window_size is not None:
-            width = self.window_size[0]
-            height = self.window_size[1]
+        if self.window_pos is not None:
             top = self.window_pos[1]
             left = self.window_pos[0]
 
@@ -353,9 +346,9 @@ class DrawState(DictConversion):
             return False
 
         if rect is None:
-            if self.bounds_top is None or self.bounds_left is None or self.width is None or self.height is None:
+            if self.top is None or self.left is None or self.width is None or self.height is None:
                 return False
-            rect = (self.bounds_left, self.bounds_top, self.width, self.height)
+            rect = (self.left, self.top, self.width, self.height)
             if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
                 return True
         else:
@@ -398,17 +391,16 @@ class DrawState(DictConversion):
         return return_events
 
     def is_bounding_hovered(self):
-
         if (self._imgui_is_active or self._imgui_is_edited or self._imgui_is_item_hovered or self._imgui_popover_open):
             return True
         mouse_x, mouse_y = imgui.get_mouse_pos()
         if not Melty.inside_clip(rect=(mouse_x, mouse_y, 1, 1)):
             return False
 
-        if not self.auto_resize and self.window_pos is not None and self.window_size is not None:
-            rect = (self.window_pos[0], self.window_pos[1], self.window_size[0], self.window_size[1])
+        if not self.auto_resize and self.window_pos is not None:
+            rect = (self.window_pos[0], self.window_pos[1], self.width, self.height)
         else:
-            if self.bounds_top is None or self.bounds_left is None or self.width is None or self.height is None:
+            if self.top is None or self.left is None or self.width is None or self.height is None:
                 return False
             rect = (self.left, self.top, self.width, self.height + 10)
 

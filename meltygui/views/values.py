@@ -257,27 +257,49 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
     io = imgui.get_io()
     overlay:_DrawList = imgui.get_overlay_draw_list()
 
-    if right_mouse_drag and not right_mouse_drag.modifiers:
+    if right_mouse_drag:
         b_str = f"{zoom_state.brightness:.3f}"
         overlay.add_text(right_mouse_drag.x, right_mouse_drag.y - 30,
                            col=imgui.get_color_u32_rgba(*highlight_color[:3], 1),
                           text=f"brightness:{zoom_state.brightness:.3}\ncontrast:{zoom_state.contrast:.3}" )
+
         if io.key_shift:
-            zoom_state.brightness += right_mouse_drag.dx * 0.001
-            zoom_state.contrast -= right_mouse_drag.dy * 0.001
+            if io.key_ctrl:
+                zoom_state.hue += right_mouse_drag.dx * 0.001
+                zoom_state.saturation -= right_mouse_drag.dy * 0.001
+            else:
+                zoom_state.brightness += right_mouse_drag.dx * 0.001
+                zoom_state.contrast -= right_mouse_drag.dy * 0.001
         else:
-            zoom_state.brightness += right_mouse_drag.dx * 0.005
-            zoom_state.contrast -= right_mouse_drag.dy * 0.005
+            if io.key_ctrl:
+                zoom_state.hue += right_mouse_drag.dx * 0.005
+                zoom_state.saturation -= right_mouse_drag.dy * 0.005
+            else:
+                zoom_state.brightness += right_mouse_drag.dx * 0.005
+                zoom_state.contrast -= right_mouse_drag.dy * 0.005
 
-        zoom_state.brightness = max(0.0, min(max_brightness, zoom_state.brightness))
-        zoom_state.contrast = max(0.0, min(max_contrast, zoom_state.contrast))
 
-    if zoom_state.brightness != 0.0 or zoom_state.contrast != 1.0:
-        texture_id = Melty.filter.brightness_contrast(
-            input_value,
-            brightness=zoom_state.brightness,
-            contrast=zoom_state.contrast
-        )
+
+        # zoom_state.brightness = max(0.0, min(max_brightness, zoom_state.brightness))
+        # zoom_state.contrast = max(0.0, min(max_contrast, zoom_state.contrast))
+
+    texture_id = Melty.filter.brightness_contrast(
+        input_value,
+        brightness=zoom_state.brightness,
+        contrast=zoom_state.contrast
+    )
+
+    # texture_id = Melty.filter.swirl(
+    #     input_value,
+    #     radius=1.0,
+    #     angle=(zoom_state.brightness * 5),
+    # )
+
+    texture_id = Melty.filter.hue_saturation(
+        texture_id,
+        saturation=(zoom_state.saturation),
+        hue_shift=(zoom_state.hue),
+    )
 
     # texture_id = Melty.filter.swirl(
     #     texture_id,
@@ -311,18 +333,26 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
             zoom_state.center_v = 0.5
             zoom_state.brightness = 0.0
             zoom_state.contrast = 1.0
+            zoom_state.hue = 0.0
+            zoom_state.saturation = 1.0
         elif imgui.is_key_pressed(50):  # Key '2'
             forced_zoom = 0.5
             zoom_state.brightness = 0.0
             zoom_state.contrast = 1.0
+            zoom_state.hue = 0.0
+            zoom_state.saturation = 1.0
         elif imgui.is_key_pressed(51):  # Key '3'
             forced_zoom = 0.25
             zoom_state.brightness = 0.0
             zoom_state.contrast = 1.0
+            zoom_state.hue = 0.0
+            zoom_state.saturation = 1.0
         elif imgui.is_key_pressed(52):  # Key '4'
             forced_zoom = 0.125
             zoom_state.brightness = 0.0
             zoom_state.contrast = 1.0
+            zoom_state.hue = 0.0
+            zoom_state.saturation = 1.0
 
     if forced_zoom > 0:
         zoom_state.zoom = forced_zoom
@@ -473,7 +503,7 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
 def draw_debug(input_value, melty):
     draw_any(melty)
 
-@with_header(is_default_for=ManagedWindow, is_tree=False, show_name=True,
+@with_header(is_default_for=ManagedWindow, is_tree=False, show_name=False,
              show_bg=True, show_add_delete=False)
 def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, mouse_down=False, **kwargs):
 
@@ -1302,7 +1332,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
         #
         # content_region = draw_state.content_region[0]
         # width = min(width, content_region)
-        draw_state.content_region = imgui.get_content_region_available()
+        # draw_state.content_region = imgui.get_content_region_available()
         draw_state._left_rel = imgui.get_cursor_pos()[0]
 
         cutoff = 50
@@ -1554,10 +1584,6 @@ def draw_collection(input_value, draw_state, depth, style_manager,
     drew_any = False
     collection_spacing = 0
     all_meta = []
-    content_height = 0.0
-
-    current_cursor = imgui.get_cursor_screen_pos()
-    # imgui.set_cursor_screen_pos((current_cursor[0], current_cursor[1] - draw_state.scroll_offset[1]))
 
     start_cursor = imgui.get_cursor_pos()[1]
     keys = list(keys)[:]
@@ -1567,11 +1593,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
     needs_content_height = ((draw_state.content_height < draw_state.height if draw_state.height is not None else True) or
                             draw_state.invalid_content_height)
 
-    # draw_list = imgui.get_window_draw_list()
-    # if rect is not None:
-    #     draw_list.add_rect(rect[0] + 1, rect[1] + 1, rect[2] - 1, rect[3] - 1,
-    #                        imgui.get_color_u32_rgba(1,1,1, 1.0),
-    #                        rounding=2.0, thickness=2.0)
+
     premature_break = False
     for idx, key in enumerate(keys):
         if isinstance(collection, dict) and key not in collection:
@@ -1630,10 +1652,6 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
         # view function & suffix
         view_fn = getattr(item_meta, "view_function", draw_collection)
-        if view_fn is None:
-            view_fn = draw_any
-
-        id_val = getattr(input_value, "unique_id", "")
 
         trigger_collapse = False
         if isinstance(input_value, (dict, defaultdict, MutableMapping)) and on_collapse:
@@ -1668,6 +1686,10 @@ def draw_collection(input_value, draw_state, depth, style_manager,
                         space_left = imgui.get_content_region_available()[0] - item_meta.tmp_draw_state.width
                         if space_left < 0:
                             imgui.new_line()
+
+            imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0,0))
+            imgui.dummy(0,0)
+            imgui.pop_style_var()
 
             item_changed, out_val, extras = draw_any(item, return_extras=True, indent_size=10, key=key,
                                                      meta=item_meta, trigger_collapse=trigger_collapse,

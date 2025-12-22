@@ -15,6 +15,8 @@ from src.lsd.gl_gui.model.core_model.core_enums import generate_id
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import global_hotkeys
 
+import OpenGL.GL as gl
+
 
 class Melty:
     selected = set()
@@ -130,11 +132,23 @@ class Melty:
     events_by_type = {}
     pending_blockers = [None] * max_layer
     imgui_blockers = [None] * max_layer
+    original_spacing = None
+    original_window_padding = None
+    original_frame_padding = None
 
     @classmethod
     def begin_frame(cls):
+        style = imgui.get_style()
 
+        cls.original_spacing = style.item_spacing
+        cls.original_window_padding = style.window_padding
+        cls.original_frame_padding = style.frame_padding
 
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+        gl.glBindRenderbuffer(gl.GL_RENDERBUFFER, 0)
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
+        gl.glBindVertexArray(0)
 
         cls.backend.pump()
 
@@ -200,6 +214,7 @@ class Melty:
         # cls._path_stack.clear()
         fb_w, fb_h = map(int, imgui.get_io().display_size)  # or your true GL FB size if HiDPI
         cls.cache.mask_begin_frame((fb_w, fb_h))
+
 
 
         from src.lsd.gl_gui.view.core_views.core_render_helpers import clear_floating_text_cache
