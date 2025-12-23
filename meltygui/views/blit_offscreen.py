@@ -600,7 +600,6 @@ class TileCacheMasked:
 
     def invalidate(self, k: str, force=False) -> None:
 
-        # print_stack_trace(5)
         t = self._tiles.get(k)
         if t is not None:
             target_frame = self._frame_id + 1
@@ -1029,12 +1028,14 @@ class TileCacheMasked:
             # Always bind VAO before any draw calls
             gl.glBindVertexArray(self._dummy_vao)
 
-            if ((t is None) or (t.size != (ctx.size[0], ctx.size[1]))) and not imgui.is_mouse_down(0):
+            if (t is None) or (t.size != (ctx.size[0], ctx.size[1])) and not imgui.is_mouse_down(0):
                 t = _ensure_tile(t, ctx.size[0], ctx.size[1], frame_id=self._frame_id)
                 self.invalidate(ctx.key)
                 self._tiles[ctx.key] = t
 
+
             if self._is_dirty(t) and (ctx.key not in self._enq_copy_keys):
+
                 self._pending.append(_Pending(tile=t, pos=ctx.pos, size=ctx.size, layer=ctx.layer, key=ctx.key))
                 self._enq_copy_keys.add(ctx.key)
 

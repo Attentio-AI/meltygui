@@ -238,12 +238,10 @@ def draw_vertical_scrollbar(content_height: float,
         min_grab_size = float(style.grab_min_size)
 
     if tint is not None:
-        col_grab = imgui.get_color_u32_rgba(*tint[:3], 0.5)
+        col_grab = imgui.get_color_u32_rgba(*tint[:3], 1.0)
     else:
         col_grab = imgui.get_color_u32(imgui.COLOR_SCROLLBAR_GRAB)
     col_border = imgui.get_color_u32(imgui.COLOR_BORDER)
-
-
 
     # Early clamps & deriveds
     view_height = max(0.0, float(view_height))

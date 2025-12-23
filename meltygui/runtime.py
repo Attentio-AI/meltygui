@@ -137,6 +137,7 @@ class Melty:
     original_frame_padding = None
 
     fixed_size_stack = []
+    nested_collections = 0
 
     @classmethod
     def begin_frame(cls):
@@ -465,6 +466,10 @@ class Melty:
         width = rect[2] - rect[0]
         height = rect[3] - rect[1]
         return width - 1, height - 1
+
+    @classmethod
+    def has_clip(cls):
+        return len(cls.clip_stack) > 0
 
     @classmethod
     def get_parent_size(cls):

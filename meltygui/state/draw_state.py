@@ -154,8 +154,8 @@ class DrawState(DictConversion):
         self._left_rel = None
         self._top_rel = None
         self._min_width = None
-        self.top = None
-        self.left = None
+        self.top = 0
+        self.left = 0
         self._draggable = False
         self.search_text = ""
         self.search_active = False
@@ -168,7 +168,8 @@ class DrawState(DictConversion):
         self._screen_pos = (0, 0)
         self._did_use_cache = False
         self.track_mouse = False
-
+        self._scroll_child = None
+        self._collection_draw_state = None
         self.mouse_btn_state = {0: MouseState(),
                                 1: MouseState(),
                                 2: MouseState()}
