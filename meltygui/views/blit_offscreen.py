@@ -1029,7 +1029,7 @@ class TileCacheMasked:
             # Always bind VAO before any draw calls
             gl.glBindVertexArray(self._dummy_vao)
 
-            if (t is None) or (t.size != (ctx.size[0], ctx.size[1])):
+            if ((t is None) or (t.size != (ctx.size[0], ctx.size[1]))) and not imgui.is_mouse_down(0):
                 t = _ensure_tile(t, ctx.size[0], ctx.size[1], frame_id=self._frame_id)
                 self.invalidate(ctx.key)
                 self._tiles[ctx.key] = t

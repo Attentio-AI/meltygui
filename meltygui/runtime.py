@@ -136,6 +136,8 @@ class Melty:
     original_window_padding = None
     original_frame_padding = None
 
+    fixed_size_stack = []
+
     @classmethod
     def begin_frame(cls):
         style = imgui.get_style()
@@ -199,10 +201,11 @@ class Melty:
         #     if Melty.is_key_pressed(hotkey.key):
         #         if callable(target):
         #             target()
-        # for view_id, evts in cls.events.items():
-        #     first_event = list(evts.values())[0]
-        #     if first_event.tile_id is not None and not cls.on_drag:
-        #         Melty.cache.clear(first_event.tile_id, force=True)
+
+        for view_id, evts in cls.events.items():
+            first_event = list(evts.values())[0]
+            if first_event.tile_id is not None and not cls.on_drag:
+                Melty.cache.invalidate(first_event.tile_id)
 
         Melty.all_uniques = set()
 
@@ -426,11 +429,12 @@ class Melty:
         draw_list = imgui.get_window_draw_list()
         current_clip = cls.get_clip_rect()
         if current_clip is not None:
+            from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
             clip_new_rect = (
-                max(current_clip[0], rect[0]),
-                max(current_clip[1], rect[1]),
-                min(current_clip[2], rect[2]),
-                min(current_clip[3], rect[3]),
+                max(current_clip[0], snap_int(rect[0])),
+                max(current_clip[1], snap_int(rect[1])),
+                min(current_clip[2], snap_int(rect[2])),
+                min(current_clip[3], snap_int(rect[3])),
             )
             rect = clip_new_rect
 
@@ -448,7 +452,8 @@ class Melty:
     @classmethod
     def get_clip_rect(cls):
         if len(cls.clip_stack) == 0:
-            return None
+            display_size = imgui.get_io().display_size
+            return (0, 0, int(display_size[0]), int(display_size[1]))
         return cls.clip_stack[-1]
 
     @classmethod
@@ -798,7 +803,7 @@ def add_to_collection(collection, item, preferred_key=None):
                          min(1.0, item.tint[1] + lighten),
                          min(1.0, item.tint[2] + lighten))
 
-    Melty.invalidate(value=collection)
+    Melty.cache.invalidate_by_obj(collection)
     request_render()
     return collection
 

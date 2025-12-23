@@ -340,8 +340,8 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
     #     radius=zoom_state.contrast
     # )
 
-    p_min = (imgui.get_item_rect_min()[0], imgui.get_item_rect_min()[1])
-    p_max = (imgui.get_item_rect_max()[0], imgui.get_item_rect_max()[1])
+    p_min = (imgui.get_item_rect_min()[0] + 2, imgui.get_item_rect_min()[1] + 2)
+    p_max = (imgui.get_item_rect_max()[0] - 1, imgui.get_item_rect_max()[1] - 1)
     p_min_x, p_min_y = p_min[0], p_min[1]
 
     scroll_delta = 0
@@ -509,19 +509,19 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
 
     draw_list:_DrawList = imgui.get_window_draw_list()
 
-    Melty.push_clip((clip_left, clip_top, clip_right, clip_bottom))
+    Melty.push_clip((clip_left , clip_top, clip_right, clip_bottom))
     draw_list.add_image_rounded(texture_id,
                                 a=p_min,
                                 b=p_max,
                                 uv_a=uv_a,
                                 uv_b=uv_b,
                                 rounding=5.0)
-
-    Melty.pop_clip()
-
-    draw_list.add_rect(raw_img_left - 1, raw_img_top - 1, raw_img_right + 1, raw_img_bottom + 1,
+    draw_list.add_rect(raw_img_left, raw_img_top, raw_img_right + 1, raw_img_bottom + 1,
                        imgui.get_color_u32_rgba(*mixed_color[:3], 1.0),
                        0.0, 0, 1.0)
+    Melty.pop_clip()
+
+
 
     line_height = imgui.get_text_line_height()
     draw_list.add_text(max(p_min_x + 5, raw_img_left), clip_top - line_height - 5,
@@ -619,6 +619,7 @@ def draw_window(input_value, unique, inner_func=None, style_manager=None, **kwar
         meta.view_function = inner_func
 
     kwargs['show_bg'] = False
+    kwargs['selectable'] = False
     return_val = meta.view_function(input_value, **kwargs)
     return return_val
 
@@ -1460,8 +1461,8 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             if draw_state.width is not None and draw_state.height is not None:
                 if draw_state.width > 0 and draw_state.height > 0:
                     clipped = True
-                    Melty.push_clip((clip_start[0], clip_start[1],
-                                     clip_start[0] + draw_state.width, clip_start[1] + draw_state.height - 3))
+                    Melty.push_clip((draw_state.left, current_cursor[1],
+                                     draw_state.left + draw_state.width, current_cursor[1] + draw_state.height - header_height))
             next_kwargs['header_height'] = header_height
 
             imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + indent_size)
@@ -1610,8 +1611,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
     rect = Melty.get_clip_rect()
 
     needs_content_height = ((draw_state.content_height < draw_state.height if draw_state.height is not None else True) or
-                            draw_state.invalid_content_height)
-
+                            draw_state.invalid_content_height) and not Melty.on_drag
 
     premature_break = False
     for idx, key in enumerate(keys):
@@ -2022,6 +2022,8 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
         if imgui.arrow_button(f"##tree{unique}", imgui.DIRECTION_DOWN if draw_state.expanded else imgui.DIRECTION_RIGHT):
             draw_state.expanded = not draw_state.expanded
+            draw_state.content_height = 0
+            draw_state.invalid_content_height = True
             request_render()
         imgui.set_item_allow_overlap()
         imgui.pop_style_color(2)
