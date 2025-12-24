@@ -306,6 +306,10 @@ def render_func(*args, **o_kwargs):
             else:
                 window_z_pos = list(Melty.registered_windows.keys()).index(window_key) \
                     if window_key in Melty.registered_windows else None
+
+                if window_z_pos == len(Melty.registered_windows) - 1:
+                    window_z_pos = len(Melty.registered_windows) + 5
+
                 kwargs['layer'] = window_z_pos
 
             if kwargs.get("layer", None) is not None and len(Melty.layers) > 0:

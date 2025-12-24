@@ -16,15 +16,15 @@ class ShadowCast:
     """
     shader_type = 'standard'
     uniforms = {
-        'light_dir': (GLType.VEC2, (-1.0, -1.0)),
-        'height_scale': (GLType.FLOAT, 0.02),
-        'blur_scale': (GLType.FLOAT, 0.05),
-        'max_steps': (GLType.INT, 64),
-        'blur_samples': (GLType.INT, 6),
-        'depth_bias': (GLType.FLOAT, 0.005),
-        'surface_threshold': (GLType.FLOAT, 0.01),
-        'min_height_diff': (GLType.FLOAT, 0.0),
-        'shadow_strength': (GLType.FLOAT, 0.7),
+        'light_dir': (GLType.VEC2, (0.05, 0.1)),
+        'height_scale': (GLType.FLOAT, 0.07),
+        'blur_scale': (GLType.FLOAT, 0.02),
+        'max_steps': (GLType.INT, 32),
+        'blur_samples': (GLType.INT, 8),
+        'depth_bias': (GLType.FLOAT, 0),
+        'surface_threshold': (GLType.FLOAT, 0.0),
+        'min_height_diff': (GLType.FLOAT, 0.000),
+        'shadow_strength': (GLType.FLOAT, 0.4),
         'texture_size': (GLType.VEC2, None),
     }
     fragment_code = """
@@ -37,7 +37,7 @@ void main() {
         return;
     }
 
-    vec2 light_normalized = normalize(light_dir);
+    vec2 light_normalized = (light_dir);
 
     float min_offset = (1.0 - receiver_depth) * height_scale;
     float depth_step = 1.0 / float(max_steps);
