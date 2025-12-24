@@ -90,7 +90,7 @@ class FilterExecutor:
         GL.glEnableVertexAttribArray(1)
         
         GL.glBindVertexArray(0)
-    
+
     def execute(self, program: CompiledProgram, texture_id: int,
                 uniforms: Dict[str, Any], in_place: bool = False,
                 output_texture: Optional[int] = None,
@@ -102,15 +102,12 @@ class FilterExecutor:
         Args:
             program: The compiled shader program
             texture_id: Input texture ID (ignored if input_framebuffer is set)
-            uniforms: Uniform values to pass to the shader
+            uniforms: Uniform values to pass to the shader.
+                      For SAMPLER2D uniforms, pass the texture ID as the value.
             in_place: If True, render back to the input texture
             output_texture: Optional output texture ID (creates new if None and not in_place)
             output_framebuffer: Optional framebuffer to render to (e.g., 0 for main screen).
-                               If set, renders directly to this framebuffer instead of creating
-                               an output texture. Returns 0 when using this mode.
             input_framebuffer: Optional framebuffer to read from (e.g., 0 for main screen).
-                              If set, reads from this framebuffer instead of texture_id.
-                              Will attempt to use the framebuffer's texture attachment if available.
 
         Returns:
             The output texture ID (or 0 if rendering to output_framebuffer)
@@ -137,92 +134,101 @@ class FilterExecutor:
 
         # Handle direct framebuffer rendering (e.g., to main screen)
         if output_framebuffer is not None:
-            # Render directly to the specified framebuffer
             GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, output_framebuffer)
             GL.glViewport(0, 0, width, height)
-            out_tex = 0  # No output texture when rendering to framebuffer
+            out_tex = 0
         else:
-            # Normal texture-based rendering
-            # Get or create FBO and temp texture for this size
             fbo, temp_texture = self._get_fbo(width, height)
 
-            # Determine output texture
             if in_place:
-                # We need to render to a temp texture, then copy back
                 out_tex = temp_texture
             elif output_texture is not None:
                 out_tex = output_texture
             else:
-                # Get cached output texture for this input (automatic per-texture caching)
                 out_tex = self._get_cached_texture(texture_id, width, height)
 
-            # Bind FBO with output texture
             GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, fbo)
             GL.glFramebufferTexture2D(GL.GL_FRAMEBUFFER, GL.GL_COLOR_ATTACHMENT0,
-                                       GL.GL_TEXTURE_2D, out_tex, 0)
-
-            # Set viewport
+                                      GL.GL_TEXTURE_2D, out_tex, 0)
             GL.glViewport(0, 0, width, height)
-        
-        # Clear
+
         GL.glClear(GL.GL_COLOR_BUFFER_BIT)
-        
-        # Use shader program
         GL.glUseProgram(program.program_id)
-        
-        # Bind input texture
+
+        # Bind main input texture to unit 0
         GL.glActiveTexture(GL.GL_TEXTURE0)
         GL.glBindTexture(GL.GL_TEXTURE_2D, texture_id)
         GL.glUniform1i(program.uniform_locations['u_texture'], 0)
 
-        # Auto-populate texture_size if it's a required uniform and not explicitly provided
+        # Bind additional sampler textures to units 1, 2, 3, ...
+        next_texture_unit = 1
+        sampler_bindings = {}  # Track which uniforms are samplers and their units
+
+        for name, (gl_type, _) in program.shader.uniforms.items():
+            if gl_type == GLType.SAMPLER2D and name in uniforms:
+                sampler_texture_id = uniforms[name]
+                if sampler_texture_id is not None:
+                    GL.glActiveTexture(GL.GL_TEXTURE0 + next_texture_unit)
+                    GL.glBindTexture(GL.GL_TEXTURE_2D, sampler_texture_id)
+                    sampler_bindings[name] = next_texture_unit
+                    next_texture_unit += 1
+
+        # Auto-populate texture_size if needed
         if 'texture_size' in program.shader.uniforms and 'texture_size' not in uniforms:
             uniforms = {**uniforms, 'texture_size': (float(width), float(height))}
 
-        # Set uniforms
-        self._set_uniforms(program, uniforms)
-        
+        # Set uniforms (passing sampler bindings for texture unit assignment)
+        self._set_uniforms(program, uniforms, sampler_bindings)
+
         # Draw fullscreen quad
         GL.glBindVertexArray(self._quad_vao)
         GL.glDrawArrays(GL.GL_TRIANGLES, 0, 6)
         GL.glBindVertexArray(0)
-        
-        # Unbind
+
+        # Restore state
         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, original_framebuffer)
+        GL.glActiveTexture(GL.GL_TEXTURE0)  # Reset to texture unit 0
         GL.glBindTexture(GL.GL_TEXTURE_2D, original_texture)
         GL.glUseProgram(original_program)
         GL.glBindVertexArray(original_vao)
-
         GL.glViewport(original_viewport[0], original_viewport[1],
-                        original_viewport[2], original_viewport[3])
+                      original_viewport[2], original_viewport[3])
 
-        # If rendering to framebuffer directly, we're done
         if output_framebuffer is not None:
             return 0
 
-        # If in_place, copy result back to input texture
         if in_place:
             self._copy_texture(out_tex, texture_id, width, height)
             return texture_id
 
         return out_tex
-    
-    def _set_uniforms(self, program: CompiledProgram, uniforms: Dict[str, Any]) -> None:
+
+    def _set_uniforms(self, program: CompiledProgram, uniforms: Dict[str, Any],
+                      sampler_bindings: Optional[Dict[str, int]] = None) -> None:
         """Set uniform values."""
+        if sampler_bindings is None:
+            sampler_bindings = {}
+
         for name, value in uniforms.items():
             if name not in program.uniform_locations:
                 continue
-            
+
             loc = program.uniform_locations[name]
             if loc < 0:
                 continue
-            
+
             gl_type, _ = program.shader.uniforms.get(name, (None, None))
             if gl_type is None:
                 continue
-            
+
+            # Handle samplers specially - set to texture unit, not texture ID
+            if gl_type == GLType.SAMPLER2D:
+                if name in sampler_bindings:
+                    self._set_uniform_value(loc, GLType.INT, sampler_bindings[name])
+                continue
+
             self._set_uniform_value(loc, gl_type, value)
-    
+
     def _set_uniform_value(self, location: int, gl_type: GLType, value: Any) -> None:
         """Set a single uniform value."""
         GL = _get_gl()

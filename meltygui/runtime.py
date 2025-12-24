@@ -62,7 +62,7 @@ class Melty:
     is_melty_window = False
     melty_window_stack = []
     default_font = None
-    max_depth = 40
+    max_depth = 13
     indent_size = 10
     annotation_mode = True
     depth = 0
@@ -138,6 +138,7 @@ class Melty:
 
     fixed_size_stack = []
     nested_collections = 0
+    z_pos = 0
 
     @classmethod
     def begin_frame(cls):
@@ -460,8 +461,7 @@ class Melty:
     @classmethod
     def get_clip_size(cls):
         if len(cls.clip_stack) == 0:
-            display_size = imgui.get_io().display_size
-            return int(display_size[0]) - 1, int(display_size[1]) - 1
+            return None
         rect = cls.clip_stack[-1]
         width = rect[2] - rect[0]
         height = rect[3] - rect[1]

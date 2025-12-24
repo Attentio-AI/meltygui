@@ -11,6 +11,7 @@ from typing import Any
 
 import glfw
 import imgui
+from imgui.core import _DrawList
 
 from src.lsd.gl_gui.view.core_views.core_render_helpers import draw_vertical_scrollbar, floating_text
 from src.lsd.gl_gui.model.core_model.draw_state import DrawState, Hotkey, DragMode
@@ -230,7 +231,7 @@ def render_func(*args, **o_kwargs):
             unique = ui_id(datatype=type(input_value), suffix=name + unique_name + str(key) + func.__name__)
             suffix = f"{unique_name}_{func.__name__}_{unique}_{key}"
         else:
-            unique = ui_id(datatype=type(input_value), suffix=suffix + unique_name + root_window_name + str(key) + func.__name__,
+            unique = ui_id(datatype=type(input_value), suffix=suffix + unique_name + name + root_window_name + str(key) + func.__name__,
                            idx=index)
 
         # if active_layer is not None:
@@ -452,10 +453,11 @@ def render_func(*args, **o_kwargs):
             inc_depth = True
 
             Melty.unique_stack.append(computed_unique)
-
-
-
             Melty.depth = Melty.depth + 1
+
+            layer_and_depth = Melty.active_layer * Melty.max_depth + Melty.depth
+            draw_state.z_pos = layer_and_depth
+            Melty.z_pos = layer_and_depth
 
             kwargs['depth'] = Melty.depth
             draw_state._draggable = kwargs.get("draggable", False)
@@ -619,8 +621,7 @@ def render_func(*args, **o_kwargs):
             hover_eligible = draw_state.hover_eligible()
             if hover_eligible:
                 max_layer_depth = Melty.max_depth * Melty.max_layer + Melty.max_depth
-                layer_and_depth = Melty.active_layer * Melty.max_depth + Melty.depth
-                priority = max_layer_depth - layer_and_depth
+                priority = max_layer_depth - draw_state.z_pos
                 event_names = copy(wanted_params)
                 Melty.event_handler.register_hovered(tile_id, event_names, priority)
 
@@ -651,6 +652,17 @@ def render_func(*args, **o_kwargs):
             width = snap_int(width)
             height = snap_int(height)
             draw_state.bg_rect = (left, top, width, height)
+
+            if not is_header:
+                if kwargs.get("live", False):
+                    fa_live_icon = "\uf0e7 Continuous Rendering"
+                    draw_list: _DrawList = imgui.get_window_draw_list()
+                    draw_list.add_text(draw_state.left + 5, draw_state.top - 20,
+                                       imgui.get_color_u32_rgba(1.0, 0.0, 0.0, 1.0), fa_live_icon)
+                    Melty.cache.invalidate(tile_id)
+                    request_render()
+                kwargs.pop("live", None)
+
 
             if not is_header and kwargs.get("selectable", True):
                 click = draw_state.on_action("left_mouse_down")
@@ -734,6 +746,8 @@ def render_func(*args, **o_kwargs):
         except Exception as e:
             print_colored_traceback(*sys.exc_info())
         finally:
+
+
             draw_state.frame_count += 1
             if Melty.imgui_crashed:
                 if return_extras:
@@ -877,11 +891,14 @@ def render_func(*args, **o_kwargs):
                 return changed, new_value, kwargs
             return changed, new_value
 
-    def draw_inner_main(clean_args, clip_rect, draw_state, input_value, kwargs, auto_resize, melty, tile_id, unique, melty_window):
+    def draw_inner_main(clean_args, clip_rect, draw_state, input_value, kwargs,
+                        auto_resize, melty, tile_id, unique, melty_window):
         return_value = None
         start_cursor = imgui.get_cursor_screen_pos()
         is_header = "with_header" in func.__name__
         not_header = "with_header" not in func.__name__
+
+        is_cachable = not is_header or melty_window
         use_cache = kwargs.get("use_cache", False) and Melty.cache.enabled
         kwargs.pop("use_cache", None)
         collection = kwargs.get("collection", None)
@@ -925,7 +942,6 @@ def render_func(*args, **o_kwargs):
                 draw_list = imgui.get_window_draw_list()
                 draw_list.channels_set_current(min(offscreen_depth, Melty.max_depth - 1))
 
-        layer_and_depth = Melty.active_layer * Melty.max_depth + Melty.depth
         indent_x = kwargs.get("indent_size", 0)
         needs_scroll = False
 
@@ -993,7 +1009,7 @@ def render_func(*args, **o_kwargs):
 
         if not use_cache or Melty.cache.mark_start_offscreen(input_value=input_value, collection=collection,
                                                              draw_state=draw_state, key=tile_id, name=draw_state.name,
-                                                             layer=layer_and_depth, caller=func):
+                                                             layer=draw_state.z_pos, caller=func):
             return_value = func(**clean_args)
             imgui.set_item_allow_overlap()
 

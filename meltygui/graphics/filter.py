@@ -12,6 +12,8 @@ from src.shader_library.shader_manager.compiler import ProgramCompiler, Compiled
 from src.shader_library.shader_manager.executor import FilterExecutor
 from src.shader_library.shader_manager.registry import get_registry
 
+from src.shader_library.shader_manager import texture_min_max
+
 
 class FilterChain:
     """
@@ -380,7 +382,7 @@ class Filter:
         self._executor.clear_fbo_cache()
 
     def normalize(self, texture_id: int, in_place: bool = False,
-                  output_texture: Optional[int] = None) -> int:
+                  output_texture: Optional[int] = None, min_val=None, max_val=None) -> int:
         """
         Normalize texture values to [0, 1] range by calculating min/max.
 
@@ -408,11 +410,8 @@ class Filter:
         GL.glBindTexture(GL.GL_TEXTURE_2D, texture_id)
         reduction_textures = []  # Track temporary textures for cleanup
 
+        min_value, max_value = texture_min_max.get_texture_min_max(texture_id)
         try:
-            pixel_data = np.frombuffer(texture_id, dtype=np.float32)
-            max_value = np.max(pixel_data)
-            min_value = np.min(pixel_data)
-
             # Apply normalization remap
             result = self.apply(
                 'normalize_remap',
@@ -478,3 +477,178 @@ class Filter:
         n_types = len(self._registry.shader_types)
         n_compiled = len(self._compiled)
         return f"Filter(shaders={n_shaders}, types={n_types}, compiled={n_compiled})"
+
+
+import numpy as np
+from OpenGL.GL import *
+from OpenGL.GL import shaders
+import ctypes
+
+
+class TextureMinMax:
+    """Compute shader-based min/max finder for OpenGL textures."""
+
+    COMPUTE_SHADER_SOURCE = """
+    #version 430
+    layout(local_size_x = 16, local_size_y = 16) in;
+
+    layout(rgba32f, binding = 0) readonly uniform image2D inputImage;
+
+    layout(std430, binding = 1) buffer ResultBuffer {
+        vec2 workgroupResults[];  // Each workgroup writes (min, max)
+    };
+
+    uniform ivec2 numWorkgroups;
+
+    shared float localMin[256];
+    shared float localMax[256];
+
+    void main() {
+        ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+        ivec2 size = imageSize(inputImage);
+        uint lid = gl_LocalInvocationIndex;
+
+        // Initialize with extreme values
+        float myMin = 1e38;
+        float myMax = -1e38;
+
+        if (pos.x < size.x && pos.y < size.y) {
+            vec4 pixel = imageLoad(inputImage, pos);
+            // Get min/max across RGB channels (ignore alpha)
+            myMin = min(min(pixel.r, pixel.g), pixel.b);
+            myMax = max(max(pixel.r, pixel.g), pixel.b);
+        }
+
+        localMin[lid] = myMin;
+        localMax[lid] = myMax;
+        barrier();
+
+        // Parallel reduction in shared memory
+        for (uint s = 128; s > 0; s >>= 1) {
+            if (lid < s) {
+                localMin[lid] = min(localMin[lid], localMin[lid + s]);
+                localMax[lid] = max(localMax[lid], localMax[lid + s]);
+            }
+            barrier();
+        }
+
+        // Workgroup leader writes result
+        if (lid == 0) {
+            uint workgroupIndex = gl_WorkGroupID.y * numWorkgroups.x + gl_WorkGroupID.x;
+            workgroupResults[workgroupIndex] = vec2(localMin[0], localMax[0]);
+        }
+    }
+    """
+
+    def __init__(self):
+        self._program = None
+        self._ssbo = None
+        self._initialized = False
+
+    def _ensure_initialized(self):
+        """Lazy initialization of shader and buffer."""
+        if self._initialized:
+            return
+
+        # Compile compute shader
+        compute_shader = shaders.compileShader(
+            self.COMPUTE_SHADER_SOURCE,
+            GL_COMPUTE_SHADER
+        )
+        self._program = shaders.compileProgram(compute_shader)
+
+        # Create SSBO (will resize as needed)
+        self._ssbo = glGenBuffers(1)
+        self._ssbo_size = 0
+
+        self._initialized = True
+
+    def get_min_max(self, texture_id: int, width: int, height: int) -> tuple[float, float]:
+        """
+        Compute min/max pixel values of an OpenGL texture.
+
+        Args:
+            texture_id: OpenGL texture ID (must be rgba32f format)
+            width: Texture width in pixels
+            height: Texture height in pixels
+
+        Returns:
+            Tuple of (min_value, max_value) across RGB channels
+        """
+        self._ensure_initialized()
+
+        # Calculate workgroup dimensions
+        workgroup_size = 16
+        num_workgroups_x = (width + workgroup_size - 1) // workgroup_size
+        num_workgroups_y = (height + workgroup_size - 1) // workgroup_size
+        total_workgroups = num_workgroups_x * num_workgroups_y
+
+        # Resize SSBO if needed (2 floats per workgroup: min and max)
+        required_size = total_workgroups * 2 * 4  # 2 floats * 4 bytes
+        if required_size > self._ssbo_size:
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, self._ssbo)
+            glBufferData(GL_SHADER_STORAGE_BUFFER, required_size, None, GL_DYNAMIC_READ)
+            self._ssbo_size = required_size
+
+        # Bind resources
+        glUseProgram(self._program)
+        glBindImageTexture(0, texture_id, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA32F)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self._ssbo)
+
+        # Set uniforms
+        loc = glGetUniformLocation(self._program, "numWorkgroups")
+        glUniform2i(loc, num_workgroups_x, num_workgroups_y)
+
+        # Dispatch compute shader
+        glDispatchCompute(num_workgroups_x, num_workgroups_y, 1)
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
+
+        # Read back results
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self._ssbo)
+        results = np.empty(total_workgroups * 2, dtype=np.float32)
+        glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, results.nbytes, results)
+
+        # Final reduction on CPU (very fast for small arrays)
+        results = results.reshape(-1, 2)
+        min_val = float(np.min(results[:, 0]))
+        max_val = float(np.max(results[:, 1]))
+
+        return min_val, max_val
+
+    def cleanup(self):
+        """Delete OpenGL resources."""
+        if self._ssbo is not None:
+            glDeleteBuffers(1, [self._ssbo])
+            self._ssbo = None
+        if self._program is not None:
+            glDeleteProgram(self._program)
+            self._program = None
+        self._initialized = False
+
+    def __del__(self):
+        # Note: OpenGL context must still be active for this to work
+        # Prefer explicit cleanup() call
+        pass
+
+
+# Convenience functions for one global use
+_global_instance = None
+
+
+def get_texture_min_max(texture_id: int, width: int, height: int) -> tuple[float, float]:
+    """
+    Convenience function to get min/max of a texture.
+    Uses a cached shader program for efficiency.
+    """
+    global _global_instance
+    if _global_instance is None:
+        _global_instance = TextureMinMax()
+    return _global_instance.get_min_max(texture_id, width, height)
+
+
+def cleanup_texture_min_max():
+    """Cleanup global resources."""
+    global _global_instance
+    if _global_instance is not None:
+        _global_instance.cleanup()
+        _global_instance = None

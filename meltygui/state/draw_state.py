@@ -88,8 +88,8 @@ class ZoomState(DictConversion):
          "z_pos", "draw_window_pos_x", "misc_used", "draw_window_pos_y", "drag_delta", "screen_pos", "imgui_is_item_activated", "frame_count")
 @exclude("render_time","overhead_time", "premature_break", "clip_rect", "_input_value", "flow_spacing", 'width', "height", "left", "top",
          "hovered", "wrapped_top", "params", "premature_break", "wrapped_left", "_did_use_cache", "content_height", "content_region", "value_hash", "drag_window", "top", "left", "content_region", "did_render",
-         "bounding_hovered", "dlt_count", "clip_rect", "bg_rect", "header_height", "z_pos", "scrolled", "is_hovered_last", "frame_count(")
-@deep_refresh('scroll_offset')
+         "bounding_hovered", "dlt_count", "clip_rect", "bg_rect", "header_height", "scrolled", "is_hovered_last", "frame_count")
+@deep_refresh('scroll_offset', 'z_pos')
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
 
@@ -154,8 +154,8 @@ class DrawState(DictConversion):
         self._left_rel = None
         self._top_rel = None
         self._min_width = None
-        self.top = 0
-        self.left = 0
+        self.top = None
+        self.left = None
         self._draggable = False
         self.search_text = ""
         self.search_active = False

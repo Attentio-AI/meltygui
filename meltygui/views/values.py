@@ -48,6 +48,116 @@ from src.lsd.gl_gui.view.core_views.codec_register import registry as FILE_CODEC
 from src.shader_library.shader_manager.texture_manager import PendingTexture
 
 
+@render_func(use_cache=True, auto_resize=False, closable=True, show_bg=True, melty_window=True, draggable=True)
+def draw_window(input_value, view_func=None, style_manager=None, **kwargs):
+    window_name = kwargs.get('name', 'Managed Window')
+    draw_state = kwargs.get('draw_state', None)
+    cursor_pos = imgui.get_cursor_screen_pos()
+
+
+    group_padding = 4
+    imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (group_padding, group_padding))
+    imgui.begin_group()
+    imgui.pop_style_var()
+
+    if draw_state.width > 0 and draw_state.height > 0:
+        imgui.set_cursor_screen_pos(cursor_pos)
+
+        # if draw_state.expanded:
+        #     if Melty.channels_split:
+        #         draw_list = imgui.get_window_draw_list()
+        #         draw_list.channels_set_current(Melty.get_channel() + 1)
+        #     imgui.invisible_button(str(unique) + "visible_blocker", width=draw_state.width, height=draw_state.height)
+        #     imgui.set_cursor_screen_pos(cursor_pos)
+        #     imgui.set_item_allow_overlap()
+        # # else:
+        #     imgui.button("##", width=draw_state.width, height=20)
+        #     imgui.set_cursor_screen_pos(cursor_pos)
+        #     imgui.set_item_allow_overlap()
+
+
+    if draw_state.width is not None and draw_state.height is not None and draw_state.expanded:
+        loading_icon_0 = "\uf00d"
+        loading_icon_1 = "\uf067"
+        frame_spacing = 1
+        alpha = 0.25
+        icon_cursor = imgui.get_cursor_screen_pos()
+        icon_x = icon_cursor[0] + draw_state.width - 20
+        icon_y = icon_cursor[1] + draw_state.height - 15
+        if (Melty.frame_count // frame_spacing) % 2 == 0:
+            draw_list = imgui.get_window_draw_list()
+            draw_list.add_text(icon_x, icon_y,
+                               imgui.get_color_u32_rgba(1, 1, 1, alpha),
+                               loading_icon_0)
+        else:
+            draw_list = imgui.get_window_draw_list()
+            draw_list.add_text(icon_x, icon_y,
+                               imgui.get_color_u32_rgba(1, 1, 1, alpha),
+                               loading_icon_1)
+
+        draw_list: _DrawList = imgui.get_window_draw_list()
+        draw_list.add_text(icon_x - 40, icon_y - 1,
+                           imgui.get_color_u32_rgba(1, 1, 1, 0.3),
+                           f"{draw_state.z_pos}")
+
+    meta = kwargs.get("meta", None)
+    if meta is None:
+        if hasattr(Meta, 'get_child_meta'):
+            meta = Meta.get_child_meta(None, field_name=kwargs.get("name", ''), value=input_value)
+
+    if view_func is None:
+        if meta.view_function is None or 'draw_any' in meta.view_function.__name__:
+            meta.view_function = draw_collection
+    # else:
+    #     meta.view_function = view_func
+
+    kwargs['show_bg'] = False
+    kwargs['selectable'] = False
+    if view_func is None:
+        return_val = meta.view_function(input_value, **kwargs)
+    else:
+        return_val = view_func(input_value, **kwargs)
+
+    imgui.end_group()
+
+    return return_val
+
+
+@render_func(use_cache=True)
+def draw_main(input_value, vis):
+    global test_obj
+    draw_window(Melty.profiles_results, show_bg=True, name="Profile Results")
+    draw_window(Melty.registered_windows, indent_size=10, is_tree=True, show_add_delete=False, name="Window Manager")
+    draw_window(test_obj, name="Layer 1")
+    draw_window(draw_main, name="Draw Main Function")
+
+    draw_window(input_value=proxy, name="CST Proxy")
+    draw_window(filesystem_proxy, name="Filesystem Test")
+    draw_window(vis.root.lora_collection, name="Test Window 1")
+    draw_window(vis.root.lora_collection.loras, name="Test Window 2")
+    draw_window(Melty.last_invalid, show_bg=True, name="Last Invalid")
+    draw_window(Melty.registered_windows, indent_size=10, is_tree=True,
+                show_add_delete=False, name="Another window manager")
+
+    draw_window("test", name="Test Widget Window")
+
+
+    draw_window(Melty.cache.snapshot_tex, show_bg=True, name="Snapshot Texture")
+
+    changed, new_val = draw_window(0.0, layer=31, name="Test return")
+    if changed:
+        print("Value changed:", new_val)
+
+    normalized_sub_mask = Melty.filter.normalize(Melty.cache._full_mask_tex)
+    draw_window(normalized_sub_mask, show_bg=True, max_contrast=30, jet=True,
+                max_brightness=30, name="Submask Texture", live=True)
+
+    draw_window("input_val", name="Test Input Value Window", view_func=test_widget)
+
+    # draw_window(Melty.last_request_render, show_bg=True, name="Last Invalid")
+
+
+
 @render_wrapper(wraps=render_func, use_cache=False)
 def with_header_minimal(func, **o_kwargs):
     def wrapper(next_kwargs=None, draw_state=None, **kwargs):
@@ -173,42 +283,6 @@ def draw_melty_windows(vis):
 def test_widget(input_value):
     imgui.text("Test Widget")
 
-@render_func(use_cache=True)
-def draw_main(input_value, vis):
-
-    global test_obj
-    draw_window(Melty.profiles_results, show_bg=True, name="Profile Results")
-    draw_window(Melty.registered_windows, indent_size=10, is_tree=True, show_add_delete=False, name="Window Manager")
-    draw_window(test_obj, name="Layer 1")
-    draw_window(draw_main, name="Draw Main Function")
-
-    draw_window(input_value=proxy, name="CST Proxy")
-    draw_window(filesystem_proxy, name="Filesystem Test")
-    draw_window(vis.root.lora_collection, name="Test Window 1")
-    draw_window(vis.root.lora_collection.loras, name="Test Window 2")
-    draw_window(Melty.last_invalid, show_bg=True, name="Last Invalid")
-    draw_window(Melty.registered_windows, indent_size=10, is_tree=True,
-                show_add_delete=False, name="Another window manager")
-
-    draw_window("test", name="Test Widget Window")
-
-    snapshot_tex = Melty.filter.normalize(Melty.cache.snapshot_tex)
-    draw_window(Melty.cache.snapshot_tex, show_bg=True, name="Snapshot Texture")
-
-    changed, new_val = draw_window(0.0, layer=31, name="Test return")
-    if changed:
-        print("Value changed:", new_val)
-
-    normalized_sub_mask = Melty.filter.normalize(Melty.cache._sub_mask_tex)
-    draw_window(normalized_sub_mask, show_bg=True, max_contrast=30,
-                max_brightness=30, name="Submask Texture")
-
-
-    draw_window("input_val", name="Test Input Value Window", view_func=test_widget)
-
-
-    # draw_window(Melty.last_request_render, show_bg=True, name="Last Invalid")
-
 
 @with_header(is_default_for=PendingTexture, use_cache=False, enable_scroll=False,
              auto_resize=True, indent_size=0)
@@ -228,7 +302,7 @@ def draw_pending_texture(input_value:PendingTexture, draw_state):
 def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mouse_drag, right_mouse_drag,
                  zoom_state: ZoomState, zoom_speed, header_height=0, min_zoom=0.1,
                  max_zoom=50.0, style_manager=None, max_brightness=5.0, max_contrast=5.0,
-                 on_scroll=0, draw_state=None):
+                 on_scroll=0, draw_state=None, jet=False):
 
     original_id = input_value
     texture_id = input_value
@@ -322,11 +396,26 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
         # zoom_state.brightness = max(0.0, min(max_brightness, zoom_state.brightness))
         # zoom_state.contrast = max(0.0, min(max_contrast, zoom_state.contrast))
 
-    texture_id = Melty.filter.brightness_contrast(
-        input_value,
-        brightness=zoom_state.brightness,
-        contrast=zoom_state.contrast
-    )
+
+    if jet:
+        texture_id = Melty.filter.brightness_contrast(
+            input_value,
+            brightness=zoom_state.brightness,
+            contrast=zoom_state.contrast
+        )
+
+        texture_id = Melty.filter.jet(texture_id, offset=zoom_state.hue)
+    else:
+        texture_id = Melty.filter.brightness_contrast(
+            input_value,
+            brightness=zoom_state.brightness,
+            contrast=zoom_state.contrast
+        )
+        texture_id = Melty.filter.hue_saturation(
+            texture_id,
+            saturation=(zoom_state.saturation),
+            hue_shift=(zoom_state.hue),
+        )
 
     # texture_id = Melty.filter.swirl(
     #     input_value,
@@ -334,11 +423,7 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
     #     angle=(zoom_state.brightness * 5),
     # )
 
-    texture_id = Melty.filter.hue_saturation(
-        texture_id,
-        saturation=(zoom_state.saturation),
-        hue_shift=(zoom_state.hue),
-    )
+
 
     # texture_id = Melty.filter.swirl(
     #     texture_id,
@@ -573,65 +658,6 @@ def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, 
             window_draw_state.closed = True
 
 
-@render_func(use_cache=True, auto_resize=False, closable=True, show_bg=True, melty_window=True, draggable=True)
-def draw_window(input_value, unique, view_func=None, style_manager=None, **kwargs):
-    window_name = kwargs.get('name', 'Managed Window')
-    draw_state = kwargs.get('draw_state', None)
-    cursor_pos = imgui.get_cursor_screen_pos()
-
-    if draw_state.width > 0 and draw_state.height > 0:
-        imgui.set_cursor_screen_pos(cursor_pos)
-
-        # if draw_state.expanded:
-        #     if Melty.channels_split:
-        #         draw_list = imgui.get_window_draw_list()
-        #         draw_list.channels_set_current(Melty.get_channel() + 1)
-        #     imgui.invisible_button(str(unique) + "window_blocker", width=draw_state.width, height=draw_state.height)
-        #     imgui.set_cursor_screen_pos(cursor_pos)
-        #     imgui.set_item_allow_overlap()
-        # # else:
-        #     imgui.button("##", width=draw_state.width, height=20)
-        #     imgui.set_cursor_screen_pos(cursor_pos)
-        #     imgui.set_item_allow_overlap()
-
-    if draw_state.width is not None and draw_state.height is not None and draw_state.expanded:
-        loading_icon_0 = "\uf00d"
-        loading_icon_1 = "\uf067"
-        frame_spacing = 1
-        alpha = 0.25
-        icon_cursor = imgui.get_cursor_screen_pos()
-        icon_x = icon_cursor[0] + draw_state.width - 20
-        icon_y = icon_cursor[1] + draw_state.height - 15
-        if (Melty.frame_count // frame_spacing) % 2 == 0:
-            draw_list = imgui.get_overlay_draw_list()
-            draw_list.add_text(icon_x, icon_y,
-                               imgui.get_color_u32_rgba(1, 1, 1, alpha),
-                               loading_icon_0)
-        else:
-            draw_list = imgui.get_overlay_draw_list()
-            draw_list.add_text(icon_x, icon_y,
-                               imgui.get_color_u32_rgba(1, 1, 1, alpha),
-                               loading_icon_1)
-
-    meta = kwargs.get("meta", None)
-    if meta is None:
-        if hasattr(Meta, 'get_child_meta'):
-            meta = Meta.get_child_meta(None, field_name=kwargs.get("name", ''), value=input_value)
-
-    if view_func is None:
-        if meta.view_function is None or 'draw_any' in meta.view_function.__name__:
-            meta.view_function = draw_collection
-    # else:
-    #     meta.view_function = view_func
-
-    kwargs['show_bg'] = False
-    kwargs['selectable'] = False
-    if view_func is None:
-        return_val = meta.view_function(input_value, **kwargs)
-    else:
-        return_val = view_func(input_value, **kwargs)
-
-    return return_val
 
 def draw(vis):
     draw_melty_windows(vis)
