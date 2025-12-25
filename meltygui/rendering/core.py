@@ -459,7 +459,7 @@ def render_func(*args, **o_kwargs):
             Melty.unique_stack.append(computed_unique)
             Melty.depth = Melty.depth + 1
 
-            layer_and_depth = Melty.active_layer * Melty.max_depth + Melty.depth
+            layer_and_depth = Melty.active_layer * Melty.max_depth + Melty.depth * 5
             draw_state.z_pos = layer_and_depth
             Melty.z_pos = layer_and_depth
 

@@ -42,6 +42,8 @@ class Tile:
     last_clean_frame: int = -1
     last_invalidated_frame: int = 3
     force_invalidate: bool = False
+    mask_layer: int = 0  # Layer at which mask_tex was built (for relative depth offset)
+    mask_layer: int = 0  # Layer this tile was at when mask_tex was built
 
 
 @dataclass
@@ -259,6 +261,22 @@ void main() {
 }
 """
 
+_MASK_TEXTURED_OFFSET_FS = """
+#version 330 core
+uniform sampler2D uTex;
+uniform float uOffset;
+in vec2 vUV;
+out vec4 oColor;
+void main() {
+    float val = texture(uTex, vUV).r;
+    if (val > 0.0) {
+        oColor = vec4(val + uOffset, 0.0, 0.0, 1.0);
+    } else {
+        discard;
+    }
+}
+"""
+
 _COPY_FS = """
 #version 330 core
 in vec2 vUV;
@@ -395,6 +413,7 @@ class TileCacheMasked:
 
         self._prog_mask: Optional[int] = None
         self._prog_mask_textured: Optional[int] = None
+        self._prog_mask_textured_offset: Optional[int] = None
         self._prog_copy: Optional[int] = None
         self._prog_blit: Optional[int] = None
         self._loc_uSrc = None
@@ -586,6 +605,8 @@ class TileCacheMasked:
         if self._scratch_fbo: gl.glDeleteFramebuffers(1, [self._scratch_fbo]); self._scratch_fbo = None
         if self._prog_mask: gl.glDeleteProgram(self._prog_mask); self._prog_mask = None
         if self._prog_mask_textured: gl.glDeleteProgram(self._prog_mask_textured); self._prog_mask_textured = None
+        if self._prog_mask_textured_offset: gl.glDeleteProgram(
+            self._prog_mask_textured_offset); self._prog_mask_textured_offset = None
         if self._prog_copy: gl.glDeleteProgram(self._prog_copy); self._prog_copy = None
         if self._prog_blit: gl.glDeleteProgram(self._prog_blit); self._prog_blit = None
 
@@ -893,6 +914,11 @@ class TileCacheMasked:
             fs = _compile(gl.GL_FRAGMENT_SHADER, _MASK_TEXTURED_FS)
             self._prog_mask_textured = _link(vs, fs)
 
+        if self._prog_mask_textured_offset is None:
+            vs = _compile(gl.GL_VERTEX_SHADER, _FULLSCREEN_VS)
+            fs = _compile(gl.GL_FRAGMENT_SHADER, _MASK_TEXTURED_OFFSET_FS)
+            self._prog_mask_textured_offset = _link(vs, fs)
+
         if self._prog_copy is None:
             vs = _compile(gl.GL_VERTEX_SHADER, _FULLSCREEN_VS)
             fs = _compile(gl.GL_FRAGMENT_SHADER, _COPY_FS)
@@ -1080,7 +1106,7 @@ class TileCacheMasked:
 
             # ================================================================
             # PASS 4: Build tile.mask_tex for each dirty tile
-            # Uses children's cached masks for full hierarchy
+            # Uses absolute depths, records mask_layer for later offset correction
             # ================================================================
             for p in local_pending:
                 x, y = p.pos
@@ -1088,7 +1114,7 @@ class TileCacheMasked:
                 x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(x, y, w, h, dp_x, dp_y, s_x, s_y, fb_h)
                 subtree_keys = self._collect_subtree_keys(p.key, local_mask_rects)
 
-                # Build _full_sub_mask_tex with children's cached masks
+                # Build _full_sub_mask_tex with children's cached masks (absolute depths)
                 gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._full_sub_mask_fbo)
                 gl.glViewport(0, 0, fb_w, fb_h)
                 gl.glDisable(gl.GL_SCISSOR_TEST)
@@ -1105,7 +1131,26 @@ class TileCacheMasked:
                     if r.key not in subtree_keys:
                         continue
 
-                    sx0, sy0, sx1, sy1 = self._screen_rect_to_fb_xyxy(r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y, fb_h)
+                    t_child = self._tiles.get(r.key)
+                    is_self = (r.key == p.key)
+                    use_child_cache = (not is_self) and (t_child is not None) and (not self._is_dirty(t_child)) and (
+                                t_child.mask_tex is not None)
+
+                    # For cached tiles, use actual tile size from context to avoid stretching
+                    if use_child_cache:
+                        child_ctx = self._key_to_ctx.get(r.key)
+                        if child_ctx and child_ctx.size:
+                            cx, cy = child_ctx.pos
+                            cw, ch = child_ctx.size
+                            sx0, sy0, sx1, sy1 = self._screen_rect_to_fb_xyxy(cx, cy, cw, ch, dp_x, dp_y, s_x, s_y,
+                                                                              fb_h)
+                        else:
+                            sx0, sy0, sx1, sy1 = self._screen_rect_to_fb_xyxy(r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y,
+                                                                              fb_h)
+                    else:
+                        sx0, sy0, sx1, sy1 = self._screen_rect_to_fb_xyxy(r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y,
+                                                                          fb_h)
+
                     ix0, iy0 = int(floor(sx0)), int(floor(sy0))
                     ix1, iy1 = int(ceil(sx1)), int(ceil(sy1))
                     iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
@@ -1114,26 +1159,26 @@ class TileCacheMasked:
 
                     gl.glViewport(ix0, iy0, iw, ih)
 
-                    # For children: use cached mask tex
-                    # For self: use fresh geometry
-                    t_child = self._tiles.get(r.key)
-                    is_self = (r.key == p.key)
-                    use_child_cache = (not is_self) and (t_child is not None) and (not self._is_dirty(t_child)) and (
-                                t_child.mask_tex is not None)
-
                     if use_child_cache:
-                        gl.glUseProgram(self._prog_mask_textured)
+                        # Child with cache: sample and apply offset to correct for layer changes
+                        # offset = (current_layer - layer_when_cached)
+                        offset = float(r.layer - t_child.mask_layer) / 65535.0
+                        gl.glUseProgram(self._prog_mask_textured_offset)
                         gl.glActiveTexture(gl.GL_TEXTURE0)
                         gl.glBindTexture(gl.GL_TEXTURE_2D, t_child.mask_tex)
-                        gl.glUniform1i(gl.glGetUniformLocation(self._prog_mask_textured, "uTex"), 0)
+                        gl.glUniform1i(gl.glGetUniformLocation(self._prog_mask_textured_offset, "uTex"), 0)
+                        gl.glUniform1f(gl.glGetUniformLocation(self._prog_mask_textured_offset, "uOffset"), offset)
                     else:
+                        # Self or dirty child: draw at current absolute layer
                         gl.glUseProgram(self._prog_mask)
                         gl.glUniform1f(gl.glGetUniformLocation(self._prog_mask, "uRankNorm"), float(r.layer) / 65535.0)
 
                     gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
 
-                # Save _full_sub_mask_tex to tile's mask_tex
+                # Save _full_sub_mask_tex to tile's mask_tex and remember the layer
                 if p.tile is not None and p.tile.mask_tex is not None:
+                    p.tile.mask_layer = p.layer  # Remember what layer this was built at
+
                     gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, self._scratch_fbo)
                     gl.glFramebufferTexture2D(gl.GL_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT0, gl.GL_TEXTURE_2D,
                                               p.tile.mask_tex, 0)
@@ -1149,7 +1194,7 @@ class TileCacheMasked:
 
             # ================================================================
             # PASS 5: Build _full_mask_tex using children cached masks
-            # All tiles should now have updated mask_tex
+            # Apply offset to correct for layer changes since subtree was built
             # ================================================================
             gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._full_mask_fbo)
             gl.glViewport(0, 0, fb_w, fb_h)
@@ -1164,7 +1209,44 @@ class TileCacheMasked:
             gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
 
             for r in local_mask_rects:
-                self._draw_mask_rect(r, dp_x, dp_y, s_x, s_y, fb_h, use_cached=True)
+                t = self._tiles.get(r.key)
+                can_use_cached = (t is not None) and (not self._is_dirty(t)) and (t.mask_tex is not None)
+
+                # For cached tiles, use actual tile size from context to avoid stretching
+                if can_use_cached:
+                    tile_ctx = self._key_to_ctx.get(r.key)
+                    if tile_ctx and tile_ctx.size:
+                        tx, ty = tile_ctx.pos
+                        tw, th = tile_ctx.size
+                        x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(tx, ty, tw, th, dp_x, dp_y, s_x, s_y, fb_h)
+                    else:
+                        x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y, fb_h)
+                else:
+                    x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y, fb_h)
+
+                ix0, iy0 = int(floor(x0)), int(floor(y0))
+                ix1, iy1 = int(ceil(x1)), int(ceil(y1))
+                iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
+
+                if iw <= 0 or ih <= 0:
+                    continue
+
+                gl.glViewport(ix0, iy0, iw, ih)
+
+                if can_use_cached:
+                    # Apply offset to correct for layer changes: (current_layer - cached_layer)
+                    offset = float(r.layer - t.mask_layer) / 65535.0
+                    gl.glUseProgram(self._prog_mask_textured_offset)
+                    gl.glActiveTexture(gl.GL_TEXTURE0)
+                    gl.glBindTexture(gl.GL_TEXTURE_2D, t.mask_tex)
+                    gl.glUniform1i(gl.glGetUniformLocation(self._prog_mask_textured_offset, "uTex"), 0)
+                    gl.glUniform1f(gl.glGetUniformLocation(self._prog_mask_textured_offset, "uOffset"), offset)
+                else:
+                    # Dirty tile: draw fresh at absolute layer
+                    gl.glUseProgram(self._prog_mask)
+                    gl.glUniform1f(gl.glGetUniformLocation(self._prog_mask, "uRankNorm"), float(r.layer) / 65535.0)
+
+                gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
 
             gl.glViewport(0, 0, fb_w, fb_h)
             gl.glDisable(gl.GL_BLEND)

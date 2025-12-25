@@ -1482,10 +1482,11 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             clipped = False
             if draw_state.width is not None and draw_state.height is not None:
                 if draw_state.width > 0 and draw_state.height > 0:
-                    clipped = True
-                    Melty.push_clip((draw_state.left, current_cursor[1],
-                                     draw_state.left + draw_state.width,
-                                     current_cursor[1] + draw_state.height - header_height))
+                    pass
+                    # clipped = True
+                    # Melty.push_clip((draw_state.left, current_cursor[1],
+                    #                  draw_state.left + draw_state.width,
+                    #                  current_cursor[1] + draw_state.height - header_height))
             next_kwargs['header_height'] = header_height
             next_kwargs.pop('draw_state', None)
             imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + indent_size)
@@ -1516,8 +1517,8 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             #     # ----------------- end header single item---------------
             #     # This is the version for single items probably
             #     draw_header_end(**next_kwargs)
-            if clipped:
-                Melty.pop_clip()
+            # if clipped:
+            #     Melty.pop_clip()
 
         if not on_drag:
             imgui.dummy(0, 1)
@@ -1639,12 +1640,17 @@ def draw_collection(input_value, draw_state, depth, style_manager,
     keys = list(keys)[:]
     children_draw_states = []
     rect = Melty.get_clip_rect()
+    if rect is None:
+        rect_height = 1e6
+        parent_bottom = 1e6
+    else:
+        rect_height = rect[3] - rect[1]
+        parent_bottom = rect[3]
 
-    needs_content_height = draw_state.invalid_content_height and draw_state.content_height < rect[3] - rect[1]
+    needs_content_height = draw_state.invalid_content_height and draw_state.content_height < rect_height
 
     premature_break = False
     break_index = -1
-    parent_bottom = rect[3]
     nested_collection = False
 
     nested_collection = True
@@ -2179,8 +2185,8 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
             draw_list.add_text(cursor_pos[0], cursor_pos[1], imgui.get_color_u32_rgba(*name_color[:3], 1.0),
                                clipped_name)
 
-            right_edge = Melty.get_clip_rect()[2]
-            space_left = right_edge - cursor_pos[0]
+            # right_edge = Melty.get_clip_rect()[2]
+            # space_left = right_edge - cursor_pos[0]
             imgui.dummy(text_width, imgui.get_frame_height())
 
             # Melty.pop_clip()

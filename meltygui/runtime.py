@@ -454,8 +454,7 @@ class Melty:
     @classmethod
     def get_clip_rect(cls):
         if len(cls.clip_stack) == 0:
-            display_size = imgui.get_io().display_size
-            return (0, 0, int(display_size[0]), int(display_size[1]))
+            return None
         return cls.clip_stack[-1]
 
     @classmethod

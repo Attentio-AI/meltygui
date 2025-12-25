@@ -89,7 +89,7 @@ class ZoomState(DictConversion):
 @exclude("render_time","overhead_time", "premature_break", "clip_rect", "_input_value", "flow_spacing", 'width', "height", "left", "top",
          "hovered", "wrapped_top", "params", "premature_break", "wrapped_left", "_did_use_cache", "content_height", "content_region", "value_hash", "drag_window", "top", "left", "content_region", "did_render",
          "bounding_hovered", "dlt_count", "clip_rect", "bg_rect", "header_height", "scrolled", "is_hovered_last", "frame_count")
-@deep_refresh('scroll_offset', 'z_pos')
+@deep_refresh('scroll_offset')
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
 

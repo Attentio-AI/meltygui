@@ -16,12 +16,12 @@ class ShadowCast:
     """
     shader_type = 'standard'
     uniforms = {
-        'light_dir': (GLType.VEC2, (0.05, 0.1)),
-        'height_scale': (GLType.FLOAT, 0.07),
-        'blur_scale': (GLType.FLOAT, 0.02),
+        'light_dir': (GLType.VEC2, (0.02, 0.09)),
+        'height_scale': (GLType.FLOAT, 0.12),
+        'blur_scale': (GLType.FLOAT, 0.01),
         'max_steps': (GLType.INT, 32),
-        'blur_samples': (GLType.INT, 8),
-        'depth_bias': (GLType.FLOAT, 0),
+        'blur_samples': (GLType.INT, 6),
+        'depth_bias': (GLType.FLOAT, 0.01),
         'surface_threshold': (GLType.FLOAT, 0.0),
         'min_height_diff': (GLType.FLOAT, 0.000),
         'shadow_strength': (GLType.FLOAT, 0.4),
