@@ -62,7 +62,7 @@ class Melty:
     is_melty_window = False
     melty_window_stack = []
     default_font = None
-    max_depth = 13
+    max_depth = 20
     indent_size = 10
     annotation_mode = True
     depth = 0
@@ -243,6 +243,7 @@ class Melty:
                 Melty.channels_split = True
 
             imgui.push_id(f"melty_layer_{idx}")
+            Melty.depth = 0
 
             for view in layer:
                 if view is not None:
@@ -259,6 +260,9 @@ class Melty:
                     return_val = view_func(input_value, **kwargs)
                     if return_val is not None:
                         cls.returned_values[draw_state.id] = return_val
+
+            Melty.depth = 0
+
             #
             if Melty.channels_split:
                 # Flatten layers into single channel

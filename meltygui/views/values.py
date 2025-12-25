@@ -178,6 +178,7 @@ def with_header_minimal(func, **o_kwargs):
         next_kwargs['func'] = func
         next_kwargs['outer_func'] = wrapper
         next_kwargs['y_offset'] = 0
+        next_kwargs['shadow'] = kwargs.get("shadow", False)
         next_kwargs['show_bg'] = kwargs.get("show_bg", False)
         next_kwargs['is_tree'] = kwargs.get("is_tree", False)
         next_kwargs['min_width'] = kwargs.get('min_width', 200)
@@ -850,7 +851,7 @@ def draw_cst_arg(input_value: cst.Arg):
 
 
 # --- Individual Parameter ---
-@render_func(is_default_for=cst.UnaryOperation, header_same_line=True, show_add_delete=False)
+@render_func(is_default_for=cst.UnaryOperation, shadow=False, header_same_line=True, show_add_delete=False)
 def draw_cst_int(input_value, width=None):
     int_str = input_value.value
     cast_str_to_int = int(int_str, 0)
@@ -1482,11 +1483,10 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             clipped = False
             if draw_state.width is not None and draw_state.height is not None:
                 if draw_state.width > 0 and draw_state.height > 0:
-                    pass
-                    # clipped = True
-                    # Melty.push_clip((draw_state.left, current_cursor[1],
-                    #                  draw_state.left + draw_state.width,
-                    #                  current_cursor[1] + draw_state.height - header_height))
+                    clipped = True
+                    Melty.push_clip((draw_state.left, current_cursor[1],
+                                     draw_state.left + draw_state.width,
+                                     current_cursor[1] + draw_state.height - header_height))
             next_kwargs['header_height'] = header_height
             next_kwargs.pop('draw_state', None)
             imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + indent_size)
@@ -1517,8 +1517,8 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             #     # ----------------- end header single item---------------
             #     # This is the version for single items probably
             #     draw_header_end(**next_kwargs)
-            # if clipped:
-            #     Melty.pop_clip()
+            if clipped:
+                Melty.pop_clip()
 
         if not on_drag:
             imgui.dummy(0, 1)
@@ -1575,7 +1575,7 @@ def seperator(height):
 
 
 
-@with_header(is_default_for=(MutableMapping, defaultdict), use_cache=False, enable_scroll=True)
+@with_header(is_default_for=(MutableMapping, defaultdict), use_cache=False, shadow=True, enable_scroll=True)
 def draw_collection(input_value, draw_state, depth, style_manager,
                     meta, suffix, melty, show_search=True, on_collapse=False, on_drag_up=False, y_offset=0,
                     on_expand=False, width=None, indent_size=10, global_style=None, global_toggles=None, show_add_delete=True,
@@ -1876,8 +1876,8 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
 
     rounding = min(max(10.0, current_indent_px()), rounding)
 
-    depth_factor = global_style.get_global_constant("depth_factor", default=1.0, folder="bg_styles") * 0.95
-    depth_offset = global_style.get_global_constant("depth_offset", default=0.0, folder="bg_styles") - 1.3
+    depth_factor = global_style.get_global_constant("depth_factor", default=1.0, folder="bg_styles") * 1.2
+    depth_offset = global_style.get_global_constant("depth_offset", default=0.0, folder="bg_styles") - 4.0
     dynamic_value = max(0, (float(depth + depth_offset) * depth_factor))
     bg_style = {
         "value": 0.01,
@@ -1898,11 +1898,11 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
 
     bg_style = global_style.get_global_constant("bg_style", default=bg_style, folder="bg_styles")
     outline_saturation = global_style.get_global_constant("outline_saturation", default=0.5, folder="bg_styles")
-    outline_offset = global_style.get_global_constant("outline_offset", default=0.0, folder="bg_styles") - 0.05
-    outline_factor = global_style.get_global_constant("outline_factor", default=1.0, folder="bg_styles") * 1.4
+    outline_offset = global_style.get_global_constant("outline_offset", default=0.0, folder="bg_styles") - 0.07
+    outline_factor = global_style.get_global_constant("outline_factor", default=1.0, folder="bg_styles") * 1.05
 
     if not auto_resize:
-        outline_factor *= 1.3
+        outline_factor *= 1.05
         outline_saturation = 0.9
 
 
@@ -2465,7 +2465,7 @@ class TestClass(DictConversion):
         self.value = 2
         self.str_val = "Test"
 
-@with_header_minimal(is_default_for=float, use_cache=False)
+@with_header_minimal(is_default_for=float, use_cache=False, shadow=False)
 def draw_float(input_value:float, draw_state, min_value=-100.0, max_value=100.0, speed=0.01):
 
     imgui.set_next_item_width(draw_state.width)
@@ -2583,7 +2583,7 @@ def draw_function(input_value, name, draw_state, unique):
 
     return False, input_value
 
-@with_header_minimal(is_default_for=(int), header_same_line=True, wraps=render_func)
+@with_header_minimal(is_default_for=(int), shadow=False, header_same_line=True, wraps=render_func)
 def draw_int(input_value: int, min_value=-100.0, max_value=100.0, speed=0.05, unique=0):
     int_text_width = imgui.calc_text_size(str(input_value))[0]
 

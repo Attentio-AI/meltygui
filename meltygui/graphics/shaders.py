@@ -15,16 +15,17 @@ class ShadowCast:
     Multiple shadows combine correctly via multiplication.
     """
     shader_type = 'standard'
+    offset_factor = 0.04
     uniforms = {
-        'light_dir': (GLType.VEC2, (0.02, 0.09)),
-        'height_scale': (GLType.FLOAT, 0.12),
-        'blur_scale': (GLType.FLOAT, 0.01),
-        'max_steps': (GLType.INT, 32),
-        'blur_samples': (GLType.INT, 6),
-        'depth_bias': (GLType.FLOAT, 0.01),
-        'surface_threshold': (GLType.FLOAT, 0.0),
+        'light_dir': (GLType.VEC2, (0.5 * offset_factor, 1.6 * offset_factor)),
+        'height_scale': (GLType.FLOAT, 0.35),
+        'blur_scale': (GLType.FLOAT, 0.03),
+        'max_steps': (GLType.INT, 64),
+        'blur_samples': (GLType.INT, 8),
+        'depth_bias': (GLType.FLOAT, 0.00),
+        'surface_threshold': (GLType.FLOAT, -10.0),
         'min_height_diff': (GLType.FLOAT, 0.000),
-        'shadow_strength': (GLType.FLOAT, 0.4),
+        'shadow_strength': (GLType.FLOAT, 0.8),
         'texture_size': (GLType.VEC2, None),
     }
     fragment_code = """
@@ -37,16 +38,17 @@ void main() {
         return;
     }
 
-    vec2 light_normalized = (light_dir);
+    vec2 light_normalized = normalize(light_dir);
+    float min_offset = 0.0;
 
-    float min_offset = (1.0 - receiver_depth) * height_scale;
+    // float min_offset = (0.35) * height_scale;
     float depth_step = 1.0 / float(max_steps);
 
     // Start with full light, each caster blocks some
     float light = 1.0;
     float max_height_diff = 0.0;
 
-    for (int i = 1; i <= max_steps; i++) {
+    for (int i = 1; i <= 16; i++) {
         float test_caster_depth = receiver_depth + float(i) * depth_step;
 
         if (test_caster_depth > 1.0) break;
@@ -82,7 +84,7 @@ void main() {
                 float scene_depth = texture(u_texture, sample_pos).r;
 
                 if (scene_depth >= test_caster_depth - depth_bias) {
-                    hits += 1.0;
+                    hits += (0.4 - height_diff * 2.0);
                 }
                 total_samples += 1.0;
             }
@@ -912,7 +914,6 @@ void main() {
 
     // Remap from [min, max] to [0, 1]
     color.rgb = (color.rgb - min_value) / range;
-    color.rgb = color.rgb;
 
     fragColor = color;
 }

@@ -382,7 +382,7 @@ class Filter:
         self._executor.clear_fbo_cache()
 
     def normalize(self, texture_id: int, in_place: bool = False,
-                  output_texture: Optional[int] = None, min_val=None, max_val=None) -> int:
+                  output_texture: Optional[int] = None, min_value=None, max_value=None) -> int:
         """
         Normalize texture values to [0, 1] range by calculating min/max.
 
@@ -410,7 +410,8 @@ class Filter:
         GL.glBindTexture(GL.GL_TEXTURE_2D, texture_id)
         reduction_textures = []  # Track temporary textures for cleanup
 
-        min_value, max_value = texture_min_max.get_texture_min_max(texture_id)
+        if min_value is None or max_value is None:
+            min_value, max_value = texture_min_max.get_texture_min_max(texture_id)
         try:
             # Apply normalization remap
             result = self.apply(

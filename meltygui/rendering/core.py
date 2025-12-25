@@ -308,7 +308,7 @@ def render_func(*args, **o_kwargs):
                     if window_key in Melty.registered_windows else None
 
                 if window_z_pos == len(Melty.registered_windows) - 1:
-                    window_z_pos = len(Melty.registered_windows) + 5
+                    window_z_pos = len(Melty.registered_windows) + 4
 
                 kwargs['layer'] = window_z_pos
 
@@ -459,8 +459,9 @@ def render_func(*args, **o_kwargs):
             Melty.unique_stack.append(computed_unique)
             Melty.depth = Melty.depth + 1
 
-            layer_and_depth = Melty.active_layer * Melty.max_depth + Melty.depth * 5
+            layer_and_depth = (Melty.active_layer * Melty.max_depth) + Melty.depth
             draw_state.z_pos = layer_and_depth
+            draw_state.depth_and_layer = (Melty.depth, Melty.active_layer)
             Melty.z_pos = layer_and_depth
 
             kwargs['depth'] = Melty.depth
@@ -705,6 +706,7 @@ def render_func(*args, **o_kwargs):
                 # draw_state.draw_rect(rounding=5.0)
 
             show_bg = kwargs.get("show_bg", False)
+            draw_state.shadow = kwargs.get("shadow", draw_state.shadow)
             if show_bg or selected or not draw_state.expanded:
                 from src.lsd.gl_gui.view.core_views.new_core_view import draw_bg
                 style_manager = Melty.global_attrs['style_manager']
@@ -713,7 +715,7 @@ def render_func(*args, **o_kwargs):
                 Melty.undo_clip(unique, 1)
                 if width > 5 and height > 5:
                     _, bg_color = draw_bg(bypass=True, left=left + 1, top=top,
-                                          width=width - 1, height=height - 1,
+                                          width=width - 1, height=height,
                                           depth=Melty.depth, selected=draw_state in Melty.selected,
                                           global_style=global_style, opacity=1.0 if show_bg else 0.0,
                                           style_manager=style_manager, auto_resize=auto_resize)
@@ -800,7 +802,11 @@ def render_func(*args, **o_kwargs):
 
                 if draw_state._parent is not None:
                     draw_state._parent.invalid_content_height = True
-                request_render()
+
+                draw_state.size_change = True
+            else:
+                if not imgui.is_mouse_down(0):
+                    draw_state.size_change = False
 
             if draw_state.width > 10000:
                 draw_state.width = 10000
