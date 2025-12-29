@@ -13,6 +13,7 @@ import glfw
 import imgui
 from imgui.core import _DrawList
 
+from imgui.core import _IO
 from src.lsd.gl_gui.view.core_views.core_render_helpers import draw_vertical_scrollbar, floating_text
 from src.lsd.gl_gui.model.core_model.draw_state import DrawState, Hotkey, DragMode
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, print_stack_trace, \
@@ -312,6 +313,7 @@ def render_func(*args, **o_kwargs):
 
                 kwargs['layer'] = window_z_pos
 
+
             if kwargs.get("layer", None) is not None and len(Melty.layers) > 0:
                 layer = kwargs.pop("layer", None)
                 if layer >= len(Melty.layers):
@@ -451,6 +453,7 @@ def render_func(*args, **o_kwargs):
                     if wanted_type is inspect.Parameter.empty:
                         wanted_type = None
                     set_default(param, None, wanted_type)
+
 
 
             inc_depth = "draw_state" in wanted_params or is_root
@@ -662,6 +665,7 @@ def render_func(*args, **o_kwargs):
                 if kwargs.get("live", False):
                     fa_live_icon = "\uf0e7 Continuous Rendering"
                     draw_list: _DrawList = imgui.get_window_draw_list()
+
                     draw_list.add_text(draw_state.left + 5, draw_state.top - 20,
                                        imgui.get_color_u32_rgba(1.0, 0.0, 0.0, 1.0), fa_live_icon)
                     Melty.cache.invalidate(tile_id)
