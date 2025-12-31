@@ -230,6 +230,8 @@ class DictConversion(metaclass=FieldMeta):
                     excluded = excluded.union(self.excluded)
 
         if hasattr(self, '__no_save__'):
+            if excluded is None:
+                excluded = []
             excluded = excluded[:]
             if excluded is None:
                 excluded = self.__no_save__

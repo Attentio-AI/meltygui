@@ -252,6 +252,11 @@ class Melty:
             for view in layer:
                 if view is not None:
                     draw_state = view[3]
+                    layer_tint = view[4]
+                    style_manager = cls.global_attrs['style_manager']
+                    current_tint = style_manager.get_tint()
+                    style_manager.set_imgui_tint(*layer_tint)
+
                     imgui.set_cursor_screen_pos((0, 0))
                     view_func = view[0]
                     input_value = view[1]
@@ -264,6 +269,8 @@ class Melty:
                     return_val = view_func(input_value, **kwargs)
                     if return_val is not None:
                         cls.returned_values[draw_state.id] = return_val
+
+                    style_manager.set_imgui_tint(*current_tint)
 
             Melty.depth = 0
 
@@ -370,6 +377,10 @@ class Melty:
             input_value = window_info[4]._input_value
             tile_id = window_info[4]._tile_id
 
+            draw_state = window_info[4]
+            draw_state.width = max(draw_state.width, 40)
+            draw_state.height = max(draw_state.height, 40)
+
             window_key = f"{name}_window"
             cls.pending_move_to_front = (name, input_value, tile_id)
 
@@ -383,7 +394,6 @@ class Melty:
 
     @classmethod
     def apply_move_to_front(cls):
-
         if cls.pending_move_to_front is None:
             return
 

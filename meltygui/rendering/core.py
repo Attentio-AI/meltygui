@@ -297,30 +297,38 @@ def render_func(*args, **o_kwargs):
 
         original_width_b = draw_state.width
         original_height_b = draw_state.height
+        style_manager = Melty.global_attrs.get("style_manager", None)
 
         if active_layer is None:
-
             if (melty.dragged_item is not None and melty.drag_in_progress and
                     draw_state is not None and melty.dragged_item.id == draw_state.id):
                 kwargs['layer'] = Melty.drag_layer
                 kwargs['start_pos'] = imgui.get_cursor_screen_pos()
             else:
+                # Indicates this is not a nested window
                 window_z_pos = list(Melty.registered_windows.keys()).index(window_key) \
                     if window_key in Melty.registered_windows else None
 
                 if window_z_pos == len(Melty.registered_windows) - 1:
                     window_z_pos = len(Melty.registered_windows) + 4
 
+                if window_z_pos is not None:
+                    window_z_pos = max(window_z_pos, Melty.active_layer)
+
                 kwargs['layer'] = window_z_pos
 
 
             if kwargs.get("layer", None) is not None and len(Melty.layers) > 0:
                 layer = kwargs.pop("layer", None)
+
                 if layer >= len(Melty.layers):
                     layer = len(Melty.layers) - 1
                 kwargs["active_layer"] = layer
                 # kwargs['unique'] = unique
-                Melty.layers[layer].append((wrapper, input_value, kwargs, draw_state))
+
+                current_tint = style_manager.get_tint()
+
+                Melty.layers[layer].append((wrapper, input_value, kwargs, draw_state, current_tint))
                 return_value = (False, None)
                 if draw_state.id in Melty.returned_values:
                     return_value = Melty.returned_values.pop(draw_state.id)
@@ -329,9 +337,9 @@ def render_func(*args, **o_kwargs):
                     if draw_state.width is not None and draw_state.height is not None:
                         imgui.set_cursor_screen_pos((start_cursor[0],
                                                      start_cursor[1] + draw_state.height))
-
-                collection = kwargs.get("collection", None)
-                Melty.cache.mark_uncached(name, input_value, collection, tile_id, draw_state)
+                #
+                # collection = kwargs.get("collection", None)
+                # Melty.cache.mark_uncached(unique, input_value, collection, tile_id, draw_state)
 
                 if return_extras:
                     return *return_value, kwargs
@@ -377,7 +385,6 @@ def render_func(*args, **o_kwargs):
         Melty.wrapped_depth = Melty.wrapped_depth + 1
         melty_window = False
         draw_state.tint = kwargs.get("tint", draw_state.tint)
-        style_manager = Melty.global_attrs.get("style_manager", None)
         is_header = "with_header" in func.__name__
         melty_window = kwargs.get("melty_window", False) and not is_header
         previous_tint = None
@@ -808,7 +815,6 @@ def render_func(*args, **o_kwargs):
             if (draw_state.width != original_width_b or
                     draw_state.height != original_height_b):
                 if draw_state._collection_draw_state is not None and not imgui.is_mouse_down(0):
-                    print("Invalidating collection content height for", draw_state.name)
                     draw_state._collection_draw_state.invalid_content_height = True
 
                 if draw_state._parent is not None:

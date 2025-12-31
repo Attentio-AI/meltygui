@@ -129,13 +129,13 @@ def draw_main(input_value, vis):
     draw_window(vis.root.lora_collection, name="Test Window 1")
     draw_window(vis.root.lora_collection.loras, name="Test Window 2")
     draw_window(Melty.last_invalid, show_bg=True, name="Last Invalid")
-    draw_window(Melty.registered_windows, is_tree=True,
-                show_add_delete=False, name="Another window manager")
+    # draw_window(Melty.registered_windows, is_tree=True,
+    #             show_add_delete=False, name="Test window manager")
 
     draw_window("test", name="Test Widget Window")
 
 
-    draw_window(Melty.cache.snapshot_tex, show_bg=True, name="Snapshot Texture")
+    draw_window(Melty.cache.snapshot_tex, show_bg=True, name="Snapshot Texture", live=True)
 
     changed, new_val = draw_window(0.0, layer=31, name="Test return")
     if changed:
@@ -145,9 +145,16 @@ def draw_main(input_value, vis):
     draw_window(normalized_sub_mask, show_bg=True, max_contrast=30, jet=True,
                 max_brightness=30, name="Submask Texture", live=True)
 
-    draw_window("input_val", name="Test Input Value Window", view_func=test_widget)
+    draw_window("input_val", name="Nested Outer live", view_func=test_widget, live=True)
+    draw_window("input_val", name="Nested Outer no live", view_func=test_widget, live=False)
 
     # draw_window(Melty.last_request_render, show_bg=True, name="Last Invalid")
+
+@render_func
+def test_widget(input_value, name, unique):
+    imgui.text("Test Widget")
+    draw_window("Nested Window", name=f"{name} Nested")
+
 
 
 
@@ -273,10 +280,6 @@ def draw_melty_windows(vis):
 
     end()
 
-@render_func
-def test_widget(input_value):
-    imgui.text("Test Widget")
-
 
 @with_header(is_default_for=PendingTexture, use_cache=False, enable_scroll=False,
              auto_resize=True, indent_size=0)
@@ -392,18 +395,31 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
 
 
     if jet:
-        texture_id = Melty.filter.brightness_contrast(
-            input_value,
-            brightness=zoom_state.brightness,
-            contrast=zoom_state.contrast
-        )
+        # texture_id = Melty.filter.brightness_contrast(
+        #     input_value,
+        #     brightness=zoom_state.brightness,
+        #     contrast=zoom_state.contrast
+        # )
 
+        texture_id = Melty.filter.swirl(
+            input_value,
+            radius=zoom_state.brightness,
+            angle=zoom_state.contrast
+
+        )
         texture_id = Melty.filter.jet(texture_id, offset=zoom_state.hue)
     else:
-        texture_id = Melty.filter.brightness_contrast(
+        # texture_id = Melty.filter.brightness_contrast(
+        #     input_value,
+        #     brightness=zoom_state.brightness,
+        #     contrast=zoom_state.contrast
+        # )
+
+        texture_id = Melty.filter.swirl(
             input_value,
-            brightness=zoom_state.brightness,
-            contrast=zoom_state.contrast
+            radius=zoom_state.brightness,
+            angle=zoom_state.contrast
+
         )
         texture_id = Melty.filter.hue_saturation(
             texture_id,
@@ -628,13 +644,13 @@ def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, 
     window_input_value = input_value.input_value
     name = window_draw_state.name
 
-    if hasattr(window_input_value, 'tint'):
+    if hasattr(window_input_value, 'tint') and getattr(window_input_value, 'tint', None) is not None:
         changed, new_tint = draw_tuple(window_input_value.tint, name="")
         if changed:
             window_input_value.tint = new_tint
         input_value.tint = window_input_value.tint
 
-    else:
+    elif window_draw_state.tint is not None:
         changed, new_tint = draw_tuple(window_draw_state.tint, name="")
         if changed:
             window_draw_state.tint = new_tint
@@ -661,6 +677,8 @@ def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, 
             print("Closing window")
             window_draw_state.closed = True
 
+
+
     imgui.same_line()
 
     target_icon = ""  # Target icon (FontAwesome Unicode)
@@ -669,6 +687,20 @@ def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, 
         this_window_right = draw_state.left + draw_state.width
         window_draw_state.window_pos = (this_window_right + 10, draw_state.top)
         Melty.move_window_to_front(window_draw_state)
+
+    if imgui.is_item_hovered():
+        imgui.begin_tooltip()
+        draw_state = window_draw_state.to_dict()
+        import json
+        json_str = json.dumps(draw_state, indent=2)
+
+        imgui.text(json_str)
+        imgui.end_tooltip()
+    # debug text
+
+
+
+
 
 
 
