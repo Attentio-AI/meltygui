@@ -123,6 +123,7 @@ class auto_eval:
         if old_value != new_value:
             if visible and not self.name.startswith('_') \
                     and self.name != "driver" and Melty.frame_count > 3:
+                Melty.last_attr = self.name
                 if do_deep_refresh:
                     Melty.cache.invalidate_up_by_obj(obj=obj, name=self.name, max_depth=3, force=True)
                     request_render()

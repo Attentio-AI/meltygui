@@ -86,6 +86,8 @@ class Melty:
     _root_by_module: dict[str, cst.Module] = {}
     _gen_by_module: dict[str, int] = {}
 
+    last_attr = ""
+
     save_draw_state_for = 1
     spacing = (2, 1)
     padding = (2, 2)
@@ -153,6 +155,8 @@ class Melty:
         gl.glBindRenderbuffer(gl.GL_RENDERBUFFER, 0)
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
         gl.glBindVertexArray(0)
+        is_popup_open = imgui.is_popup_open("", flags=imgui.POPUP_ANY_POPUP)
+        Melty.imgui_popup_open = is_popup_open
 
         cls.backend.pump()
 

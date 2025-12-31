@@ -348,6 +348,7 @@ def render_func(*args, **o_kwargs):
                     if draw_state._input_value != input_value:
                         if kwargs.get("collection", None) is not None:
                             Melty.cache.invalidate(tile_id)
+                            Melty.last_attr = draw_state.name
                             request_render()
 
         collection = kwargs.get("collection", None)
@@ -754,8 +755,11 @@ def render_func(*args, **o_kwargs):
                 is_popup_open = Melty.imgui_popup_open
                 if is_popup_open != draw_state._imgui_popover_open and not is_popup_open:
                     Melty.cache.invalidate_up_by_obj(input_value, max_depth=6)
-
+                if is_popup_open:
+                    Melty.report_imgui_active()
                 draw_state._imgui_popover_open = Melty.imgui_popup_open
+
+
         except Exception as e:
             print_colored_traceback(*sys.exc_info())
         finally:

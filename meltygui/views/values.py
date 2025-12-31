@@ -120,7 +120,7 @@ def draw_window(input_value, view_func=None, style_manager=None, tint=None, **kw
 def draw_main(input_value, vis):
     global test_obj
     draw_window(Melty.profiles_results, show_bg=True, name="Profile Results")
-    draw_window(Melty.registered_windows, indent_size=10, is_tree=True, show_add_delete=False, name="Window Manager")
+    draw_window(Melty.registered_windows, is_tree=True, show_add_delete=False, name="Window Manager")
     draw_window(test_obj, name="Layer 1")
     draw_window(draw_main, name="Draw Main Function")
 
@@ -626,6 +626,7 @@ def draw_debug(input_value, melty):
 def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, mouse_down=False, **kwargs):
     window_draw_state = input_value.draw_state
     window_input_value = input_value.input_value
+    name = window_draw_state.name
 
     if hasattr(window_input_value, 'tint'):
         changed, new_tint = draw_tuple(window_input_value.tint, name="")
@@ -647,7 +648,7 @@ def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, 
     imgui.dummy(5, 20)
     imgui.same_line()
 
-    if window_input_value == Melty.registered_windows:
+    if name == "Window Manager":
         button(f"{name}", color=(0,0,0,0), saturation=1.3, width=130)[0]
         return
 
@@ -2123,6 +2124,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         tint_changed, tint_value = draw_tuple(input_value.tint, show_header=False)
         if tint_changed:
             input_value.tint = tint_value
+            Melty.cache.invalidate_by_obj(input_value, name)
         same_line()
 
     if show_add_delete and isinstance(input_value, (list, dict)) or hasattr(input_value, "__dict__"):
