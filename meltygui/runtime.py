@@ -357,7 +357,7 @@ class Melty:
         # return max(min(cls.max_depth - 3, cls.depth), 0)
 
     @classmethod
-    def move_window_to_front(cls, name=None, input_value=None, tile_id=None):
+    def move_window_to_front(cls, name=None):
         if name is None:
             window_info = cls.melty_window_stack[-1] if len(cls.melty_window_stack) > 0 else None
             if window_info is None:
@@ -1371,4 +1371,5 @@ class ManagedWindow:
         self.draw_state = draw_state
         self.window_args = window_args
         self.name = name
+        self.tint = (1,1,1)
 

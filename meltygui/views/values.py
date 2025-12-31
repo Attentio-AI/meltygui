@@ -49,16 +49,10 @@ from src.shader_library.shader_manager.texture_manager import PendingTexture
 
 
 @render_func(use_cache=True, auto_resize=False, closable=True, show_bg=True, melty_window=True, draggable=True)
-def draw_window(input_value, view_func=None, style_manager=None, **kwargs):
+def draw_window(input_value, view_func=None, style_manager=None, tint=None, **kwargs):
     window_name = kwargs.get('name', 'Managed Window')
     draw_state = kwargs.get('draw_state', None)
     cursor_pos = imgui.get_cursor_screen_pos()
-
-
-    group_padding = 4
-    imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (group_padding, group_padding))
-    imgui.begin_group()
-    imgui.pop_style_var()
 
     if draw_state.width > 0 and draw_state.height > 0:
         imgui.set_cursor_screen_pos(cursor_pos)
@@ -118,7 +112,6 @@ def draw_window(input_value, view_func=None, style_manager=None, **kwargs):
     else:
         return_val = view_func(input_value, **kwargs)
 
-    imgui.end_group()
 
     return return_val
 
@@ -136,7 +129,7 @@ def draw_main(input_value, vis):
     draw_window(vis.root.lora_collection, name="Test Window 1")
     draw_window(vis.root.lora_collection.loras, name="Test Window 2")
     draw_window(Melty.last_invalid, show_bg=True, name="Last Invalid")
-    draw_window(Melty.registered_windows, indent_size=10, is_tree=True,
+    draw_window(Melty.registered_windows, is_tree=True,
                 show_add_delete=False, name="Another window manager")
 
     draw_window("test", name="Test Widget Window")
@@ -629,34 +622,52 @@ def draw_debug(input_value, melty):
     draw_any(melty)
 
 @with_header(is_default_for=ManagedWindow, is_tree=False, show_name=False,
-             show_bg=True, show_add_delete=False)
+             show_bg=True, show_add_delete=False, show_tint=False)
 def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, mouse_down=False, **kwargs):
-
-    window_input_value = input_value.input_value
-    if hasattr(window_input_value, 'tint') and window_input_value.tint is not None:
-        draw_state.tint = window_input_value.tint
-    else:
-        draw_state.tint = (0.9, 0.991, 0.999)
-
     window_draw_state = input_value.draw_state
+    window_input_value = input_value.input_value
+
+    if hasattr(window_input_value, 'tint'):
+        changed, new_tint = draw_tuple(window_input_value.tint, name="")
+        if changed:
+            window_input_value.tint = new_tint
+        input_value.tint = window_input_value.tint
+
+    else:
+        changed, new_tint = draw_tuple(window_draw_state.tint, name="")
+        if changed:
+            window_draw_state.tint = new_tint
+        input_value.tint = window_draw_state.tint
+
+    imgui.same_line()
 
     if mouse_down:
         window_draw_state.closed = not window_draw_state.closed
 
-    imgui.dummy(30, 20)
+    imgui.dummy(5, 20)
     imgui.same_line()
 
     if window_input_value == Melty.registered_windows:
         button(f"{name}", color=(0,0,0,0), saturation=1.3, width=130)[0]
         return
+
     if window_draw_state.closed:
-        if button(f"{name}", color=(0,0,0), saturation=1.3, width=130)[0]:
+        if button(f"{name}", color=(0,0,0), saturation=1.3, width=draw_state.width - 60)[0]:
             print("Opening window")
             window_draw_state.closed = False
     else:
-        if button(f"{name}", saturation=1.3, width=130)[0]:
+        if button(f"{name}", saturation=1.3, width=draw_state.width - 60)[0]:
             print("Closing window")
             window_draw_state.closed = True
+
+    imgui.same_line()
+
+    target_icon = ""  # Target icon (FontAwesome Unicode)
+
+    if button(target_icon, width=20, color=(1,0,0), saturation=0.7)[0]:
+        this_window_right = draw_state.left + draw_state.width
+        window_draw_state.window_pos = (this_window_right + 10, draw_state.top)
+        Melty.move_window_to_front(window_draw_state)
 
 
 
@@ -1353,13 +1364,13 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
         if not show_bg:
             y_offset = 0
         prev_tint = None
-        if hasattr(input_value, "tint") and input_value.tint is not None and show_bg:
+        if hasattr(input_value, "tint") and input_value.tint is not None:
             prev_tint = style_manager.get_tint()
             style_manager.set_imgui_tint(*input_value.tint)
         elif draw_state.tint is not None and show_bg:
             prev_tint = style_manager.get_tint()
             style_manager.set_imgui_tint(*draw_state.tint)
-        elif hasattr(collection, "__tint__") and collection.__tint__ is not None and show_bg:
+        elif hasattr(collection, "__tint__") and collection.__tint__ is not None:
             if name in collection.__tint__:
                 prev_tint = style_manager.get_tint()
                 style_manager.set_imgui_tint(*collection.__tint__[name])
@@ -2112,7 +2123,6 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         tint_changed, tint_value = draw_tuple(input_value.tint, show_header=False)
         if tint_changed:
             input_value.tint = tint_value
-            # Melty.cache.refresh_by_obj(input_value, name)
         same_line()
 
     if show_add_delete and isinstance(input_value, (list, dict)) or hasattr(input_value, "__dict__"):
@@ -2346,7 +2356,7 @@ def draw_any(input_value, indent_size=0, **kwargs):
     return return_val
 
 
-@with_header_minimal(header_same_line=True, is_default_for=(NoneType))
+@with_header_minimal(header_same_line=True, is_default_for=(NoneType), shadow=False)
 def draw_none(input_value: NoneType):
     imgui.align_text_to_frame_padding()
     imgui.text("None")
@@ -2362,7 +2372,7 @@ def draw_bool(input_value: bool):
     return False, None
 
 
-@with_header_minimal(is_default_for=(str))
+@with_header_minimal(is_default_for=(str), shadow=False)
 def draw_str(input_value: str):
     line_count = input_value.count('\n') + 1
     line_height = imgui.get_text_line_height_with_spacing()

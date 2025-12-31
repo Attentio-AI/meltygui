@@ -84,9 +84,9 @@ class ZoomState(DictConversion):
 @no_save("mouse_btn_state", "mouse_up", "mouse_down", "unique", "search_active", "content_height", "shadow", "size_change",
          "drag_released","clicked", "dragged", "dragged", "name", "expanded_height", "clipped", "fully_clipped", "left", "top",
          "render_time", "overhead_time", "depth_and_layer", "imgui_is_toggled_open", "z_pos", "hotkey_receiver", "use_child", "cst", "search_text", "bg_color",
-         "is_active", "clip_rect", "wrapped_top", "wrapped_left", "min_width", "min_height", "is_focused", "drag_window_pos_x", "drag_window_pos_y", "drag_mode", "is_hovered_last",
+         "is_active", "clip_rect", "wrapped_top", "current_tint", "wrapped_left", "min_width", "min_height", "is_focused", "drag_window_pos_x", "drag_window_pos_y", "drag_mode", "is_hovered_last",
          "z_pos", "bg_shown", "draw_window_pos_x", "misc_used", "draw_window_pos_y", "drag_delta", "screen_pos", "imgui_is_item_activated", "frame_count")
-@exclude("render_time","overhead_time", "premature_break", "clip_rect", "_input_value", "flow_spacing", 'width', "height", "left", "top", "size_change",
+@exclude("render_time", "current_tint", "overhead_time", "premature_break", "clip_rect", "_input_value", "flow_spacing", 'width', "height", "left", "top", "size_change",
          "hovered", "wrapped_top", "params", "premature_break", "wrapped_left", "_did_use_cache", "content_height", "content_region", "value_hash", "drag_window", "top", "left", "content_region", "did_render",
          "bounding_hovered", "dlt_count", "clip_rect", "bg_rect", "header_height", "scrolled", "is_hovered_last", "frame_count")
 @deep_refresh('scroll_offset')
@@ -145,6 +145,7 @@ class DrawState(DictConversion):
 
         self._previous_hash = None
         self.tint = None
+        self.current_tint = None
 
         self.unique = 0  # stable UI identifier
         self.expanded = True

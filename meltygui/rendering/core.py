@@ -376,18 +376,20 @@ def render_func(*args, **o_kwargs):
         Melty.wrapped_depth = Melty.wrapped_depth + 1
         melty_window = False
         draw_state.tint = kwargs.get("tint", draw_state.tint)
-
+        style_manager = Melty.global_attrs.get("style_manager", None)
         is_header = "with_header" in func.__name__
         melty_window = kwargs.get("melty_window", False) and not is_header
-
         previous_tint = None
-        style_manager = None
         if melty_window:
-            style_manager = Melty.global_attrs.get("style_manager", None)
             previous_tint = style_manager.get_tint()
             if hasattr(input_value, 'tint') and getattr(input_value, "tint") is not None:
                 style_manager.set_imgui_tint(*getattr(input_value, "tint"))
+            elif draw_state.tint is not None:
+                style_manager.set_imgui_tint(*draw_state.tint)
         try:
+
+            draw_state.current_tint = style_manager.get_tint()
+
             meta = kwargs.get("meta", None)
             if meta is None:
                 # Use class meta as default if available
@@ -597,6 +599,7 @@ def render_func(*args, **o_kwargs):
                     Melty.registered_windows[window_key].draw_state = kwargs.get('draw_state', None)
                     Melty.registered_windows[window_key].window_args = kwargs
                     Melty.registered_windows[window_key].name = kwargs.get('name', 'Managed Window')
+
 
             if kwargs.get("closable", False):
                 if draw_state.closed and not input_value == Melty.registered_windows:
@@ -1016,7 +1019,11 @@ def render_func(*args, **o_kwargs):
             fixed_size_draw_state = Melty.fixed_size_stack[-1]
             rect = fixed_size_draw_state.get_rect()
             x_offset = start_cursor[0] - rect[0]
-            draw_state.width = rect[2] - x_offset - 10
+            if is_header:
+                draw_state.width = rect[2] - x_offset - 10
+            else:
+                draw_state.width = rect[2] - x_offset - 5
+
 
             if kwargs.get("fill_height", False):
                 draw_state.height = snap_int(fixed_size_draw_state.height - (start_cursor[1] - rect[1]))
