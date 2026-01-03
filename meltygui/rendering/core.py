@@ -680,7 +680,6 @@ def render_func(*args, **o_kwargs):
                     draw_list.add_text(draw_state.left + 5, draw_state.top - 20,
                                        imgui.get_color_u32_rgba(1.0, 0.0, 0.0, 1.0), fa_live_icon)
                     Melty.cache.invalidate(tile_id)
-                    request_render()
                 kwargs.pop("live", None)
 
 
