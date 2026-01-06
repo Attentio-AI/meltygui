@@ -176,6 +176,8 @@ class Melty:
         event_keys_str = [str(k) for k in event_keys]
         concat_names = "_".join(event_keys_str)
 
+
+
         cls.on_scroll_buffer.append("scroll_y_changed" in cls.events_by_type and "view_scroll" in concat_names)
         cls.on_scroll = any(cls.on_scroll_buffer)
 
@@ -235,6 +237,13 @@ class Melty:
         cls.returned_values = {}
 
         # cls.draw_blockers_to()
+        # Manually mask windows
+        for window in Melty.registered_windows.values():
+            draw_state = window.draw_state
+            unique = f"{draw_state.id}"
+            Melty.cache.mask_mark_view(draw_state.z_pos - 2, draw_state.left,
+                                       draw_state.top, draw_state.width, draw_state.height,
+                                       f"window_mask_{unique}", 4)
 
         for idx in range(len(cls.layers)):
             layer = cls.layers[idx]

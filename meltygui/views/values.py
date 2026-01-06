@@ -49,7 +49,7 @@ from src.shader_library.shader_manager.texture_manager import PendingTexture
 
 
 @render_func(use_cache=True, auto_resize=False, closable=True, show_bg=True, melty_window=True, draggable=True)
-def draw_window(input_value, view_func=None, style_manager=None, tint=None, **kwargs):
+def draw_window(input_value, view_func=None, style_manager=None, tint=None, unique=0, **kwargs):
     window_name = kwargs.get('name', 'Managed Window')
     draw_state = kwargs.get('draw_state', None)
     cursor_pos = imgui.get_cursor_screen_pos()
@@ -68,6 +68,8 @@ def draw_window(input_value, view_func=None, style_manager=None, tint=None, **kw
         #     imgui.button("##", width=draw_state.width, height=20)
         #     imgui.set_cursor_screen_pos(cursor_pos)
         #     imgui.set_item_allow_overlap()
+
+
 
 
     if draw_state.width is not None and draw_state.height is not None and draw_state.expanded:
@@ -141,7 +143,7 @@ def draw_main(input_value, vis):
     if changed:
         print("Value changed:", new_val)
 
-    normalized_sub_mask = Melty.filter.normalize(Melty.cache._full_mask_tex)
+    normalized_sub_mask = Melty.filter.normalize(Melty.cache._mask_tex)
     draw_window(normalized_sub_mask, show_bg=True, max_contrast=30, jet=True,
                 max_brightness=30, name="Submask Texture", live=True)
 
@@ -395,32 +397,32 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
 
 
     if jet:
-        # texture_id = Melty.filter.brightness_contrast(
-        #     input_value,
-        #     brightness=zoom_state.brightness,
-        #     contrast=zoom_state.contrast
-        # )
-
-        texture_id = Melty.filter.swirl(
+        texture_id = Melty.filter.brightness_contrast(
             input_value,
-            radius=zoom_state.brightness,
-            angle=zoom_state.contrast
-
+            brightness=zoom_state.brightness,
+            contrast=zoom_state.contrast
         )
+
+        # texture_id = Melty.filter.swirl(
+        #     input_value,
+        #     radius=zoom_state.brightness,
+        #     angle=zoom_state.contrast
+        #
+        # )
         texture_id = Melty.filter.jet(texture_id, offset=zoom_state.hue)
     else:
-        # texture_id = Melty.filter.brightness_contrast(
-        #     input_value,
-        #     brightness=zoom_state.brightness,
-        #     contrast=zoom_state.contrast
-        # )
-
-        texture_id = Melty.filter.swirl(
+        texture_id = Melty.filter.brightness_contrast(
             input_value,
-            radius=zoom_state.brightness,
-            angle=zoom_state.contrast
-
+            brightness=zoom_state.brightness,
+            contrast=zoom_state.contrast
         )
+
+        # texture_id = Melty.filter.swirl(
+        #     input_value,
+        #     radius=zoom_state.brightness,
+        #     angle=zoom_state.contrast
+        #
+        # )
         texture_id = Melty.filter.hue_saturation(
             texture_id,
             saturation=(zoom_state.saturation),
