@@ -876,10 +876,33 @@ class TileCacheMasked:
         self.py_id_to_keys.setdefault(f"{id(collection)}", set()).add(rkey)
         self.key_to_parent_key[rkey] = parent_ctx.key if parent_ctx else None
 
-    def mark_start_offscreen(self, input_value, collection, draw_state, key: str, layer: int, name="",
-                             caller=None, no_mask=False, parent_ctx=None) -> bool:
+    def draw_tile(self, draw_state):
+        imgui.push_id(f"{draw_state._tile_id}_cached")
+        rkey = draw_state._tile_id
+
+        t = self._tiles.get(rkey)
+        size = self._sizes.get(rkey, None)
+        has_area = size is not None and size[0] != 0 and size[1] != 0
+        use_image = t and has_area and (t.size == (size[0], size[1])) and (not self._is_dirty(t))
+        if use_image:
+            imgui.set_cursor_screen_pos((draw_state.left, draw_state.top))
+            imgui.image(t.tex, snap_int(size[0]), snap_int(size[1]), uv0=(0.0, 1.0), uv1=(1.0, 0.0))
+            # imgui.set_item_allow_overlap()
+        imgui.pop_id()
+
+
+    def mark_start_offscreen(self, draw_state) -> bool:
         if not self.enabled:
             return True
+
+        if not draw_state.use_cache:
+            return True
+
+        input_value = draw_state._input_value
+        collection = draw_state._collection
+        key = draw_state._tile_id
+        layer = draw_state.z_pos
+        name = draw_state.name
 
         gl.glDisable(gl.GL_DEPTH_TEST)
 
@@ -936,8 +959,8 @@ class TileCacheMasked:
             use_image = t and has_area and (t.size == (size[0], size[1])) and (not self._is_dirty(t))
 
             if use_image:
-                imgui.image(t.tex, snap_int(size[0]), snap_int(size[1]), uv0=(0.0, 1.0), uv1=(1.0, 0.0),
-                            tint_color=(1, 1, 1, 1))
+                imgui.set_cursor_screen_pos((draw_state.left, draw_state.top))
+                imgui.image(t.tex, snap_int(size[0]), snap_int(size[1]), uv0=(0.0, 1.0), uv1=(1.0, 0.0))
                 imgui.set_item_allow_overlap()
                 self._stack.append(
                     _Ctx(draw_state=draw_state, key=rkey, pos=(x, y), size=size, layer=layer, drew_cached=True,
@@ -948,8 +971,11 @@ class TileCacheMasked:
                                 auto_resize=draw_state.auto_resize))
         return True
 
-    def mark_end_offscreen(self) -> None:
+    def mark_end_offscreen(self, draw_state=None) -> None:
         if not self.enabled:
+            return
+
+        if draw_state is not None and not draw_state.use_cache:
             return
 
         ctx = self._stack.pop()

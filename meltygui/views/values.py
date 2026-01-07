@@ -118,7 +118,7 @@ def draw_window(input_value, view_func=None, style_manager=None, tint=None, uniq
     return return_val
 
 
-@render_func(use_cache=False)
+@render_func(use_cache=True)
 def draw_main(input_value, vis):
     global test_obj
     draw_window(Melty.profiles_results, show_bg=True, name="Profile Results")
@@ -143,11 +143,11 @@ def draw_main(input_value, vis):
 
     normalized_sub_mask = Melty.filter.normalize(Melty.cache._mask_tex)
     draw_window(normalized_sub_mask, show_bg=True, max_contrast=30, jet=True,
-                max_brightness=30, name="_mask_tex", live=True)
+                max_brightness=30, name="mask_tex", live=True)
 
     normalized_sub_mask = Melty.filter.normalize(Melty.cache._full_mask_tex)
     draw_window(normalized_sub_mask, show_bg=True, max_contrast=30, jet=True,
-                max_brightness=30, name="_full_mask_tex", live=True)
+                max_brightness=30, name="full_mask_tex", live=True)
 
     draw_window("input_val", name="Outer live", view_func=test_widget, live=True)
     draw_window("input_val", name="Outer no live", view_func=test_widget, live=False)

@@ -25,6 +25,7 @@ class Melty:
     draw_state_stack = []
 
     root_draw_states = set()
+    root_draw_states_by_layer = defaultdict(lambda: set())
 
     filter = Filter()
 
@@ -240,10 +241,22 @@ class Melty:
         # Manually mask windows
         # for window in Melty.registered_windows.values():
         #     draw_state = window.draw_state
-        #     unique = f"{draw_state.id}"
-        #     Melty.cache.mask_mark_view(draw_state.z_pos - 2, draw_state.left,
-        #                                draw_state.top, draw_state.width, draw_state.height,
-        #                                f"window_mask_{unique}", 4)
+        #     if not draw_state.closed:
+        #         unique = f"{draw_state.id}"
+        #         Melty.cache.mask_mark_view(draw_state.z_pos - 2, draw_state.left,
+        #                                    draw_state.top, draw_state.width, draw_state.height,
+        #                                    f"window_mask_{unique}", 4)
+
+        cls.root_draw_states_by_layer = defaultdict(set)
+        to_discard = set()
+        for ds in cls.root_draw_states:
+            if ds.closed:
+                to_discard.add(ds)
+            else:
+                cls.root_draw_states_by_layer[ds.layer].add(ds)
+
+        for ds in to_discard:
+            cls.root_draw_states.discard(ds)
 
         for idx in range(len(cls.layers)):
             layer = cls.layers[idx]
@@ -260,6 +273,7 @@ class Melty:
             for view in layer:
                 if view is not None:
                     draw_state = view[3]
+
                     layer_tint = view[4]
                     parent_ctx = view[5]
                     current_z_pos = view[6]
@@ -286,17 +300,33 @@ class Melty:
                     style_manager.set_imgui_tint(*current_tint)
 
                     cls.cache.remove_parent()
+            imgui.pop_id()
+
+            for draw_state in cls.root_draw_states_by_layer[idx]:
+                Melty.cache.mask_mark_view(draw_state.z_pos, draw_state.left,
+                                           draw_state.top, draw_state.width, draw_state.height,
+                                           f"window_mask_{draw_state.id}", 4)
+                imgui.get_window_draw_list().channels_set_current(0)
+
+                Melty.cache.draw_tile(draw_state)
+
+                last_bounding_hovered = draw_state._bounding_hovered
+                new_bounding_hovered = draw_state.is_bounding_hovered()
+                hover_changed = last_bounding_hovered != new_bounding_hovered
+                draw_state._bounding_hovered = new_bounding_hovered
+                if (draw_state.width is None or draw_state.height is None or hover_changed or
+                        draw_state._bounding_hovered or draw_state._imgui_popover_open):
+                    Melty.cache.invalidate(draw_state._tile_id, force=True)
+                    # draw_state.draw_rect()
+
+
 
             Melty.depth = 0
-
-            #
             if Melty.channels_split:
                 # Flatten layers into single channel
                 imgui.get_window_draw_list().channels_set_current(0)
                 imgui.get_window_draw_list().channels_merge()
                 Melty.channels_split = False
-
-            imgui.pop_id()
 
         cls.layers = []
 
@@ -327,22 +357,6 @@ class Melty:
         melty.unique_stack = []
         Melty.draw_state_stack = []
 
-        to_discard = set()
-        for draw_state in cls.root_draw_states:
-            if draw_state.closed:
-                to_discard.add(draw_state)
-
-            last_bounding_hovered = draw_state._bounding_hovered
-            new_bounding_hovered = draw_state.is_bounding_hovered()
-            hover_changed = last_bounding_hovered != new_bounding_hovered
-            draw_state._bounding_hovered = new_bounding_hovered
-            if (draw_state.width is None or draw_state.height is None or hover_changed or
-                    draw_state._bounding_hovered or draw_state._imgui_popover_open):
-                Melty.cache.invalidate(draw_state._tile_id, force=True)
-                    # draw_state.draw_internal()
-
-        for ds in to_discard:
-            cls.root_draw_states.discard(ds)
 
         if not melty.nearest_drop_target is None:
             melty.drag_drop_target = melty.nearest_drop_target
@@ -394,8 +408,17 @@ class Melty:
         cls.texture_manager.clear()
 
     @classmethod
-    def get_channel(cls):
-        return cls.depth + 3
+    def get_channel(cls, depth=None):
+        if depth is None:
+            depth = cls.depth
+
+        if depth < 0:
+            depth = 0
+
+        if depth >= cls.max_depth - 3:
+            return cls.max_depth - 1
+
+        return depth + 3
         # return max(min(cls.max_depth - 3, cls.depth), 0)
 
     @classmethod

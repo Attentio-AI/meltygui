@@ -100,7 +100,8 @@ class ZoomState(DictConversion):
          "bounding_hovered", "dlt_count", "clip_rect", "bg_rect",
          "header_height", "scrolled", "is_hovered_last", "frame_count")
 @no_save_exclude("live", 'render_time', 'content_height', 'invalid_content_height'
-                 "left", "top", 'hover_rects', 'nested_window')
+                 "left", "top", 'hover_rects', 'nested_window', 'use_cache', 'depth', 'layer',
+                 'channel')
 @deep_refresh('scroll_offset')
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
@@ -115,6 +116,10 @@ class DrawState(DictConversion):
         self.frame_count = 0
         self.corner_radius = 6
         self.nested_window = False
+        self.use_cache = False
+        self.depth = 0
+        self.layer = 0
+        self.channel = 0
 
         self._queued_windows = []
         self.drag_window_pos_x = None

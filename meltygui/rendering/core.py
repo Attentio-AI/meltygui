@@ -480,6 +480,8 @@ def render_func(*args, **o_kwargs):
 
             layer_and_depth = (Melty.active_layer * Melty.max_depth) + Melty.depth
             draw_state.z_pos = layer_and_depth
+            draw_state.depth = Melty.depth
+            draw_state.layer = Melty.active_layer
             draw_state.depth_and_layer = (Melty.depth, Melty.active_layer)
             Melty.z_pos = layer_and_depth
 
@@ -633,6 +635,7 @@ def render_func(*args, **o_kwargs):
             else:
                 clean_args = {k: kwargs[k] for k in wanted_params if k in kwargs}
             ###########################################################
+            draw_state.channel = Melty.get_channel()
 
             if not auto_resize:
                 draw_list = imgui.get_window_draw_list()
@@ -935,6 +938,7 @@ def render_func(*args, **o_kwargs):
 
         is_cachable = not is_header or melty_window
         use_cache = kwargs.get("use_cache", False) and Melty.cache.enabled
+        draw_state.use_cache = use_cache
         kwargs.pop("use_cache", None)
         collection = kwargs.get("collection", None)
         global_toggles = kwargs.get("global_toggles", {})
@@ -1046,12 +1050,9 @@ def render_func(*args, **o_kwargs):
             if kwargs.get("fill_height", False):
                 draw_state.height = snap_int(fixed_size_draw_state.height - (start_cursor[1] - rect[1]))
 
-        if not use_cache or Melty.cache.mark_start_offscreen(input_value=input_value, collection=collection,
-                                                             draw_state=draw_state, key=tile_id, name=draw_state.name,
-                                                             layer=draw_state.z_pos, caller=func):
+        if Melty.cache.mark_start_offscreen(draw_state=draw_state):
             return_value = func(**clean_args)
             imgui.set_item_allow_overlap()
-
             draw_state._imgui_scroll_y = imgui.get_scroll_y()
 
         if not use_cache:
