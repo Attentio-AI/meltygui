@@ -1343,7 +1343,6 @@ class TileCacheMasked:
 
                 for r in local_mask_rects:
                     draw_state = self.key_to_draw_state.get(r.key)
-
                     size_change = draw_state.size_change if draw_state else False
 
                     if r.key not in subtree_keys:
@@ -1475,8 +1474,8 @@ class TileCacheMasked:
                 if draw_state.width <= 0 or draw_state.height <= 0:
                     continue
                 gl.glEnable(gl.GL_SCISSOR_TEST)
-                gl.glScissor(clip_ix0, clip_iy0, clip_iw, clip_ih)
-                gl.glViewport(ix0, iy0, iw, ih)
+                # gl.glScissor(clip_ix0, clip_iy0, clip_iw, clip_ih)
+                # gl.glViewport(ix0, iy0, iw, ih)
 
                 if can_use_cached:
                     # Apply offset to correct for layer changes: (current_layer - cached_layer)

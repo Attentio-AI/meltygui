@@ -303,10 +303,10 @@ class Melty:
             imgui.pop_id()
 
             for draw_state in cls.root_draw_states_by_layer[idx]:
-                Melty.cache.mask_mark_view(draw_state.z_pos, draw_state.left,
-                                           draw_state.top, draw_state.width, draw_state.height,
-                                           f"window_mask_{draw_state.id}", 4)
-                imgui.get_window_draw_list().channels_set_current(0)
+                # Melty.cache.mask_mark_view(draw_state.z_pos, draw_state.left,
+                #                            draw_state.top, draw_state.width, draw_state.height,
+                #                            f"window_mask_{draw_state.id}", 4)
+                # imgui.get_window_draw_list().channels_set_current(0)
 
                 Melty.cache.draw_tile(draw_state)
 
