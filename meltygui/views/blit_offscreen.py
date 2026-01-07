@@ -897,7 +897,8 @@ class TileCacheMasked:
         if size:
             if has_area:
                 self.mask_mark_view(layer, draw_state.left, draw_state.top,
-                                    draw_state.width, draw_state.height, draw_state._tile_id, corner_radius)
+                                    draw_state.width, draw_state.height,
+                                    draw_state._tile_id, corner_radius)
 
 
     def mark_start_offscreen(self, draw_state) -> bool:
