@@ -425,6 +425,7 @@ void main(){
 
   if (subRank > 0 && topRank == subRank) {
       oColor = texture(uSrc, uv) * uTint;
+      oColor.a = 1.0;
   } else {
       discard;
   }
@@ -882,6 +883,7 @@ class TileCacheMasked:
 
         t = self._tiles.get(rkey)
         size = self._sizes.get(rkey, None)
+        layer = draw_state.z_pos
         has_area = size is not None and size[0] != 0 and size[1] != 0
         use_image = t and has_area and (t.size == (size[0], size[1])) and (not self._is_dirty(t))
         if use_image:
@@ -889,6 +891,13 @@ class TileCacheMasked:
             imgui.image(t.tex, snap_int(size[0]), snap_int(size[1]), uv0=(0.0, 1.0), uv1=(1.0, 0.0))
             # imgui.set_item_allow_overlap()
         imgui.pop_id()
+
+        corner_radius = getattr(draw_state, 'corner_radius', 0.0) or 0.0
+
+        if size:
+            if has_area:
+                self.mask_mark_view(layer, draw_state.left, draw_state.top,
+                                    draw_state.width, draw_state.height, draw_state._tile_id, corner_radius)
 
 
     def mark_start_offscreen(self, draw_state) -> bool:
@@ -1474,8 +1483,8 @@ class TileCacheMasked:
                 if draw_state.width <= 0 or draw_state.height <= 0:
                     continue
                 gl.glEnable(gl.GL_SCISSOR_TEST)
-                # gl.glScissor(clip_ix0, clip_iy0, clip_iw, clip_ih)
-                # gl.glViewport(ix0, iy0, iw, ih)
+                gl.glScissor(clip_ix0, clip_iy0, clip_iw, clip_ih)
+                gl.glViewport(ix0, iy0, iw, ih)
 
                 if can_use_cached:
                     # Apply offset to correct for layer changes: (current_layer - cached_layer)
