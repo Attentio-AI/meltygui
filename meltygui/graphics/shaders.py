@@ -23,7 +23,7 @@ class ShadowCast:
         'max_steps': (GLType.INT, 64),
         'blur_samples': (GLType.INT, 8),
         'depth_bias': (GLType.FLOAT, 0.00),
-        'surface_threshold': (GLType.FLOAT, 0.0),
+        'surface_threshold': (GLType.FLOAT, -30.0),
         'min_height_diff': (GLType.FLOAT, 0.000),
         'shadow_strength': (GLType.FLOAT, 0.8),
         'texture_size': (GLType.VEC2, None),

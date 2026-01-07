@@ -4,19 +4,7 @@ from typing import Any
 
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 
-def exclude(*args, **kwargs):
-    def decorator(cls):
-        if len(args) == 1 and isinstance(args[0], (list, set, tuple)):
-            from_args = args[0]
-        else:
-            from_args = set(args)
-        already_excluded = getattr(cls, '__excluded_attrs__', set())
-        merged_names = already_excluded.union(set(from_args))
-        merged_names = merged_names.union(from_args)
 
-        setattr(cls, '__excluded_attrs__', merged_names)
-        return cls
-    return decorator
 
 def defaults(*args, **kwargs):
     def decorator(cls):
@@ -196,6 +184,45 @@ def no_save(*args, **kwargs):
         return cls
 
     return decorator
+
+
+def exclude(*args, **kwargs):
+    def decorator(cls):
+        if len(args) == 1 and isinstance(args[0], (list, set, tuple)):
+            from_args = args[0]
+        else:
+            from_args = set(args)
+        already_excluded = getattr(cls, '__excluded_attrs__', set())
+        merged_names = already_excluded.union(set(from_args))
+        merged_names = merged_names.union(from_args)
+
+        setattr(cls, '__excluded_attrs__', merged_names)
+        return cls
+
+    return decorator
+
+
+def no_save_exclude(*args, **kwargs):
+    def decorator(cls):
+        if len(args) == 1 and isinstance(args[0], (list, set, tuple)):
+            from_args = args[0]
+        else:
+            from_args = set(args)
+        already_excluded = getattr(cls, '__excluded_attrs__', set())
+        merged_names = already_excluded.union(set(from_args))
+        merged_names = merged_names.union(from_args)
+        setattr(cls, '__excluded_attrs__', merged_names)
+
+        already_no_save = getattr(cls, '__no_save__', set())
+        merged_names_ns = already_no_save.union(set(from_args))
+        merged_names_ns = merged_names_ns.union(from_args)
+
+        setattr(cls, '__no_save__', merged_names_ns)
+
+        return cls
+
+    return decorator
+
 
 
 def hotkey(key):

@@ -313,7 +313,7 @@ def render_func(*args, **o_kwargs):
                     window_z_pos = len(Melty.registered_windows) + 4
 
                 if window_z_pos is not None:
-                    window_z_pos = max(window_z_pos, Melty.active_layer)
+                    window_z_pos = max(window_z_pos, Melty.active_layer + 1)
 
                 kwargs['layer'] = window_z_pos
 
@@ -328,7 +328,10 @@ def render_func(*args, **o_kwargs):
 
                 current_tint = style_manager.get_tint()
 
-                Melty.layers[layer].append((wrapper, input_value, kwargs, draw_state, current_tint))
+                cache_parent_ctx = Melty.cache.get_current_parent()
+                Melty.layers[layer].append((wrapper, input_value, kwargs,
+                                            draw_state, current_tint,
+                                            cache_parent_ctx))
                 return_value = (False, None)
                 if draw_state.id in Melty.returned_values:
                     return_value = Melty.returned_values.pop(draw_state.id)
@@ -387,6 +390,7 @@ def render_func(*args, **o_kwargs):
         draw_state.tint = kwargs.get("tint", draw_state.tint)
         is_header = "with_header" in func.__name__
         melty_window = kwargs.get("melty_window", False) and not is_header
+        melty_window_header = kwargs.get("melty_window", False)
         previous_tint = None
         if melty_window:
             previous_tint = style_manager.get_tint()
@@ -672,9 +676,13 @@ def render_func(*args, **o_kwargs):
             height = snap_int(height)
             draw_state.bg_rect = (left, top, width, height)
 
+            if melty_window:
+                Melty.root_draw_states.add(draw_state)
+
             if not is_header:
                 if kwargs.get("live", False):
-                    fa_live_icon = "\uf0e7 Continuous Rendering"
+                    draw_state.live = True
+                    fa_live_icon = "\uf0e7  Live"
                     draw_list: _DrawList = imgui.get_window_draw_list()
 
                     draw_list.add_text(draw_state.left + 5, draw_state.top - 20,
@@ -769,8 +777,6 @@ def render_func(*args, **o_kwargs):
         except Exception as e:
             print_colored_traceback(*sys.exc_info())
         finally:
-
-
             draw_state.frame_count += 1
             if Melty.imgui_crashed:
                 if return_extras:
@@ -798,6 +804,7 @@ def render_func(*args, **o_kwargs):
                 draw_state.width = 30
             if melty_window and draw_state.height < 30:
                 draw_state.height = 30
+
 
             if auto_resize:
                 if len(Melty.fixed_size_stack) == 0:
@@ -1369,7 +1376,7 @@ def apply_drag_and_drop():
         request_render()
 
 def get_resize_handle(a_ds):
-    if a_ds.left is None:
+    if a_ds.left is None or a_ds.height is None or a_ds.width is None or a_ds.top is None:
         return (0, 0, 0, 0)
     left = a_ds.left
     top = a_ds.top

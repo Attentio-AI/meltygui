@@ -840,6 +840,16 @@ class TileCacheMasked:
                 k = parent_of.get(k)
         return subtree
 
+    def get_current_parent(self):
+        return self._stack[-1] if self._stack else None
+
+    def insert_parent(self, parent):
+        self._stack.append(parent)
+
+    def remove_parent(self):
+        if self._stack:
+            self._stack.pop()
+
     def mark_uncached(self, name, input_value, collection, key: str, draw_state) -> None:
         rkey = key
         parent_ctx = self._stack[-1] if self._stack else None
@@ -867,7 +877,7 @@ class TileCacheMasked:
         self.key_to_parent_key[rkey] = parent_ctx.key if parent_ctx else None
 
     def mark_start_offscreen(self, input_value, collection, draw_state, key: str, layer: int, name="",
-                             caller=None, no_mask=False) -> bool:
+                             caller=None, no_mask=False, parent_ctx=None) -> bool:
         if not self.enabled:
             return True
 

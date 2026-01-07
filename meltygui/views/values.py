@@ -135,8 +135,6 @@ def draw_main(input_value, vis):
     #             show_add_delete=False, name="Test window manager")
 
     draw_window("test", name="Test Widget Window")
-
-
     draw_window(Melty.cache.snapshot_tex, show_bg=True, name="Snapshot Texture", live=True)
 
     changed, new_val = draw_window(0.0, layer=31, name="Test return")
@@ -145,10 +143,14 @@ def draw_main(input_value, vis):
 
     normalized_sub_mask = Melty.filter.normalize(Melty.cache._mask_tex)
     draw_window(normalized_sub_mask, show_bg=True, max_contrast=30, jet=True,
-                max_brightness=30, name="Submask Texture", live=True)
+                max_brightness=30, name="_mask_tex", live=True)
 
-    draw_window("input_val", name="Nested Outer live", view_func=test_widget, live=True)
-    draw_window("input_val", name="Nested Outer no live", view_func=test_widget, live=False)
+    normalized_sub_mask = Melty.filter.normalize(Melty.cache._full_mask_tex)
+    draw_window(normalized_sub_mask, show_bg=True, max_contrast=30, jet=True,
+                max_brightness=30, name="_full_mask_tex", live=True)
+
+    draw_window("input_val", name="Outer live", view_func=test_widget, live=True)
+    draw_window("input_val", name="Outer no live", view_func=test_widget, live=False)
 
     # draw_window(Melty.last_request_render, show_bg=True, name="Last Invalid")
 
@@ -156,8 +158,6 @@ def draw_main(input_value, vis):
 def test_widget(input_value, name, unique):
     imgui.text("Test Widget")
     draw_window("Nested Window", name=f"{name} Nested")
-
-
 
 
 @render_wrapper(wraps=render_func, use_cache=False)
@@ -253,7 +253,7 @@ def draw_melty_windows(vis):
     # Fill the entire screen
     fb_w, fb_h = map(int, imgui.get_io().display_size)
 
-    imgui.set_next_window_size(fb_w - 300, fb_h)
+    imgui.set_next_window_size(fb_w, fb_h)
     title = "main##window_melty"
     opened, _ = begin(title, closable=False, flags=flags)
 
@@ -657,6 +657,8 @@ def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, 
         if changed:
             window_draw_state.tint = new_tint
         input_value.tint = window_draw_state.tint
+    else:
+        window_draw_state.tint = (1.0, 1.0, 1.0, 1.0)
 
     imgui.same_line()
 
@@ -666,20 +668,26 @@ def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, 
     imgui.dummy(5, 20)
     imgui.same_line()
 
+    if window_draw_state.live:
+        fa_live_icon = "\uf0e7"
+        imgui.text_colored(fa_live_icon, 1.0, 0.0, 0.0)
+        imgui.same_line()
+
     if name == "Window Manager":
-        button(f"{name}", color=(0,0,0,0), saturation=1.3, width=130)[0]
+        button(f"{name}", color=(0,0,0,0),
+               saturation=1.3, width=130)[0]
         return
 
     if window_draw_state.closed:
-        if button(f"{name}", color=(0,0,0), saturation=1.3, width=draw_state.width - 60)[0]:
+        if button(f"{name}", color=(0,0,0),
+                  saturation=1.3, width=draw_state.width - 60)[0]:
             print("Opening window")
             window_draw_state.closed = False
     else:
-        if button(f"{name}", saturation=1.3, width=draw_state.width - 60)[0]:
+        if button(f"{name}", saturation=1.3,
+                  width=draw_state.width - 60)[0]:
             print("Closing window")
             window_draw_state.closed = True
-
-
 
     imgui.same_line()
 
@@ -699,12 +707,6 @@ def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, 
         imgui.text(json_str)
         imgui.end_tooltip()
     # debug text
-
-
-
-
-
-
 
 def draw(vis):
     draw_melty_windows(vis)

@@ -6,7 +6,7 @@ import libcst as cst
 
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import no_save, exclude, deep_refresh
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import no_save, exclude, deep_refresh, no_save_exclude
 
 
 # class decoration
@@ -81,14 +81,26 @@ class ZoomState(DictConversion):
         self.hue = 0.0
         self.saturation = 1.0
 
-@no_save("mouse_btn_state", "mouse_up", "mouse_down", "unique", "search_active", "content_height", "shadow", "size_change",
-         "drag_released","clicked", "dragged", "dragged", "name", "expanded_height", "clipped", "fully_clipped", "left", "top",
-         "render_time", "overhead_time", "scroll_visible", "depth_and_layer", "imgui_is_toggled_open", "z_pos", "hotkey_receiver", "use_child", "cst", "search_text", "bg_color",
-         "is_active", "clip_rect", "wrapped_top", "current_tint", "wrapped_left", "min_width", "min_height", "is_focused", "drag_window_pos_x", "drag_window_pos_y", "drag_mode", "is_hovered_last",
-         "z_pos", "bg_shown", "draw_window_pos_x", "misc_used", "draw_window_pos_y", "drag_delta", "screen_pos", "imgui_is_item_activated", "frame_count")
-@exclude("render_time", "current_tint", "overhead_time", "premature_break", "clip_rect", "_input_value", "flow_spacing", 'width', "height", "left", "top", "size_change",
-         "hovered", "wrapped_top", "params", "scroll_visible", "depth_and_layer", "premature_break", "wrapped_left", "_did_use_cache", "content_height", "content_region", "value_hash", "drag_window", "top", "left", "content_region", "did_render",
-         "bounding_hovered", "dlt_count", "clip_rect", "bg_rect", "header_height", "scrolled", "is_hovered_last", "frame_count")
+@no_save("mouse_btn_state", "mouse_up", "mouse_down", "unique", "search_active",
+        "shadow", "size_change", "drag_released","clicked", "dragged",
+         "dragged", "name", "expanded_height", "clipped", "fully_clipped",
+         "overhead_time", "scroll_visible", "depth_and_layer", "imgui_is_toggled_open",
+         "z_pos", "hotkey_receiver", "use_child", "cst", "search_text", "bg_color",
+         "is_active", "clip_rect", "wrapped_top", "current_tint", "wrapped_left",
+         "min_width", "min_height", "is_focused", "drag_window_pos_x", "drag_window_pos_y",
+         "drag_mode", "is_hovered_last", "z_pos", "bg_shown", "draw_window_pos_x",
+         "misc_used", "draw_window_pos_y", "drag_delta", "screen_pos", "hover_rects",
+         "imgui_is_item_activated", "frame_count")
+@exclude("current_tint", "overhead_time", "premature_break",
+         "clip_rect", "_input_value", "flow_spacing",
+         'width', "height", "size_change",
+         "hovered", "wrapped_top", "params", "scroll_visible", "depth_and_layer",
+         "premature_break", "wrapped_left", "_did_use_cache", "hover_rects",
+         "content_region", "value_hash", "drag_window", "content_region", "did_render",
+         "bounding_hovered", "dlt_count", "clip_rect", "bg_rect",
+         "header_height", "scrolled", "is_hovered_last", "frame_count")
+@no_save_exclude("live", 'render_time', 'content_height', 'invalid_content_height'
+                 "left", "top", 'hover_rects')
 @deep_refresh('scroll_offset')
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
@@ -125,6 +137,7 @@ class DrawState(DictConversion):
         self.fully_clipped = True
         self.scroll_visible = False
         self._unmanaged_window = False
+        self.live = False
 
         self.shadow = True
         self.cst = None
@@ -298,9 +311,7 @@ class DrawState(DictConversion):
             tint = getattr(self._input_value, 'tint', None)
 
         draw_list = imgui.get_overlay_draw_list()
-        if rect is None:
-            rect = self.get_rect()
-        draw_list.add_rect(rect[0], rect[1], rect[2], rect[3],
+        draw_list.add_rect(self.left, self.top, self.left + self.width, self.top + self.height,
                            imgui.get_color_u32_rgba(*tint[:3], 1.0) if tint is not None else
                            imgui.get_color_u32_rgba(1, 1, 1, 1),
                            rounding=rounding, thickness=1)
