@@ -178,8 +178,6 @@ class Melty:
         event_keys_str = [str(k) for k in event_keys]
         concat_names = "_".join(event_keys_str)
 
-
-
         cls.on_scroll_buffer.append("scroll_y_changed" in cls.events_by_type and "view_scroll" in concat_names)
         cls.on_scroll = any(cls.on_scroll_buffer)
 
@@ -258,13 +256,14 @@ class Melty:
                 Melty.channels_split = True
 
             imgui.push_id(f"melty_layer_{idx}")
-            Melty.depth = 0
 
             for view in layer:
                 if view is not None:
                     draw_state = view[3]
                     layer_tint = view[4]
                     parent_ctx = view[5]
+                    current_z_pos = view[6]
+                    Melty.depth = current_z_pos
 
                     cls.cache.insert_parent(parent_ctx)
                     style_manager = cls.global_attrs['style_manager']

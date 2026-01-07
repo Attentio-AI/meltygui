@@ -299,6 +299,8 @@ def render_func(*args, **o_kwargs):
         original_height_b = draw_state.height
         style_manager = Melty.global_attrs.get("style_manager", None)
 
+
+
         if active_layer is None:
             if (melty.dragged_item is not None and melty.drag_in_progress and
                     draw_state is not None and melty.dragged_item.id == draw_state.id):
@@ -331,7 +333,7 @@ def render_func(*args, **o_kwargs):
                 cache_parent_ctx = Melty.cache.get_current_parent()
                 Melty.layers[layer].append((wrapper, input_value, kwargs,
                                             draw_state, current_tint,
-                                            cache_parent_ctx))
+                                            cache_parent_ctx, min(Melty.z_pos, 4)))
                 return_value = (False, None)
                 if draw_state.id in Melty.returned_values:
                     return_value = Melty.returned_values.pop(draw_state.id)
@@ -499,7 +501,8 @@ def render_func(*args, **o_kwargs):
 
             if melty_window:
                 # melty_hovered = draw_state.on_action("on_hover", view_id="window_hover", priority_delta=1)
-                Melty.melty_window_stack.append((draw_state.window_pos, (draw_state.width, draw_state.height), unique, False, draw_state))
+                Melty.melty_window_stack.append((draw_state.window_pos, (draw_state.width, draw_state.height),
+                                                 unique, False, draw_state))
                 if draw_state.window_pos is None and draw_state.width is not None:
                     draw_state.window_pos = Melty.init_window_cursor
 
@@ -675,8 +678,7 @@ def render_func(*args, **o_kwargs):
             width = snap_int(width)
             height = snap_int(height)
             draw_state.bg_rect = (left, top, width, height)
-
-            if melty_window:
+            if melty_window and active_layer is not None and Melty.depth >= 3:
                 Melty.root_draw_states.add(draw_state)
 
             if not is_header:

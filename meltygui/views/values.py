@@ -94,7 +94,7 @@ def draw_window(input_value, view_func=None, style_manager=None, tint=None, uniq
         draw_list: _DrawList = imgui.get_window_draw_list()
         draw_list.add_text(icon_x - 40, icon_y - 1,
                            imgui.get_color_u32_rgba(1, 1, 1, 0.3),
-                           f"{draw_state.z_pos}")
+                           f"{Melty.depth}")
 
     meta = kwargs.get("meta", None)
     if meta is None:
@@ -118,7 +118,7 @@ def draw_window(input_value, view_func=None, style_manager=None, tint=None, uniq
     return return_val
 
 
-@render_func(use_cache=True)
+@render_func(use_cache=False)
 def draw_main(input_value, vis):
     global test_obj
     draw_window(Melty.profiles_results, show_bg=True, name="Profile Results")
