@@ -1450,9 +1450,9 @@ class TileCacheMasked:
             gl.glClearColor(0, 0, 0, 0.0)
             gl.glClear(gl.GL_COLOR_BUFFER_BIT)
 
-            gl.glEnable(gl.GL_BLEND)
-            gl.glBlendEquation(gl.GL_MAX)
-            gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
+            gl.glDisable(gl.GL_BLEND)
+            # gl.glBlendEquation(gl.GL_MAX)
+            # gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
 
             for r in local_mask_rects:
                 draw_state = self.key_to_draw_state.get(r.key)
