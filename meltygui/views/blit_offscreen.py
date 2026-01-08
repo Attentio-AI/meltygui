@@ -878,21 +878,27 @@ class TileCacheMasked:
         self.key_to_parent_key[rkey] = parent_ctx.key if parent_ctx else None
 
     def draw_tile(self, draw_state):
-        imgui.push_id(f"{draw_state._tile_id}_cached")
+
+        imgui.push_id(f"{draw_state._tile_id}")
         rkey = draw_state._tile_id
 
         t = self._tiles.get(rkey)
         size = self._sizes.get(rkey, None)
         layer = draw_state.z_pos
         has_area = size is not None and size[0] != 0 and size[1] != 0
+
+
+
         use_image = t and has_area and (t.size == (size[0], size[1])) and (not self._is_dirty(t))
         if use_image:
+
             imgui.set_cursor_screen_pos((draw_state.left, draw_state.top))
             imgui.image(t.tex, snap_int(size[0]), snap_int(size[1]), uv0=(0.0, 1.0), uv1=(1.0, 0.0))
-            # imgui.set_item_allow_overlap()
+            imgui.set_item_allow_overlap()
         imgui.pop_id()
 
         corner_radius = getattr(draw_state, 'corner_radius', 0.0) or 0.0
+
 
         if size:
             if has_area:

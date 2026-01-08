@@ -118,7 +118,7 @@ def draw_window(input_value, view_func=None, style_manager=None, tint=None, uniq
     return return_val
 
 
-@render_func(use_cache=False)
+@render_func(use_cache=True)
 def draw_main(input_value, vis):
     global test_obj
     draw_window(Melty.profiles_results, show_bg=True, name="Profile Results")
