@@ -69,9 +69,6 @@ def draw_window(input_value, view_func=None, style_manager=None, tint=None, uniq
         #     imgui.set_cursor_screen_pos(cursor_pos)
         #     imgui.set_item_allow_overlap()
 
-
-
-
     if draw_state.width is not None and draw_state.height is not None and draw_state.expanded:
         loading_icon_0 = "\uf00d"
         loading_icon_1 = "\uf067"

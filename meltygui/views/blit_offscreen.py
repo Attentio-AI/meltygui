@@ -883,10 +883,9 @@ class TileCacheMasked:
         rkey = draw_state._tile_id
 
         t = self._tiles.get(rkey)
-        size = self._sizes.get(rkey, None)
+        size = (draw_state.width, draw_state.height)
         layer = draw_state.z_pos
         has_area = size is not None and size[0] != 0 and size[1] != 0
-
 
 
         use_image = t and has_area and (t.size == (size[0], size[1])) and (not self._is_dirty(t))
@@ -898,13 +897,10 @@ class TileCacheMasked:
         imgui.pop_id()
 
         corner_radius = getattr(draw_state, 'corner_radius', 0.0) or 0.0
-
-
-        if size:
-            if has_area:
-                self.mask_mark_view(layer, draw_state.left, draw_state.top,
-                                    draw_state.width, draw_state.height,
-                                    draw_state._tile_id, corner_radius)
+        if has_area:
+            self.mask_mark_view(layer, draw_state.left, draw_state.top,
+                                draw_state.width, draw_state.height,
+                                draw_state._tile_id, corner_radius)
 
 
     def mark_start_offscreen(self, draw_state) -> bool:
@@ -929,7 +925,7 @@ class TileCacheMasked:
 
         parent_ctx = self._stack[-1] if self._stack else None
         rkey = self._resolve_key(key)
-        size = self._sizes.get(rkey, None)
+        size = (draw_state.width, draw_state.height)
 
         if not draw_state.auto_resize and draw_state.width is not None and draw_state.height is not None:
             size = snap_int(draw_state.width), snap_int(draw_state.height)
@@ -1404,8 +1400,8 @@ class TileCacheMasked:
                         draw_state = self.key_to_draw_state.get(r.key)
                         depth, active_layer = draw_state.depth_and_layer
 
-                        divisor = max(1.0, depth - 10.0)
-                        layer_and_depth = active_layer * Melty.max_depth + (depth * (10.0 / (divisor)))
+                        divisor = max(1.0, depth - 13.0)
+                        layer_and_depth = active_layer * Melty.max_depth + (depth * (15.0 / (divisor)))
                         rank_norm = float(layer_and_depth) / 65535.5
 
                         gl.glViewport(ix0, iy0, iw, ih)
@@ -1450,11 +1446,9 @@ class TileCacheMasked:
             gl.glClearColor(0, 0, 0, 0.0)
             gl.glClear(gl.GL_COLOR_BUFFER_BIT)
 
-            gl.glDisable(gl.GL_BLEND)
-            # gl.glBlendEquation(gl.GL_MAX)
-            # gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
-
             for r in local_mask_rects:
+                gl.glDisable(gl.GL_BLEND)
+
                 draw_state = self.key_to_draw_state.get(r.key)
                 if draw_state is None:
                     continue
@@ -1473,7 +1467,13 @@ class TileCacheMasked:
                 if tile_ctx is not None and not tile_ctx.draw_state.shadow:
                     continue
 
+                if size_change:
+                    gl.glEnable(gl.GL_BLEND)
+                    gl.glBlendEquation(gl.GL_MAX)
+                    gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
+
                 if can_use_cached or size_change:
+
                     if tile_ctx and tile_ctx.size:
                         tx, ty = draw_state.left, draw_state.top
                         tw, th = draw_state.width, draw_state.height
@@ -1505,8 +1505,8 @@ class TileCacheMasked:
                         gl.glViewport(clip_ix0, clip_iy0, clip_iw, clip_ih)
 
                         depth, active_layer = draw_state.depth_and_layer
-                        divisor = max(1.0, depth - 10.0)
-                        layer_and_depth = active_layer * Melty.max_depth + (depth * (10.0 / (divisor)))
+                        divisor = max(1.0, depth - 13.0)
+                        layer_and_depth = active_layer * Melty.max_depth + (depth * (15.0 / (divisor)))
                         rank_norm = float(layer_and_depth) / 65535.5
 
                         if r.corner_radius > 0:

@@ -23,9 +23,9 @@ class ShadowCast:
         'max_steps': (GLType.INT, 64),
         'blur_samples': (GLType.INT, 8),
         'depth_bias': (GLType.FLOAT, 0.00),
-        'surface_threshold': (GLType.FLOAT, -30.0),
+        'surface_threshold': (GLType.FLOAT, -10.0),
         'min_height_diff': (GLType.FLOAT, 0.000),
-        'shadow_strength': (GLType.FLOAT, 0.8),
+        'shadow_strength': (GLType.FLOAT, 0.55),
         'texture_size': (GLType.VEC2, None),
     }
     fragment_code = """
@@ -84,7 +84,7 @@ void main() {
                 float scene_depth = texture(u_texture, sample_pos).r;
 
                 if (scene_depth >= test_caster_depth - depth_bias) {
-                    hits += (0.4 - height_diff * 2.0);
+                    hits += (0.7 - height_diff * 7.0);
                 }
                 total_samples += 1.0;
             }

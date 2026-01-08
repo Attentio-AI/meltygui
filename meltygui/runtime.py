@@ -269,6 +269,22 @@ class Melty:
                 Melty.channels_split = True
 
             imgui.push_id(f"melty_layer_{idx}")
+            for draw_state in cls.root_draw_states_by_layer[idx]:
+                # Melty.cache.mask_mark_view(draw_state.z_pos, draw_state.left,
+                #                            draw_state.top, draw_state.width, draw_state.height,
+                #                            f"window_mask_{draw_state.id}", 4)
+                imgui.get_window_draw_list().channels_set_current(0)
+
+                Melty.cache.draw_tile(draw_state)
+
+                last_bounding_hovered = draw_state._bounding_hovered
+                new_bounding_hovered = draw_state.is_bounding_hovered()
+                hover_changed = last_bounding_hovered != new_bounding_hovered
+                draw_state._bounding_hovered = new_bounding_hovered
+                if (draw_state.width is None or draw_state.height is None or hover_changed or
+                        draw_state._bounding_hovered or draw_state._imgui_popover_open):
+                    Melty.cache.invalidate(draw_state._tile_id, force=True)
+                    # draw_state.draw_rect()
 
             for view in layer:
                 if view is not None:
@@ -302,23 +318,6 @@ class Melty:
                     cls.cache.remove_parent()
             imgui.pop_id()
 
-            for draw_state in cls.root_draw_states_by_layer[idx]:
-                # Melty.cache.mask_mark_view(draw_state.z_pos, draw_state.left,
-                #                            draw_state.top, draw_state.width, draw_state.height,
-                #                            f"window_mask_{draw_state.id}", 4)
-                # imgui.get_window_draw_list().channels_set_current(0)
-
-                Melty.cache.draw_tile(draw_state)
-
-                last_bounding_hovered = draw_state._bounding_hovered
-                new_bounding_hovered = draw_state.is_bounding_hovered()
-                hover_changed = last_bounding_hovered != new_bounding_hovered
-                draw_state._bounding_hovered = new_bounding_hovered
-                if (draw_state.width is None or draw_state.height is None or hover_changed or
-                        draw_state._bounding_hovered or draw_state._imgui_popover_open):
-                    Melty.cache.invalidate(draw_state._tile_id, force=True)
-                    # draw_state.draw_rect()
-
 
 
             Melty.depth = 0
@@ -327,6 +326,8 @@ class Melty:
                 imgui.get_window_draw_list().channels_set_current(0)
                 imgui.get_window_draw_list().channels_merge()
                 Melty.channels_split = False
+
+
 
         cls.layers = []
 
