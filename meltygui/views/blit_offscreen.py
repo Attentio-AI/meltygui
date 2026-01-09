@@ -971,7 +971,7 @@ class TileCacheMasked:
             use_image = t and has_area and (t.size == (size[0], size[1])) and (not self._is_dirty(t))
 
             if use_image:
-                imgui.set_cursor_screen_pos((draw_state.left, draw_state.top))
+                # imgui.set_cursor_screen_pos((draw_state.left, draw_state.top))
                 imgui.image(t.tex, snap_int(size[0]), snap_int(size[1]), uv0=(0.0, 1.0), uv1=(1.0, 0.0))
                 imgui.set_item_allow_overlap()
                 self._stack.append(

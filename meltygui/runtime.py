@@ -293,6 +293,7 @@ class Melty:
                     layer_tint = view[4]
                     parent_ctx = view[5]
                     current_z_pos = view[6]
+                    cursor_pos = view[7]
                     Melty.depth = current_z_pos
 
                     cls.cache.insert_parent(parent_ctx)
@@ -308,6 +309,8 @@ class Melty:
                     fill_original = kwargs.get("start_pos", None) is not None
                     if fill_original:
                         imgui.set_cursor_screen_pos(kwargs["start_pos"])
+
+                    imgui.set_cursor_screen_pos(cursor_pos)
 
                     return_val = view_func(input_value, **kwargs)
                     if return_val is not None:

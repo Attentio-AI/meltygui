@@ -299,8 +299,6 @@ def render_func(*args, **o_kwargs):
         original_height_b = draw_state.height
         style_manager = Melty.global_attrs.get("style_manager", None)
 
-
-
         if active_layer is None:
             if (melty.dragged_item is not None and melty.drag_in_progress and
                     draw_state is not None and melty.dragged_item.id == draw_state.id):
@@ -333,7 +331,8 @@ def render_func(*args, **o_kwargs):
                 cache_parent_ctx = Melty.cache.get_current_parent()
                 Melty.layers[layer].append((wrapper, input_value, kwargs,
                                             draw_state, current_tint,
-                                            cache_parent_ctx, min(Melty.z_pos, 4)))
+                                            cache_parent_ctx, min(Melty.z_pos, 4),
+                                           imgui.get_cursor_screen_pos()))
                 return_value = (False, None)
                 if draw_state.id in Melty.returned_values:
                     return_value = Melty.returned_values.pop(draw_state.id)
@@ -537,6 +536,7 @@ def render_func(*args, **o_kwargs):
             if draw_state.height is not None and draw_state.min_height is not None:
                 draw_state.height = max(draw_state.height, draw_state.min_height)
 
+            cursor_pos = imgui.get_cursor_screen_pos()
             if draw_state.window_pos is not None and melty_window:
                 on_drag = draw_state.on_action("left_mouse_drag", "window_move")
 
@@ -551,8 +551,8 @@ def render_func(*args, **o_kwargs):
                 else:
                     draw_state._initial_window_pos = None
 
-                imgui.set_cursor_screen_pos((snap_int(draw_state.window_pos[0]),
-                                             snap_int(draw_state.window_pos[1])))
+                imgui.set_cursor_screen_pos((snap_int(cursor_pos[0] + draw_state.window_pos[0]),
+                                             snap_int(cursor_pos[1] + draw_state.window_pos[1])))
 
             kwargs['melty_window'] = False
             Melty.size_stack.append((draw_state.width, draw_state.height))
@@ -681,8 +681,14 @@ def render_func(*args, **o_kwargs):
             width = snap_int(width)
             height = snap_int(height)
             draw_state.bg_rect = (left, top, width, height)
+            parent_ds = draw_state._parent
             if melty_window and active_layer is not None and Melty.depth >= 3:
                 Melty.root_draw_states.add(draw_state)
+                if parent_ds is not None:
+                    parent_ds.nested_window = True
+            else:
+                if parent_ds is not None:
+                    parent_ds.nested_window = False
 
             if not is_header:
                 if kwargs.get("live", False):
@@ -848,12 +854,8 @@ def render_func(*args, **o_kwargs):
             d_height = draw_state.height
             scrollbar_width = 5.0
 
-
             # elif not imgui.is_mouse_down(0):
             #     draw_state.scroll_offset = (0, 0)
-
-
-
             ########################################### ACTIONS #######################
 
             draw_state._hovered = False
@@ -972,7 +974,7 @@ def render_func(*args, **o_kwargs):
         draw_state._bounding_hovered = new_bounding_hovered
         if (draw_state.width is None or draw_state.height is None or hover_changed or
                 draw_state._bounding_hovered or draw_state._imgui_popover_open):
-            if not Melty.on_drag:
+            if not Melty.on_drag or draw_state.nested_window:
                 Melty.cache.invalidate(tile_id, force=True)
 
         if use_cache:

@@ -52,10 +52,6 @@ from src.shader_library.shader_manager.texture_manager import PendingTexture
 def draw_window(input_value, view_func=None, style_manager=None, tint=None, unique=0, **kwargs):
     window_name = kwargs.get('name', 'Managed Window')
     draw_state = kwargs.get('draw_state', None)
-    cursor_pos = imgui.get_cursor_screen_pos()
-
-    if draw_state.width > 0 and draw_state.height > 0:
-        imgui.set_cursor_screen_pos(cursor_pos)
 
         # if draw_state.expanded:
         #     if Melty.channels_split:
@@ -91,7 +87,7 @@ def draw_window(input_value, view_func=None, style_manager=None, tint=None, uniq
         draw_list: _DrawList = imgui.get_window_draw_list()
         draw_list.add_text(icon_x - 40, icon_y - 1,
                            imgui.get_color_u32_rgba(1, 1, 1, 0.3),
-                           f"{Melty.depth}")
+                           f"{draw_state.nested_window}")
 
     meta = kwargs.get("meta", None)
     if meta is None:
@@ -689,11 +685,13 @@ def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, 
     imgui.same_line()
 
     target_icon = ""  # Target icon (FontAwesome Unicode)
-
     if button(target_icon, width=20, color=(1,0,0), saturation=0.7)[0]:
         this_window_right = draw_state.left + draw_state.width
-        window_draw_state.window_pos = (this_window_right + 10, draw_state.top)
+        from_zero_x = window_draw_state.left - window_draw_state.window_pos[0]
+        from_zero_y = window_draw_state.top - window_draw_state.window_pos[1]
+        window_draw_state.window_pos = (this_window_right + 10 - from_zero_x, draw_state.top - from_zero_y)
         Melty.move_window_to_front(window_draw_state)
+        Melty.cache.invalidate_up_by_obj(input_value)
 
     if imgui.is_item_hovered():
         imgui.begin_tooltip()
