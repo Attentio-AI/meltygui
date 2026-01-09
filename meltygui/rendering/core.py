@@ -469,12 +469,18 @@ def render_func(*args, **o_kwargs):
                         wanted_type = None
                     set_default(param, None, wanted_type)
 
-
-
             inc_depth = "draw_state" in wanted_params or is_root
             inc_depth = True
 
             Melty.unique_stack.append(computed_unique)
+
+            last_draw_state = Melty.last_draw_state[Melty.depth]
+            if last_draw_state is not None:
+                draw_state.previous = last_draw_state
+                last_draw_state.next = draw_state
+                draw_state.index_in_parent = last_draw_state.index_in_parent + 1
+            Melty.last_draw_state[Melty.depth] = draw_state
+
             Melty.depth = Melty.depth + 1
 
             layer_and_depth = (Melty.active_layer * Melty.max_depth) + Melty.depth
@@ -726,11 +732,68 @@ def render_func(*args, **o_kwargs):
 
                         Melty.cache.invalidate(tile_id)
                         request_render()
+
                     elif click.modifiers == glfw.MOD_SHIFT and click.action == "down":
                         if draw_state in Melty.selected:
                             Melty.selected.remove(draw_state)
+                            adding = False
                         else:
                             Melty.selected.add(draw_state)
+                            adding = True
+
+                        if Melty.last_selected is not None:
+                            # Check if both have the same parent
+                            last_parent = Melty.last_selected._collection
+                            this_parent = draw_state._collection
+
+                            if id(last_parent) == id(this_parent) and last_parent is not None:
+                                it_count = 0
+                                max_iter = 1000
+                                seen = set()
+                                items_to_select = []
+
+                                ds_index = draw_state.index_in_parent
+                                last_index = Melty.last_selected.index_in_parent
+                                go_back = ds_index > last_index
+                                if go_back:
+                                    next_ds = draw_state.previous
+                                else:
+                                    next_ds = draw_state.next
+
+                                while (id(next_ds) not in seen and
+                                       id(next_ds) != id(Melty.last_selected) and
+                                       next_ds is not None
+                                       and it_count < max_iter):
+                                    seen.add(id(next_ds))
+                                    items_to_select.append(next_ds)
+
+                                    if go_back:
+                                        next_ds = next_ds.previous
+                                    else:
+                                        next_ds = next_ds.next
+                                    it_count += 1
+
+                                if id(next_ds) == id(Melty.last_selected):
+                                    for item in items_to_select:
+                                        if adding:
+                                            if item not in Melty.selected:
+                                                Melty.selected.add(item)
+                                        else:
+                                            if item in Melty.selected:
+                                                Melty.selected.remove(item)
+
+                                        Melty.cache.invalidate(item._tile_id)
+
+                                Melty.cache.invalidate(draw_state._parent._tile_id)
+                                Melty.cache.invalidate(Melty.last_selected._parent._tile_id)
+
+                                request_render()
+
+                                print("Parents match")
+                            else:
+                                print("Parents do not match")
+
+                        Melty.last_selected = draw_state
                         request_render()
 
             selected = False
@@ -863,6 +926,7 @@ def render_func(*args, **o_kwargs):
 
             if inc_depth:
                 Melty.depth = Melty.depth - 1
+
                 Melty.unique_stack.pop()
 
             Melty.input_value_stack.pop()

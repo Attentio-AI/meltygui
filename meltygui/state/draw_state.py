@@ -101,7 +101,7 @@ class ZoomState(DictConversion):
          "header_height", "scrolled", "is_hovered_last", "frame_count")
 @no_save_exclude("live", 'render_time', 'content_height', 'invalid_content_height'
                  "left", "top", 'hover_rects', 'nested_window', 'use_cache', 'depth', 'layer',
-                 'channel')
+                 'channel', 'next', 'previous', 'index_in_parent')
 @deep_refresh('scroll_offset')
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
@@ -110,6 +110,9 @@ class DrawState(DictConversion):
         super().__init__()
         self._children = []
         self._parent = None
+        self.next = None
+        self.previous = None
+        self.index_in_parent = 0
         self.misc = {}
         self.misc_used = set()
         self.closed = False
@@ -382,7 +385,7 @@ class DrawState(DictConversion):
             else:
                 if self.top is None or self.left is None or self.width is None or self.height is None:
                     return False
-                rect = (self.left, self.top, self.width, self.height)
+                rect = (self.left, self.top - 2, self.width, self.height + 2)
                 if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
                     return True
         else:

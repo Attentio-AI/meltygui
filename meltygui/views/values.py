@@ -1699,6 +1699,12 @@ def draw_collection(input_value, draw_state, depth, style_manager,
     nested_collection = True
     # Melty.nested_collections += 1
 
+    previous_draw_state = None
+
+    for i in range(Melty.depth + 2, Melty.max_depth - 1):
+
+        Melty.last_draw_state[i] = None
+
     for idx, key in enumerate(keys):
         if isinstance(collection, dict) and key not in collection:
             continue
@@ -1804,7 +1810,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
             item_changed, out_val, extras = draw_any(item, return_extras=True, indent_size=10, key=key,
                                                      meta=item_meta, trigger_collapse=trigger_collapse,
                              trigger_expand=trigger_expand, y_offset=y_offset, on_collapse=on_collapse, on_expand=on_expand,
-                             collection=ordered_driver, name=key_str, display_name=display_name,
+                             collection=input_value, name=key_str, display_name=display_name,
                                              parent_show_add_delete=show_add_delete,
                                              show_add_delete=show_add_delete)
             imgui.dummy(1, 1)
@@ -1813,6 +1819,13 @@ def draw_collection(input_value, draw_state, depth, style_manager,
             if 'draw_state' in extras:
                 children_draw_states.append(extras['draw_state'])
                 extras['draw_state']._collection_draw_state = draw_state
+
+                # if draw_state is not None:
+                #     draw_state.previous = previous_draw_state
+                #
+                # if previous_draw_state is not None:
+                #     previous_draw_state.next = draw_state
+                #     previous_draw_state = draw_state
 
             view_bottom = cursor_pos[1]
             if (view_bottom - 500 > parent_bottom and Melty.frame_count > 2):

@@ -24,6 +24,7 @@ class Melty:
 
     draw_state_stack = []
 
+
     root_draw_states = set()
     root_draw_states_by_layer = defaultdict(lambda: set())
 
@@ -38,6 +39,8 @@ class Melty:
     drag_layer = 31
     layers = []
     active_layer = 0
+
+    last_draw_state = [None] * max_layer
 
     windows = []
     collection_stack = []
@@ -162,6 +165,8 @@ class Melty:
         Melty.imgui_popup_open = is_popup_open
 
         cls.backend.pump()
+
+        cls.last_draw_state = [None] * cls.max_layer
 
         cls.imgui_active = cls.imgui_active_pending
         cls.imgui_active_pending = False
