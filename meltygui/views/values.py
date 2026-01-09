@@ -1701,11 +1701,11 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
     previous_draw_state = None
 
-    for i in range(Melty.depth + 2, Melty.max_depth - 1):
-
-        Melty.last_draw_state[i] = None
+    Melty.collection_index_stack.append(0)
+    this_collection = len(Melty.collection_index_stack) - 1
 
     for idx, key in enumerate(keys):
+        Melty.collection_index_stack[this_collection] = idx
         if isinstance(collection, dict) and key not in collection:
             continue
 
@@ -1865,6 +1865,9 @@ def draw_collection(input_value, draw_state, depth, style_manager,
             if prev_tint is not None:
                 style_manager.set_imgui_tint(*prev_tint)
 
+
+
+    Melty.collection_index_stack.pop()
     end_pos = imgui.get_cursor_pos()[1]
     content_height = (end_pos - start_cursor) + draw_state.header_height
 

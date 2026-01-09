@@ -474,12 +474,14 @@ def render_func(*args, **o_kwargs):
 
             Melty.unique_stack.append(computed_unique)
 
-            last_draw_state = Melty.last_draw_state[Melty.depth]
+            last_draw_state = Melty.last_draw_state[Melty.depth][0]
             if last_draw_state is not None:
-                draw_state.previous = last_draw_state
-                last_draw_state.next = draw_state
-                draw_state.index_in_parent = last_draw_state.index_in_parent + 1
-            Melty.last_draw_state[Melty.depth] = draw_state
+                new_index_in_parent = Melty.collection_index_stack[-1] if len(Melty.collection_index_stack) > 0 else 0
+                if draw_state.index_in_parent != new_index_in_parent:
+                    draw_state.previous = last_draw_state
+                    last_draw_state.next = draw_state
+                    draw_state.index_in_parent = new_index_in_parent
+            Melty.last_draw_state[Melty.depth] = (draw_state, kwargs.get("collection", None))
 
             Melty.depth = Melty.depth + 1
 
@@ -746,52 +748,47 @@ def render_func(*args, **o_kwargs):
                             last_parent = Melty.last_selected._collection
                             this_parent = draw_state._collection
 
-                            if id(last_parent) == id(this_parent) and last_parent is not None:
-                                it_count = 0
-                                max_iter = 1000
-                                seen = set()
-                                items_to_select = []
+                            it_count = 0
+                            max_iter = 1000
+                            seen = set()
+                            items_to_select = []
 
-                                ds_index = draw_state.index_in_parent
-                                last_index = Melty.last_selected.index_in_parent
-                                go_back = ds_index > last_index
-                                if go_back:
-                                    next_ds = draw_state.previous
-                                else:
-                                    next_ds = draw_state.next
-
-                                while (id(next_ds) not in seen and
-                                       id(next_ds) != id(Melty.last_selected) and
-                                       next_ds is not None
-                                       and it_count < max_iter):
-                                    seen.add(id(next_ds))
-                                    items_to_select.append(next_ds)
-
-                                    if go_back:
-                                        next_ds = next_ds.previous
-                                    else:
-                                        next_ds = next_ds.next
-                                    it_count += 1
-
-                                if id(next_ds) == id(Melty.last_selected):
-                                    for item in items_to_select:
-                                        if adding:
-                                            if item not in Melty.selected:
-                                                Melty.selected.add(item)
-                                        else:
-                                            if item in Melty.selected:
-                                                Melty.selected.remove(item)
-
-                                        Melty.cache.invalidate(item._tile_id)
-
-                                Melty.cache.invalidate(draw_state._parent._tile_id)
-                                Melty.cache.invalidate(Melty.last_selected._parent._tile_id)
-
-                                request_render()
-
-                                print("Parents match")
+                            ds_index = draw_state.index_in_parent
+                            last_index = Melty.last_selected.index_in_parent
+                            go_back = ds_index > last_index
+                            if go_back:
+                                next_ds = draw_state.previous
                             else:
-                                print("Parents do not match")
+                                next_ds = draw_state.next
+
+                            while (id(next_ds) not in seen and
+                                   id(next_ds) != id(Melty.last_selected) and
+                                   next_ds is not None
+                                   and it_count < max_iter):
+                                seen.add(id(next_ds))
+                                items_to_select.append(next_ds)
+
+                                if go_back:
+                                    next_ds = next_ds.previous
+                                else:
+                                    next_ds = next_ds.next
+                                it_count += 1
+
+                            if id(next_ds) == id(Melty.last_selected):
+                                for item in items_to_select:
+                                    if adding:
+                                        if item not in Melty.selected:
+                                            Melty.selected.add(item)
+                                    else:
+                                        if item in Melty.selected:
+                                            Melty.selected.remove(item)
+
+                                    Melty.cache.invalidate(item._tile_id)
+
+                            Melty.cache.invalidate(draw_state._parent._tile_id)
+                            Melty.cache.invalidate(Melty.last_selected._parent._tile_id)
+
+                            request_render()
 
                         Melty.last_selected = draw_state
                         request_render()

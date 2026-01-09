@@ -40,7 +40,8 @@ class Melty:
     layers = []
     active_layer = 0
 
-    last_draw_state = [None] * max_layer
+    last_draw_state = [(None, None)] * max_layer
+    collection_index_stack = []
 
     windows = []
     collection_stack = []
@@ -166,7 +167,7 @@ class Melty:
 
         cls.backend.pump()
 
-        cls.last_draw_state = [None] * cls.max_layer
+        cls.last_draw_state = [(None, None)] * cls.max_layer
 
         cls.imgui_active = cls.imgui_active_pending
         cls.imgui_active_pending = False
