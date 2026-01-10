@@ -232,13 +232,29 @@ def render_func(*args, **o_kwargs):
             unique = ui_id(datatype=type(input_value), suffix=name + unique_name + str(key) + func.__name__)
             suffix = f"{unique_name}_{func.__name__}_{unique}_{key}"
         else:
-            unique = ui_id(datatype=type(input_value), suffix=suffix + unique_name + name + root_window_name + str(key) + func.__name__,
-                           idx=index)
+            unique = ui_id(datatype=type(input_value), suffix=suffix + unique_name +
+                                                              name + root_window_name +
+                                                              str(key) + func.__name__, idx=index)
 
         # if active_layer is not None:
         #     unique = kwargs.get("unique", unique)
+        # if unique in Melty.seen_unique:
+        #     unique = unique + 128
+        #     suffix = f"{suffix}_{unique}"
 
+
+            # Disable cache for this frame to avoid further issues
+        if unique in Melty.seen_unique:
+            if 'draw_state' in wanted_params:
+                overlay_list: _DrawList = imgui.get_overlay_draw_list()
+                overlay_list.add_text(*imgui.get_cursor_screen_pos(),
+                                      imgui.get_color_u32_rgba(1.0, 0.0, 0.0, 1.0),
+                                      f"Warning: ID collision {name} {func.__name__} {unique}")
+                kwargs['use_cache'] = False
+                return False, None
+        Melty.seen_unique.add(unique)
         computed_unique = unique
+
         # -------------------------------------------------------------------------
 
         start_cursor = imgui.get_cursor_screen_pos()
@@ -625,7 +641,6 @@ def render_func(*args, **o_kwargs):
                     Melty.registered_windows[window_key].window_args = kwargs
                     Melty.registered_windows[window_key].name = kwargs.get('name', 'Managed Window')
 
-
             if kwargs.get("closable", False):
                 if draw_state.closed and not input_value == Melty.registered_windows:
                     if return_extras:
@@ -745,9 +760,6 @@ def render_func(*args, **o_kwargs):
 
                         if Melty.last_selected is not None:
                             # Check if both have the same parent
-                            last_parent = Melty.last_selected._collection
-                            this_parent = draw_state._collection
-
                             it_count = 0
                             max_iter = 1000
                             seen = set()
@@ -822,7 +834,9 @@ def render_func(*args, **o_kwargs):
                                  left + width,
                                  top + height))
 
-            return_value = draw_inner_main(clean_args, clip_rect, draw_state, input_value, kwargs, auto_resize, melty, tile_id, unique, melty_window)
+            return_value = draw_inner_main(clean_args, clip_rect, draw_state,
+                                           input_value, kwargs, auto_resize,
+                                           melty, tile_id, unique, melty_window)
             if not is_header:
                 Melty.pop_clip()
 
@@ -1026,7 +1040,7 @@ def render_func(*args, **o_kwargs):
                 needs_invalidate = True
             draw_state.clipped = inside_clip
 
-            if needs_invalidate and not Melty.on_drag:
+            if needs_invalidate and not Melty.on_drag and not imgui.is_mouse_down(2):
                 Melty.cache.invalidate(tile_id, force=True)
 
         last_bounding_hovered = draw_state._bounding_hovered
@@ -1035,7 +1049,8 @@ def render_func(*args, **o_kwargs):
         draw_state._bounding_hovered = new_bounding_hovered
         if (draw_state.width is None or draw_state.height is None or hover_changed or
                 draw_state._bounding_hovered or draw_state._imgui_popover_open):
-            if not Melty.on_drag or draw_state.nested_window:
+            if (not Melty.on_drag or draw_state.nested_window
+                    and not imgui.is_mouse_down(2) and not imgui.is_mouse_down(1)):
                 Melty.cache.invalidate(tile_id, force=True)
 
         if use_cache:

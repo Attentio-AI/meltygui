@@ -40,6 +40,8 @@ class Melty:
     layers = []
     active_layer = 0
 
+    seen_unique = set()
+
     last_draw_state = [(None, None)] * max_layer
     collection_index_stack = []
 
@@ -152,7 +154,7 @@ class Melty:
     @classmethod
     def begin_frame(cls):
         style = imgui.get_style()
-
+        cls.seen_unique = set()
         cls.original_spacing = style.item_spacing
         cls.original_window_padding = style.window_padding
         cls.original_frame_padding = style.frame_padding

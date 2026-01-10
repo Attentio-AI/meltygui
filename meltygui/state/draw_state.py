@@ -93,22 +93,22 @@ class ZoomState(DictConversion):
          "imgui_is_item_activated", "frame_count")
 @exclude("current_tint", "overhead_time", "premature_break",
          "clip_rect", "_input_value", "flow_spacing",
-         'width', "height", "size_change",
+         'width', "height", "size_change", 'left', 'top',
          "hovered", "wrapped_top", "params", "scroll_visible", "depth_and_layer",
          "premature_break", "wrapped_left", "_did_use_cache", "hover_rects",
          "content_region", "value_hash", "drag_window", "content_region", "did_render",
          "bounding_hovered", "dlt_count", "clip_rect", "bg_rect",
          "header_height", "scrolled", "is_hovered_last", "frame_count")
 @no_save_exclude("live", 'render_time', 'content_height', 'invalid_content_height'
-                 "left", "top", 'hover_rects', 'nested_window', 'use_cache', 'depth', 'layer',
-                 'channel', 'next', 'previous', 'index_in_parent')
+                  'hover_rects', 'nested_window', 'use_cache', 'depth', 'layer',
+                 'channel', 'next', 'previous', 'index_in_parent', 'relative_pos',)
 @deep_refresh('scroll_offset')
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
 
     def __init__(self):
         super().__init__()
-        self._children = []
+        self._children = {}
         self._parent = None
         self.next = None
         self.previous = None
@@ -123,6 +123,10 @@ class DrawState(DictConversion):
         self.depth = 0
         self.layer = 0
         self.channel = 0
+
+        self.relative_pos = None
+
+        self._first_draw_state = None
 
         self._queued_windows = []
         self.drag_window_pos_x = None
@@ -380,16 +384,16 @@ class DrawState(DictConversion):
         if rect is None:
             if self.bg_rect is not None:
                 rect = self.bg_rect
-                if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
+                if imgui.is_mouse_hovering_rect(rect[0], rect[1] - 3, rect[0] + rect[2], rect[1] + rect[3] + 3):
                     return True
             else:
                 if self.top is None or self.left is None or self.width is None or self.height is None:
                     return False
-                rect = (self.left, self.top - 2, self.width, self.height + 2)
+                rect = (self.left, self.top - 3, self.width, self.height + 3)
                 if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
                     return True
         else:
-            if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[2], rect[3]):
+            if imgui.is_mouse_hovering_rect(rect[0], rect[1] - 3, rect[2], rect[3] + 3):
                 return True
 
 
@@ -442,7 +446,7 @@ class DrawState(DictConversion):
             else:
                 if self.top is None or self.left is None or self.width is None or self.height is None:
                     return False
-                rect = (self.left, self.top, self.width, self.height + 10)
+                rect = (self.left, self.top - 3, self.width, self.height + 10)
 
         if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
             if imgui.is_window_hovered() or Melty.imgui_popup_open:

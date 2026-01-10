@@ -456,6 +456,8 @@ class TileCacheMasked:
         self._LAYER_MIN = 1
         self._LAYER_MAX = 2048
 
+        self.seen_ids = set()
+
         self.offscreen_debug_mode: OffscreenDebugMode = OffscreenDebugMode.OFF
         self.offscreen_scale = 200.0
 
@@ -913,6 +915,10 @@ class TileCacheMasked:
         input_value = draw_state._input_value
         collection = draw_state._collection
         key = draw_state._tile_id
+        # if key in self.seen_ids:
+        #     key = key + 1
+        # self.seen_ids.add(key)
+
         layer = draw_state.z_pos
         name = draw_state.name
 
@@ -1316,19 +1322,20 @@ class TileCacheMasked:
                 gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE)
 
                 if p.tile is not None:
-                    gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, p.tile.fbo)
-                    gl.glViewport(0, 0, snap_int(p.tile.size[0]), snap_int(p.tile.size[1]))
+                    if p.tile.fbo != -1:
+                        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, p.tile.fbo)
+                        gl.glViewport(0, 0, snap_int(p.tile.size[0]), snap_int(p.tile.size[1]))
 
-                    if global_toggles is not None and getattr(global_toggles, "offscreen_debug", False):
-                        gl.glUniform4f(gl.glGetUniformLocation(self._prog_copy, "uTint"), *self.frame_tint)
-                    else:
-                        gl.glUniform4f(gl.glGetUniformLocation(self._prog_copy, "uTint"), 1.0, 1.0, 1.0, 1.0)
+                        if global_toggles is not None and getattr(global_toggles, "offscreen_debug", False):
+                            gl.glUniform4f(gl.glGetUniformLocation(self._prog_copy, "uTint"), *self.frame_tint)
+                        else:
+                            gl.glUniform4f(gl.glGetUniformLocation(self._prog_copy, "uTint"), 1.0, 1.0, 1.0, 1.0)
 
-                    gl.glUniform4f(self._loc_uSrcRectPx, float(x0), float(y0), float(x1), float(y1))
-                    gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
+                        gl.glUniform4f(self._loc_uSrcRectPx, float(x0), float(y0), float(x1), float(y1))
+                        gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
 
-                    p.tile.last_clean_frame = self._frame_id
-                    p.tile.dirty = self._is_dirty(p.tile)
+                        p.tile.last_clean_frame = self._frame_id
+                        p.tile.dirty = self._is_dirty(p.tile)
 
             # ================================================================
             # PASS 4: Build tile.mask_tex for each dirty tile
@@ -1474,7 +1481,7 @@ class TileCacheMasked:
 
                 if can_use_cached or size_change:
 
-                    if tile_ctx and tile_ctx.size:
+                    if tile_ctx:
                         tx, ty = draw_state.left, draw_state.top
                         tw, th = draw_state.width, draw_state.height
                         x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(tx, ty, tw, th, dp_x, dp_y, s_x, s_y, fb_h)
@@ -1539,3 +1546,4 @@ class TileCacheMasked:
             self._recording = False
             self.apply_invalid()
             self.did_deviate.clear()
+            self.seen_ids.clear()

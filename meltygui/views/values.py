@@ -65,6 +65,9 @@ def draw_window(input_value, view_func=None, style_manager=None, tint=None, uniq
         #     imgui.set_cursor_screen_pos(cursor_pos)
         #     imgui.set_item_allow_overlap()
 
+    if draw_state.name == "Test List":
+        pass
+
     if draw_state.width is not None and draw_state.height is not None and draw_state.expanded:
         loading_icon_0 = "\uf00d"
         loading_icon_1 = "\uf067"
@@ -111,6 +114,365 @@ def draw_window(input_value, view_func=None, style_manager=None, tint=None, uniq
     return return_val
 
 
+@render_wrapper(wraps=render_func, use_cache=False)
+def with_header(func, **o_kwargs):
+    def wrapper(next_kwargs=None, draw_state=None, **kwargs):
+        if Melty.annotation_mode:
+            annotation = annotation_track(wrapper=wrapper, **o_kwargs)
+            if annotation is not None: return annotation
+
+        header_top = imgui.get_cursor_screen_pos()[1]
+        header_left = imgui.get_cursor_screen_pos()[0]
+        header_width = draw_state.width
+        header_height = draw_state.height
+
+        # if not next_kwargs.get("auto_resize", False):
+        #     next_kwargs['width'] = draw_state.width
+        #     next_kwargs['height'] = draw_state.height - header_height
+
+        next_kwargs['func'] = func
+        next_kwargs['outer_func'] = wrapper
+        next_kwargs['show_bg'] = kwargs.get("show_bg", True)
+        next_kwargs['header_top'] = header_top
+        next_kwargs['header_left'] = header_left
+        next_kwargs['header_width'] = header_width
+        next_kwargs['header_height'] = header_height
+        next_kwargs['draw_state'].header_top = header_top
+
+        return_val = core_header(**next_kwargs)
+
+        return return_val
+
+    setattr(wrapper, '__name__', f"{func.__name__} --- with_header ")
+
+    return wrapper
+
+@with_header(is_default_for=(MutableMapping, defaultdict), use_cache=False, shadow=True, enable_scroll=True)
+def draw_collection(input_value, draw_state, depth, style_manager,
+                    meta, suffix, melty, show_search=True, on_collapse=False, on_drag_up=False, y_offset=0,
+                    on_expand=False, width=None, indent_size=10, global_style=None, global_toggles=None,
+                    show_add_delete=True,
+                    show_instance_vars=True, unique=0, horizontal=False, show_indices=False, **kwargs):
+    """
+    Universal collection renderer
+    """
+    if isinstance(input_value, defaultdict):
+        pass
+    changed = False
+    # ----- SIMPLE NORMALIZER (lowercase, remove spaces, '_' and '-') -----
+    _TRANS = str.maketrans("", "", " _-")
+
+    def norm_string(s) -> str:
+        if s is None:
+            return ""
+        try:
+            s = str(s)
+        except Exception:
+            s = ""
+        return s.lower().translate(_TRANS)
+
+    if hasattr(input_value, 'children') and isinstance(input_value.children, (list, dict, defaultdict, deque)):
+        input_value = input_value.children
+
+    search_token = norm_string(draw_state.search_text) if show_search else ""
+
+    # --- Setup per collection type ---
+    ordered_driver = input_value
+    if isinstance(input_value, (dict, list, tuple, set, defaultdict, MutableMapping, deque)):
+        use_tint = True
+        use_child_meta = True
+        apply_change = True
+        parent_type = input_value.__class__
+        if isinstance(input_value, (dict, defaultdict, MutableMapping)):
+            keys = input_value.keys()
+            collection = input_value
+        else:
+            keys = range(len(input_value))
+            collection = list(input_value)
+
+    elif hasattr(input_value, "__dict__") and depth < Melty.max_depth:
+        if hasattr(type(input_value), "__field_defaults__") and hasattr(input_value, 'to_dict'):
+            type(input_value).__field_defaults__.update(input_value.__dict__)
+            keys = type(input_value).__field_defaults__.keys()
+        else:
+            keys = input_value.__dict__.keys()
+        collection = input_value.__dict__
+        use_tint = False
+        use_child_meta = True
+        apply_change = True
+        parent_type = input_value.__class__
+    else:
+
+        return False, input_value
+
+    # --- unified loop ---
+    drew_any = False
+    collection_spacing = 0
+    all_meta = []
+
+    start_cursor = imgui.get_cursor_pos()[1]
+    keys = list(keys)[:]
+    children_draw_states = []
+    rect = Melty.get_clip_rect()
+    if rect is None:
+        rect_height = 1e6
+        parent_bottom = 1e6
+    else:
+        rect_height = rect[3] - rect[1]
+        parent_bottom = rect[3]
+
+    needs_content_height = draw_state.invalid_content_height and draw_state.content_height < rect_height
+
+    premature_break = False
+
+    Melty.collection_index_stack.append(0)
+    this_collection = len(Melty.collection_index_stack) - 1
+
+    start_index = 0
+    end_index = len(keys) - 1
+
+    # draw_list: ImDrawList = imgui.get_overlay_draw_list()
+    # draw_list.add_rect_filled(rect[0], rect[1], rect[0] + 100, rect[1] + 20,
+    #                     imgui.get_color_u32_rgba(0, 0, 0, 0.5))
+    #
+    # draw_list.add_text(rect[0], rect[1],
+    #                    imgui.get_color_u32_rgba(1, 1, 1, 1.0),
+    #                    f"{start_index} {end_index} {len(keys)}")
+    #
+
+    scroll_offset = draw_state.scroll_offset
+    true_left = draw_state.left - scroll_offset[0]
+    true_top = draw_state.top - scroll_offset[1]
+
+    for idx in range(start_index, end_index + 1):
+        key = keys[idx]
+        relative_pos = imgui.get_cursor_screen_pos()
+        relative_pos = (relative_pos[0] - true_left,
+                        relative_pos[1] - true_top)
+
+        child_draw_state = draw_state._children.get(idx, None)
+        if child_draw_state is not None and (imgui.is_mouse_down(0) or Melty.on_scroll or imgui.is_mouse_down(1) or imgui.is_mouse_down(2)):
+            if child_draw_state.relative_pos is not None:
+                screen_pos = (true_left + child_draw_state.relative_pos[0],
+                              true_top + child_draw_state.relative_pos[1])
+
+                bottom = screen_pos[1] + child_draw_state.height
+                if (bottom < rect[1] or screen_pos[1] > rect[3]):
+                    imgui.set_cursor_screen_pos(((true_left + child_draw_state.relative_pos[0]),
+                                                 (true_top + child_draw_state.relative_pos[1] +
+                                                  child_draw_state.height + 1)))
+                    continue
+
+        Melty.collection_index_stack[this_collection] = idx
+        if isinstance(collection, dict) and key not in collection:
+            continue
+
+        if hasattr(input_value, "__dict__") and hasattr(input_value, key):
+            item = getattr(input_value, key, None)
+        else:
+            item = collection[key]
+
+        # Snap cursor to nearest pixel
+        cursor_pos = imgui.get_cursor_screen_pos()
+        # imgui.set_cursor_screen_pos((snap_int(cursor_pos[0]), snap_int(cursor_pos[1])))
+
+        # visual separator (object extras)
+        if key is None and item is None:
+            seperator(Melty.spacing[1])
+            continue
+
+        if hasattr(type(input_value), "__excluded_attrs__"):
+            if not global_toggles.force_show_excluded:
+                if str(key) in type(input_value).__excluded_attrs__:
+                    continue
+        display_name = None
+
+        # apply global skip to all types
+        if isinstance(key, (float, Enum, NoneType)):
+            key_str = f"{input_value.__class__.__name__}"
+        elif isinstance(key, int):
+            key_str = f"{key}"
+        else:
+            key_str = str(key)
+
+        if ((key_str.startswith("__") and key_str.endswith("__")) or
+                key_str.endswith("meta") or key_str.startswith("_")):
+            continue
+
+        # ----- SEARCH CHECK (keys + item.name if present) -----
+        if search_token:
+            name_field = getattr(item, "name", None) or getattr(item, "__name__", "")
+            if ((search_token not in norm_string(key_str)) and
+                    (search_token not in norm_string(name_field))):
+                continue
+
+        # meta selection
+        if use_child_meta and hasattr(Meta, 'get_child_meta'):
+            item_meta = Meta.get_child_meta(parent_type, field_name=key, value=item)
+        else:
+            item_meta = meta
+
+        item_meta.collection_type = meta.field_type
+
+        # view function & suffix
+        view_fn = getattr(item_meta, "view_function", draw_collection)
+
+        trigger_collapse = False
+        if isinstance(input_value, (dict, defaultdict, MutableMapping)) and on_collapse:
+            trigger_collapse = True
+
+        trigger_expand = False
+        if isinstance(input_value, (dict, defaultdict, MutableMapping)) and on_expand:
+            trigger_expand = True
+
+        prev_tint = None
+        try:
+            if isinstance(collection, FolderProxy):
+                codec = FILE_CODECS.for_name(key)
+                if codec is not None and hasattr(codec, 'tint'):
+                    prev_tint = style_manager.get_tint()
+                    style_manager.set_imgui_tint(*codec.tint)
+
+            if hasattr(input_value, "__tint__") and getattr(input_value, "__tint__"):
+                if key in input_value.__tint__:
+                    prev_tint = style_manager.get_tint()
+                    style_manager.set_imgui_tint(*input_value.__tint__[key])
+
+            y_offset = Melty.collection_spacing
+            all_meta.append(item_meta)
+            if show_indices or isinstance(collection, (list, tuple, set, deque)):
+                display_name = f"{str(idx)}"
+
+            if horizontal:
+                if item_meta is not None and hasattr(item_meta, 'tmp_draw_state'):
+                    imgui.same_line()
+                    if item_meta.tmp_draw_state.width is not None:
+                        space_left = imgui.get_content_region_available()[0] - item_meta.tmp_draw_state.width
+                        if space_left < 0:
+                            imgui.new_line()
+
+            imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
+            imgui.dummy(0, 0)
+            imgui.pop_style_var()
+
+            drew_dummy = False
+            # if rect is not None:
+            #     child_draw_state = draw_state._children[idx] if idx < len(draw_state._children) else None
+            #     if draw_state._parent is not None and child_draw_state is not None and draw_state.expanded:
+            #         if (cursor_pos[1] + child_draw_state.height < draw_state._parent.top and not needs_content_height and Melty.frame_count > 2):
+            #             imgui.dummy(child_draw_state.width, child_draw_state.height)
+            #             drew_dummy = True
+            #
+
+            item_changed, out_val, extras = draw_any(item, return_extras=True, indent_size=10, key=key,
+                                                     meta=item_meta, trigger_collapse=trigger_collapse,
+                                                     trigger_expand=trigger_expand, y_offset=y_offset,
+                                                     on_collapse=on_collapse, on_expand=on_expand,
+                                                     collection=input_value, name=key_str, display_name=display_name,
+                                                     parent_show_add_delete=show_add_delete,
+                                                     show_add_delete=show_add_delete)
+            imgui.dummy(1, 1)
+
+            if 'draw_state' in extras:
+                returned_ds = extras.get('draw_state', None)
+                if returned_ds is not None:
+                    draw_state._children[idx] = returned_ds
+                    returned_ds._collection_draw_state = draw_state
+                    returned_ds.relative_pos = relative_pos
+
+                if draw_state._first_draw_state is None:
+                    draw_state._first_draw_state = extras.get('draw_state', None)
+
+                # if draw_state is not None:
+                #     draw_state.previous = previous_draw_state
+                #
+                # if previous_draw_state is not None:
+                #     previous_draw_state.next = draw_state
+                #     previous_draw_state = draw_state
+
+            view_bottom = cursor_pos[1]
+            # if (view_bottom - 500 > parent_bottom and Melty.frame_count > 2):
+            #     if not needs_content_height:
+            #         premature_break = True
+            #         break_index = view_bottom
+            #         break
+
+            if isinstance(out_val, CollectionAction):
+                # perform the move; this should mutate the plain dicts you supply
+                result = Melty.to_apply(out_val)
+                item_changed, out_val = False, None
+
+            if item_changed and apply_change and key is not None:
+                if isinstance(input_value, (dict, defaultdict, MutableMapping)):
+                    input_value[key] = out_val
+                elif isinstance(input_value, list):
+                    input_value[key] = out_val
+                elif isinstance(input_value, deque):
+                    input_value[key] = out_val
+                elif isinstance(input_value, tuple):
+                    temp = list(input_value)
+                    temp[key] = out_val
+                    input_value = parent_type(temp)
+                else:
+                    setattr(input_value, key_str, out_val)
+
+            changed |= item_changed
+            drew_any = True
+
+
+        except Exception as e:
+            print(f"Error rendering field '{key_str}' of {type(input_value).__name__}: {e}")
+            print_colored_traceback(*sys.exc_info())
+
+        finally:
+            if prev_tint is not None:
+                style_manager.set_imgui_tint(*prev_tint)
+
+    Melty.collection_index_stack.pop()
+    end_pos = imgui.get_cursor_pos()[1]
+    content_height = (end_pos - start_cursor) + draw_state.header_height
+
+    # if len(children_draw_states) == len(keys):
+    #     draw_state._children = children_draw_states
+
+    #
+    # over_layer_draw_list: _DrawList = imgui.get_overlay_draw_list()
+    # color = imgui.color_to_u32_rgba(1, 0, 0, 1)
+    # over_layer_draw_list.add_text(draw_state.left, draw_state.top, color,f"{Melty.nested_collections} - {break_index} {len(keys)} ")
+    # if nested_collection:
+    #     Melty.nested_collections -= 1
+
+    # imgui.set_cursor_screen_pos((current_cursor[0], current_cursor[1] + draw_state.scroll_offset[1]))
+    # current_cursor = imgui.get_cursor_screen_pos()
+    if not imgui.is_mouse_down(0) and not imgui.is_mouse_down(1) and not premature_break:
+        draw_state.content_height = snap_int(content_height)
+        draw_state.invalid_content_height = False
+
+    draw_state.premature_break = premature_break
+
+    # ----------------- top spacing -----------
+    last_key = list(keys)[-1] if len(keys) > 0 else None
+
+    if not drew_any:
+        last_key = None
+
+    last_meta = all_meta[-1] if len(all_meta) > 0 else None
+    if hasattr(last_meta, 'tmp_draw_state'):
+        last_draw_state = last_meta.tmp_draw_state if last_meta is not None else draw_state
+
+        # if Melty.window_enabled and melty.drag_in_progress:
+        #     # last_item = collection[last_key] if (isinstance(collection, dict) and last_key in collection) else None
+        #     _, flow_spacing = draw_drag_drop_target(do_flow=True, enable_flow=True, melty=melty, offset=0,
+        #                                             collection=ordered_driver, key=last_key, on_drag=False,
+        #                                             draw_state=last_draw_state, tag="bottom")
+    # ------------------ end spacing -----------
+
+    # if drew_any and len(keys) > 1:
+    #     imgui.dummy(0, 2)
+
+    return changed, input_value
+
+
 @render_func(use_cache=True)
 def draw_main(input_value, vis):
     global test_obj
@@ -133,6 +495,8 @@ def draw_main(input_value, vis):
     changed, new_val = draw_window(0.0, layer=31, name="Test return")
     if changed:
         print("Value changed:", new_val)
+
+    changed, new_val = draw_window([1,2,3,4,5], name="Test List", horizontal=True, tint=(1,0,0))
 
     normalized_sub_mask = Melty.filter.normalize(Melty.cache._mask_tex)
     draw_window(normalized_sub_mask, show_bg=True, max_contrast=30, jet=True,
@@ -184,38 +548,6 @@ def with_header_minimal(func, **o_kwargs):
 
 
 
-@render_wrapper(wraps=render_func, use_cache=False)
-def with_header(func, **o_kwargs):
-    def wrapper(next_kwargs=None, draw_state=None, **kwargs):
-        if Melty.annotation_mode:
-            annotation = annotation_track( wrapper=wrapper, **o_kwargs)
-            if annotation is not None: return annotation
-
-        header_top = imgui.get_cursor_screen_pos()[1]
-        header_left = imgui.get_cursor_screen_pos()[0]
-        header_width = draw_state.width
-        header_height = draw_state.height
-
-        # if not next_kwargs.get("auto_resize", False):
-        #     next_kwargs['width'] = draw_state.width
-        #     next_kwargs['height'] = draw_state.height - header_height
-
-        next_kwargs['func'] = func
-        next_kwargs['outer_func'] = wrapper
-        next_kwargs['show_bg'] = kwargs.get("show_bg", True)
-        next_kwargs['header_top'] = header_top
-        next_kwargs['header_left'] = header_left
-        next_kwargs['header_width'] = header_width
-        next_kwargs['header_height'] = header_height
-        next_kwargs['draw_state'].header_top = header_top
-
-        return_val = core_header(**next_kwargs)
-
-        return return_val
-
-    setattr(wrapper, '__name__', f"{func.__name__} --- with_header ")
-
-    return wrapper
 
 source = "x = foo(val=1)\nprint(x)\nsome_list=[0, 1, 2, 3]\n"
 module = cst.parse_module(source)
@@ -1428,11 +1760,6 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() - int(Melty.flow_spacing))
             Melty.flow_spacing = 0.0
 
-        bg_tint = None
-        bg_selected = False
-
-        current_cursor = imgui.get_cursor_screen_pos()
-        header_width = 0
         if show_header:
             next_kwargs['highlight'] = on_hover
             if on_drag and not melty_window:
@@ -1460,7 +1787,6 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             # # Auto indent is decided here
             if header_same_line:
                 same_line()
-
             else:
                 space_available = width - header_width
                 if (not isinstance(input_value, (dict, list, tuple, defaultdict)) and not hasattr(input_value, '__dict__')):
@@ -1480,8 +1806,6 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                 # # This is the version with auto indent, probably a dict header
                 draw_header_end(**next_kwargs)
 
-
-        bg_color = (0, 0, 0, 1)
         if show_bg:
             bg_color = get_bg_color(len(Melty.bg_color_stack) * 2, rounding=4.0,
                                     global_style=global_style,
@@ -1495,34 +1819,16 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             next_kwargs.pop('spacing', None)
             next_kwargs.pop('padding', None)
 
-            # end_header_with = draw_state._end_header_size[0]
-
-            current_x = imgui.get_cursor_screen_pos()[0]
-            # space_used = max(0, current_x - start_x_pos)
-            # space_available = width - space_used
-
-            # padding_x = imgui.get_style().frame_padding.x
-            # request_width = space_available - end_header_with - padding_x - 7
-            # min_width = min(imgui.get_content_region_available()[0],
-            #                 min_width - space_used)
-            # min_width = max(min_width, request_width)
-
-            parent_rect = Melty.get_clip_rect()
             imgui.set_next_item_width(120)
 
             ######################## MAIN FUNC CALL ########################
             current_cursor = imgui.get_cursor_screen_pos()
             header_height = current_cursor[1] - start_y_pos
             draw_state._header_height = header_height
-            #
-            # if not header_same_line:
-            #     Melty.indent(indent_size)
-
             draw_list = imgui.get_window_draw_list()
 
             if Melty.channels_split and show_bg:
                 draw_list.channels_set_current(min(Melty.max_depth - 1, Melty.get_channel()))
-            clip_start = imgui.get_cursor_screen_pos()
             clipped = False
             if draw_state.width is not None and draw_state.height is not None:
                 if draw_state.width > 0 and draw_state.height > 0:
@@ -1535,7 +1841,6 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + indent_size)
 
             current_x = imgui.get_cursor_screen_pos()[0]
-            space_used = current_x - start_x_pos
 
             if not auto_resize:
                 next_kwargs['scrollable'] = True
@@ -1544,9 +1849,6 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             return_val = func(**next_kwargs)
 
             imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() - indent_size)
-
-            # if not header_same_line:
-            #     Melty.unindent(indent_size)
 
             ############### END MAIN FUNC CALL #############################
             if return_val is not None and len(return_val) == 2:
@@ -1569,23 +1871,6 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
         same_line(spacing=0)
         imgui.dummy(0, snap_int(y_margin))
 
-        background_width = width
-        background_height = draw_state.height  if draw_state.height is not None else 0
-        draw_list = imgui.get_window_draw_list()
-
-        #
-        # if Melty.channels_split:
-        #     if show_bg:
-        #         channel = max(0, min(Melty.max_depth - 2, Melty.get_channel() - 1))
-        #         draw_list.channels_set_current(channel)
-        #
-        #         _, bg_color = draw_bg(bypass=True, left=start_x_pos, top=y_margin + start_y_pos, bg_color=bg_color,
-        #                 width=background_width, height=(background_height - Melty.spacing[1] / 2.0),
-        #                 tint=bg_tint, depth=Melty.depth, selected=bg_selected, global_style=global_style,
-        #                 style_manager=style_manager, auto_resize=auto_resize)
-        #         draw_state.bg_color = bg_color
-
-
         if show_bg:
             style_manager.get_tint()
             Melty.bg_stack.pop()
@@ -1593,9 +1878,6 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
         if not on_drag or melty_window:
             next_kwargs['do_flow'] = True
 
-        # if melty_window:
-        #     imgui.set_cursor_screen_pos((initial_cursor_pos[0],
-        #                                  initial_cursor_pos[1]))
         if prev_tint is not None:
             style_manager.set_imgui_tint(*prev_tint)
         if on_drag_up and not melty_window:
@@ -1617,299 +1899,6 @@ def seperator(height):
     imgui.dummy(0, snap_int(height / 2))
 
 
-
-@with_header(is_default_for=(MutableMapping, defaultdict), use_cache=False, shadow=True, enable_scroll=True)
-def draw_collection(input_value, draw_state, depth, style_manager,
-                    meta, suffix, melty, show_search=True, on_collapse=False, on_drag_up=False, y_offset=0,
-                    on_expand=False, width=None, indent_size=10, global_style=None, global_toggles=None, show_add_delete=True,
-                    show_instance_vars=True, unique=0, horizontal=False, show_indices=False, **kwargs):
-    """
-    Universal collection renderer
-    """
-    if isinstance(input_value, defaultdict):
-        pass
-    changed = False
-    # ----- SIMPLE NORMALIZER (lowercase; remove spaces, '_' and '-') -----
-    _TRANS = str.maketrans("", "", " _-")
-    def norm_string(s) -> str:
-        if s is None:
-            return ""
-        try:
-            s = str(s)
-        except Exception:
-            s = ""
-        return s.lower().translate(_TRANS)
-
-    if hasattr(input_value, 'children') and isinstance(input_value.children, (list, dict, defaultdict, deque)):
-        input_value = input_value.children
-
-    search_token = norm_string(draw_state.search_text) if show_search else ""
-
-    # --- configure per collection type ---
-    ordered_driver = input_value
-    if isinstance(input_value, (dict, list, tuple, set, defaultdict, MutableMapping, deque)):
-        use_tint = True
-        use_child_meta = True
-        apply_change = True
-        parent_type = input_value.__class__
-        if isinstance(input_value, (dict, defaultdict, MutableMapping)):
-            keys = input_value.keys()
-            collection = input_value
-        else:
-            keys = range(len(input_value))
-            collection = list(input_value)
-
-    elif hasattr(input_value, "__dict__") and depth < Melty.max_depth:
-        if hasattr(type(input_value), "__field_defaults__") and hasattr(input_value, 'to_dict'):
-            type(input_value).__field_defaults__.update(input_value.__dict__)
-            keys = type(input_value).__field_defaults__.keys()
-        else:
-            keys = input_value.__dict__.keys()
-        collection = input_value.__dict__
-        use_tint = False
-        use_child_meta = True
-        apply_change = True
-        parent_type = input_value.__class__
-    else:
-
-        return False, input_value
-
-    # --- unified loop ---
-    drew_any = False
-    collection_spacing = 0
-    all_meta = []
-
-    start_cursor = imgui.get_cursor_pos()[1]
-    keys = list(keys)[:]
-    children_draw_states = []
-    rect = Melty.get_clip_rect()
-    if rect is None:
-        rect_height = 1e6
-        parent_bottom = 1e6
-    else:
-        rect_height = rect[3] - rect[1]
-        parent_bottom = rect[3]
-
-    needs_content_height = draw_state.invalid_content_height and draw_state.content_height < rect_height
-
-    premature_break = False
-    break_index = -1
-    nested_collection = False
-
-    nested_collection = True
-    # Melty.nested_collections += 1
-
-    previous_draw_state = None
-
-    Melty.collection_index_stack.append(0)
-    this_collection = len(Melty.collection_index_stack) - 1
-
-    for idx, key in enumerate(keys):
-        Melty.collection_index_stack[this_collection] = idx
-        if isinstance(collection, dict) and key not in collection:
-            continue
-
-        if hasattr(input_value, "__dict__") and hasattr(input_value, key):
-            item = getattr(input_value, key, None)
-        else:
-            item = collection[key]
-
-        # Snap cursor to nearest pixel
-        cursor_pos = imgui.get_cursor_screen_pos()
-        # imgui.set_cursor_screen_pos((snap_int(cursor_pos[0]), snap_int(cursor_pos[1])))
-
-        # visual separator (object extras)
-        if key is None and item is None:
-            seperator(Melty.spacing[1])
-            continue
-
-        if hasattr(type(input_value), "__excluded_attrs__"):
-            if not global_toggles.force_show_excluded:
-                if str(key) in type(input_value).__excluded_attrs__:
-                    continue
-        display_name = None
-
-        # apply global skip to all types
-        if isinstance(key, (float, Enum, NoneType)):
-            key_str = f"{input_value.__class__.__name__}"
-        elif isinstance(key, int):
-            key_str = f"{key}"
-        else:
-            key_str = str(key)
-
-
-        if ((key_str.startswith("__") and key_str.endswith("__")) or
-                key_str.endswith("meta") or key_str.startswith("_")):
-            continue
-
-        # ----- SEARCH CHECK (keys + item.name if present) -----
-        if search_token:
-            name_field = getattr(item, "name", None) or getattr(item, "__name__", "")
-            if ((search_token not in norm_string(key_str)) and
-                    (search_token not in norm_string(name_field))):
-                continue
-
-        # meta selection
-        if use_child_meta and hasattr(Meta, 'get_child_meta'):
-            item_meta = Meta.get_child_meta(parent_type, field_name=key, value=item)
-        else:
-            item_meta = meta
-
-        item_meta.collection_type = meta.field_type
-
-        # view function & suffix
-        view_fn = getattr(item_meta, "view_function", draw_collection)
-
-        trigger_collapse = False
-        if isinstance(input_value, (dict, defaultdict, MutableMapping)) and on_collapse:
-            trigger_collapse = True
-
-        trigger_expand = False
-        if isinstance(input_value, (dict, defaultdict, MutableMapping)) and on_expand:
-            trigger_expand = True
-
-        prev_tint = None
-        try:
-            if isinstance(collection, FolderProxy):
-                codec = FILE_CODECS.for_name(key)
-                if codec is not None and hasattr(codec, 'tint'):
-                    prev_tint = style_manager.get_tint()
-                    style_manager.set_imgui_tint(*codec.tint)
-
-            if hasattr(input_value, "__tint__") and getattr(input_value, "__tint__"):
-                if key in input_value.__tint__:
-                    prev_tint = style_manager.get_tint()
-                    style_manager.set_imgui_tint(*input_value.__tint__[key])
-
-            y_offset = Melty.collection_spacing
-            all_meta.append(item_meta)
-            if show_indices or isinstance(collection, (list, tuple, set, deque)):
-                display_name = f"{str(idx)}"
-
-            if horizontal:
-                if item_meta is not None and hasattr(item_meta, 'tmp_draw_state'):
-                    imgui.same_line()
-                    if item_meta.tmp_draw_state.width is not None:
-                        space_left = imgui.get_content_region_available()[0] - item_meta.tmp_draw_state.width
-                        if space_left < 0:
-                            imgui.new_line()
-
-            imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0,0))
-            imgui.dummy(0,0)
-            imgui.pop_style_var()
-
-            drew_dummy = False
-            # if rect is not None:
-            #     child_draw_state = draw_state._children[idx] if idx < len(draw_state._children) else None
-            #     if draw_state._parent is not None and child_draw_state is not None and draw_state.expanded:
-            #         if (cursor_pos[1] + child_draw_state.height > draw_state._parent.top and not needs_content_height and Melty.frame_count > 2):
-            #             imgui.dummy(child_draw_state.width, child_draw_state.height)
-            #             drew_dummy = True
-            #
-
-            item_changed, out_val, extras = draw_any(item, return_extras=True, indent_size=10, key=key,
-                                                     meta=item_meta, trigger_collapse=trigger_collapse,
-                             trigger_expand=trigger_expand, y_offset=y_offset, on_collapse=on_collapse, on_expand=on_expand,
-                             collection=input_value, name=key_str, display_name=display_name,
-                                             parent_show_add_delete=show_add_delete,
-                                             show_add_delete=show_add_delete)
-            imgui.dummy(1, 1)
-
-
-            if 'draw_state' in extras:
-                children_draw_states.append(extras['draw_state'])
-                extras['draw_state']._collection_draw_state = draw_state
-
-                # if draw_state is not None:
-                #     draw_state.previous = previous_draw_state
-                #
-                # if previous_draw_state is not None:
-                #     previous_draw_state.next = draw_state
-                #     previous_draw_state = draw_state
-
-            view_bottom = cursor_pos[1]
-            if (view_bottom - 500 > parent_bottom and Melty.frame_count > 2):
-                if not needs_content_height:
-                    premature_break = True
-                    break_index = view_bottom
-                break
-
-            if isinstance(out_val, CollectionAction):
-                # perform the move; this should mutate the plain dicts you attached
-                result = Melty.to_apply(out_val)
-                item_changed, out_val = False, None
-
-            if item_changed and apply_change and key is not None:
-                if isinstance(input_value, (dict, defaultdict, MutableMapping)):
-                    input_value[key] = out_val
-                elif isinstance(input_value, list):
-                    input_value[key] = out_val
-                elif isinstance(input_value, deque):
-                    input_value[key] = out_val
-                elif isinstance(input_value, tuple):
-                    temp = list(input_value)
-                    temp[key] = out_val
-                    input_value = parent_type(temp)
-                else:
-                    setattr(input_value, key_str, out_val)
-
-            changed |= item_changed
-            drew_any = True
-
-
-        except Exception as e:
-            print(f"Error rendering field '{key_str}' of {type(input_value).__name__}: {e}")
-            print_colored_traceback(*sys.exc_info())
-
-        finally:
-            if prev_tint is not None:
-                style_manager.set_imgui_tint(*prev_tint)
-
-
-
-    Melty.collection_index_stack.pop()
-    end_pos = imgui.get_cursor_pos()[1]
-    content_height = (end_pos - start_cursor) + draw_state.header_height
-
-    draw_state._children = children_draw_states
-
-
-    #
-    # overlay_layer_draw_list: _DrawList = imgui.get_overlay_draw_list()
-    # color = imgui.get_color_u32_rgba(1, 0, 0, 1)
-    # overlay_layer_draw_list.add_text(draw_state.left, draw_state.top, color,f"{Melty.nested_collections}  {break_index} {len(keys)} ")
-    # if nested_collection:
-    #     Melty.nested_collections -= 1
-
-    # imgui.set_cursor_screen_pos((current_cursor[0], current_cursor[1] + draw_state.scroll_offset[1]))
-    # current_cursor = imgui.get_cursor_screen_pos()
-    if not imgui.is_mouse_down(0) and not premature_break:
-        draw_state.content_height = snap_int(content_height)
-        draw_state.invalid_content_height = False
-
-    draw_state.premature_break = premature_break
-
-    # ----------------- top spacing -----------
-    last_key = list(keys)[-1] if len(keys) > 0 else None
-
-    if not drew_any:
-        last_key = None
-
-    last_meta = all_meta[-1] if len(all_meta) > 0 else None
-    if hasattr(last_meta, 'tmp_draw_state'):
-        last_draw_state = last_meta.tmp_draw_state if last_meta is not None else draw_state
-
-        # if Melty.window_enabled and melty.drag_in_progress:
-        #     # last_item = collection[last_key] if (isinstance(collection, dict) and last_key in collection) else None
-        #     _, flow_spacing = draw_drag_drop_target(do_flow=True, enable_flow=True, melty=melty, depth=0,
-        #                                             collection=ordered_driver, key=last_key, on_click=False,
-        #                                             draw_state=last_draw_state, tag="bottom")
-    # ------------------ end spacing -----------
-
-    # if drew_any and len(keys) == 1:
-    #     imgui.dummy(0, 2)
-
-    return changed, input_value
 
 
 def draw_bg(left=0, top=0, width=20, height=20, depth=0,
@@ -2084,7 +2073,8 @@ def button(input_value="", color=None, width=None, height=None, style_manager=No
     return clicked, input_value
 
 
-def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add_delete=False, width=0, suffix="", collection=None, display_name=None, meta=None, unique=None, is_tree=True,
+def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add_delete=False, width=0, suffix="",
+                collection=None, display_name=None, meta=None, unique=None, is_tree=True,
                 show_name=True, name_func=None, show_type=False, show_unique=False,
                 on_search=False, trigger_collapse=False, trigger_expand=False,
                 draw_state=None, show_tint=True, opacity=1.0, show_add_delete=True,
@@ -2121,8 +2111,6 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
                    make_color_style_value(input=bg_style, saturation=0.8, alpha=1.0,
                                           value=0.9))
 
-    # push_style_var(imgui.STYLE_FRAME_PADDING, (4, 0))
-    # push_style_var(imgui.STYLE_ITEM_SPACING, (4, 0))
     imgui.align_text_to_frame_padding()
 
     if is_tree:
@@ -2191,8 +2179,6 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     if show_name and name != "" and name is not None and name != "None":
         if isinstance(input_value, (dict, MutableMapping)):
             folder_icon = "\uf07b"
-            # imgui.text_colored(folder_icon, *name_color)
-
             push_style_color(imgui.COLOR_BUTTON, *(0.0, 0.0, 0.0, 0.0))
             push_style_color(imgui.COLOR_TEXT, *name_color)
             if imgui.button(f"{folder_icon}##open_folder"):
@@ -2231,43 +2217,14 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         push_style_var(imgui.STYLE_FRAME_ROUNDING, 2.0)
         name_width = min(text_width, min_text_width)
         if not draw_state._name_edit:
-            # imgui.set_next_item_width(50)
-            # imgui.text_colored(name, *name_color)
-
             draw_list: _DrawList = imgui.get_window_draw_list()
             cursor_pos = imgui.get_cursor_screen_pos()
-            # Melty.push_clip((snap_int(cursor_pos[0]),
-            #                  snap_int(cursor_pos[1]),
-            #                  snap_int(cursor_pos[0] + name_width),
-            #                  snap_int(cursor_pos[1] + imgui.get_frame_height())))
-
             draw_list.add_text(cursor_pos[0], cursor_pos[1], imgui.get_color_u32_rgba(*name_color[:3], 1.0),
                                clipped_name)
-
-            # right_edge = Melty.get_clip_rect()[2]
-            # space_left = right_edge - cursor_pos[0]
             imgui.dummy(text_width, imgui.get_frame_height())
-
-            # Melty.pop_clip()
-
-            # imgui.text_colored(name, *name_color)
-
-            # imgui.button(f"{name}", width=name_width)
-            # rect_min = imgui.get_item_rect_min()
-            # if imgui.is_mouse_double_clicked(0) and imgui.is_item_hovered():
-            #     draw_state._name_edit = True
-            #     imgui.set_keyboard_focus_here(0)
 
             pop_style_color(4)
             pop_style_var(1)
-
-            # if imgui.is_item_hovered():
-            #     button_rect = (rect_min[0], rect_min[1], rect_min[0] + name_width,
-            #                    rect_min[1] + imgui.get_item_rect_size()[ 1])
-            #     #
-            #     # Melty.cache.mask_mark_rect(Melty.depth + 2, button_rect[0], button_rect[1],
-            #     #                             button_rect[2], button_rect[3],
-            #     #                            key=str(Melty.unique_stack[-1]) + "_scrollbar")
         else:
             imgui.set_next_item_width(name_width)
             # Selected text on focus
