@@ -88,7 +88,7 @@ class ZoomState(DictConversion):
          "z_pos", "hotkey_receiver", "use_child", "cst", "search_text", "bg_color",
          "is_active", "clip_rect", "wrapped_top", "current_tint", "wrapped_left",
          "min_width", "min_height", "is_focused", "drag_window_pos_x", "drag_window_pos_y",
-         "drag_mode", "is_hovered_last", "bg_shown", "draw_window_pos_x",
+         "drag_mode", "is_hovered_last", "bg_shown", "draw_window_pos_x", "bg_rect",
          "misc_used", "draw_window_pos_y", "drag_delta", "screen_pos", "hover_rects",
          "imgui_is_item_activated", "frame_count")
 @exclude("current_tint", "overhead_time", "premature_break",

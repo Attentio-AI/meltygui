@@ -222,7 +222,6 @@ def draw_collection(input_value, draw_state, depth, style_manager,
         parent_bottom = rect[3]
 
     needs_content_height = draw_state.invalid_content_height and draw_state.content_height < rect_height
-
     premature_break = False
 
     Melty.collection_index_stack.append(0)
@@ -251,17 +250,18 @@ def draw_collection(input_value, draw_state, depth, style_manager,
                         relative_pos[1] - true_top)
 
         child_draw_state = draw_state._children.get(idx, None)
-        if child_draw_state is not None and (imgui.is_mouse_down(0) or Melty.on_scroll or imgui.is_mouse_down(1) or imgui.is_mouse_down(2)):
-            if child_draw_state.relative_pos is not None:
-                screen_pos = (true_left + child_draw_state.relative_pos[0],
-                              true_top + child_draw_state.relative_pos[1])
+        if not horizontal:
+            if child_draw_state is not None and (imgui.is_mouse_down(0) or Melty.on_scroll or imgui.is_mouse_down(1) or imgui.is_mouse_down(2)):
+                if child_draw_state.relative_pos is not None:
+                    screen_pos = (true_left + child_draw_state.relative_pos[0],
+                                  true_top + child_draw_state.relative_pos[1])
 
-                bottom = screen_pos[1] + child_draw_state.height
-                if (bottom < rect[1] or screen_pos[1] > rect[3]):
-                    imgui.set_cursor_screen_pos(((true_left + child_draw_state.relative_pos[0]),
-                                                 (true_top + child_draw_state.relative_pos[1] +
-                                                  child_draw_state.height + 1)))
-                    continue
+                    bottom = screen_pos[1] + child_draw_state.height
+                    if (bottom < rect[1] or screen_pos[1] > rect[3]):
+                        imgui.set_cursor_screen_pos(((true_left + child_draw_state.relative_pos[0]),
+                                                     (true_top + child_draw_state.relative_pos[1] +
+                                                      child_draw_state.height + 1)))
+                        continue
 
         Melty.collection_index_stack[this_collection] = idx
         if isinstance(collection, dict) and key not in collection:
@@ -343,26 +343,12 @@ def draw_collection(input_value, draw_state, depth, style_manager,
             if show_indices or isinstance(collection, (list, tuple, set, deque)):
                 display_name = f"{str(idx)}"
 
-            if horizontal:
-                if item_meta is not None and hasattr(item_meta, 'tmp_draw_state'):
-                    imgui.same_line()
-                    if item_meta.tmp_draw_state.width is not None:
-                        space_left = imgui.get_content_region_available()[0] - item_meta.tmp_draw_state.width
-                        if space_left < 0:
-                            imgui.new_line()
 
+
+            imgui.begin_group()
             imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
             imgui.dummy(0, 0)
             imgui.pop_style_var()
-
-            drew_dummy = False
-            # if rect is not None:
-            #     child_draw_state = draw_state._children[idx] if idx < len(draw_state._children) else None
-            #     if draw_state._parent is not None and child_draw_state is not None and draw_state.expanded:
-            #         if (cursor_pos[1] + child_draw_state.height < draw_state._parent.top and not needs_content_height and Melty.frame_count > 2):
-            #             imgui.dummy(child_draw_state.width, child_draw_state.height)
-            #             drew_dummy = True
-            #
 
             item_changed, out_val, extras = draw_any(item, return_extras=True, indent_size=10, key=key,
                                                      meta=item_meta, trigger_collapse=trigger_collapse,
@@ -372,6 +358,20 @@ def draw_collection(input_value, draw_state, depth, style_manager,
                                                      parent_show_add_delete=show_add_delete,
                                                      show_add_delete=show_add_delete)
             imgui.dummy(1, 1)
+
+            imgui.end_group()
+
+            if horizontal:
+                if item_meta is not None and hasattr(item_meta, 'tmp_draw_state'):
+                    imgui.same_line()
+                    rect = Melty.get_clip_rect()
+                    item_size = imgui.get_item_rect_max()[0]
+                    right_edge = rect[2]
+                    space_left = right_edge - item_size
+
+                    if item_meta.tmp_draw_state.width is not None:
+                        if space_left < 0:
+                            imgui.new_line()
 
             if 'draw_state' in extras:
                 returned_ds = extras.get('draw_state', None)
@@ -540,7 +540,7 @@ def with_header_minimal(func, **o_kwargs):
         next_kwargs['shadow'] = kwargs.get("shadow", False)
         next_kwargs['show_bg'] = kwargs.get("show_bg", False)
         next_kwargs['is_tree'] = kwargs.get("is_tree", False)
-        next_kwargs['min_width'] = kwargs.get('min_width', 200)
+        next_kwargs['min_width'] = kwargs.get('min_width', 30)
         return core_header(**next_kwargs)
 
     setattr(wrapper, '__name__', f"{func.__name__} --- with_header_minimal")
@@ -1801,6 +1801,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                             if (space_available > cutoff and draw_state.expanded) or on_same_line:
                                 header_same_line = True
                                 same_line(spacing=0.0)
+
             if not header_same_line and (not on_drag or melty_window):
                 # # ----------------- end header for collections ---------------
                 # # This is the version with auto indent, probably a dict header
@@ -1838,6 +1839,7 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
                                      current_cursor[1] + draw_state.height - header_height))
             next_kwargs['header_height'] = header_height
             next_kwargs.pop('draw_state', None)
+            next_kwargs.pop('width', None)
             imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + indent_size)
 
             current_x = imgui.get_cursor_screen_pos()[0]
@@ -2599,10 +2601,9 @@ def draw_function(input_value, name, draw_state, unique):
 
     return False, input_value
 
-@with_header_minimal(is_default_for=(int), shadow=False, header_same_line=True, wraps=render_func)
-def draw_int(input_value: int, min_value=-100.0, max_value=100.0, speed=0.05, unique=0):
+@with_header_minimal(is_default_for=(int), shadow=False, wrap=True, header_same_line=True, wraps=render_func)
+def draw_int(input_value: int, draw_state, min_value=-100.0, max_value=100.0, speed=0.05, unique=0):
     int_text_width = imgui.calc_text_size(str(input_value))[0]
-
     imgui.set_next_item_width(int_text_width + 20)
 
     # draw_window("hello", name=f"{unique}testset", closable=False)

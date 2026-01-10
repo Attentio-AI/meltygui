@@ -1119,11 +1119,11 @@ def render_func(*args, **o_kwargs):
             fixed_size_draw_state = Melty.fixed_size_stack[-1]
             rect = fixed_size_draw_state.get_rect()
             x_offset = start_cursor[0] - rect[0]
-            if is_header:
-                draw_state.width = rect[2] - x_offset - 10
-            else:
-                draw_state.width = rect[2] - x_offset - 5
 
+            if not kwargs.get("wrap", False):
+                draw_state.width = rect[2] - x_offset - 5
+            else:
+                draw_state.width = 100
 
             if kwargs.get("fill_height", False):
                 draw_state.height = snap_int(fixed_size_draw_state.height - (start_cursor[1] - rect[1]))
