@@ -899,7 +899,6 @@ class TileCacheMasked:
             imgui.set_item_allow_overlap()
         imgui.pop_id()
 
-
         corner_radius = getattr(draw_state, 'corner_radius', 0.0) or 0.0
         if has_area:
             self.mask_mark_view(layer, draw_state.left, draw_state.top,
@@ -1158,7 +1157,7 @@ class TileCacheMasked:
         """Draw a cached mask texture with offset and optional rounded corners."""
         gl.glViewport(ix0, iy0, iw, ih)
 
-        if corner_radius > 0:
+        if max(5.0, corner_radius) > 0:
             gl.glUseProgram(self._prog_mask_textured_offset_rounded)
             gl.glActiveTexture(gl.GL_TEXTURE0)
             gl.glBindTexture(gl.GL_TEXTURE_2D, tex)
@@ -1167,7 +1166,7 @@ class TileCacheMasked:
             gl.glUniform2f(gl.glGetUniformLocation(self._prog_mask_textured_offset_rounded, "uRectSize"), float(iw),
                            float(ih))
             gl.glUniform1f(gl.glGetUniformLocation(self._prog_mask_textured_offset_rounded, "uCornerRadius"),
-                           corner_radius)
+                           max(5.0, corner_radius))
         else:
             gl.glUseProgram(self._prog_mask_textured_offset)
             gl.glActiveTexture(gl.GL_TEXTURE0)
@@ -1514,7 +1513,7 @@ class TileCacheMasked:
                 if can_use_cached:
                     # Apply offset to correct for layer changes: (current_layer - cached_layer)
                     offset = float(r.layer - t.mask_layer) / 65535.0
-                    self._draw_mask_rect_cached(t.mask_tex, ix0, iy0, iw, ih, offset, r.corner_radius)
+                    self._draw_mask_rect_cached(t.mask_tex, ix0, iy0, iw, ih, offset, max(5.0, r.corner_radius))
                 else:
                     if draw_state is not None:
                         # Dirty tile: draw fresh using absolute layer
@@ -1527,13 +1526,13 @@ class TileCacheMasked:
                         layer_and_depth = active_layer * Melty.max_depth + (depth * (15.0 / (divisor)))
                         rank_norm = float(layer_and_depth) / 65535.5
 
-                        if r.corner_radius > 0:
+                        if max(5.0, r.corner_radius) > 0:
                             gl.glUseProgram(self._prog_mask_rounded)
                             gl.glUniform1f(gl.glGetUniformLocation(self._prog_mask_rounded, "uRankNorm"), rank_norm)
                             gl.glUniform2f(gl.glGetUniformLocation(self._prog_mask_rounded, "uRectSize"),
                                            float(clip_iw), float(clip_ih))
                             gl.glUniform1f(gl.glGetUniformLocation(self._prog_mask_rounded, "uCornerRadius"),
-                                           r.corner_radius)
+                                           max(5.0, r.corner_radius))
                         else:
                             gl.glUseProgram(self._prog_mask)
                             gl.glUniform1f(gl.glGetUniformLocation(self._prog_mask, "uRankNorm"), rank_norm)

@@ -347,13 +347,13 @@ def draw_collection(input_value, draw_state, depth, style_manager,
             imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
             imgui.pop_style_var()
 
-            item_changed, out_val, returned_ds = draw_any(item, return_extras=True, indent_size=10, key=key,
-                                                     meta=item_meta, trigger_collapse=trigger_collapse,
-                                                     trigger_expand=trigger_expand, y_offset=y_offset,
-                                                     on_collapse=on_collapse, on_expand=on_expand,
-                                                     collection=input_value, name=key_str, display_name=display_name,
-                                                     parent_show_add_delete=show_add_delete,
-                                                     show_add_delete=show_add_delete)
+            item_changed, out_val, returned_ds = draw_any(item, return_extras=True, key=key,
+                                                          meta=item_meta, trigger_collapse=trigger_collapse,
+                                                          trigger_expand=trigger_expand, y_offset=y_offset,
+                                                          on_collapse=on_collapse, on_expand=on_expand,
+                                                          collection=input_value, name=key_str, display_name=display_name,
+                                                          parent_show_add_delete=show_add_delete,
+                                                          show_add_delete=show_add_delete)
             imgui.dummy(0, 0)
             imgui.end_group()
 
@@ -1049,7 +1049,6 @@ def cst_header(func, **o_kwargs):
         next_kwargs['show_bg'] = kwargs.get('show_bg', True)
         next_kwargs['is_tree'] = kwargs.get('is_tree', True)
         next_kwargs['y_offset'] = Melty.collection_spacing
-        next_kwargs['wrap'] = True
 
         return core_header(**next_kwargs)
 
@@ -1115,10 +1114,16 @@ def draw_cst_name(input_value: cst.Name):
 
 
 @cst_header(is_default_for=(cst.Expr, cst.Element), header_same_line=True, show_header=False,
-            show_bg=False, show_name=False, wrap=True)
+            show_bg=False, show_name=True, wrap=True)
 def draw_cst_expr(input_value):
     # Just render the wrapped expression
-    draw_any(input_value.value, wrap=True)
+    imgui.dummy(0,0)
+    if hasattr(input_value, 'value'):
+        imgui.text("Expr(?)")
+        return draw_any(input_value.value)
+
+    else:
+        imgui.text("Expr(?)")
 # --- Function Calls ---
 
 # Call name
@@ -1130,6 +1135,7 @@ def call_name(call: cst.Call):
 
 @cst_header(is_default_for=cst.Call, header_same_line=True, name_func=call_name, wrap=True)
 def draw_cst_call(input_value: cst.Call):
+    imgui.same_line()
     imgui.align_text_to_frame_padding()
     imgui.text(" (")
     imgui.same_line()
@@ -1146,7 +1152,6 @@ def draw_cst_call(input_value: cst.Call):
 @cst_header(is_default_for=cst.List, show_name=False, show_bg=False,
             header_same_line=True, wrap=True)
 def draw_cst_list(input_value: cst.List):
-    imgui.dummy(0,0)
     imgui.same_line()
     imgui.align_text_to_frame_padding()
     imgui.text("[")
@@ -1876,7 +1881,7 @@ def seperator(height):
     imgui.separator()
     imgui.dummy(0, snap_int(height / 2))
 
-def draw_bg(left=0, top=0, width=20, height=20, depth=0,
+def draw_bg(left=0, top=0, width=20, height=20, depth=0, rounding=5.0,
             global_style=None, outline=True, bg_color=None, opacity=1.0,
             style_manager=None, tint=None, outline_tint=None, selected=False,
             hovered=False, auto_resize=False, **kwargs):
@@ -1885,7 +1890,6 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
         return Melty.current_indent
 
     depth = len(Melty.bg_stack) * 2
-    rounding = 5.0
 
     right =  left + width
     bottom =  top + height
@@ -1904,13 +1908,13 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
     dynamic_value = max(0, (float(depth + depth_offset) * depth_factor))
     bg_style = {
         "value": 0.01,
-        "saturation": 1.2,
+        "saturation": 1.6,
         "alpha": 1.0,
         'max_value': 1.0
     }
     hovered_offset = 0.0
     if selected:
-        hovered_offset = 0.6
+        hovered_offset = 0.2
     # elif hovered:
     #     hovered_offset = 0.6
 
@@ -1921,7 +1925,7 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
 
     bg_style = global_style.get_global_constant("bg_style", default=bg_style, folder="bg_styles")
     outline_saturation = global_style.get_global_constant("outline_saturation", default=0.5, folder="bg_styles")
-    outline_offset = global_style.get_global_constant("outline_offset", default=0.0, folder="bg_styles") - 0.07
+    outline_offset = global_style.get_global_constant("outline_offset", default=0.0, folder="bg_styles") - 0.09
     outline_factor = global_style.get_global_constant("outline_factor", default=1.0, folder="bg_styles") * 1.05
 
     if not auto_resize:
@@ -1933,7 +1937,7 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0,
         bleed_factor = 0.2
     else:
         bleed_factor = 0.0
-    bg_bleed = Melty.get_bg_color(-1)
+    bg_bleed = Melty.get_bg_color(-2)
     bg_bleed = style_manager.make_custom_styled(*bg_bleed, input=bg_style,
                                                 value=0.6,
                                                 alpha=1.0, saturation=1.8)
@@ -2316,7 +2320,7 @@ def render_profiler_time(input_value=None, brief=False, style_manager=None,
 #     return changed, new_value
 
 
-def draw_any(input_value, indent_size=0, **kwargs):
+def draw_any(input_value, **kwargs):
     # # meta handlin
     meta = kwargs.get("meta", None)
     if meta is None:
@@ -2344,7 +2348,7 @@ def draw_none(input_value: NoneType):
     return False, input_value
 
 
-@with_header_minimal(is_default_for=(bool), header_same_line=True, use_cache=False)
+@with_header_minimal(is_default_for=(bool), header_same_line=True, use_cache=False, shadow=False)
 def draw_bool(input_value: bool):
     changed, is_checked = imgui.checkbox("##bool", input_value)
     if changed:
@@ -2353,11 +2357,10 @@ def draw_bool(input_value: bool):
     return False, None
 
 
-@with_header_minimal(is_default_for=(str), shadow=False)
-def draw_str(input_value: str):
+@with_header_minimal(is_default_for=(str), shadow=False, wrap=False)
+def draw_str(input_value: str, draw_state):
     line_count = input_value.count('\n') + 1
     line_height = imgui.get_text_line_height_with_spacing()
-    changed, value = False, input_value
 
     if line_count == 1:
         padding = imgui.get_style().frame_padding.y
@@ -2365,40 +2368,25 @@ def draw_str(input_value: str):
     else:
         height = (max(0, min(200, line_count * line_height + 6)))
 
-    # multi line doesn't work with clipping, patch to fix
-    clip_rect = Melty.get_clip_rect()
-    space_left_bottom = float('inf')
-    space_from_top = float('inf')
-    if clip_rect is not None:
-        cursor_y = imgui.get_cursor_screen_pos()[1]
-        space_left_bottom = clip_rect[3] - cursor_y
-        space_from_top = cursor_y - clip_rect[1]
-
-    left_edge = Melty.get_clip_rect()[0] if Melty.get_clip_rect() is not None else 0
-    start_x = imgui.get_cursor_screen_pos()[0]
-    start_offset = start_x - left_edge
-
     show_controls = True
-    width = min(Melty.get_space_left(), 400 - start_offset)
 
     if not show_controls:
         imgui.push_style_var(imgui.STYLE_ALPHA, 0)
 
     if line_count == 1:
-        # imgui.set_next_item_width(width)
+        imgui.set_next_item_width(draw_state.width - 5)
         changed, value = imgui.input_text("##str", input_value,
                                           flags=imgui.INPUT_TEXT_ENTER_RETURNS_TRUE)
     else:
-        changed, value = imgui.input_text_multiline("##str", input_value, width=width, height=height)
+        changed, value = imgui.input_text_multiline("##str", input_value,
+                                                    width=draw_state.width - 5, height=height)
 
     if not show_controls:
         imgui.pop_style_var(1)
 
     if changed:
         return True, value
-
     return changed, value
-
 
 @with_header_minimal(is_default_for=('tint'), has_popup=True, indent_size=0, use_cache=False)
 def draw_tuple(input_value: tuple, unique):
@@ -2459,7 +2447,7 @@ class TestClass(DictConversion):
 @with_header_minimal(is_default_for=float, use_cache=False, shadow=False, wrap=False)
 def draw_float(input_value:float, draw_state, min_value=-100.0, max_value=100.0, speed=0.01):
 
-    imgui.set_next_item_width(draw_state.width)
+    imgui.set_next_item_width(draw_state.width - 5)
     changed, value = imgui.drag_float("##float", input_value,
                                       change_speed=speed,
                                       min_value=min_value,
@@ -2574,8 +2562,8 @@ def draw_function(input_value, name, draw_state, unique):
 
     return False, input_value
 
-@with_header(is_default_for=(int), shadow=False, wrap=True, header_same_line=True, wraps=render_func)
-def draw_int(input_value: int, draw_state, min_value=-100.0, max_value=100.0, speed=0.05, unique=0):
+@with_header_minimal(is_default_for=(int), shadow=False, wrap=True, header_same_line=True, wraps=render_func)
+def draw_int(input_value: int, min_value=-100.0, max_value=100.0, speed=0.05, unique=0):
     int_text_width = imgui.calc_text_size(str(input_value))[0]
     imgui.set_next_item_width(int_text_width + 20)
 

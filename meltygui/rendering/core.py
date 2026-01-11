@@ -834,6 +834,7 @@ def render_func(*args, **o_kwargs):
             show_bg = kwargs.get("show_bg", False)
             draw_state.shadow = kwargs.get("shadow", draw_state.shadow)
             if show_bg or selected or not draw_state.expanded:
+                draw_state.corner_radius = 5.0
                 from src.lsd.gl_gui.view.core_views.new_core_view import draw_bg
                 style_manager = Melty.global_attrs['style_manager']
                 global_style = Melty.global_attrs['global_style']
@@ -841,19 +842,22 @@ def render_func(*args, **o_kwargs):
                 Melty.undo_clip(unique, 1)
                 if width > 5 and height > 5:
                     _, bg_color = draw_bg(bypass=True, left=left + 1, top=top,
-                                          width=width - 2, height=height,
+                                          width=width - 2, height=height, rounding=draw_state.corner_radius,
                                           depth=Melty.depth, selected=draw_state in Melty.selected,
                                           global_style=global_style, opacity=1.0 if show_bg else 0.0,
                                           style_manager=style_manager, auto_resize=auto_resize)
-
                 Melty.redo_clip(unique)
+
+            else:
+                draw_state.corner_radius = 0.0
+
             #### MAIN CALL #######################################################
             clip_rect = Melty.get_clip_rect()
 
             if not is_header:
                 Melty.push_clip((left, top,
                                  left + width,
-                                 top + height))
+                                 top + height - 2))
 
             return_value = draw_inner_main(clean_args, clip_rect, draw_state,
                                            input_value, kwargs, auto_resize,
@@ -922,7 +926,7 @@ def render_func(*args, **o_kwargs):
                             fixed_size_draw_state = Melty.fixed_size_stack[-1]
                             rect = fixed_size_draw_state.get_rect()
                             x_offset = draw_state.left - rect[0]
-                            width = rect[2] - x_offset - 5
+                            width = rect[2] - x_offset
                             min_width = min(width, item_rect[0])
                             draw_state.width = snap_int(min_width)
                         else:
@@ -1144,7 +1148,7 @@ def render_func(*args, **o_kwargs):
             x_offset = start_cursor[0] - rect[0]
 
             if not Melty.is_wrapped():
-                draw_state.width = rect[2] - x_offset - 5
+                draw_state.width = rect[2] - x_offset - ((len(Melty.bg_stack) + 1) * 2.0)
 
             if kwargs.get("fill_height", False):
                 draw_state.height = snap_int(fixed_size_draw_state.height - (start_cursor[1] - rect[1]))

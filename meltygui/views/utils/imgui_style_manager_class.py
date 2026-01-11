@@ -343,6 +343,7 @@ class ImGuiStyleManager:
         def make_color(input, alpha=1.0):
             value = input["value"]
             saturation_scale = input["saturation"]
+            self.root.global_style.base_value = 0.3
             value = (v * self.root.global_style.base_value) + value
             alpha = input["alpha"]
 
