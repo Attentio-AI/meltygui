@@ -211,7 +211,7 @@ def render_func(*args, **o_kwargs):
 
         if Melty.depth > Melty.max_depth:
             if return_extras:
-                return False, None, kwargs
+                return False, None, None
             return False, None
 
         # ----- Unique computation BEFORE pushing ID scope (avoid divergence) -----
@@ -362,7 +362,7 @@ def render_func(*args, **o_kwargs):
                 # Melty.cache.mark_uncached(unique, input_value, collection, tile_id, draw_state)
 
                 if return_extras:
-                    return *return_value, kwargs
+                    return *return_value, draw_state
                 return return_value
 
         if not draw_state.expanded:
@@ -610,6 +610,7 @@ def render_func(*args, **o_kwargs):
                     imgui.set_cursor_screen_pos(reset_to)
                     imgui.set_item_allow_overlap()
 
+
             begin_group(unique)
             push_id(unique)
 
@@ -644,12 +645,12 @@ def render_func(*args, **o_kwargs):
             if kwargs.get("closable", False):
                 if draw_state.closed and not input_value == Melty.registered_windows:
                     if return_extras:
-                        return False, None, kwargs
+                        return False, None, draw_state
                     return False, None
 
             if not meta.visible_in_ui:
                 if return_extras:
-                    return False, None, kwargs
+                    return False, None, draw_state
                 return False, None
             ###########################################################
             kwargs['next_kwargs'] = kwargs
@@ -865,20 +866,24 @@ def render_func(*args, **o_kwargs):
             draw_state.frame_count += 1
             if Melty.imgui_crashed:
                 if return_extras:
-                    return False, None, kwargs
+                    return False, None, draw_state
                 return False, None
 
             if has_collection:
                 Melty.collection_stack.pop()
 
             pop_id()
+
             if not kwargs.get("imgui_padding", True):
                 push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
                 push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
                 end_group()
                 pop_style_var(2)
             else:
+                push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
+                push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
                 end_group()
+                pop_style_var(2)
 
             item_rect = imgui.get_item_rect_size()
 
@@ -921,17 +926,6 @@ def render_func(*args, **o_kwargs):
             if draw_state.height > 10000:
                 draw_state.height = 10000
 
-            ################################# SCROLLING
-            d_left = draw_state.left
-            d_top = draw_state.top
-            d_width = draw_state.width
-            d_height = draw_state.height
-            scrollbar_width = 5.0
-
-            # elif not imgui.is_mouse_down(0):
-            #     draw_state.scroll_offset = (0, 0)
-            ########################################### ACTIONS #######################
-
             draw_state._hovered = False
             draw_state.hotkey_receiver = False
 
@@ -964,9 +958,9 @@ def render_func(*args, **o_kwargs):
             end_time = time.time()
             # if not "with_header" in func.__name__:
             draw_state.render_time = end_time - start_time
+            style = imgui.get_style()
 
             if is_root:
-                style = imgui.get_style()
                 style.item_spacing = Melty.original_spacing
                 style.window_padding = Melty.original_window_padding
                 style.frame_padding = Melty.original_frame_padding
@@ -975,6 +969,7 @@ def render_func(*args, **o_kwargs):
                     draw_list = imgui.get_window_draw_list()
                     Melty.channels_split = False
                     draw_list.channels_merge()
+
             # over_header_end_time = time.time()
             #
             # overhead_time = (over_header_end_time - over_header_start_time)
@@ -1003,7 +998,7 @@ def render_func(*args, **o_kwargs):
             #                          style_manager=style_manager, global_style=global_style)
             # imgui.end_group()
             if return_extras:
-                return changed, new_value, kwargs
+                return changed, new_value, draw_state
             return changed, new_value
 
     def draw_inner_main(clean_args, clip_rect, draw_state, input_value, kwargs,
@@ -1139,10 +1134,12 @@ def render_func(*args, **o_kwargs):
         if use_cache:
             Melty.cache.mark_end_offscreen()
 
+
         if do_scroll or indent_x > 0:
             start_cursor = imgui.get_cursor_screen_pos()
             imgui.set_cursor_screen_pos((start_cursor[0] - indent_x,
                                          start_cursor[1] + scroll_offset[1]))
+
 
         if not auto_resize:
             Melty.fixed_size_stack.pop()

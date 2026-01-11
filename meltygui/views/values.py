@@ -242,6 +242,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
     scroll_offset = draw_state.scroll_offset
     true_left = draw_state.left - scroll_offset[0]
     true_top = draw_state.top - scroll_offset[1]
+    imgui.set_cursor_screen_pos((true_left, true_top))
 
     for idx in range(start_index, end_index + 1):
         key = keys[idx]
@@ -258,9 +259,9 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
                     bottom = screen_pos[1] + child_draw_state.height
                     if (bottom < rect[1] or screen_pos[1] > rect[3]):
-                        imgui.set_cursor_screen_pos(((true_left + child_draw_state.relative_pos[0]),
+                        imgui.set_cursor_screen_pos((draw_state.left,
                                                      (true_top + child_draw_state.relative_pos[1] +
-                                                      child_draw_state.height + 1)))
+                                                      child_draw_state.height)))
                         continue
 
         Melty.collection_index_stack[this_collection] = idx
@@ -342,46 +343,34 @@ def draw_collection(input_value, draw_state, depth, style_manager,
             all_meta.append(item_meta)
             if show_indices or isinstance(collection, (list, tuple, set, deque)):
                 display_name = f"{str(idx)}"
-
-
-
             imgui.begin_group()
             imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
             imgui.dummy(0, 0)
             imgui.pop_style_var()
 
-            item_changed, out_val, extras = draw_any(item, return_extras=True, indent_size=10, key=key,
+            item_changed, out_val, returned_ds = draw_any(item, return_extras=True, indent_size=10, key=key,
                                                      meta=item_meta, trigger_collapse=trigger_collapse,
                                                      trigger_expand=trigger_expand, y_offset=y_offset,
                                                      on_collapse=on_collapse, on_expand=on_expand,
                                                      collection=input_value, name=key_str, display_name=display_name,
                                                      parent_show_add_delete=show_add_delete,
                                                      show_add_delete=show_add_delete)
-            imgui.dummy(1, 1)
-
+            imgui.dummy(0, 0)
             imgui.end_group()
 
-            if horizontal:
-                if item_meta is not None and hasattr(item_meta, 'tmp_draw_state'):
-                    imgui.same_line()
+            if returned_ds is not None:
+                draw_state._children[idx] = returned_ds
+                returned_ds._collection_draw_state = draw_state
+                returned_ds.relative_pos = relative_pos
+                if horizontal:
+                    imgui.same_line(spacing=0)
+                    imgui.set_cursor_screen_pos((returned_ds.left + returned_ds.width, returned_ds.top))
                     rect = Melty.get_clip_rect()
-                    item_size = imgui.get_item_rect_max()[0]
                     right_edge = rect[2]
-                    space_left = right_edge - item_size
+                    space_left = right_edge - (returned_ds.left + returned_ds.width)
 
-                    if item_meta.tmp_draw_state.width is not None:
-                        if space_left < 0:
-                            imgui.new_line()
-
-            if 'draw_state' in extras:
-                returned_ds = extras.get('draw_state', None)
-                if returned_ds is not None:
-                    draw_state._children[idx] = returned_ds
-                    returned_ds._collection_draw_state = draw_state
-                    returned_ds.relative_pos = relative_pos
-
-                if draw_state._first_draw_state is None:
-                    draw_state._first_draw_state = extras.get('draw_state', None)
+                    if space_left < returned_ds.width:
+                        imgui.new_line()
 
                 # if draw_state is not None:
                 #     draw_state.previous = previous_draw_state
@@ -1900,9 +1889,6 @@ def seperator(height):
     imgui.separator()
     imgui.dummy(0, snap_int(height / 2))
 
-
-
-
 def draw_bg(left=0, top=0, width=20, height=20, depth=0,
             global_style=None, outline=True, bg_color=None, opacity=1.0,
             style_manager=None, tint=None, outline_tint=None, selected=False,
@@ -2601,7 +2587,7 @@ def draw_function(input_value, name, draw_state, unique):
 
     return False, input_value
 
-@with_header_minimal(is_default_for=(int), shadow=False, wrap=True, header_same_line=True, wraps=render_func)
+@with_header(is_default_for=(int), shadow=False, wrap=True, header_same_line=True, wraps=render_func)
 def draw_int(input_value: int, draw_state, min_value=-100.0, max_value=100.0, speed=0.05, unique=0):
     int_text_width = imgui.calc_text_size(str(input_value))[0]
     imgui.set_next_item_width(int_text_width + 20)
@@ -2673,3 +2659,5 @@ def draw_enum(input_value:Enum, global_style=None, style_manager=None, enum_tint
     pop_style_var(1)
 
     return changed, selected_enum
+
+
