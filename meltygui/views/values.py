@@ -147,7 +147,7 @@ def with_header(func, **o_kwargs):
 
     return wrapper
 
-@with_header(is_default_for=(MutableMapping, defaultdict), use_cache=False, shadow=True, enable_scroll=True)
+@with_header(is_default_for=(MutableMapping, defaultdict), use_cache=False, shadow=True, wrap=False, enable_scroll=True)
 def draw_collection(input_value, draw_state, depth, style_manager,
                     meta, suffix, melty, show_search=True, on_collapse=False, on_drag_up=False, y_offset=0,
                     on_expand=False, width=None, indent_size=10, global_style=None, global_toggles=None,
@@ -345,7 +345,6 @@ def draw_collection(input_value, draw_state, depth, style_manager,
                 display_name = f"{str(idx)}"
             imgui.begin_group()
             imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
-            imgui.dummy(0, 0)
             imgui.pop_style_var()
 
             item_changed, out_val, returned_ds = draw_any(item, return_extras=True, indent_size=10, key=key,
@@ -597,20 +596,21 @@ def draw_melty_windows(vis):
     end()
 
 
-@with_header(is_default_for=PendingTexture, use_cache=False, enable_scroll=False,
-             auto_resize=True, indent_size=0)
+@with_header(is_default_for=PendingTexture, use_cache=True,
+             show_bg=False, enable_scroll=False,
+             auto_resize=True, indent_size=0, shadow=True)
 def draw_pending_texture(input_value:PendingTexture, draw_state):
     if input_value.texture_id is None:
         imgui.text(f"Uploading... {id(input_value)}")
         return False, None
 
-    return draw_texture(input_value.texture_id, name=f"{input_value.name[:30]}",
+    return draw_texture(input_value.texture_id, name=f"{draw_state.id}_inner",
                         width=draw_state.width, height=draw_state.height,
-                 auto_resize=False, show_header=False, indent_size=0)
+                 auto_resize=False, show_header=False, indent_size=0, wrap=False)
 
 @with_header(is_default_for=numpy.uint32, show_bg=True,
-             use_cache=False, show_add_delete=False,
-             indent_size=1, min_width=100, min_height=100,
+             use_cache=True, show_add_delete=False, shadow=True,
+             indent_size=0, min_width=100, min_height=100, wrap=False,
              enable_scroll=True, zoom_speed=0.2, fill_height=True)
 def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mouse_drag, right_mouse_drag,
                  zoom_state: ZoomState, zoom_speed, header_height=0, min_zoom=0.1,
@@ -632,17 +632,18 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
         return False, None
 
     # 1. Query Texture Properties
+    original_texture = gl.glGetIntegerv(gl.GL_TEXTURE_BINDING_2D)
     gl.glBindTexture(gl.GL_TEXTURE_2D, texture_id)
 
     width = gl.glGetTexLevelParameteriv(gl.GL_TEXTURE_2D, 0, gl.GL_TEXTURE_WIDTH)
     height = gl.glGetTexLevelParameteriv(gl.GL_TEXTURE_2D, 0, gl.GL_TEXTURE_HEIGHT)
     gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
 
-    if draw_state.width is None:
-        draw_state.width = width
-
-    if draw_state.height is None:
-        draw_state.height = height
+    # if draw_state.width is None:
+    #     draw_state.width = (width)
+    #
+    # if draw_state.height is None:
+    #     draw_state.height = (height)
 
     if width > 16384 or height > 16384:
         imgui.text(f"Error: Texture size {width}x{height} exceeds maximum supported size.")
@@ -652,8 +653,8 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
         return False, None
 
     # 2. Canvas Setup (Fill available space)
-    view_width = max(1, draw_state.width - 2)
-    view_height = max(1, draw_state.height - header_height - 2)
+    view_width = max(1, draw_state.width)
+    view_height = max(1, draw_state.height)
 
     # 3. Calculate Aspect Ratio Corrections
     tex_aspect = width / height
@@ -670,7 +671,9 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
         uv_height_size = uv_width_size * (tex_aspect / view_aspect)
 
     # 4. Handle Input and Interaction
-    imgui.dummy(view_width, view_height)
+    imgui.dummy((view_width) - 1, (view_height) - 1)
+    Melty.cache.mask_mark_rect(Melty.max_depth - 1, draw_state.left, draw_state.top, view_width, view_height,
+                               key=f"texture_{original_id}")
 
     mixed_color = (1, 1, 1, 1)
     highlight_color = (1, 1, 1, 1)
@@ -748,17 +751,14 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
     #     radius=1.0,
     #     angle=(zoom_state.brightness * 5),
     # )
-
-
-
     # texture_id = Melty.filter.swirl(
     #     texture_id,
     #     angle=zoom_state.brightness,
     #     radius=zoom_state.contrast
     # )
 
-    p_min = (imgui.get_item_rect_min()[0] + 2, imgui.get_item_rect_min()[1] + 2)
-    p_max = (imgui.get_item_rect_max()[0] - 1, imgui.get_item_rect_max()[1] - 1)
+    p_min = (draw_state.left + 2, draw_state.top + 2)
+    p_max = (draw_state.left + draw_state.width, draw_state.top + draw_state.height - 2)
     p_min_x, p_min_y = p_min[0], p_min[1]
 
     scroll_delta = 0
@@ -938,12 +938,12 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
                        0.0, 0, 1.0)
     Melty.pop_clip()
 
-
-
     line_height = imgui.get_text_line_height()
     draw_list.add_text(max(p_min_x + 5, raw_img_left), clip_top - line_height - 5,
                        imgui.get_color_u32_rgba(*mixed_color[:3],1.0),
                        text=f"{original_id} - {texture_id} - {width}x{height} - Zoom: {zoom_state.zoom:.2f}x")
+
+    gl.glBindTexture(gl.GL_TEXTURE_2D, original_texture)
 
     return True, draw_state
 
@@ -954,7 +954,7 @@ def draw_debug(input_value, melty):
     draw_any(melty)
 
 @with_header(is_default_for=ManagedWindow, is_tree=False, show_name=False,
-             show_bg=True, show_add_delete=False, show_tint=False)
+             show_bg=True, show_add_delete=False, show_tint=False, wrap=False)
 def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, mouse_down=False, **kwargs):
     window_draw_state = input_value.draw_state
     window_input_value = input_value.input_value
@@ -1049,6 +1049,7 @@ def cst_header(func, **o_kwargs):
         next_kwargs['show_bg'] = kwargs.get('show_bg', True)
         next_kwargs['is_tree'] = kwargs.get('is_tree', True)
         next_kwargs['y_offset'] = Melty.collection_spacing
+        next_kwargs['wrap'] = True
 
         return core_header(**next_kwargs)
 
@@ -1056,18 +1057,18 @@ def cst_header(func, **o_kwargs):
 
     return wrapper
 
-@cst_header(is_default_for=cst.SimpleStatementLine, header_same_line=True)
+@cst_header(is_default_for=cst.SimpleStatementLine, header_same_line=True, wrap=True)
 def draw_cst_single_line(input_value: cst.SimpleStatementLine):
     # An Assign has one or more targets, an AssignEqual token, and a value
-    draw_any(input_value.body)
+    draw_any(input_value.body, wrap=True)
 
 
-@cst_header(is_default_for=cst.Comment)
+@cst_header(is_default_for=cst.Comment, wrap=True)
 def draw_comment(input_value: cst.Comment, **kwargs):
     # imgui.text(f"# {input_value.value}")
     pass
 
-@cst_header(is_default_for=cst.SimpleWhitespace, header_same_line=True, show_name=False)
+@cst_header(is_default_for=cst.SimpleWhitespace, header_same_line=True, show_name=False, shadow=False, wrap=True)
 def draw_cst_simple_whitespace(input_value: cst.SimpleWhitespace):
     # An Assign has one or more targets, an AssignEqual token, and a value
     # imgui.same_line()
@@ -1092,7 +1093,7 @@ def assign_name(input_value: cst.Assign):
     else:
         return "Multiple Targets"
 
-@cst_header(is_default_for=cst.Assign, header_same_line=True, name_func=assign_name)
+@cst_header(is_default_for=cst.Assign, header_same_line=True, name_func=assign_name, wrap=True)
 def draw_cst_assign(input_value: cst.Assign):
     # An Assign has one or more targets, an AssignEqual token, and a value
     # draw_collection(input_value.targets)
@@ -1102,23 +1103,22 @@ def draw_cst_assign(input_value: cst.Assign):
 
 
 # --- Names ---
-@cst_header(is_default_for=cst.AssignTarget)
+@cst_header(is_default_for=cst.AssignTarget, wrap=True)
 def draw_assign_target(input_value: cst.AssignTarget):
     draw_any(input_value.target)
 
-
 # --- Names ---
-@render_func(is_default_for=cst.Name)
+@render_func(is_default_for=cst.Name, wrap=True)
 def draw_cst_name(input_value: cst.Name):
     # imgui.text(f"{input_value.value}")
     pass
 
 
 @cst_header(is_default_for=(cst.Expr, cst.Element), header_same_line=True, show_header=False,
-            show_bg=False, show_name=False)
+            show_bg=False, show_name=False, wrap=True)
 def draw_cst_expr(input_value):
     # Just render the wrapped expression
-    draw_any(input_value.value)
+    draw_any(input_value.value, wrap=True)
 # --- Function Calls ---
 
 # Call name
@@ -1128,16 +1128,15 @@ def call_name(call: cst.Call):
     else:
         return ""
 
-@cst_header(is_default_for=cst.Call, header_same_line=True, name_func=call_name)
+@cst_header(is_default_for=cst.Call, header_same_line=True, name_func=call_name, wrap=True)
 def draw_cst_call(input_value: cst.Call):
+    imgui.align_text_to_frame_padding()
+    imgui.text(" (")
+    imgui.same_line()
+    draw_any(input_value.args, wrap=True, horizontal=True)
     imgui.same_line()
     imgui.align_text_to_frame_padding()
-    imgui.text("(")
-    imgui.same_line()
-    draw_any(input_value.args, horizontal=True)
-    imgui.same_line()
-    imgui.align_text_to_frame_padding()
-    imgui.text(")")
+    imgui.text(" )")
 
 #
 # @with_header(is_default_for=cst.Module, use_cache=True, show_add_delete=False)
@@ -1145,19 +1144,20 @@ def draw_cst_call(input_value: cst.Call):
 #     return draw_any(input_value.body, show_name=False)
 
 @cst_header(is_default_for=cst.List, show_name=False, show_bg=False,
-            header_same_line=True)
+            header_same_line=True, wrap=True)
 def draw_cst_list(input_value: cst.List):
+    imgui.dummy(0,0)
     imgui.same_line()
     imgui.align_text_to_frame_padding()
     imgui.text("[")
     imgui.same_line()
-    draw_any(input_value.elements, horizontal=True)
+    draw_any(input_value.elements, wrap=True, horizontal=True)
     imgui.same_line()
     imgui.align_text_to_frame_padding()
     imgui.text("]")
 
 @render_func(is_default_for=CSTDictProxy, header_same_line=True,
-             show_bg=False, indent_size=0, draggable=True)
+             show_bg=False, indent_size=0, draggable=True, wrap=True)
 def draw_cst_dict(input_value: CSTDictProxy):
     show_indices = False
 
@@ -1168,11 +1168,11 @@ def draw_cst_dict(input_value: CSTDictProxy):
     # kwargs['show_name'] = False
 
     draw_collection(input_value, header_same_line=True, show_bg=False, enable_scroll=False,
-                    show_name=False, show_indices=show_indices, indent_size=0)
+                    show_name=False, show_indices=show_indices, indent_size=0, wrap=True)
 
 
 # --- Parameters ---
-@cst_header(is_default_for=cst.Parameters)
+@cst_header(is_default_for=cst.Parameters, wrap=True)
 def draw_cst_parameters(input_value: cst.Parameters):
     first = True
     for param in input_value.params:
@@ -1185,7 +1185,7 @@ def draw_cst_parameters(input_value: cst.Parameters):
 
 
 # --- Individual Parameter ---
-@cst_header(is_default_for=cst.Param)
+@cst_header(is_default_for=cst.Param, wrap=True)
 def draw_cst_param(input_value: cst.Param):
     draw_any(input_value.name)
     if input_value.default:
@@ -1209,27 +1209,14 @@ def arg_name(arg: cst.Arg):
     else:
         return None
 @with_header_minimal(is_default_for=cst.Arg, show_bg=True, name_attrib="keyword",
-                     name_func=arg_name, show_add_delete=False, header_same_line=True)
+                     name_func=arg_name, show_add_delete=False, header_same_line=True,
+                     wrap=True)
 def draw_cst_arg(input_value: cst.Arg):
-    draw_any(input_value.value)
+    draw_any(input_value.value, wrap=True)
 
 
 # --- Individual Parameter ---
-@render_func(is_default_for=cst.UnaryOperation, shadow=False, header_same_line=True, show_add_delete=False)
-def draw_cst_int(input_value, width=None):
-    int_str = input_value.value
-    cast_str_to_int = int(int_str, 0)
-    if cast_str_to_int == 25:
-        pass
-
-    changed, new_val = draw_int(cast_str_to_int, indent_size=0, show_name=False,
-                                show_add_delete=False)
-    if changed:
-        input_value.value = str(new_val)
-
-
-# --- Individual Parameter ---
-@render_func(is_default_for=(cst.UnaryOperation, cst.Integer), header_same_line=True, show_add_delete=False)
+@render_func(is_default_for=(cst.UnaryOperation, cst.Integer), header_same_line=True, show_add_delete=False, wrap=True)
 def draw_cst_int(input_value, width=None):
     # Format the magnitude to match the original literal's base/prefix/case.
     def _format_like(template: str, magnitude: int) -> str:
@@ -2469,7 +2456,7 @@ class TestClass(DictConversion):
         self.value = 2
         self.str_val = "Test"
 
-@with_header_minimal(is_default_for=float, use_cache=False, shadow=False)
+@with_header_minimal(is_default_for=float, use_cache=False, shadow=False, wrap=False)
 def draw_float(input_value:float, draw_state, min_value=-100.0, max_value=100.0, speed=0.01):
 
     imgui.set_next_item_width(draw_state.width)

@@ -403,9 +403,10 @@ def render_func(*args, **o_kwargs):
         Melty.input_value_stack.append(input_value)
         inc_depth = False
         Melty.wrapped_depth = Melty.wrapped_depth + 1
+        is_header = "with_header" in func.__name__
+
         melty_window = False
         draw_state.tint = kwargs.get("tint", draw_state.tint)
-        is_header = "with_header" in func.__name__
         melty_window = kwargs.get("melty_window", False) and not is_header
         melty_window_header = kwargs.get("melty_window", False)
         previous_tint = None
@@ -510,6 +511,15 @@ def render_func(*args, **o_kwargs):
 
             kwargs['depth'] = Melty.depth
             draw_state._draggable = kwargs.get("draggable", False)
+
+            # Wrapping
+            parent_wrap = Melty.wrap_stack[-1] if len(Melty.wrap_stack) > 0 else False
+            this_wrap = kwargs.get("wrap", True)
+            if not auto_resize:
+                parent_wrap = False
+                this_wrap = False
+
+            Melty.wrap_stack.append(this_wrap or parent_wrap)
 
             if draw_state.get_drag_mode() == DragMode.RESIZE_BR:
                 melty.hover_stack.append(unique)
@@ -661,6 +671,9 @@ def render_func(*args, **o_kwargs):
             ###########################################################
             draw_state.channel = Melty.get_channel()
 
+
+
+
             if not auto_resize:
                 draw_list = imgui.get_window_draw_list()
                 if Melty.channels_split:
@@ -695,7 +708,13 @@ def render_func(*args, **o_kwargs):
             header_height_diff = draw_state.top - top
             header_width_diff = draw_state.left - left
             c_width = draw_state.width + header_width_diff
-            c_height = draw_state.height + header_height_diff
+
+            if kwargs.get("show_bg", False):
+                c_height = draw_state.height + header_height_diff
+
+            else:
+                c_height = draw_state.height
+                top = kwargs.get("header_top", draw_state.top) + header_height_diff
 
             # width = max(c_width, width)
             height = max(c_height, height)
@@ -811,6 +830,7 @@ def render_func(*args, **o_kwargs):
                 selected = True
                 # draw_state.draw_rect(rounding=5.0)
 
+
             show_bg = kwargs.get("show_bg", False)
             draw_state.shadow = kwargs.get("shadow", draw_state.shadow)
             if show_bg or selected or not draw_state.expanded:
@@ -821,7 +841,7 @@ def render_func(*args, **o_kwargs):
                 Melty.undo_clip(unique, 1)
                 if width > 5 and height > 5:
                     _, bg_color = draw_bg(bypass=True, left=left + 1, top=top,
-                                          width=width - 1, height=height,
+                                          width=width - 2, height=height,
                                           depth=Melty.depth, selected=draw_state in Melty.selected,
                                           global_style=global_style, opacity=1.0 if show_bg else 0.0,
                                           style_manager=style_manager, auto_resize=auto_resize)
@@ -895,11 +915,18 @@ def render_func(*args, **o_kwargs):
             if melty_window and draw_state.height < 30:
                 draw_state.height = 30
 
-
             if auto_resize:
-                if len(Melty.fixed_size_stack) == 0:
+                if len(Melty.fixed_size_stack) == 0 or Melty.is_wrapped():
                     if passed_width is None:
-                        draw_state.width = snap_int(item_rect[0])
+                        if len(Melty.fixed_size_stack) > 0 and draw_state.auto_resize:
+                            fixed_size_draw_state = Melty.fixed_size_stack[-1]
+                            rect = fixed_size_draw_state.get_rect()
+                            x_offset = draw_state.left - rect[0]
+                            width = rect[2] - x_offset - 5
+                            min_width = min(width, item_rect[0])
+                            draw_state.width = snap_int(min_width)
+                        else:
+                            draw_state.width = snap_int(item_rect[0])
                     else:
                         draw_state.width = passed_width
 
@@ -936,6 +963,7 @@ def render_func(*args, **o_kwargs):
 
             Melty.input_value_stack.pop()
             Melty.size_stack.pop()
+            Melty.wrap_stack.pop()
 
             if melty_window:
                 Melty.melty_window_stack.pop()
@@ -1115,10 +1143,8 @@ def render_func(*args, **o_kwargs):
             rect = fixed_size_draw_state.get_rect()
             x_offset = start_cursor[0] - rect[0]
 
-            if not kwargs.get("wrap", False):
+            if not Melty.is_wrapped():
                 draw_state.width = rect[2] - x_offset - 5
-            else:
-                draw_state.width = 100
 
             if kwargs.get("fill_height", False):
                 draw_state.height = snap_int(fixed_size_draw_state.height - (start_cursor[1] - rect[1]))

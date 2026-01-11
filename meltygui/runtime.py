@@ -23,8 +23,6 @@ class Melty:
     last_selected = None
 
     draw_state_stack = []
-
-
     root_draw_states = set()
     root_draw_states_by_layer = defaultdict(lambda: set())
 
@@ -53,6 +51,7 @@ class Melty:
     registered_windows = {}
     scroll_stack = []
     tile_id_stack = []
+    wrap_stack = []
 
     content_height_stack = []
 
@@ -239,6 +238,13 @@ class Melty:
 
         from src.lsd.gl_gui.view.core_views.core_render_helpers import clear_floating_text_cache
         clear_floating_text_cache()
+
+    @classmethod
+    def is_wrapped(cls):
+        if len(cls.wrap_stack) == 0:
+            return False
+        else:
+            return cls.wrap_stack[-1]
 
     @classmethod
     def end_frame(cls):
