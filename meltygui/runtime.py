@@ -52,6 +52,7 @@ class Melty:
     scroll_stack = []
     tile_id_stack = []
     wrap_stack = []
+    previous_select = None
 
     content_height_stack = []
 
@@ -61,7 +62,7 @@ class Melty:
 
     actions_to_apply = []
 
-    init_window_cursor = (350, 350)
+    init_window_cursor = (0, 0)
 
     last_invalid_attr = ""
     last_invalid = deque(maxlen=10)
@@ -249,7 +250,6 @@ class Melty:
     @classmethod
     def end_frame(cls):
 
-        cls.returned_values = {}
 
         # cls.draw_blockers_to()
         # Manually mask windows
@@ -263,7 +263,7 @@ class Melty:
 
         cls.root_draw_states_by_layer = defaultdict(set)
         to_discard = set()
-        for ds in cls.root_draw_states:
+        for idx, ds in enumerate(cls.root_draw_states):
             if ds.closed:
                 to_discard.add(ds)
             else:
@@ -282,24 +282,6 @@ class Melty:
                 imgui.get_window_draw_list().channels_set_current(Melty.max_depth - 1)
                 Melty.channels_split = True
 
-            imgui.push_id(f"melty_layer_{idx}")
-            for draw_state in cls.root_draw_states_by_layer[idx]:
-                # Melty.cache.mask_mark_view(draw_state.z_pos, draw_state.left,
-                #                            draw_state.top, draw_state.width, draw_state.height,
-                #                            f"window_mask_{draw_state.id}", 4)
-                imgui.get_window_draw_list().channels_set_current(0)
-
-                Melty.cache.draw_tile(draw_state)
-
-                last_bounding_hovered = draw_state._bounding_hovered
-                new_bounding_hovered = draw_state.is_bounding_hovered()
-                hover_changed = last_bounding_hovered != new_bounding_hovered
-                draw_state._bounding_hovered = new_bounding_hovered
-                if (draw_state.width is None or draw_state.height is None or hover_changed or
-                        draw_state._bounding_hovered or draw_state._imgui_popover_open):
-                    Melty.cache.invalidate(draw_state._tile_id, force=True)
-                    # draw_state.draw_rect()
-
             for view in layer:
                 if view is not None:
                     draw_state = view[3]
@@ -315,14 +297,9 @@ class Melty:
                     current_tint = style_manager.get_tint()
                     style_manager.set_imgui_tint(*layer_tint)
 
-                    imgui.set_cursor_screen_pos((0, 0))
                     view_func = view[0]
                     input_value = view[1]
                     kwargs = view[2]
-
-                    fill_original = kwargs.get("start_pos", None) is not None
-                    if fill_original:
-                        imgui.set_cursor_screen_pos(kwargs["start_pos"])
 
                     imgui.set_cursor_screen_pos(cursor_pos)
 
@@ -333,9 +310,22 @@ class Melty:
                     style_manager.set_imgui_tint(*current_tint)
 
                     cls.cache.remove_parent()
-            imgui.pop_id()
 
+            for draw_state in cls.root_draw_states_by_layer[idx]:
+                # Melty.cache.mask_mark_view(draw_state.z_pos, draw_state.left,
+                #                            draw_state.top, draw_state.width, draw_state.height,
+                #                            f"view_mask_{draw_state.id}", 4)
 
+                Melty.cache.draw_tile(draw_state)
+
+                last_bounding_hovered = draw_state._bounding_hovered
+                new_bounding_hovered = draw_state.is_bounding_hovered()
+                hover_changed = last_bounding_hovered != new_bounding_hovered
+                draw_state._bounding_hovered = new_bounding_hovered
+                if (draw_state.width is None or draw_state.height is None or hover_changed or
+                        draw_state._bounding_hovered or draw_state._imgui_popover_open):
+                    Melty.cache.invalidate(draw_state._tile_id)
+                    # draw_state.invalidate_rect()
 
             Melty.depth = 0
             if Melty.channels_split:
@@ -343,8 +333,6 @@ class Melty:
                 imgui.get_window_draw_list().channels_set_current(0)
                 imgui.get_window_draw_list().channels_merge()
                 Melty.channels_split = False
-
-
 
         cls.layers = []
 
@@ -1394,6 +1382,7 @@ class MeltyState:
         self.max_distance = 200
 
         self.selected_views = {}
+
         self.drag_in_progress = False
 
         self.initial_drag_offset = (0, 0)

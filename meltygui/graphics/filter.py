@@ -382,7 +382,7 @@ class Filter:
         self._executor.clear_fbo_cache()
 
     def normalize(self, texture_id: int, in_place: bool = False,
-                  output_texture: Optional[int] = None, min_value=None, max_value=None) -> int:
+                  output_texture: Optional[int] = None, min_value=None, max_value=None) -> Any:
         """
         Normalize texture values to [0, 1] range by calculating min/max.
 
@@ -422,7 +422,7 @@ class Filter:
                 min_value=min_value,
                 max_value=max_value
             )
-            return result
+            return result, min_value, max_value
 
         finally:
             # Clean up temporary reduction textures

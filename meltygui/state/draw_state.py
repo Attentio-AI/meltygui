@@ -32,24 +32,6 @@ class SynthColors(DictConversion):
 #         self.adapter = None
 #         self.target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
 
-@no_save("mouse_up", "mouse_down", "drag_released", "hovered", "clicked", "dragged",
-         "mouse_down_pos", "initial_screen_pos", "drag_delta")
-class MouseState(DictConversion):
-    def __init__(self):
-        super().__init__()
-        self.mouse_up = False
-        self.mouse_down = False
-        self.drag_released = False
-        self.hovered = False
-        self.clicked = False
-        self.dragged = False
-        self.mouse_down_pos = (0, 0)
-        self.initial_screen_pos = (0, 0)
-        self.drag_delta = (0, 0)
-        self.initial_window_pos = (0, 0)
-        self.initial_scroll_offset = (0, 0)
-        self.dlt_count = Melty.save_draw_state_for
-
 
 class CSTDrawBits:
     def __init__(self):
@@ -101,7 +83,7 @@ class ZoomState(DictConversion):
          "header_height", "scrolled", "is_hovered_last", "frame_count")
 @no_save_exclude("live", 'render_time', 'content_height', 'invalid_content_height'
                   'hover_rects', 'nested_window', 'use_cache', 'depth', 'layer',
-                 'channel', 'next', 'previous', 'index_in_parent', 'relative_pos',)
+                 'channel', 'next', 'previous', 'index_in_parent', 'relative_pos', 'context_menu_open', 'context_menu_ds')
 @deep_refresh('scroll_offset')
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
@@ -114,6 +96,8 @@ class DrawState(DictConversion):
         self.previous = None
         self.index_in_parent = 0
         self.misc = {}
+        self._clean_args = {}
+        self._func = None
         self.misc_used = set()
         self.closed = False
         self.frame_count = 0
@@ -124,9 +108,13 @@ class DrawState(DictConversion):
         self.layer = 0
         self.channel = 0
 
+        self.context_menu_open = False
+        self.context_menu_ds = None
+
         self.relative_pos = None
 
         self._first_draw_state = None
+        self.melty_window = False
 
         self._queued_windows = []
         self.drag_window_pos_x = None
@@ -201,9 +189,6 @@ class DrawState(DictConversion):
         self.track_mouse = False
         self._scroll_child = None
         self._collection_draw_state = None
-        self.mouse_btn_state = {0: MouseState(),
-                                1: MouseState(),
-                                2: MouseState()}
         self._mouse_up = False
         self.mouse_down = False
         self.drag_released = False

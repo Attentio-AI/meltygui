@@ -479,6 +479,7 @@ class TileCacheMasked:
         self._tiles: Dict[str, Tile] = {}
         self._sizes = {}
         self._stack: List[_Ctx] = []
+        self._window_stack: List[_Ctx] = []
         self._key_to_ctx: Dict[str, _Ctx] = {}
         self._pending: List[_Pending] = []
         self.all_keys = set()
@@ -846,6 +847,9 @@ class TileCacheMasked:
     def get_current_parent(self):
         return self._stack[-1] if self._stack else None
 
+    def get_current_window(self):
+        return self._window_stack[-1] if len(self._window_stack) > 0 else None
+
     def insert_parent(self, parent):
         self._stack.append(parent)
 
@@ -880,8 +884,6 @@ class TileCacheMasked:
         self.key_to_parent_key[rkey] = parent_ctx.key if parent_ctx else None
 
     def draw_tile(self, draw_state):
-
-
         imgui.push_id(f"{draw_state._tile_id}")
         rkey = draw_state._tile_id
 
@@ -889,21 +891,19 @@ class TileCacheMasked:
         size = (draw_state.width, draw_state.height)
         layer = draw_state.z_pos
         has_area = size is not None and size[0] != 0 and size[1] != 0
-
-
-
         use_image = t and has_area and (t.size == (size[0], size[1])) and (not self._is_dirty(t))
+        if has_area and not draw_state.closed and use_image and (not self._is_dirty(t)):
+            corner_radius = getattr(draw_state, 'corner_radius', 0.0) or 0.0
+            self.mask_mark_view(layer, draw_state.left, draw_state.top,
+                                draw_state.width, draw_state.height,
+                                draw_state._tile_id, corner_radius)
+
         if use_image:
             imgui.set_cursor_screen_pos((draw_state.left, draw_state.top))
             imgui.image(t.tex, snap_int(size[0]), snap_int(size[1]), uv0=(0.0, 1.0), uv1=(1.0, 0.0))
             imgui.set_item_allow_overlap()
         imgui.pop_id()
 
-        corner_radius = getattr(draw_state, 'corner_radius', 0.0) or 0.0
-        if has_area:
-            self.mask_mark_view(layer, draw_state.left, draw_state.top,
-                                draw_state.width, draw_state.height,
-                                draw_state._tile_id, corner_radius)
 
 
     def mark_start_offscreen(self, draw_state) -> bool:
@@ -990,10 +990,14 @@ class TileCacheMasked:
                 self._stack.append(
                     _Ctx(draw_state=draw_state, key=rkey, pos=(x, y), size=size, layer=layer, drew_cached=True,
                          auto_resize=draw_state.auto_resize))
+                if draw_state.melty_window:
+                    self._window_stack.append(self._stack[-1])
                 return False
 
         self._stack.append(_Ctx(draw_state=draw_state, key=rkey, pos=(x, y), size=size, layer=layer, drew_cached=False,
                                 auto_resize=draw_state.auto_resize))
+        if draw_state.melty_window:
+            self._window_stack.append(self._stack[-1])
 
 
         return True
@@ -1006,6 +1010,8 @@ class TileCacheMasked:
             return
 
         ctx = self._stack.pop()
+        if ctx.draw_state.melty_window:
+            self._window_stack.pop()
         imgui.pop_id()
 
         imgui.end_group()

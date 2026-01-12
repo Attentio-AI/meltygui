@@ -51,8 +51,6 @@ void main() {
     for (int i = 1; i <= 16; i++) {
         float test_caster_depth = receiver_depth + float(i) * depth_step;
 
-        if (test_caster_depth > 1.0) break;
-
         float height_diff = test_caster_depth - receiver_depth;
 
         if (height_diff < min_height_diff) {

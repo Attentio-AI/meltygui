@@ -49,24 +49,7 @@ from src.shader_library.shader_manager.texture_manager import PendingTexture
 
 
 @render_func(use_cache=True, auto_resize=False, closable=True, show_bg=True, melty_window=True, draggable=True)
-def draw_window(input_value, view_func=None, style_manager=None, tint=None, unique=0, **kwargs):
-    window_name = kwargs.get('name', 'Managed Window')
-    draw_state = kwargs.get('draw_state', None)
-
-        # if draw_state.expanded:
-        #     if Melty.channels_split:
-        #         draw_list = imgui.get_window_draw_list()
-        #         draw_list.channels_set_current(Melty.get_channel() + 1)
-        #     imgui.invisible_button(str(unique) + "visible_blocker", width=draw_state.width, height=draw_state.height)
-        #     imgui.set_cursor_screen_pos(cursor_pos)
-        #     imgui.set_item_allow_overlap()
-        # # else:
-        #     imgui.button("##", width=draw_state.width, height=20)
-        #     imgui.set_cursor_screen_pos(cursor_pos)
-        #     imgui.set_item_allow_overlap()
-
-    if draw_state.name == "Test List":
-        pass
+def draw_window(input_value, view_func=None, draw_state=None, **kwargs):
 
     if draw_state.width is not None and draw_state.height is not None and draw_state.expanded:
         loading_icon_0 = "\uf00d"
@@ -100,16 +83,18 @@ def draw_window(input_value, view_func=None, style_manager=None, tint=None, uniq
     if view_func is None:
         if meta.view_function is None or 'draw_any' in meta.view_function.__name__:
             meta.view_function = draw_collection
-    # else:
-    #     meta.view_function = view_func
 
     kwargs['show_bg'] = False
     kwargs['selectable'] = False
+    kwargs['return_extras'] = True
+    kwargs['draw_state'] = draw_state
     if view_func is None:
         return_val = meta.view_function(input_value, **kwargs)
     else:
         return_val = view_func(input_value, **kwargs)
 
+    if len(return_val) == 3:
+        return_val = (return_val[0], return_val[1], draw_state)
 
     return return_val
 
@@ -464,8 +449,8 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 @render_func(use_cache=True)
 def draw_main(input_value, vis):
     global test_obj
-    draw_window(Melty.profiles_results, show_bg=True, name="Profile Results")
-    draw_window(Melty.registered_windows, is_tree=True, show_add_delete=False, name="Window Manager")
+    return_val = draw_window(Melty.profiles_results, show_bg=True, name="Profile Results")
+    return_val2 = draw_window(Melty.registered_windows, is_tree=True, show_add_delete=False, return_extras=True, name="Window Manager")
     draw_window(test_obj, name="Layer 1")
     draw_window(draw_main, name="Draw Main Function")
 
@@ -2444,7 +2429,14 @@ class TestClass(DictConversion):
         self.value = 2
         self.str_val = "Test"
 
-@with_header_minimal(is_default_for=float, use_cache=False, shadow=False, wrap=False)
+
+@render_func
+def draw_float_ctx(input_value):
+    imgui.text('Float content menu')
+    imgui.dummy(30, 30)
+    draw_float(0.0, name="test")
+
+@with_header_minimal(is_default_for=float, use_cache=False, shadow=False, wrap=False, context_menu=draw_float_ctx)
 def draw_float(input_value:float, draw_state, min_value=-100.0, max_value=100.0, speed=0.01):
 
     imgui.set_next_item_width(draw_state.width - 5)
