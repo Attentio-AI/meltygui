@@ -23,7 +23,7 @@ class ShadowCast:
         'max_steps': (GLType.INT, 64),
         'blur_samples': (GLType.INT, 8),
         'depth_bias': (GLType.FLOAT, 0.00),
-        'surface_threshold': (GLType.FLOAT, -10.0),
+        'surface_threshold': (GLType.FLOAT, -3.0),
         'min_height_diff': (GLType.FLOAT, 0.000),
         'shadow_strength': (GLType.FLOAT, 0.55),
         'texture_size': (GLType.VEC2, None),
@@ -48,7 +48,7 @@ void main() {
     float light = 1.0;
     float max_height_diff = 0.0;
 
-    for (int i = 1; i <= 16; i++) {
+    for (int i = 1; i <= 8; i++) {
         float test_caster_depth = receiver_depth + float(i) * depth_step;
 
         float height_diff = test_caster_depth - receiver_depth;

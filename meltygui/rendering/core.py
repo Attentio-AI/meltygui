@@ -313,6 +313,8 @@ def render_func(*args, **o_kwargs):
         original_height_b = draw_state.height
         style_manager = Melty.global_attrs.get("style_manager", None)
 
+        layer_count = 20
+
         if active_layer is None:
             if (melty.dragged_item is not None and melty.drag_in_progress and
                     draw_state is not None and melty.dragged_item.id == draw_state.id):
@@ -324,28 +326,35 @@ def render_func(*args, **o_kwargs):
                     if window_key in Melty.registered_windows else None
 
                 if window_z_pos == len(Melty.registered_windows) - 1:
-                    window_z_pos = len(Melty.registered_windows)
+                    window_z_pos = len(Melty.registered_windows) + 8
+                # else:
+                #     if window_z_pos is not None:
+                #         window_z_pos = int((window_z_pos / (Melty.max_layer)) * layer_count)
 
                 if window_z_pos is not None:
-                    window_z_pos = max(window_z_pos, Melty.active_layer + 8)
+                    window_z_pos = max(window_z_pos, Melty.active_layer)
 
                 kwargs['layer'] = window_z_pos
 
             if kwargs.get("layer", None) is not None and len(Melty.layers) > 0:
                 layer = kwargs.pop("layer", None)
 
-
+                if kwargs.get("melty_window", False) and Melty.depth >= 3:
+                    layer = layer + 16
                 kwargs["active_layer"] = layer
-                # kwargs['unique'] = unique
+
                 if layer >= len(Melty.layers):
                     layer = len(Melty.layers) - 1
+
+                # kwargs['unique'] = unique
+
                 current_tint = style_manager.get_tint()
 
                 cache_parent_ctx = Melty.cache.get_current_parent()
                 Melty.layers[layer].append((wrapper, input_value, kwargs,
                                             draw_state, current_tint,
                                             cache_parent_ctx, min(Melty.z_pos, 3),
-                                            imgui.get_cursor_screen_pos()))
+                                            imgui.get_cursor_screen_pos(), Melty.depth))
                 return_value = (False, None)
                 if draw_state.id in Melty.returned_values:
                     return_value = Melty.returned_values.pop(draw_state.id)
@@ -770,13 +779,13 @@ def render_func(*args, **o_kwargs):
                     from src.lsd.gl_gui.view.core_views.new_core_view import draw_window
                     returned_val = draw_window(input_value=draw_state, view_func=context_menu_func,
                                                name=f"Context Menu##{unique}", auto_resize=True, return_extras=True,
-                                               wrap=True, layer=Melty.max_layer)
+                                               wrap=True)
                     if draw_state.context_menu_ds is None or draw_state.context_menu_ds.height == 0:
                         ctx_ds = returned_val[2]
                         ctx_ds.window_pos = (0, -ctx_ds.height)
                         Melty.cache.invalidate_up_by_obj(draw_state)
+                        ctx_ds.closed = False
 
-                        print(f"new ds {ctx_ds.height}")
 
                     draw_state.context_menu_ds = returned_val[2]
                 else:

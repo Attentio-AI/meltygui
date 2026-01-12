@@ -237,7 +237,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
         child_draw_state = draw_state._children.get(idx, None)
         if not horizontal:
-            if child_draw_state is not None and (imgui.is_mouse_down(0) or Melty.on_scroll or imgui.is_mouse_down(1) or imgui.is_mouse_down(2)):
+            if child_draw_state is not None and (not draw_state.invalid_content_height or imgui.is_mouse_down(0) or imgui.is_mouse_down(1)):
                 if child_draw_state.relative_pos is not None:
                     screen_pos = (true_left + child_draw_state.relative_pos[0],
                                   true_top + child_draw_state.relative_pos[1])
@@ -471,11 +471,11 @@ def draw_main(input_value, vis):
 
     changed, new_val = draw_window([1,2,3,4,5], name="Test List", horizontal=True, tint=(1,0,0))
 
-    normalized_sub_mask = Melty.filter.normalize(Melty.cache._mask_tex)
+    normalized_sub_mask, _, _ = Melty.filter.normalize(Melty.cache._mask_tex)
     draw_window(normalized_sub_mask, show_bg=True, max_contrast=30, jet=True,
                 max_brightness=30, name="mask_tex", live=True)
 
-    normalized_sub_mask = Melty.filter.normalize(Melty.cache._full_mask_tex)
+    normalized_sub_mask, _, _ = Melty.filter.normalize(Melty.cache._full_mask_tex)
     draw_window(normalized_sub_mask, show_bg=True, max_contrast=30, jet=True,
                 max_brightness=30, name="full_mask_tex", live=True)
 
@@ -581,7 +581,7 @@ def draw_melty_windows(vis):
     end()
 
 
-@with_header(is_default_for=PendingTexture, use_cache=True,
+@with_header(is_default_for=PendingTexture, use_cache=False,
              show_bg=False, enable_scroll=False,
              auto_resize=True, indent_size=0, shadow=True)
 def draw_pending_texture(input_value:PendingTexture, draw_state):
@@ -594,7 +594,7 @@ def draw_pending_texture(input_value:PendingTexture, draw_state):
                  auto_resize=False, show_header=False, indent_size=0, wrap=False)
 
 @with_header(is_default_for=numpy.uint32, show_bg=True,
-             use_cache=True, show_add_delete=False, shadow=True,
+             use_cache=False, show_add_delete=False, shadow=True,
              indent_size=0, min_width=100, min_height=100, wrap=False,
              enable_scroll=True, zoom_speed=0.2, fill_height=True)
 def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mouse_drag, right_mouse_drag,

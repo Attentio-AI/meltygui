@@ -894,7 +894,7 @@ class TileCacheMasked:
         use_image = t and has_area and (t.size == (size[0], size[1])) and (not self._is_dirty(t))
         if has_area and not draw_state.closed and use_image and (not self._is_dirty(t)):
             corner_radius = getattr(draw_state, 'corner_radius', 0.0) or 0.0
-            self.mask_mark_view(layer, draw_state.left, draw_state.top,
+            self.mask_mark_view(layer - 1, draw_state.left, draw_state.top,
                                 draw_state.width, draw_state.height,
                                 draw_state._tile_id, corner_radius)
 
@@ -1424,7 +1424,7 @@ class TileCacheMasked:
                         depth, active_layer = draw_state.depth_and_layer
 
                         divisor = max(1.0, depth - 13.0)
-                        layer_and_depth = active_layer * Melty.max_depth + (depth * (15.0 / (divisor)))
+                        layer_and_depth = active_layer * Melty.max_depth + (depth * (20.0 / (divisor)))
                         rank_norm = float(layer_and_depth) / 65535.5
 
                         gl.glViewport(ix0, iy0, iw, ih)
@@ -1529,7 +1529,7 @@ class TileCacheMasked:
 
                         depth, active_layer = draw_state.depth_and_layer
                         divisor = max(1.0, depth - 13.0)
-                        layer_and_depth = active_layer * Melty.max_depth + (depth * (15.0 / (divisor)))
+                        layer_and_depth = active_layer * Melty.max_depth + (depth * (20.0 / (divisor)))
                         rank_norm = float(layer_and_depth) / 65535.5
 
                         if max(5.0, r.corner_radius) > 0:

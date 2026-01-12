@@ -211,7 +211,7 @@ class Melty:
         cls.blocker_hovered = False
 
         cls.layers.clear()
-        for _ in range(cls.max_layer):
+        for _ in range(cls.max_layer * 2):
             cls.layers.append([])
         # Handle global hotkeys
         # for hotkey, target in global_hotkeys.items():
@@ -290,6 +290,7 @@ class Melty:
                     parent_ctx = view[5]
                     current_z_pos = view[6]
                     cursor_pos = view[7]
+                    depth = view[8]
                     Melty.depth = current_z_pos
 
                     cls.cache.insert_parent(parent_ctx)
@@ -316,8 +317,8 @@ class Melty:
                 #                            draw_state.top, draw_state.width, draw_state.height,
                 #                            f"view_mask_{draw_state.id}", 4)
 
+                Melty.depth = draw_state.depth
                 Melty.cache.draw_tile(draw_state)
-
                 last_bounding_hovered = draw_state._bounding_hovered
                 new_bounding_hovered = draw_state.is_bounding_hovered()
                 hover_changed = last_bounding_hovered != new_bounding_hovered
