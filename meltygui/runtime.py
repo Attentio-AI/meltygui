@@ -1,4 +1,5 @@
 from collections import defaultdict, deque
+from copy import copy
 from enum import Enum
 from typing import MutableMapping, Optional
 
@@ -138,6 +139,7 @@ class Melty:
 
     texture_manager = TextureManager()
     returned_values = {}
+    pending_return_values = {}
 
     empty_event = InputEvent(input_id="", action="")
     events_by_type = {}
@@ -250,6 +252,9 @@ class Melty:
     @classmethod
     def end_frame(cls):
 
+        cls.returned_values = copy(cls.pending_return_values)
+        cls.pending_returned_values = {}
+
 
         # cls.draw_blockers_to()
         # Manually mask windows
@@ -306,7 +311,7 @@ class Melty:
 
                     return_val = view_func(input_value, **kwargs)
                     if return_val is not None:
-                        cls.returned_values[draw_state.id] = return_val
+                        cls.pending_return_values[draw_state.id] = return_val
 
                     style_manager.set_imgui_tint(*current_tint)
 

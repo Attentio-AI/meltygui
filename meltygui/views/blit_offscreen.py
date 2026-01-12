@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import random
-from collections import deque
+from collections import deque, defaultdict
 from copy import copy
 from dataclasses import dataclass
 from math import ceil, floor
 from typing import Dict, List, Optional, Tuple, MutableMapping
+
 from OpenGL import GL as gl
 import imgui
+
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.model.core_model.core_enums import OffscreenDebugMode
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
@@ -26,6 +28,8 @@ This ensures:
 - Pixel copying ignores children (uses flat mask)
 - Final depth map includes all nested children (uses full mask with cached subtrees)
 """
+
+INV_65535 = 1.0 / 65535.0
 
 
 # ==============================
@@ -147,8 +151,18 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, ti
             gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, new_fbo)
             gl.glClearColor(0, 0, 0, 0.0)
             gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT | gl.GL_STENCIL_BUFFER_BIT)
-            gl.glBlitFramebuffer(0, 0, snap_int(existing.size[0]), snap_int(existing.size[1]), 0, 0,
-                                 snap_int(w), snap_int(h), gl.GL_COLOR_BUFFER_BIT, gl.GL_NEAREST)
+            gl.glBlitFramebuffer(
+                0,
+                0,
+                snap_int(existing.size[0]),
+                snap_int(existing.size[1]),
+                0,
+                0,
+                snap_int(w),
+                snap_int(h),
+                gl.GL_COLOR_BUFFER_BIT,
+                gl.GL_NEAREST,
+            )
         finally:
             st.restore()
 
@@ -202,7 +216,9 @@ class _GLState:
         else:
             gl.glDisable(gl.GL_BLEND)
         gl.glBlendEquationSeparate(self.blend_eq_rgb, self.blend_eq_a)
-        gl.glBlendFuncSeparate(self.blend_src_rgb, self.blend_dst_rgb, self.blend_src_a, self.blend_dst_a)
+        gl.glBlendFuncSeparate(
+            self.blend_src_rgb, self.blend_dst_rgb, self.blend_src_a, self.blend_dst_a
+        )
         gl.glColorMask(*self.color_mask)
 
 
@@ -465,10 +481,11 @@ class TileCacheMasked:
         self.debug_overlay_mask_to_screen: bool = False
         self.debug_overlay_src_to_screen: bool = False
 
-        random_float = random.Random().random
-        self.frame_tint = (0.5 + 0.5 * random_float(),
-                           0.5 + 0.5 * random_float(),
-                           0.5 + 0.5 * random_float(), 1.0)
+        # Reuse RNG (avoid Random() per frame)
+        self._rng = random.Random()
+        self._rand = self._rng.random
+        rf = self._rand
+        self.frame_tint = (0.5 + 0.5 * rf(), 0.5 + 0.5 * rf(), 0.5 + 0.5 * rf(), 1.0)
 
         self.py_id_to_keys: Dict[str, set] = {}
         self.key_to_parent_key: Dict[str, str] = {}
@@ -479,7 +496,6 @@ class TileCacheMasked:
         self._tiles: Dict[str, Tile] = {}
         self._sizes = {}
         self._stack: List[_Ctx] = []
-        self._window_stack: List[_Ctx] = []
         self._key_to_ctx: Dict[str, _Ctx] = {}
         self._pending: List[_Pending] = []
         self.all_keys = set()
@@ -519,11 +535,37 @@ class TileCacheMasked:
         self._prog_mask_textured_offset_rounded: Optional[int] = None
         self._prog_copy: Optional[int] = None
         self._prog_blit: Optional[int] = None
+
+        # Cached uniform locations
+        self._loc_mask_uRankNorm = None
+
+        self._loc_maskr_uRankNorm = None
+        self._loc_maskr_uRectSize = None
+        self._loc_maskr_uCornerRadius = None
+
+        self._loc_tex_uTex = None
+
+        self._loc_texr_uTex = None
+        self._loc_texr_uRectSize = None
+        self._loc_texr_uCornerRadius = None
+
+        self._loc_texoff_uTex = None
+        self._loc_texoff_uOffset = None
+
+        self._loc_texoffr_uTex = None
+        self._loc_texoffr_uOffset = None
+        self._loc_texoffr_uRectSize = None
+        self._loc_texoffr_uCornerRadius = None
+
         self._loc_uSrc = None
         self._loc_uTopMask = None
         self._loc_uSubMask = None
         self._loc_uFBSize = None
         self._loc_uSrcRectPx = None
+        self._loc_copy_uCopyDebugMode = None
+        self._loc_copy_uDebugScale = None
+        self._loc_copy_uTint = None
+
         self._dummy_vao: Optional[int] = None
         self._recording: bool = False
         self._cancelled_keys: set[str] = set()
@@ -641,16 +683,22 @@ class TileCacheMasked:
 
     def get_hash(self, draw_state):
         from src.lsd.gl_gui.model.dict_conversion import DictConversion
-        if hasattr(draw_state._input_value, "hash") or isinstance(draw_state._input_value,
-                                                                  (dict, list, set, DictConversion,
-                                                                   tuple, int, float, str, bool, type(None))):
-            input_val_hash = DictConversion.compute_hash(draw_state._input_value, exclude=draw_state.__excluded_attrs__,
-                                                         include_hidden=False)
+
+        if hasattr(draw_state._input_value, "hash") or isinstance(
+                draw_state._input_value,
+                (dict, list, set, DictConversion, tuple, int, float, str, bool, type(None)),
+        ):
+            input_val_hash = DictConversion.compute_hash(
+                draw_state._input_value,
+                exclude=draw_state.__excluded_attrs__,
+                include_hidden=False,
+            )
         else:
             input_val_hash = 0
-        return (DictConversion.compute_hash(draw_state,
-                                            exclude=draw_state.__excluded_attrs__, include_hidden=False),
-                input_val_hash)
+        return (
+            DictConversion.compute_hash(draw_state, exclude=draw_state.__excluded_attrs__, include_hidden=False),
+            input_val_hash,
+        )
 
     def invalidate(self, k: str, force=False) -> None:
         t = self._tiles.get(k)
@@ -694,29 +742,63 @@ class TileCacheMasked:
                 gl.glDeleteRenderbuffers(1, [t.rbo])
         self._tiles.clear()
 
-        if self._mask_fbo: gl.glDeleteFramebuffers(1, [self._mask_fbo]); self._mask_fbo = None
-        if self._mask_tex: gl.glDeleteTextures(1, [self._mask_tex]); self._mask_tex = None
-        if self._full_mask_fbo: gl.glDeleteFramebuffers(1, [self._full_mask_fbo]); self._full_mask_fbo = None
-        if self._full_mask_tex: gl.glDeleteTextures(1, [self._full_mask_tex]); self._full_mask_tex = None
-        if self._sub_mask_fbo: gl.glDeleteFramebuffers(1, [self._sub_mask_fbo]); self._sub_mask_fbo = None
-        if self._sub_mask_tex: gl.glDeleteTextures(1, [self._sub_mask_tex]); self._sub_mask_tex = None
-        if self._full_sub_mask_fbo: gl.glDeleteFramebuffers(1,
-                                                            [self._full_sub_mask_fbo]); self._full_sub_mask_fbo = None
-        if self._full_sub_mask_tex: gl.glDeleteTextures(1, [self._full_sub_mask_tex]); self._full_sub_mask_tex = None
-        if self._snapshot_fbo: gl.glDeleteFramebuffers(1, [self._snapshot_fbo]); self._snapshot_fbo = None
-        if self.snapshot_tex: gl.glDeleteTextures(1, [self.snapshot_tex]); self.snapshot_tex = None
-        if self._scratch_fbo: gl.glDeleteFramebuffers(1, [self._scratch_fbo]); self._scratch_fbo = None
-        if self._prog_mask: gl.glDeleteProgram(self._prog_mask); self._prog_mask = None
-        if self._prog_mask_rounded: gl.glDeleteProgram(self._prog_mask_rounded); self._prog_mask_rounded = None
-        if self._prog_mask_textured: gl.glDeleteProgram(self._prog_mask_textured); self._prog_mask_textured = None
-        if self._prog_mask_textured_rounded: gl.glDeleteProgram(
-            self._prog_mask_textured_rounded); self._prog_mask_textured_rounded = None
-        if self._prog_mask_textured_offset: gl.glDeleteProgram(
-            self._prog_mask_textured_offset); self._prog_mask_textured_offset = None
-        if self._prog_mask_textured_offset_rounded: gl.glDeleteProgram(
-            self._prog_mask_textured_offset_rounded); self._prog_mask_textured_offset_rounded = None
-        if self._prog_copy: gl.glDeleteProgram(self._prog_copy); self._prog_copy = None
-        if self._prog_blit: gl.glDeleteProgram(self._prog_blit); self._prog_blit = None
+        if self._mask_fbo:
+            gl.glDeleteFramebuffers(1, [self._mask_fbo])
+            self._mask_fbo = None
+        if self._mask_tex:
+            gl.glDeleteTextures(1, [self._mask_tex])
+            self._mask_tex = None
+        if self._full_mask_fbo:
+            gl.glDeleteFramebuffers(1, [self._full_mask_fbo])
+            self._full_mask_fbo = None
+        if self._full_mask_tex:
+            gl.glDeleteTextures(1, [self._full_mask_tex])
+            self._full_mask_tex = None
+        if self._sub_mask_fbo:
+            gl.glDeleteFramebuffers(1, [self._sub_mask_fbo])
+            self._sub_mask_fbo = None
+        if self._sub_mask_tex:
+            gl.glDeleteTextures(1, [self._sub_mask_tex])
+            self._sub_mask_tex = None
+        if self._full_sub_mask_fbo:
+            gl.glDeleteFramebuffers(1, [self._full_sub_mask_fbo])
+            self._full_sub_mask_fbo = None
+        if self._full_sub_mask_tex:
+            gl.glDeleteTextures(1, [self._full_sub_mask_tex])
+            self._full_sub_mask_tex = None
+        if self._snapshot_fbo:
+            gl.glDeleteFramebuffers(1, [self._snapshot_fbo])
+            self._snapshot_fbo = None
+        if self.snapshot_tex:
+            gl.glDeleteTextures(1, [self.snapshot_tex])
+            self.snapshot_tex = None
+        if self._scratch_fbo:
+            gl.glDeleteFramebuffers(1, [self._scratch_fbo])
+            self._scratch_fbo = None
+        if self._prog_mask:
+            gl.glDeleteProgram(self._prog_mask)
+            self._prog_mask = None
+        if self._prog_mask_rounded:
+            gl.glDeleteProgram(self._prog_mask_rounded)
+            self._prog_mask_rounded = None
+        if self._prog_mask_textured:
+            gl.glDeleteProgram(self._prog_mask_textured)
+            self._prog_mask_textured = None
+        if self._prog_mask_textured_rounded:
+            gl.glDeleteProgram(self._prog_mask_textured_rounded)
+            self._prog_mask_textured_rounded = None
+        if self._prog_mask_textured_offset:
+            gl.glDeleteProgram(self._prog_mask_textured_offset)
+            self._prog_mask_textured_offset = None
+        if self._prog_mask_textured_offset_rounded:
+            gl.glDeleteProgram(self._prog_mask_textured_offset_rounded)
+            self._prog_mask_textured_offset_rounded = None
+        if self._prog_copy:
+            gl.glDeleteProgram(self._prog_copy)
+            self._prog_copy = None
+        if self._prog_blit:
+            gl.glDeleteProgram(self._prog_blit)
+            self._prog_blit = None
 
     def mask_begin_frame(self, framebuffer_size: Tuple[int, int]) -> None:
         fb_w, fb_h = map(int, framebuffer_size)
@@ -726,19 +808,19 @@ class TileCacheMasked:
         self._enq_mask_keys.clear()
         self._enq_copy_keys.clear()
 
-        random_float = random.Random().random
-        self.frame_tint = (0.5 + 0.5 * random_float(),
-                           0.5 + 0.5 * random_float(),
-                           0.5 + 0.5 * random_float(), 1.0)
+        rf = self._rand
+        self.frame_tint = (0.5 + 0.5 * rf(), 0.5 + 0.5 * rf(), 0.5 + 0.5 * rf(), 1.0)
 
         if (fb_w, fb_h) != self._fb_size or self._snapshot_fbo is None:
             self._fb_size = (fb_w, fb_h)
 
             def safe_del_tex(t):
-                if t: gl.glDeleteTextures(1, [t])
+                if t:
+                    gl.glDeleteTextures(1, [t])
 
             def safe_del_fbo(f):
-                if f: gl.glDeleteFramebuffers(1, [f])
+                if f:
+                    gl.glDeleteFramebuffers(1, [f])
 
             safe_del_tex(self._mask_tex)
             safe_del_fbo(self._mask_fbo)
@@ -772,16 +854,18 @@ class TileCacheMasked:
         self._mask_rects.clear()
         self._rect_seq = 0
 
-    def mask_mark_rect(self, layer: int, x: float, y: float, w: float, h: float, key: str,
-                       corner_radius: float = 0.0) -> None:
+    def mask_mark_rect(
+            self, layer: int, x: float, y: float, w: float, h: float, key: str, corner_radius: float = 0.0
+    ) -> None:
         if key in self._enq_mask_keys:
             return
         self._enq_mask_keys.add(key)
         self._rect_seq = (self._rect_seq + 1) & 0xFF
         self._mask_rects.append(_Rect(layer, x, y, w, h, key, self._rect_seq, corner_radius))
 
-    def mask_mark_view(self, layer: int, x: float, y: float, w: float, h: float, key: str,
-                       corner_radius: float = 0.0) -> None:
+    def mask_mark_view(
+            self, layer: int, x: float, y: float, w: float, h: float, key: str, corner_radius: float = 0.0
+    ) -> None:
         self.mask_mark_rect(layer, x, y, w, h, key, corner_radius)
 
     def _get_current_clip_rect_screen(self) -> Tuple[float, float, float, float]:
@@ -789,8 +873,13 @@ class TileCacheMasked:
         return clip
 
     @staticmethod
-    def _clip_rect(x: float, y: float, w: float, h: float, clip_xyxy: Tuple[float, float, float, float]
-                   ) -> Optional[Tuple[float, float, float, float]]:
+    def _clip_rect(
+            x: float,
+            y: float,
+            w: float,
+            h: float,
+            clip_xyxy: Tuple[float, float, float, float],
+    ) -> Optional[Tuple[float, float, float, float]]:
         if clip_xyxy is None:
             return None
         cx0, cy0, cx1, cy1 = clip_xyxy
@@ -803,7 +892,13 @@ class TileCacheMasked:
         return (x0, y0, x1 - x0, y1 - y0)
 
     @staticmethod
-    def _fully_clipped(x: float, y: float, w: float, h: float, clip_xyxy: Tuple[float, float, float, float]) -> bool:
+    def _fully_clipped(
+            x: float,
+            y: float,
+            w: float,
+            h: float,
+            clip_xyxy: Tuple[float, float, float, float],
+    ) -> bool:
         if clip_xyxy is None:
             return False
         cx0, cy0, cx1, cy1 = clip_xyxy
@@ -847,9 +942,6 @@ class TileCacheMasked:
     def get_current_parent(self):
         return self._stack[-1] if self._stack else None
 
-    def get_current_window(self):
-        return self._window_stack[-1] if len(self._window_stack) > 0 else None
-
     def insert_parent(self, parent):
         self._stack.append(parent)
 
@@ -871,7 +963,7 @@ class TileCacheMasked:
             name_key = f"{id(collection)}.{name}"
             self.py_id_to_keys.setdefault(name_key, set()).add(rkey)
 
-        if isinstance(input_value, (list, dict, set, deque, MutableMapping)) or hasattr(input_value, '__dict__'):
+        if isinstance(input_value, (list, dict, set, deque, MutableMapping)) or hasattr(input_value, "__dict__"):
             self.py_id_to_keys.setdefault(f"{id(input_value)}", set()).add(rkey)
 
         if f"{id(draw_state)}" not in self.py_id_to_keys:
@@ -892,19 +984,29 @@ class TileCacheMasked:
         layer = draw_state.z_pos
         has_area = size is not None and size[0] != 0 and size[1] != 0
         use_image = t and has_area and (t.size == (size[0], size[1])) and (not self._is_dirty(t))
-        if has_area and not draw_state.closed and use_image and (not self._is_dirty(t)):
-            corner_radius = getattr(draw_state, 'corner_radius', 0.0) or 0.0
-            self.mask_mark_view(layer - 1, draw_state.left, draw_state.top,
-                                draw_state.width, draw_state.height,
-                                draw_state._tile_id, corner_radius)
+        if has_area and not draw_state.closed and use_image:
+            corner_radius = getattr(draw_state, "corner_radius", 0.0) or 0.0
+            self.mask_mark_view(
+                layer - 1,
+                draw_state.left,
+                draw_state.top,
+                draw_state.width,
+                draw_state.height,
+                draw_state._tile_id,
+                corner_radius,
+            )
 
         if use_image:
             imgui.set_cursor_screen_pos((draw_state.left, draw_state.top))
-            imgui.image(t.tex, snap_int(size[0]), snap_int(size[1]), uv0=(0.0, 1.0), uv1=(1.0, 0.0))
+            imgui.image(
+                t.tex,
+                snap_int(size[0]),
+                snap_int(size[1]),
+                uv0=(0.0, 1.0),
+                uv1=(1.0, 0.0),
+            )
             imgui.set_item_allow_overlap()
         imgui.pop_id()
-
-
 
     def mark_start_offscreen(self, draw_state) -> bool:
         if not self.enabled:
@@ -916,9 +1018,6 @@ class TileCacheMasked:
         input_value = draw_state._input_value
         collection = draw_state._collection
         key = draw_state._tile_id
-        # if key in self.seen_ids:
-        #     key = key + 1
-        # self.seen_ids.add(key)
 
         layer = draw_state.z_pos
         name = draw_state.name
@@ -961,7 +1060,7 @@ class TileCacheMasked:
             name_key = f"{id(collection)}.{name}"
             self.py_id_to_keys.setdefault(name_key, set()).add(rkey)
 
-        if isinstance(input_value, (list, dict, set, deque, MutableMapping)) or hasattr(input_value, '__dict__'):
+        if isinstance(input_value, (list, dict, set, deque, MutableMapping)) or hasattr(input_value, "__dict__"):
             self.py_id_to_keys.setdefault(f"{id(input_value)}", set()).add(rkey)
 
         if f"{id(draw_state)}" not in self.py_id_to_keys:
@@ -970,13 +1069,7 @@ class TileCacheMasked:
         self.py_id_to_keys[f"{id(draw_state)}"].add(rkey)
 
         imgui.push_id(f"{rkey}{layer}_offscreen")
-
-
-
         imgui.begin_group()
-
-
-
         has_area = size is not None and size[0] != 0 and size[1] != 0
 
         if size is not None and self.enabled and draw_state.frame_count >= 2:
@@ -985,20 +1078,38 @@ class TileCacheMasked:
 
             if use_image:
                 imgui.set_cursor_screen_pos((draw_state.left, draw_state.top))
-                imgui.image(t.tex, snap_int(size[0]), snap_int(size[1]), uv0=(0.0, 1.0), uv1=(1.0, 0.0))
+                imgui.image(
+                    t.tex,
+                    snap_int(size[0]),
+                    snap_int(size[1]),
+                    uv0=(0.0, 1.0),
+                    uv1=(1.0, 0.0),
+                )
                 imgui.set_item_allow_overlap()
                 self._stack.append(
-                    _Ctx(draw_state=draw_state, key=rkey, pos=(x, y), size=size, layer=layer, drew_cached=True,
-                         auto_resize=draw_state.auto_resize))
-                if draw_state.melty_window:
-                    self._window_stack.append(self._stack[-1])
+                    _Ctx(
+                        draw_state=draw_state,
+                        key=rkey,
+                        pos=(x, y),
+                        size=size,
+                        layer=layer,
+                        drew_cached=True,
+                        auto_resize=draw_state.auto_resize,
+                    )
+                )
                 return False
 
-        self._stack.append(_Ctx(draw_state=draw_state, key=rkey, pos=(x, y), size=size, layer=layer, drew_cached=False,
-                                auto_resize=draw_state.auto_resize))
-        if draw_state.melty_window:
-            self._window_stack.append(self._stack[-1])
-
+        self._stack.append(
+            _Ctx(
+                draw_state=draw_state,
+                key=rkey,
+                pos=(x, y),
+                size=size,
+                layer=layer,
+                drew_cached=False,
+                auto_resize=draw_state.auto_resize,
+            )
+        )
 
         return True
 
@@ -1010,8 +1121,6 @@ class TileCacheMasked:
             return
 
         ctx = self._stack.pop()
-        if ctx.draw_state.melty_window:
-            self._window_stack.pop()
         imgui.pop_id()
 
         imgui.end_group()
@@ -1038,8 +1147,7 @@ class TileCacheMasked:
         clipped = self._clip_rect(x, y, w, h, clip)
         self._key_to_ctx[ctx.key] = ctx
 
-        # Get corner_radius from draw_state
-        corner_radius = getattr(ctx.draw_state, 'corner_radius', 0.0) or 0.0
+        corner_radius = getattr(ctx.draw_state, "corner_radius", 0.0) or 0.0
 
         if ctx.size:
             if clipped:
@@ -1065,7 +1173,7 @@ class TileCacheMasked:
 
             gl.glBindVertexArray(self._dummy_vao)
 
-            if (t is None) or (t.size != (ctx.size[0], ctx.size[1])) and not imgui.is_mouse_down(0):
+            if ((t is None) or (t.size != (ctx.size[0], ctx.size[1]))) and not imgui.is_mouse_down(0):
                 t = _ensure_tile(t, ctx.size[0], ctx.size[1], frame_id=self._frame_id)
                 self.invalidate(ctx.key)
                 self._tiles[ctx.key] = t
@@ -1087,31 +1195,51 @@ class TileCacheMasked:
             vs = _compile(gl.GL_VERTEX_SHADER, _FULLSCREEN_VS)
             fs = _compile(gl.GL_FRAGMENT_SHADER, _MASK_FS)
             self._prog_mask = _link(vs, fs)
+            self._loc_mask_uRankNorm = gl.glGetUniformLocation(self._prog_mask, "uRankNorm")
 
         if self._prog_mask_rounded is None:
             vs = _compile(gl.GL_VERTEX_SHADER, _FULLSCREEN_VS)
             fs = _compile(gl.GL_FRAGMENT_SHADER, _MASK_ROUNDED_FS)
             self._prog_mask_rounded = _link(vs, fs)
+            self._loc_maskr_uRankNorm = gl.glGetUniformLocation(self._prog_mask_rounded, "uRankNorm")
+            self._loc_maskr_uRectSize = gl.glGetUniformLocation(self._prog_mask_rounded, "uRectSize")
+            self._loc_maskr_uCornerRadius = gl.glGetUniformLocation(self._prog_mask_rounded, "uCornerRadius")
 
         if self._prog_mask_textured is None:
             vs = _compile(gl.GL_VERTEX_SHADER, _FULLSCREEN_VS)
             fs = _compile(gl.GL_FRAGMENT_SHADER, _MASK_TEXTURED_FS)
             self._prog_mask_textured = _link(vs, fs)
+            self._loc_tex_uTex = gl.glGetUniformLocation(self._prog_mask_textured, "uTex")
 
         if self._prog_mask_textured_rounded is None:
             vs = _compile(gl.GL_VERTEX_SHADER, _FULLSCREEN_VS)
             fs = _compile(gl.GL_FRAGMENT_SHADER, _MASK_TEXTURED_ROUNDED_FS)
             self._prog_mask_textured_rounded = _link(vs, fs)
+            self._loc_texr_uTex = gl.glGetUniformLocation(self._prog_mask_textured_rounded, "uTex")
+            self._loc_texr_uRectSize = gl.glGetUniformLocation(self._prog_mask_textured_rounded, "uRectSize")
+            self._loc_texr_uCornerRadius = gl.glGetUniformLocation(
+                self._prog_mask_textured_rounded, "uCornerRadius"
+            )
 
         if self._prog_mask_textured_offset is None:
             vs = _compile(gl.GL_VERTEX_SHADER, _FULLSCREEN_VS)
             fs = _compile(gl.GL_FRAGMENT_SHADER, _MASK_TEXTURED_OFFSET_FS)
             self._prog_mask_textured_offset = _link(vs, fs)
+            self._loc_texoff_uTex = gl.glGetUniformLocation(self._prog_mask_textured_offset, "uTex")
+            self._loc_texoff_uOffset = gl.glGetUniformLocation(self._prog_mask_textured_offset, "uOffset")
 
         if self._prog_mask_textured_offset_rounded is None:
             vs = _compile(gl.GL_VERTEX_SHADER, _FULLSCREEN_VS)
             fs = _compile(gl.GL_FRAGMENT_SHADER, _MASK_TEXTURED_OFFSET_ROUNDED_FS)
             self._prog_mask_textured_offset_rounded = _link(vs, fs)
+            self._loc_texoffr_uTex = gl.glGetUniformLocation(self._prog_mask_textured_offset_rounded, "uTex")
+            self._loc_texoffr_uOffset = gl.glGetUniformLocation(self._prog_mask_textured_offset_rounded, "uOffset")
+            self._loc_texoffr_uRectSize = gl.glGetUniformLocation(
+                self._prog_mask_textured_offset_rounded, "uRectSize"
+            )
+            self._loc_texoffr_uCornerRadius = gl.glGetUniformLocation(
+                self._prog_mask_textured_offset_rounded, "uCornerRadius"
+            )
 
         if self._prog_copy is None:
             vs = _compile(gl.GL_VERTEX_SHADER, _FULLSCREEN_VS)
@@ -1124,6 +1252,10 @@ class TileCacheMasked:
             self._loc_uFBSize = gl.glGetUniformLocation(self._prog_copy, "uFBSize")
             self._loc_uSrcRectPx = gl.glGetUniformLocation(self._prog_copy, "uSrcRectPx")
 
+            self._loc_copy_uDebugScale = gl.glGetUniformLocation(self._prog_copy, "uDebugScale")
+            self._loc_copy_uCopyDebugMode = gl.glGetUniformLocation(self._prog_copy, "uCopyDebugMode")
+            self._loc_copy_uTint = gl.glGetUniformLocation(self._prog_copy, "uTint")
+
         if self._prog_blit is None:
             vs = _compile(gl.GL_VERTEX_SHADER, _FULLSCREEN_VS)
             fs = _compile(gl.GL_FRAGMENT_SHADER, _BLIT_FS)
@@ -1131,7 +1263,13 @@ class TileCacheMasked:
 
     def _copy_debug_mode_to_int(self) -> int:
         table = {
-            "off": 0, "uv": 1, "srcpx": 2, "mask": 3, "layer": 4, "checker": 5, "solid": 6,
+            "off": 0,
+            "uv": 1,
+            "srcpx": 2,
+            "mask": 3,
+            "layer": 4,
+            "checker": 5,
+            "solid": 6,
         }
         return table.get(self.copy_debug_mode.value, 0)
 
@@ -1149,36 +1287,30 @@ class TileCacheMasked:
 
         if r.corner_radius > 0:
             gl.glUseProgram(self._prog_mask_rounded)
-            gl.glUniform1f(gl.glGetUniformLocation(self._prog_mask_rounded, "uRankNorm"), rank_norm)
-            gl.glUniform2f(gl.glGetUniformLocation(self._prog_mask_rounded, "uRectSize"), float(iw), float(ih))
-            gl.glUniform1f(gl.glGetUniformLocation(self._prog_mask_rounded, "uCornerRadius"), r.corner_radius)
+            gl.glUniform1f(self._loc_maskr_uRankNorm, rank_norm)
+            gl.glUniform2f(self._loc_maskr_uRectSize, float(iw), float(ih))
+            gl.glUniform1f(self._loc_maskr_uCornerRadius, r.corner_radius)
         else:
             gl.glUseProgram(self._prog_mask)
-            gl.glUniform1f(gl.glGetUniformLocation(self._prog_mask, "uRankNorm"), rank_norm)
+            gl.glUniform1f(self._loc_mask_uRankNorm, rank_norm)
 
         gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
 
-    def _draw_mask_rect_cached(self, tex: int, ix0: int, iy0: int, iw: int, ih: int,
-                               offset: float, corner_radius: float):
-        """Draw a cached mask texture with offset and optional rounded corners."""
+    def _draw_mask_rect_cached(self, tex: int, ix0: int, iy0: int, iw: int, ih: int, offset: float,
+                               corner_radius: float):
+        """Draw a cached mask texture with offset and optional rounded corners.
+        Note: preserves existing behavior (rounded path effectively always used by callers).
+        """
         gl.glViewport(ix0, iy0, iw, ih)
 
-        if max(5.0, corner_radius) > 0:
-            gl.glUseProgram(self._prog_mask_textured_offset_rounded)
-            gl.glActiveTexture(gl.GL_TEXTURE0)
-            gl.glBindTexture(gl.GL_TEXTURE_2D, tex)
-            gl.glUniform1i(gl.glGetUniformLocation(self._prog_mask_textured_offset_rounded, "uTex"), 0)
-            gl.glUniform1f(gl.glGetUniformLocation(self._prog_mask_textured_offset_rounded, "uOffset"), offset)
-            gl.glUniform2f(gl.glGetUniformLocation(self._prog_mask_textured_offset_rounded, "uRectSize"), float(iw),
-                           float(ih))
-            gl.glUniform1f(gl.glGetUniformLocation(self._prog_mask_textured_offset_rounded, "uCornerRadius"),
-                           max(5.0, corner_radius))
-        else:
-            gl.glUseProgram(self._prog_mask_textured_offset)
-            gl.glActiveTexture(gl.GL_TEXTURE0)
-            gl.glBindTexture(gl.GL_TEXTURE_2D, tex)
-            gl.glUniform1i(gl.glGetUniformLocation(self._prog_mask_textured_offset, "uTex"), 0)
-            gl.glUniform1f(gl.glGetUniformLocation(self._prog_mask_textured_offset, "uOffset"), offset)
+        # Preserve existing behavior: callers often pass max(5.0, corner_radius) anyway.
+        gl.glUseProgram(self._prog_mask_textured_offset_rounded)
+        gl.glActiveTexture(gl.GL_TEXTURE0)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, tex)
+        gl.glUniform1i(self._loc_texoffr_uTex, 0)
+        gl.glUniform1f(self._loc_texoffr_uOffset, offset)
+        gl.glUniform2f(self._loc_texoffr_uRectSize, float(iw), float(ih))
+        gl.glUniform1f(self._loc_texoffr_uCornerRadius, corner_radius)
 
         gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
 
@@ -1202,25 +1334,23 @@ class TileCacheMasked:
                 gl.glUseProgram(self._prog_mask_textured_rounded)
                 gl.glActiveTexture(gl.GL_TEXTURE0)
                 gl.glBindTexture(gl.GL_TEXTURE_2D, t.mask_tex)
-                gl.glUniform1i(gl.glGetUniformLocation(self._prog_mask_textured_rounded, "uTex"), 0)
-                gl.glUniform2f(gl.glGetUniformLocation(self._prog_mask_textured_rounded, "uRectSize"), float(iw),
-                               float(ih))
-                gl.glUniform1f(gl.glGetUniformLocation(self._prog_mask_textured_rounded, "uCornerRadius"),
-                               r.corner_radius)
+                gl.glUniform1i(self._loc_texr_uTex, 0)
+                gl.glUniform2f(self._loc_texr_uRectSize, float(iw), float(ih))
+                gl.glUniform1f(self._loc_texr_uCornerRadius, r.corner_radius)
             else:
                 gl.glUseProgram(self._prog_mask_textured)
                 gl.glActiveTexture(gl.GL_TEXTURE0)
                 gl.glBindTexture(gl.GL_TEXTURE_2D, t.mask_tex)
-                gl.glUniform1i(gl.glGetUniformLocation(self._prog_mask_textured, "uTex"), 0)
+                gl.glUniform1i(self._loc_tex_uTex, 0)
         else:
             if r.corner_radius > 0:
                 gl.glUseProgram(self._prog_mask_rounded)
-                gl.glUniform1f(gl.glGetUniformLocation(self._prog_mask_rounded, "uRankNorm"), float(r.layer) / 65535.0)
-                gl.glUniform2f(gl.glGetUniformLocation(self._prog_mask_rounded, "uRectSize"), float(iw), float(ih))
-                gl.glUniform1f(gl.glGetUniformLocation(self._prog_mask_rounded, "uCornerRadius"), r.corner_radius)
+                gl.glUniform1f(self._loc_maskr_uRankNorm, float(r.layer) * INV_65535)
+                gl.glUniform2f(self._loc_maskr_uRectSize, float(iw), float(ih))
+                gl.glUniform1f(self._loc_maskr_uCornerRadius, r.corner_radius)
             else:
                 gl.glUseProgram(self._prog_mask)
-                gl.glUniform1f(gl.glGetUniformLocation(self._prog_mask, "uRankNorm"), float(r.layer) / 65535.0)
+                gl.glUniform1f(self._loc_mask_uRankNorm, float(r.layer) * INV_65535)
 
         gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
 
@@ -1232,8 +1362,9 @@ class TileCacheMasked:
         if not self._pending and not self._mask_rects:
             return
 
-        local_mask_rects = self._mask_rects[:]
-        local_pending = self._pending[:]
+        # Grab direct references (we clear at end anyway)
+        local_mask_rects = self._mask_rects
+        local_pending = self._pending
 
         if not local_pending and not local_mask_rects:
             self._pending.clear()
@@ -1249,6 +1380,15 @@ class TileCacheMasked:
             self.mask_begin_frame((dd_fb_w, dd_fb_h))
             fb_w, fb_h = self._fb_size
 
+        # Precompute subtree rect lists once (key -> rects in its subtree, draw order)
+        parent_of = self.key_to_parent_key
+        subtree_rects_by_root = defaultdict(list)
+        for r in local_mask_rects:
+            k = r.key
+            while k is not None:
+                subtree_rects_by_root[k].append(r)
+                k = parent_of.get(k)
+
         st = _GLState()
         try:
             self._ensure_programs()
@@ -1260,12 +1400,12 @@ class TileCacheMasked:
             # ================================================================
             gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, 0)
             gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, self._snapshot_fbo)
-            gl.glBlitFramebuffer(0, 0, dd_fb_w, dd_fb_h, 0, 0, dd_fb_w, dd_fb_h,
-                                 gl.GL_COLOR_BUFFER_BIT, gl.GL_NEAREST)
+            gl.glBlitFramebuffer(
+                0, 0, dd_fb_w, dd_fb_h, 0, 0, dd_fb_w, dd_fb_h, gl.GL_COLOR_BUFFER_BIT, gl.GL_NEAREST
+            )
 
             # ================================================================
             # PASS 2: Build _mask_tex (flat, fresh geometry only)
-            # Used for pixel copying - ignores children
             # ================================================================
             gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._mask_fbo)
             gl.glViewport(0, 0, fb_w, fb_h)
@@ -1293,23 +1433,31 @@ class TileCacheMasked:
             gl.glActiveTexture(gl.GL_TEXTURE0)
             gl.glBindTexture(gl.GL_TEXTURE_2D, self.snapshot_tex)
             gl.glUniform1i(self._loc_uSrc, 0)
+
             gl.glActiveTexture(gl.GL_TEXTURE1)
             gl.glBindTexture(gl.GL_TEXTURE_2D, self._mask_tex)
             gl.glUniform1i(self._loc_uTopMask, 1)
+
             gl.glUniform2f(self._loc_uFBSize, float(fb_w), float(fb_h))
-            gl.glUniform1f(gl.glGetUniformLocation(self._prog_copy, "uDebugScale"), float(self.offscreen_scale))
-            gl.glUniform1i(gl.glGetUniformLocation(self._prog_copy, "uCopyDebugMode"), self._copy_debug_mode_to_int())
+            gl.glUniform1f(self._loc_copy_uDebugScale, float(self.offscreen_scale))
+            gl.glUniform1i(self._loc_copy_uCopyDebugMode, self._copy_debug_mode_to_int())
 
             for p in local_pending:
                 x, y = p.pos
                 w, h = p.size
                 x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(x, y, w, h, dp_x, dp_y, s_x, s_y, fb_h)
-                subtree_keys = self._collect_subtree_keys(p.key, local_mask_rects)
 
-                # Build _sub_mask_tex with fresh geometry only
+                # Build _sub_mask_tex with fresh geometry only (scissor to tile rect)
                 gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._sub_mask_fbo)
                 gl.glViewport(0, 0, fb_w, fb_h)
-                gl.glDisable(gl.GL_SCISSOR_TEST)
+
+                sc_x0, sc_y0 = int(floor(x0)), int(floor(y0))
+                sc_x1, sc_y1 = int(ceil(x1)), int(ceil(y1))
+                sc_w, sc_h = max(0, sc_x1 - sc_x0), max(0, sc_y1 - sc_y0)
+
+                gl.glEnable(gl.GL_SCISSOR_TEST)
+                gl.glScissor(sc_x0, sc_y0, sc_w, sc_h)
+
                 gl.glDisable(gl.GL_BLEND)
                 gl.glColorMask(gl.GL_TRUE, gl.GL_FALSE, gl.GL_FALSE, gl.GL_FALSE)
                 gl.glClearColor(0, 0, 0, 0.0)
@@ -1319,12 +1467,8 @@ class TileCacheMasked:
                 gl.glBlendEquation(gl.GL_MAX)
                 gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
 
-                for r in local_mask_rects:
-                    if r.key not in subtree_keys:
-                        continue
-
-                    rank_norm = float(r.layer) / 65535.0
-                    self._draw_mask_rect_fresh(r, dp_x, dp_y, s_x, s_y, fb_h, rank_norm)
+                for r in subtree_rects_by_root.get(p.key, ()):
+                    self._draw_mask_rect_fresh(r, dp_x, dp_y, s_x, s_y, fb_h, float(r.layer) * INV_65535)
 
                 # Copy pixels to tile
                 gl.glUseProgram(self._prog_copy)
@@ -1337,36 +1481,41 @@ class TileCacheMasked:
                 gl.glBlendFunc(gl.GL_ONE, gl.GL_ZERO)
                 gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE)
 
-                if p.tile is not None:
-                    if p.tile.fbo != -1:
-                        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, p.tile.fbo)
-                        gl.glViewport(0, 0, snap_int(p.tile.size[0]), snap_int(p.tile.size[1]))
+                gl.glDisable(gl.GL_SCISSOR_TEST)
 
-                        if global_toggles is not None and getattr(global_toggles, "offscreen_debug", False):
-                            gl.glUniform4f(gl.glGetUniformLocation(self._prog_copy, "uTint"), *self.frame_tint)
-                        else:
-                            gl.glUniform4f(gl.glGetUniformLocation(self._prog_copy, "uTint"), 1.0, 1.0, 1.0, 1.0)
+                if p.tile is not None and p.tile.fbo != -1:
+                    gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, p.tile.fbo)
+                    gl.glViewport(0, 0, snap_int(p.tile.size[0]), snap_int(p.tile.size[1]))
 
-                        gl.glUniform4f(self._loc_uSrcRectPx, float(x0), float(y0), float(x1), float(y1))
-                        gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
+                    if global_toggles is not None and getattr(global_toggles, "offscreen_debug", False):
+                        gl.glUniform4f(self._loc_copy_uTint, *self.frame_tint)
+                    else:
+                        gl.glUniform4f(self._loc_copy_uTint, 1.0, 1.0, 1.0, 1.0)
 
-                        p.tile.last_clean_frame = self._frame_id
-                        p.tile.dirty = self._is_dirty(p.tile)
+                    gl.glUniform4f(self._loc_uSrcRectPx, float(x0), float(y0), float(x1), float(y1))
+                    gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
+
+                    p.tile.last_clean_frame = self._frame_id
+                    p.tile.dirty = self._is_dirty(p.tile)
 
             # ================================================================
-            # PASS 4: Build tile.mask_tex for each dirty tile
-            # Uses absolute depths, records mask_layer for later offset correction
+            # PASS 4: Build tile.mask_tex for each dirty tile (full subtree)
             # ================================================================
             for p in local_pending:
                 x, y = p.pos
                 w, h = p.size
                 x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(x, y, w, h, dp_x, dp_y, s_x, s_y, fb_h)
-                subtree_keys = self._collect_subtree_keys(p.key, local_mask_rects)
 
-                # Build _full_sub_mask_tex with children's cached masks (absolute depths)
                 gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._full_sub_mask_fbo)
                 gl.glViewport(0, 0, fb_w, fb_h)
-                gl.glDisable(gl.GL_SCISSOR_TEST)
+
+                sc_x0, sc_y0 = int(floor(x0)), int(floor(y0))
+                sc_x1, sc_y1 = int(ceil(x1)), int(ceil(y1))
+                sc_w, sc_h = max(0, sc_x1 - sc_x0), max(0, sc_y1 - sc_y0)
+
+                gl.glEnable(gl.GL_SCISSOR_TEST)
+                gl.glScissor(sc_x0, sc_y0, sc_w, sc_h)
+
                 gl.glDisable(gl.GL_BLEND)
                 gl.glColorMask(gl.GL_TRUE, gl.GL_FALSE, gl.GL_FALSE, gl.GL_FALSE)
                 gl.glClearColor(0, 0, 0, 0.0)
@@ -1376,12 +1525,9 @@ class TileCacheMasked:
                 gl.glBlendEquation(gl.GL_MAX)
                 gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
 
-                for r in local_mask_rects:
+                for r in subtree_rects_by_root.get(p.key, ()):
                     draw_state = self.key_to_draw_state.get(r.key)
                     size_change = draw_state.size_change if draw_state else False
-
-                    if r.key not in subtree_keys:
-                        continue
 
                     tile_ctx = self._key_to_ctx.get(r.key)
                     if tile_ctx is not None and not tile_ctx.draw_state.shadow:
@@ -1390,8 +1536,12 @@ class TileCacheMasked:
                     t_child = self._tiles.get(r.key)
                     is_self = (r.key == p.key)
 
-                    use_child_cache = (not is_self) and (t_child is not None) and (
-                            t_child.mask_tex is not None) and not size_change
+                    use_child_cache = (
+                            (not is_self)
+                            and (t_child is not None)
+                            and (t_child.mask_tex is not None)
+                            and (not size_change)
+                    )
 
                     # For cached tiles, use actual tile size from context to avoid stretching
                     if use_child_cache:
@@ -1415,14 +1565,18 @@ class TileCacheMasked:
                         continue
 
                     if use_child_cache:
-                        # Child with cache: sample and apply offset to correct for layer changes
-                        offset = float(r.layer - t_child.mask_layer) / 65535.0
-                        self._draw_mask_rect_cached(t_child.mask_tex, ix0, iy0, iw, ih, offset, r.corner_radius)
+                        offset = float(r.layer - t_child.mask_layer) * INV_65535
+                        self._draw_mask_rect_cached(
+                            t_child.mask_tex,
+                            ix0,
+                            iy0,
+                            iw,
+                            ih,
+                            offset,
+                            max(5.0, r.corner_radius),
+                        )
                     else:
-                        # Self or dirty child: draw at current absolute layer
-                        draw_state = self.key_to_draw_state.get(r.key)
                         depth, active_layer = draw_state.depth_and_layer
-
                         divisor = max(1.0, depth - 13.0)
                         layer_and_depth = active_layer * Melty.max_depth + (depth * (20.0 / (divisor)))
                         rank_norm = float(layer_and_depth) / 65535.5
@@ -1430,36 +1584,47 @@ class TileCacheMasked:
                         gl.glViewport(ix0, iy0, iw, ih)
                         if r.corner_radius > 0:
                             gl.glUseProgram(self._prog_mask_rounded)
-                            gl.glUniform1f(gl.glGetUniformLocation(self._prog_mask_rounded, "uRankNorm"), rank_norm)
-                            gl.glUniform2f(gl.glGetUniformLocation(self._prog_mask_rounded, "uRectSize"), float(iw),
-                                           float(ih))
-                            gl.glUniform1f(gl.glGetUniformLocation(self._prog_mask_rounded, "uCornerRadius"),
-                                           r.corner_radius)
+                            gl.glUniform1f(self._loc_maskr_uRankNorm, rank_norm)
+                            gl.glUniform2f(self._loc_maskr_uRectSize, float(iw), float(ih))
+                            gl.glUniform1f(self._loc_maskr_uCornerRadius, r.corner_radius)
                         else:
                             gl.glUseProgram(self._prog_mask)
-                            gl.glUniform1f(gl.glGetUniformLocation(self._prog_mask, "uRankNorm"), rank_norm)
+                            gl.glUniform1f(self._loc_mask_uRankNorm, rank_norm)
                         gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
+
+                gl.glDisable(gl.GL_SCISSOR_TEST)
 
                 # Save _full_sub_mask_tex to tile's mask_tex and remember the layer
                 if p.tile is not None and p.tile.mask_tex is not None:
-                    p.tile.mask_layer = p.layer  # Remember what layer this was built at
+                    p.tile.mask_layer = p.layer
 
                     gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, self._scratch_fbo)
-                    gl.glFramebufferTexture2D(gl.GL_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT0, gl.GL_TEXTURE_2D,
-                                              p.tile.mask_tex, 0)
+                    gl.glFramebufferTexture2D(
+                        gl.GL_FRAMEBUFFER,
+                        gl.GL_COLOR_ATTACHMENT0,
+                        gl.GL_TEXTURE_2D,
+                        p.tile.mask_tex,
+                        0,
+                    )
                     gl.glDrawBuffers(1, [gl.GL_COLOR_ATTACHMENT0])
 
                     gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, self._full_sub_mask_fbo)
 
                     gl.glBlitFramebuffer(
-                        int(x0), int(y0), int(x1), int(y1),
-                        0, 0, int(p.tile.size[0]), int(p.tile.size[1]),
-                        gl.GL_COLOR_BUFFER_BIT, gl.GL_NEAREST
+                        int(x0),
+                        int(y0),
+                        int(x1),
+                        int(y1),
+                        0,
+                        0,
+                        int(p.tile.size[0]),
+                        int(p.tile.size[1]),
+                        gl.GL_COLOR_BUFFER_BIT,
+                        gl.GL_NEAREST,
                     )
 
             # ================================================================
-            # PASS 5: Build _full_mask_tex using children cached masks
-            # Apply offset to correct for layer changes since subtree was built
+            # PASS 5: Build _full_mask_tex using cached subtree masks
             # ================================================================
             gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._full_mask_fbo)
             gl.glViewport(0, 0, fb_w, fb_h)
@@ -1469,9 +1634,9 @@ class TileCacheMasked:
             gl.glClearColor(0, 0, 0, 0.0)
             gl.glClear(gl.GL_COLOR_BUFFER_BIT)
 
-            for r in local_mask_rects:
-                gl.glDisable(gl.GL_BLEND)
+            gl.glDisable(gl.GL_BLEND)
 
+            for r in local_mask_rects:
                 draw_state = self.key_to_draw_state.get(r.key)
                 if draw_state is None:
                     continue
@@ -1479,13 +1644,15 @@ class TileCacheMasked:
                 t = self._tiles.get(r.key)
                 size_change = draw_state.size_change if draw_state else False
 
-                can_use_cached = (t is not None) and (t.mask_tex is not None) and not size_change
-                clip_x0, clip_y0, clip_x1, clip_y1 = self._screen_rect_to_fb_xyxy(r.x, r.y, r.w, r.h, dp_x, dp_y, s_x,
-                                                                                  s_y, fb_h)
+                can_use_cached = (t is not None) and (t.mask_tex is not None) and (not size_change)
+
+                clip_x0, clip_y0, clip_x1, clip_y1 = self._screen_rect_to_fb_xyxy(
+                    r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y, fb_h
+                )
                 clip_ix0, clip_iy0 = int(floor(clip_x0)), int(floor(clip_y0))
                 clip_ix1, clip_iy1 = int(ceil(clip_x1)), int(ceil(clip_y1))
                 clip_iw, clip_ih = max(0, clip_ix1 - clip_ix0), max(0, clip_iy1 - clip_iy0)
-                # For cached tiles, use actual tile size from context to avoid stretching
+
                 tile_ctx = self._key_to_ctx.get(r.key)
                 if tile_ctx is not None and not tile_ctx.draw_state.shadow:
                     continue
@@ -1494,15 +1661,13 @@ class TileCacheMasked:
                     gl.glEnable(gl.GL_BLEND)
                     gl.glBlendEquation(gl.GL_MAX)
                     gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
+                else:
+                    gl.glDisable(gl.GL_BLEND)
 
-                if can_use_cached or size_change:
-
-                    if tile_ctx:
-                        tx, ty = draw_state.left, draw_state.top
-                        tw, th = draw_state.width, draw_state.height
-                        x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(tx, ty, tw, th, dp_x, dp_y, s_x, s_y, fb_h)
-                    else:
-                        x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y, fb_h)
+                if (can_use_cached or size_change) and tile_ctx:
+                    tx, ty = draw_state.left, draw_state.top
+                    tw, th = draw_state.width, draw_state.height
+                    x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(tx, ty, tw, th, dp_x, dp_y, s_x, s_y, fb_h)
                 else:
                     x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y, fb_h)
 
@@ -1510,40 +1675,35 @@ class TileCacheMasked:
                 ix1, iy1 = int(ceil(x1)), int(ceil(y1))
                 iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
 
-                if draw_state.width <= 0 or draw_state.height <= 0:
+                if draw_state.width <= 0 or draw_state.height <= 0 or iw <= 0 or ih <= 0 or clip_iw <= 0 or clip_ih <= 0:
                     continue
+
                 gl.glEnable(gl.GL_SCISSOR_TEST)
                 gl.glScissor(clip_ix0, clip_iy0, clip_iw, clip_ih)
                 gl.glViewport(ix0, iy0, iw, ih)
 
                 if can_use_cached:
-                    # Apply offset to correct for layer changes: (current_layer - cached_layer)
-                    offset = float(r.layer - t.mask_layer) / 65535.0
+                    offset = float(r.layer - t.mask_layer) * INV_65535
                     self._draw_mask_rect_cached(t.mask_tex, ix0, iy0, iw, ih, offset, max(5.0, r.corner_radius))
                 else:
-                    if draw_state is not None:
-                        # Dirty tile: draw fresh using absolute layer
-                        gl.glEnable(gl.GL_SCISSOR_TEST)
-                        gl.glScissor(clip_ix0, clip_iy0, clip_iw, clip_ih)
-                        gl.glViewport(clip_ix0, clip_iy0, clip_iw, clip_ih)
+                    depth, active_layer = draw_state.depth_and_layer
+                    divisor = max(1.0, depth - 13.0)
+                    layer_and_depth = active_layer * Melty.max_depth + (depth * (20.0 / (divisor)))
+                    rank_norm = float(layer_and_depth) / 65535.5
 
-                        depth, active_layer = draw_state.depth_and_layer
-                        divisor = max(1.0, depth - 13.0)
-                        layer_and_depth = active_layer * Melty.max_depth + (depth * (20.0 / (divisor)))
-                        rank_norm = float(layer_and_depth) / 65535.5
+                    gl.glViewport(clip_ix0, clip_iy0, clip_iw, clip_ih)
 
-                        if max(5.0, r.corner_radius) > 0:
-                            gl.glUseProgram(self._prog_mask_rounded)
-                            gl.glUniform1f(gl.glGetUniformLocation(self._prog_mask_rounded, "uRankNorm"), rank_norm)
-                            gl.glUniform2f(gl.glGetUniformLocation(self._prog_mask_rounded, "uRectSize"),
-                                           float(clip_iw), float(clip_ih))
-                            gl.glUniform1f(gl.glGetUniformLocation(self._prog_mask_rounded, "uCornerRadius"),
-                                           max(5.0, r.corner_radius))
-                        else:
-                            gl.glUseProgram(self._prog_mask)
-                            gl.glUniform1f(gl.glGetUniformLocation(self._prog_mask, "uRankNorm"), rank_norm)
+                    cr = max(5.0, r.corner_radius)
+                    if cr > 0:
+                        gl.glUseProgram(self._prog_mask_rounded)
+                        gl.glUniform1f(self._loc_maskr_uRankNorm, rank_norm)
+                        gl.glUniform2f(self._loc_maskr_uRectSize, float(clip_iw), float(clip_ih))
+                        gl.glUniform1f(self._loc_maskr_uCornerRadius, cr)
+                    else:
+                        gl.glUseProgram(self._prog_mask)
+                        gl.glUniform1f(self._loc_mask_uRankNorm, rank_norm)
 
-                        gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
+                    gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
 
             gl.glDisable(gl.GL_SCISSOR_TEST)
 

@@ -92,6 +92,7 @@ class DrawState(DictConversion):
         super().__init__()
         self._children = {}
         self._parent = None
+        self._is_header = False
         self.next = None
         self.previous = None
         self.index_in_parent = 0
