@@ -85,6 +85,8 @@ class _Rect:
 # GL helpers
 # ==============================
 def _create_color_tex(w: int, h: int, internal_format=gl.GL_RGBA8) -> int:
+    Melty.cache.tex_init_count += 1
+
     tex = gl.glGenTextures(1)
     gl.glBindTexture(gl.GL_TEXTURE_2D, tex)
     gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, internal_format, w, h, 0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, None)
@@ -141,6 +143,7 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, ti
         return None
 
     new_tex = _create_color_tex(w, h)
+
     new_mask_tex = _create_mask_tex(w, h)
     new_fbo, new_rbo = _create_fbo_with_tex(new_tex, True, w, h)
 
@@ -473,6 +476,7 @@ class TileCacheMasked:
         self._LAYER_MAX = 2048
 
         self.seen_ids = set()
+        self.tex_init_count = 0
 
         self.offscreen_debug_mode: OffscreenDebugMode = OffscreenDebugMode.OFF
         self.offscreen_scale = 200.0

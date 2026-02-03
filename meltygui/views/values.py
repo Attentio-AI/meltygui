@@ -448,6 +448,8 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
 @render_func(use_cache=True)
 def draw_main(input_value, vis):
+
+
     global test_obj
     return_val = draw_window(Melty.profiles_results, show_bg=True, name="Profile Results")
     return_val2 = draw_window(Melty.registered_windows, is_tree=True, show_add_delete=False, return_extras=True, name="Window Manager")
@@ -483,6 +485,7 @@ def draw_main(input_value, vis):
     draw_window("input_val", name="Outer no live", view_func=test_widget, live=False)
 
     # draw_window(Melty.last_request_render, show_bg=True, name="Last Invalid")
+
 
 @render_func
 def test_widget(input_value, name, unique):
