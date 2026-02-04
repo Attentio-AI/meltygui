@@ -523,8 +523,6 @@ def with_header_minimal(func, **o_kwargs):
     return wrapper
 
 
-
-
 source = "x = foo(val=1)\nprint(x)\nsome_list=[0, 1, 2, 3]\n"
 module = cst.parse_module(source)
 proxy = cst_wrap(module)
