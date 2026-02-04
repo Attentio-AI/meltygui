@@ -108,6 +108,8 @@ class Melty:
     vis = None
     imgui_crashed = False
     type_defaults = {}
+    type_to_default_view_func = defaultdict(lambda: set())
+
     unique_stack = [0] * max_depth
     size_stack = []
     window_stack = []

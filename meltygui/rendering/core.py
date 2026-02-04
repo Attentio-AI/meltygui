@@ -87,11 +87,14 @@ def render_wrapper(*o_args, **o_kwargs):
         wanted_params.remove("args") if "args" in wanted_params else None
         wanted_params.remove("o_kwargs") if "o_kwargs" in wanted_params else None
 
-        def add_default(value):
+        def add_default(register_type):
             kwargs.pop('is_default_for', None)
             new_meta = Meta()
             new_meta.view_function = wrapper(*args, **kwargs)
-            Melty.type_defaults[value] = new_meta
+            Melty.type_defaults[register_type] = new_meta
+
+            if not isinstance((register_type), str):
+                Melty.type_to_default_view_func[register_type].add(func.__name__)
 
         is_default_for = kwargs.get('is_default_for', None)
         if isinstance(is_default_for, (tuple, list)):

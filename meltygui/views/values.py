@@ -332,13 +332,18 @@ def draw_collection(input_value, draw_state, depth, style_manager,
             imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
             imgui.pop_style_var()
 
-            item_changed, out_val, returned_ds = draw_any(item, return_extras=True, key=key,
+            item_return = draw_any(item, return_extras=True, key=key,
                                                           meta=item_meta, trigger_collapse=trigger_collapse,
                                                           trigger_expand=trigger_expand, y_offset=y_offset,
                                                           on_collapse=on_collapse, on_expand=on_expand,
                                                           collection=input_value, name=key_str, display_name=display_name,
                                                           parent_show_add_delete=show_add_delete,
                                                           show_add_delete=show_add_delete)
+
+            if len(item_return) == 3:
+                item_changed, out_val, returned_ds = item_return
+            else:
+                item_changed, out_val, returned_ds = item_return[0], item_return[1], None
             imgui.dummy(0, 0)
             imgui.end_group()
 
@@ -447,7 +452,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
 
 @render_func(use_cache=True)
-def draw_main(input_value, vis):
+def draw_main(input_value, vis, **kwargs):
 
 
     global test_obj
@@ -461,6 +466,10 @@ def draw_main(input_value, vis):
     draw_window(vis.root.lora_collection, name="Test Window 1")
     draw_window(vis.root.lora_collection.loras, name="Test Window 2")
     draw_window(Melty.last_invalid, show_bg=True, name="Last Invalid")
+
+    draw_window(input_value=Melty.type_to_default_view_func, is_tree=True,
+                show_add_delete=False, name="Type Defaults")
+
     # draw_window(Melty.registered_windows, is_tree=True,
     #             show_add_delete=False, name="Test window manager")
 
@@ -488,7 +497,7 @@ def draw_main(input_value, vis):
 
 
 @render_func
-def test_widget(input_value, name, unique):
+def test_widget(input_value, name, unique, **kwargs):
     imgui.text("Test Widget")
     draw_window("Nested Window", name=f"{name} Nested")
 
@@ -601,7 +610,7 @@ def draw_pending_texture(input_value:PendingTexture, draw_state):
 def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mouse_drag, right_mouse_drag,
                  zoom_state: ZoomState, zoom_speed, header_height=0, min_zoom=0.1,
                  max_zoom=50.0, style_manager=None, max_brightness=5.0, max_contrast=5.0,
-                 on_scroll=0, draw_state=None, jet=False):
+                 on_scroll=0, draw_state=None, jet=False, **kwargs):
 
     original_id = input_value
     texture_id = input_value
@@ -942,7 +951,11 @@ def draw_debug(input_value, melty):
 @with_header(is_default_for=ManagedWindow, is_tree=False, show_name=False,
              show_bg=True, show_add_delete=False, show_tint=False, wrap=False)
 def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, mouse_down=False, **kwargs):
-    window_draw_state = input_value.draw_state
+    try:
+        window_draw_state = input_value.draw_state
+    except Exception as e:
+        imgui.text(f"Error accessing draw_state: {e}")
+        return False, None
     window_input_value = input_value.input_value
     name = window_draw_state.name
 
@@ -2464,10 +2477,17 @@ def draw_parameter(input_value):
 @with_header(is_default_for=(types.MappingProxyType), show_add_delete=False, wraps=render_func)
 def draw_mapping_proxy(input_value):
     # To list first, then back to mapping proxy
-    dict_values = dict(input_value)
-    changed, new_dict = draw_collection(dict_values, show_bg=False, indent_size=0, show_header=False, show_add_delete=False)
-    if changed:
-        return True, types.MappingProxyType(new_dict)
+    try:
+        dict_values = dict(input_value)
+        changed, new_dict = draw_collection(dict_values, show_bg=False, indent_size=0, show_header=False,
+                                            show_add_delete=False)
+        if changed:
+            return True, types.MappingProxyType(new_dict)
+
+    except Exception as e:
+        imgui.text(f"Error converting MappingProxyType to dict: {e}")
+        return False, input_value
+
 
     return changed, input_value
 
@@ -2514,6 +2534,9 @@ def draw_vis(input_val):
 @with_header(is_default_for=(types.FunctionType, types.MethodType),
                      wraps=render_func, show_add_delete=False, is_tree=False, show_name=False)
 def draw_function(input_value, name, draw_state, unique):
+    if not callable(input_value):
+        imgui.text("Not a callable function")
+        return False, input_value
     signature = inspect.signature(input_value)
     params = signature.parameters
     if len(draw_state.params) != len(params):

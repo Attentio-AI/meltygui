@@ -11,10 +11,7 @@ class Meta:
 
     @staticmethod
     def get_child_meta(cls, field_name, value=None):
-        if value is not None and value.__class__.__name__ == "RightMouse":
-            pass
-        if value.__class__.__name__ == cst.Integer.__name__:
-            pass
+
         child_meta = getattr(cls, f"{field_name}_meta", None)
         if cls is not None:
             if child_meta is None:
@@ -27,7 +24,7 @@ class Meta:
             if isinstance(value, Enum):
                 type_default = Melty.type_defaults.get(Enum, None)
             else:
-                if field_name in Melty.type_defaults:
+                if isinstance(field_name, str) and field_name in Melty.type_defaults:
                     type_default = Melty.type_defaults.get(field_name, None)
                 else:
                     type_default = Melty.type_defaults.get(value.__class__, None)
