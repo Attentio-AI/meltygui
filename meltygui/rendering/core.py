@@ -94,7 +94,7 @@ def render_wrapper(*o_args, **o_kwargs):
             Melty.type_defaults[register_type] = new_meta
 
             if not isinstance((register_type), str):
-                Melty.type_to_default_view_func[register_type].add(func.__name__)
+                Melty.type_to_default_view_func[register_type].add(render_func.__name__)
 
         is_default_for = kwargs.get('is_default_for', None)
         if isinstance(is_default_for, (tuple, list)):
