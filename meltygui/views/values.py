@@ -2531,6 +2531,10 @@ def draw_vis(input_val):
     imgui.text("An LSD Studio Instance")
 
 
+@with_header(is_default_for="AppModel", show_bg=True, tint=(0.6, 0.2, 0.8))
+def draw_vis(input_val):
+    imgui.text("An App Model Instance")
+
 @with_header(is_default_for=(types.FunctionType, types.MethodType),
                      wraps=render_func, show_add_delete=False, is_tree=False, show_name=False)
 def draw_function(input_value, name, draw_state, unique):
@@ -2542,6 +2546,8 @@ def draw_function(input_value, name, draw_state, unique):
     if len(draw_state.params) != len(params):
         param_dict = {}
         for name, param in params.items():
+            if name == 'kwargs':
+                continue
             if param.default is not inspect.Parameter.empty:
                 param_dict[name] = param.default
             else:
