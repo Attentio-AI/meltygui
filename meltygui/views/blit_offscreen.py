@@ -1130,8 +1130,8 @@ class TileCacheMasked:
         imgui.end_group()
         Melty.tile_id_stack.pop()
 
-        minx, miny = imgui.get_item_rect_min()
-        size = imgui.get_item_rect_size()
+        minx, miny = ctx.draw_state.left, ctx.draw_state.top
+        size = ctx.draw_state.width + ctx.draw_state.header_left_delta, ctx.draw_state.header_top_delta
         if not ctx.auto_resize and ctx.draw_state.window_size is not None:
             size = snap_int(ctx.draw_state.width), snap_int(ctx.draw_state.height)
 
