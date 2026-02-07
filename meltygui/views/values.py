@@ -190,7 +190,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     if display_name is not None:
         name = display_name
 
-    imgui.dummy(0, 1)
+    imgui.dummy(0, 0)
 
     on_change = False
     return_val = on_action
@@ -226,8 +226,8 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         #     draw_state.expanded = True
 
         push_style_color(imgui.COLOR_TEXT, *outline_color)
-        imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0], imgui.get_cursor_screen_pos()[1] + 1))
-        imgui.dummy(1, 5)
+        imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0], imgui.get_cursor_screen_pos()[1]))
+        imgui.dummy(0, 0)
         imgui.same_line(spacing=1)
 
         # no background
@@ -385,7 +385,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
 
 @render_func(is_default_for=(MutableMapping, defaultdict), use_cache=False,
-             shadow=True, wrap=False, enable_scroll=True, with_header=draw_header_new)
+             shadow=True, wrap=False, enable_scroll=True, with_header=draw_header)
 # @with_header(is_default_for=(MutableMapping, defaultdict), use_cache=False,
 #              shadow=True, wrap=False, enable_scroll=True)
 def draw_collection(input_value, draw_state, depth, style_manager,
@@ -454,6 +454,8 @@ def draw_collection(input_value, draw_state, depth, style_manager,
     keys = list(keys)[:]
     children_draw_states = []
     rect = Melty.get_clip_rect()
+    header_height = 20
+
     if rect is None:
         rect_height = 1e6
         parent_bottom = 1e6
@@ -461,7 +463,6 @@ def draw_collection(input_value, draw_state, depth, style_manager,
         rect_height = rect[3] - rect[1]
         parent_bottom = rect[3]
 
-    needs_content_height = draw_state.invalid_content_height and draw_state.content_height < rect_height
     premature_break = False
 
     Melty.collection_index_stack.append(0)
@@ -663,7 +664,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
     Melty.collection_index_stack.pop()
     end_pos = imgui.get_cursor_pos()[1]
-    content_height = (end_pos - start_cursor) + 1
+    content_height = (end_pos - start_cursor)
 
     # if len(children_draw_states) == len(keys):
     #     draw_state._children = children_draw_states
@@ -678,7 +679,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
     # imgui.set_cursor_screen_pos((current_cursor[0], current_cursor[1] + draw_state.scroll_offset[1]))
     # current_cursor = imgui.get_cursor_screen_pos()
     if not imgui.is_mouse_down(0) and not imgui.is_mouse_down(1) and not premature_break:
-        draw_state.content_height = snap_int(content_height)
+        draw_state.content_height = snap_int(content_height) + header_height
         draw_state.invalid_content_height = False
 
     draw_state.premature_break = premature_break

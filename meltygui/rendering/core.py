@@ -638,13 +638,18 @@ def render_func(*args, **o_kwargs):
                 draw_header = kwargs.get("with_header", None)
 
                 imgui.begin_group()
+                header_start_cursor = imgui.get_cursor_screen_pos()
                 draw_header(**kwargs)
                 header_end = imgui.get_item_rect_max()[0]
-                draw_state.header_width = imgui.get_item_rect_max()[0] - imgui.get_item_rect_min()[0]
-                draw_state.header_height = imgui.get_item_rect_max()[1] - imgui.get_item_rect_min()[1]
+                header_end_cursor = imgui.get_cursor_screen_pos()
+                draw_state.header_height = header_end_cursor[1] - header_start_cursor[1]
+                draw_state.header_width = header_end_cursor[0] - header_start_cursor[0]
 
                 imgui.dummy(0, 0)
-                imgui.end_group()
+                end_group()
+
+
+
 
                 cutoff = 100
                 single_line_max_h = 23
@@ -655,7 +660,6 @@ def render_func(*args, **o_kwargs):
                 if draw_state.height is not None and draw_state.height < single_line_max_h:
                     if (parent_end - header_end > cutoff and draw_state.expanded):
                         same_line()
-
             begin_group(unique)
             push_id(unique)
 
@@ -670,7 +674,6 @@ def render_func(*args, **o_kwargs):
             draw_state.left, draw_state.top = imgui.get_cursor_screen_pos()
             draw_state.left = snap_int(draw_state.left)
             draw_state.top = snap_int(draw_state.top)
-
             draw_state.clip_rect = Melty.get_clip_rect()
 
 
@@ -754,7 +757,6 @@ def render_func(*args, **o_kwargs):
             left = draw_state.left
             width = draw_state.width
             height = draw_state.height
-
 
             top = snap_int(top)
             left = snap_int(left)
@@ -922,7 +924,7 @@ def render_func(*args, **o_kwargs):
             clip_rect = Melty.get_clip_rect()
 
             if not is_header:
-                Melty.push_clip((left - kwargs.get("indent_size", 0), top - draw_state.header_height,
+                Melty.push_clip((left - kwargs.get("indent_size", 0), top,
                                  left + width,
                                  top + height))
 
@@ -1172,10 +1174,12 @@ def render_func(*args, **o_kwargs):
 
         indent_x = kwargs.get("indent_size", 0)
         needs_scroll = False
-
+        clip_height = 0
         if draw_state._parent is not None and not draw_state._parent.auto_resize:
-            clip_height = draw_state._parent.height
-            needs_scroll = draw_state.content_height > clip_height
+            clip_size = Melty.get_clip_size()
+            if clip_size is not None:
+                clip_height = clip_size[1]
+                needs_scroll = draw_state.content_height > clip_height
             draw_state.scroll_visible = True
             draw_state._parent.scroll_visible = True
         else:
