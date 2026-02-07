@@ -99,32 +99,6 @@ def draw_window(input_value, view_func=None, draw_state=None, **kwargs):
 
     return return_val
 
-
-@render_wrapper(wraps=render_func, use_cache=False)
-def with_header(func, **o_kwargs):
-    def wrapper(next_kwargs=None, draw_state=None, **kwargs):
-        if Melty.annotation_mode:
-            annotation = annotation_track(wrapper=wrapper, **o_kwargs)
-            if annotation is not None: return annotation
-
-
-
-        # if not next_kwargs.get("auto_resize", False):
-        #     next_kwargs['width'] = draw_state.width
-        #     next_kwargs['height'] = draw_state.height - header_height
-
-        next_kwargs['func'] = func
-        next_kwargs['outer_func'] = wrapper
-        next_kwargs['show_bg'] = kwargs.get("show_bg", True)
-
-        return_val = core_header(**next_kwargs)
-
-        return return_val
-
-    setattr(wrapper, '__name__', f"{func.__name__} --- with_header ")
-
-    return wrapper
-
 def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add_delete=False, width=0, suffix="",
                 collection=None, display_name=None, meta=None, unique=None, is_tree=True,
                 show_name=True, name_func=None, show_type=False, show_unique=False,
@@ -700,35 +674,6 @@ def test_widget(input_value, name, unique, **kwargs):
     draw_window("Nested Window", name=f"{name} Nested")
 
 
-@render_wrapper(wraps=render_func, use_cache=False)
-def with_header_minimal(func, **o_kwargs):
-    def wrapper(next_kwargs=None, draw_state=None, **kwargs):
-        if Melty.annotation_mode:
-            annotation = annotation_track( wrapper=wrapper, **o_kwargs)
-            if annotation is not None: return annotation
-
-        # header_top = imgui.get_cursor_screen_pos()[1]
-        # header_left = imgui.get_cursor_screen_pos()[0]
-        # header_width = draw_state.width
-        # header_height = draw_state.height
-        #
-        # next_kwargs['header_top'] = header_top
-        # next_kwargs['header_left'] = header_left
-        # next_kwargs['header_width'] = header_width
-        # next_kwargs['header_height'] = header_height
-
-        next_kwargs['func'] = func
-        next_kwargs['outer_func'] = wrapper
-        next_kwargs['y_offset'] = 0
-        next_kwargs['shadow'] = kwargs.get("shadow", False)
-        next_kwargs['show_bg'] = kwargs.get("show_bg", False)
-        next_kwargs['is_tree'] = kwargs.get("is_tree", False)
-        next_kwargs['min_width'] = kwargs.get('min_width', 30)
-        return core_header(**next_kwargs)
-
-    setattr(wrapper, '__name__', f"{func.__name__} --- with_header_minimal")
-    return wrapper
-
 
 source = "x = foo(val=1)\nprint(x)\nsome_list=[0, 1, 2, 3]\n"
 module = cst.parse_module(source)
@@ -789,9 +734,9 @@ def draw_melty_windows(vis):
     end()
 
 
-@with_header(is_default_for=PendingTexture, use_cache=False,
+@render_func(is_default_for=PendingTexture, use_cache=False,
              show_bg=False, enable_scroll=False,
-             auto_resize=True, indent_size=0, shadow=True)
+             auto_resize=True, indent_size=0, shadow=True, with_header=draw_header)
 def draw_pending_texture(input_value:PendingTexture, draw_state):
     if input_value.texture_id is None:
         imgui.text(f"Uploading... {id(input_value)}")
@@ -801,10 +746,10 @@ def draw_pending_texture(input_value:PendingTexture, draw_state):
                         width=draw_state.width, height=draw_state.height,
                  auto_resize=False, show_header=False, indent_size=0, wrap=False)
 
-@with_header(is_default_for=numpy.uint32, show_bg=True,
+@render_func(is_default_for=numpy.uint32, show_bg=True,
              use_cache=False, show_add_delete=False, shadow=True,
              indent_size=0, min_width=100, min_height=100, wrap=False,
-             enable_scroll=True, zoom_speed=0.2, fill_height=True)
+             enable_scroll=True, zoom_speed=0.2, fill_height=True, with_header=draw_header)
 def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mouse_drag, right_mouse_drag,
                  zoom_state: ZoomState, zoom_speed, header_height=0, min_zoom=0.1,
                  max_zoom=50.0, style_manager=None, max_brightness=5.0, max_contrast=5.0,
@@ -1141,8 +1086,8 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
     return True, draw_state
 
     # draw_window(Melty.last_request_render, show_bg=True, name="Last Invalid")
-@with_header(is_default_for=ManagedWindow, is_tree=False,
-             show_bg=True, show_add_delete=False)
+@render_func(is_default_for=ManagedWindow, is_tree=False,
+             show_bg=True, show_add_delete=False, with_header=draw_header)
 def draw_debug(input_value, melty):
     draw_any(melty)
 
@@ -1233,38 +1178,19 @@ def export_code(test_param_2: int = 5):
 
 ######################## libCST START ##########################
 
-@render_wrapper(wraps=render_func)
-def cst_header(func, **o_kwargs):
-    def wrapper(next_kwargs=None, draw_state=None, **kwargs):
-        if Melty.annotation_mode:
-            annotation = annotation_track( wrapper=wrapper, **o_kwargs)
-            if annotation is not None: return annotation
 
-        next_kwargs['func'] = func
-        next_kwargs['outer_func'] = wrapper
-        next_kwargs['show_add_delete'] = False
-        next_kwargs['show_bg'] = kwargs.get('show_bg', True)
-        next_kwargs['is_tree'] = kwargs.get('is_tree', True)
-        next_kwargs['y_offset'] = Melty.collection_spacing
-
-        return core_header(**next_kwargs)
-
-    setattr(wrapper, '__name__', f"{func.__name__} --- with_header ")
-
-    return wrapper
-
-@cst_header(is_default_for=cst.SimpleStatementLine, header_same_line=True, wrap=True)
+@render_func(is_default_for=cst.SimpleStatementLine, with_header=draw_header, header_same_line=True, wrap=True)
 def draw_cst_single_line(input_value: cst.SimpleStatementLine):
     # An Assign has one or more targets, an AssignEqual token, and a value
     draw_any(input_value.body, wrap=True)
 
 
-@cst_header(is_default_for=cst.Comment, wrap=True)
+@render_func(is_default_for=cst.Comment, wrap=True, with_header=draw_header)
 def draw_comment(input_value: cst.Comment, **kwargs):
     # imgui.text(f"# {input_value.value}")
     pass
 
-@cst_header(is_default_for=cst.SimpleWhitespace, header_same_line=True, show_name=False, shadow=False, wrap=True)
+@render_func(is_default_for=cst.SimpleWhitespace, header_same_line=True, with_header=draw_header, show_name=False, shadow=False, wrap=True)
 def draw_cst_simple_whitespace(input_value: cst.SimpleWhitespace):
     # An Assign has one or more targets, an AssignEqual token, and a value
     # imgui.same_line()
@@ -1289,7 +1215,7 @@ def assign_name(input_value: cst.Assign):
     else:
         return "Multiple Targets"
 
-@cst_header(is_default_for=cst.Assign, header_same_line=True, name_func=assign_name, wrap=True)
+@render_func(is_default_for=cst.Assign, header_same_line=True, name_func=assign_name, wrap=True, with_header=draw_header)
 def draw_cst_assign(input_value: cst.Assign):
     # An Assign has one or more targets, an AssignEqual token, and a value
 
@@ -1299,7 +1225,7 @@ def draw_cst_assign(input_value: cst.Assign):
 
 
 # --- Names ---
-@cst_header(is_default_for=cst.AssignTarget, wrap=True)
+@render_func(is_default_for=cst.AssignTarget, wrap=True, with_header=draw_header)
 def draw_assign_target(input_value: cst.AssignTarget):
     draw_any(input_value.target)
 
@@ -1310,7 +1236,8 @@ def draw_cst_name(input_value: cst.Name):
     pass
 
 
-@cst_header(is_default_for=(cst.Expr, cst.Element), header_same_line=True, show_header=False,
+@render_func(is_default_for=(cst.Expr, cst.Element), header_same_line=True, show_header=False,
+             with_header=draw_header,
             show_bg=False, show_name=True, wrap=True)
 def draw_cst_expr(input_value):
     # Just render the wrapped expression
@@ -1330,7 +1257,7 @@ def call_name(call: cst.Call):
     else:
         return ""
 
-@cst_header(is_default_for=cst.Call, header_same_line=True, name_func=call_name, wrap=True)
+@render_func(is_default_for=cst.Call, header_same_line=True, name_func=call_name, wrap=True, with_header=draw_header)
 def draw_cst_call(input_value: cst.Call):
     imgui.same_line()
     imgui.align_text_to_frame_padding()
@@ -1346,8 +1273,8 @@ def draw_cst_call(input_value: cst.Call):
 # def draw_cst_module(input_value: cst.Module):
 #     return draw_any(input_value.body, show_name=False)
 
-@cst_header(is_default_for=cst.List, show_name=False, show_bg=False,
-            header_same_line=True, wrap=True)
+@render_func(is_default_for=cst.List, show_name=False, show_bg=False,
+            header_same_line=True, wrap=True, with_header=draw_header)
 def draw_cst_list(input_value: cst.List):
     imgui.same_line()
     imgui.align_text_to_frame_padding()
@@ -1374,7 +1301,7 @@ def draw_cst_dict(input_value: CSTDictProxy):
 
 
 # --- Parameters ---
-@cst_header(is_default_for=cst.Parameters, wrap=True)
+@render_func(is_default_for=cst.Parameters, wrap=True, with_header=draw_header)
 def draw_cst_parameters(input_value: cst.Parameters):
     first = True
     for param in input_value.params:
@@ -1387,7 +1314,7 @@ def draw_cst_parameters(input_value: cst.Parameters):
 
 
 # --- Individual Parameter ---
-@cst_header(is_default_for=cst.Param, wrap=True)
+@render_func(is_default_for=cst.Param, wrap=True, with_header=draw_header)
 def draw_cst_param(input_value: cst.Param):
     draw_any(input_value.name)
     if input_value.default:
@@ -1410,7 +1337,7 @@ def arg_name(arg: cst.Arg):
         return arg.value.value
     else:
         return None
-@with_header_minimal(is_default_for=cst.Arg, show_bg=True, name_attrib="keyword",
+@render_func(is_default_for=cst.Arg, show_bg=True, name_attrib="keyword", with_header=draw_header,
                      name_func=arg_name, show_add_delete=False, header_same_line=True,
                      wrap=True)
 def draw_cst_arg(input_value: cst.Arg):
@@ -1883,191 +1810,6 @@ def get_bg_color(depth, rounding, global_style, style_manager, auto_resize):
     bg_color = mix_colors(bg_color, bg_bleed, bleed_factor)
     return bg_color
 
-def core_header(func, outer_func, render_func, input_value=None, melty_window=False, auto_resize=True,
-                collection=None, key=None, indent_size=10, depth=0, draw_state=None,
-                window_stack=None, is_tree=True, is_window=False, spacing=Melty.spacing, padding=Melty.padding, show_name=True,
-                on_mouse_down=False, no_measure=False, show_search=False, on_search=False,
-                closable=False,
-                show_header=True, show_bg=True, unique=0, name="", style_manager=None, global_style=None, parent_show_add_delete=True,
-                selected_views=None, on_drag=False, on_drag_up=False, do_flow=True, melty=None, enable_flow=True, header_same_line=False,
-                on_hover=False, next_kwargs=None, meta=None, on_same_line=False, y_offset=0, width=None, min_width=1, **kwargs):
-
-        return_value = None
-        changed = False
-
-        if meta is not None:
-            meta.tmp_draw_state = draw_state
-
-        draw_list = imgui.get_window_draw_list()
-
-        if Melty.channels_split and show_bg:
-            draw_list.channels_set_current(min(Melty.max_depth - 1, Melty.get_channel()))
-
-        if not show_bg:
-            y_offset = 0
-        prev_tint = None
-        if hasattr(input_value, "tint") and input_value.tint is not None:
-            prev_tint = style_manager.get_tint()
-            style_manager.set_imgui_tint(*input_value.tint)
-        elif draw_state.tint is not None and show_bg:
-            prev_tint = style_manager.get_tint()
-            style_manager.set_imgui_tint(*draw_state.tint)
-        elif hasattr(collection, "__tint__") and collection.__tint__ is not None:
-            if name in collection.__tint__:
-                prev_tint = style_manager.get_tint()
-                style_manager.set_imgui_tint(*collection.__tint__[name])
-
-        start_x_pos = imgui.get_cursor_screen_pos()[0]
-        start_y_pos = imgui.get_cursor_screen_pos()[1]
-        # ----------------- top spacing -----------
-        # if not show_name:
-        #     enable_flow = False
-
-        if not melty_window and enable_flow and Melty.window_enabled and melty.drag_in_progress:
-            _, flow_spacing = draw_drag_drop_target(do_flow=True, enable_flow=enable_flow,
-                                                    collection=collection, key=key, on_drag=False,
-                                                    draw_state=draw_state, tag="top")
-        # ------------------ end spacing -----------
-        width = draw_state.width
-        draw_state._left_rel = imgui.get_cursor_pos()[0]
-
-        cutoff = 50
-        y_margin = y_offset / 2.0
-
-        if on_drag:
-            imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() - int(Melty.flow_spacing))
-            Melty.flow_spacing = 0.0
-
-        if show_header:
-            next_kwargs['highlight'] = on_hover
-            if on_drag and not melty_window:
-                next_kwargs['opacity'] = 0.0
-            next_kwargs.pop('spacing', None)
-            next_kwargs.pop('padding', None)
-            next_kwargs.pop('melty_window', False)
-            next_kwargs['is_tree'] = is_tree
-
-            next_kwargs['input_value'] = input_value
-            next_kwargs['spacing'] =(spacing[0], Melty.spacing[1])
-            next_kwargs['padding'] = (padding[0], Melty.padding[1])
-            next_kwargs['show_search'] = show_search
-            next_kwargs['on_search'] = on_search
-            next_kwargs['key'] = key
-            next_kwargs['collection'] = collection
-            next_kwargs['closable'] = closable
-
-            # ------------------ HEADER -----------------
-
-            changed, return_value = draw_header(**next_kwargs)
-            rect_size = imgui.get_item_rect_size()
-            header_width = rect_size[0]
-
-            # # Auto indent is decided here
-            if header_same_line:
-                same_line()
-            else:
-                space_available = width - header_width
-                if (not isinstance(input_value, (dict, list, tuple, defaultdict)) and not hasattr(input_value, '__dict__')):
-                    if draw_state.height is not None:
-
-                        if draw_state.expanded_height is None:
-                            draw_state.expanded_height = draw_state.height
-
-                        height = max(draw_state.height, draw_state.expanded_height)
-
-                        if height is None or height < 79 or on_same_line:
-                            if (space_available > cutoff and draw_state.expanded) or on_same_line:
-                                header_same_line = True
-                                same_line(spacing=0.0)
-
-            if not header_same_line and (not on_drag or melty_window):
-                # # ----------------- end header for collections ---------------
-                # # This is the version with auto indent, probably a dict header
-                draw_header_end(**next_kwargs)
-
-        if show_bg:
-            bg_color = get_bg_color(len(Melty.bg_color_stack) * 2, rounding=4.0,
-                                    global_style=global_style,
-                                    style_manager=style_manager,
-                                    auto_resize=auto_resize)
-            Melty.bg_color_stack.append(bg_color)
-            style_manager.get_tint()
-            Melty.bg_stack.append(style_manager.get_tint())
-
-        if not is_tree or draw_state.expanded:
-            next_kwargs.pop('spacing', None)
-            next_kwargs.pop('padding', None)
-
-            imgui.set_next_item_width(120)
-
-            ######################## MAIN FUNC CALL ########################
-            current_cursor = imgui.get_cursor_screen_pos()
-            header_height = current_cursor[1] - start_y_pos
-            draw_list = imgui.get_window_draw_list()
-
-            if Melty.channels_split and show_bg:
-                draw_list.channels_set_current(min(Melty.max_depth - 1, Melty.get_channel()))
-            clipped = False
-            if draw_state.width is not None and draw_state.height is not None:
-                if draw_state.width > 0 and draw_state.height > 0:
-                    clipped = True
-                    # Melty.push_clip((draw_state.left, current_cursor[1],
-                    #                  draw_state.left + draw_state.width,
-                    #                  current_cursor[1] + draw_state.height - header_height))
-            next_kwargs.pop('draw_state', None)
-            next_kwargs.pop('width', None)
-            imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + indent_size)
-
-
-            if not auto_resize:
-                next_kwargs['scrollable'] = True
-
-            return_val = func(**next_kwargs)
-
-            imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() - indent_size)
-
-            ############### END MAIN FUNC CALL #############################
-            if return_val is not None and len(return_val) == 2:
-                func_changed, func_return_val = return_val
-
-                if func_changed:
-                    return_value = func_return_val
-                changed |= func_changed
-
-            # if header_same_line and show_bg:
-            #     # ----------------- end header single item---------------
-            #     # This is the version for single items probably
-            #     draw_header_end(**next_kwargs)
-            # if clipped:
-            #     Melty.pop_clip()
-
-        if not on_drag:
-            imgui.dummy(0, 1)
-
-        same_line(spacing=0)
-        imgui.dummy(0, snap_int(y_margin))
-
-        if show_bg:
-            style_manager.get_tint()
-            Melty.bg_stack.pop()
-            Melty.bg_color_stack.pop()
-        if not on_drag or melty_window:
-            next_kwargs['do_flow'] = True
-
-        if prev_tint is not None:
-            style_manager.set_imgui_tint(*prev_tint)
-        if on_drag_up and not melty_window:
-            melty.drag_in_progress = False
-            new_action = copy(melty.drag_drop_action)
-            new_action.operation = OperationType.MOVE
-            new_action.source_key = key
-            new_action.source_unique = unique
-            new_action.source_collection = collection
-            new_action.source_draw_state = draw_state
-
-            return False, new_action
-
-        return changed, return_value
 
 def seperator(height):
     imgui.dummy(0, snap_int(height / 2))
@@ -2277,41 +2019,6 @@ def render_profiler_time(input_value=None, brief=False, style_manager=None,
     return False, input_value
 
 
-#
-# @render_func(use_cache=False)
-# @listens_for(Hotkey(glfw.KEY_O, "on_search", KeyMod.CTRL))
-# @listens_for(Hotkey(glfw.KEY_MINUS, "on_collapse", KeyMod.CTRL, invert=False))
-# @listens_for(Hotkey(glfw.KEY_EQUAL, "on_expand", KeyMod.CTRL, repeat=False))
-# def draw_object(input_value=None, draw_state=None, meta=None, name="", style_manager=None,
-#                 depth=0, unique=0, suffix="", collection=None, key=None, *args, **kwargs):
-#     # if is_tree and not draw_state.expanded:
-#     #     return False, None
-#     is_collection = isinstance(input_value, (dict, list, tuple, set, defaultdict, MutableMapping)) or (
-#             hasattr(input_value, "__dict__") and depth < Melty.max_depth)
-#     if is_collection:
-#
-#         # render collections
-#         changed, new_value = draw_collection(input_value=input_value, collection=collection,
-#                                              name=name, key=key, **kwargs)
-#     else:
-#         return_value = None
-#         push_id(unique)
-#         try:
-#             imgui.text(f"Render object {name}")
-#         except Exception as e:
-#             print_colored_traceback(e)
-#         finally:
-#             pop_id()
-#             if return_value is None:
-#                 changed, new_value = False, None
-#             elif isinstance(return_value, tuple) and len(return_value) == 2:
-#                 changed, new_value = return_value
-#             else:
-#                 imgui.text("Unsupported return of render_func")
-#                 changed, new_value = False, None
-#     return changed, new_value
-
-
 def draw_any(input_value, **kwargs):
     # # meta handlin
     meta = kwargs.get("meta", None)
@@ -2321,11 +2028,6 @@ def draw_any(input_value, **kwargs):
 
     if meta.view_function is None or 'draw_any' in meta.view_function.__name__ :
         meta.view_function = draw_collection
-    #
-    # if kwargs['global_toggles'].force_show_view_fn:
-    #     imgui.text_colored(f"[{meta.view_function.__name__}]", 0.8, 0.5, 0.9)
-    # if kwargs['dev_toggles'].force_show_unique and hasattr(meta, 'unique'):
-    #     imgui.text_colored(f"[{Melty.get_tile_id()}]", 0.8, 0.5, 0.9)
 
     kwargs['use_cache'] = True
     return_val = meta.view_function(input_value, **kwargs)
@@ -2333,14 +2035,15 @@ def draw_any(input_value, **kwargs):
     return return_val
 
 
-@with_header_minimal(header_same_line=True, is_default_for=(NoneType), shadow=False)
+@render_func(header_same_line=True, is_default_for=(NoneType), shadow=False, is_tree=False, with_header=draw_header)
 def draw_none(input_value: NoneType):
     imgui.align_text_to_frame_padding()
     imgui.text("None")
     return False, input_value
 
 
-@with_header_minimal(is_default_for=(bool), header_same_line=True, use_cache=False, shadow=False)
+@render_func(is_default_for=(bool), header_same_line=True, use_cache=False, is_tree=False,
+             shadow=False, with_header=draw_header)
 def draw_bool(input_value: bool):
     changed, is_checked = imgui.checkbox("##bool", input_value)
     if changed:
@@ -2366,12 +2069,12 @@ def draw_str(input_value: str, draw_state):
         imgui.push_style_var(imgui.STYLE_ALPHA, 0)
 
     if line_count == 1:
-        imgui.set_next_item_width(draw_state.content_width - 5)
+        imgui.set_next_item_width(draw_state.content_width)
         changed, value = imgui.input_text("##str", input_value,
                                           flags=imgui.INPUT_TEXT_ENTER_RETURNS_TRUE)
     else:
         changed, value = imgui.input_text_multiline("##str", input_value,
-                                                    width=draw_state.content_width - 5, height=height)
+                                                    width=draw_state.content_width, height=height)
 
     if not show_controls:
         imgui.pop_style_var(1)
@@ -2380,7 +2083,9 @@ def draw_str(input_value: str, draw_state):
         return True, value
     return changed, value
 
-@with_header_minimal(is_default_for=('tint'), has_popup=True, indent_size=0, use_cache=False)
+@render_func(is_default_for=('tint'), has_popup=True, indent_size=0, is_tree=False,
+             show_name=False,
+             use_cache=False, with_header=draw_header)
 def draw_tuple(input_value: tuple, unique):
     if len(input_value) > 0 and isinstance(input_value[0], (float, int)):
         if len(input_value) == 4:
@@ -2449,7 +2154,7 @@ def draw_float_ctx(input_value):
              context_menu=draw_float_ctx, with_header=draw_header)
 def draw_float(input_value:float, draw_state, min_value=-100.0, max_value=100.0, speed=0.01):
 
-    imgui.set_next_item_width(max(30, draw_state.content_width - 5))
+    imgui.set_next_item_width(max(30, draw_state.content_width))
     changed, value = imgui.drag_float("##float", input_value,
                                       change_speed=speed,
                                       min_value=min_value,
@@ -2459,7 +2164,7 @@ def draw_float(input_value:float, draw_state, min_value=-100.0, max_value=100.0,
         return True, value
 
 
-@with_header_minimal(is_default_for=(Parameter), wraps=render_func)
+@render_func(is_default_for=(Parameter), wraps=render_func, with_header=draw_header)
 def draw_parameter(input_value):
 
     parameter_default = input_value.default
@@ -2470,7 +2175,7 @@ def draw_parameter(input_value):
         return draw_any(parameter_default, show_name=False, show_add_delete=False)
 
 
-@with_header(is_default_for=(types.MappingProxyType), show_add_delete=False, wraps=render_func)
+@render_func(is_default_for=(types.MappingProxyType), show_add_delete=False, with_header=draw_header)
 def draw_mapping_proxy(input_value):
     # To list first, then back to mapping proxy
     try:
@@ -2522,13 +2227,13 @@ def eval_function(input_value, draw_state):
 
     return changed, input_value
 
-@with_header(is_default_for="LSDStudio", show_bg=True, tint=(0.6, 0.2, 0.8))
+@render_func(is_default_for="LSDStudio", show_bg=True, tint=(0.6, 0.2, 0.8), with_header=draw_header)
 def draw_vis(input_val):
     imgui.text("An LSD Studio Instance")
 
 
-@with_header(is_default_for="AppModel", show_bg=True, tint=(0.6, 0.2, 0.8))
-def draw_vis(input_val):
+@render_func(is_default_for="AppModel", show_bg=True, tint=(0.6, 0.2, 0.8), with_header=draw_header)
+def draw_app_model(input_val):
     imgui.text("An App Model Instance")
 
 @render_func(is_default_for=(types.FunctionType, types.MethodType),
@@ -2598,11 +2303,11 @@ def draw_int(input_value: int, min_value=-100.0, max_value=100.0, speed=0.05, un
         return changed, value
     return False, input_value
 
-@with_header(show_header=False, show_name=False, show_bg=True)
+@render_func(show_header=False, show_name=False, show_bg=True, with_header=draw_header)
 def draw_debug_label(input_value:str):
     imgui.text(input_value)
 
-@with_header_minimal(is_default_for=Enum, show_add_delete=False, header_same_line=True, wraps=render_func)
+@render_func(is_default_for=Enum, show_add_delete=False, header_same_line=True, with_header=draw_header)
 def draw_enum(input_value:Enum, global_style=None, style_manager=None, enum_tint=(0.3, 0.3, 0.3)):
 
     unique = "enum"

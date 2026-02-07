@@ -636,6 +636,7 @@ def render_func(*args, **o_kwargs):
             draw_state.left = snap_int(draw_state.left)
             draw_state.top = snap_int(draw_state.top)
             draw_state.clip_rect = Melty.get_clip_rect()
+            draw_state.header_width = 0
 
             if "with_header" in kwargs:
                 if hasattr(input_value, "tint") and input_value.tint is not None:
@@ -678,7 +679,6 @@ def render_func(*args, **o_kwargs):
 
                 clip_rect = Melty.get_clip_rect()
                 parent_end = clip_rect[2] if clip_rect is not None else 0
-                draw_state.header_width = 0
                 if draw_state.height is not None and draw_state.height < single_line_max_h:
                     if (parent_end - header_end_cursor[0] > cutoff and draw_state.expanded) or Melty.is_wrapped():
                         same_line()
@@ -1274,7 +1274,20 @@ def render_func(*args, **o_kwargs):
             if kwargs.get("fill_height", False):
                 draw_state.height = snap_int(fixed_size_draw_state.height - (start_cursor[1] - rect[1]))
 
-        draw_state.content_width = draw_state.width - draw_state.header_width if draw_state.header_width is not None else draw_state.width
+            draw_state.content_width = (rect[2] - x_offset - ((len(Melty.bg_stack) + 1) * 2.0) -
+                                        draw_state.header_width - 10)
+        elif len(Melty.fixed_size_stack) > 0:
+            fixed_size_draw_state = Melty.fixed_size_stack[-1]
+            rect = fixed_size_draw_state.get_rect()
+            x_offset = draw_state.left - rect[0]
+            draw_state.content_width = (rect[2] - x_offset  - (
+                        (len(Melty.bg_stack) + 1) * 2.0) -
+                                        draw_state.header_width - 10)
+        else:
+
+            rect = Melty.get_clip_size()
+            x_offset = draw_state.left - rect[0]
+            draw_state.content_width = (rect[0] - draw_state.header_width - 10)
 
         if Melty.cache.mark_start_offscreen(draw_state=draw_state):
             if do_scroll:

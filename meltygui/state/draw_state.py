@@ -289,9 +289,9 @@ class DrawState(DictConversion):
         top = self.top
         left = self.left
 
-        if self.window_pos is not None:
-            top = self.window_pos[1]
-            left = self.window_pos[0]
+        # if self.window_pos is not None:
+        #     top = self.window_pos[1]
+        #     left = self.window_pos[0]
 
         right = left + width
         bottom = top + height
