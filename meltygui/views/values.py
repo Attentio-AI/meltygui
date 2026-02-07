@@ -2082,7 +2082,7 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0, rounding=5.0,
     def current_indent_px():
         return Melty.current_indent
 
-    depth = len(Melty.bg_stack) * 2
+    depth = (len(Melty.bg_stack) - 1) * 2
 
     right =  left + width
     bottom =  top + height

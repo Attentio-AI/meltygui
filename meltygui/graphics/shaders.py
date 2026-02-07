@@ -18,8 +18,8 @@ class ShadowCast:
     offset_factor = 0.04
     uniforms = {
         'light_dir': (GLType.VEC2, (0.5 * offset_factor, 1.6 * offset_factor)),
-        'height_scale': (GLType.FLOAT, 0.35),
-        'blur_scale': (GLType.FLOAT, 0.03),
+        'height_scale': (GLType.FLOAT, 0.55),
+        'blur_scale': (GLType.FLOAT, 0.09),
         'max_steps': (GLType.INT, 64),
         'blur_samples': (GLType.INT, 8),
         'depth_bias': (GLType.FLOAT, 0.00),

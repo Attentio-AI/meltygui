@@ -941,6 +941,7 @@ def render_func(*args, **o_kwargs):
                 from src.lsd.gl_gui.view.core_views.new_core_view import draw_bg
                 style_manager = Melty.global_attrs['style_manager']
                 global_style = Melty.global_attrs['global_style']
+                Melty.bg_stack.append(style_manager.get_tint())
 
                 Melty.undo_clip(unique, 1)
                 if width > 5 and height > 5:
@@ -971,6 +972,9 @@ def render_func(*args, **o_kwargs):
             if not is_header:
                 Melty.pop_clip()
 
+            if show_bg or selected or not draw_state.expanded:
+
+                Melty.bg_stack.pop()
             #######################
             if imgui.is_item_active() or imgui.is_item_activated():
                 Melty.report_imgui_active()
@@ -1266,7 +1270,7 @@ def render_func(*args, **o_kwargs):
             fixed_size_draw_state = Melty.fixed_size_stack[-1]
             rect = fixed_size_draw_state.get_rect()
             x_offset = draw_state.left - rect[0]
-            draw_state.width = rect[2] - x_offset
+            draw_state.width = rect[2] - x_offset - ((len(Melty.bg_stack) + 1) * 2.0)
             if kwargs.get("fill_height", False):
                 draw_state.height = snap_int(fixed_size_draw_state.height - (start_cursor[1] - rect[1]))
 
