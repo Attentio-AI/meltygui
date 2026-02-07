@@ -82,7 +82,7 @@ class ZoomState(DictConversion):
          "bounding_hovered", "dlt_count", "clip_rect", "bg_rect",
          "header_height", "scrolled", "is_hovered_last", "frame_count")
 @no_save_exclude("live", 'render_time', 'content_height', 'invalid_content_height'
-                  'hover_rects', 'nested_window', 'use_cache', 'depth', 'layer',
+                  'hover_rects', 'nested_window', 'use_cache', 'depth', 'layer', 'header_width',
                  'channel', 'next', 'previous', 'index_in_parent', 'relative_pos', 'context_menu_open', 'context_menu_ds')
 @deep_refresh('scroll_offset')
 class DrawState(DictConversion):
@@ -211,6 +211,7 @@ class DrawState(DictConversion):
         self.wrapped_left = 0
         self.header_height = 0
         self.header_top = None
+        self.header_width = 0
         self.clip_rect = None
         self.dlt_count = Melty.save_draw_state_for
         self.premature_break = False

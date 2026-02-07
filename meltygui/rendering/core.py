@@ -305,8 +305,8 @@ def render_func(*args, **o_kwargs):
         tile_id = strhash(str(computed_unique) + str(draw_state.id))
         draw_state._tile_id = tile_id
 
-        if kwargs.get("core_header_height", None) is not None:
-            draw_state.header_height = kwargs.get("core_header_height", 0)
+        # if kwargs.get("core_header_height", None) is not None:
+        #     draw_state.header_height = kwargs.get("core_header_height", 0)
 
         original_width_b = draw_state.width
         original_height_b = draw_state.height
@@ -520,7 +520,7 @@ def render_func(*args, **o_kwargs):
 
             # Wrapping
             parent_wrap = Melty.wrap_stack[-1] if len(Melty.wrap_stack) > 0 else False
-            this_wrap = kwargs.get("wrap", True)
+            this_wrap = kwargs.get("wrap", False)
             if not auto_resize:
                 parent_wrap = False
                 this_wrap = False
@@ -617,12 +617,6 @@ def render_func(*args, **o_kwargs):
             # push_style_var(imgui.STYLE_ITEM_SPACING, spacing)
             # push_style_var(imgui.STYLE_FRAME_PADDING, padding)
 
-            draw_state.left, draw_state.top = imgui.get_cursor_screen_pos()
-
-            draw_state.left = snap_int(draw_state.left)
-            draw_state.top = snap_int(draw_state.top)
-            draw_state.clip_rect = Melty.get_clip_rect()
-
             if not is_header and (draw_state.left is not None and draw_state.top is not None and
                     draw_state.width is not None and draw_state.height is not None) and melty_window:
                 if (draw_state.width > 0 and draw_state.height > 0):
@@ -632,9 +626,53 @@ def render_func(*args, **o_kwargs):
                     imgui.set_cursor_screen_pos(reset_to)
                     imgui.set_item_allow_overlap()
 
+            begin_group()
+
+            push_id(str(unique) + "_header")
+            if "with_header" in kwargs:
+                next_kwargs = kwargs.get('next_kwargs', {})
+                next_kwargs['func'] = func
+                next_kwargs['outer_func'] = wrapper
+                next_kwargs['show_bg'] = kwargs.get("show_bg", True)
+                on_same_line = kwargs.get("on_same_line", False)
+                draw_header = kwargs.get("with_header", None)
+
+                imgui.begin_group()
+                draw_header(**kwargs)
+                header_end = imgui.get_item_rect_max()[0]
+                draw_state.header_width = imgui.get_item_rect_max()[0] - imgui.get_item_rect_min()[0]
+                draw_state.header_height = imgui.get_item_rect_max()[1] - imgui.get_item_rect_min()[1]
+
+                imgui.dummy(0, 0)
+                imgui.end_group()
+
+                cutoff = 100
+                single_line_max_h = 23
+
+                clip_rect = Melty.get_clip_rect()
+                parent_end = clip_rect[2] if clip_rect is not None else 0
+
+                if draw_state.height is not None and draw_state.height < single_line_max_h:
+                    if (parent_end - header_end > cutoff and draw_state.expanded):
+                        same_line()
 
             begin_group(unique)
             push_id(unique)
+
+            indent_x = kwargs.get("indent_size", 0)
+            if indent_x > 0:
+                sc = imgui.get_cursor_screen_pos()
+                imgui.set_cursor_screen_pos((sc[0] + indent_x,
+                                             sc[1]))
+
+            ####################################################################################
+            #### New callback ################################################
+            draw_state.left, draw_state.top = imgui.get_cursor_screen_pos()
+            draw_state.left = snap_int(draw_state.left)
+            draw_state.top = snap_int(draw_state.top)
+
+            draw_state.clip_rect = Melty.get_clip_rect()
+
 
             expected_type = param_types[wanted_params.index("input_value")] if "input_value" in wanted_params else None
             annotation_empty = expected_type == inspect.Parameter.empty
@@ -712,23 +750,11 @@ def render_func(*args, **o_kwargs):
             is_hovered = draw_state.on_action("cursor_hover", view_id="test") is not None
 
             ############# HANDLE SELECTION
-            top = kwargs.get("header_top", draw_state.top)
-            left = kwargs.get("header_left", draw_state.left)
-            width = kwargs.get("header_width", draw_state.width)
-            height = kwargs.get("header_height", draw_state.height)
+            top = draw_state.top
+            left = draw_state.left
+            width = draw_state.width
+            height = draw_state.height
 
-            header_height_diff = draw_state.top - top
-            header_width_diff = draw_state.left - left
-            c_width = draw_state.width + header_width_diff
-
-            if kwargs.get("show_bg", False):
-                c_height = draw_state.height + header_height_diff
-
-            else:
-                c_height = draw_state.height
-                top = kwargs.get("header_top", draw_state.top) + header_height_diff
-
-            height = max(c_height, height)
 
             top = snap_int(top)
             left = snap_int(left)
@@ -896,7 +922,7 @@ def render_func(*args, **o_kwargs):
             clip_rect = Melty.get_clip_rect()
 
             if not is_header:
-                Melty.push_clip((left, top,
+                Melty.push_clip((left - kwargs.get("indent_size", 0), top - draw_state.header_height,
                                  left + width,
                                  top + height))
 
@@ -952,6 +978,22 @@ def render_func(*args, **o_kwargs):
 
             item_rect = imgui.get_item_rect_size()
 
+            push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
+            push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
+
+            indent_x = kwargs.get("indent_size", 0)
+            if indent_x > 0:
+                sc = imgui.get_cursor_screen_pos()
+                imgui.set_cursor_screen_pos((sc[0] - indent_x,
+                                             sc[1]))
+            pop_id()
+            push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
+            push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
+            end_group()
+            pop_style_var(2)
+            pop_style_var(2)
+
+
             if not is_header:
                 Melty.draw_state_stack.pop()
 
@@ -963,15 +1005,7 @@ def render_func(*args, **o_kwargs):
             if auto_resize:
                 if len(Melty.fixed_size_stack) == 0 or Melty.is_wrapped():
                     if passed_width is None:
-                        if len(Melty.fixed_size_stack) > 0 and draw_state.auto_resize:
-                            fixed_size_draw_state = Melty.fixed_size_stack[-1]
-                            rect = fixed_size_draw_state.get_rect()
-                            x_offset = draw_state.left - rect[0]
-                            width = rect[2] - x_offset
-                            min_width = min(width, item_rect[0])
-                            draw_state.width = snap_int(min_width)
-                        else:
-                            draw_state.width = snap_int(item_rect[0])
+                        draw_state.width = snap_int(item_rect[0])
                     else:
                         draw_state.width = passed_width
 
@@ -1000,6 +1034,7 @@ def render_func(*args, **o_kwargs):
 
             draw_state._hovered = False
             draw_state.hotkey_receiver = False
+
 
             if inc_depth:
                 Melty.depth = Melty.depth - 1
@@ -1183,38 +1218,46 @@ def render_func(*args, **o_kwargs):
         do_scroll = needs_scroll
 
         scroll_offset = draw_state.scroll_offset if do_scroll else (0, 0)
-        if do_scroll or indent_x > 0:
-            start_cursor = imgui.get_cursor_screen_pos()
-            imgui.set_cursor_screen_pos((start_cursor[0] + indent_x,
-                                         start_cursor[1] - scroll_offset[1]))
+
 
         if not draw_state.auto_resize:
             Melty.fixed_size_stack.append(draw_state)
 
-        if len(Melty.fixed_size_stack) > 0 and draw_state.auto_resize:
+        if len(Melty.fixed_size_stack) > 0 and draw_state.auto_resize and not Melty.is_wrapped():
             fixed_size_draw_state = Melty.fixed_size_stack[-1]
             rect = fixed_size_draw_state.get_rect()
             x_offset = start_cursor[0] - rect[0]
-
-            if not Melty.is_wrapped():
-                draw_state.width = rect[2] - x_offset - ((len(Melty.bg_stack) + 1) * 2.0)
-
+            draw_state.width = rect[2] - x_offset - ((len(Melty.bg_stack) + 1) * 2.0)
             if kwargs.get("fill_height", False):
                 draw_state.height = snap_int(fixed_size_draw_state.height - (start_cursor[1] - rect[1]))
 
+
         if Melty.cache.mark_start_offscreen(draw_state=draw_state):
-            return_value = func(**clean_args)
-            imgui.set_item_allow_overlap()
+            if do_scroll:
+                start_cursor = imgui.get_cursor_screen_pos()
+                imgui.set_cursor_screen_pos((start_cursor[0],
+                                             start_cursor[1] - scroll_offset[1]))
+
+
+            # If we are using the new callback header, gate rendering on expanded
+            if "with_header" not in kwargs or draw_state.expanded:
+                return_value = func(**clean_args)
+                imgui.set_item_allow_overlap()
+
+
+            if do_scroll:
+                start_cursor = imgui.get_cursor_screen_pos()
+                imgui.set_cursor_screen_pos((start_cursor[0],
+                                             start_cursor[1] + scroll_offset[1]))
+
+
 
         if not use_cache:
             Melty.cache.mark_uncached(draw_state.name, input_value, collection, tile_id, draw_state)
 
         if use_cache:
             Melty.cache.mark_end_offscreen()
-        if do_scroll or indent_x > 0:
-            start_cursor = imgui.get_cursor_screen_pos()
-            imgui.set_cursor_screen_pos((start_cursor[0] - indent_x,
-                                         start_cursor[1] + scroll_offset[1]))
+
         if not auto_resize:
             Melty.fixed_size_stack.pop()
 

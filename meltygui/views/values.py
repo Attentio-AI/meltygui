@@ -106,10 +106,7 @@ def with_header(func, **o_kwargs):
             annotation = annotation_track(wrapper=wrapper, **o_kwargs)
             if annotation is not None: return annotation
 
-        header_top = imgui.get_cursor_screen_pos()[1]
-        header_left = imgui.get_cursor_screen_pos()[0]
-        header_width = draw_state.width
-        header_height = draw_state.height
+
 
         # if not next_kwargs.get("auto_resize", False):
         #     next_kwargs['width'] = draw_state.width
@@ -118,11 +115,6 @@ def with_header(func, **o_kwargs):
         next_kwargs['func'] = func
         next_kwargs['outer_func'] = wrapper
         next_kwargs['show_bg'] = kwargs.get("show_bg", True)
-        next_kwargs['header_top'] = header_top
-        next_kwargs['header_left'] = header_left
-        next_kwargs['header_width'] = header_width
-        next_kwargs['header_height'] = header_height
-        next_kwargs['draw_state'].header_top = header_top
 
         return_val = core_header(**next_kwargs)
 
@@ -132,7 +124,270 @@ def with_header(func, **o_kwargs):
 
     return wrapper
 
-@with_header(is_default_for=(MutableMapping, defaultdict), use_cache=False, shadow=True, wrap=False, enable_scroll=True)
+def draw_header_new(input_value=None, name="", key=None, melty=None, parent_show_add_delete=False, width=0, suffix="",
+                    collection=None, display_name=None, meta=None, unique=None, is_tree=True,
+                    show_name=True, name_func=None, show_type=False, show_unique=False,
+                    on_search=False, trigger_collapse=False, trigger_expand=False,
+                    draw_state=None, show_tint=True, opacity=1.0, show_add_delete=True,
+                    on_drag=False, on_action=None, style_manager=None,
+                    global_style=None, global_toggles=None, **kwargs):
+
+    imgui.text("test")
+    # on_change = False
+    # return_val = on_action
+    # push_style_var(imgui.STYLE_ALPHA, opacity)
+    # value_factor = global_style.get_global_constant("depth_factor", default=1.0, folder="bg_styles")
+    # value_offset = global_style.get_global_constant("depth_offset", default=0.0, folder="bg_styles")
+    #
+    # depth = len(Melty.bg_stack)
+    # depth_factor = global_style.get_global_constant("depth_factor", default=1.0, folder="bg_styles")
+    # depth_offset = global_style.get_global_constant("depth_offset", default=0.0, folder="bg_styles") + 0.2
+    # dynamic_value = max(0, (float(depth + depth_offset) * depth_factor))
+    # bg_style = global_style.get_global_constant("bg_style", default=None, folder="bg_styles")
+    # saturation = -0.5
+    #
+    # saturation = bg_style['saturation'] + saturation
+    # name_color = (style_manager.
+    #               make_color_style_value(input=bg_style, saturation=saturation,
+    #                                      value=max(0, dynamic_value * value_factor + value_offset)))
+    # hover_color = (style_manager.
+    #                make_color_style_value(input=bg_style, saturation=1.2, alpha=1.0,
+    #                                       value=0.67))
+    #
+    # outline_color = (style_manager.
+    #                  make_color_style_value(input=bg_style, saturation=0.8, alpha=1.0,
+    #                                         value=0.9))
+    # #
+    # # if is_tree:
+    # #     # if trigger_collapse:
+    # #     #     draw_state.expanded = False
+    # #     # if trigger_expand:
+    # #     #     draw_state.expanded = True
+    # #
+    # #     imgui.push_style_color(imgui.COLOR_TEXT, *outline_color)
+    # #     # no background
+    # #     imgui.push_style_color(imgui.COLOR_BUTTON, *(0.0, 0.0, 0.0, 0.0))
+    # #     imgui.push_style_color(imgui.COLOR_BUTTON_HOVERED, *(0.0, 0.0, 0.0, 0.0))
+    # #
+    # #     if imgui.arrow_button(f"##tree{unique}",
+    # #                           imgui.DIRECTION_DOWN if draw_state.expanded else imgui.DIRECTION_RIGHT):
+    # #         draw_state.expanded = not draw_state.expanded
+    # #         draw_state.content_height = 0
+    # #         draw_state.invalid_content_height = True
+    # #         request_render()
+    # #     imgui.pop_style_color(3)
+    #
+    # pop_style_var(1)
+
+def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add_delete=False, width=0, suffix="",
+                collection=None, display_name=None, meta=None, unique=None, is_tree=True,
+                show_name=True, name_func=None, show_type=False, show_unique=False,
+                on_search=False, trigger_collapse=False, trigger_expand=False,
+                draw_state=None, show_tint=True, opacity=1.0, show_add_delete=True,
+                on_drag=False, on_action=None, style_manager=None,
+                global_style=None, global_toggles=None, **kwargs):
+
+    if display_name is not None:
+        name = display_name
+
+    imgui.dummy(0, 1)
+
+    on_change = False
+    return_val = on_action
+    push_style_var(imgui.STYLE_ALPHA, opacity)
+    value_factor = global_style.get_global_constant("depth_factor", default=1.0, folder="bg_styles")
+    value_offset = global_style.get_global_constant("depth_offset", default=0.0, folder="bg_styles")
+
+    depth = len(Melty.bg_stack)
+    depth_factor = global_style.get_global_constant("depth_factor", default=1.0, folder="bg_styles")
+    depth_offset = global_style.get_global_constant("depth_offset", default=0.0, folder="bg_styles") + 0.2
+    dynamic_value = max(0, (float(depth + depth_offset) * depth_factor))
+    bg_style = global_style.get_global_constant("bg_style", default=None, folder="bg_styles")
+    saturation = -0.5
+
+    saturation = bg_style['saturation'] + saturation
+    name_color = (style_manager.
+                  make_color_style_value(input=bg_style, saturation=saturation,
+                                         value=max(0, dynamic_value * value_factor + value_offset)))
+    hover_color = (style_manager.
+                   make_color_style_value(input=bg_style, saturation=1.2, alpha=1.0,
+                                          value=0.67))
+
+    outline_color = (style_manager.
+                     make_color_style_value(input=bg_style, saturation=0.8, alpha=1.0,
+                                            value=0.9))
+
+    imgui.align_text_to_frame_padding()
+
+    if is_tree:
+        # if trigger_collapse:
+        #     draw_state.expanded = False
+        # if trigger_expand:
+        #     draw_state.expanded = True
+
+        push_style_color(imgui.COLOR_TEXT, *outline_color)
+        imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0], imgui.get_cursor_screen_pos()[1] + 1))
+        imgui.dummy(1, 5)
+        imgui.same_line(spacing=1)
+
+        # no background
+        imgui.push_style_color(imgui.COLOR_BUTTON, *(0.0, 0.0, 0.0, 0.0))
+        imgui.push_style_color(imgui.COLOR_BUTTON_HOVERED, *(0.0, 0.0, 0.0, 0.0))
+        imgui.set_item_allow_overlap()
+
+        if imgui.arrow_button(f"##tree{unique}",
+                              imgui.DIRECTION_DOWN if draw_state.expanded else imgui.DIRECTION_RIGHT):
+            draw_state.expanded = not draw_state.expanded
+            draw_state.content_height = 0
+            draw_state.invalid_content_height = True
+            request_render()
+        imgui.set_item_allow_overlap()
+        imgui.pop_style_color(2)
+
+        # draw_state.expanded = checkbox(f"{down_icon}##tree", draw_state.expanded, width=50)
+
+        pop_style_color(1)
+        same_line()
+    else:
+        imgui.same_line()
+    if show_type:
+        imgui.text_colored(f"({input_value.__class__.__name__})", *(0.8, 0.0, 0.5, 1.0))
+        same_line()
+
+    if show_unique:
+        imgui.text_colored(f"({str(Melty.get_tile_id())})", *(0.4, 0.0, 0.9, 1.0))
+        same_line()
+    if show_name and name != "":
+        same_line()
+        imgui.set_item_allow_overlap()
+
+    if show_tint and hasattr(input_value, "tint") and input_value.tint is not None:
+        draw_state._has_popup = True
+        tint_changed, tint_value = draw_tuple(input_value.tint, show_header=False)
+        if tint_changed:
+            input_value.tint = tint_value
+            Melty.cache.invalidate_by_obj(input_value, name)
+        same_line()
+
+    if show_add_delete and isinstance(input_value, (list, dict)) or hasattr(input_value, "__dict__"):
+        if show_add_delete:
+            if imgui.small_button(f"\uf067##add{unique}"):
+                # Use str as default hinted type
+                hinted_type = NoneType
+                if meta.field_type is not None and hasattr(meta.field_type, "__args__"):
+                    if len(meta.field_type.__args__) == 2:
+                        hinted_type = meta.field_type.__args__[1]
+                add_to_collection(input_value, hinted_type())
+                on_change = True
+                return_val = input_value
+            same_line()
+
+    min_text_width = 60
+    if show_name and name != "" and name is not None and name != "None":
+        if isinstance(input_value, (dict, MutableMapping)):
+            folder_icon = "\uf07b"
+            push_style_color(imgui.COLOR_BUTTON, *(0.0, 0.0, 0.0, 0.0))
+            push_style_color(imgui.COLOR_TEXT, *name_color)
+            if imgui.button(f"{folder_icon}##open_folder"):
+                if hasattr(input_value, "file_path"):
+                    open_file(input_value.file_path)
+
+            pop_style_color(2)
+            same_line()
+        elif isinstance(collection, (FolderProxy)):
+            file_icon = "\uf15b"
+            # imgui.text_colored(folder_icon, *name_color)
+
+            push_style_color(imgui.COLOR_BUTTON, *(0.0, 0.0, 0.0, 0.0))
+            push_style_color(imgui.COLOR_TEXT, name_color[0], name_color[1], name_color[2], 0.5)
+            if imgui.button(f"{file_icon}##open_file"):
+                if hasattr(collection, "file_path"):
+                    folder_path = collection.file_path
+                    file_path = os.path.join(folder_path, str(name))
+                    open_file(file_path)
+
+            pop_style_color(2)
+            same_line()
+
+        clipped_name = name[:40]
+        padding = imgui.get_style().frame_padding.x
+        text_width = imgui.calc_text_size(clipped_name)[0]
+        push_style_color(imgui.COLOR_BUTTON, *(0.0, 0.0, 0.0, 0.0))
+        push_style_color(imgui.COLOR_TEXT, *name_color)
+
+        if Melty.is_window_enabled():
+            push_style_color(imgui.COLOR_BUTTON_HOVERED, *hover_color)
+        else:
+            push_style_color(imgui.COLOR_BUTTON_HOVERED, *(0.0, 0.0, 0.0, 0.0))
+
+        push_style_color(imgui.COLOR_BUTTON_ACTIVE, *hover_color)
+        push_style_var(imgui.STYLE_FRAME_ROUNDING, 2.0)
+        name_width = min(text_width, min_text_width)
+        if not draw_state._name_edit:
+            draw_list: _DrawList = imgui.get_window_draw_list()
+            cursor_pos = imgui.get_cursor_screen_pos()
+            draw_list.add_text(cursor_pos[0], cursor_pos[1], imgui.get_color_u32_rgba(*name_color[:3], 1.0),
+                               clipped_name)
+            imgui.dummy(text_width, imgui.get_frame_height())
+
+            pop_style_color(4)
+            pop_style_var(1)
+        else:
+            imgui.set_next_item_width(name_width)
+            # Selected text on focus
+            flags = imgui.INPUT_TEXT_ENTER_RETURNS_TRUE | imgui.INPUT_TEXT_AUTO_SELECT_ALL
+            changed, new_name = imgui.input_text(f"##edit{name}_{unique}", name,
+                                                 flags=flags)
+            pop_style_color(4)
+            pop_style_var(1)
+            if changed:
+                draw_state._name_edit = False
+
+            if imgui.is_key_pressed(imgui.KEY_ESCAPE):
+                draw_state._name_edit = False
+
+            if not imgui.is_item_active():
+                draw_state._name_edit = False
+
+        same_line(spacing=3)
+
+    if parent_show_add_delete:
+        bg_style = {
+            "value": 0.01,
+            "saturation": 1.0,
+            "alpha": 1.0,
+            'max_value': 1.0
+        }
+        bg_style = global_style.get_global_constant("bg_style", default=bg_style, folder="bg_styles")
+        search_color = (style_manager.
+                        make_color_style_value(input=bg_style, saturation=0.7,
+                                               value=1.0))
+        imgui.same_line()
+        push_style_color(imgui.COLOR_TEXT, *search_color)
+        push_style_color(imgui.COLOR_BUTTON, *(0.0, 0.0, 0.0, 0.0))
+        if imgui.button(f"\uf1f8##del"):
+            melty.to_delete(key, collection)
+            print("No selected_views or remove_view method")
+        same_line(spacing=0.0)
+        pop_style_color(2)
+
+    do_profile = global_toggles.profiler == ProfileMode.ON
+    if do_profile:
+        profile_time = draw_state.render_time
+        render_profiler_time(input_value=profile_time, brief=True,
+                             style_manager=style_manager, global_style=global_style)
+    pop_style_var(1)
+
+
+    # pop_style_var(2)
+
+    return on_change, return_val
+
+
+@render_func(is_default_for=(MutableMapping, defaultdict), use_cache=False,
+             shadow=True, wrap=False, enable_scroll=True, with_header=draw_header_new)
+# @with_header(is_default_for=(MutableMapping, defaultdict), use_cache=False,
+#              shadow=True, wrap=False, enable_scroll=True)
 def draw_collection(input_value, draw_state, depth, style_manager,
                     meta, suffix, melty, show_search=True, on_collapse=False, on_drag_up=False, y_offset=0,
                     on_expand=False, width=None, indent_size=10, global_style=None, global_toggles=None,
@@ -227,7 +482,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
     scroll_offset = draw_state.scroll_offset
     true_left = draw_state.left - scroll_offset[0]
     true_top = draw_state.top - scroll_offset[1]
-    imgui.set_cursor_screen_pos((true_left, true_top))
+    imgui.set_cursor_screen_pos((true_left, imgui.get_cursor_screen_pos()[1]))
 
     for idx in range(start_index, end_index + 1):
         key = keys[idx]
@@ -240,13 +495,13 @@ def draw_collection(input_value, draw_state, depth, style_manager,
             if child_draw_state is not None and (not draw_state.invalid_content_height or imgui.is_mouse_down(0) or imgui.is_mouse_down(1)):
                 if child_draw_state.relative_pos is not None:
                     screen_pos = (true_left + child_draw_state.relative_pos[0],
-                                  true_top + child_draw_state.relative_pos[1])
+                                  true_top + child_draw_state.relative_pos[1] - child_draw_state.header_height)
 
-                    bottom = screen_pos[1] + child_draw_state.height
+                    bottom = screen_pos[1] + child_draw_state.height + child_draw_state.header_height
                     if (bottom < rect[1] or screen_pos[1] > rect[3]):
                         imgui.set_cursor_screen_pos((draw_state.left,
                                                      (true_top + child_draw_state.relative_pos[1] +
-                                                      child_draw_state.height)))
+                                                      child_draw_state.height + child_draw_state.header_height)))
                         continue
 
         Melty.collection_index_stack[this_collection] = idx
@@ -408,7 +663,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
     Melty.collection_index_stack.pop()
     end_pos = imgui.get_cursor_pos()[1]
-    content_height = (end_pos - start_cursor) + draw_state.header_height
+    content_height = (end_pos - start_cursor) + 1
 
     # if len(children_draw_states) == len(keys):
     #     draw_state._children = children_draw_states
@@ -509,15 +764,15 @@ def with_header_minimal(func, **o_kwargs):
             annotation = annotation_track( wrapper=wrapper, **o_kwargs)
             if annotation is not None: return annotation
 
-        header_top = imgui.get_cursor_screen_pos()[1]
-        header_left = imgui.get_cursor_screen_pos()[0]
-        header_width = draw_state.width
-        header_height = draw_state.height
-
-        next_kwargs['header_top'] = header_top
-        next_kwargs['header_left'] = header_left
-        next_kwargs['header_width'] = header_width
-        next_kwargs['header_height'] = header_height
+        # header_top = imgui.get_cursor_screen_pos()[1]
+        # header_left = imgui.get_cursor_screen_pos()[0]
+        # header_width = draw_state.width
+        # header_height = draw_state.height
+        #
+        # next_kwargs['header_top'] = header_top
+        # next_kwargs['header_left'] = header_left
+        # next_kwargs['header_width'] = header_width
+        # next_kwargs['header_height'] = header_height
 
         next_kwargs['func'] = func
         next_kwargs['outer_func'] = wrapper
@@ -1094,7 +1349,7 @@ def assign_name(input_value: cst.Assign):
 @cst_header(is_default_for=cst.Assign, header_same_line=True, name_func=assign_name, wrap=True)
 def draw_cst_assign(input_value: cst.Assign):
     # An Assign has one or more targets, an AssignEqual token, and a value
-    # draw_collection(input_value.targets)
+
     imgui.text_colored("=", *(1, 1.1, 1, 0.5))
     imgui.same_line()
     draw_any(input_value.value)
@@ -1805,7 +2060,6 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             ######################## MAIN FUNC CALL ########################
             current_cursor = imgui.get_cursor_screen_pos()
             header_height = current_cursor[1] - start_y_pos
-            draw_state._header_height = header_height
             draw_list = imgui.get_window_draw_list()
 
             if Melty.channels_split and show_bg:
@@ -1814,20 +2068,17 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             if draw_state.width is not None and draw_state.height is not None:
                 if draw_state.width > 0 and draw_state.height > 0:
                     clipped = True
-                    Melty.push_clip((draw_state.left, current_cursor[1],
-                                     draw_state.left + draw_state.width,
-                                     current_cursor[1] + draw_state.height - header_height))
-            next_kwargs['header_height'] = header_height
+                    # Melty.push_clip((draw_state.left, current_cursor[1],
+                    #                  draw_state.left + draw_state.width,
+                    #                  current_cursor[1] + draw_state.height - header_height))
             next_kwargs.pop('draw_state', None)
             next_kwargs.pop('width', None)
             imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + indent_size)
 
-            current_x = imgui.get_cursor_screen_pos()[0]
 
             if not auto_resize:
                 next_kwargs['scrollable'] = True
 
-            next_kwargs['core_header_height'] = imgui.get_cursor_screen_pos()[1] - start_y_pos
             return_val = func(**next_kwargs)
 
             imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() - indent_size)
@@ -1844,8 +2095,8 @@ def core_header(func, outer_func, render_func, input_value=None, melty_window=Fa
             #     # ----------------- end header single item---------------
             #     # This is the version for single items probably
             #     draw_header_end(**next_kwargs)
-            if clipped:
-                Melty.pop_clip()
+            # if clipped:
+            #     Melty.pop_clip()
 
         if not on_drag:
             imgui.dummy(0, 1)
@@ -2051,207 +2302,6 @@ def button(input_value="", color=None, width=None, height=None, style_manager=No
     return clicked, input_value
 
 
-def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add_delete=False, width=0, suffix="",
-                collection=None, display_name=None, meta=None, unique=None, is_tree=True,
-                show_name=True, name_func=None, show_type=False, show_unique=False,
-                on_search=False, trigger_collapse=False, trigger_expand=False,
-                draw_state=None, show_tint=True, opacity=1.0, show_add_delete=True,
-                on_drag=False, on_action=None, style_manager=None,
-                global_style=None, global_toggles=None, **kwargs):
-
-    if display_name is not None:
-        name = display_name
-
-    imgui.dummy(0, 1)
-
-    on_change = False
-    return_val = on_action
-    push_style_var(imgui.STYLE_ALPHA, opacity)
-    value_factor = global_style.get_global_constant("depth_factor", default=1.0, folder="bg_styles")
-    value_offset = global_style.get_global_constant("depth_offset", default=0.0, folder="bg_styles")
-
-    depth = len(Melty.bg_stack)
-    depth_factor = global_style.get_global_constant("depth_factor", default=1.0, folder="bg_styles")
-    depth_offset = global_style.get_global_constant("depth_offset", default=0.0, folder="bg_styles") + 0.2
-    dynamic_value = max(0, (float(depth + depth_offset) * depth_factor))
-    bg_style = global_style.get_global_constant("bg_style", default=None, folder="bg_styles")
-    saturation = -0.5
-
-    saturation = bg_style['saturation'] + saturation
-    name_color = (style_manager.
-                  make_color_style_value(input=bg_style, saturation=saturation,
-                                         value=max(0, dynamic_value * value_factor + value_offset)))
-    hover_color = (style_manager.
-                  make_color_style_value(input=bg_style, saturation=1.2, alpha=1.0,
-                                         value=0.67))
-
-    outline_color = (style_manager.
-                   make_color_style_value(input=bg_style, saturation=0.8, alpha=1.0,
-                                          value=0.9))
-
-    imgui.align_text_to_frame_padding()
-
-    if is_tree:
-        # if trigger_collapse:
-        #     draw_state.expanded = False
-        # if trigger_expand:
-        #     draw_state.expanded = True
-
-        push_style_color(imgui.COLOR_TEXT, *outline_color)
-        imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0], imgui.get_cursor_screen_pos()[1] + 1))
-        imgui.dummy(1,5)
-        imgui.same_line(spacing=1)
-
-        # no background
-        imgui.push_style_color(imgui.COLOR_BUTTON, *(0.0, 0.0, 0.0, 0.0))
-        imgui.push_style_color(imgui.COLOR_BUTTON_HOVERED, *(0.0, 0.0, 0.0, 0.0))
-        imgui.set_item_allow_overlap()
-
-        if imgui.arrow_button(f"##tree{unique}", imgui.DIRECTION_DOWN if draw_state.expanded else imgui.DIRECTION_RIGHT):
-            draw_state.expanded = not draw_state.expanded
-            draw_state.content_height = 0
-            draw_state.invalid_content_height = True
-            request_render()
-        imgui.set_item_allow_overlap()
-        imgui.pop_style_color(2)
-
-        # draw_state.expanded = tree(f"{down_icon}##tree", draw_state.expanded, width=50)
-
-        pop_style_color(1)
-        same_line()
-    else:
-        imgui.same_line()
-    if show_type:
-        imgui.text_colored(f"({input_value.__class__.__name__})", *(0.8, 0.0, 0.5, 1.0))
-        same_line()
-
-    if show_unique:
-        imgui.text_colored(f"({str(Melty.get_tile_id())})", *(0.4, 0.0, 0.9, 1.0))
-        same_line()
-    if show_name and name != "":
-        same_line()
-        imgui.set_item_allow_overlap()
-
-    if show_tint and hasattr(input_value, "tint") and input_value.tint is not None:
-        draw_state._has_popup = True
-        tint_changed, tint_value = draw_tuple(input_value.tint, show_header=False)
-        if tint_changed:
-            input_value.tint = tint_value
-            Melty.cache.invalidate_by_obj(input_value, name)
-        same_line()
-
-    if show_add_delete and isinstance(input_value, (list, dict)) or hasattr(input_value, "__dict__"):
-        if show_add_delete:
-            if imgui.small_button(f"\uf067##add{unique}"):
-                # Use str as default hinted type
-                hinted_type = NoneType
-                if meta.field_type is not None and hasattr(meta.field_type, "__args__"):
-                    if len(meta.field_type.__args__) == 2:
-                        hinted_type = meta.field_type.__args__[1]
-                add_to_collection(input_value, hinted_type())
-                on_change = True
-                return_val = input_value
-            same_line()
-
-    min_text_width = 60
-    if show_name and name != "" and name is not None and name != "None":
-        if isinstance(input_value, (dict, MutableMapping)):
-            folder_icon = "\uf07b"
-            push_style_color(imgui.COLOR_BUTTON, *(0.0, 0.0, 0.0, 0.0))
-            push_style_color(imgui.COLOR_TEXT, *name_color)
-            if imgui.button(f"{folder_icon}##open_folder"):
-                if hasattr(input_value, "file_path"):
-                    open_file(input_value.file_path)
-
-            pop_style_color(2)
-            same_line()
-        elif isinstance(collection, (FolderProxy)):
-            file_icon = "\uf15b"
-            # imgui.text_colored(folder_icon, *name_color)
-
-            push_style_color(imgui.COLOR_BUTTON, *(0.0, 0.0, 0.0, 0.0))
-            push_style_color(imgui.COLOR_TEXT, name_color[0], name_color[1], name_color[2], 0.5)
-            if imgui.button(f"{file_icon}##open_file"):
-                if hasattr(collection, "file_path"):
-                    folder_path = collection.file_path
-                    file_path = os.path.join(folder_path, str(name))
-                    open_file(file_path)
-
-            pop_style_color(2)
-            same_line()
-
-        clipped_name = name[:40]
-        padding = imgui.get_style().frame_padding.x
-        text_width = imgui.calc_text_size(clipped_name)[0]
-        push_style_color(imgui.COLOR_BUTTON, *(0.0, 0.0, 0.0, 0.0))
-        push_style_color(imgui.COLOR_TEXT, *name_color)
-
-        if Melty.is_window_enabled():
-            push_style_color(imgui.COLOR_BUTTON_HOVERED, *hover_color)
-        else:
-            push_style_color(imgui.COLOR_BUTTON_HOVERED, *(0.0, 0.0, 0.0, 0.0))
-
-        push_style_color(imgui.COLOR_BUTTON_ACTIVE, *hover_color)
-        push_style_var(imgui.STYLE_FRAME_ROUNDING, 2.0)
-        name_width = min(text_width, min_text_width)
-        if not draw_state._name_edit:
-            draw_list: _DrawList = imgui.get_window_draw_list()
-            cursor_pos = imgui.get_cursor_screen_pos()
-            draw_list.add_text(cursor_pos[0], cursor_pos[1], imgui.get_color_u32_rgba(*name_color[:3], 1.0),
-                               clipped_name)
-            imgui.dummy(text_width, imgui.get_frame_height())
-
-            pop_style_color(4)
-            pop_style_var(1)
-        else:
-            imgui.set_next_item_width(name_width)
-            # Selected text on focus
-            flags = imgui.INPUT_TEXT_ENTER_RETURNS_TRUE | imgui.INPUT_TEXT_AUTO_SELECT_ALL
-            changed, new_name = imgui.input_text(f"##edit{name}_{unique}", name,
-                                                 flags=flags)
-            pop_style_color(4)
-            pop_style_var(1)
-            if changed:
-                draw_state._name_edit = False
-
-            if imgui.is_key_pressed(imgui.KEY_ESCAPE):
-                draw_state._name_edit = False
-
-            if not imgui.is_item_active():
-                draw_state._name_edit = False
-
-        same_line(spacing=3)
-
-    if parent_show_add_delete:
-        bg_style = {
-            "value": 0.01,
-            "saturation": 1.0,
-            "alpha": 1.0,
-            'max_value': 1.0
-        }
-        bg_style = global_style.get_global_constant("bg_style", default=bg_style, folder="bg_styles")
-        search_color = (style_manager.
-                        make_color_style_value(input=bg_style, saturation=0.7,
-                                               value=1.0))
-        imgui.same_line()
-        push_style_color(imgui.COLOR_TEXT, *search_color)
-        push_style_color(imgui.COLOR_BUTTON, *(0.0, 0.0, 0.0, 0.0))
-        if imgui.button(f"\uf1f8##del"):
-            melty.to_delete(key, collection)
-            print("No selected_views or remove_view method")
-        same_line(spacing=0.0)
-        pop_style_color(2)
-
-
-    do_profile = global_toggles.profiler == ProfileMode.ON
-    if do_profile:
-        profile_time = draw_state.render_time
-        render_profiler_time(input_value=profile_time, brief=True,
-                             style_manager=style_manager, global_style=global_style)
-    pop_style_var(1)
-    # pop_style_color(2)
-
-    return on_change, return_val
 
 def render_profiler_time(input_value=None, brief=False, style_manager=None,
                          global_style=None):
@@ -2450,10 +2500,13 @@ def draw_float_ctx(input_value):
     imgui.dummy(30, 30)
     draw_float(0.0, name="test")
 
-@with_header_minimal(is_default_for=float, use_cache=False, shadow=False, wrap=False, context_menu=draw_float_ctx)
+
+
+@render_func(is_default_for=float, use_cache=False, shadow=False, wrap=False, is_tree=False,
+             context_menu=draw_float_ctx, with_header=draw_header_new)
 def draw_float(input_value:float, draw_state, min_value=-100.0, max_value=100.0, speed=0.01):
 
-    imgui.set_next_item_width(draw_state.width - 5)
+    imgui.set_next_item_width(max(30, draw_state.width - 5))
     changed, value = imgui.drag_float("##float", input_value,
                                       change_speed=speed,
                                       min_value=min_value,
