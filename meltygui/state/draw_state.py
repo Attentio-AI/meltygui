@@ -117,6 +117,7 @@ class DrawState(DictConversion):
 
         self._first_draw_state = None
         self.melty_window = False
+        self.selected = False
 
         self._queued_windows = []
         self.drag_window_pos_x = None

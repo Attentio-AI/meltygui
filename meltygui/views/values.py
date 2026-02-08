@@ -296,7 +296,6 @@ def draw_window(input_value, view_func=None, draw_state=None, **kwargs):
     kwargs['indent_size'] = 10
     kwargs['with_header'] = None
     kwargs['closable'] = False
-    kwargs['closed'] = False
     if view_func is None:
         return_val = meta.view_function(input_value, **kwargs)
     else:
@@ -749,16 +748,17 @@ def draw_pending_texture(input_value:PendingTexture, draw_state):
 
     return draw_texture(input_value.texture_id, name=f"{draw_state.id}_inner",
                         width=draw_state.width, height=draw_state.height,
-                 auto_resize=False, show_header=False, indent_size=0, wrap=False)
+                 auto_resize=False, show_header=True, indent_size=0, wrap=False)
 
 @render_func(is_default_for=numpy.uint32, show_bg=True,
              use_cache=False, show_add_delete=False, shadow=True,
              indent_size=0, min_width=100, min_height=100, wrap=False,
-             enable_scroll=True, zoom_speed=0.2, fill_height=True, with_header=draw_header)
+             enable_scroll=True, zoom_speed=0.3, fill_height=True, with_header=draw_header)
 def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mouse_drag, right_mouse_drag,
                  zoom_state: ZoomState, zoom_speed, header_height=0, min_zoom=0.1,
                  max_zoom=50.0, style_manager=None, max_brightness=5.0, max_contrast=5.0,
-                 on_scroll=0, draw_state=None, jet=False, **kwargs):
+                 draw_state=None, jet=False, **kwargs):
+
 
     original_id = input_value
     texture_id = input_value

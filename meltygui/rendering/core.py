@@ -194,7 +194,6 @@ def render_func(*args, **o_kwargs):
             except Exception as e:
                 name = str(f"{e}")
 
-
         if Melty.depth == 0:
             style = imgui.get_style()
             style.item_spacing = (4, 0)
@@ -233,17 +232,32 @@ def render_func(*args, **o_kwargs):
                                                               name + root_window_name +
                                                               str(key) + func.__name__, idx=index)
         draw_state: DrawState = kwargs.get("draw_state", get_draw_state(unique))
-        if kwargs.get("closable", False):
-            if draw_state.closed and not input_value == Melty.registered_windows:
-                if return_extras:
-                    return False, None, draw_state
-                return False, None
+        draw_state._input_value = input_value
+        draw_state._collection = Melty.collection_stack[-1] if len(Melty.collection_stack) > 0 else None
+        draw_state.name = name
         # if active_layer is not None:
         #     unique = kwargs.get("unique", unique)
         # if unique in Melty.seen_unique:
         #     unique = unique + 128
         #     suffix = f"{suffix}_{unique}"
 
+        if kwargs.get("closable", False):
+            if window_key not in Melty.registered_windows:
+                Melty.registered_windows[window_key] = ManagedWindow(input_value=input_value,
+                                                                     draw_state=draw_state,
+                                                                     window_args=kwargs,
+                                                                     name=kwargs.get('name', 'Managed Window'))
+            else:
+                Melty.registered_windows[window_key].input_value = input_value
+                Melty.registered_windows[window_key].draw_state = draw_state
+                Melty.registered_windows[window_key].window_args = kwargs
+                Melty.registered_windows[window_key].name = kwargs.get('name', 'Managed Window')
+
+        if kwargs.get("closable", False):
+            if draw_state.closed and not input_value == Melty.registered_windows:
+                if return_extras:
+                    return False, None, draw_state
+                return False, None
 
             # Disable cache for this frame to avoid further issues
         if unique in Melty.seen_unique:
@@ -387,10 +401,6 @@ def render_func(*args, **o_kwargs):
         has_collection = collection is not None and not isinstance(collection, tuple)
         if has_collection:
             Melty.collection_stack.append(collection)
-
-        draw_state._input_value = input_value
-        draw_state._collection = Melty.collection_stack[-1] if len(Melty.collection_stack) > 0 else None
-        draw_state.name = name
 
         if not draw_state.auto_resize:
             draw_state.expanded_rect = (draw_state.left, draw_state.top, draw_state.width, draw_state.height)
@@ -640,6 +650,7 @@ def render_func(*args, **o_kwargs):
             prev_tint = None
             draw_state.left, draw_state.top = imgui.get_cursor_screen_pos()
 
+
             begin_group(unique)
             push_id(unique)
 
@@ -731,20 +742,6 @@ def render_func(*args, **o_kwargs):
                                            f"got {actual_type_class_path}", *yellow)
                         return False, None
 
-            if melty_window and kwargs.get("closable", True):
-                if window_key not in Melty.registered_windows:
-                    Melty.registered_windows[window_key] = ManagedWindow(input_value=input_value,
-                                                                         draw_state=draw_state,
-                                                                         window_args=kwargs,
-                                                                         name=kwargs.get('name', 'Managed Window'))
-                else:
-                    Melty.registered_windows[window_key].input_value = input_value
-                    Melty.registered_windows[window_key].draw_state = kwargs.get('draw_state', None)
-                    Melty.registered_windows[window_key].window_args = kwargs
-                    Melty.registered_windows[window_key].name = kwargs.get('name', 'Managed Window')
-
-
-
             if not meta.visible_in_ui:
                 if return_extras:
                     return False, None, draw_state
@@ -774,7 +771,7 @@ def render_func(*args, **o_kwargs):
                 max_layer_depth = Melty.max_depth * Melty.max_layer + Melty.max_depth
                 priority = max_layer_depth - draw_state.z_pos
                 event_names = copy(wanted_params)
-                Melty.event_handler.register_hovered(tile_id, event_names, priority)
+                Melty.event_handler.register_hovered(tile_id, event_names, priority, selected=draw_state.selected)
 
             ######################################################
 
@@ -926,14 +923,15 @@ def render_func(*args, **o_kwargs):
                         Melty.last_selected = draw_state
                         request_render()
 
-            selected = False
             if draw_state in Melty.selected:
-                selected = True
+                draw_state.selected = True
+            else:
+                draw_state.selected = False
                 # draw_state.draw_rect(rounding=5.0)
 
             show_bg = kwargs.get("show_bg", False)
             draw_state.shadow = kwargs.get("shadow", draw_state.shadow)
-            if show_bg or selected or not draw_state.expanded:
+            if show_bg or draw_state.selected or not draw_state.expanded:
                 draw_state.corner_radius = 5.0
                 from src.lsd.gl_gui.view.core_views.new_core_view import draw_bg
                 style_manager = Melty.global_attrs['style_manager']
@@ -969,7 +967,7 @@ def render_func(*args, **o_kwargs):
             if prev_tint is not None:
                 style_manager.set_imgui_tint(*prev_tint)
 
-            if show_bg or selected or not draw_state.expanded:
+            if show_bg or draw_state.selected or not draw_state.expanded:
                 Melty.bg_stack.pop()
             #######################
             if imgui.is_item_active() or imgui.is_item_activated():
@@ -1218,7 +1216,7 @@ def render_func(*args, **o_kwargs):
             draw_state.scroll_visible = False
 
         if needs_scroll:
-            scroll_y_changed = draw_state.on_action("scroll_y_changed", view_id="view_scroll", priority_delta=3)
+            scroll_y_changed = draw_state.on_action("scroll_y_changed", view_id="view_scroll", priority_delta=10)
             scroll_delta = 0
             if scroll_y_changed is not None:
                 scroll_delta = scroll_y_changed.value
@@ -1227,7 +1225,7 @@ def render_func(*args, **o_kwargs):
             current_x = scroll_offset[0]
             current_y = scroll_offset[1]
             direction = -1
-            scroll_speed = 150.0
+            scroll_speed = 250.0
             new_offset_y = current_y + scroll_delta * direction * scroll_speed
 
             min_scroll_y = 0

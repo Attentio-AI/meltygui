@@ -94,13 +94,16 @@ class _InputState:
     click_count: int = 0
 
 
-_parse_cache: dict[str, tuple[str, str]] = {}
+_parse_cache: dict[str, tuple[str, str, bool]] = {}  # (input_id, action, inverted)
 _view_id_names_cache: dict[Any, dict[tuple[str, str], str]] = {}
 _view_id_to_tile_id: dict[str, str] = {}
 
 
-def parse_event_name(name: str) -> tuple[str, str]:
-    """Parse "left_mouse_up" → ("left_mouse", "up")"""
+def parse_event_name(name: str) -> tuple[str, str, bool]:
+    """Parse "left_mouse_up" → ("left_mouse", "up", False)
+    Parse "inverted_left_mouse_clicked" → ("left_mouse", "clicked", True)
+    Parse "left_mouse_inverted_clicked" → ("left_mouse", "clicked", True)
+    """
     if name in _parse_cache:
         return _parse_cache[name]
 
@@ -108,11 +111,23 @@ def parse_event_name(name: str) -> tuple[str, str]:
     if name.startswith("on_"):
         name = name[3:]
 
+    # Detect and strip "inverted_" prefix or "_inverted" suffix in the name
+    inverted = False
+    if name.startswith("inverted_"):
+        inverted = True
+        name = name[9:]
+    elif "_inverted_" in name:
+        inverted = True
+        name = name.replace("_inverted_", "_", 1)
+    elif name.endswith("_inverted"):
+        inverted = True
+        name = name[:-9]
+
     # Check if the name itself is an action (e.g., "hovered", "clicked")
     if name in ALL_ACTIONS:
         canonical = ACTION_ALIASES.get(name, name)
-        _parse_cache[original] = ("cursor", canonical)
-        return ("cursor", canonical)
+        _parse_cache[original] = ("cursor", canonical, inverted)
+        return ("cursor", canonical, inverted)
 
     # Check for action suffix
     for action in _SORTED_ACTIONS:
@@ -121,11 +136,11 @@ def parse_event_name(name: str) -> tuple[str, str]:
             if input_id.endswith("_key"):
                 input_id = input_id[:-4]
             canonical = ACTION_ALIASES.get(action, action)
-            _parse_cache[original] = (input_id, canonical)
-            return (input_id, canonical)
+            _parse_cache[original] = (input_id, canonical, inverted)
+            return (input_id, canonical, inverted)
 
-    _parse_cache[original] = (name, "")
-    return (name, "")
+    _parse_cache[original] = (name, "", inverted)
+    return (name, "", inverted)
 
 
 class InputHandler:
@@ -136,6 +151,9 @@ class InputHandler:
         handler.begin_frame()
         handler.register_hovered("btn", ["left_mouse_clicked"])
         handler.register_hovered("panel", ["left_mouse_dragged"], priority=1)
+
+        # Inverted priority (parent/root views fire first):
+        handler.register_hovered("root", ["inverted_left_mouse_clicked"])
 
         # Feed from backend
         handler.feed_down("left_mouse", x, y)
@@ -179,30 +197,37 @@ class InputHandler:
         self._last_dx = 0.0
         self._last_dy = 0.0
 
-    def register_hovered(self, view_id: Any, subscribed: list[str], priority: int = 0, tile_id=None):
+    def register_hovered(self, view_id: Any, subscribed: list[str], priority: int = 0, tile_id=None, selected=False):
         """Register hovered view. Priority 0 = topmost.
 
         Multiple calls with the same view_id will merge subscriptions,
         using the lowest (best) priority.
+
+        Including "inverted" in a subscription name (e.g. "inverted_left_mouse_clicked")
+        causes that event to fire to the highest-priority-number (parent/root) view first,
+        reversing the normal child-first dispatch order.
         """
         # Parse new subscriptions
         new_subs = set()
         for s in subscribed:
-            sub = parse_event_name(s)
+            if selected and s == "scroll_y_changed":
+                priority -= 20
+            input_id, action, inverted = parse_event_name(s)
+            sub = (input_id, action)
             if view_id not in _view_id_names_cache:
                 _view_id_names_cache[view_id] = {}
             _view_id_names_cache[view_id][sub] = s
             _view_id_to_tile_id[view_id] = tile_id
             new_subs.add(sub)
 
-        # Check if view already registered this frame - merge if so
-        for i, (vid, pri, subs) in enumerate(self._hovered):
-            if vid == view_id:
-                # Merge subscriptions, keep lowest priority
-                merged_subs = subs | frozenset(new_subs)
-                merged_priority = min(pri, priority)
-                self._hovered[i] = (view_id, merged_priority, merged_subs)
-                return
+        # # Check if view already registered this frame - merge if so
+        # for i, (vid, pri, subs) in enumerate(self._hovered):
+        #     if vid == view_id:
+        #         # Merge subscriptions, keep lowest priority
+        #         merged_subs = subs | frozenset(new_subs)
+        #         merged_priority = min(pri, priority)
+        #         self._hovered[i] = (view_id, merged_priority, merged_subs)
+        #         return
 
         # New view
         self._hovered.append((view_id, priority, frozenset(new_subs)))
@@ -270,6 +295,44 @@ class InputHandler:
     def feed_change(self, input_id: str, value: float, t: float = None):
         self._emit(input_id, Action.CHANGED, self._cursor_x, self._cursor_y, value=value, t=t)
 
+    def _is_sub_inverted(self, view_id: Any, key: tuple[str, str]) -> bool:
+        """Check if a view's subscription for the given key was registered as inverted."""
+        cache = _view_id_names_cache.get(view_id)
+        if cache is None:
+            return False
+        event_name = cache.get(key)
+        if event_name is None:
+            return False
+        _, _, inverted = parse_event_name(event_name)
+        return inverted
+
+    def _find_top_subscriber(self, key: tuple[str, str], views: list[tuple[Any, int, frozenset]] = None) -> Any:
+        """Find top subscriber for a key, respecting inverted priority.
+
+        Normal subscriptions: lowest priority number wins (child-first).
+        Inverted subscriptions: highest priority number wins (parent-first).
+
+        Among all views subscribed to this key, if ANY subscriber registered it
+        as inverted, the dispatch order is reversed for this key.
+        """
+        if views is None:
+            views = self._hovered
+
+        # Collect all subscribers for this key
+        subscribers = [(v, p) for v, p, s in views if key in s]
+        if not subscribers:
+            return None
+
+        # Check if any subscriber registered this key as inverted
+        any_inverted = any(self._is_sub_inverted(v, key) for v, _ in subscribers)
+
+        if any_inverted:
+            # Inverted: highest priority number wins (parent view first)
+            return max(subscribers, key=lambda x: x[1])[0]
+        else:
+            # Normal: lowest priority number wins (child first) - already sorted
+            return subscribers[0][0]
+
     def process_frame(self):
         """Returns {view_id: {event_name: event}} for all matched subscriptions."""
         self._hovered.sort(key=lambda x: x[1])
@@ -307,16 +370,17 @@ class InputHandler:
             result[view_id][event_name] = event
             result_by_type[event_name][view_id] = event
 
-        # Find top subscriber for each hover event type
-        top_enter = next((v for v, _, s in self._hovered if v not in self._prev_hovered and hover_enter_key in s), None)
-        top_hovered = next((v for v, _, s in self._hovered if hovered_key in s), None)
+        # Find top subscriber for each hover event type (respecting inverted)
+        newly_hovered = [(v, p, s) for v, p, s in self._hovered if v not in self._prev_hovered]
+        top_enter = self._find_top_subscriber(hover_enter_key, newly_hovered)
+        top_hovered = self._find_top_subscriber(hovered_key)
 
         # For exit, sort exited views by their stored priority
         exited = sorted(
             ((v, p, s) for v, (p, s) in self._prev_hovered.items() if v not in current_hovered),
             key=lambda x: x[1]
         )
-        top_exit = next((v for v, _, s in exited if hover_exit_key in s), None)
+        top_exit = self._find_top_subscriber(hover_exit_key, exited)
 
         # Emit hover events
         def make_hover_event(action: str) -> InputEvent:
@@ -336,7 +400,7 @@ class InputHandler:
             # On DOWN, capture drag target (top hovered view subscribed to drag)
             if event.action == Action.DOWN:
                 drag_key = (event.input_id, Action.DRAGGED)
-                capture_view = next((v for v, _, s in self._hovered if drag_key in s), None)
+                capture_view = self._find_top_subscriber(drag_key)
                 if capture_view is not None:
                     self._drag_capture[event.input_id] = capture_view
 
@@ -364,7 +428,7 @@ class InputHandler:
                         state.down_y = 0.0
                         state.down_time = 0.0
 
-            top = next((v for v, _, s in self._hovered if key in s), None)
+            top = self._find_top_subscriber(key)
             add_event(top, key, event)
 
         # Emit continuous drag events only to captured views
