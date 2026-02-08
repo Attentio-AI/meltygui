@@ -48,57 +48,6 @@ from src.lsd.gl_gui.view.core_views.codec_register import registry as FILE_CODEC
 from src.shader_library.shader_manager.texture_manager import PendingTexture
 
 
-@render_func(use_cache=True, auto_resize=False, closable=True, show_bg=True, melty_window=True, draggable=True)
-def draw_window(input_value, view_func=None, draw_state=None, **kwargs):
-
-    if draw_state.width is not None and draw_state.height is not None and draw_state.expanded:
-        loading_icon_0 = "\uf00d"
-        loading_icon_1 = "\uf067"
-        frame_spacing = 1
-        alpha = 0.25
-        icon_cursor = imgui.get_cursor_screen_pos()
-        icon_x = icon_cursor[0] + draw_state.width - 20
-        icon_y = icon_cursor[1] + draw_state.height - 15
-        if (Melty.frame_count // frame_spacing) % 2 == 0:
-            draw_list = imgui.get_window_draw_list()
-            draw_list.add_text(icon_x, icon_y,
-                               imgui.get_color_u32_rgba(1, 1, 1, alpha),
-                               loading_icon_0)
-        else:
-            draw_list = imgui.get_window_draw_list()
-            draw_list.add_text(icon_x, icon_y,
-                               imgui.get_color_u32_rgba(1, 1, 1, alpha),
-                               loading_icon_1)
-
-        draw_list: _DrawList = imgui.get_window_draw_list()
-        draw_list.add_text(icon_x - 40, icon_y - 1,
-                           imgui.get_color_u32_rgba(1, 1, 1, 0.3),
-                           f"{draw_state.nested_window}")
-
-    meta = kwargs.get("meta", None)
-    if meta is None:
-        if hasattr(Meta, 'get_child_meta'):
-            meta = Meta.get_child_meta(None, field_name=kwargs.get("name", ''), value=input_value)
-
-    if view_func is None:
-        if meta.view_function is None or 'draw_any' in meta.view_function.__name__:
-            meta.view_function = draw_collection
-
-    kwargs['show_bg'] = False
-    kwargs['selectable'] = False
-    kwargs['return_extras'] = True
-    kwargs['draw_state'] = draw_state
-    kwargs['indent_size'] = 10
-    if view_func is None:
-        return_val = meta.view_function(input_value, **kwargs)
-    else:
-        return_val = view_func(input_value, **kwargs)
-
-    if len(return_val) == 3:
-        return_val = (return_val[0], return_val[1], draw_state)
-
-    return return_val
-
 def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add_delete=False, width=0, suffix="",
                 collection=None, display_name=None, meta=None, unique=None, is_tree=True,
                 show_name=True, name_func=None, show_type=False, show_unique=False,
@@ -106,7 +55,6 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
                 draw_state=None, show_tint=True, opacity=1.0, show_add_delete=True,
                 on_drag=False, on_action=None, style_manager=None,
                 global_style=None, global_toggles=None, **kwargs):
-
     if display_name is not None:
         name = display_name
 
@@ -298,10 +246,64 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
                              style_manager=style_manager, global_style=global_style)
     pop_style_var(1)
 
-
     # pop_style_var(2)
 
     return on_change, return_val
+
+
+@render_func(use_cache=True, auto_resize=False, closable=True, show_bg=True, melty_window=True, draggable=True,
+             with_header=draw_header)
+def draw_window(input_value, view_func=None, draw_state=None, **kwargs):
+
+    if draw_state.width is not None and draw_state.height is not None and draw_state.expanded:
+        loading_icon_0 = "\uf00d"
+        loading_icon_1 = "\uf067"
+        frame_spacing = 1
+        alpha = 0.25
+        icon_cursor = imgui.get_cursor_screen_pos()
+        icon_x = icon_cursor[0] + draw_state.width - 20
+        icon_y = icon_cursor[1] + draw_state.height - 15
+        if (Melty.frame_count // frame_spacing) % 2 == 0:
+            draw_list = imgui.get_window_draw_list()
+            draw_list.add_text(icon_x, icon_y,
+                               imgui.get_color_u32_rgba(1, 1, 1, alpha),
+                               loading_icon_0)
+        else:
+            draw_list = imgui.get_window_draw_list()
+            draw_list.add_text(icon_x, icon_y,
+                               imgui.get_color_u32_rgba(1, 1, 1, alpha),
+                               loading_icon_1)
+
+        draw_list: _DrawList = imgui.get_window_draw_list()
+        draw_list.add_text(icon_x - 40, icon_y - 1,
+                           imgui.get_color_u32_rgba(1, 1, 1, 0.3),
+                           f"{draw_state.nested_window}")
+
+    meta = kwargs.get("meta", None)
+    if meta is None:
+        if hasattr(Meta, 'get_child_meta'):
+            meta = Meta.get_child_meta(None, field_name=kwargs.get("name", ''), value=input_value)
+
+    if view_func is None:
+        if meta.view_function is None or 'draw_any' in meta.view_function.__name__:
+            meta.view_function = draw_collection
+
+    kwargs['show_bg'] = False
+    kwargs['selectable'] = False
+    kwargs['return_extras'] = True
+    kwargs['draw_state'] = draw_state
+    kwargs['indent_size'] = 10
+    kwargs['with_header'] = None
+    if view_func is None:
+        return_val = meta.view_function(input_value, **kwargs)
+    else:
+        return_val = view_func(input_value, **kwargs)
+
+    if len(return_val) == 3:
+        return_val = (return_val[0], return_val[1], draw_state)
+
+    return return_val
+
 
 
 @render_func(is_default_for=(MutableMapping, defaultdict), use_cache=False, show_bg=True,

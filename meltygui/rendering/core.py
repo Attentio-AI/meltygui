@@ -393,12 +393,23 @@ def render_func(*args, **o_kwargs):
         draw_state._input_value = input_value
         draw_state._collection = Melty.collection_stack[-1] if len(Melty.collection_stack) > 0 else None
         draw_state.name = name
+
+        if not draw_state.auto_resize:
+            draw_state.expanded_rect = (draw_state.left, draw_state.top, draw_state.width, draw_state.height)
+
         if not draw_state.expanded:
             kwargs["auto_resize"] = True
+            passed_width = None
+            passed_height = None
+
+        auto_resize = kwargs.get("auto_resize", True)
+        if auto_resize != draw_state.auto_resize and not auto_resize and draw_state.expanded:
+            # Restore rect
+            draw_state.left, draw_state.top, draw_state.width, draw_state.height = draw_state.expanded_rect
+            draw_state.expanded_rect = (0,0,0,0)
+        draw_state.auto_resize = auto_resize
 
         draw_state._has_popup = kwargs.get("has_popup", False)
-        draw_state.auto_resize = kwargs.get("auto_resize", True)
-        auto_resize = kwargs.get("auto_resize", True)
         kwargs.pop("auto_resize", None)
         if auto_resize:
             if passed_width is not None:
@@ -569,14 +580,15 @@ def render_func(*args, **o_kwargs):
                 else:
                     draw_state._initial_window_size = None
 
-            draw_state.min_width = kwargs.get("min_width", draw_state.min_width)
-            draw_state.min_height = kwargs.get("min_height", draw_state.min_height)
+            if draw_state.expanded:
+                draw_state.min_width = kwargs.get("min_width", draw_state.min_width)
+                draw_state.min_height = kwargs.get("min_height", draw_state.min_height)
 
-            if draw_state.width is not None and draw_state.min_width is not None:
-                draw_state.width = max(draw_state.width, draw_state.min_width)
+                if draw_state.width is not None and draw_state.min_width is not None:
+                    draw_state.width = max(draw_state.width, draw_state.min_width)
 
-            if draw_state.height is not None and draw_state.min_height is not None:
-                draw_state.height = max(draw_state.height, draw_state.min_height)
+                if draw_state.height is not None and draw_state.min_height is not None:
+                    draw_state.height = max(draw_state.height, draw_state.min_height)
 
             cursor_pos = imgui.get_cursor_screen_pos()
             if draw_state.window_pos is not None and melty_window:
@@ -638,7 +650,7 @@ def render_func(*args, **o_kwargs):
             draw_state.clip_rect = Melty.get_clip_rect()
             draw_state.header_width = 0
 
-            if "with_header" in kwargs:
+            if "with_header" in kwargs and kwargs.get("with_header", None) is not None:
                 if hasattr(input_value, "tint") and input_value.tint is not None:
                     prev_tint = style_manager.get_tint()
                     style_manager.set_imgui_tint(*input_value.tint)
@@ -669,7 +681,6 @@ def render_func(*args, **o_kwargs):
                 imgui.dummy(0, 0)
                 end_group()
 
-
                 draw_state.header_left = header_start_cursor[0]
                 draw_state.header_top = header_start_cursor[1]
                 draw_state.header_height = header_end_cursor[1] - header_start_cursor[1]
@@ -678,9 +689,10 @@ def render_func(*args, **o_kwargs):
                 single_line_max_h = 50
 
                 clip_rect = Melty.get_clip_rect()
+                header_same_line = kwargs.get("header_same_line", False)
                 parent_end = clip_rect[2] if clip_rect is not None else 0
-                if draw_state.height is not None and draw_state.height < single_line_max_h:
-                    if (parent_end - header_end_cursor[0] > cutoff and draw_state.expanded) or Melty.is_wrapped():
+                if (draw_state.height is not None and draw_state.height < single_line_max_h) or header_same_line:
+                    if (parent_end - header_end_cursor[0] > cutoff and draw_state.expanded) or Melty.is_wrapped() or header_same_line:
                         same_line()
                         draw_state.header_width = header_end_cursor[0] - header_start_cursor[0]
 

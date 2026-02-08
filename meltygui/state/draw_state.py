@@ -74,7 +74,7 @@ class ZoomState(DictConversion):
          "misc_used", "draw_window_pos_y", "drag_delta", "screen_pos", "hover_rects",
          "imgui_is_item_activated", "frame_count")
 @exclude("current_tint", "overhead_time", "premature_break",
-         "clip_rect", "_input_value", "flow_spacing",
+         "clip_rect", "_input_value", "flow_spacing", "expanded_rect",
          'width', "height", "size_change", 'left', 'top',
          "hovered", "wrapped_top", "params", "scroll_visible", "depth_and_layer",
          "premature_break", "wrapped_left", "_did_use_cache", "hover_rects",
@@ -227,6 +227,8 @@ class DrawState(DictConversion):
         # Profiling
         self.render_time = 0.0
         self.overhead_time = 0.0
+
+        self.expanded_rect = (0,0,200,400)
 
     def init_cst_state(self, node, module_id: str):
         self.cst = CSTDrawBits()
