@@ -251,7 +251,8 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     return on_change, return_val
 
 
-@render_func(use_cache=True, auto_resize=False, closable=True, show_bg=True, melty_window=True, draggable=True,
+@render_func(use_cache=True, auto_resize=False, closable=True,
+             show_bg=True, melty_window=True, draggable=True,
              with_header=draw_header)
 def draw_window(input_value, view_func=None, draw_state=None, **kwargs):
 
@@ -291,9 +292,11 @@ def draw_window(input_value, view_func=None, draw_state=None, **kwargs):
     kwargs['show_bg'] = False
     kwargs['selectable'] = False
     kwargs['return_extras'] = True
-    kwargs['draw_state'] = draw_state
+    # kwargs['draw_state'] = draw_state
     kwargs['indent_size'] = 10
     kwargs['with_header'] = None
+    kwargs['closable'] = False
+    kwargs['closed'] = False
     if view_func is None:
         return_val = meta.view_function(input_value, **kwargs)
     else:
