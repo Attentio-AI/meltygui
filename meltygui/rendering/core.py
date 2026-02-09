@@ -235,6 +235,9 @@ def render_func(*args, **o_kwargs):
         draw_state._input_value = input_value
         draw_state._collection = Melty.collection_stack[-1] if len(Melty.collection_stack) > 0 else None
         draw_state.name = name
+        tile_id = strhash(str(unique) + str(draw_state.id))
+        draw_state._tile_id = tile_id
+
         # if active_layer is not None:
         #     unique = kwargs.get("unique", unique)
         # if unique in Melty.seen_unique:
@@ -308,23 +311,14 @@ def render_func(*args, **o_kwargs):
                     # FIX: ensure to reset the same dict we read from
                     Melty.move_draw_state_pending = {}
 
-
-
         if len(Melty.draw_state_stack) > 0:
             draw_state._parent = Melty.draw_state_stack[-1]
 
         Melty.draw_state_stack.append(draw_state)
-        tile_id = strhash(str(computed_unique) + str(draw_state.id))
-        draw_state._tile_id = tile_id
-
-        # if kwargs.get("core_header_height", None) is not None:
-        #     draw_state.header_height = kwargs.get("core_header_height", 0)
 
         original_width_b = draw_state.width
         original_height_b = draw_state.height
         style_manager = Melty.global_attrs.get("style_manager", None)
-
-        layer_count = 20
 
         if active_layer is None:
             if (melty.dragged_item is not None and melty.drag_in_progress and
@@ -428,19 +422,12 @@ def render_func(*args, **o_kwargs):
         Melty.input_value_stack.append(input_value)
         inc_depth = False
         Melty.wrapped_depth = Melty.wrapped_depth + 1
-        is_header = "with_header" in func.__name__
-        draw_state._is_header = is_header
         draw_state.tint = kwargs.get("tint", draw_state.tint)
         melty_window = kwargs.get("melty_window", False)
         melty_window_header = kwargs.get("melty_window", False)
         draw_state.melty_window = melty_window_header
         previous_tint = None
-        if melty_window:
-            previous_tint = style_manager.get_tint()
-            if hasattr(input_value, 'tint') and getattr(input_value, "tint") is not None:
-                style_manager.set_imgui_tint(*getattr(input_value, "tint"))
-            elif draw_state.tint is not None:
-                style_manager.set_imgui_tint(*draw_state.tint)
+
         try:
             draw_state.current_tint = style_manager.get_tint()
 
@@ -552,12 +539,6 @@ def render_func(*args, **o_kwargs):
             ############ HANDLE WINDOW DRAGGING ########################
             imgui_active = Melty.imgui_active or Melty.imgui_popup_open
 
-            # if draw_state.window_size is not None and not auto_resize and draw_state.expanded:
-            #     draw_state.width = draw_state.window_size[0]
-            #     draw_state.height = snap_int(draw_state.window_size[1])
-            #     draw_state.bounding_width = draw_state.window_size[0]
-            #     draw_state.bounding_height = snap_int(draw_state.window_size[1])
-
             if melty_window:
                 # melty_hovered = draw_state.on_action("on_hover", view_id="window_hover", priority_delta=1)
                 Melty.melty_window_stack.append((draw_state.window_pos, (draw_state.width, draw_state.height),
@@ -627,172 +608,43 @@ def render_func(*args, **o_kwargs):
             else:
                 Melty.is_melty_window = False
 
-
             ######################## ERROR HANDLING FOR TYPES ########################
             cursor_pos = imgui.get_cursor_pos()
             imgui.set_cursor_pos((snap_int(cursor_pos[0]), snap_int(cursor_pos[1])))
-            # spacing = kwargs.get('spacing', Melty.spacing)
-            # padding = kwargs.get('padding', Melty.padding)
-            # push_style_var(imgui.STYLE_ITEM_SPACING, spacing)
-            # push_style_var(imgui.STYLE_FRAME_PADDING, padding)
 
-            if (draw_state.left is not None and draw_state.top is not None and
-                    draw_state.width is not None and draw_state.height is not None) and melty_window:
-                if (draw_state.width > 0 and draw_state.height > 0):
-                    reset_to = imgui.get_cursor_screen_pos()
 
-                    imgui.invisible_button(str(unique) + "window_blocker", width=draw_state.width, height=draw_state.height)
-                    imgui.set_cursor_screen_pos(reset_to)
-                    imgui.set_item_allow_overlap()
-
-            # begin_group()
-            # push_id(str(unique) + "_header")
-            prev_tint = None
+            use_cache = kwargs.get("use_cache", False) and Melty.cache.enabled
+            draw_state.use_cache = use_cache
             draw_state.left, draw_state.top = imgui.get_cursor_screen_pos()
 
+            start_cursor = imgui.get_cursor_screen_pos()
 
-            begin_group(unique)
-            push_id(unique)
+            if len(Melty.fixed_size_stack) > 0 and draw_state.auto_resize and not Melty.is_wrapped():
+                fixed_size_draw_state = Melty.fixed_size_stack[-1]
+                rect = fixed_size_draw_state.get_rect()
+                x_offset = draw_state.left - rect[0]
+                draw_state.width = rect[2] - x_offset - ((len(Melty.bg_stack) + 1) * 2.0)
+                if kwargs.get("fill_height", False):
+                    draw_state.height = snap_int(fixed_size_draw_state.height - (start_cursor[1] - rect[1]))
 
-            draw_state.left = snap_int(draw_state.left)
-            draw_state.top = snap_int(draw_state.top)
-            draw_state.clip_rect = Melty.get_clip_rect()
-            draw_state.header_width = 0
-
-            if "with_header" in kwargs and kwargs.get("with_header", None) is not None and kwargs.get("show_header", True):
-                if hasattr(input_value, "tint") and input_value.tint is not None:
-                    prev_tint = style_manager.get_tint()
-                    style_manager.set_imgui_tint(*input_value.tint)
-                elif draw_state.tint is not None and kwargs.get("show_bg", False):
-                    prev_tint = style_manager.get_tint()
-                    style_manager.set_imgui_tint(*draw_state.tint)
-                elif hasattr(collection, "__tint__") and collection.__tint__ is not None:
-                    if name in collection.__tint__:
-                        prev_tint = style_manager.get_tint()
-                        style_manager.set_imgui_tint(*collection.__tint__[name])
-
-                next_kwargs = kwargs.get('next_kwargs', {})
-                next_kwargs['func'] = func
-                next_kwargs['outer_func'] = wrapper
-                next_kwargs['show_bg'] = kwargs.get("show_bg", True)
-                on_same_line = kwargs.get("on_same_line", False)
-                draw_header = kwargs.get("with_header", None)
-
-                if Melty.channels_split:
-                    draw_list = imgui.get_window_draw_list()
-                    draw_list.channels_set_current(Melty.get_channel())
-
-                imgui.begin_group()
-                header_start_cursor = imgui.get_cursor_screen_pos()
-                draw_header(**kwargs)
-                header_end = imgui.get_item_rect_max()[0]
-                header_end_cursor = imgui.get_cursor_screen_pos()
-                imgui.dummy(0, 0)
-                end_group()
-
-                draw_state.header_left = header_start_cursor[0]
-                draw_state.header_top = header_start_cursor[1]
-                draw_state.header_height = header_end_cursor[1] - header_start_cursor[1]
-
-                cutoff = 100
-                single_line_max_h = 50
-
-                clip_rect = Melty.get_clip_rect()
-                header_same_line = kwargs.get("header_same_line", False)
-                parent_end = clip_rect[2] if clip_rect is not None else 0
-                if (draw_state.height is not None and draw_state.height < single_line_max_h) or header_same_line:
-                    if (parent_end - header_end_cursor[0] > cutoff and draw_state.expanded) or Melty.is_wrapped() or header_same_line:
-                        same_line()
-                        draw_state.header_width = header_end_cursor[0] - header_start_cursor[0]
-
+                draw_state.content_width = (rect[2] - x_offset - ((len(Melty.bg_stack) + 1) * 2.0) -
+                                            draw_state.header_width - 10)
+            elif len(Melty.fixed_size_stack) > 0:
+                fixed_size_draw_state = Melty.fixed_size_stack[-1]
+                rect = fixed_size_draw_state.get_rect()
+                x_offset = draw_state.left - rect[0]
+                draw_state.content_width = (rect[2] - x_offset - (
+                        (len(Melty.bg_stack) + 1) * 2.0) -
+                                            draw_state.header_width - 10)
             else:
-                draw_state.header_left = draw_state.left
-                draw_state.header_top = draw_state.top
 
+                rect = Melty.get_clip_size()
+                if rect is not None:
+                    x_offset = draw_state.left - rect[0]
+                    draw_state.content_width = (rect[0] - draw_state.header_width - 15)
+                else:
+                    draw_state.content_width = 400
 
-
-            ####################################################################################
-            #### End callback header
-
-            if draw_state.header_left is not None and draw_state.left is not None:
-                draw_state.header_left_delta = draw_state.left - draw_state.header_left
-                draw_state.header_top_delta = draw_state.top - draw_state.header_top
-
-            indent_x = kwargs.get("indent_size", 0)
-            if indent_x > 0:
-                sc = imgui.get_cursor_screen_pos()
-                imgui.set_cursor_screen_pos((sc[0] + indent_x,
-                                             sc[1]))
-
-            imgui.begin_group()
-
-            expected_type = param_types[wanted_params.index("input_value")] if "input_value" in wanted_params else None
-            annotation_empty = expected_type == inspect.Parameter.empty
-            if not annotation_empty:
-                if expected_type is not Any and isinstance(expected_type, type):
-                    if not isinstance(input_value, expected_type):
-                        yellow = (1.0, 1.0, 0.0, 1.0)
-                        if imgui.button(f"Fix Type##{unique}"):
-                            return True, expected_type()
-                        same_line()
-                        type_class_path = f"{expected_type.__module__}.{expected_type.__name__}"
-                        actual_type_class_path = f"{type(input_value).__module__}.{type(input_value).__name__}"
-                        imgui.text_colored(f"Type mismatch in {func.__name__}\n"
-                                           f"Expected {type_class_path}, "
-                                           f"got {actual_type_class_path}", *yellow)
-                        return False, None
-
-            if not meta.visible_in_ui:
-                if return_extras:
-                    return False, None, draw_state
-                return False, None
-            ###########################################################
-            kwargs['next_kwargs'] = kwargs
-            if 'kwargs' in wanted_params:
-                clean_args = kwargs
-            else:
-                clean_args = {k: kwargs[k] for k in wanted_params if k in kwargs}
-            ###########################################################
-            draw_state.channel = Melty.get_channel()
-
-            if not auto_resize:
-                draw_list = imgui.get_window_draw_list()
-                if Melty.channels_split:
-                    draw_list.channels_set_current((Melty.max_depth - 1))
-                draw_resize_handle(draw_state)
-                if Melty.channels_split:
-                    draw_list.channels_set_current(Melty.get_channel())
-            kwargs['on_drag'] = False
-
-            ##### Register With event handler #########################
-
-            hover_eligible = draw_state.hover_eligible()
-            if hover_eligible:
-                max_layer_depth = Melty.max_depth * Melty.max_layer + Melty.max_depth
-                priority = max_layer_depth - draw_state.z_pos
-                event_names = copy(wanted_params)
-                Melty.event_handler.register_hovered(tile_id, event_names, priority, selected=draw_state.selected)
-
-            ######################################################
-
-            if hasattr(input_value, 'pending_upload') and callable(getattr(input_value, 'pending_upload')):
-                if input_value.pending_upload():
-                    request_render()
-
-            is_hovered = draw_state.on_action("cursor_hover", view_id="test") is not None
-
-            ############# HANDLE SELECTION
-            top = draw_state.top
-            left = draw_state.left
-            width = draw_state.width
-            height = draw_state.height
-
-            top = snap_int(top)
-            left = snap_int(left)
-            width = snap_int(width)
-            height = snap_int(height)
-
-            draw_state.bg_rect = (left, top, width, height)
             parent_ds = draw_state._parent
             if melty_window and active_layer is not None and Melty.depth >= 3:
                 Melty.root_draw_states.add(draw_state)
@@ -811,181 +663,392 @@ def render_func(*args, **o_kwargs):
                                                                 0.0, 1.0), fa_live_icon)
                     Melty.cache.invalidate(tile_id)
             kwargs.pop("live", None)
+            if not meta.visible_in_ui:
+                if return_extras:
+                    return False, None, draw_state
+                return False, None
 
-            ########### CONTEXT MENU HANDLING ############
-            context_menu_func = kwargs.get("context_menu", None)
-            if context_menu_func is not None:
-                right_click = draw_state.on_action("right_mouse_down")
-                if right_click:
-                    if not draw_state.context_menu_open:
-                        if draw_state.context_menu_ds is not None:
-                            ctx_height = draw_state.context_menu_ds.height
-                            draw_state.context_menu_ds.window_pos = (0, -draw_state.context_menu_ds.height)
-                            draw_state.context_menu_ds.closed = False
-                            Melty.move_window_to_front(draw_state.context_menu_ds)
-
-                    draw_state.context_menu_open = not draw_state.context_menu_open
-                    if draw_state.context_menu_ds is not None:
-                        Melty.cache.invalidate_up(draw_state.context_menu_ds._tile_id, max_depth=5)
-
-                    Melty.cache.invalidate_up_by_obj(draw_state)
-
-                if draw_state.context_menu_open:
-                    from src.lsd.gl_gui.view.core_views.new_core_view import draw_window
-                    returned_val = draw_window(input_value=draw_state, view_func=context_menu_func,
-                                               name=f"Context Menu##{unique}", auto_resize=True, return_extras=True,
-                                               wrap=True)
-                    if draw_state.context_menu_ds is None or draw_state.context_menu_ds.height == 0:
-                        ctx_ds = returned_val[2]
-                        ctx_ds.window_pos = (0, -ctx_ds.height)
-                        Melty.cache.invalidate_up_by_obj(draw_state)
-                        ctx_ds.closed = False
+            expected_type = param_types[wanted_params.index("input_value")] if "input_value" in wanted_params else None
+            annotation_empty = expected_type == inspect.Parameter.empty
+            if not annotation_empty:
+                if expected_type is not Any and isinstance(expected_type, type):
+                    if not isinstance(input_value, expected_type):
+                        yellow = (1.0, 1.0, 0.0, 1.0)
+                        if imgui.button(f"Fix Type##{unique}"):
+                            return True, expected_type()
+                        same_line()
+                        type_class_path = f"{expected_type.__module__}.{expected_type.__name__}"
+                        actual_type_class_path = f"{type(input_value).__module__}.{type(input_value).__name__}"
+                        imgui.text_colored(f"Type mismatch in {func.__name__}\n"
+                                           f"Expected {type_class_path}, "
+                                           f"got {actual_type_class_path}", *yellow)
+                        return False, None
 
 
-                    draw_state.context_menu_ds = returned_val[2]
+            last_bounding_hovered = draw_state._bounding_hovered
+            new_bounding_hovered = draw_state.is_bounding_hovered()
+            hover_changed = last_bounding_hovered != new_bounding_hovered
+            draw_state._bounding_hovered = new_bounding_hovered
+            if (draw_state.width is None or draw_state.height is None or hover_changed or
+                    draw_state._bounding_hovered or draw_state._imgui_popover_open):
+                if (not Melty.on_drag or draw_state.nested_window
+                        and not imgui.is_mouse_down(2) and not imgui.is_mouse_down(1)):
+                    Melty.cache.invalidate(tile_id, force=True)
+
+            if draw_state.width > 0 and draw_state.height > 0:
+                inside_clip = Melty.fully_inside_clip(rect=(draw_state.left, draw_state.top,
+                                                            draw_state.width, draw_state.height))
+                needs_invalidate = False
+                if inside_clip != draw_state.fully_clipped and inside_clip:
+                    needs_invalidate = True
+                draw_state.fully_clipped = inside_clip
+
+                inside_clip = Melty.inside_clip(rect=(draw_state.left, draw_state.top,
+                                                      draw_state.width, draw_state.height))
+                if inside_clip != draw_state.clipped and inside_clip:
+                    needs_invalidate = True
+                draw_state.clipped = inside_clip
+
+                if needs_invalidate and not Melty.on_drag and not imgui.is_mouse_down(2):
+                    Melty.cache.invalidate(tile_id, force=True)
+
+            if Melty.cache.mark_start_offscreen(draw_state=draw_state):
+                if melty_window:
+                    previous_tint = style_manager.get_tint()
+                    if hasattr(input_value, 'tint') and getattr(input_value, "tint") is not None:
+                        style_manager.set_imgui_tint(*getattr(input_value, "tint"))
+                    elif draw_state.tint is not None:
+                        style_manager.set_imgui_tint(*draw_state.tint)
+
+                if (draw_state.left is not None and draw_state.top is not None and
+                    draw_state.width is not None and draw_state.height is not None) and melty_window:
+                    if (draw_state.width > 0 and draw_state.height > 0):
+                        reset_to = imgui.get_cursor_screen_pos()
+
+                        imgui.invisible_button(str(unique) + "window_blocker", width=draw_state.width,
+                                               height=draw_state.height)
+                        imgui.set_cursor_screen_pos(reset_to)
+                        imgui.set_item_allow_overlap()
+
+
+                begin_group(unique)
+                push_id(unique)
+
+                draw_state.left = snap_int(draw_state.left)
+                draw_state.top = snap_int(draw_state.top)
+                draw_state.clip_rect = Melty.get_clip_rect()
+                draw_state.header_width = 0
+
+                if "with_header" in kwargs and kwargs.get("with_header", None) is not None and kwargs.get("show_header",
+                                                                                                          True):
+                    if hasattr(input_value, "tint") and input_value.tint is not None:
+                        previous_tint = style_manager.get_tint()
+                        style_manager.set_imgui_tint(*input_value.tint)
+                    elif draw_state.tint is not None and kwargs.get("show_bg", False):
+                        previous_tint = style_manager.get_tint()
+                        style_manager.set_imgui_tint(*draw_state.tint)
+                    elif hasattr(collection, "__tint__") and collection.__tint__ is not None:
+                        if name in collection.__tint__:
+                            previous_tint = style_manager.get_tint()
+                            style_manager.set_imgui_tint(*collection.__tint__[name])
+
+                    next_kwargs = kwargs.get('next_kwargs', {})
+                    next_kwargs['func'] = func
+                    next_kwargs['outer_func'] = wrapper
+                    next_kwargs['show_bg'] = kwargs.get("show_bg", True)
+                    on_same_line = kwargs.get("on_same_line", False)
+                    draw_header = kwargs.get("with_header", None)
+
+                    if Melty.channels_split:
+                        draw_list = imgui.get_window_draw_list()
+                        draw_list.channels_set_current(Melty.get_channel())
+
+                    imgui.begin_group()
+                    header_start_cursor = imgui.get_cursor_screen_pos()
+                    draw_header(**kwargs)
+                    header_end = imgui.get_item_rect_max()[0]
+                    header_end_cursor = imgui.get_cursor_screen_pos()
+                    imgui.dummy(0, 0)
+                    end_group()
+
+                    draw_state.header_left = header_start_cursor[0]
+                    draw_state.header_top = header_start_cursor[1]
+                    draw_state.header_height = header_end_cursor[1] - header_start_cursor[1]
+
+                    cutoff = 100
+                    single_line_max_h = 50
+
+                    clip_rect = Melty.get_clip_rect()
+                    header_same_line = kwargs.get("header_same_line", False)
+                    parent_end = clip_rect[2] if clip_rect is not None else 0
+                    if (draw_state.height is not None and draw_state.height < single_line_max_h) or header_same_line:
+                        if (parent_end - header_end_cursor[
+                            0] > cutoff and draw_state.expanded) or Melty.is_wrapped() or header_same_line:
+                            same_line()
+                            draw_state.header_width = header_end_cursor[0] - header_start_cursor[0]
+
                 else:
-                    if draw_state.context_menu_ds is not None:
-                        draw_state.context_menu_ds.closed = True
+                    draw_state.header_left = draw_state.left
+                    draw_state.header_top = draw_state.top
 
+                ####################################################################################
+                #### with callback header
 
-            if kwargs.get("selectable", True):
-                click = draw_state.on_action("left_mouse_down")
-                if click:
-                    Melty.move_window_to_front()
-                    Melty.previous_select = copy(Melty.selected)
+                if draw_state.header_left is not None and draw_state.left is not None:
+                    draw_state.header_left_delta = draw_state.left - draw_state.header_left
+                    draw_state.header_top_delta = draw_state.top - draw_state.header_top
 
-                    if not click.modifiers:
-                        Melty.selected = set()
-                        Melty.selected.add(draw_state)
-                        Melty.last_selected = draw_state
-                        Melty.cache.invalidate(tile_id)
-                    elif click.modifiers == glfw.MOD_CONTROL and click.action == "down":
-                        if draw_state in Melty.selected:
-                            Melty.selected.remove(draw_state)
-                        else:
-                            Melty.selected.add(draw_state)
+                indent_x = kwargs.get("indent_size", 0)
+                if indent_x > 0:
+                    sc = imgui.get_cursor_screen_pos()
+                    imgui.set_cursor_screen_pos((sc[0] + indent_x,
+                                                 sc[1]))
 
-                        Melty.cache.invalidate(tile_id)
+                imgui.begin_group()
+                kwargs['on_drag'] = False
+
+                is_hovered = draw_state.on_action("cursor_hover", view_id="test") is not None
+                hover_eligible = draw_state.hover_eligible()
+                if hover_eligible:
+                    max_layer_depth = Melty.max_depth * Melty.max_layer + Melty.max_depth
+                    priority = max_layer_depth - draw_state.z_pos
+                    event_names = copy(wanted_params)
+                    Melty.event_handler.register_hovered(tile_id, event_names, priority, selected=draw_state.selected)
+
+                ###########################################################
+                kwargs['next_kwargs'] = kwargs
+                if 'kwargs' in wanted_params:
+                    clean_args = kwargs
+                else:
+                    clean_args = {k: kwargs[k] for k in wanted_params if k in kwargs}
+                ###########################################################
+                draw_state.channel = Melty.get_channel()
+
+                if not auto_resize:
+                    draw_list = imgui.get_window_draw_list()
+                    if Melty.channels_split:
+                        draw_list.channels_set_current((Melty.max_depth - 1))
+                    draw_resize_handle(draw_state)
+                    if Melty.channels_split:
+                        draw_list.channels_set_current(Melty.get_channel())
+
+                ##### Register With event handler #########################
+
+                ##########################################################
+
+                if hasattr(input_value, 'pending_upload') and callable(getattr(input_value, 'pending_upload')):
+                    if input_value.pending_upload():
                         request_render()
 
-                    elif click.modifiers == glfw.MOD_SHIFT and click.action == "down":
-                        if draw_state in Melty.selected:
-                            Melty.selected.remove(draw_state)
-                            adding = False
-                        else:
+
+                ############# HANDLE SELECTION
+                top = draw_state.top
+                left = draw_state.left
+                width = draw_state.width
+                height = draw_state.height
+
+                top = snap_int(top)
+                left = snap_int(left)
+                width = snap_int(width)
+                height = snap_int(height)
+
+                draw_state.bg_rect = (left, top, width, height)
+
+
+                ########### CONTEXT MENU HANDLING ############
+                context_menu_func = kwargs.get("context_menu", None)
+                if context_menu_func is not None:
+                    right_click = draw_state.on_action("right_mouse_down")
+                    if right_click:
+                        if not draw_state.context_menu_open:
+                            if draw_state.context_menu_ds is not None:
+                                ctx_height = draw_state.context_menu_ds.height
+                                draw_state.context_menu_ds.window_pos = (0, -draw_state.context_menu_ds.height)
+                                draw_state.context_menu_ds.closed = False
+                                Melty.move_window_to_front(draw_state.context_menu_ds)
+
+                        draw_state.context_menu_open = not draw_state.context_menu_open
+                        if draw_state.context_menu_ds is not None:
+                            Melty.cache.invalidate_up(draw_state.context_menu_ds._tile_id, max_depth=5)
+
+                        Melty.cache.invalidate_up_by_obj(draw_state)
+
+                    if draw_state.context_menu_open:
+                        from src.lsd.gl_gui.view.core_views.new_core_view import draw_window
+                        returned_val = draw_window(input_value=draw_state, view_func=context_menu_func,
+                                                   name=f"Context Menu##{unique}", auto_resize=True, return_extras=True,
+                                                   wrap=True)
+                        if draw_state.context_menu_ds is None or draw_state.context_menu_ds.height == 0:
+                            ctx_ds = returned_val[2]
+                            ctx_ds.window_pos = (0, -ctx_ds.height)
+                            Melty.cache.invalidate_up_by_obj(draw_state)
+                            ctx_ds.closed = False
+
+
+                        draw_state.context_menu_ds = returned_val[2]
+                    else:
+                        if draw_state.context_menu_ds is not None:
+                            draw_state.context_menu_ds.closed = True
+
+
+                if kwargs.get("selectable", True):
+                    click = draw_state.on_action("left_mouse_down")
+                    if click:
+                        Melty.move_window_to_front()
+                        Melty.previous_select = copy(Melty.selected)
+
+                        if not click.modifiers:
+                            Melty.selected = set()
                             Melty.selected.add(draw_state)
-                            adding = True
-
-                        if Melty.last_selected is not None:
-                            # Check if both have the same parent
-                            it_count = 0
-                            max_iter = 1000
-                            seen = set()
-                            items_to_select = []
-
-                            ds_index = draw_state.index_in_parent
-                            last_index = Melty.last_selected.index_in_parent
-                            go_back = ds_index > last_index
-                            if go_back:
-                                next_ds = draw_state.previous
+                            Melty.last_selected = draw_state
+                            Melty.cache.invalidate(tile_id)
+                        elif click.modifiers == glfw.MOD_CONTROL and click.action == "down":
+                            if draw_state in Melty.selected:
+                                Melty.selected.remove(draw_state)
                             else:
-                                next_ds = draw_state.next
+                                Melty.selected.add(draw_state)
 
-                            while (id(next_ds) not in seen and
-                                   id(next_ds) != id(Melty.last_selected) and
-                                   next_ds is not None
-                                   and it_count < max_iter):
-                                seen.add(id(next_ds))
-                                items_to_select.append(next_ds)
-
-                                if go_back:
-                                    next_ds = next_ds.previous
-                                else:
-                                    next_ds = next_ds.next
-                                it_count += 1
-
-                            if id(next_ds) == id(Melty.last_selected):
-                                for item in items_to_select:
-                                    if adding:
-                                        if item not in Melty.selected:
-                                            Melty.selected.add(item)
-                                    else:
-                                        if item in Melty.selected:
-                                            Melty.selected.remove(item)
-
-                                    Melty.cache.invalidate(item._tile_id)
-
-                            Melty.cache.invalidate(draw_state._parent._tile_id)
-                            Melty.cache.invalidate(Melty.last_selected._parent._tile_id)
-
+                            Melty.cache.invalidate(tile_id)
                             request_render()
 
-                        Melty.last_selected = draw_state
-                        request_render()
+                        elif click.modifiers == glfw.MOD_SHIFT and click.action == "down":
+                            if draw_state in Melty.selected:
+                                Melty.selected.remove(draw_state)
+                                adding = False
+                            else:
+                                Melty.selected.add(draw_state)
+                                adding = True
 
-            if draw_state in Melty.selected:
-                draw_state.selected = True
-            else:
-                draw_state.selected = False
-                # draw_state.draw_rect(rounding=5.0)
+                            if Melty.last_selected is not None:
+                                # Check if both have the same parent
+                                it_count = 0
+                                max_iter = 1000
+                                seen = set()
+                                items_to_select = []
 
-            show_bg = kwargs.get("show_bg", False)
-            draw_state.shadow = kwargs.get("shadow", draw_state.shadow)
-            if show_bg or draw_state.selected or not draw_state.expanded:
-                draw_state.corner_radius = 5.0
-                from src.lsd.gl_gui.view.core_views.new_core_view import draw_bg
-                style_manager = Melty.global_attrs['style_manager']
-                global_style = Melty.global_attrs['global_style']
-                Melty.bg_stack.append(style_manager.get_tint())
+                                ds_index = draw_state.index_in_parent
+                                last_index = Melty.last_selected.index_in_parent
+                                go_back = ds_index > last_index
+                                if go_back:
+                                    next_ds = draw_state.previous
+                                else:
+                                    next_ds = draw_state.next
 
-                # Melty.undo_clip(unique, 1)
-                if width > 5 and height > 5:
-                    _, bg_color = draw_bg(bypass=True, left=left + 1, top=top,
-                                          width=width - 2, height=height, rounding=draw_state.corner_radius,
-                                          depth=Melty.depth, selected=draw_state in Melty.selected,
-                                          global_style=global_style, opacity=1.0 if show_bg else 0.0,
-                                          style_manager=style_manager, auto_resize=auto_resize)
-                # Melty.redo_clip(unique)
+                                while (id(next_ds) not in seen and
+                                       id(next_ds) != id(Melty.last_selected) and
+                                       next_ds is not None
+                                       and it_count < max_iter):
+                                    seen.add(id(next_ds))
+                                    items_to_select.append(next_ds)
 
-            else:
-                draw_state.corner_radius = 0.0
+                                    if go_back:
+                                        next_ds = next_ds.previous
+                                    else:
+                                        next_ds = next_ds.next
+                                    it_count += 1
+
+                                if id(next_ds) == id(Melty.last_selected):
+                                    for item in items_to_select:
+                                        if adding:
+                                            if item not in Melty.selected:
+                                                Melty.selected.add(item)
+                                        else:
+                                            if item in Melty.selected:
+                                                Melty.selected.remove(item)
+
+                                        Melty.cache.invalidate(item._tile_id)
+
+                                Melty.cache.invalidate(draw_state._parent._tile_id)
+                                Melty.cache.invalidate(Melty.last_selected._parent._tile_id)
+
+                                request_render()
+
+                            Melty.last_selected = draw_state
+                            request_render()
+
+                if draw_state in Melty.selected:
+                    draw_state.selected = True
+                else:
+                    draw_state.selected = False
+                    # draw_state.draw_rect(rounding=5.0)
+
+                show_bg = kwargs.get("show_bg", False)
+                draw_state.shadow = kwargs.get("shadow", draw_state.shadow)
+                if show_bg or draw_state.selected or not draw_state.expanded:
+                    draw_state.corner_radius = 5.0
+                    from src.lsd.gl_gui.view.core_views.new_core_view import draw_bg
+                    style_manager = Melty.global_attrs['style_manager']
+                    global_style = Melty.global_attrs['global_style']
+                    Melty.bg_stack.append(style_manager.get_tint())
+
+                    # Melty.undo_clip(unique, 1)
+                    if width > 5 and height > 5:
+                        _, bg_color = draw_bg(bypass=True, left=left + 1, top=top,
+                                              width=width - 2, height=height, rounding=draw_state.corner_radius,
+                                              depth=Melty.depth, selected=draw_state in Melty.selected,
+                                              global_style=global_style, opacity=1.0 if show_bg else 0.0,
+                                              style_manager=style_manager, auto_resize=auto_resize)
+                    # Melty.redo_clip(unique)
+
+                else:
+                    draw_state.corner_radius = 0.0
 
 
-            #### MAIN CALL #######################################################
-            clip_rect = Melty.get_clip_rect()
+                #### MAIN CALL #######################
+                clip_rect = Melty.get_clip_rect()
+                Melty.push_clip((left, top,
+                                 left + width,
+                                 top + height))
 
+                return_value = draw_inner_main(clean_args, clip_rect, draw_state,
+                                               input_value, kwargs, auto_resize,
+                                               melty, tile_id, unique, melty_window)
+                Melty.pop_clip()
 
-            Melty.push_clip((left, top,
-                             left + width,
-                             top + height))
+                if show_bg or draw_state.selected or not draw_state.expanded:
+                    Melty.bg_stack.pop()
 
-            return_value = draw_inner_main(clean_args, clip_rect, draw_state,
-                                           input_value, kwargs, auto_resize,
-                                           melty, tile_id, unique, melty_window)
-            Melty.pop_clip()
+                draw_state._imgui_is_hovered = draw_state._imgui_is_item_hovered and is_hovered
 
-            if prev_tint is not None:
-                style_manager.set_imgui_tint(*prev_tint)
+                if draw_state._has_popup:
+                    is_popup_open = Melty.imgui_popup_open
+                    if is_popup_open != draw_state._imgui_popover_open and not is_popup_open:
+                        Melty.cache.invalidate_up_by_obj(input_value, max_depth=6)
+                    if is_popup_open:
+                        Melty.report_imgui_active()
+                    draw_state._imgui_popover_open = Melty.imgui_popup_open
+                draw_state._imgui_is_edited = imgui.is_item_edited()
+                draw_state._imgui_is_activated = imgui.is_item_activated()
+                draw_state._imgui_is_active = imgui.is_item_active()
+                draw_state._imgui_is_focused = imgui.is_item_focused()
+                draw_state._imgui_is_item_hovered = imgui.is_item_hovered()
 
-            if show_bg or draw_state.selected or not draw_state.expanded:
-                Melty.bg_stack.pop()
-            #######################
-            if imgui.is_item_active() or imgui.is_item_activated():
-                Melty.report_imgui_active()
-            draw_state._imgui_is_edited = imgui.is_item_edited()
-            draw_state._imgui_is_activated = imgui.is_item_activated()
-            draw_state._imgui_is_active = imgui.is_item_active()
-            draw_state._imgui_is_focused = imgui.is_item_focused()
-            draw_state._imgui_is_item_hovered = imgui.is_item_hovered()
-            draw_state._imgui_is_hovered = draw_state._imgui_is_item_hovered and is_hovered
-
-            if draw_state._has_popup:
-                is_popup_open = Melty.imgui_popup_open
-                if is_popup_open != draw_state._imgui_popover_open and not is_popup_open:
-                    Melty.cache.invalidate_up_by_obj(input_value, max_depth=6)
-                if is_popup_open:
+                if imgui.is_item_active() or imgui.is_item_activated():
                     Melty.report_imgui_active()
-                draw_state._imgui_popover_open = Melty.imgui_popup_open
+                #######################
+
+                end_group()
+                pop_id()
+
+                if not kwargs.get("imgui_padding", True):
+                    push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
+                    push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
+                    end_group()
+                    pop_style_var(2)
+                else:
+                    push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
+                    push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
+                    end_group()
+                    pop_style_var(2)
+
+                if previous_tint is not None:
+                    style_manager.set_imgui_tint(*previous_tint)
+
+            if use_cache:
+                Melty.cache.mark_end_offscreen()
+            if not use_cache:
+                Melty.cache.mark_uncached(draw_state.name, input_value, collection, tile_id, draw_state)
+
 
 
         except Exception as e:
@@ -1000,22 +1063,13 @@ def render_func(*args, **o_kwargs):
             if has_collection:
                 Melty.collection_stack.pop()
 
-            end_group()
-
-            pop_id()
-
-            if not kwargs.get("imgui_padding", True):
-                push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
-                push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
-                end_group()
-                pop_style_var(2)
-            else:
-                push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
-                push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
-                end_group()
-                pop_style_var(2)
 
             item_rect = imgui.get_item_rect_size()
+
+            use_cache = kwargs.get("use_cache", False) and Melty.cache.enabled
+            # if not use_cache:
+            #     Melty.cache.mark_uncached(draw_state.name, input_value, collection, tile_id, draw_state)
+
 
             # push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
             # push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
@@ -1035,6 +1089,10 @@ def render_func(*args, **o_kwargs):
                 draw_state.width = 30
             if melty_window and draw_state.height < 30:
                 draw_state.height = 30
+            if draw_state.width > 10000:
+                draw_state.width = 10000
+            if draw_state.height > 10000:
+                draw_state.height = 10000
 
             if auto_resize:
                 if len(Melty.fixed_size_stack) == 0 or Melty.is_wrapped():
@@ -1061,14 +1119,8 @@ def render_func(*args, **o_kwargs):
                 if not imgui.is_mouse_down(0):
                     draw_state.size_change = False
 
-            if draw_state.width > 10000:
-                draw_state.width = 10000
-            if draw_state.height > 10000:
-                draw_state.height = 10000
-
             draw_state._hovered = False
             draw_state.hotkey_receiver = False
-
 
             if inc_depth:
                 Melty.depth = Melty.depth - 1
@@ -1082,8 +1134,7 @@ def render_func(*args, **o_kwargs):
             if melty_window:
                 Melty.melty_window_stack.pop()
 
-            if previous_tint is not None:
-                style_manager.set_imgui_tint(*previous_tint)
+
 
             return_draw_state = draw_state
             if return_value is None:
@@ -1169,32 +1220,7 @@ def render_func(*args, **o_kwargs):
         if draw_state._has_popup:
             draw_state._imgui_popover_open = Melty.imgui_popup_open
 
-        if draw_state.width > 0 and draw_state.height > 0:
-            inside_clip = Melty.fully_inside_clip(rect=(draw_state.left, draw_state.top,
-                                                  draw_state.width, draw_state.height))
-            needs_invalidate = False
-            if inside_clip != draw_state.fully_clipped and inside_clip:
-                needs_invalidate = True
-            draw_state.fully_clipped = inside_clip
 
-            inside_clip = Melty.inside_clip(rect=(draw_state.left, draw_state.top,
-                                                        draw_state.width, draw_state.height))
-            if inside_clip != draw_state.clipped and inside_clip:
-                needs_invalidate = True
-            draw_state.clipped = inside_clip
-
-            if needs_invalidate and not Melty.on_drag and not imgui.is_mouse_down(2):
-                Melty.cache.invalidate(tile_id, force=True)
-
-        last_bounding_hovered = draw_state._bounding_hovered
-        new_bounding_hovered = draw_state.is_bounding_hovered()
-        hover_changed = last_bounding_hovered != new_bounding_hovered
-        draw_state._bounding_hovered = new_bounding_hovered
-        if (draw_state.width is None or draw_state.height is None or hover_changed or
-                draw_state._bounding_hovered or draw_state._imgui_popover_open):
-            if (not Melty.on_drag or draw_state.nested_window
-                    and not imgui.is_mouse_down(2) and not imgui.is_mouse_down(1)):
-                Melty.cache.invalidate(tile_id, force=True)
 
         if use_cache:
             offscreen_depth = Melty.get_channel()
@@ -1255,54 +1281,24 @@ def render_func(*args, **o_kwargs):
         if not draw_state.auto_resize:
             Melty.fixed_size_stack.append(draw_state)
 
-        if len(Melty.fixed_size_stack) > 0 and draw_state.auto_resize and not Melty.is_wrapped():
-            fixed_size_draw_state = Melty.fixed_size_stack[-1]
-            rect = fixed_size_draw_state.get_rect()
-            x_offset = draw_state.left - rect[0]
-            draw_state.width = rect[2] - x_offset - ((len(Melty.bg_stack) + 1) * 2.0)
-            if kwargs.get("fill_height", False):
-                draw_state.height = snap_int(fixed_size_draw_state.height - (start_cursor[1] - rect[1]))
-
-            draw_state.content_width = (rect[2] - x_offset - ((len(Melty.bg_stack) + 1) * 2.0) -
-                                        draw_state.header_width - 10)
-        elif len(Melty.fixed_size_stack) > 0:
-            fixed_size_draw_state = Melty.fixed_size_stack[-1]
-            rect = fixed_size_draw_state.get_rect()
-            x_offset = draw_state.left - rect[0]
-            draw_state.content_width = (rect[2] - x_offset  - (
-                        (len(Melty.bg_stack) + 1) * 2.0) -
-                                        draw_state.header_width - 10)
-        else:
-
-            rect = Melty.get_clip_size()
-            x_offset = draw_state.left - rect[0]
-            draw_state.content_width = (rect[0] - draw_state.header_width - 10)
-
-        if Melty.cache.mark_start_offscreen(draw_state=draw_state):
-            if do_scroll:
-                start_cursor = imgui.get_cursor_screen_pos()
-                imgui.set_cursor_screen_pos((start_cursor[0],
-                                             start_cursor[1] - scroll_offset[1]))
 
 
-            # If we are using the new callback header, gate rendering on expanded
-            if "with_header" not in kwargs or draw_state.expanded:
-                return_value = func(**clean_args)
-                imgui.set_item_allow_overlap()
+        if do_scroll:
+            start_cursor = imgui.get_cursor_screen_pos()
+            imgui.set_cursor_screen_pos((start_cursor[0],
+                                         start_cursor[1] - scroll_offset[1]))
 
 
-            if do_scroll:
-                start_cursor = imgui.get_cursor_screen_pos()
-                imgui.set_cursor_screen_pos((start_cursor[0],
-                                             start_cursor[1] + scroll_offset[1]))
+        # If we are using the new callback header, gate rendering behind expanded
+        if "with_header" not in kwargs or draw_state.expanded:
+            return_value = func(**clean_args)
+            imgui.set_item_allow_overlap()
 
 
-
-        if not use_cache:
-            Melty.cache.mark_uncached(draw_state.name, input_value, collection, tile_id, draw_state)
-
-        if use_cache:
-            Melty.cache.mark_end_offscreen()
+        if do_scroll:
+            start_cursor = imgui.get_cursor_screen_pos()
+            imgui.set_cursor_screen_pos((start_cursor[0],
+                                         start_cursor[1] + scroll_offset[1]))
 
         if not auto_resize:
             Melty.fixed_size_stack.pop()
