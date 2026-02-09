@@ -82,7 +82,7 @@ class ZoomState(DictConversion):
          "bounding_hovered", "dlt_count", "clip_rect", "bg_rect",
          "header_height", "scrolled", "is_hovered_last", "frame_count")
 @no_save_exclude("live", 'render_time', 'content_height', 'invalid_content_height'
-                  'hover_rects', 'nested_window', 'use_cache', 'depth', 'layer', 'header_width', "header_top", "header_left",
+                  'hover_rects', 'nested_window', 'use_cache', 'depth', 'layer', "header_top", "header_left",
                  "header_left_delta", "header_top_delta",
                  'channel', 'next', 'previous', 'index_in_parent', 'relative_pos', 'context_menu_open', 'context_menu_ds')
 @deep_refresh('scroll_offset')

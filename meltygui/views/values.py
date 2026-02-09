@@ -244,6 +244,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         profile_time = draw_state.render_time
         render_profiler_time(input_value=profile_time, brief=True,
                              style_manager=style_manager, global_style=global_style)
+        same_line(spacing=3)
     pop_style_var(1)
 
     # pop_style_var(2)
@@ -256,29 +257,29 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
              with_header=draw_header)
 def draw_window(input_value, view_func=None, draw_state=None, **kwargs):
 
-    if draw_state.width is not None and draw_state.height is not None and draw_state.expanded:
-        loading_icon_0 = "\uf00d"
-        loading_icon_1 = "\uf067"
-        frame_spacing = 1
-        alpha = 0.25
-        icon_cursor = imgui.get_cursor_screen_pos()
-        icon_x = icon_cursor[0] + draw_state.width - 20
-        icon_y = icon_cursor[1] + draw_state.height - 15
-        if (Melty.frame_count // frame_spacing) % 2 == 0:
-            draw_list = imgui.get_window_draw_list()
-            draw_list.add_text(icon_x, icon_y,
-                               imgui.get_color_u32_rgba(1, 1, 1, alpha),
-                               loading_icon_0)
-        else:
-            draw_list = imgui.get_window_draw_list()
-            draw_list.add_text(icon_x, icon_y,
-                               imgui.get_color_u32_rgba(1, 1, 1, alpha),
-                               loading_icon_1)
-
-        draw_list: _DrawList = imgui.get_window_draw_list()
-        draw_list.add_text(icon_x - 40, icon_y - 1,
-                           imgui.get_color_u32_rgba(1, 1, 1, 0.3),
-                           f"{draw_state.nested_window}")
+    # if draw_state.width is not None and draw_state.height is not None and draw_state.expanded:
+    #     loading_icon_0 = "\uf00d"
+    #     loading_icon_1 = "\uf067"
+    #     frame_spacing = 1
+    #     alpha = 0.25
+    #     icon_cursor = imgui.get_cursor_screen_pos()
+    #     icon_x = icon_cursor[0] + draw_state.width - 20
+    #     icon_y = icon_cursor[1] + draw_state.height - 15
+    #     if (Melty.frame_count // frame_spacing) % 2 == 0:
+    #         draw_list = imgui.get_window_draw_list()
+    #         draw_list.add_text(icon_x, icon_y,
+    #                            imgui.get_color_u32_rgba(1, 1, 1, alpha),
+    #                            loading_icon_0)
+    #     else:
+    #         draw_list = imgui.get_window_draw_list()
+    #         draw_list.add_text(icon_x, icon_y,
+    #                            imgui.get_color_u32_rgba(1, 1, 1, alpha),
+    #                            loading_icon_1)
+    #
+    #     draw_list: _DrawList = imgui.get_window_draw_list()
+    #     draw_list.add_text(icon_x - 40, icon_y - 1,
+    #                        imgui.get_color_u32_rgba(1, 1, 1, 0.3),
+    #                        f"{draw_state.nested_depth}")
 
     meta = kwargs.get("meta", None)
     if meta is None:
@@ -418,16 +419,17 @@ def draw_collection(input_value, draw_state, depth, style_manager,
         child_draw_state = draw_state._children.get(idx, None)
         if not horizontal:
             if child_draw_state is not None and (not draw_state.invalid_content_height or imgui.is_mouse_down(0) or imgui.is_mouse_down(1)):
-                if child_draw_state.relative_pos is not None:
-                    screen_pos = (true_left + child_draw_state.relative_pos[0],
-                                  true_top + child_draw_state.relative_pos[1] - child_draw_state.header_height)
+                if not Melty.frame_count <= 2:
+                    if child_draw_state.relative_pos is not None:
+                        screen_pos = (true_left + child_draw_state.relative_pos[0],
+                                      true_top + child_draw_state.relative_pos[1] - child_draw_state.header_height)
 
-                    bottom = screen_pos[1] + child_draw_state.height + child_draw_state.header_height
-                    if (bottom < rect[1] or screen_pos[1] > rect[3]):
-                        imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0],
-                                                     (true_top + child_draw_state.relative_pos[1] +
-                                                      child_draw_state.height + child_draw_state.header_height)))
-                        continue
+                        bottom = screen_pos[1] + child_draw_state.height + child_draw_state.header_height
+                        if (bottom + child_draw_state.height < rect[1] or screen_pos[1]  > rect[3]):
+                            imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0],
+                                                         (true_top + child_draw_state.relative_pos[1] +
+                                                          child_draw_state.height + child_draw_state.header_height)))
+                            continue
 
         Melty.collection_index_stack[this_collection] = idx
         if isinstance(collection, dict) and key not in collection:
@@ -599,7 +601,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
     # imgui.set_cursor_screen_pos((current_cursor[0], current_cursor[1] + draw_state.scroll_offset[1]))
     # current_cursor = imgui.get_cursor_screen_pos()
     if not imgui.is_mouse_down(0) and not imgui.is_mouse_down(1) and not premature_break:
-        draw_state.content_height = snap_int(content_height) + header_height
+        draw_state.content_height = snap_int(content_height)
         draw_state.invalid_content_height = False
 
     draw_state.premature_break = premature_break
@@ -627,15 +629,17 @@ def draw_collection(input_value, draw_state, depth, style_manager,
     return changed, input_value
 
 
-@render_func(use_cache=True)
-def draw_main(input_value, vis, **kwargs):
 
+@render_func(use_cache=False)
+def draw_main(input_value, vis, **kwargs):
 
     global test_obj
     return_val = draw_window(Melty.profiles_results, show_bg=True, name="Profile Results")
     return_val2 = draw_window(Melty.registered_windows, is_tree=True, show_add_delete=False, return_extras=True, name="Window Manager")
     draw_window(test_obj, name="Layer 1")
     draw_window(draw_main, name="Draw Main Function")
+    some_enum = ProfileMode.OFF
+    draw_enum(some_enum, name="Test Enum", show_bg=True, is_tree=False)
 
     draw_window(input_value=proxy, name="CST Proxy")
     draw_window(filesystem_proxy, name="Filesystem Test")
@@ -725,8 +729,7 @@ def draw_melty_windows(vis):
     Melty.channels_split = True
     Melty.window_stack.append((title, True))
 
-    draw_main(name="Main Window", vis=vis)
-    draw_window(test_obj, name="Layer Main", layer=2)
+    draw_main(name="Main Window", vis=vis, width=fb_w, height=fb_h, shadow=False)
 
     Melty.end_frame()
 
@@ -2316,7 +2319,7 @@ def draw_debug_label(input_value:str):
 def draw_enum(input_value:Enum, global_style=None, style_manager=None, enum_tint=(0.3, 0.3, 0.3)):
 
     unique = "enum"
-    imgui.set_next_item_width(imgui.get_content_region_available().x)
+    # imgui.set_next_item_width(imgui.get_content_region_available().x)
     selected_idx = next(enumerate(input_value.__class__))[1]
     changed = False
 
@@ -2324,6 +2327,7 @@ def draw_enum(input_value:Enum, global_style=None, style_manager=None, enum_tint
 
     for i, option in enumerate(input_value.__class__):
         a_pretty_name = option.name.replace("_", " ").capitalize()
+
 
         label = f"{a_pretty_name}##{unique}{i}"
         active = (input_value == option)
@@ -2348,6 +2352,7 @@ def draw_enum(input_value:Enum, global_style=None, style_manager=None, enum_tint
         pop_style_color(1)
 
         if clicked:
+            print(f"Selected enum option: {option}")
             selected_idx = option
             changed = True
 

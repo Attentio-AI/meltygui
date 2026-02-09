@@ -194,7 +194,7 @@ def render_func(*args, **o_kwargs):
             except Exception as e:
                 name = str(f"{e}")
 
-        if Melty.depth == 0:
+        if Melty.depth <= 2:
             style = imgui.get_style()
             style.item_spacing = (4, 0)
             style.window_padding = (3, 0)
@@ -331,7 +331,7 @@ def render_func(*args, **o_kwargs):
                     if window_key in Melty.registered_windows else None
 
                 if window_z_pos == len(Melty.registered_windows) - 1:
-                    window_z_pos = len(Melty.registered_windows) + 8
+                    window_z_pos = len(Melty.registered_windows) + 7
                 if window_z_pos is not None:
                     window_z_pos = max(window_z_pos, Melty.active_layer)
 
@@ -608,6 +608,7 @@ def render_func(*args, **o_kwargs):
             else:
                 Melty.is_melty_window = False
 
+
             ######################## ERROR HANDLING FOR TYPES ########################
             cursor_pos = imgui.get_cursor_pos()
             imgui.set_cursor_pos((snap_int(cursor_pos[0]), snap_int(cursor_pos[1])))
@@ -637,13 +638,12 @@ def render_func(*args, **o_kwargs):
                         (len(Melty.bg_stack) + 1) * 2.0) -
                                             draw_state.header_width - 10)
             else:
-
                 rect = Melty.get_clip_size()
                 if rect is not None:
-                    x_offset = draw_state.left - rect[0]
-                    draw_state.content_width = (rect[0] - draw_state.header_width - 15)
+                    draw_state.content_width = (rect[0] - draw_state.header_width - (
+                            (len(Melty.bg_stack) + 2) * 2.0) - 10)
                 else:
-                    draw_state.content_width = 400
+                    draw_state.content_width = 200
 
             parent_ds = draw_state._parent
             if melty_window and active_layer is not None and Melty.depth >= 3:
@@ -654,14 +654,14 @@ def render_func(*args, **o_kwargs):
                 if parent_ds is not None:
                     parent_ds.nested_window = False
 
-                if kwargs.get("live", False):
-                    draw_state.live = True
-                    fa_live_icon = "\uf0e7  Live"
-                    draw_list: _DrawList = imgui.get_window_draw_list()
-                    draw_list.add_text(draw_state.left + 5, draw_state.top - 20,
-                                       imgui.get_color_u32_rgba(1.0, 0.0,
-                                                                0.0, 1.0), fa_live_icon)
-                    Melty.cache.invalidate(tile_id)
+            if kwargs.get("live", False):
+                draw_state.live = True
+                fa_live_icon = "\uf0e7  Live"
+                draw_list: _DrawList = imgui.get_window_draw_list()
+                draw_list.add_text(draw_state.left + 5, draw_state.top - 20,
+                                   imgui.get_color_u32_rgba(1.0, 0.0,
+                                                            0.0, 1.0), fa_live_icon)
+                Melty.cache.invalidate(tile_id)
             kwargs.pop("live", None)
             if not meta.visible_in_ui:
                 if return_extras:
@@ -711,6 +711,7 @@ def render_func(*args, **o_kwargs):
 
                 if needs_invalidate and not Melty.on_drag and not imgui.is_mouse_down(2):
                     Melty.cache.invalidate(tile_id, force=True)
+            push_id(unique)
 
             if Melty.cache.mark_start_offscreen(draw_state=draw_state):
                 if melty_window:
@@ -732,7 +733,6 @@ def render_func(*args, **o_kwargs):
 
 
                 begin_group(unique)
-                push_id(unique)
 
                 draw_state.left = snap_int(draw_state.left)
                 draw_state.top = snap_int(draw_state.top)
@@ -1017,18 +1017,13 @@ def render_func(*args, **o_kwargs):
                     if is_popup_open:
                         Melty.report_imgui_active()
                     draw_state._imgui_popover_open = Melty.imgui_popup_open
-                draw_state._imgui_is_edited = imgui.is_item_edited()
-                draw_state._imgui_is_activated = imgui.is_item_activated()
-                draw_state._imgui_is_active = imgui.is_item_active()
-                draw_state._imgui_is_focused = imgui.is_item_focused()
-                draw_state._imgui_is_item_hovered = imgui.is_item_hovered()
+
 
                 if imgui.is_item_active() or imgui.is_item_activated():
                     Melty.report_imgui_active()
                 #######################
 
                 end_group()
-                pop_id()
 
                 if not kwargs.get("imgui_padding", True):
                     push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
@@ -1043,47 +1038,30 @@ def render_func(*args, **o_kwargs):
 
                 if previous_tint is not None:
                     style_manager.set_imgui_tint(*previous_tint)
-
-            if use_cache:
-                Melty.cache.mark_end_offscreen()
+            draw_state._imgui_is_edited = imgui.is_item_edited()
+            draw_state._imgui_is_activated = imgui.is_item_activated()
+            draw_state._imgui_is_active = imgui.is_item_active()
+            draw_state._imgui_is_focused = imgui.is_item_focused()
+            draw_state._imgui_is_item_hovered = imgui.is_item_hovered()
             if not use_cache:
                 Melty.cache.mark_uncached(draw_state.name, input_value, collection, tile_id, draw_state)
 
-
-
-        except Exception as e:
-            print_colored_traceback(*sys.exc_info())
-        finally:
-            draw_state.frame_count += 1
-            if Melty.imgui_crashed:
-                if return_extras:
-                    return False, None, draw_state
-                return False, None
-
-            if has_collection:
-                Melty.collection_stack.pop()
-
-
-            item_rect = imgui.get_item_rect_size()
-
-            use_cache = kwargs.get("use_cache", False) and Melty.cache.enabled
+            if use_cache:
+                Melty.cache.mark_end_offscreen()
             # if not use_cache:
             #     Melty.cache.mark_uncached(draw_state.name, input_value, collection, tile_id, draw_state)
 
-
-            # push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
-            # push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
-
-
-            # pop_id()
-            # push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
-            # push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
-            # end_group()
-            # pop_style_var(2)
-            # pop_style_var(2)
-
-
+            pop_id()
+            if melty_window:
+                Melty.melty_window_stack.pop()
+            if has_collection:
+                Melty.collection_stack.pop()
             Melty.draw_state_stack.pop()
+            Melty.input_value_stack.pop()
+            Melty.size_stack.pop()
+            Melty.wrap_stack.pop()
+
+            style = imgui.get_style()
 
             if melty_window and draw_state.width < 30:
                 draw_state.width = 30
@@ -1093,6 +1071,8 @@ def render_func(*args, **o_kwargs):
                 draw_state.width = 10000
             if draw_state.height > 10000:
                 draw_state.height = 10000
+
+            item_rect = imgui.get_item_rect_size()
 
             if auto_resize:
                 if len(Melty.fixed_size_stack) == 0 or Melty.is_wrapped():
@@ -1122,19 +1102,52 @@ def render_func(*args, **o_kwargs):
             draw_state._hovered = False
             draw_state.hotkey_receiver = False
 
+            if is_root:
+                style.item_spacing = Melty.original_spacing
+                style.window_padding = Melty.original_window_padding
+                style.frame_padding = Melty.original_frame_padding
+
+                if Melty.previous_select is not None:
+                    for prev_select in Melty.previous_select:
+                        Melty.cache.invalidate(prev_select._tile_id)
+                    Melty.previous_select = None
+
+                if Melty.channels_split:
+                    draw_list = imgui.get_window_draw_list()
+                    Melty.channels_split = False
+                    draw_list.channels_merge()
+
+        except Exception as e:
+            print_colored_traceback(*sys.exc_info())
+        finally:
+            draw_state.frame_count += 1
+            if Melty.imgui_crashed:
+                if return_extras:
+                    return False, None, draw_state
+                return False, None
+
+
+
+
+            # if not use_cache:
+            #     Melty.cache.mark_uncached(draw_state.name, input_value, collection, tile_id, draw_state)
+
+
+            # push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
+            # push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
+
+            # pop_id()
+            # push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
+            # push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
+            # end_group()
+            # pop_style_var(2)
+            # pop_style_var(2)
+
+
+
             if inc_depth:
                 Melty.depth = Melty.depth - 1
-
                 Melty.unique_stack.pop()
-
-            Melty.input_value_stack.pop()
-            Melty.size_stack.pop()
-            Melty.wrap_stack.pop()
-
-            if melty_window:
-                Melty.melty_window_stack.pop()
-
-
 
             return_draw_state = draw_state
             if return_value is None:

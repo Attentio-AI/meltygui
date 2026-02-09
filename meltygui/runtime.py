@@ -279,6 +279,8 @@ class Melty:
         for ds in to_discard:
             cls.root_draw_states.discard(ds)
 
+        cls.apply_move_to_front()
+
         for idx in range(len(cls.layers)):
             layer = cls.layers[idx]
             imgui.set_cursor_screen_pos((0, 0))
@@ -350,7 +352,6 @@ class Melty:
         from src.lsd.gl_gui.view.core_views.core_render import get_melty_state
         melty = get_melty_state()
 
-        cls.apply_move_to_front()
         # melty.last_mouse_pos = imgui.get_mouse_pos()
         # # Did mouse move
         # if len(melty.hover_stack) > 0:
@@ -462,7 +463,7 @@ class Melty:
 
     @classmethod
     def apply_move_to_front(cls):
-        if cls.pending_move_to_front is None:
+        if cls.pending_move_to_front is None or Melty.imgui_popup_open:
             return
 
         if not cls.imgui_active:
