@@ -18,8 +18,8 @@ class ShadowCast:
     offset_factor = 0.04
     uniforms = {
         'light_dir': (GLType.VEC2, (0.5 * offset_factor, 1.6 * offset_factor)),
-        'height_scale': (GLType.FLOAT, 0.55),
-        'blur_scale': (GLType.FLOAT, 0.09),
+        'height_scale': (GLType.FLOAT, 0.45),
+        'blur_scale': (GLType.FLOAT, 0.14),
         'max_steps': (GLType.INT, 64),
         'blur_samples': (GLType.INT, 8),
         'depth_bias': (GLType.FLOAT, 0.00),
@@ -32,7 +32,7 @@ class ShadowCast:
 void main() {
     vec2 uv = v_texcoord;
     float receiver_depth = texture(u_texture, uv).r;
-
+ 
     if (receiver_depth < surface_threshold) {
         fragColor = vec4(0.0, 0.0, 0.0, 0.0);
         return;
@@ -48,7 +48,7 @@ void main() {
     float light = 1.0;
     float max_height_diff = 0.0;
 
-    for (int i = 1; i <= 8; i++) {
+    for (float i = 0.5; i <= 16.0; i++) {
         float test_caster_depth = receiver_depth + float(i) * depth_step;
 
         float height_diff = test_caster_depth - receiver_depth;
@@ -82,7 +82,7 @@ void main() {
                 float scene_depth = texture(u_texture, sample_pos).r;
 
                 if (scene_depth >= test_caster_depth - depth_bias) {
-                    hits += (0.7 - height_diff * 7.0);
+                    hits += (0.7 - height_diff * 14.0);
                 }
                 total_samples += 1.0;
             }

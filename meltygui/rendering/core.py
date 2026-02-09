@@ -331,7 +331,7 @@ def render_func(*args, **o_kwargs):
                     if window_key in Melty.registered_windows else None
 
                 if window_z_pos == len(Melty.registered_windows) - 1:
-                    window_z_pos = len(Melty.registered_windows) + 7
+                    window_z_pos = len(Melty.registered_windows) + 8
                 if window_z_pos is not None:
                     window_z_pos = max(window_z_pos, Melty.active_layer)
 
