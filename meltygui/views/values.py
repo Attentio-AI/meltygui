@@ -219,26 +219,6 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
         same_line(spacing=3)
 
-    if parent_show_add_delete:
-        bg_style = {
-            "value": 0.01,
-            "saturation": 1.0,
-            "alpha": 1.0,
-            'max_value': 1.0
-        }
-        bg_style = global_style.get_global_constant("bg_style", default=bg_style, folder="bg_styles")
-        search_color = (style_manager.
-                        make_color_style_value(input=bg_style, saturation=0.7,
-                                               value=1.0))
-        imgui.same_line()
-        push_style_color(imgui.COLOR_TEXT, *search_color)
-        push_style_color(imgui.COLOR_BUTTON, *(0.0, 0.0, 0.0, 0.0))
-        if imgui.button(f"\uf1f8##del"):
-            melty.to_delete(key, collection)
-            print("No selected_views or remove_view method")
-        same_line(spacing=0.0)
-        pop_style_color(2)
-
     do_profile = global_toggles.profiler == ProfileMode.ON
     if do_profile:
         profile_time = draw_state.render_time
@@ -252,9 +232,86 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     return on_change, return_val
 
 
+def draw_header_end(input_value=None, name="", key=None, melty=None, parent_show_add_delete=False,
+                    collection=None, draw_state=None, closable=False, style_manager=None,
+                    global_style=None, global_toggles=None, **kwargs):
+    bg_style = {
+        "value": 0.01,
+        "saturation": 1.0,
+        "alpha": 1.0,
+        'max_value': 1.0
+    }
+    bg_style = global_style.get_global_constant("bg_style", default=bg_style, folder="bg_styles")
+    search_color = (style_manager.
+                    make_color_style_value(input=bg_style, saturation=0.7,
+                                           value=1.0))
+
+
+    # push_style_var(imgui.STYLE_FRAME_PADDING, (4, 0))
+    # push_style_var(imgui.STYLE_ITEM_SPACING, (4, 0))
+
+    if parent_show_add_delete:
+        bg_style = {
+            "value": 0.01,
+            "saturation": 1.0,
+            "alpha": 1.0,
+            'max_value': 1.0
+        }
+        bg_style = global_style.get_global_constant("bg_style", default=bg_style, folder="bg_styles")
+        search_color = (style_manager.
+                        make_color_style_value(input=bg_style, saturation=0.7,
+                                               value=1.0))
+        push_style_color(imgui.COLOR_TEXT, *search_color)
+        push_style_color(imgui.COLOR_BUTTON, *(0.0, 0.0, 0.0, 0.0))
+        if imgui.button(f"\uf1f8##del"):
+            melty.to_delete(key, collection)
+            print("No selected_views or remove_view method")
+        same_line(spacing=0.0)
+        pop_style_color(2)
+
+
+    if closable:
+        close_icon = "\uf00d"
+        if button(f"{close_icon}", color=(1, 1, 1, 0))[0]:
+            draw_state.closed = not draw_state.closed
+            Melty.cache.invalidate_up_by_obj(Melty.registered_windows)
+
+
+    # if show_search or draw_state.search_active:
+    #     imgui.same_line()
+    #     imgui.set_cursor_pos_y(imgui.get_cursor_pos()[1] + 2)
+    #
+    #     icon = "\uf002"
+    #     imgui.text_colored(icon, *search_color)
+    #     imgui.same_line()
+    #     search_width = 150.0
+    #     imgui.set_next_item_width(search_width)
+    #     search_changed, new_search = imgui.input_text(f"##search{unique}", draw_state.search_text)
+    #
+    #     if search_changed:
+    #         draw_state.search_text = new_search
+    #         imgui.set_keyboard_focus_here(-1)
+    #         request_render()
+    #
+    #     if not draw_state.search_active:
+    #         draw_state.search_text = ""
+    #
+    #     if on_search:
+    #         draw_state.search_active = True
+    #         imgui.set_keyboard_focus_here(-1)
+    #         request_render()
+    #
+    #     draw_state.search_active = imgui.is_item_focused()
+    # pop_style_var(2)
+
+    # push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
+
+    # pop_style_var(2)
+
+
 @render_func(use_cache=True, auto_resize=False, closable=True,
              show_bg=True, melty_window=True, draggable=True,
-             with_header=draw_header)
+             with_header=draw_header, with_header_end=draw_header_end)
 def draw_window(input_value, view_func=None, draw_state=None, **kwargs):
 
     # if draw_state.width is not None and draw_state.height is not None and draw_state.expanded:
@@ -296,6 +353,8 @@ def draw_window(input_value, view_func=None, draw_state=None, **kwargs):
     # kwargs['draw_state'] = draw_state
     kwargs['indent_size'] = 10
     kwargs['with_header'] = None
+    kwargs['with_header_end'] = None
+
     kwargs['closable'] = False
     if view_func is None:
         return_val = meta.view_function(input_value, **kwargs)
@@ -1596,80 +1655,6 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
 
     return False, flow_spacing
 
-def draw_header_end(global_style, unique, style_manager, show_search,
-                    on_search, draw_state, collection, key, closable, is_tree,
-                    melty, show_add_delete=True, parent_show_add_delete=False,
-                    **kwargs):
-    push_id(f"header_end_{unique}")
-    bg_style = {
-        "value": 0.01,
-        "saturation": 1.0,
-        "alpha": 1.0,
-        'max_value': 1.0
-    }
-    bg_style = global_style.get_global_constant("bg_style", default=bg_style, folder="bg_styles")
-    search_color = (style_manager.
-                    make_color_style_value(input=bg_style, saturation=0.7,
-                                           value=1.0))
-
-    imgui.begin_group()
-
-    # push_style_var(imgui.STYLE_FRAME_PADDING, (4, 0))
-    # push_style_var(imgui.STYLE_ITEM_SPACING, (4, 0))
-
-
-
-    if closable:
-        imgui.same_line()
-        cursor_start = imgui.get_cursor_screen_pos()
-        if draw_state.width is not None and draw_state.left is not None and draw_state.expanded:
-            imgui.set_cursor_screen_pos((draw_state.left + draw_state.width - 20 + imgui.get_window_position()[0],
-                                       imgui.get_cursor_screen_pos()[1]))
-
-        close_icon = "\uf00d"
-        if button(f"{close_icon}", color=(1, 1, 1, 0))[0]:
-            draw_state.closed = not draw_state.closed
-            Melty.cache.invalidate_up_by_obj(Melty.registered_windows)
-        imgui.set_cursor_screen_pos(cursor_start)
-
-    if is_tree:
-        if not draw_state.expanded:
-            imgui.same_line()
-            imgui.dummy(20, 1)
-
-    # if show_search or draw_state.search_active:
-    #     imgui.same_line()
-    #     imgui.set_cursor_pos_y(imgui.get_cursor_pos()[1] + 2)
-    #
-    #     icon = "\uf002"
-    #     imgui.text_colored(icon, *search_color)
-    #     imgui.same_line()
-    #     search_width = 150.0
-    #     imgui.set_next_item_width(search_width)
-    #     search_changed, new_search = imgui.input_text(f"##search{unique}", draw_state.search_text)
-    #
-    #     if search_changed:
-    #         draw_state.search_text = new_search
-    #         imgui.set_keyboard_focus_here(-1)
-    #         request_render()
-    #
-    #     if not draw_state.search_active:
-    #         draw_state.search_text = ""
-    #
-    #     if on_search:
-    #         draw_state.search_active = True
-    #         imgui.set_keyboard_focus_here(-1)
-    #         request_render()
-    #
-    #     draw_state.search_active = imgui.is_item_focused()
-    # pop_style_var(2)
-
-    # push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
-    # push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
-    imgui.end_group()
-
-    pop_id()
-    # pop_style_var(2)
 
 @hotkey(glfw.KEY_O)
 def toggle_offscreen():
@@ -2159,7 +2144,7 @@ def draw_float_ctx(input_value):
 
 
 @render_func(is_default_for=float, use_cache=False, shadow=False, show_bg=False, wrap=False, is_tree=False,
-             context_menu=draw_float_ctx, with_header=draw_header)
+             context_menu=draw_float_ctx, with_header=draw_header, with_header_end=draw_header_end)
 def draw_float(input_value:float, draw_state, min_value=-100.0, max_value=100.0, speed=0.01):
 
     imgui.set_next_item_width(max(30, draw_state.content_width))
@@ -2298,7 +2283,6 @@ def draw_int(input_value: int, min_value=-100.0, max_value=100.0, speed=0.05, un
     int_text_width = imgui.calc_text_size(str(input_value))[0]
     imgui.set_next_item_width(int_text_width + 20)
 
-    # draw_window("hello", name=f"{unique}testset", closable=False)
     max_int = 2147483647
     if input_value < max_int:
         changed, value = imgui.drag_int("##int", input_value,

@@ -18,14 +18,14 @@ class ShadowCast:
     offset_factor = 0.04
     uniforms = {
         'light_dir': (GLType.VEC2, (0.5 * offset_factor, 1.6 * offset_factor)),
-        'height_scale': (GLType.FLOAT, 0.45),
+        'height_scale': (GLType.FLOAT, 0.33),
         'blur_scale': (GLType.FLOAT, 0.14),
         'max_steps': (GLType.INT, 64),
         'blur_samples': (GLType.INT, 8),
         'depth_bias': (GLType.FLOAT, 0.00),
         'surface_threshold': (GLType.FLOAT, -3.0),
         'min_height_diff': (GLType.FLOAT, 0.000),
-        'shadow_strength': (GLType.FLOAT, 0.55),
+        'shadow_strength': (GLType.FLOAT, 0.5),
         'texture_size': (GLType.VEC2, None),
     }
     fragment_code = """

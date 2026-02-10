@@ -620,6 +620,8 @@ def render_func(*args, **o_kwargs):
 
             start_cursor = imgui.get_cursor_screen_pos()
 
+
+            available_width = 0
             if len(Melty.fixed_size_stack) > 0 and draw_state.auto_resize and not Melty.is_wrapped():
                 fixed_size_draw_state = Melty.fixed_size_stack[-1]
                 rect = fixed_size_draw_state.get_rect()
@@ -628,22 +630,39 @@ def render_func(*args, **o_kwargs):
                 if kwargs.get("fill_height", False):
                     draw_state.height = snap_int(fixed_size_draw_state.height - (start_cursor[1] - rect[1]))
 
-                draw_state.content_width = (rect[2] - x_offset - ((len(Melty.bg_stack) + 1) * 2.0) -
-                                            draw_state.header_width - 10)
+                available_width = (rect[2] - x_offset - ((len(Melty.bg_stack) + 1) * 2.0) -
+                                            draw_state.header_width - draw_state.header_end_width - 10)
             elif len(Melty.fixed_size_stack) > 0:
                 fixed_size_draw_state = Melty.fixed_size_stack[-1]
                 rect = fixed_size_draw_state.get_rect()
                 x_offset = draw_state.left - rect[0]
-                draw_state.content_width = (rect[2] - x_offset - (
+                available_width = (rect[2] - x_offset - (
                         (len(Melty.bg_stack) + 1) * 2.0) -
-                                            draw_state.header_width - 10)
+                                            draw_state.header_width - draw_state.header_end_width - 10)
             else:
                 rect = Melty.get_clip_size()
                 if rect is not None:
-                    draw_state.content_width = (rect[0] - draw_state.header_width - (
+                    available_width = (rect[0] - draw_state.header_width - draw_state.header_end_width - (
                             (len(Melty.bg_stack) + 2) * 2.0) - 10)
+                elif not auto_resize:
+                    available_width = draw_state.width - draw_state.header_width - draw_state.header_end_width
                 else:
-                    draw_state.content_width = 200
+                    available_width = 30
+
+            header_same_line = kwargs.get("header_same_line", False)
+            if (available_width < 100 or draw_state.height > 50) or Melty.is_wrapped() or header_same_line:
+                draw_state.multi_line = True
+                rect = Melty.get_clip_size()
+                if rect is not None:
+                    draw_state.content_width = (rect[0] - ((len(Melty.bg_stack) + 1) * 2.0) - 10)
+                elif not auto_resize:
+                    draw_state.content_width = draw_state.width - ((len(Melty.bg_stack) + 1) * 2.0) - 10
+                else:
+                    draw_state.content_width = 30
+            else:
+                draw_state.multi_line = False
+                draw_state.content_width = available_width
+
 
             parent_ds = draw_state._parent
             if melty_window and active_layer is not None and Melty.depth >= 3:
@@ -774,6 +793,7 @@ def render_func(*args, **o_kwargs):
                     draw_state.header_left = header_start_cursor[0]
                     draw_state.header_top = header_start_cursor[1]
                     draw_state.header_height = header_end_cursor[1] - header_start_cursor[1]
+                    draw_state.header_width = header_end_cursor[0] - header_start_cursor[0]
 
                     cutoff = 100
                     single_line_max_h = 50
@@ -782,14 +802,51 @@ def render_func(*args, **o_kwargs):
                     header_same_line = kwargs.get("header_same_line", False)
                     parent_end = clip_rect[2] if clip_rect is not None else 0
                     if (draw_state.height is not None and draw_state.height < single_line_max_h) or header_same_line:
-                        if (parent_end - header_end_cursor[
-                            0] > cutoff and draw_state.expanded) or Melty.is_wrapped() or header_same_line:
+                        if ((parent_end - header_end_cursor[0] > cutoff and draw_state.expanded)
+                                or Melty.is_wrapped() or header_same_line):
                             same_line()
-                            draw_state.header_width = header_end_cursor[0] - header_start_cursor[0]
 
                 else:
                     draw_state.header_left = draw_state.left
                     draw_state.header_top = draw_state.top
+
+                if "with_header_end" in kwargs and kwargs.get("with_header_end", None) is not None and kwargs.get("show_header",
+                                                                                                          True):
+                    next_kwargs = kwargs.get('next_kwargs', {})
+                    next_kwargs['func'] = func
+                    next_kwargs['outer_func'] = wrapper
+                    next_kwargs['show_bg'] = kwargs.get("show_bg", True)
+                    draw_header_end = kwargs.get("with_header_end", None)
+
+                    clip_size = Melty.get_clip_size()
+                    imgui.same_line()
+
+                    if clip_size is None and not auto_resize:
+                        clip_size = (draw_state.width, draw_state.height)
+
+                    current_cursor = imgui.get_cursor_screen_pos()
+                    if clip_size is not None:
+                        end_x = max(draw_state.left, draw_state.left + clip_size[0] - draw_state.header_end_width - 10)
+                        imgui.set_cursor_screen_pos((end_x,
+                                                    imgui.get_cursor_screen_pos()[1]))
+
+                    if Melty.channels_split:
+                        draw_list = imgui.get_window_draw_list()
+                        draw_list.channels_set_current(Melty.get_channel())
+
+                    imgui.begin_group()
+                    draw_header_end(**kwargs)
+                    imgui.dummy(0, 0)
+                    end_group()
+
+                    end_header_rect = imgui.get_item_rect_size()
+                    draw_state.header_end_width = end_header_rect[0]
+
+                    if not draw_state.multi_line:
+                        imgui.same_line()
+                        imgui.set_cursor_screen_pos(current_cursor)
+
+
 
                 ####################################################################################
                 #### with callback header

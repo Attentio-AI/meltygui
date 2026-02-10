@@ -215,12 +215,14 @@ class DrawState(DictConversion):
         self.header_top = 0
         self.header_left = 0
         self.header_width = 0
+        self.header_end_width = 0
         self.clip_rect = None
         self.dlt_count = Melty.save_draw_state_for
         self.premature_break = False
         self.bg_rect = None
         self.header_left_delta = 0
         self.header_top_delta = 0
+        self.multi_line = False
 
         self.content_width = 0
         self.content_height = 0
