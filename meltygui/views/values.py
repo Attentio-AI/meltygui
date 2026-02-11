@@ -1185,12 +1185,17 @@ def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, 
     except Exception as e:
         imgui.text(f"Error accessing draw_state: {e}")
         return False, None
+
+
     window_input_value = input_value.input_value
     name = window_draw_state.name
 
     start_cursor = imgui.get_cursor_screen_pos()
     imgui.dummy(5, 20)
     imgui.same_line()
+
+    if not window_draw_state.persistent and not window_draw_state.seen and window_draw_state.closed:
+        Melty.delete_window(window_draw_state)
 
     window_tint = None
 

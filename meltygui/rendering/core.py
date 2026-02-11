@@ -15,7 +15,7 @@ from imgui.core import _DrawList
 
 from imgui.core import _IO
 from src.lsd.gl_gui.view.core_views.core_render_helpers import draw_vertical_scrollbar, floating_text
-from src.lsd.gl_gui.model.core_model.draw_state import DrawState, Hotkey, DragMode
+from src.lsd.gl_gui.model.core_model.draw_state import DrawState, Hotkey, DragMode, Anchor
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, print_stack_trace, \
     push_style_var, pop_style_var
 from src.lsd.gl_gui.utils.glfw_utils import request_render
@@ -250,17 +250,20 @@ def render_func(*args, **o_kwargs):
         # if unique in Melty.seen_unique:
         #     unique = unique + 128
         #     suffix = f"{suffix}_{unique}"
-        window_key = f"{tile_id}_window"
+        window_key = tile_id
+        draw_state.persistent = kwargs.get("persistent", True)
 
         if kwargs.get("closable", False):
-                if name == "Type Defaults":
-                    pass
-                Melty.registered_windows[window_key].input_value = input_value
-                Melty.registered_windows[window_key].draw_state = draw_state
-                Melty.registered_windows[window_key].window_args = kwargs
-                Melty.registered_windows[window_key].name = name
 
-        if kwargs.get("closable", False):
+
+            Melty.registered_windows[tile_id].input_value = input_value
+            Melty.registered_windows[tile_id].draw_state = draw_state
+            Melty.registered_windows[tile_id].window_args = kwargs
+            Melty.registered_windows[tile_id].name = name
+
+            if tile_id not in Melty.registered_windows:
+                Melty.cache.invalidate_by_obj(Melty.registered_windows)
+
             if draw_state.closed and not input_value == Melty.registered_windows:
                 if return_extras:
                     return False, None, draw_state
@@ -322,6 +325,7 @@ def render_func(*args, **o_kwargs):
         original_width_b = draw_state.width
         original_height_b = draw_state.height
         style_manager = Melty.global_attrs.get("style_manager", None)
+        collection = kwargs.get("collection", None)
 
         if active_layer is None:
             if (melty.dragged_item is not None and melty.drag_in_progress and
@@ -369,7 +373,7 @@ def render_func(*args, **o_kwargs):
                 #                                      start_cursor[1] + draw_state.height))
                 #
                 # collection = kwargs.get("collection", None)
-                # Melty.cache.mark_uncached(unique, input_value, collection, tile_id, draw_state)
+                Melty.cache.mark_uncached(name, input_value, collection, tile_id, draw_state)
 
                 if return_extras:
                     if len(return_value) == 3:
@@ -396,7 +400,6 @@ def render_func(*args, **o_kwargs):
                             Melty.last_attr = draw_state.name
                             request_render()
 
-        collection = kwargs.get("collection", None)
         has_collection = collection is not None and not isinstance(collection, tuple)
         if has_collection:
             Melty.collection_stack.append(collection)
@@ -601,8 +604,23 @@ def render_func(*args, **o_kwargs):
                 else:
                     draw_state._initial_window_pos = None
 
-                imgui.set_cursor_screen_pos((snap_int(cursor_pos[0] + draw_state.window_pos[0]),
-                                             snap_int(cursor_pos[1] + draw_state.window_pos[1])))
+                anchor_pos = kwargs.get("anchor", Anchor.TOP_LEFT)
+                anchor_offset = (0, 0) # Top Left
+                if anchor_pos == Anchor.TOP_LEFT:
+                    anchor_offset = (0, 0)
+                elif anchor_pos == Anchor.TOP_RIGHT:
+                    anchor_offset = (-draw_state.width, 0)
+                elif anchor_pos == Anchor.BOTTOM_LEFT:
+                    anchor_offset = (0, -draw_state.height)
+                elif anchor_pos == Anchor.BOTTOM_RIGHT:
+                    anchor_offset = (-draw_state.width, -draw_state.height)
+
+                imgui.set_cursor_screen_pos((snap_int(cursor_pos[0] + draw_state.window_pos[0] + anchor_offset[0]),
+                                                snap_int(cursor_pos[1] + draw_state.window_pos[1] + anchor_offset[1])))
+
+
+                # imgui.set_cursor_screen_pos((snap_int(cursor_pos[0] + draw_state.window_pos[0]),
+                #                              snap_int(cursor_pos[1] + draw_state.window_pos[1])))
 
                 # imgui.get_overlay_draw_list().add_text(*imgui.get_cursor_screen_pos(), imgui.get_color_u32_rgba(1.0, 0.0, 0.0, 1.0),
                 #                                         f"{draw_state.window_pos}")
@@ -921,35 +939,35 @@ def render_func(*args, **o_kwargs):
                 if context_menu_func is not None:
                     right_click = draw_state.on_action("right_mouse_down")
                     if right_click:
-                        if not draw_state.context_menu_open:
-                            if draw_state.context_menu_ds is not None:
-                                ctx_height = draw_state.context_menu_ds.height
-                                draw_state.context_menu_ds.window_pos = (0, -draw_state.context_menu_ds.height)
-                                draw_state.context_menu_ds.closed = False
-                                Melty.move_window_to_front(draw_state.context_menu_ds)
 
                         draw_state.context_menu_open = not draw_state.context_menu_open
                         if draw_state.context_menu_ds is not None:
                             Melty.cache.invalidate_up(draw_state.context_menu_ds._tile_id, max_depth=5)
-
                         Melty.cache.invalidate_up_by_obj(draw_state)
 
                     if draw_state.context_menu_open:
                         from src.lsd.gl_gui.view.core_views.new_core_view import draw_window
-                        returned_val = draw_window(input_value=draw_state, view_func=context_menu_func,
-                                                   name=f"Context Menu##{unique}", auto_resize=True, return_extras=True,
-                                                   wrap=True)
-                        if draw_state.context_menu_ds is None or draw_state.context_menu_ds.height == 0:
-                            ctx_ds = returned_val[2]
-                            ctx_ds.window_pos = (0, -ctx_ds.height)
-                            Melty.cache.invalidate_up_by_obj(draw_state)
+                        returned_val = draw_window(input_value=draw_state, view_func=context_menu_func, tint=style_manager.get_tint(),
+                                                   persistent=False, anchor=Anchor.BOTTOM_LEFT,
+                                                   name=f"{name}##context_menu_{unique}", auto_resize=True, return_extras=True)
+                        ctx_ds = returned_val[2]
+                        draw_state.context_menu_ds = ctx_ds
+                        if ctx_ds.last_seen is None:
                             ctx_ds.closed = False
+                            ctx_ds.window_pos = (0,0)
+                            Melty.move_window_to_front(ctx_ds)
 
 
-                        draw_state.context_menu_ds = returned_val[2]
+
+                        if ctx_ds.closed:
+                            draw_state.context_menu_open = False
                     else:
                         if draw_state.context_menu_ds is not None:
                             draw_state.context_menu_ds.closed = True
+                            Melty.cache.invalidate_by_obj(Melty.registered_windows)
+
+                        draw_state.context_menu_ds = None
+
 
 
                 if kwargs.get("selectable", True):
@@ -1132,8 +1150,6 @@ def render_func(*args, **o_kwargs):
             draw_state._imgui_is_item_hovered = imgui.is_item_hovered()
             item_rect = imgui.get_item_rect_size()
 
-            if not use_cache:
-                Melty.cache.mark_uncached(draw_state.name, input_value, collection, tile_id, draw_state)
 
             if use_cache:
                 Melty.cache.mark_end_offscreen()
@@ -1187,6 +1203,7 @@ def render_func(*args, **o_kwargs):
 
             draw_state._hovered = False
             draw_state.hotkey_receiver = False
+            draw_state.last_seen = Melty.frame_count
 
             if is_root:
                 style.item_spacing = Melty.original_spacing
@@ -1214,6 +1231,10 @@ def render_func(*args, **o_kwargs):
             if inc_depth:
                 Melty.depth = Melty.depth - 1
                 Melty.unique_stack.pop()
+
+            use_cache = kwargs.get("use_cache", False) and Melty.cache.enabled
+            if not use_cache:
+                Melty.cache.mark_uncached(draw_state.name, input_value, collection, tile_id, draw_state)
 
             return_draw_state = draw_state
             if return_value is None:

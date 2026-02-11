@@ -47,6 +47,11 @@ class DragMode(Enum):
     WINDOW = 'move'
     RESIZE_BR = 'resize_br'
 
+class Anchor(Enum):
+    TOP_LEFT = 'top_left'
+    TOP_RIGHT = 'top_right'
+    BOTTOM_LEFT = 'bottom_left'
+    BOTTOM_RIGHT = 'bottom_right'
 
 class ZoomState(DictConversion):
     def __init__(self):
@@ -81,11 +86,11 @@ class ZoomState(DictConversion):
          "content_region", "value_hash", "drag_window", "content_region", "did_render",
          "bounding_hovered", "dlt_count", "clip_rect", "bg_rect",
          "header_height", "scrolled", "is_hovered_last", "frame_count")
-@no_save_exclude("live", 'render_time', 'content_height', 'invalid_content_height'
+@no_save_exclude( 'render_time', 'content_height', 'invalid_content_height'
                   'hover_rects', 'nested_window', 'use_cache', 'layer', "header_top", "header_left",
-                 "header_left_delta", "header_top_delta",
+                 "header_left_delta", "header_top_delta", "last_seen", "persistent",
                  'channel', 'next', 'previous', 'index_in_parent', 'relative_pos', 'context_menu_open', 'context_menu_ds')
-@deep_refresh('scroll_offset')
+@deep_refresh('scroll_offset', "closed")
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
 
@@ -109,6 +114,7 @@ class DrawState(DictConversion):
         self.depth = 0
         self.layer = 0
         self.channel = 0
+        self.last_seen = None
 
         self.context_menu_open = False
         self.context_menu_ds = None
@@ -117,6 +123,7 @@ class DrawState(DictConversion):
 
         self._first_draw_state = None
         self.melty_window = False
+        self.persistent = True
         self.selected = False
 
         self._queued_windows = []
@@ -234,6 +241,11 @@ class DrawState(DictConversion):
         self.overhead_time = 0.0
 
         self.expanded_rect = (0,0,200,400)
+
+    @property
+    def seen(self):
+        debounce = 2
+        return self.last_seen is not None and Melty.frame_count - self.last_seen < debounce
 
     def init_cst_state(self, node, module_id: str):
         self.cst = CSTDrawBits()

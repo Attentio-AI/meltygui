@@ -1012,6 +1012,7 @@ class TileCacheMasked:
             )
             imgui.set_item_allow_overlap()
         imgui.pop_id()
+        draw_state.last_seen = Melty.frame_count
 
     def mark_start_offscreen(self, draw_state) -> bool:
         if not self.enabled:

@@ -81,6 +81,7 @@ class Melty:
     indent_count = 0
     unindent_count = 0
     pending_move_to_front = None
+    pending_delete_window = None
     imgui_popup_open = False
     imgui_active = False
     imgui_any_item_active = False
@@ -280,7 +281,6 @@ class Melty:
         for ds in to_discard:
             cls.root_draw_states.discard(ds)
 
-        cls.apply_move_to_front()
 
         for idx in range(len(cls.layers)):
             layer = cls.layers[idx]
@@ -304,9 +304,6 @@ class Melty:
                     Melty.depth = current_z_pos
 
                     cls.cache.insert_parent(parent_ctx)
-                    style_manager = cls.global_attrs['style_manager']
-                    current_tint = style_manager.get_tint()
-                    style_manager.set_imgui_tint(*layer_tint)
 
                     view_func = view[0]
                     input_value = view[1]
@@ -318,7 +315,6 @@ class Melty:
                     if return_val is not None:
                         cls.pending_return_values[draw_state.id] = return_val
 
-                    style_manager.set_imgui_tint(*current_tint)
 
                     cls.cache.remove_parent()
 
@@ -352,6 +348,8 @@ class Melty:
         #
         from src.lsd.gl_gui.view.core_views.core_render import get_melty_state
         melty = get_melty_state()
+
+        cls.apply_move_to_front()
 
         # melty.last_mouse_pos = imgui.get_mouse_pos()
         # # Did mouse move
@@ -438,11 +436,18 @@ class Melty:
         # return max(min(cls.max_depth - 3, cls.depth), 0)
 
     @classmethod
+    def delete_window(cls, draw_state):
+        if draw_state is None:
+            return
+        window_key = draw_state._tile_id
+        cls.pending_delete_window = (window_key, draw_state)
+
+    @classmethod
     def move_window_to_front(cls, draw_state):
             if draw_state is None:
                 return
 
-            window_key = f"{draw_state._tile_id}_window"
+            window_key = draw_state._tile_id
             cls.pending_move_to_front = (window_key, draw_state)
 
             # window_key = f"{cls.pending_move_to_front[0]}_window"
@@ -455,6 +460,22 @@ class Melty:
 
     @classmethod
     def apply_move_to_front(cls):
+        if cls.pending_delete_window is not None:
+            window_key, draw_state = cls.pending_delete_window
+            if window_key in Melty.registered_windows:
+                draw_state.last_seen = None
+                del Melty.registered_windows[window_key]
+                print(f"Deleted window {window_key}")
+                Melty.cache.invalidate_by_obj(Melty.registered_windows)
+                Melty.cache.invalidate_up(draw_state._tile_id, max_depth=6, force=True)
+            else:
+                print(f"Warning: Tried to delete window but {window_key} not found in registered_windows")
+                print(f"Registered windows: {list(Melty.registered_windows.keys())}")
+
+            cls.pending_delete_window = None
+            request_render()
+            return
+
         if cls.pending_move_to_front is None or Melty.imgui_popup_open:
             return
 
@@ -471,7 +492,6 @@ class Melty:
         if not cls.imgui_active and not cls.on_drag:
             Melty.cache.invalidate_by_obj(Melty.registered_windows)
             Melty.cache.invalidate_up(cls.pending_move_to_front[1]._tile_id, max_depth=6, force=True)
-
             cls.pending_move_to_front = None
 
     @classmethod
