@@ -65,9 +65,9 @@ class ZoomState(DictConversion):
 
 @no_save("mouse_btn_state", "mouse_up", "mouse_down", "unique", "search_active",
         "shadow", "size_change", "drag_released","clicked", "dragged",
-         "dragged", "name", "expanded_height", "clipped", "fully_clipped",
+         "dragged", "expanded_height", "clipped", "fully_clipped",
          "overhead_time", "scroll_visible", "depth_and_layer", "imgui_is_toggled_open",
-         "z_pos", "hotkey_receiver", "use_child", "cst", "search_text", "bg_color",
+         "hotkey_receiver", "use_child", "cst", "search_text", "bg_color",
          "is_active", "clip_rect", "wrapped_top", "current_tint", "wrapped_left",
          "min_width", "min_height", "is_focused", "drag_window_pos_x", "drag_window_pos_y",
          "drag_mode", "is_hovered_last", "bg_shown", "draw_window_pos_x", "bg_rect",
@@ -82,7 +82,7 @@ class ZoomState(DictConversion):
          "bounding_hovered", "dlt_count", "clip_rect", "bg_rect",
          "header_height", "scrolled", "is_hovered_last", "frame_count")
 @no_save_exclude("live", 'render_time', 'content_height', 'invalid_content_height'
-                  'hover_rects', 'nested_window', 'use_cache', 'depth', 'layer', "header_top", "header_left",
+                  'hover_rects', 'nested_window', 'use_cache', 'layer', "header_top", "header_left",
                  "header_left_delta", "header_top_delta",
                  'channel', 'next', 'previous', 'index_in_parent', 'relative_pos', 'context_menu_open', 'context_menu_ds')
 @deep_refresh('scroll_offset')
@@ -161,10 +161,10 @@ class DrawState(DictConversion):
         self.imgui_is_toggled_open = False
 
         self._previous_hash = None
-        self.tint = None
+        self.tint = (1,1,1)
         self.current_tint = None
 
-        self.unique = 0  # stable UI identifier
+        self.unique = None  # stable UI ID
         self.expanded = True
         self.name = ""
         self.height = 0

@@ -37,6 +37,7 @@ INV_65535 = 1.0 / 65535.0
 # ==============================
 @dataclass
 class Tile:
+    draw_state: any
     fbo: int
     tex: int
     mask_tex: int  # Cached subtree mask for this tile
@@ -135,7 +136,7 @@ def _create_fbo_with_tex(tex: int, depth_stencil: bool, w, h) -> Tuple[int, Opti
     return fbo, rbo
 
 
-def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, tile_id=None) -> Optional[Tile]:
+def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, draw_state=None, tile_id=None) -> Optional[Tile]:
     if existing and existing.size == (w, h):
         return existing
 
@@ -186,7 +187,7 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, ti
         finally:
             st.restore()
 
-    t = Tile(fbo=new_fbo, tex=new_tex, mask_tex=new_mask_tex, rbo=new_rbo, size=(w, h), dirty=True)
+    t = Tile(draw_state=draw_state, fbo=new_fbo, tex=new_tex, mask_tex=new_mask_tex, rbo=new_rbo, size=(w, h), dirty=True)
     t.last_invalidated_frame = frame_id + 1
     request_render()
     return t
@@ -1178,7 +1179,7 @@ class TileCacheMasked:
             gl.glBindVertexArray(self._dummy_vao)
 
             if ((t is None) or (t.size != (ctx.size[0], ctx.size[1]))) and not imgui.is_mouse_down(0):
-                t = _ensure_tile(t, ctx.size[0], ctx.size[1], frame_id=self._frame_id)
+                t = _ensure_tile(t, ctx.size[0], ctx.size[1], frame_id=self._frame_id, draw_state=ctx.draw_state)
                 self.invalidate(ctx.key)
                 self._tiles[ctx.key] = t
 
@@ -1488,19 +1489,22 @@ class TileCacheMasked:
                 gl.glDisable(gl.GL_SCISSOR_TEST)
 
                 if p.tile is not None and p.tile.fbo != -1:
-                    gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, p.tile.fbo)
-                    gl.glViewport(0, 0, snap_int(p.tile.size[0]), snap_int(p.tile.size[1]))
+                    try:
+                        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, p.tile.fbo)
+                        gl.glViewport(0, 0, snap_int(p.tile.size[0]), snap_int(p.tile.size[1]))
 
-                    if global_toggles is not None and getattr(global_toggles, "offscreen_debug", False):
-                        gl.glUniform4f(self._loc_copy_uTint, *self.frame_tint)
-                    else:
-                        gl.glUniform4f(self._loc_copy_uTint, 1.0, 1.0, 1.0, 1.0)
+                        if global_toggles is not None and getattr(global_toggles, "offscreen_debug", False):
+                            gl.glUniform4f(self._loc_copy_uTint, *self.frame_tint)
+                        else:
+                            gl.glUniform4f(self._loc_copy_uTint, 1.0, 1.0, 1.0, 1.0)
 
-                    gl.glUniform4f(self._loc_uSrcRectPx, float(x0), float(y0), float(x1), float(y1))
-                    gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
+                        gl.glUniform4f(self._loc_uSrcRectPx, float(x0), float(y0), float(x1), float(y1))
+                        gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
 
-                    p.tile.last_clean_frame = self._frame_id
-                    p.tile.dirty = self._is_dirty(p.tile)
+                        p.tile.last_clean_frame = self._frame_id
+                        p.tile.dirty = self._is_dirty(p.tile)
+                    except Exception as e:
+                        print(f"Error copying to tile {p.key}: {e} {p.tile.draw_state.to_dict()} input_value={p.tile.draw_state._input_value}")
 
             # ================================================================
             # PASS 4: Build tile.mask_tex for each dirty tile (full subtree)

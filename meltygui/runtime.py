@@ -49,7 +49,7 @@ class Melty:
     glfw_window = None
     clip_stack = []
     clip_stack_holder = {}
-    registered_windows = {}
+    registered_windows = defaultdict(lambda: ManagedWindow())
     scroll_stack = []
     tile_id_stack = []
     wrap_stack = []
@@ -110,7 +110,8 @@ class Melty:
     type_defaults = {}
     type_to_default_view_func = defaultdict(lambda: set())
 
-    unique_stack = [0] * max_depth
+    unique_stack = []
+    suffix_stack = []
     size_stack = []
     window_stack = []
     window_hovered = False
@@ -310,7 +311,7 @@ class Melty:
                     view_func = view[0]
                     input_value = view[1]
                     kwargs = view[2]
-
+                    kwargs['layer_unique'] = draw_state.unique
                     imgui.set_cursor_screen_pos(cursor_pos)
 
                     return_val = view_func(input_value, **kwargs)
@@ -437,21 +438,12 @@ class Melty:
         # return max(min(cls.max_depth - 3, cls.depth), 0)
 
     @classmethod
-    def move_window_to_front(cls, name=None):
-        if name is None:
-            window_info = cls.melty_window_stack[-1] if len(cls.melty_window_stack) > 0 else None
-            if window_info is None:
+    def move_window_to_front(cls, draw_state):
+            if draw_state is None:
                 return
-            name = window_info[4].name if len(cls.melty_window_stack) > 0 else "main"
-            input_value = window_info[4]._input_value
-            tile_id = window_info[4]._tile_id
 
-            draw_state = window_info[4]
-            draw_state.width = max(draw_state.width, 40)
-            draw_state.height = max(draw_state.height, 40)
-
-            window_key = f"{name}_window"
-            cls.pending_move_to_front = (name, input_value, tile_id)
+            window_key = f"{draw_state._tile_id}_window"
+            cls.pending_move_to_front = (window_key, draw_state)
 
             # window_key = f"{cls.pending_move_to_front[0]}_window"
             # if window_key in Melty.registered_windows:
@@ -467,15 +459,18 @@ class Melty:
             return
 
         if not cls.imgui_active:
-            window_key = f"{cls.pending_move_to_front[0]}_window"
+            window_key = cls.pending_move_to_front[0]
             if window_key in Melty.registered_windows:
                 # Remove and re-insert to move to end (top)
                 window = Melty.registered_windows.pop(window_key)
                 Melty.registered_windows[window_key] = window
+            else:
+                print(f"Warning: Tried to move window to front but {window_key} not found in registered_windows")
+                print(f"Registered windows: {list(Melty.registered_windows.keys())}")
 
         if not cls.imgui_active and not cls.on_drag:
             Melty.cache.invalidate_by_obj(Melty.registered_windows)
-            Melty.cache.invalidate_up(cls.pending_move_to_front[2], max_depth=6, force=True)
+            Melty.cache.invalidate_up(cls.pending_move_to_front[1]._tile_id, max_depth=6, force=True)
 
             cls.pending_move_to_front = None
 
@@ -1450,10 +1445,9 @@ class MeltyState:
         self.items_to_delete.append((key, collection))
 
 class ManagedWindow:
-    def __init__(self, input_value, draw_state, window_args, name):
+    def __init__(self, input_value=None, draw_state=None, window_args=None, name=None):
         self.input_value = input_value
         self.draw_state = draw_state
         self.window_args = window_args
         self.name = name
-        self.tint = (1,1,1)
 

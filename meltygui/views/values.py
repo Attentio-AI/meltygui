@@ -52,7 +52,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
                 collection=None, display_name=None, meta=None, unique=None, is_tree=True,
                 show_name=True, name_func=None, show_type=False, show_unique=False,
                 on_search=False, trigger_collapse=False, trigger_expand=False,
-                draw_state=None, show_tint=True, opacity=1.0, show_add_delete=True,
+                draw_state=None, show_tint=False, opacity=1.0, show_add_delete=True,
                 on_drag=False, on_action=None, style_manager=None,
                 global_style=None, global_toggles=None, **kwargs):
     if display_name is not None:
@@ -106,10 +106,11 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         if imgui.arrow_button(f"##tree",
                               imgui.DIRECTION_DOWN if draw_state.expanded else imgui.DIRECTION_RIGHT):
             draw_state.expanded = not draw_state.expanded
+            print(f"Expanded: {draw_state.expanded}")
             draw_state.content_height = 0
             draw_state.invalid_content_height = True
             request_render()
-        imgui.set_item_allow_overlap()
+        # imgui.set_item_allow_overlap()
         imgui.pop_style_color(2)
 
         # draw_state.expanded = checkbox(f"{down_icon}##tree", draw_state.expanded, width=50)
@@ -129,11 +130,18 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         same_line()
         imgui.set_item_allow_overlap()
 
-    if show_tint and hasattr(input_value, "tint") and input_value.tint is not None:
+    if hasattr(input_value, "tint") and input_value.tint is not None:
         draw_state._has_popup = True
         tint_changed, tint_value = draw_tuple(input_value.tint, show_header=False)
         if tint_changed:
             input_value.tint = tint_value
+            Melty.cache.invalidate_by_obj(input_value, name)
+        same_line()
+    elif show_tint:
+        draw_state._has_popup = True
+        tint_changed, tint_value = draw_tuple(draw_state.tint, show_header=False)
+        if tint_changed:
+            draw_state.tint = tint_value
             Melty.cache.invalidate_by_obj(input_value, name)
         same_line()
 
@@ -236,7 +244,7 @@ def draw_footer(input_value=None, name="", key=None, melty=None, parent_show_add
                 collection=None, display_name=None, meta=None, unique=None, is_tree=True,
                 show_name=True, name_func=None, show_type=False, show_unique=False,
                 on_search=False, trigger_collapse=False, trigger_expand=False,
-                draw_state=None, show_tint=True, opacity=1.0, show_add_delete=True,
+                draw_state=None, show_tint=False, opacity=1.0, show_add_delete=True,
                 on_drag=False, on_action=None, style_manager=None,
                 global_style=None, global_toggles=None, **kwargs):
 
@@ -321,7 +329,7 @@ def draw_header_end(input_value=None, name="", key=None, melty=None, parent_show
 
 
 @render_func(use_cache=True, auto_resize=False, closable=True,
-             show_bg=True, melty_window=True, draggable=True,
+             show_bg=True, melty_window=True, draggable=True, show_tint=True,
              with_header=draw_header, with_header_end=draw_header_end,
              with_footer=draw_footer)
 def draw_window(input_value, view_func=None, draw_state=None, **kwargs):
@@ -574,10 +582,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
                     prev_tint = style_manager.get_tint()
                     style_manager.set_imgui_tint(*codec.tint)
 
-            if hasattr(input_value, "__tint__") and getattr(input_value, "__tint__"):
-                if key in input_value.__tint__:
-                    prev_tint = style_manager.get_tint()
-                    style_manager.set_imgui_tint(*input_value.__tint__[key])
+
 
             y_offset = Melty.collection_spacing
             all_meta.append(item_meta)
@@ -1172,8 +1177,8 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
 def draw_debug(input_value, melty):
     draw_any(melty)
 
-@render_func(is_default_for=ManagedWindow, is_tree=False, show_name=False,
-             show_bg=True, show_add_delete=False, show_tint=False, wrap=False, with_header=draw_header)
+@render_func(is_default_for=ManagedWindow, is_tree=False, show_name=False, use_cache=True,
+             show_bg=False, show_add_delete=False, show_tint=False, wrap=False, with_header=draw_header)
 def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, mouse_down=False, **kwargs):
     try:
         window_draw_state = input_value.draw_state
@@ -1183,32 +1188,31 @@ def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, 
     window_input_value = input_value.input_value
     name = window_draw_state.name
 
-    if hasattr(window_input_value, 'tint') and getattr(window_input_value, 'tint', None) is not None:
+    start_cursor = imgui.get_cursor_screen_pos()
+    imgui.dummy(5, 20)
+    imgui.same_line()
+
+    window_tint = None
+
+    if hasattr(window_input_value, 'tint') and window_input_value.tint is not None:
         changed, new_tint = draw_tuple(window_input_value.tint, name="")
         if changed:
             window_input_value.tint = new_tint
-        input_value.tint = window_input_value.tint
+            window_draw_state.tint = window_input_value.tint
+        draw_state.tint = window_draw_state.tint
+        window_tint = window_input_value.tint
 
     elif window_draw_state.tint is not None:
         changed, new_tint = draw_tuple(window_draw_state.tint, name="")
         if changed:
             window_draw_state.tint = new_tint
-        input_value.tint = window_draw_state.tint
-    else:
-        window_draw_state.tint = (1.0, 1.0, 1.0, 1.0)
+        draw_state.tint = window_draw_state.tint
+        window_tint = window_draw_state.tint
 
     imgui.same_line()
 
     if mouse_down:
         window_draw_state.closed = not window_draw_state.closed
-
-    imgui.dummy(5, 20)
-    imgui.same_line()
-
-    if window_draw_state.live:
-        fa_live_icon = "\uf0e7"
-        imgui.text_colored(fa_live_icon, 1.0, 0.0, 0.0)
-        imgui.same_line()
 
     if name == "Window Manager":
         button(f"{name}", color=(0,0,0,0),
@@ -1216,26 +1220,31 @@ def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, 
         return
 
     if window_draw_state.closed:
-        if button(f"{name}", color=(0,0,0),
-                  saturation=1.3, width=draw_state.width - 60)[0]:
-            print("Opening window")
+        if button(f"{name}", color=window_tint, value=0.1, factor=0.95, text_value=0.3,
+                  saturation=1.2, shadow=False, width=draw_state.content_width - 60, height=30)[0]:
             window_draw_state.closed = False
     else:
-        if button(f"{name}", saturation=1.3,
-                  width=draw_state.width - 60)[0]:
-            print("Closing window")
+        if button(f"{name}", saturation=1.2, color=window_tint, factor=0.6, value=0.1, text_value=1.0,
+                  width=draw_state.content_width - 60, height=30)[0]:
             window_draw_state.closed = True
 
     imgui.same_line()
 
     target_icon = ""  # Target icon (FontAwesome Unicode)
-    if button(target_icon, width=20, color=(1,0,0), saturation=0.7)[0]:
+    if button(f"{target_icon}", width=20, color=(1,0,0), saturation=0.5)[0]:
         this_window_right = draw_state.left + draw_state.width
         from_zero_x = window_draw_state.left - window_draw_state.window_pos[0]
         from_zero_y = window_draw_state.top - window_draw_state.window_pos[1]
         window_draw_state.window_pos = (this_window_right + 10 - from_zero_x, draw_state.top - from_zero_y)
         Melty.move_window_to_front(window_draw_state)
         Melty.cache.invalidate_up_by_obj(input_value)
+
+    imgui.set_cursor_screen_pos(start_cursor)
+
+    if window_draw_state.live:
+        fa_live_icon = "\uf0e7"
+        imgui.text_colored(fa_live_icon, 1.0, 0.0, 0.0)
+        imgui.same_line()
 
     if imgui.is_item_hovered():
         imgui.begin_tooltip()
@@ -1956,8 +1965,8 @@ def open_file(path, app=None):
     else:
         print(f"Path does not exist: {path}")
 
-@render_func()
-def button(input_value="", color=None, width=None, height=None, style_manager=None, value=0.5, saturation=0.8, unique=0):
+@render_func(use_cache=True, shadow=True, show_bg=False)
+def button(input_value="", color=None, width=None, height=None, style_manager=None, factor=0.5, value=0.5, text_value=None, saturation=0.8, unique=0):
     if height is None:
         height = imgui.get_frame_height()
 
@@ -1965,11 +1974,13 @@ def button(input_value="", color=None, width=None, height=None, style_manager=No
         width = imgui.calc_text_size(input_value)[0] + imgui.get_style().frame_padding.x * 2
         width = max(height, width)
 
+    if text_value is None:
+        text_value = value + 0.5
     if color is not None:
         mixed_color = style_manager.make_color_rgb(color[0], color[1], color[2],
-                                                value=0.35, factor=0.9, saturation_scale=saturation, alpha=1.0)
+                                                value=value, factor=factor, saturation_scale=saturation, alpha=1.0)
         text_color = style_manager.make_color_rgb(color[0], color[1], color[2],
-                                                 value=1.0, factor=0.5, saturation_scale=0.8, alpha=1.0)
+                                                 value=text_value, factor=factor, saturation_scale=0.4, alpha=1.0)
         rounding = 4.0
 
         imgui.push_style_var(imgui.STYLE_FRAME_ROUNDING, rounding)
