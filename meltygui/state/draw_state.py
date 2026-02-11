@@ -223,6 +223,8 @@ class DrawState(DictConversion):
         self.header_left_delta = 0
         self.header_top_delta = 0
         self.multi_line = False
+        self.footer_width = 0
+        self.footer_height = 0
 
         self.content_width = 0
         self.content_height = 0

@@ -103,7 +103,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         imgui.push_style_color(imgui.COLOR_BUTTON_HOVERED, *(0.0, 0.0, 0.0, 0.0))
         imgui.set_item_allow_overlap()
 
-        if imgui.arrow_button(f"##tree{unique}",
+        if imgui.arrow_button(f"##tree",
                               imgui.DIRECTION_DOWN if draw_state.expanded else imgui.DIRECTION_RIGHT):
             draw_state.expanded = not draw_state.expanded
             draw_state.content_height = 0
@@ -232,6 +232,17 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     return on_change, return_val
 
 
+def draw_footer(input_value=None, name="", key=None, melty=None, parent_show_add_delete=False, width=0, suffix="",
+                collection=None, display_name=None, meta=None, unique=None, is_tree=True,
+                show_name=True, name_func=None, show_type=False, show_unique=False,
+                on_search=False, trigger_collapse=False, trigger_expand=False,
+                draw_state=None, show_tint=True, opacity=1.0, show_add_delete=True,
+                on_drag=False, on_action=None, style_manager=None,
+                global_style=None, global_toggles=None, **kwargs):
+
+    imgui.text(f"Footer: {name}")
+
+
 def draw_header_end(input_value=None, name="", key=None, melty=None, parent_show_add_delete=False,
                     collection=None, draw_state=None, closable=False, style_manager=None,
                     global_style=None, global_toggles=None, **kwargs):
@@ -311,7 +322,8 @@ def draw_header_end(input_value=None, name="", key=None, melty=None, parent_show
 
 @render_func(use_cache=True, auto_resize=False, closable=True,
              show_bg=True, melty_window=True, draggable=True,
-             with_header=draw_header, with_header_end=draw_header_end)
+             with_header=draw_header, with_header_end=draw_header_end,
+             with_footer=draw_footer)
 def draw_window(input_value, view_func=None, draw_state=None, **kwargs):
 
     # if draw_state.width is not None and draw_state.height is not None and draw_state.expanded:
@@ -354,6 +366,8 @@ def draw_window(input_value, view_func=None, draw_state=None, **kwargs):
     kwargs['indent_size'] = 10
     kwargs['with_header'] = None
     kwargs['with_header_end'] = None
+    kwargs['with_footer'] = None
+    kwargs['is_tree'] = False
 
     kwargs['closable'] = False
     if view_func is None:
@@ -487,7 +501,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
                         if (bottom + child_draw_state.height < rect[1] or screen_pos[1]  > rect[3]):
                             imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0],
                                                          (true_top + child_draw_state.relative_pos[1] +
-                                                          child_draw_state.height + child_draw_state.header_height)))
+                                                          child_draw_state.height)))
                             continue
 
         Melty.collection_index_stack[this_collection] = idx
@@ -2278,7 +2292,8 @@ def draw_function(input_value, name, draw_state, unique):
 
     return False, input_value
 
-@render_func(is_default_for=(int), shadow=False, wrap=True, header_same_line=True, with_header=draw_header)
+@render_func(is_default_for=(int), shadow=False, is_tree=False, wrap=True, header_same_line=True,
+             with_header=draw_header)
 def draw_int(input_value: int, min_value=-100.0, max_value=100.0, speed=0.05, unique=0):
     int_text_width = imgui.calc_text_size(str(input_value))[0]
     imgui.set_next_item_width(int_text_width + 20)
