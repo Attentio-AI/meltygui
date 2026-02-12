@@ -72,11 +72,11 @@ class ZoomState(DictConversion):
         "shadow", "size_change", "drag_released","clicked", "dragged",
          "dragged", "expanded_height", "clipped", "fully_clipped",
          "overhead_time", "scroll_visible", "depth_and_layer", "imgui_is_toggled_open",
-         "hotkey_receiver", "use_child", "cst", "search_text", "bg_color",
-         "is_active", "clip_rect", "wrapped_top", "current_tint", "wrapped_left",
-         "min_width", "min_height", "is_focused", "drag_window_pos_x", "drag_window_pos_y",
-         "drag_mode", "is_hovered_last", "bg_shown", "draw_window_pos_x", "bg_rect",
-         "misc_used", "draw_window_pos_y", "drag_delta", "screen_pos", "hover_rects",
+         "hotkey_receiver", "use_child", "cst", "search_text", "bg_color", "depth", "z_pos",
+         "is_active", "clip_rect", "wrapped_top", "current_tint", "wrapped_left", "multi_line",
+         "min_width", "min_height", "is_focused", "drag_window_pos_x", "drag_window_pos_y", "corner_radius",
+         "drag_mode", "is_hovered_last", "bg_shown", "draw_window_pos_x", "bg_rect", "z_offset",
+         "misc_used", "draw_window_pos_y", "drag_delta", "screen_pos", "hover_rects", "melty_window", "auto_resize",
          "imgui_is_item_activated", "frame_count")
 @exclude("current_tint", "overhead_time", "premature_break",
          "clip_rect", "_input_value", "flow_spacing", "expanded_rect",
@@ -86,7 +86,7 @@ class ZoomState(DictConversion):
          "content_region", "value_hash", "drag_window", "content_region", "did_render",
          "bounding_hovered", "dlt_count", "clip_rect", "bg_rect",
          "header_height", "scrolled", "is_hovered_last", "frame_count")
-@no_save_exclude( 'render_time', 'content_height', 'invalid_content_height'
+@no_save_exclude( 'render_time', 'content_height', 'invalid_content_height', "header_height",
                   'hover_rects', 'nested_window', 'use_cache', 'layer', "header_top", "header_left",
                  "header_left_delta", "header_top_delta", "last_seen", "persistent",
                  'channel', 'next', 'previous', 'index_in_parent', 'relative_pos', 'context_menu_open', 'context_menu_ds')
