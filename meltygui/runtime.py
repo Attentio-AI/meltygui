@@ -239,7 +239,6 @@ class Melty:
         for view_id, evts in cls.events.items():
             first_event = list(evts.values())[0]
             if first_event.tile_id is not None and not cls.on_drag:
-                print(first_event.tile_id)
                 Melty.cache.invalidate(first_event.tile_id)
 
         Melty.all_uniques = set()
