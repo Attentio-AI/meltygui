@@ -88,7 +88,7 @@ class ZoomState(DictConversion):
          "header_height", "scrolled", "is_hovered_last", "frame_count")
 @no_save_exclude( 'render_time', 'content_height', 'invalid_content_height'
                   'hover_rects', 'nested_window', 'use_cache', 'layer', "header_top", "header_left",
-                 "header_left_delta", "header_top_delta", "last_seen", "persistent", "z_offset",
+                 "header_left_delta", "header_top_delta", "last_seen", "persistent",
                  'channel', 'next', 'previous', 'index_in_parent', 'relative_pos', 'context_menu_open', 'context_menu_ds')
 @deep_refresh('scroll_offset', "closed")
 class DrawState(DictConversion):
@@ -160,6 +160,7 @@ class DrawState(DictConversion):
         self.drag_mode = DragMode.NONE
         self.use_child = False
         self.z_pos = None
+        self.z_pos_shadow = 1
         self.size_change = False
         self.depth_and_layer = (0,0)
         self.content_height = 0
@@ -243,6 +244,13 @@ class DrawState(DictConversion):
 
         self.expanded_rect = (0,0,200,400)
 
+    @property
+    def shadow_depth(self):
+        depth, active_layer = self.depth_and_layer
+
+        divisor = max(1.0, depth - 13.0)
+        depth_and_layer = active_layer * Melty.max_depth + (depth * (20.0 / (divisor)))
+        return depth_and_layer
     @property
     def seen(self):
         debounce = 2

@@ -76,6 +76,7 @@ class Melty:
     indent_size = 10
     annotation_mode = True
     depth = 0
+    shadow_depth = 2
     wrapped_depth = 0
     current_indent = 0
     indent_count = 0
@@ -301,7 +302,8 @@ class Melty:
                     current_z_pos = view[6]
                     cursor_pos = view[7]
                     depth = view[8]
-                    Melty.depth = current_z_pos
+                    shadow_depth = view[-1]
+                    # Melty.depth = current_z_pos
 
                     cls.cache.insert_parent(parent_ctx)
 

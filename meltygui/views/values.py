@@ -896,7 +896,8 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
 
     # 4. Handle Input and Interaction
     imgui.dummy((view_width) - 1, (view_height) - 1)
-    Melty.cache.mask_mark_rect(Melty.max_depth - 1, draw_state.left, draw_state.top, view_width, view_height,
+    Melty.cache.mask_mark_rect(draw_state, Melty.max_depth - 1, draw_state.shadow_depth,
+                               draw_state.left, draw_state.top, view_width, view_height,
                                key=f"texture_{original_id}")
 
     mixed_color = (1, 1, 1, 1)
@@ -1673,7 +1674,7 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
                                     col=imgui.get_color_u32_rgba(*color), rounding=4.0)
 
             if opacity > 0:
-                Melty.cache.mask_mark_rect(Melty.max_depth - 1, left, top, width, height,
+                Melty.cache.mask_mark_rect(draw_state, Melty.max_depth - 1, draw_state.shadow_depth, left, top, width, height,
                                                key=f"{left}x{top}_flow")
             #
             # draw_list.add_line(draw_state.left, draw_state.top - 2 - offset,
@@ -1870,7 +1871,7 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0, rounding=5.0,
     }
     hovered_offset = 0.0
     if selected:
-        hovered_offset = 0.2
+        hovered_offset = 0.05
     # elif hovered:
     #     hovered_offset = 0.6
 
