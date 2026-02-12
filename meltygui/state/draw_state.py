@@ -108,7 +108,7 @@ class DrawState(DictConversion):
         self.misc_used = set()
         self.closed = False
         self.frame_count = 0
-        self.corner_radius = 5
+        self.corner_radius = 6
         self.nested_window = False
         self.use_cache = False
         self.depth = 0

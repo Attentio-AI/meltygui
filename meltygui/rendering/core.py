@@ -196,7 +196,7 @@ def render_func(*args, **o_kwargs):
             style = imgui.get_style()
             style.item_spacing = (4, 0)
             style.window_padding = (3, 0)
-            style.frame_padding = (4, 1)
+            style.frame_padding = (4, 0)
 
         key = kwargs.get("key", None)
         key = key if key is not None else ""
@@ -508,7 +508,7 @@ def render_func(*args, **o_kwargs):
 
             if draw_state in Melty.selected and not kwargs.get("closable", False):
                 draw_state.selected = True
-                draw_state.z_offset = kwargs.get("z_offset", 0) + 1
+                draw_state.z_offset = kwargs.get("z_offset", 0) + 2
             else:
                 draw_state.selected = False
                 draw_state.z_offset = kwargs.get("z_offset", 0)
@@ -636,9 +636,6 @@ def render_func(*args, **o_kwargs):
 
 
             ######################## ERROR HANDLING FOR TYPES ########################
-            cursor_pos = imgui.get_cursor_pos()
-            imgui.set_cursor_pos((snap_int(cursor_pos[0]), snap_int(cursor_pos[1])))
-
 
             use_cache = kwargs.get("use_cache", False) and Melty.cache.enabled
             draw_state.use_cache = use_cache
@@ -724,7 +721,7 @@ def render_func(*args, **o_kwargs):
 
 
 
-            if len(Melty.fixed_size_stack) > 0 and draw_state.auto_resize and not Melty.is_wrapped():
+            if len(Melty.fixed_size_stack) > 0 and draw_state.auto_resize and not Melty.is_wrapped() and passed_width is None:
                 fixed_size_draw_state = Melty.fixed_size_stack[-1]
                 rect = fixed_size_draw_state.get_rect()
                 x_offset = draw_state.left - rect[0]
@@ -893,7 +890,6 @@ def render_func(*args, **o_kwargs):
                     draw_header(**kwargs)
 
                     header_end_cursor = imgui.get_cursor_screen_pos()
-                    imgui.dummy(0, 0)
                     end_group()
                     if imgui.is_item_active() or imgui.is_item_activated():
                         Melty.report_imgui_active()
@@ -936,7 +932,6 @@ def render_func(*args, **o_kwargs):
 
                     imgui.begin_group()
                     draw_header_end(**kwargs)
-                    imgui.dummy(0, 0)
                     end_group()
                     if imgui.is_item_active() or imgui.is_item_activated():
                         Melty.report_imgui_active()
@@ -1078,6 +1073,7 @@ def render_func(*args, **o_kwargs):
                 return_value = draw_inner_main(clean_args, clip_rect, draw_state,
                                                input_value, kwargs, auto_resize,
                                                melty, tile_id, unique, melty_window)
+
                 Melty.pop_clip()
                 if show_bg or draw_state.selected or not draw_state.expanded:
                     Melty.bg_stack.pop()
@@ -1092,14 +1088,11 @@ def render_func(*args, **o_kwargs):
                         Melty.report_imgui_active()
                     draw_state._imgui_popover_open = Melty.imgui_popup_open
 
-
                 if imgui.is_item_active() or imgui.is_item_activated():
                     Melty.report_imgui_active()
                 #######################
 
                 end_group()
-
-
                 if "with_footer" in kwargs and kwargs.get("with_footer", None) is not None:
                     next_kwargs = kwargs.get('next_kwargs', {})
                     next_kwargs['func'] = func
@@ -1147,7 +1140,6 @@ def render_func(*args, **o_kwargs):
             draw_state._imgui_is_item_hovered = imgui.is_item_hovered()
             item_rect = imgui.get_item_rect_size()
 
-
             if use_cache:
                 Melty.cache.mark_end_offscreen()
 
@@ -1187,7 +1179,8 @@ def render_func(*args, **o_kwargs):
 
             if (draw_state.width != original_width_b or
                     draw_state.height != original_height_b):
-                if draw_state._collection_draw_state is not None and not imgui.is_mouse_down(0):
+                if (draw_state._collection_draw_state is not None and not imgui.is_mouse_down(0) and not
+                imgui.is_mouse_down(1) and not imgui.is_mouse_down(2)):
                     draw_state._collection_draw_state.invalid_content_height = True
 
                 if draw_state._parent is not None:
@@ -1195,7 +1188,7 @@ def render_func(*args, **o_kwargs):
 
                 draw_state.size_change = True
             else:
-                if not imgui.is_mouse_down(0):
+                if not imgui.is_mouse_down(0) and not imgui.is_mouse_down(1) and not imgui.is_mouse_down(2):
                     draw_state.size_change = False
 
             draw_state._hovered = False
@@ -1353,7 +1346,7 @@ def render_func(*args, **o_kwargs):
 
             min_scroll_y = 0
             max_scroll_y = max(0, draw_state.content_height - clip_height)
-            if not imgui.is_mouse_down(0):
+            if not imgui.is_mouse_down(0) and not imgui.is_mouse_down(1) and not imgui.is_mouse_down(2):
                 draw_state.scroll_offset = (current_x,
                                             max(min_scroll_y, min(new_offset_y, max_scroll_y)))
 

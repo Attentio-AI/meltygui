@@ -998,7 +998,7 @@ class TileCacheMasked:
             corner_radius = getattr(draw_state, "corner_radius", 0.0) or 0.0
             self.mask_mark_view(
                 draw_state,
-                layer - 1,
+                layer,
                 draw_state.shadow_depth,
                 draw_state.left,
                 draw_state.top,
@@ -1009,7 +1009,7 @@ class TileCacheMasked:
             )
 
         if use_image:
-            imgui.set_cursor_screen_pos((draw_state.left, draw_state.top))
+            imgui.set_cursor_screen_pos((draw_state.left, snap_int(draw_state.top)))
             imgui.image(
                 t.tex,
                 snap_int(size[0]),
@@ -1018,6 +1018,8 @@ class TileCacheMasked:
                 uv1=(1.0, 0.0),
             )
             imgui.set_item_allow_overlap()
+            imgui.dummy(1, 1)
+
         imgui.pop_id()
         draw_state.last_seen = Melty.frame_count
 
@@ -1053,10 +1055,11 @@ class TileCacheMasked:
         if size is not None:
             min_width = draw_state.min_width
             min_height = draw_state.min_height
-            if min_width is not None and size[0] < min_width:
-                size = (snap_int(min_width), size[1])
-            if min_height is not None and size[1] < min_height:
-                size = (size[0], snap_int(min_height))
+            if draw_state.expanded:
+                if min_width is not None and size[0] < min_width:
+                    size = (snap_int(min_width), size[1])
+                if min_height is not None and size[1] < min_height:
+                    size = (size[0], snap_int(min_height))
 
             self._sizes[rkey] = size
 
@@ -1188,7 +1191,8 @@ class TileCacheMasked:
 
             gl.glBindVertexArray(self._dummy_vao)
 
-            if ((t is None) or (t.size != (ctx.size[0], ctx.size[1]))) and not imgui.is_mouse_down(0):
+            if (((t is None) or (t.size != (ctx.size[0], ctx.size[1]))) and not imgui.is_mouse_down(0)
+                    and not imgui.is_mouse_down(1) and not imgui.is_mouse_down(2)):
                 t = _ensure_tile(t, ctx.size[0], ctx.size[1], frame_id=self._frame_id, draw_state=ctx.draw_state)
                 self.invalidate(ctx.key)
                 self._tiles[ctx.key] = t
@@ -1584,6 +1588,12 @@ class TileCacheMasked:
                     ix0, iy0 = int(floor(sx0)), int(floor(sy0))
                     ix1, iy1 = int(ceil(sx1)), int(ceil(sy1))
                     iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
+                    # if r.draw_state.z_offset < 0:
+                    #     ix0, iy0 = ix0 + 2, iy0 + 2
+                    #     ix1, iy1 = ix1 - 2, iy1 - 2
+                    #     iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
+
+
                     if iw <= 0 or ih <= 0:
                         continue
                     depth_and_layer = r.depth_and_layer
@@ -1597,12 +1607,10 @@ class TileCacheMasked:
                             iw,
                             ih,
                             offset,
-                            max(5.0, r.corner_radius),
+                            r.corner_radius,
                         )
                     else:
                         rank_norm = float(depth_and_layer) / 65535.5
-
-
 
                         gl.glViewport(ix0, iy0, iw, ih)
                         if r.corner_radius > 0:
@@ -1699,6 +1707,11 @@ class TileCacheMasked:
                     ix1, iy1 = int(ceil(x1)), int(ceil(y1))
                     iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
 
+                    # if r.draw_state.depth_offset < -1:
+                    #     ix0, iy0 = ix0 + 2, iy0 + 2
+                    #     ix1, iy1 = ix1 - 2, iy1 - 2
+                    #     iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
+
                     if draw_state.width <= 0 or draw_state.height <= 0 or iw <= 0 or ih <= 0 or clip_iw <= 0 or clip_ih <= 0:
                         continue
 
@@ -1710,13 +1723,13 @@ class TileCacheMasked:
 
                     if can_use_cached:
                         offset = float(depth_and_layer - t.mask_layer) * INV_65535
-                        self._draw_mask_rect_cached(t.mask_tex, ix0, iy0, iw, ih, offset, max(5.0, r.corner_radius))
+                        self._draw_mask_rect_cached(t.mask_tex, ix0, iy0, iw, ih, offset, r.corner_radius)
                     else:
                         rank_norm = float(depth_and_layer) / 65535.5
 
                         gl.glViewport(clip_ix0, clip_iy0, clip_iw, clip_ih)
 
-                        cr = max(5.0, r.corner_radius)
+                        cr = r.corner_radius
                         if cr > 0:
                             gl.glUseProgram(self._prog_mask_rounded)
                             gl.glUniform1f(self._loc_maskr_uRankNorm, rank_norm)

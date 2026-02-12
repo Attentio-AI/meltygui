@@ -25,7 +25,7 @@ class Melty:
 
     draw_state_stack = []
     root_draw_states = set()
-    root_draw_states_by_layer = defaultdict(lambda: set())
+    root_draw_states_by_layer = defaultdict(lambda: list())
 
     filter = Filter()
 
@@ -271,13 +271,13 @@ class Melty:
         #                                    draw_state.top, draw_state.width, draw_state.height,
         #                                    f"window_mask_{unique}", 4)
 
-        cls.root_draw_states_by_layer = defaultdict(set)
+        cls.root_draw_states_by_layer = defaultdict(list)
         to_discard = set()
         for idx, ds in enumerate(cls.root_draw_states):
             if ds.closed:
                 to_discard.add(ds)
             else:
-                cls.root_draw_states_by_layer[ds.layer].add(ds)
+                cls.root_draw_states_by_layer[ds.layer].append(ds)
 
         for ds in to_discard:
             cls.root_draw_states.discard(ds)
@@ -303,7 +303,7 @@ class Melty:
                     cursor_pos = view[7]
                     depth = view[8]
                     shadow_depth = view[-1]
-                    # Melty.depth = current_z_pos
+                    Melty.depth = current_z_pos
 
                     cls.cache.insert_parent(parent_ctx)
 
@@ -320,12 +320,12 @@ class Melty:
 
                     cls.cache.remove_parent()
 
-            for draw_state in cls.root_draw_states_by_layer[idx]:
+            for d_idx, draw_state in enumerate(cls.root_draw_states_by_layer[idx]):
                 # Melty.cache.mask_mark_view(draw_state.z_pos, draw_state.left,
                 #                            draw_state.top, draw_state.width, draw_state.height,
                 #                            f"view_mask_{draw_state.id}", 4)
 
-                Melty.depth = draw_state.depth
+                Melty.depth = draw_state.depth + d_idx
                 Melty.cache.draw_tile(draw_state)
                 last_bounding_hovered = draw_state._bounding_hovered
                 new_bounding_hovered = draw_state.is_bounding_hovered()

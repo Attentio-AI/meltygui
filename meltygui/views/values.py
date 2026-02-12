@@ -499,7 +499,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
         child_draw_state = draw_state._children.get(idx, None)
         if not horizontal:
-            if child_draw_state is not None and (not draw_state.invalid_content_height or imgui.is_mouse_down(0) or imgui.is_mouse_down(1)):
+            if child_draw_state is not None and (not draw_state.invalid_content_height or imgui.is_mouse_down(0) or imgui.is_mouse_down(1) or imgui.is_mouse_down(2)):
                 if not Melty.frame_count <= 2:
                     if child_draw_state.relative_pos is not None:
                         screen_pos = (true_left + child_draw_state.relative_pos[0],
@@ -601,7 +601,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
                 item_changed, out_val, returned_ds = item_return
             else:
                 item_changed, out_val, returned_ds = item_return[0], item_return[1], None
-            imgui.dummy(0, 0)
+            imgui.dummy(0, 1)
 
             if returned_ds is not None:
                 draw_state._children[idx] = returned_ds
@@ -678,7 +678,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
     # imgui.set_cursor_screen_pos((current_cursor[0], current_cursor[1] + draw_state.scroll_offset[1]))
     # current_cursor = imgui.get_cursor_screen_pos()
-    if not imgui.is_mouse_down(0) and not imgui.is_mouse_down(1) and not premature_break:
+    if not imgui.is_mouse_down(0) and not imgui.is_mouse_down(1) and not imgui.is_mouse_down(2) and not premature_break:
         draw_state.content_height = snap_int(content_height)
         draw_state.invalid_content_height = False
 
@@ -819,30 +819,29 @@ def draw_melty_windows(vis):
     end()
 
 
-@render_func(is_default_for=PendingTexture, use_cache=False,
-             show_bg=False, enable_scroll=False,
-             auto_resize=True, indent_size=0, shadow=True, with_header=draw_header)
+@render_func(is_default_for=PendingTexture, use_cache=True, z_offset=-1, selectable=False,
+             show_bg=False, auto_resize=True, with_header=draw_header)
 def draw_pending_texture(input_value:PendingTexture, draw_state):
     if input_value.texture_id is None:
         imgui.text(f"Uploading... {id(input_value)}")
         return False, None
 
-    return draw_texture(input_value.texture_id, name=f"{draw_state.id}_inner",
-                        width=draw_state.width, height=draw_state.height,
-                 auto_resize=False, show_header=True, indent_size=0, wrap=False)
+    return_val = draw_texture(input_value.texture_id, name=f"{draw_state.id}_inner",
+                 auto_resize=False, show_header=False, use_cache=True, wrap=False)
+
+    return return_val
 
 @render_func(is_default_for=numpy.uint32, show_bg=True,
-             use_cache=False, show_add_delete=False, shadow=True,
+             use_cache=False, show_add_delete=False, z_offset=2, fill_height=True,
              indent_size=0, min_width=100, min_height=100, wrap=False,
-             enable_scroll=True, zoom_speed=0.3, fill_height=True, with_header=draw_header)
+             enable_scroll=True, zoom_speed=0.3, with_header=draw_header)
 def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mouse_drag, right_mouse_drag,
                  zoom_state: ZoomState, zoom_speed, header_height=0, min_zoom=0.1,
                  max_zoom=50.0, style_manager=None, max_brightness=5.0, max_contrast=5.0,
                  draw_state=None, jet=False, **kwargs):
-
-
     original_id = input_value
     texture_id = input_value
+    imgui.dummy(draw_state.width, draw_state.height)
 
     # Ensure we have valid state if this is the first run
     if not hasattr(zoom_state, 'zoom'):
@@ -895,7 +894,6 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
         uv_height_size = uv_width_size * (tex_aspect / view_aspect)
 
     # 4. Handle Input and Interaction
-    imgui.dummy((view_width) - 1, (view_height) - 1)
     Melty.cache.mask_mark_rect(draw_state, Melty.max_depth - 1, draw_state.shadow_depth,
                                draw_state.left, draw_state.top, view_width, view_height,
                                key=f"texture_{original_id}")
@@ -1151,7 +1149,7 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
 
     draw_list:_DrawList = imgui.get_window_draw_list()
 
-    Melty.push_clip((clip_left , clip_top, clip_right, clip_bottom))
+    Melty.push_clip((clip_left , clip_top, clip_right - 3, clip_bottom))
     draw_list.add_image_rounded(texture_id,
                                 a=p_min,
                                 b=p_max,
@@ -1170,16 +1168,14 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
 
     gl.glBindTexture(gl.GL_TEXTURE_2D, original_texture)
 
+
     return True, draw_state
 
     # draw_window(Melty.last_request_render, show_bg=True, name="Last Invalid")
-@render_func(is_default_for=ManagedWindow, is_tree=False,
-             show_bg=True, show_add_delete=False, with_header=draw_header)
-def draw_debug(input_value, melty):
-    draw_any(melty)
 
-@render_func(is_default_for=ManagedWindow, is_tree=False, show_name=False, use_cache=True, z_offset=-2,
-             show_bg=False, show_add_delete=False, show_tint=False, wrap=False, with_header=draw_header)
+
+@render_func(is_default_for=ManagedWindow, is_tree=False, show_name=False, use_cache=True, z_offset=-1,
+             show_bg=False, selectable=False, show_add_delete=False, show_tint=False, wrap=False, with_header=draw_header)
 def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, mouse_down=False, **kwargs):
     try:
         window_draw_state = input_value.draw_state
@@ -1227,7 +1223,7 @@ def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, 
 
     if window_draw_state.closed:
         if button(f"{name}", color=window_tint, value=0.1, factor=0.95, text_value=0.3,
-                  saturation=1.2, shadow=False, width=draw_state.content_width - 60, height=30)[0]:
+                  saturation=1.2, z_offset=-1, width=draw_state.content_width - 60, height=30)[0]:
             window_draw_state.closed = False
     else:
         if button(f"{name}", saturation=1.2, color=window_tint, factor=0.6, value=0.1, text_value=1.0,
@@ -1237,7 +1233,7 @@ def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, 
     imgui.same_line()
 
     target_icon = ""  # Target icon (FontAwesome Unicode)
-    if button(f"{target_icon}", width=20, color=(1,0,0), saturation=0.5)[0]:
+    if button(f"{target_icon}", width=22, height=22, color=window_tint, z_offset=-1, value=0.4, factor=0.9,saturation=0.2)[0]:
         this_window_right = draw_state.left + draw_state.width
         from_zero_x = window_draw_state.left - window_draw_state.window_pos[0]
         from_zero_y = window_draw_state.top - window_draw_state.window_pos[1]
@@ -1914,7 +1910,7 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0, rounding=5.0,
             outline_color = imgui.get_color_u32_rgba(*outline_tint[:3], 1.0)
         if Melty.channels_split:
             draw_list = imgui.get_window_draw_list()
-            channel = max(0, min(Melty.max_depth - 2, Melty.get_channel()))
+            channel = max(0, min(Melty.max_depth - 2, Melty.get_channel() + 1))
             draw_list.channels_set_current(channel)
 
         # if selected:
@@ -1971,7 +1967,7 @@ def open_file(path, app=None):
     else:
         print(f"Path does not exist: {path}")
 
-@render_func(use_cache=True, shadow=True, show_bg=False)
+@render_func(use_cache=True, shadow=True, selectable=False, show_bg=False)
 def button(input_value="", color=None, width=None, height=None, style_manager=None, factor=0.5, value=0.5, text_value=None, saturation=0.8, unique=0):
     if height is None:
         height = imgui.get_frame_height()
@@ -2108,7 +2104,7 @@ def draw_str(input_value: str, draw_state):
     return changed, value
 
 @render_func(is_default_for=('tint'), has_popup=True, indent_size=0, is_tree=False,
-             show_name=False,
+             show_name=False, selectable=False,
              use_cache=False, with_header=draw_header)
 def draw_tuple(input_value: tuple, unique):
     if len(input_value) > 0 and isinstance(input_value[0], (float, int)):
@@ -2174,7 +2170,7 @@ def draw_float_ctx(input_value):
 
 
 
-@render_func(is_default_for=float, use_cache=False, shadow=False, show_bg=False, wrap=False, is_tree=False,
+@render_func(is_default_for=float, use_cache=True, shadow=False, wrap=False, is_tree=False,
              context_menu=draw_float_ctx, with_header=draw_header, with_header_end=draw_header_end)
 def draw_float(input_value:float, draw_state, min_value=-100.0, max_value=100.0, speed=0.01):
 
