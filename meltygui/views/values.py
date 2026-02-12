@@ -135,14 +135,12 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         tint_changed, tint_value = draw_tuple(input_value.tint, show_header=False)
         if tint_changed:
             input_value.tint = tint_value
-            Melty.cache.invalidate_by_obj(input_value, name)
         same_line()
     elif show_tint:
         draw_state._has_popup = True
         tint_changed, tint_value = draw_tuple(draw_state.tint, show_header=False)
         if tint_changed:
             draw_state.tint = tint_value
-            Melty.cache.invalidate_by_obj(input_value, name)
         same_line()
 
     if show_add_delete and isinstance(input_value, (list, dict)) or hasattr(input_value, "__dict__"):
@@ -397,7 +395,7 @@ def draw_window(input_value, view_func=None, draw_state=None, **kwargs):
 def draw_collection(input_value, draw_state, depth, style_manager,
                     meta, suffix, melty, show_search=True, on_collapse=False, on_drag_up=False, y_offset=0,
                     on_expand=False, width=None, indent_size=10, global_style=None, global_toggles=None,
-                    show_add_delete=True,
+                    show_add_delete=True, item_spacing_y=1,
                     show_instance_vars=True, unique=0, horizontal=False, show_indices=False, **kwargs):
     """
     Universal collection renderer
@@ -453,21 +451,11 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
     # --- unified loop ---
     drew_any = False
-    collection_spacing = 0
     all_meta = []
 
     start_cursor = imgui.get_cursor_pos()[1]
     keys = list(keys)[:]
-    children_draw_states = []
     rect = Melty.get_clip_rect()
-    header_height = 20
-
-    if rect is None:
-        rect_height = 1e6
-        parent_bottom = 1e6
-    else:
-        rect_height = rect[3] - rect[1]
-        parent_bottom = rect[3]
 
     premature_break = False
 
@@ -477,25 +465,15 @@ def draw_collection(input_value, draw_state, depth, style_manager,
     start_index = 0
     end_index = len(keys) - 1
 
-    # draw_list: ImDrawList = imgui.get_overlay_draw_list()
-    # draw_list.add_rect_filled(rect[0], rect[1], rect[0] + 100, rect[1] + 20,
-    #                     imgui.get_color_u32_rgba(0, 0, 0, 0.5))
-    #
-    # draw_list.add_text(rect[0], rect[1],
-    #                    imgui.get_color_u32_rgba(1, 1, 1, 1.0),
-    #                    f"{start_index} {end_index} {len(keys)}")
-    #
-
     scroll_offset = draw_state.scroll_offset
     true_left = draw_state.left - scroll_offset[0]
     true_top = draw_state.top - scroll_offset[1]
-    # imgui.set_cursor_screen_pos((true_left, imgui.get_cursor_screen_pos()[1]))
 
     for idx in range(start_index, end_index + 1):
         key = keys[idx]
         relative_pos = imgui.get_cursor_screen_pos()
         relative_pos = (relative_pos[0] - true_left,
-                        relative_pos[1] - true_top)
+                        relative_pos[1] - true_top + item_spacing_y)
 
         child_draw_state = draw_state._children.get(idx, None)
         if not horizontal:
@@ -562,10 +540,6 @@ def draw_collection(input_value, draw_state, depth, style_manager,
             item_meta = meta
 
         item_meta.collection_type = meta.field_type
-
-        # view function & suffix
-        view_fn = getattr(item_meta, "view_function", draw_collection)
-
         trigger_collapse = False
         if isinstance(input_value, (dict, defaultdict, MutableMapping)) and on_collapse:
             trigger_collapse = True
@@ -601,7 +575,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
                 item_changed, out_val, returned_ds = item_return
             else:
                 item_changed, out_val, returned_ds = item_return[0], item_return[1], None
-            imgui.dummy(0, 1)
+            imgui.dummy(0, item_spacing_y)
 
             if returned_ds is not None:
                 draw_state._children[idx] = returned_ds
@@ -616,20 +590,6 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
                     if space_left < returned_ds.width:
                         imgui.new_line()
-
-                # if draw_state is not None:
-                #     draw_state.previous = previous_draw_state
-                #
-                # if previous_draw_state is not None:
-                #     previous_draw_state.next = draw_state
-                #     previous_draw_state = draw_state
-
-            view_bottom = cursor_pos[1]
-            # if (view_bottom - 500 > parent_bottom and Melty.frame_count > 2):
-            #     if not needs_content_height:
-            #         premature_break = True
-            #         break_index = view_bottom
-            #         break
 
             if isinstance(out_val, CollectionAction):
                 # perform the move; this should mutate the plain dicts you supply
@@ -1226,7 +1186,7 @@ def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, 
                   saturation=1.2, z_offset=-1, width=draw_state.content_width - 60, height=30)[0]:
             window_draw_state.closed = False
     else:
-        if button(f"{name}", saturation=1.2, color=window_tint, factor=0.6, value=0.1, text_value=1.0,
+        if button(f"{name}", saturation=1.2, color=window_tint, factor=0.6, value=0.3, text_value=1.0,
                   width=draw_state.content_width - 60, height=30)[0]:
             window_draw_state.closed = True
 
@@ -2170,7 +2130,7 @@ def draw_float_ctx(input_value):
 
 
 
-@render_func(is_default_for=float, use_cache=True, shadow=False, wrap=False, is_tree=False,
+@render_func(is_default_for=float, use_cache=False, shadow=False, show_bg=False, wrap=False, is_tree=False,
              context_menu=draw_float_ctx, with_header=draw_header, with_header_end=draw_header_end)
 def draw_float(input_value:float, draw_state, min_value=-100.0, max_value=100.0, speed=0.01):
 

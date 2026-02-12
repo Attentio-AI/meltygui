@@ -1018,7 +1018,6 @@ class TileCacheMasked:
                 uv1=(1.0, 0.0),
             )
             imgui.set_item_allow_overlap()
-            imgui.dummy(1, 1)
 
         imgui.pop_id()
         draw_state.last_seen = Melty.frame_count

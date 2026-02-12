@@ -189,6 +189,16 @@ class Melty:
 
         cls.on_drag = ("left_mouse_drag" in cls.events_by_type) and not cls.imgui_active
 
+        # if ("right_mouse_drag" in cls.events_by_type):
+        #     right_mouse_drag_events = cls.events_by_type["right_mouse_drag"]
+        #     for event in right_mouse_drag_events:
+        #         Melty.cache.invalidate(event)
+        #
+        # if ("middle_mouse_drag" in cls.events_by_type):
+        #     right_mouse_drag_events = cls.events_by_type["middle_mouse_drag"]
+        #     for event in right_mouse_drag_events:
+        #         Melty.cache.invalidate(event)
+
         event_keys = list(cls.events.keys())
         # To string
         event_keys_str = [str(k) for k in event_keys]
@@ -229,6 +239,7 @@ class Melty:
         for view_id, evts in cls.events.items():
             first_event = list(evts.values())[0]
             if first_event.tile_id is not None and not cls.on_drag:
+                print(first_event.tile_id)
                 Melty.cache.invalidate(first_event.tile_id)
 
         Melty.all_uniques = set()

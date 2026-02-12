@@ -160,7 +160,6 @@ class DrawState(DictConversion):
         self.drag_mode = DragMode.NONE
         self.use_child = False
         self.z_pos = None
-        self.z_pos_shadow = 1
         self.size_change = False
         self.depth_and_layer = (0,0)
         self.content_height = 0
@@ -170,7 +169,7 @@ class DrawState(DictConversion):
         self.imgui_is_toggled_open = False
 
         self._previous_hash = None
-        self.tint = (1,1,1)
+        self.tint = None
         self.current_tint = None
 
         self.unique = None  # stable UI ID
@@ -439,8 +438,9 @@ class DrawState(DictConversion):
                 priority = max_layer_depth - layer_and_depth
 
             Melty.event_handler.register_hovered(view_id, event_names,
+                                                 priority=priority - priority_delta,
                                                  tile_id=self._tile_id,
-                                                 priority=priority - priority_delta)
+                                                 )
 
         if single_event:
             if view_id in Melty.events:

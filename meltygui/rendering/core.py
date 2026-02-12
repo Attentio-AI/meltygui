@@ -196,7 +196,7 @@ def render_func(*args, **o_kwargs):
             style = imgui.get_style()
             style.item_spacing = (4, 0)
             style.window_padding = (3, 0)
-            style.frame_padding = (4, 0)
+            style.frame_padding = (4, 1)
 
         key = kwargs.get("key", None)
         key = key if key is not None else ""
@@ -527,7 +527,6 @@ def render_func(*args, **o_kwargs):
             shadow_depth = Melty.shadow_depth
             draw_state.depth = Melty.depth
             draw_state.z_pos = (Melty.active_layer * Melty.max_depth) + Melty.depth
-            draw_state.z_pos_shadow = (Melty.active_layer * Melty.max_depth) + Melty.shadow_depth
 
             draw_state.layer = Melty.active_layer
             draw_state.depth_and_layer = (shadow_depth, Melty.active_layer)
@@ -838,16 +837,20 @@ def render_func(*args, **o_kwargs):
                 #         style_manager.set_imgui_tint(*getattr(input_value, "tint"))
                 #     elif draw_state.tint is not None:
                 #         style_manager.set_imgui_tint(*draw_state.tint)
-                if hasattr(input_value, "tint") and input_value.tint is not None:
+                if "tint" in kwargs and kwargs.get("tint", None) is not None:
+                    previous_tint = style_manager.get_tint()
+                    style_manager.set_imgui_tint(*kwargs.get("tint"))
+                elif hasattr(input_value, "tint") and input_value.tint is not None:
                     previous_tint = style_manager.get_tint()
                     style_manager.set_imgui_tint(*input_value.tint)
+                elif hasattr(collection, "__tint__") and getattr(collection, "__tint__"):
+                    if name in collection.__tint__:
+                        previous_tint = style_manager.get_tint()
+                        style_manager.set_imgui_tint(*collection.__tint__[name])
                 elif draw_state.tint is not None and kwargs.get("show_bg", False) and kwargs.get("show_tint", False):
                     previous_tint = style_manager.get_tint()
                     style_manager.set_imgui_tint(*draw_state.tint)
-                # elif hasattr(input_value, "__tint__") and getattr(input_value, "__tint__"):
-                #     if key in input_value.__tint__:
-                #         previous_tint = style_manager.get_tint()
-                #         style_manager.set_imgui_tint(*input_value.__tint__[key])
+
 
                 if (draw_state.left is not None and draw_state.top is not None and
                     draw_state.width is not None and draw_state.height is not None) and melty_window:
@@ -960,13 +963,13 @@ def render_func(*args, **o_kwargs):
 
                 imgui.begin_group()
 
-                is_hovered = draw_state.on_action("cursor_hover", view_id="test") is not None
+                is_hovered = draw_state.on_action("cursor_hover", view_id="test", priority_delta=-1) is not None
                 hover_eligible = draw_state.hover_eligible()
                 if hover_eligible:
                     max_layer_depth = Melty.max_depth * Melty.max_layer + Melty.max_depth
                     priority = max_layer_depth - draw_state.z_pos
                     event_names = copy(wanted_params)
-                    Melty.event_handler.register_hovered(tile_id, event_names, priority, selected=draw_state.selected)
+                    Melty.event_handler.register_hovered(tile_id, event_names, priority, tile_id, selected=draw_state.selected)
 
                 ###########################################################
                 kwargs['next_kwargs'] = kwargs
