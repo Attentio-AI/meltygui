@@ -1177,7 +1177,7 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
 def draw_debug(input_value, melty):
     draw_any(melty)
 
-@render_func(is_default_for=ManagedWindow, is_tree=False, show_name=False, use_cache=True,
+@render_func(is_default_for=ManagedWindow, is_tree=False, show_name=False, use_cache=True, z_offset=-2,
              show_bg=False, show_add_delete=False, show_tint=False, wrap=False, with_header=draw_header)
 def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, mouse_down=False, **kwargs):
     try:

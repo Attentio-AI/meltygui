@@ -134,7 +134,6 @@ def render_func(*args, **o_kwargs):
     header_defaults = o_kwargs.get("header_defaults", None)
     param_defaults = o_kwargs.get("param_defaults", None)
     name_to_param_type = o_kwargs.get("name_to_param_type", None)
-    am_a_header = o_kwargs.get("am_a_header", False)
 
     """
     Decorator for render functions.
@@ -245,17 +244,10 @@ def render_func(*args, **o_kwargs):
         tile_id = strhash(str(unique) + str(draw_state.id))
         draw_state._tile_id = tile_id
 
-        # if active_layer is not None:
-        #     unique = kwargs.get("unique", unique)
-        # if unique in Melty.seen_unique:
-        #     unique = unique + 128
-        #     suffix = f"{suffix}_{unique}"
         window_key = tile_id
         draw_state.persistent = kwargs.get("persistent", True)
 
         if kwargs.get("closable", False):
-
-
             Melty.registered_windows[tile_id].input_value = input_value
             Melty.registered_windows[tile_id].draw_state = draw_state
             Melty.registered_windows[tile_id].window_args = kwargs
@@ -354,8 +346,6 @@ def render_func(*args, **o_kwargs):
                 if layer >= len(Melty.layers):
                     layer = len(Melty.layers) - 1
 
-                # kwargs['unique'] = unique
-
                 current_tint = style_manager.get_tint()
 
                 cache_parent_ctx = Melty.cache.get_current_parent()
@@ -366,13 +356,7 @@ def render_func(*args, **o_kwargs):
                 return_value = (False, None)
                 if draw_state.id in Melty.returned_values:
                     return_value = Melty.returned_values.pop(draw_state.id)
-                #
-                # if draw_state.left is not None and draw_state.top is not None:
-                #     if draw_state.width is not None and draw_state.height is not None:
-                #         imgui.set_cursor_screen_pos((start_cursor[0],
-                #                                      start_cursor[1] + draw_state.height))
-                #
-                # collection = kwargs.get("collection", None)
+
                 Melty.cache.mark_uncached(name, input_value, collection, tile_id, draw_state)
 
                 if return_extras:
@@ -509,9 +493,7 @@ def render_func(*args, **o_kwargs):
                         wanted_type = None
                     set_default(param, None, wanted_type)
 
-            inc_depth = "draw_state" in wanted_params or is_root
             inc_depth = True
-
             Melty.unique_stack.append(computed_unique)
 
             last_draw_state = Melty.last_draw_state[Melty.depth][0]
@@ -523,13 +505,19 @@ def render_func(*args, **o_kwargs):
                     draw_state.index_in_parent = new_index_in_parent
             Melty.last_draw_state[Melty.depth] = (draw_state, kwargs.get("collection", None))
 
+            draw_state.z_offset = kwargs.get("z_offset", draw_state.z_offset)
+            # if Melty.depth + passed_z_offset <= 1:
+            #     draw_state.z_offset = 0
+
             Melty.depth = Melty.depth + 1
 
-            layer_and_depth = (Melty.active_layer * Melty.max_depth) + Melty.depth
-            draw_state.z_pos = layer_and_depth
-            draw_state.depth = Melty.depth
+            offset_depth = Melty.depth + draw_state.z_offset
+
+            layer_and_depth = (Melty.active_layer * Melty.max_depth) + offset_depth
+            draw_state.z_pos = (Melty.active_layer * Melty.max_depth) + Melty.depth
+            draw_state.depth = offset_depth
             draw_state.layer = Melty.active_layer
-            draw_state.depth_and_layer = (Melty.depth, Melty.active_layer)
+            draw_state.depth_and_layer = (offset_depth, Melty.active_layer)
             Melty.z_pos = layer_and_depth
 
             kwargs['depth'] = Melty.depth
@@ -1047,8 +1035,10 @@ def render_func(*args, **o_kwargs):
 
                 if draw_state in Melty.selected:
                     draw_state.selected = True
+                    draw_state.z_offset = 1
                 else:
                     draw_state.selected = False
+                    draw_state.z_offset = 0
 
                 show_bg = kwargs.get("show_bg", False)
                 draw_state.shadow = kwargs.get("shadow", draw_state.shadow)
