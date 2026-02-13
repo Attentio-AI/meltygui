@@ -411,7 +411,11 @@ class Filter:
         reduction_textures = []  # Track temporary textures for cleanup
 
         if min_value is None or max_value is None:
-            min_value, max_value = texture_min_max.get_texture_min_max(texture_id)
+            min_value_compute, max_value_compute = texture_min_max.get_texture_min_max(texture_id)
+            if min_value is None:
+                min_value = min_value_compute
+            if max_value is None:
+                max_value = max_value_compute
         try:
             # Apply normalization remap
             result = self.apply(

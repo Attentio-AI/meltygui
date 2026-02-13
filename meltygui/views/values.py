@@ -575,7 +575,6 @@ def draw_collection(input_value, draw_state, depth, style_manager,
                 item_changed, out_val, returned_ds = item_return
             else:
                 item_changed, out_val, returned_ds = item_return[0], item_return[1], None
-            imgui.dummy(0, item_spacing_y)
 
             if returned_ds is not None:
                 draw_state._children[idx] = returned_ds
@@ -590,6 +589,11 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
                     if space_left < returned_ds.width:
                         imgui.new_line()
+                        imgui.dummy(0, item_spacing_y)
+
+                else:
+
+                    imgui.dummy(0, item_spacing_y)
 
             if isinstance(out_val, CollectionAction):
                 # perform the move; this should mutate the plain dicts you supply
@@ -668,12 +672,13 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
 
 
-@render_func(use_cache=False)
+@render_func(use_cache=False, show_bg=True, selectable=False, z_offset=15)
 def draw_main(input_value, vis, **kwargs):
 
     global test_obj
     return_val = draw_window(Melty.profiles_results, show_bg=True, name="Profile Results")
-    return_val2 = draw_window(Melty.registered_windows, is_tree=True, show_add_delete=False, return_extras=True, name="Window Manager")
+    return_val2 = draw_window(Melty.registered_windows, is_tree=True, show_add_delete=False, return_extras=True, name="Window Manager",
+                              z_absolute=-1)
     draw_window(test_obj, name="Layer 1")
     draw_window(draw_main, name="Draw Main Function")
     some_enum = ProfileMode.OFF
@@ -767,7 +772,7 @@ def draw_melty_windows(vis):
     Melty.channels_split = True
     Melty.window_stack.append((title, True))
 
-    draw_main(name="Main Window", vis=vis, width=fb_w, height=fb_h, shadow=False)
+    draw_main(name="Main Window", vis=vis, width=fb_w, height=fb_h)
 
     Melty.end_frame()
 
@@ -779,7 +784,7 @@ def draw_melty_windows(vis):
     end()
 
 
-@render_func(is_default_for=PendingTexture, use_cache=True, z_offset=-1, selectable=False,
+@render_func(is_default_for=PendingTexture, use_cache=True, z_offset=0, selectable=False,
              show_bg=False, auto_resize=True, with_header=draw_header)
 def draw_pending_texture(input_value:PendingTexture, draw_state):
     if input_value.texture_id is None:
@@ -1186,7 +1191,7 @@ def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, 
                   saturation=1.2, z_offset=-1, width=draw_state.content_width - 60, height=30)[0]:
             window_draw_state.closed = False
     else:
-        if button(f"{name}", saturation=1.2, color=window_tint, factor=0.6, value=0.3, text_value=1.0,
+        if button(f"{name}", saturation=1.2, color=window_tint, z_offset=20, factor=0.6, value=0.3, text_value=1.0,
                   width=draw_state.content_width - 60, height=30)[0]:
             window_draw_state.closed = True
 
@@ -1802,7 +1807,7 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0, rounding=5.0,
     def current_indent_px():
         return Melty.current_indent
 
-    depth = (len(Melty.bg_stack) - 1) * 2
+    depth = (len(Melty.bg_stack) - 1) * 3
 
     right =  left + width
     bottom =  top + height

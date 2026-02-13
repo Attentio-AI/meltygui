@@ -23,7 +23,7 @@ class ShadowCast:
         'max_steps': (GLType.INT, 64),
         'blur_samples': (GLType.INT, 8),
         'depth_bias': (GLType.FLOAT, 0.00),
-        'surface_threshold': (GLType.FLOAT, -3.0),
+        'surface_threshold': (GLType.FLOAT, -10.0),
         'min_height_diff': (GLType.FLOAT, 0.000),
         'shadow_strength': (GLType.FLOAT, 0.5),
         'texture_size': (GLType.VEC2, None),
@@ -32,7 +32,7 @@ class ShadowCast:
 void main() {
     vec2 uv = v_texcoord;
     float receiver_depth = texture(u_texture, uv).r;
- 
+     
     if (receiver_depth < surface_threshold) {
         fragColor = vec4(0.0, 0.0, 0.0, 0.0);
         return;
@@ -908,7 +908,7 @@ void main() {
     vec4 color = texture(u_texture, v_texcoord);
 
     // Avoid division by zero
-    float range = max(max_value - min_value, 0.0001);
+    float range = max_value - min_value;
 
     // Remap from [min, max] to [0, 1]
     color.rgb = (color.rgb - min_value) / range;

@@ -38,6 +38,7 @@ class Melty:
     drag_layer = 31
     layers = []
     active_layer = 0
+    active_layer_stack = []
 
     seen_unique = set()
 
@@ -253,7 +254,6 @@ class Melty:
         cls.cache.mask_begin_frame((fb_w, fb_h))
 
 
-
         from src.lsd.gl_gui.view.core_views.core_render_helpers import clear_floating_text_cache
         clear_floating_text_cache()
 
@@ -265,11 +265,16 @@ class Melty:
             return cls.wrap_stack[-1]
 
     @classmethod
+    def post_frame(cls):
+        pass
+
+    @classmethod
     def end_frame(cls):
 
         cls.returned_values = copy(cls.pending_return_values)
         cls.pending_returned_values = {}
 
+        cls.apply_move_to_front()
 
         # cls.draw_blockers_to()
         # Manually mask windows
@@ -361,8 +366,6 @@ class Melty:
         from src.lsd.gl_gui.view.core_views.core_render import get_melty_state
         melty = get_melty_state()
 
-        cls.apply_move_to_front()
-
         # melty.last_mouse_pos = imgui.get_mouse_pos()
         # # Did mouse move
         # if len(melty.hover_stack) > 0:
@@ -395,7 +398,6 @@ class Melty:
 
         Melty.hovered_drawstate = Melty.hovered_drawstate_pending
         Melty.imgui_any_item_active = imgui.is_any_item_active()
-
 
         # cls._root_by_module[module_id] = root
         # cls._gen_by_module.setdefault(module_id, 0)
@@ -493,6 +495,8 @@ class Melty:
 
         if not cls.imgui_active:
             window_key = cls.pending_move_to_front[0]
+            window_z_pos = len(Melty.registered_windows) + 8
+            cls.pending_move_to_front[1].layer = window_z_pos
             if window_key in Melty.registered_windows:
                 # Remove and re-insert to move to end (top)
                 window = Melty.registered_windows.pop(window_key)
@@ -501,7 +505,7 @@ class Melty:
                 print(f"Warning: Tried to move window to front but {window_key} not found in registered_windows")
                 print(f"Registered windows: {list(Melty.registered_windows.keys())}")
 
-        if not cls.imgui_active and not cls.on_drag:
+        if not cls.on_drag:
             Melty.cache.invalidate_by_obj(Melty.registered_windows)
             Melty.cache.invalidate_up(cls.pending_move_to_front[1]._tile_id, max_depth=6, force=True)
             cls.pending_move_to_front = None
@@ -841,6 +845,7 @@ class Melty:
             if key in cls.vis.first_frame_keys:
                 return True
         return False
+
 
 
 class Action:

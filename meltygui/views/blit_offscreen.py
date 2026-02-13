@@ -355,7 +355,7 @@ in vec2 vUV;
 out vec4 oColor;
 void main() {
     float val = texture(uTex, vUV).r;
-    if (val > 0.0) {
+    if (val > -10.0) {
         oColor = vec4(val + uOffset, 0.0, 0.0, 1.0);
     } else {
         discard;
@@ -390,7 +390,7 @@ void main() {
     }
 
     float val = texture(uTex, vUV).r;
-    if (val > 0.0) {
+    if (val > -10.0) {
         oColor = vec4(val + uOffset, 0.0, 0.0, 1.0);
     } else {
         discard;
@@ -478,7 +478,7 @@ class TileCacheMasked:
         self.enabled: bool = False
 
         self._LAYER_BG = 0
-        self._LAYER_MIN = 1
+        self._LAYER_MIN = -2048
         self._LAYER_MAX = 2048
 
         self.seen_ids = set()
@@ -871,7 +871,7 @@ class TileCacheMasked:
             return
         self._enq_mask_keys.add(key)
         self._rect_seq = (self._rect_seq + 1) & 0xFF
-        self._mask_rects.append(_Rect(draw_state, layer, copy(depth_and_layer), x, y, w, h, key, self._rect_seq, corner_radius))
+        self._mask_rects.append(_Rect(draw_state, layer, depth_and_layer, x, y, w, h, key, self._rect_seq, corner_radius))
 
     def mask_mark_view(
             self, draw_state:any, layer: int, depth_and_layer: any, x: float, y: float, w: float, h: float, key: str, corner_radius: float = 0.0
@@ -1387,6 +1387,7 @@ class TileCacheMasked:
         #Reversed
         local_mask_rects_rev = list(reversed(local_mask_rects))
         local_pending = self._pending
+        local_pending_rev = list(reversed(local_pending))
 
         if not local_pending and not local_mask_rects:
             self._pending.clear()
@@ -1412,6 +1413,7 @@ class TileCacheMasked:
                 k = parent_of.get(k)
 
         # Reverse
+        subtree_rects_by_root_rev = subtree_rects_by_root
         subtree_rects_by_root = {k: list(reversed(v)) for k, v in subtree_rects_by_root.items()}
 
         st = _GLState()
@@ -1444,7 +1446,7 @@ class TileCacheMasked:
             gl.glBlendEquation(gl.GL_MAX)
             gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
 
-            for r in local_mask_rects:
+            for r in local_mask_rects_rev:
                 self._draw_mask_rect(r, dp_x, dp_y, s_x, s_y, fb_h, use_cached=False)
 
             gl.glViewport(0, 0, fb_w, fb_h)
@@ -1529,6 +1531,7 @@ class TileCacheMasked:
             # ================================================================
             # PASS 4: Build tile.mask_tex for each dirty tile (full subtree)
             # ================================================================
+            background_depth = 0.001
             for p in local_pending:
                 x, y = p.pos
                 w, h = p.size
@@ -1541,13 +1544,15 @@ class TileCacheMasked:
                 sc_x1, sc_y1 = int(ceil(x1)), int(ceil(y1))
                 sc_w, sc_h = max(0, sc_x1 - sc_x0), max(0, sc_y1 - sc_y0)
 
+
                 gl.glEnable(gl.GL_SCISSOR_TEST)
                 gl.glScissor(sc_x0, sc_y0, sc_w, sc_h)
 
                 gl.glDisable(gl.GL_BLEND)
                 gl.glColorMask(gl.GL_TRUE, gl.GL_FALSE, gl.GL_FALSE, gl.GL_FALSE)
-                gl.glClearColor(0, 0, 0, 0.0)
+                gl.glClearColor(background_depth, 0, 0, 0.0)
                 gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+
 
                 # gl.glEnable(gl.GL_BLEND)
                 # gl.glBlendEquation(gl.GL_MAX)
@@ -1581,8 +1586,15 @@ class TileCacheMasked:
                             sx0, sy0, sx1, sy1 = self._screen_rect_to_fb_xyxy(r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y,
                                                                               fb_h)
                     else:
-                        sx0, sy0, sx1, sy1 = self._screen_rect_to_fb_xyxy(r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y,
-                                                                          fb_h)
+                        child_ctx = self._key_to_ctx.get(r.key)
+                        if child_ctx and child_ctx.size:
+                            cx, cy = child_ctx.pos
+                            cw, ch = draw_state.width, draw_state.height
+                            sx0, sy0, sx1, sy1 = self._screen_rect_to_fb_xyxy(cx, cy, cw, ch, dp_x, dp_y, s_x, s_y,
+                                                                              fb_h)
+                        else:
+                            sx0, sy0, sx1, sy1 = self._screen_rect_to_fb_xyxy(r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y,
+                                                                              fb_h)
 
                     ix0, iy0 = int(floor(sx0)), int(floor(sy0))
                     ix1, iy1 = int(ceil(sx1)), int(ceil(sy1))
@@ -1661,7 +1673,7 @@ class TileCacheMasked:
             gl.glDisable(gl.GL_SCISSOR_TEST)
             gl.glDisable(gl.GL_BLEND)
             gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE)
-            gl.glClearColor(0, 0, 0, 0.0)
+            gl.glClearColor(background_depth, 0, 0, 0.0)
             gl.glClear(gl.GL_COLOR_BUFFER_BIT)
 
             gl.glDisable(gl.GL_BLEND)
