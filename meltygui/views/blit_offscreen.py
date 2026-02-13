@@ -989,6 +989,12 @@ class TileCacheMasked:
         imgui.push_id(f"{draw_state._tile_id}")
         rkey = draw_state._tile_id
 
+        if draw_state.parent_window is not None:
+            draw_state.left = (draw_state.parent_window.window_pos[0] + draw_state.window_pos[0] +
+                               draw_state.anchor_offset[0] + draw_state.left_offset)
+            draw_state.top = (draw_state.parent_window.window_pos[1] + draw_state.window_pos[1] +
+                              draw_state.anchor_offset[1] + draw_state.top_offset)
+
         t = self._tiles.get(rkey)
         size = (draw_state.width, draw_state.height)
         layer = draw_state.z_pos
@@ -1558,6 +1564,8 @@ class TileCacheMasked:
                 # gl.glBlendEquation(gl.GL_MAX)
                 # gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
 
+                last_depth_and_layer = -1
+
                 for r in subtree_rects_by_root.get(p.key, ()):
                     draw_state = self.key_to_draw_state.get(r.key)
                     size_change = draw_state.size_change if draw_state else False
@@ -1599,15 +1607,16 @@ class TileCacheMasked:
                     ix0, iy0 = int(floor(sx0)), int(floor(sy0))
                     ix1, iy1 = int(ceil(sx1)), int(ceil(sy1))
                     iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
-                    # if r.draw_state.z_offset < 0:
-                    #     ix0, iy0 = ix0 + 2, iy0 + 2
-                    #     ix1, iy1 = ix1 - 2, iy1 - 2
-                    #     iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
+
 
 
                     if iw <= 0 or ih <= 0:
                         continue
                     depth_and_layer = r.depth_and_layer
+
+                    ix0, iy0 = ix0 + r.draw_state.shadow_margin, iy0 + + r.draw_state.shadow_margin
+                    ix1, iy1 = ix1 - + r.draw_state.shadow_margin, iy1 - + r.draw_state.shadow_margin
+                    iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
 
                     if use_child_cache:
                         offset = float(depth_and_layer - t_child.mask_layer) * INV_65535

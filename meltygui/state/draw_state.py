@@ -86,9 +86,9 @@ class ZoomState(DictConversion):
          "content_region", "value_hash", "drag_window", "content_region", "did_render",
          "bounding_hovered", "dlt_count", "clip_rect", "bg_rect",
          "header_height", "scrolled", "is_hovered_last", "frame_count")
-@no_save_exclude( 'render_time', 'content_height', 'invalid_content_height', "header_height",
-                  'hover_rects', 'nested_window', 'use_cache', 'layer', "header_top", "header_left",
-                 "header_left_delta", "header_top_delta", "last_seen", "persistent",
+@no_save_exclude( 'render_time', 'content_height', 'invalid_content_height', "header_height", "parent_window",
+                  'hover_rects', 'nested_window', 'use_cache', 'layer', "header_top", "header_left", "left_offset", "top_offset",
+                 "header_left_delta", "header_top_delta", "last_seen", "persistent", "shadow_margin",
                  'channel', 'next', 'previous', 'index_in_parent', 'relative_pos', 'context_menu_open', 'context_menu_ds')
 @deep_refresh('scroll_offset', "closed")
 class DrawState(DictConversion):
@@ -116,6 +116,7 @@ class DrawState(DictConversion):
         self.channel = 0
         self.last_seen = None
         self.z_offset = 0
+        self.shadow_margin = 0
 
         self.context_menu_open = False
         self.context_menu_ds = None
@@ -186,6 +187,9 @@ class DrawState(DictConversion):
         self._min_width = None
         self.top = None
         self.left = None
+        self.left_offset = 0
+        self.anchor_offset = (0,0)
+        self.top_offset = 0
         self._draggable = False
         self.search_text = ""
         self.search_active = False
@@ -214,7 +218,7 @@ class DrawState(DictConversion):
         self._collection = None
         self._has_popup = False
         self.is_hovered_last = False
-
+        self.parent_window = None
         self.result = None
         self.params = {}
         self.wrapped_top = 0
@@ -457,18 +461,13 @@ class DrawState(DictConversion):
         if (self._imgui_is_active or self._imgui_is_edited or self._imgui_is_item_hovered or self._imgui_popover_open):
             return True
 
-        if self.bg_rect is not None:
-            rect = self.bg_rect
+        mouse_x, mouse_y = imgui.get_mouse_pos()
+        if not Melty.inside_clip(rect=(mouse_x, mouse_y, 1, 1)):
+            return False
         else:
-            mouse_x, mouse_y = imgui.get_mouse_pos()
-            if not Melty.inside_clip(rect=(mouse_x, mouse_y, 1, 1)):
+            if self.top is None or self.left is None or self.width is None or self.height is None:
                 return False
-            if not self.auto_resize and self.window_pos is not None:
-                rect = (self.window_pos[0], self.window_pos[1], self.width, self.height)
-            else:
-                if self.top is None or self.left is None or self.width is None or self.height is None:
-                    return False
-                rect = (self.left, self.top - 3, self.width, self.height + 10)
+            rect = (self.left, self.top - 3, self.width, self.height + 10)
 
         if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
             if imgui.is_window_hovered() or Melty.imgui_popup_open:

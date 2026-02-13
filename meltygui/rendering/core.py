@@ -320,6 +320,12 @@ def render_func(*args, **o_kwargs):
         original_height_b = draw_state.height
         style_manager = Melty.global_attrs.get("style_manager", None)
         collection = kwargs.get("collection", None)
+        if len(Melty.melty_window_stack) > 0:
+            draw_state.parent_window = Melty.melty_window_stack[-1]
+            draw_state.left_offset, draw_state.top_offset = (imgui.get_cursor_screen_pos()[0] - draw_state.parent_window.left,
+                                                             imgui.get_cursor_screen_pos()[1] -
+                                                             draw_state.parent_window.top +
+                                                             draw_state.parent_window.header_height)
 
         if active_layer is None:
             if (melty.dragged_item is not None and melty.drag_in_progress and
@@ -522,10 +528,6 @@ def render_func(*args, **o_kwargs):
                     Melty.active_layer_stack.append(Melty.active_layer + 2)
                 new_active_layer = True
 
-            # if Melty.depth + passed_z_offset <= 1:
-
-            #     draw_state.z_offset = 0
-
             Melty.depth = Melty.depth + 1
 
             if kwargs.get("shadow", False):
@@ -534,10 +536,14 @@ def render_func(*args, **o_kwargs):
                 Melty.shadow_depth = Melty.shadow_depth + draw_state.z_offset
 
             if kwargs.get("z_absolute", None) is not None:
+                draw_state.shadow_margin = 2
                 Melty.shadow_depth = 0
                 draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer_stack[-1])
             else:
                 draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer_stack[-1])
+                if draw_state.z_offset < -1:
+                    draw_state.shadow_margin = 2
+
 
             draw_state.depth = Melty.depth
             draw_state.z_pos = (Melty.active_layer * Melty.max_depth) + Melty.depth
@@ -565,6 +571,7 @@ def render_func(*args, **o_kwargs):
             imgui_active = Melty.imgui_active or Melty.imgui_popup_open
 
             if kwargs.get("closable", False):
+
                 # melty_hovered = draw_state.on_action("on_hover", view_id="window_hover", priority_delta=1)
                 Melty.melty_window_stack.append(draw_state)
                 if draw_state.window_pos is None and draw_state.width is not None:
@@ -618,18 +625,26 @@ def render_func(*args, **o_kwargs):
                     draw_state._initial_window_pos = None
 
                 anchor_pos = kwargs.get("anchor", Anchor.TOP_LEFT)
-                anchor_offset = (0, 0) # Top Left
+                draw_state.anchor_offset = (0, 0) # Top Left
                 if anchor_pos == Anchor.TOP_LEFT:
-                    anchor_offset = (0, 0)
+                    draw_state.anchor_offset = (0, 0)
                 elif anchor_pos == Anchor.TOP_RIGHT:
-                    anchor_offset = (-draw_state.width, 0)
+                    draw_state.anchor_offset = (-draw_state.width, 0)
                 elif anchor_pos == Anchor.BOTTOM_LEFT:
-                    anchor_offset = (0, -draw_state.height)
+                    draw_state.anchor_offset = (0, -draw_state.height)
                 elif anchor_pos == Anchor.BOTTOM_RIGHT:
-                    anchor_offset = (-draw_state.width, -draw_state.height)
+                    draw_state.anchor_offset = (-draw_state.width, -draw_state.height)
 
-                imgui.set_cursor_screen_pos((snap_int(cursor_pos[0] + draw_state.window_pos[0] + anchor_offset[0]),
-                                                snap_int(cursor_pos[1] + draw_state.window_pos[1] + anchor_offset[1])))
+                window_origin = cursor_pos
+                if draw_state.parent_window is not None:
+                    window_origin = (draw_state.parent_window.window_pos[0],
+                                        draw_state.parent_window.window_pos[1])
+
+
+                imgui.set_cursor_screen_pos((snap_int(window_origin[0] + draw_state.window_pos[0] +
+                                                      draw_state.anchor_offset[0] + draw_state.left_offset),
+                                                snap_int(window_origin[1] + draw_state.window_pos[1] +
+                                                         draw_state.anchor_offset[1] + draw_state.top_offset)))
 
 
                 # imgui.set_cursor_screen_pos((snap_int(cursor_pos[0] + draw_state.window_pos[0]),
@@ -655,6 +670,12 @@ def render_func(*args, **o_kwargs):
             use_cache = kwargs.get("use_cache", False) and Melty.cache.enabled
             draw_state.use_cache = use_cache
             draw_state.left, draw_state.top = imgui.get_cursor_screen_pos()
+            if draw_state.parent_window is not None and draw_state.window_pos is not None:
+                draw_state.left = (draw_state.parent_window.window_pos[0] + draw_state.window_pos[0] +
+                                   draw_state.anchor_offset[0] + draw_state.left_offset)
+                draw_state.top = (draw_state.parent_window.window_pos[1] + draw_state.window_pos[1] +
+                                  draw_state.anchor_offset[1] + draw_state.top_offset)
+
 
             start_cursor = imgui.get_cursor_screen_pos()
 
@@ -824,8 +845,7 @@ def render_func(*args, **o_kwargs):
             draw_state._bounding_hovered = new_bounding_hovered
             if (draw_state.width is None or draw_state.height is None or hover_changed or
                     draw_state._bounding_hovered or draw_state._imgui_popover_open):
-                if (not Melty.on_drag or draw_state.nested_window
-                        and not imgui.is_mouse_down(2) and not imgui.is_mouse_down(1)):
+                if (not Melty.on_drag and not imgui.is_mouse_down(2) and not imgui.is_mouse_down(1)) or draw_state.nested_window:
                     Melty.cache.invalidate(tile_id, force=True)
 
             if draw_state.width > 0 and draw_state.height > 0:
@@ -892,7 +912,13 @@ def render_func(*args, **o_kwargs):
 
                 draw_state.left = snap_int(draw_state.left)
                 draw_state.top = snap_int(draw_state.top)
+
+
                 draw_state.clip_rect = Melty.get_clip_rect()
+                if kwargs.get("show_bg", False):
+                    outline_margin = 3
+                else:
+                    outline_margin = 0
 
                 if "with_header" in kwargs and kwargs.get("with_header", None) is not None and kwargs.get("show_header",
                                                                                                           True):
@@ -907,6 +933,7 @@ def render_func(*args, **o_kwargs):
                     next_kwargs['outer_func'] = wrapper
                     next_kwargs['show_bg'] = kwargs.get("show_bg", True)
                     draw_header = kwargs.get("with_header", None)
+                    reset_cursor = imgui.get_cursor_screen_pos()
 
                     if Melty.channels_split:
                         draw_list = imgui.get_window_draw_list()
@@ -914,9 +941,14 @@ def render_func(*args, **o_kwargs):
 
                     imgui.begin_group()
                     header_start_cursor = imgui.get_cursor_screen_pos()
+
+                    imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0] + outline_margin,
+                                                 imgui.get_cursor_screen_pos()[1] + outline_margin))
                     draw_header(**kwargs)
 
                     header_end_cursor = imgui.get_cursor_screen_pos()
+                    imgui.set_cursor_screen_pos(reset_cursor)
+
                     end_group()
                     if imgui.is_item_active() or imgui.is_item_activated():
                         Melty.report_imgui_active()
@@ -925,6 +957,7 @@ def render_func(*args, **o_kwargs):
                     header_rect = imgui.get_item_rect_size()
                     draw_state.header_width = header_rect[0]
                     draw_state.header_height = header_rect[1]
+
 
                     if not draw_state.multi_line:
                         same_line()
@@ -949,14 +982,17 @@ def render_func(*args, **o_kwargs):
                         clip_size = (draw_state.width, draw_state.height)
                     current_cursor = imgui.get_cursor_screen_pos()
                     if kwargs.get("closable", False):
-                        margin = 2
+                        margin = 0
                     else:
                         margin = 10
 
                     if clip_size is not None:
                         end_x = max(draw_state.left, draw_state.left + clip_size[0] - draw_state.header_end_width - margin)
+                        end_x = max(end_x, draw_state.left + draw_state.header_width + 10)
+                        if not draw_state.expanded:
+                            end_x = draw_state.left + draw_state.header_width + 10
                         imgui.set_cursor_screen_pos((end_x,
-                                                    imgui.get_cursor_screen_pos()[1] + 2))
+                                                    imgui.get_cursor_screen_pos()[1] + outline_margin))
 
                     if Melty.channels_split:
                         draw_list = imgui.get_window_draw_list()
@@ -964,6 +1000,8 @@ def render_func(*args, **o_kwargs):
 
                     imgui.begin_group()
                     draw_header_end(**kwargs)
+                    imgui.same_line(spacing=0)
+                    imgui.dummy(outline_margin,1)
                     end_group()
                     if imgui.is_item_active() or imgui.is_item_activated():
                         Melty.report_imgui_active()
@@ -1108,14 +1146,6 @@ def render_func(*args, **o_kwargs):
 
                 draw_state._imgui_is_hovered = draw_state._imgui_is_item_hovered and is_hovered
 
-                if draw_state._has_popup:
-                    is_popup_open = Melty.imgui_popup_open
-                    if is_popup_open != draw_state._imgui_popover_open and not is_popup_open:
-                        Melty.cache.invalidate_up_by_obj(input_value, max_depth=6)
-                    if is_popup_open:
-                        Melty.report_imgui_active()
-                    draw_state._imgui_popover_open = Melty.imgui_popup_open
-
                 if imgui.is_item_active() or imgui.is_item_activated():
                     Melty.report_imgui_active()
                 #######################
@@ -1164,6 +1194,7 @@ def render_func(*args, **o_kwargs):
 
                 if previous_tint is not None:
                     style_manager.set_imgui_tint(*previous_tint)
+
             draw_state._imgui_is_edited = imgui.is_item_edited()
             draw_state._imgui_is_activated = imgui.is_item_activated()
             draw_state._imgui_is_active = imgui.is_item_active()
@@ -1173,6 +1204,15 @@ def render_func(*args, **o_kwargs):
 
             if use_cache:
                 Melty.cache.mark_end_offscreen()
+
+            if draw_state._has_popup:
+                is_popup_open = Melty.imgui_popup_open
+
+                if is_popup_open != draw_state._imgui_popover_open and not is_popup_open:
+                    Melty.cache.invalidate_up(tile_id, max_depth=8)
+                if is_popup_open:
+                    Melty.report_imgui_active()
+                draw_state._imgui_popover_open = Melty.imgui_popup_open
 
             pop_id()
             if kwargs.get("closable", False):
@@ -1343,10 +1383,6 @@ def render_func(*args, **o_kwargs):
             depth_tint = (Melty.wrapped_depth * 0.05)
             jet = jet_color(depth_tint)
             floating_text(f"{func.__name__} w:{Melty.wrapped_depth}", tint=jet)
-        if draw_state._has_popup:
-            draw_state._imgui_popover_open = Melty.imgui_popup_open
-
-
 
         if use_cache:
             offscreen_depth = Melty.get_channel()
