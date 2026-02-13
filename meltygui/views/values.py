@@ -183,7 +183,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
             pop_style_color(2)
             same_line()
 
-        clipped_name = name[:40]
+        clipped_name = name.split("##")[0][:40]
         padding = imgui.get_style().frame_padding.x
         text_width = imgui.calc_text_size(clipped_name)[0]
         push_style_color(imgui.COLOR_BUTTON, *(0.0, 0.0, 0.0, 0.0))
@@ -289,7 +289,7 @@ def draw_header_end(input_value=None, name="", key=None, melty=None, parent_show
 
     if closable:
         close_icon = "\uf00d"
-        if button(f"{close_icon}", color=(1, 1, 1, 0))[0]:
+        if button(f"{close_icon}", z_offset=3, color=(1, 1, 1, 0), channel_offset=5)[0]:
             draw_state.closed = not draw_state.closed
             Melty.cache.invalidate_up_by_obj(Melty.registered_windows)
 
@@ -1932,44 +1932,75 @@ def open_file(path, app=None):
     else:
         print(f"Path does not exist: {path}")
 
-@render_func(use_cache=True, shadow=True, selectable=False, show_bg=False)
-def button(input_value="", color=None, width=None, height=None, style_manager=None, factor=0.5, value=0.5, text_value=None, saturation=0.8, unique=0):
-    if height is None:
-        height = imgui.get_frame_height()
+@render_func(use_cache=True, shadow=True, selectable=False, show_bg=False, width=20, height=20, min_width=10, min_height=10)
+def button(input_value="", corner_radius=8, draw_state=None, left_mouse_down=False, color=None, hovered=False, width=None, height=None, style_manager=None,
+           factor=0.9, value=0.2, text_value=1.0, saturation=0.8, unique=0):
 
-    if width is None:
-        width = imgui.calc_text_size(input_value)[0] + imgui.get_style().frame_padding.x * 2
-        width = max(height, width)
-
-    if text_value is None:
-        text_value = value + 0.5
     if color is not None:
-        mixed_color = style_manager.make_color_rgb(color[0], color[1], color[2],
-                                                value=value, factor=factor, saturation_scale=saturation, alpha=1.0)
+        if hovered:
+            mixed_color = style_manager.make_color_rgb(color[0], color[1], color[2],
+                                                       value=value + 0.1, factor=factor, saturation_scale=saturation,
+                                                       alpha=1.0)
+        else:
+            mixed_color = style_manager.make_color_rgb(color[0], color[1], color[2],
+                                                       value=value, factor=factor, saturation_scale=saturation,
+                                                       alpha=1.0)
         text_color = style_manager.make_color_rgb(color[0], color[1], color[2],
                                                  value=text_value, factor=factor, saturation_scale=0.4, alpha=1.0)
-        rounding = 4.0
+    else:
+        text_color = (1.0, 1.0, 1.0)
+        mixed_color = (0,0,0)
 
-        imgui.push_style_var(imgui.STYLE_FRAME_ROUNDING, rounding)
-        alpha = color[3] if len(color) > 3 else 1.0
+    draw_state.corner_radius = corner_radius
+    imgui.dummy(width or 0, height or 0)
+    draw_list: _DrawList = imgui.get_window_draw_list()
+    draw_list.add_rect_filled(draw_state.left, draw_state.top, draw_state.left + width,
+                               draw_state.top + height, imgui.get_color_u32_rgba(*mixed_color),
+                              rounding=corner_radius)
 
-        imgui.push_style_color(imgui.COLOR_BUTTON, *mixed_color[:3], alpha)
-        imgui.push_style_color(imgui.COLOR_BUTTON_HOVERED, *(min(mixed_color[0]+0.1,1.0),
-                                                            min(mixed_color[1]+0.1,1.0),
-                                                            min(mixed_color[2]+0.1,1.0),
-                                                            max(0.3, alpha)))
-        imgui.push_style_color(imgui.COLOR_BUTTON_ACTIVE, *(max(mixed_color[0]-0.1,0.0),
-                                                              max(mixed_color[1]-0.1,0.0),
-                                                              max(mixed_color[2]-0.1,0.0),
-                                                            alpha))
-        imgui.push_style_color(imgui.COLOR_TEXT, *text_color[:3], 1.0)
+    text_size = imgui.calc_text_size(input_value)
 
-    clicked = imgui.button(input_value + f"##{unique}", width, height)
-    if color is not None:
-        imgui.pop_style_color(4)
-        imgui.pop_style_var(1)
+    draw_list.add_text(draw_state.left + (width - text_size[0]) / 2.0 + 1, draw_state.top + (height - text_size[1]) / 2.0 - 1,
+                        imgui.get_color_u32_rgba(*text_color), input_value)
+    # if height is None:
+    #     height = imgui.get_frame_height()
+    #
+    # if width is None:
+    #     width = imgui.calc_text_size(input_value)[0] + imgui.get_style().frame_padding.x * 2
+    #     width = max(height, width)
+    #
+    # if text_value is None:
+    #     text_value = value + 0.5
+    # if color is not None:
+    #     mixed_color = style_manager.make_color_rgb(color[0], color[1], color[2],
+    #                                             value=value, factor=factor, saturation_scale=saturation, alpha=1.0)
+    #     text_color = style_manager.make_color_rgb(color[0], color[1], color[2],
+    #                                              value=text_value, factor=factor, saturation_scale=0.4, alpha=1.0)
+    #     rounding = 4.0
+    #
+    #     imgui.push_style_var(imgui.STYLE_FRAME_ROUNDING, rounding)
+    #     alpha = color[3] if len(color) > 3 else 1.0
+    #
+    #     imgui.push_style_color(imgui.COLOR_BUTTON, *mixed_color[:3], alpha)
+    #     imgui.push_style_color(imgui.COLOR_BUTTON_HOVERED, *(min(mixed_color[0]+0.1,1.0),
+    #                                                         min(mixed_color[1]+0.1,1.0),
+    #                                                         min(mixed_color[2]+0.1,1.0),
+    #                                                         max(0.3, alpha)))
+    #     imgui.push_style_color(imgui.COLOR_BUTTON_ACTIVE, *(max(mixed_color[0]-0.1,0.0),
+    #                                                           max(mixed_color[1]-0.1,0.0),
+    #                                                           max(mixed_color[2]-0.1,0.0),
+    #                                                         alpha))
+    #     imgui.push_style_color(imgui.COLOR_TEXT, *text_color[:3], 1.0)
+    #
+    # clicked = imgui.button(input_value + f"##{unique}", width, height)
+    # if color is not None:
+    #     imgui.pop_style_color(4)
+    #     imgui.pop_style_var(1)
 
-    return clicked, input_value
+    if left_mouse_down:
+        return True, input_value
+
+    return False, input_value
 
 
 
