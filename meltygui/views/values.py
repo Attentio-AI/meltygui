@@ -388,7 +388,7 @@ def draw_window(input_value, view_func=None, draw_state=None, **kwargs):
 
 
 
-@render_func(is_default_for=(MutableMapping, defaultdict), use_cache=False, show_bg=True,
+@render_func(is_default_for=(MutableMapping, defaultdict), use_cache=False, show_bg=True, z_offset=1,
              shadow=True, wrap=False, enable_scroll=True, with_header=draw_header)
 # @with_header(is_default_for=(MutableMapping, defaultdict), use_cache=False,
 #              shadow=True, wrap=False, enable_scroll=True)
@@ -673,7 +673,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
 
 
-@render_func(use_cache=False, show_bg=True, selectable=False, z_offset=15)
+@render_func(use_cache=False, show_bg=True, selectable=False)
 def draw_main(input_value, vis, **kwargs):
 
     global test_obj
@@ -1833,7 +1833,7 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0, rounding=5.0,
     }
     hovered_offset = 0.0
     if selected:
-        hovered_offset = 0.05
+        hovered_offset = 0.2
     # elif hovered:
     #     hovered_offset = 0.6
 

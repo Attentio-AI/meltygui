@@ -264,14 +264,6 @@ def render_func(*args, **o_kwargs):
                 return False, None
 
             # Disable cache for this frame to avoid further issues
-        if unique in Melty.seen_unique:
-            if 'draw_state' in wanted_params:
-                overlay_list: _DrawList = imgui.get_overlay_draw_list()
-                overlay_list.add_text(*imgui.get_cursor_screen_pos(),
-                                      imgui.get_color_u32_rgba(1.0, 0.0, 0.0, 1.0),
-                                      f"Warning: ID collision {name} {func.__name__} {unique}")
-                kwargs['use_cache'] = False
-                return False, None
         computed_unique = unique
 
         # -------------------------------------------------------------------------
@@ -387,6 +379,15 @@ def render_func(*args, **o_kwargs):
                 return return_value
 
         kwargs['return_extras'] = False
+
+        if unique in Melty.seen_unique:
+            if 'draw_state' in wanted_params:
+                overlay_list: _DrawList = imgui.get_overlay_draw_list()
+                overlay_list.add_text(*imgui.get_cursor_screen_pos(),
+                                      imgui.get_color_u32_rgba(1.0, 0.0, 0.0, 1.0),
+                                      f"Warning: ID collision {name} {func.__name__} {unique}")
+                kwargs['use_cache'] = False
+                return False, None
 
         Melty.seen_unique.add(unique)
 
@@ -518,9 +519,11 @@ def render_func(*args, **o_kwargs):
                     draw_state.index_in_parent = new_index_in_parent
             Melty.last_draw_state[Melty.depth] = (draw_state, kwargs.get("collection", None))
 
+
+
             if draw_state in Melty.selected and not melty_window:
                 draw_state.selected = True
-                draw_state.z_offset = kwargs.get("z_offset", 0) + 5
+                draw_state.z_offset = -2 if kwargs.get("shadow", False) else -1
             else:
                 draw_state.z_offset = kwargs.get("z_offset", 0)
                 draw_state.selected = False
@@ -548,13 +551,15 @@ def render_func(*args, **o_kwargs):
 
             if kwargs.get("z_absolute", None) is not None:
                 if kwargs.get("z_absolute", 0) < 3:
-                    draw_state.shadow_margin = 2
+                    draw_state.shadow_margin = 1.5
                 Melty.shadow_depth = 0
                 draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer_stack[-1])
             else:
                 draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer_stack[-1])
-                if draw_state.z_offset < -1:
-                    draw_state.shadow_margin = 2
+                if draw_state.z_offset <= -1:
+                    draw_state.shadow_margin = 1.5
+                else:
+                    draw_state.shadow_margin = 0
 
 
             draw_state.depth = Melty.depth
@@ -794,7 +799,12 @@ def render_func(*args, **o_kwargs):
                 elif not auto_resize:
                     available_width = draw_state.width - draw_state.header_width - draw_state.header_end_width - 5
                 else:
-                    available_width = draw_state.width - 10
+                    rect = imgui.get_io().display_size
+                    offset = rect[0] - draw_state.left - draw_state.header_width - draw_state.header_end_width
+                    available_width = (offset - (
+                            (len(Melty.bg_stack) + 2) * 2.0) - 10)
+
+
 
             header_same_line = kwargs.get("header_same_line", False)
             if (available_width < 100 or draw_state.height - draw_state.footer_height > 50) and not header_same_line and not Melty.is_wrapped():
@@ -916,10 +926,6 @@ def render_func(*args, **o_kwargs):
                                                height=draw_state.height)
                         imgui.set_cursor_screen_pos(reset_to)
                         imgui.set_item_allow_overlap()
-
-
-
-
 
                 begin_group(unique)
 
@@ -1147,9 +1153,9 @@ def render_func(*args, **o_kwargs):
 
                     # Melty.undo_clip(unique, 1)
                     if width > 5 and height > 5:
-                        _, bg_color = draw_bg(bypass=True, left=left + 1, top=top,
-                                              width=width - 2, height=height, rounding=draw_state.corner_radius,
-                                              depth=Melty.shadow_depth, selected=draw_state in Melty.selected,
+                        _, bg_color = draw_bg(bypass=True, left=left, top=top,
+                                              width=width, height=height, rounding=draw_state.corner_radius,
+                                              depth=Melty.shadow_depth, selected=draw_state.selected,
                                               global_style=global_style, opacity=1.0,
                                               style_manager=style_manager, auto_resize=not melty_window)
                     # Melty.redo_clip(unique)
@@ -1260,11 +1266,6 @@ def render_func(*args, **o_kwargs):
                 draw_state.width = 30
             if melty_window and draw_state.height < 30:
                 draw_state.height = 30
-            if draw_state.width > 10000:
-                draw_state.width = 10000
-            if draw_state.height > 10000:
-                draw_state.height = 10000
-
 
             if auto_resize:
                 if len(Melty.fixed_size_stack) == 0 or kwargs.get("wrap", False):
@@ -1291,6 +1292,12 @@ def render_func(*args, **o_kwargs):
             else:
                 if not imgui.is_mouse_down(0) and not imgui.is_mouse_down(1) and not imgui.is_mouse_down(2):
                     draw_state.size_change = False
+
+            if draw_state.width > 10000:
+                draw_state.width = 10000
+
+            if draw_state.height > 10000:
+                draw_state.height = 10000
 
             draw_state._hovered = False
             draw_state.hotkey_receiver = False

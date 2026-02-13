@@ -148,7 +148,16 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
     if w == 0 or h == 0:
         return None
 
-    new_tex = _create_color_tex(w, h)
+    try:
+        new_tex = _create_color_tex(w, h)
+    except Exception as e:
+        existing_size = existing.size if existing else None
+        reset = "\033[0m"
+        pink = "\033[95m"
+        print(f"{pink}{draw_state.to_dict()}\n{'='*10} "
+              f"Failed to create color texture for tile (size {w}x{h}): {e}"
+              f"\nCurrent size {existing_size}\n{'=' * 10}{reset}")
+        return None
 
     new_mask_tex = _create_mask_tex(w, h)
     new_fbo, new_rbo = _create_fbo_with_tex(new_tex, True, w, h)
@@ -282,12 +291,13 @@ _MASK_ROUNDED_FS = """
 uniform float uRankNorm;
 uniform vec2 uRectSize;      // Width and height in pixels
 uniform float uCornerRadius; // Corner radius in pixels
+uniform float uMargin;
 in vec2 vUV;
 out vec4 oColor;
 
 float sdRoundedBox(vec2 p, vec2 b, float r) {
     vec2 q = abs(p) - b + r;
-    return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;
+    return min(max(q.x, q.y), uMargin) + length(max(q, uMargin)) - r;
 }
 
 void main() {
@@ -326,10 +336,11 @@ uniform vec2 uRectSize;      // Width and height in pixels
 uniform float uCornerRadius; // Corner radius in pixels
 in vec2 vUV;
 out vec4 oColor;
+uniform float uMargin;
 
 float sdRoundedBox(vec2 p, vec2 b, float r) {
     vec2 q = abs(p) - b + r;
-    return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;
+    return min(max(q.x, q.y), uMargin) + length(max(q, uMargin)) - r;
 }
 
 void main() {
@@ -372,10 +383,11 @@ uniform vec2 uRectSize;      // Width and height in pixels
 uniform float uCornerRadius; // Corner radius in pixels
 in vec2 vUV;
 out vec4 oColor;
+uniform float uMargin;
 
 float sdRoundedBox(vec2 p, vec2 b, float r) {
     vec2 q = abs(p) - b + r;
-    return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;
+    return min(max(q.x, q.y), uMargin) + length(max(q, uMargin)) - r;
 }
 
 void main() {
@@ -552,12 +564,13 @@ class TileCacheMasked:
         self._loc_maskr_uRankNorm = None
         self._loc_maskr_uRectSize = None
         self._loc_maskr_uCornerRadius = None
-
+        self._loc_maskr_uMargin = None
         self._loc_tex_uTex = None
 
         self._loc_texr_uTex = None
         self._loc_texr_uRectSize = None
         self._loc_texr_uCornerRadius = None
+        self._loc_texr_uMargin = None
 
         self._loc_texoff_uTex = None
         self._loc_texoff_uOffset = None
@@ -566,6 +579,7 @@ class TileCacheMasked:
         self._loc_texoffr_uOffset = None
         self._loc_texoffr_uRectSize = None
         self._loc_texoffr_uCornerRadius = None
+        self._loc_texoffr_uMargin = None
 
         self._loc_uSrc = None
         self._loc_uTopMask = None
@@ -1230,6 +1244,7 @@ class TileCacheMasked:
             self._loc_maskr_uRankNorm = gl.glGetUniformLocation(self._prog_mask_rounded, "uRankNorm")
             self._loc_maskr_uRectSize = gl.glGetUniformLocation(self._prog_mask_rounded, "uRectSize")
             self._loc_maskr_uCornerRadius = gl.glGetUniformLocation(self._prog_mask_rounded, "uCornerRadius")
+            self._loc_maskr_uMargin = gl.glGetUniformLocation(self._prog_mask_rounded, "uMargin")
 
         if self._prog_mask_textured is None:
             vs = _compile(gl.GL_VERTEX_SHADER, _FULLSCREEN_VS)
@@ -1245,6 +1260,9 @@ class TileCacheMasked:
             self._loc_texr_uRectSize = gl.glGetUniformLocation(self._prog_mask_textured_rounded, "uRectSize")
             self._loc_texr_uCornerRadius = gl.glGetUniformLocation(
                 self._prog_mask_textured_rounded, "uCornerRadius"
+            )
+            self._loc_texr_uMargin = gl.glGetUniformLocation(
+                self._prog_mask_textured_rounded, "uMargin"
             )
 
         if self._prog_mask_textured_offset is None:
@@ -1265,6 +1283,9 @@ class TileCacheMasked:
             )
             self._loc_texoffr_uCornerRadius = gl.glGetUniformLocation(
                 self._prog_mask_textured_offset_rounded, "uCornerRadius"
+            )
+            self._loc_texoffr_uMargin = gl.glGetUniformLocation(
+                self._prog_mask_textured_offset_rounded, "uMargin"
             )
 
         if self._prog_copy is None:
@@ -1299,7 +1320,7 @@ class TileCacheMasked:
         }
         return table.get(self.copy_debug_mode.value, 0)
 
-    def _draw_mask_rect_fresh(self, r: _Rect, dp_x, dp_y, s_x, s_y, fb_h, rank_norm: float):
+    def _draw_mask_rect_fresh(self, r: _Rect, dp_x, dp_y, s_x, s_y, fb_h, rank_norm: float, shadow_margin=0.0):
         """Draw a fresh mask rect (no cached texture) with optional rounded corners."""
         x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y, fb_h)
         ix0, iy0 = int(floor(x0)), int(floor(y0))
@@ -1316,6 +1337,8 @@ class TileCacheMasked:
             gl.glUniform1f(self._loc_maskr_uRankNorm, rank_norm)
             gl.glUniform2f(self._loc_maskr_uRectSize, float(iw), float(ih))
             gl.glUniform1f(self._loc_maskr_uCornerRadius, r.corner_radius)
+            gl.glUniform1f(self._loc_maskr_uMargin, shadow_margin)
+
         else:
             gl.glUseProgram(self._prog_mask)
             gl.glUniform1f(self._loc_mask_uRankNorm, rank_norm)
@@ -1323,7 +1346,7 @@ class TileCacheMasked:
         gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
 
     def _draw_mask_rect_cached(self, tex: int, ix0: int, iy0: int, iw: int, ih: int, offset: float,
-                               corner_radius: float):
+                               corner_radius: float, shadow_margin:float=0.0):
         """Draw a cached mask texture with offset and optional rounded corners.
         Note: preserves existing behavior (rounded path effectively always used by callers).
         """
@@ -1337,10 +1360,11 @@ class TileCacheMasked:
         gl.glUniform1f(self._loc_texoffr_uOffset, offset)
         gl.glUniform2f(self._loc_texoffr_uRectSize, float(iw), float(ih))
         gl.glUniform1f(self._loc_texoffr_uCornerRadius, corner_radius)
+        gl.glUniform1f(self._loc_maskr_uMargin, shadow_margin)
 
         gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
 
-    def _draw_mask_rect(self, r: _Rect, dp_x, dp_y, s_x, s_y, fb_h, use_cached: bool):
+    def _draw_mask_rect(self, r: _Rect, dp_x, dp_y, s_x, s_y, fb_h, use_cached: bool, shadow_margin=0.0):
         """Helper to draw a single mask rect, optionally using cached subtree mask."""
         x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y, fb_h)
         ix0, iy0 = int(snap_int(x0)), int(snap_int(y0))
@@ -1363,6 +1387,8 @@ class TileCacheMasked:
                 gl.glUniform1i(self._loc_texr_uTex, 0)
                 gl.glUniform2f(self._loc_texr_uRectSize, float(iw), float(ih))
                 gl.glUniform1f(self._loc_texr_uCornerRadius, r.corner_radius)
+                gl.glUniform1f(self._loc_texr_uMargin, shadow_margin)
+
             else:
                 gl.glUseProgram(self._prog_mask_textured)
                 gl.glActiveTexture(gl.GL_TEXTURE0)
@@ -1374,6 +1400,8 @@ class TileCacheMasked:
                 gl.glUniform1f(self._loc_maskr_uRankNorm, float(r.layer) * INV_65535)
                 gl.glUniform2f(self._loc_maskr_uRectSize, float(iw), float(ih))
                 gl.glUniform1f(self._loc_maskr_uCornerRadius, r.corner_radius)
+                gl.glUniform1f(self._loc_maskr_uMargin, shadow_margin)
+
             else:
                 gl.glUseProgram(self._prog_mask)
                 gl.glUniform1f(self._loc_mask_uRankNorm, float(r.layer) * INV_65535)
@@ -1614,8 +1642,8 @@ class TileCacheMasked:
                         continue
                     depth_and_layer = r.depth_and_layer
 
-                    ix0, iy0 = ix0 + r.draw_state.shadow_margin, iy0 + + r.draw_state.shadow_margin
-                    ix1, iy1 = ix1 - + r.draw_state.shadow_margin, iy1 - + r.draw_state.shadow_margin
+                    ix0, iy0 = ix0, iy0
+                    ix1, iy1 = ix1, iy1
                     iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
 
                     if use_child_cache:
@@ -1628,6 +1656,7 @@ class TileCacheMasked:
                             ih,
                             offset,
                             r.corner_radius,
+                            r.draw_state.shadow_margin if r.draw_state else 0.0
                         )
                     else:
                         rank_norm = float(depth_and_layer) / 65535.5
@@ -1638,6 +1667,8 @@ class TileCacheMasked:
                             gl.glUniform1f(self._loc_maskr_uRankNorm, rank_norm)
                             gl.glUniform2f(self._loc_maskr_uRectSize, float(iw), float(ih))
                             gl.glUniform1f(self._loc_maskr_uCornerRadius, r.corner_radius)
+                            gl.glUniform1f(self._loc_maskr_uMargin, r.draw_state.shadow_margin)
+
                         else:
                             gl.glUseProgram(self._prog_mask)
                             gl.glUniform1f(self._loc_mask_uRankNorm, rank_norm)
@@ -1743,7 +1774,8 @@ class TileCacheMasked:
 
                     if can_use_cached:
                         offset = float(depth_and_layer - t.mask_layer) * INV_65535
-                        self._draw_mask_rect_cached(t.mask_tex, ix0, iy0, iw, ih, offset, r.corner_radius)
+                        self._draw_mask_rect_cached(t.mask_tex, ix0, iy0, iw, ih, offset,
+                                                    r.corner_radius, r.draw_state.shadow_margin)
                     else:
                         rank_norm = float(depth_and_layer) / 65535.5
 
@@ -1755,6 +1787,8 @@ class TileCacheMasked:
                             gl.glUniform1f(self._loc_maskr_uRankNorm, rank_norm)
                             gl.glUniform2f(self._loc_maskr_uRectSize, float(clip_iw), float(clip_ih))
                             gl.glUniform1f(self._loc_maskr_uCornerRadius, cr)
+                            gl.glUniform1f(self._loc_maskr_uMargin, r.draw_state.shadow_margin)
+
                         else:
                             gl.glUseProgram(self._prog_mask)
                             gl.glUniform1f(self._loc_mask_uRankNorm, rank_norm)
