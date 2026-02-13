@@ -88,7 +88,7 @@ class ZoomState(DictConversion):
          "header_height", "scrolled", "is_hovered_last", "frame_count")
 @no_save_exclude( 'render_time', 'content_height', 'invalid_content_height', "header_height", "parent_window",
                   'hover_rects', 'nested_window', 'use_cache', 'layer', "header_top", "header_left", "left_offset", "top_offset",
-                 "header_left_delta", "header_top_delta", "last_seen", "persistent", "shadow_margin",
+                 "header_left_delta", "header_top_delta", "last_seen", "persistent", "shadow_margin", "bg_depth",
                  'channel', 'next', 'previous', 'index_in_parent', 'relative_pos', 'context_menu_open', 'context_menu_ds')
 @deep_refresh('scroll_offset', "closed")
 class DrawState(DictConversion):
@@ -99,6 +99,10 @@ class DrawState(DictConversion):
         self._children = {}
         self._parent = None
         self._is_header = False
+        self._view_func = None
+        self._kwargs = None
+        self._cursor_pos = (0, 0)
+        self._parent_ctx = None
         self.next = None
         self.previous = None
         self.index_in_parent = 0
@@ -117,6 +121,7 @@ class DrawState(DictConversion):
         self.last_seen = None
         self.z_offset = 0
         self.shadow_margin = 0
+        self.bg_depth = 0
 
         self.context_menu_open = False
         self.context_menu_ds = None
@@ -157,10 +162,10 @@ class DrawState(DictConversion):
         self.window_pos = None
         self.window_size = None
         self._initial_window_pos = None
-        self._initial_window_size = None
+        self._initial_window_size = (300, 300)
         self.drag_mode = DragMode.NONE
         self.use_child = False
-        self.z_pos = None
+        self.z_pos = 0
         self.size_change = False
         self.depth_and_layer = (0,0)
         self.content_height = 0
@@ -254,6 +259,7 @@ class DrawState(DictConversion):
         divisor = max(1.0, depth - 13.0)
         depth_and_layer = active_layer * Melty.max_depth + (depth * (20.0 / (divisor)))
         return depth_and_layer
+
     @property
     def seen(self):
         debounce = 2

@@ -629,6 +629,7 @@ def draw_collection(input_value, draw_state, depth, style_manager,
     Melty.collection_index_stack.pop()
     end_pos = imgui.get_cursor_pos()[1]
     content_height = (end_pos - start_cursor)
+    imgui.dummy(1, 1)
 
     # if len(children_draw_states) == len(keys):
     #     draw_state._children = children_draw_states
@@ -1807,7 +1808,7 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0, rounding=5.0,
     def current_indent_px():
         return Melty.current_indent
 
-    depth = (len(Melty.bg_stack) - 1.5) * 3
+    depth = ((max(2, Melty.bg_depth)) - 1.5) * 2
 
     right =  left + width
     bottom =  top + height
@@ -2300,7 +2301,8 @@ def draw_function(input_value, name, draw_state, unique):
 
     return False, input_value
 
-@render_func(is_default_for=(int), shadow=False, is_tree=False, wrap=True, header_same_line=True,
+@render_func(is_default_for=(int), shadow=False,
+             is_tree=False, wrap=True, header_same_line=True,
              with_header=draw_header)
 def draw_int(input_value: int, min_value=-100.0, max_value=100.0, speed=0.05, unique=0):
     int_text_width = imgui.calc_text_size(str(input_value))[0]
@@ -2322,7 +2324,7 @@ def draw_int(input_value: int, min_value=-100.0, max_value=100.0, speed=0.05, un
 def draw_debug_label(input_value:str):
     imgui.text(input_value)
 
-@render_func(is_default_for=Enum, show_add_delete=False, header_same_line=True, with_header=draw_header)
+@render_func(is_default_for=Enum, show_add_delete=False, shadow=False, header_same_line=True, with_header=draw_header)
 def draw_enum(input_value:Enum, global_style=None, style_manager=None, enum_tint=(0.3, 0.3, 0.3)):
 
     unique = "enum"

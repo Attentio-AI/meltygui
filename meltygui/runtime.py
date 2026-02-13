@@ -40,6 +40,7 @@ class Melty:
     active_layer = 0
     active_layer_stack = []
 
+    bg_depth = 0
     seen_unique = set()
 
     last_draw_state = [(None, None)] * max_layer
@@ -181,6 +182,7 @@ class Melty:
 
         cls.imgui_active = cls.imgui_active_pending
         cls.imgui_active_pending = False
+        cls.bg_depth = 0
 
         cls.imgui_blockers = cls.pending_blockers
         cls.pending_blockers = [None] * cls.max_layer
@@ -297,7 +299,6 @@ class Melty:
         for ds in to_discard:
             cls.root_draw_states.discard(ds)
 
-
         for idx in range(len(cls.layers)):
             layer = cls.layers[idx]
             imgui.set_cursor_screen_pos((0, 0))
@@ -312,18 +313,16 @@ class Melty:
                 if view is not None:
                     draw_state = view[3]
 
-                    layer_tint = view[4]
                     parent_ctx = view[5]
                     current_z_pos = view[6]
                     cursor_pos = view[7]
-                    depth = view[8]
-                    shadow_depth = view[-1]
                     Melty.depth = current_z_pos
+                    Melty.bg_depth = draw_state.bg_depth - 1
 
                     cls.cache.insert_parent(parent_ctx)
 
                     view_func = view[0]
-                    input_value = view[1]
+                    input_value = draw_state._input_value
                     kwargs = view[2]
                     kwargs['layer_unique'] = draw_state.unique
                     imgui.set_cursor_screen_pos(cursor_pos)
@@ -398,7 +397,12 @@ class Melty:
 
         Melty.hovered_drawstate = Melty.hovered_drawstate_pending
         Melty.imgui_any_item_active = imgui.is_any_item_active()
+        Melty.active_layer = 0
+        style = imgui.get_style()
 
+        style.item_spacing = Melty.original_spacing
+        style.window_padding = Melty.original_window_padding
+        style.frame_padding = Melty.original_frame_padding
         # cls._root_by_module[module_id] = root
         # cls._gen_by_module.setdefault(module_id, 0)
         # cls._path_stack.clear()
