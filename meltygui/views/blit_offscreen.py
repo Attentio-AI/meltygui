@@ -546,6 +546,8 @@ class TileCacheMasked:
         self._scratch_fbo: Optional[int] = None
 
         self._mask_rects: List[_Rect] = []
+        self._shadow_mask_keys = set()
+        self._shadow_rects: List[_Rect] = []
 
         self._rect_seq: int = 0
 
@@ -887,6 +889,21 @@ class TileCacheMasked:
         self._rect_seq = (self._rect_seq + 1) & 0xFF
         self._mask_rects.append(_Rect(draw_state, layer, depth_and_layer, x, y, w, h, key, self._rect_seq, corner_radius))
 
+    def mark_shadow(
+            self, layer: int, depth_and_layer: any, x: float, y: float, w: float, h: float, corner_radius: float = 0.0
+    ) -> None:
+        self._rect_seq = (self._rect_seq + 1) & 0xFF
+        key = f"shadow_{self._rect_seq}"
+        parent_ctx = self._stack[-1] if self._stack else None
+        layer = parent_ctx.draw_state.z_pos + layer if parent_ctx else layer
+        depth_and_layer = parent_ctx.depth_and_layer + depth_and_layer - 45 if parent_ctx else depth_and_layer
+
+        self._mask_rects.append(
+            _Rect(None, layer, depth_and_layer, x, y, w, h, key, self._rect_seq, corner_radius))
+        parent_key = parent_ctx.key if parent_ctx else None
+        self._shadow_mask_keys.add(key)
+        self.key_to_parent_key[key] = parent_key
+
     def mask_mark_view(
             self, draw_state:any, layer: int, depth_and_layer: any, x: float, y: float, w: float, h: float, key: str, corner_radius: float = 0.0
     ) -> None:
@@ -1003,15 +1020,15 @@ class TileCacheMasked:
         imgui.push_id(f"{draw_state._tile_id}")
         rkey = draw_state._tile_id
 
-        if draw_state.parent_window is not None:
+        if draw_state.parent_window is not None and draw_state.parent_window.window_pos:
             draw_state.left = (draw_state.parent_window.window_pos[0] + draw_state.window_pos[0] +
-                               draw_state.anchor_offset[0] + draw_state.left_offset)
+                               draw_state.anchor_offset[0] + (draw_state.left_offset or 0))
             draw_state.top = (draw_state.parent_window.window_pos[1] + draw_state.window_pos[1] +
-                              draw_state.anchor_offset[1] + draw_state.top_offset)
+                              draw_state.anchor_offset[1] + (draw_state.top_offset or 0))
 
         t = self._tiles.get(rkey)
         size = (draw_state.width, draw_state.height)
-        layer = draw_state.z_pos
+        layer = Melty.z_pos
         has_area = size is not None and size[0] != 0 and size[1] != 0
         use_image = t and has_area and (t.size == (size[0], size[1])) and (not self._is_dirty(t))
         if has_area and not draw_state.closed and use_image:
@@ -1061,7 +1078,7 @@ class TileCacheMasked:
         Melty.tile_id_stack.append(key)
         x, y = imgui.get_cursor_screen_pos()
         imgui.set_cursor_screen_pos((snap_int(x), snap_int(y)))
-        layer = max(self._LAYER_MIN, min(self._LAYER_MAX, layer + 1))
+        layer = max(self._LAYER_MIN, min(self._LAYER_MAX, layer))
 
         parent_ctx = self._stack[-1] if self._stack else None
         rkey = self._resolve_key(key)
@@ -1164,9 +1181,6 @@ class TileCacheMasked:
         Melty.tile_id_stack.pop()
 
         minx, miny = ctx.draw_state.left, ctx.draw_state.top
-        size = ctx.draw_state.width + ctx.draw_state.header_left_delta, ctx.draw_state.header_top_delta
-        if not ctx.auto_resize and ctx.draw_state.window_size is not None:
-            size = snap_int(ctx.draw_state.width), snap_int(ctx.draw_state.height)
 
         ctx.pos = (float(minx), float(miny))
         ctx.size = (ctx.draw_state.width, ctx.draw_state.height)
@@ -1442,13 +1456,14 @@ class TileCacheMasked:
         subtree_rects_by_root = defaultdict(list)
         for r in local_mask_rects:
             k = r.key
+
             while k is not None:
                 subtree_rects_by_root[k].append(r)
                 k = parent_of.get(k)
 
         # Reverse
-        subtree_rects_by_root_rev = subtree_rects_by_root
         subtree_rects_by_root = {k: list(reversed(v)) for k, v in subtree_rects_by_root.items()}
+
 
         st = _GLState()
         try:
@@ -1597,9 +1612,6 @@ class TileCacheMasked:
                 for r in subtree_rects_by_root.get(p.key, ()):
                     draw_state = self.key_to_draw_state.get(r.key)
                     size_change = draw_state.size_change if draw_state else False
-
-                    tile_ctx = self._key_to_ctx.get(r.key)
-
                     t_child = self._tiles.get(r.key)
                     is_self = (r.key == p.key)
 
@@ -1667,7 +1679,8 @@ class TileCacheMasked:
                             gl.glUniform1f(self._loc_maskr_uRankNorm, rank_norm)
                             gl.glUniform2f(self._loc_maskr_uRectSize, float(iw), float(ih))
                             gl.glUniform1f(self._loc_maskr_uCornerRadius, r.corner_radius)
-                            gl.glUniform1f(self._loc_maskr_uMargin, r.draw_state.shadow_margin)
+                            shadow_margin = r.draw_state.shadow_margin if r.draw_state else 0.0
+                            gl.glUniform1f(self._loc_maskr_uMargin, shadow_margin)
 
                         else:
                             gl.glUseProgram(self._prog_mask)
@@ -1720,8 +1733,7 @@ class TileCacheMasked:
             for key in subtree_rects_by_root.keys():
                 for r in subtree_rects_by_root.get(key, ()):
                     draw_state = self.key_to_draw_state.get(r.key)
-                    if draw_state is None:
-                        continue
+
 
                     t = self._tiles.get(r.key)
                     size_change = draw_state.size_change if draw_state else False
@@ -1747,7 +1759,7 @@ class TileCacheMasked:
                     # else:
                     gl.glDisable(gl.GL_BLEND)
 
-                    if (can_use_cached or size_change) and tile_ctx:
+                    if (can_use_cached or size_change) and tile_ctx and not draw_state is None:
                         tx, ty = draw_state.left, draw_state.top
                         tw, th = draw_state.width, draw_state.height
                         x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(tx, ty, tw, th, dp_x, dp_y, s_x, s_y, fb_h)
@@ -1763,8 +1775,9 @@ class TileCacheMasked:
                     #     ix1, iy1 = ix1 - 2, iy1 - 2
                     #     iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
 
-                    if draw_state.width <= 0 or draw_state.height <= 0 or iw <= 0 or ih <= 0 or clip_iw <= 0 or clip_ih <= 0:
+                    if r.w <= 0 or r.h <= 0 or iw <= 0 or ih <= 0 or clip_iw <= 0 or clip_ih <= 0:
                         continue
+
 
                     gl.glEnable(gl.GL_SCISSOR_TEST)
                     gl.glScissor(clip_ix0, clip_iy0, clip_iw, clip_ih)
@@ -1774,8 +1787,10 @@ class TileCacheMasked:
 
                     if can_use_cached:
                         offset = float(depth_and_layer - t.mask_layer) * INV_65535
+                        shadow_margin = r.draw_state.shadow_margin if r.draw_state else 0.0
+
                         self._draw_mask_rect_cached(t.mask_tex, ix0, iy0, iw, ih, offset,
-                                                    r.corner_radius, r.draw_state.shadow_margin)
+                                                    r.corner_radius, shadow_margin)
                     else:
                         rank_norm = float(depth_and_layer) / 65535.5
 
@@ -1787,7 +1802,8 @@ class TileCacheMasked:
                             gl.glUniform1f(self._loc_maskr_uRankNorm, rank_norm)
                             gl.glUniform2f(self._loc_maskr_uRectSize, float(clip_iw), float(clip_ih))
                             gl.glUniform1f(self._loc_maskr_uCornerRadius, cr)
-                            gl.glUniform1f(self._loc_maskr_uMargin, r.draw_state.shadow_margin)
+                            shadow_margin = r.draw_state.shadow_margin if r.draw_state else 0.0
+                            gl.glUniform1f(self._loc_maskr_uMargin, shadow_margin)
 
                         else:
                             gl.glUseProgram(self._prog_mask)
@@ -1806,6 +1822,7 @@ class TileCacheMasked:
             st.restore()
             self._pending.clear()
             self._mask_rects.clear()
+            self._shadow_rects.clear()
             self._enq_mask_keys.clear()
             self._enq_copy_keys.clear()
             self._cancelled_keys.clear()

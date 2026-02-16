@@ -310,6 +310,7 @@ class Melty:
                 Melty.channels_split = True
 
             for view in layer:
+
                 if view is not None:
                     draw_state = view[3]
 
@@ -485,7 +486,7 @@ class Melty:
                 del Melty.registered_windows[window_key]
                 print(f"Deleted window {window_key}")
                 Melty.cache.invalidate_by_obj(Melty.registered_windows)
-                Melty.cache.invalidate_up(draw_state._tile_id, max_depth=6, force=True)
+                Melty.cache.invalidate_up(draw_state._tile_id, max_depth=4, force=True)
             else:
                 print(f"Warning: Tried to delete window but {window_key} not found in registered_windows")
                 print(f"Registered windows: {list(Melty.registered_windows.keys())}")
@@ -511,7 +512,7 @@ class Melty:
 
         if not cls.on_drag:
             Melty.cache.invalidate_by_obj(Melty.registered_windows)
-            Melty.cache.invalidate_up(cls.pending_move_to_front[1]._tile_id, max_depth=6, force=True)
+            Melty.cache.invalidate_up(cls.pending_move_to_front[1]._tile_id, max_depth=4, force=True)
             cls.pending_move_to_front = None
 
     @classmethod
@@ -580,6 +581,61 @@ class Melty:
         return cls.clip_stack[-1]
 
     @classmethod
+    def apply_clip_ds(self, draw_state):
+        x = draw_state.left
+        y = draw_state.top
+        left, top = self.apply_clip((x, y))
+        width, height = draw_state.width, draw_state.height
+        right, bottom = draw_state.left + width, draw_state.top + height
+        right, bottom = self.apply_clip((right, bottom))
+        width, height = right - x, bottom - y
+
+        return (draw_state.left, draw_state.top, width, draw_state.height)
+
+    @classmethod
+    def apply_clip(cls, point, fixed_size_ds=None):
+        x,y = point
+        fix_sized_ds = cls.fixed_size_stack[-1] if len(cls.fixed_size_stack) > 0 else fixed_size_ds
+        if fix_sized_ds is not None and fix_sized_ds.width is not None and fix_sized_ds.height is not None:
+            margin = (len(Melty.bg_stack) + 1) * 2.0
+            clip_rect = (
+                fix_sized_ds.left,
+                fix_sized_ds.top,
+                fix_sized_ds.left + fix_sized_ds.width - margin,
+                fix_sized_ds.top + fix_sized_ds.height
+            )
+        else:
+            clip_rect = cls.get_clip_rect()
+
+
+
+        if clip_rect is None:
+            return x,y
+
+        clip_left, clip_top, clip_right, clip_bottom = clip_rect
+        x = max(clip_left, min(x, clip_right))
+        y = max(clip_top, min(y, clip_bottom))
+        return (x, y)
+
+    @classmethod
+    def apply_clip_x(cls, x):
+
+        x,y = cls.apply_clip((x,0))
+        return x
+
+    @classmethod
+    def apply_clip_width(cls, draw_state):
+        width = draw_state.width
+        fix_sized_ds = cls.fixed_size_stack[-1] if len(cls.fixed_size_stack) > 0 else None
+        if fix_sized_ds is not None and fix_sized_ds.width is not None:
+
+            x = draw_state.left + draw_state.width
+            x, y = cls.apply_clip((x, 0))
+            width = x - draw_state.left
+        return width
+
+
+    @classmethod
     def get_clip_size(cls):
         if len(cls.clip_stack) == 0:
             return None
@@ -622,16 +678,10 @@ class Melty:
         clip_left, clip_top, clip_right, clip_bottom = clip_rect
 
         if draw_state is not None:
-            if draw_state.bg_rect is not None:
-                left = draw_state.bg_rect[0]
-                top = draw_state.bg_rect[1]
-                width = draw_state.bg_rect[2]
-                height = draw_state.bg_rect[3]
-            else:
-                left = draw_state.left
-                top = draw_state.top
-                width = draw_state.width
-                height = draw_state.height
+            left = draw_state.left
+            top = draw_state.top
+            width = draw_state.width
+            height = draw_state.height
         else:
             left, top, width, height = rect
 

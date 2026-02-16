@@ -289,7 +289,7 @@ def draw_header_end(input_value=None, name="", key=None, melty=None, parent_show
 
     if closable:
         close_icon = "\uf00d"
-        if button(f"{close_icon}", z_offset=-0.4, color=(9, 1, 1, 0), channel_offset=5)[0]:
+        if button(f"{close_icon}", shadow=False, color=(9, 1, 1, 0))[0]:
             draw_state.closed = not draw_state.closed
             Melty.cache.invalidate_up_by_obj(Melty.registered_windows)
 
@@ -859,10 +859,10 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
         uv_width_size = 1.0 / zoom_state.zoom
         uv_height_size = uv_width_size * (tex_aspect / view_aspect)
 
-    # 4. Handle Input and Interaction
-    Melty.cache.mask_mark_rect(draw_state, Melty.max_depth - 1, draw_state.shadow_depth,
-                               draw_state.left, draw_state.top, view_width, view_height,
-                               key=f"texture_{original_id}")
+    # # 4. Handle Input and Interaction
+    # Melty.cache.mask_mark_rect(draw_state, Melty.max_z - 1, draw_state.shadow_index,
+    #                            draw_state.left, draw_state.top, view_width, view_height,
+    #                            key=f"texture_{original_id}")
 
     mixed_color = (1, 1, 1, 1)
     highlight_color = (1, 1, 1, 1)
@@ -895,6 +895,7 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
             else:
                 zoom_state.brightness += right_mouse_drag.dx * 0.005
                 zoom_state.contrast -= right_mouse_drag.dy * 0.005
+
 
 
 
@@ -1626,11 +1627,11 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
             color = color if active_drop else inactive_color
 
             top = cursor_top - 1
-            bottom = max(cursor_top, cursor_bottom - 1)
-            left = cursor_left + offset
-            right = cursor_left + draw_state.width - indent_size
-            width = right - left
-            height = bottom - top
+            bottom = max(draw_state.top, cursor_bottom - 1)
+            left = draw_state.left + offset
+            right = draw_state.left + draw_state.width - indent_size
+            width = draw_state.width
+            height = draw_state.height
 
             draw_list.add_rect_filled(left, top, right, bottom,
                                     col=imgui.get_color_u32_rgba(*color), rounding=4.0)

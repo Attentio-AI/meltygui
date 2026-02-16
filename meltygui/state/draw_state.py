@@ -75,16 +75,16 @@ class ZoomState(DictConversion):
          "hotkey_receiver", "use_child", "cst", "search_text", "bg_color", "depth", "z_pos",
          "is_active", "clip_rect", "wrapped_top", "current_tint", "wrapped_left", "multi_line",
          "min_width", "min_height", "is_focused", "drag_window_pos_x", "drag_window_pos_y", "corner_radius",
-         "drag_mode", "is_hovered_last", "bg_shown", "draw_window_pos_x", "bg_rect", "z_offset",
+         "drag_mode", "is_hovered_last", "bg_shown", "draw_window_pos_x", "z_offset",
          "misc_used", "draw_window_pos_y", "drag_delta", "screen_pos", "hover_rects", "melty_window", "auto_resize",
          "imgui_is_item_activated", "frame_count")
 @exclude("current_tint", "overhead_time", "premature_break",
-         "clip_rect", "_input_value", "flow_spacing", "expanded_rect",
+         "clip_rect", "_input_value", "flow_spacing", "expanded_rect", 'max_column',
          'width', "height", "size_change", 'left', 'top',
          "hovered", "wrapped_top", "params", "scroll_visible", "depth_and_layer",
          "premature_break", "wrapped_left", "_did_use_cache", "hover_rects",
          "content_region", "value_hash", "drag_window", "content_region", "did_render",
-         "bounding_hovered", "dlt_count", "clip_rect", "bg_rect",
+         "bounding_hovered", "dlt_count", "clip_rect",
          "header_height", "scrolled", "is_hovered_last", "frame_count")
 @no_save_exclude( 'render_time', 'content_height', 'invalid_content_height', "header_height", "parent_window",
                   'hover_rects', 'nested_window', 'use_cache', 'layer', "header_top", "header_left", "left_offset", "top_offset",
@@ -236,7 +236,6 @@ class DrawState(DictConversion):
         self.clip_rect = None
         self.dlt_count = Melty.save_draw_state_for
         self.premature_break = False
-        self.bg_rect = None
         self.header_left_delta = 0
         self.header_top_delta = 0
         self.multi_line = False
@@ -252,6 +251,12 @@ class DrawState(DictConversion):
 
         self.expanded_rect = (0,0,200,400)
 
+        self.max_column = 1
+
+
+    def mark_column(self, column):
+        self.max_column = max(self.max_column, column)
+
     @property
     def shadow_depth(self):
         depth, active_layer = self.depth_and_layer
@@ -262,7 +267,7 @@ class DrawState(DictConversion):
 
     @property
     def seen(self):
-        debounce = 2
+        debounce = 1
         return self.last_seen is not None and Melty.frame_count - self.last_seen < debounce
 
     def init_cst_state(self, node, module_id: str):
@@ -314,31 +319,14 @@ class DrawState(DictConversion):
 
 
     def get_rect(self):
-        if self.bg_rect is not None:
-            return self.bg_rect
+        width = self.width or 0
+        height = self.height or 0
 
-        if self.left is None or self.top is None or self.width is None or self.height is None:
-            return (0,0,0,0)
-
-        width = self.width
-        height = self.height
-
-        top = self.top
-        left = self.left
-
-        # if self.window_pos is not None:
-        #     top = self.window_pos[1]
-        #     left = self.window_pos[0]
+        top = self.top or 0
+        left = self.left or 0
 
         right = left + width
         bottom = top + height
-
-        # do clipping
-        if self.clip_rect is not None:
-            left = max(left, self.clip_rect[0])
-            top = max(top, self.clip_rect[1])
-            right = min(right, self.clip_rect[2])
-            bottom = min(bottom, self.clip_rect[3])
 
         is_outside = left >= right or top >= bottom
         if is_outside:
@@ -398,31 +386,11 @@ class DrawState(DictConversion):
     def hover_eligible(self, rect=None):
         if self.closed or not Melty.imgui_main_window_hovered:
             return False
-        # if (self._imgui_is_active or self._imgui_is_edited or self._imgui_is_activated or
-        #         self._imgui_is_focused or self._imgui_popover_open):
-        #     return False
-
-        # if (Melty.imgui_any_item_hovered or self._imgui_is_active or
-        #         self._imgui_is_edited or self._imgui_is_activated):
-        #     return False
-
-        mouse_x, mouse_y = imgui.get_mouse_pos()
-        # if Melty.imgui_any_item_hovered:
-        #     return False
-        # if not Melty.inside_clip(rect=(mouse_x, mouse_y, 1, 1)):
-        #     return False
 
         if rect is None:
-            if self.bg_rect is not None:
-                rect = self.bg_rect
-                if imgui.is_mouse_hovering_rect(rect[0], rect[1] - 3, rect[0] + rect[2], rect[1] + rect[3] + 3):
-                    return True
-            else:
-                if self.top is None or self.left is None or self.width is None or self.height is None:
-                    return False
-                rect = (self.left, self.top - 3, self.width, self.height + 3)
-                if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
-                    return True
+            rect = (self.left or 0, (self.top or 0) - 3, (self.width or 0), (self.height or 0) + 3)
+            if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
+                return True
         else:
             if imgui.is_mouse_hovering_rect(rect[0], rect[1] - 3, rect[2], rect[3] + 3):
                 return True
