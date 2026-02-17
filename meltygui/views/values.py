@@ -388,10 +388,8 @@ def draw_window(input_value, view_func=None, draw_state=None, **kwargs):
 
 
 
-@render_func(is_default_for=(MutableMapping, defaultdict), use_cache=False, show_bg=True, z_offset=1,
+@render_func(is_default_for=(MutableMapping, defaultdict), use_cache=False, show_bg=True,
              shadow=True, wrap=False, enable_scroll=True, with_header=draw_header)
-# @with_header(is_default_for=(MutableMapping, defaultdict), use_cache=False,
-#              shadow=True, wrap=False, enable_scroll=True)
 def draw_collection(input_value, draw_state, depth, style_manager,
                     meta, suffix, melty, show_search=True, on_collapse=False, on_drag_up=False, y_offset=0,
                     on_expand=False, width=None, indent_size=10, global_style=None, global_toggles=None,
@@ -680,13 +678,15 @@ def draw_main(input_value, vis, **kwargs):
     return_val = draw_window(Melty.profiles_results, show_bg=True, name="Profile Results")
     return_val2 = draw_window(Melty.registered_windows, is_tree=True, show_add_delete=False, return_extras=True, name="Window Manager",
                               z_absolute=-1)
-    draw_window(test_obj, name="Layer 1")
     draw_window(draw_main, name="Draw Main Function")
     some_enum = ProfileMode.OFF
     draw_enum(some_enum, name="Test Enum", show_bg=True, is_tree=False)
+    draw_window(test_obj, name="Layer 1")
+
+    draw_window(filesystem_proxy, name="Filesystem Test")
 
     draw_window(input_value=proxy, name="CST Proxy")
-    draw_window(filesystem_proxy, name="Filesystem Test")
+
     draw_window(vis.root.lora_collection, name="Test Window 1")
     draw_window(vis.root.lora_collection.loras, name="Test Window 2")
     draw_window(Melty.last_invalid, show_bg=True, name="Last Invalid")

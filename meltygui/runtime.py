@@ -34,13 +34,15 @@ class Melty:
     on_scroll_buffer = deque(maxlen=5)
 
     # list, full with 32 Nones
+    max_depth = 32
     nested_layer_boost = 16
-    top_layer_boost = 7
+    top_layer_boost = 8
     max_layer = 64
     drag_layer = 31
     layers = []
     active_layer = 0
     active_layer_stack = []
+    layer_inc = 1
 
     bg_depth = 0
     seen_unique = set()
@@ -76,12 +78,11 @@ class Melty:
     is_melty_window = False
     melty_window_stack = []
     default_font = None
-    max_depth = 32
     indent_size = 10
     annotation_mode = True
     depth = 0
-    shadow_depth = 2
-    wrapped_depth = 0
+    shadow_depth = 0
+    wrapped_depth =0
     current_indent = 0
     indent_count = 0
     unindent_count = 0
@@ -169,6 +170,8 @@ class Melty:
         cls.original_spacing = style.item_spacing
         cls.original_window_padding = style.window_padding
         cls.original_frame_padding = style.frame_padding
+
+        cls.layer_inc = 0.04 / ((Melty.max_layer - 1.0) * (Melty.max_depth - 1.0)) * 65535.0
 
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
         gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
@@ -315,6 +318,7 @@ class Melty:
             for view in layer:
 
                 if view is not None:
+                    Melty.shadow_depth = 0.0
                     draw_state = view[3]
                     # draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer)
 
@@ -344,10 +348,13 @@ class Melty:
 
                     cls.cache.remove_parent()
 
+            # Sort by y position (draw_state.top)
+
             for d_idx, draw_state in enumerate(cls.root_draw_states_by_layer[idx - 1]):
                 # Melty.cache.mask_mark_view(draw_state.z_pos, draw_state.left,
                 #                            draw_state.top, draw_state.width, draw_state.height,
                 #                            f"view_mask_{draw_state.id}", 4)
+                Melty.shadow_depth = 0.0
 
                 # Melty.depth = draw_state.depth + d_idx
                 Melty.cache.draw_tile(draw_state)

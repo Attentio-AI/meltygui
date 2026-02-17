@@ -262,9 +262,9 @@ class DrawState(DictConversion):
     @property
     def shadow_depth(self):
         depth, active_layer = self.depth_and_layer
-
         divisor = max(1.0, depth - 13.0)
         depth_and_layer = active_layer * Melty.max_depth + (depth * (20.0 / (divisor)))
+        depth_and_layer *= Melty.layer_inc
         return depth_and_layer
 
     @property

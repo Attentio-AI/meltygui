@@ -898,6 +898,7 @@ class TileCacheMasked:
             blend_max = False
         else:
             blend_max = True
+
         self._mask_rects.append(_Rect(draw_state, layer, depth_and_layer, x, y, w, h, key, self._rect_seq, corner_radius, blend_max=blend_max))
 
     def mark_shadow(
@@ -907,6 +908,7 @@ class TileCacheMasked:
         self._rect_seq = (self._rect_seq + 1) & 0xFF
         key = f"shadow_{self._rect_seq}"
         parent_ctx = self._stack[-1] if self._stack else None
+
 
         self._mask_rects.append(
             _Rect(draw_state, layer, depth_and_layer, x, y, w, h, key, self._rect_seq, corner_radius, blend_max=False))
