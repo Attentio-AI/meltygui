@@ -340,16 +340,16 @@ def render_func(*args, **o_kwargs):
                 # Indicates this is not a nested window
                 window_z_pos = list(Melty.registered_windows.keys()).index(window_key) \
                     if window_key in Melty.registered_windows else None
-
-                if window_z_pos == len(Melty.registered_windows) - 1 and not "z_absolute" in kwargs:
-                    window_z_pos = len(Melty.registered_windows) + Melty.top_layer_boost
-                if window_z_pos is not None:
-                    window_z_pos = max(window_z_pos, Melty.active_layer)
+                # if window_z_pos is not None:
+                #     window_z_pos = max(window_z_pos, Melty.active_layer)
 
                 kwargs['layer'] = window_z_pos
 
             if kwargs.get("layer", None) is not None and len(Melty.layers) > 0:
                 layer = kwargs.pop("layer", None)
+
+                if layer == len(Melty.registered_windows) - 1 and not "z_absolute" in kwargs:
+                    layer = len(Melty.registered_windows) + Melty.top_layer_boost
 
                 if kwargs.get("melty_window", False) and Melty.depth > 3:
                     layer = layer + Melty.nested_layer_boost
@@ -530,19 +530,22 @@ def render_func(*args, **o_kwargs):
                 draw_state.z_offset = kwargs.get("z_offset", 0)
                 draw_state.selected = False
 
-            new_active_layer = False
+            new_active_layer = 0
             if draw_state.context_menu_open:
                 draw_state.selected = True
-                draw_state.z_offset = kwargs.get("z_offset", 0)
-                Melty.active_layer_stack.append(55)
-                new_active_layer = True
+                kwargs["z_absolute"] = 40
+
 
             if melty_window or kwargs.get("z_absolute", None) is not None or len(Melty.active_layer_stack) == 0:
                 if kwargs.get("z_absolute", None) is not None:
                     Melty.active_layer_stack.append(kwargs.get("z_absolute", Melty.active_layer))
+                    new_active_layer += 1
+
+                elif len(Melty.active_layer_stack) == 0:
+                    Melty.active_layer_stack.append(Melty.active_layer)
+                    new_active_layer += 1
                 else:
-                    Melty.active_layer_stack.append(Melty.active_layer + 2)
-                new_active_layer = True
+                    Melty.active_layer_stack[-1] = Melty.active_layer
 
             Melty.depth = Melty.depth + 1
 
@@ -551,6 +554,7 @@ def render_func(*args, **o_kwargs):
             else:
                 Melty.shadow_depth = Melty.shadow_depth + draw_state.z_offset
 
+
             if kwargs.get("z_absolute", None) is not None:
                 if kwargs.get("z_absolute", 0) < 3:
                     draw_state.shadow_margin = 1.5
@@ -558,7 +562,7 @@ def render_func(*args, **o_kwargs):
                 draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer_stack[-1])
             else:
                 draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer_stack[-1])
-                if draw_state.z_offset < -1 or draw_state.scroll_visible:
+                if draw_state.z_offset < -1:
                     draw_state.shadow_margin = 1.5
                 else:
                     draw_state.shadow_margin = 0
@@ -983,6 +987,7 @@ def render_func(*args, **o_kwargs):
                             ctx_ds.window_pos = (0, 0)
                             Melty.move_window_to_front(ctx_ds)
 
+
                         if ctx_ds.closed:
                             draw_state.context_menu_open = False
 
@@ -1258,8 +1263,8 @@ def render_func(*args, **o_kwargs):
                         True):
 
 
-                    Melty.cache.mark_shadow(layer=draw_state.z_pos, depth_and_layer=max(30.0, draw_state.shadow_depth) + 20,
-                                            x=draw_state.left + 2, y=draw_state.top + 2,
+                    Melty.cache.mark_shadow(layer=draw_state.z_pos + 1, depth_and_layer=max(30.0, draw_state.shadow_depth) + 10,
+                                            x=draw_state.left + 2, y= draw_state.top + draw_state.shadow_margin,
                                             w=draw_state.width - 4,
                                             h=draw_state.header_height,
                                             corner_radius=draw_state.corner_radius)
@@ -1340,8 +1345,6 @@ def render_func(*args, **o_kwargs):
             draw_state._hovered = False
             draw_state.hotkey_receiver = False
             draw_state.last_seen = Melty.frame_count
-            if new_active_layer:
-                Melty.active_layer_stack.pop()
 
             if is_root:
                 style.item_spacing = Melty.original_spacing
@@ -1361,6 +1364,12 @@ def render_func(*args, **o_kwargs):
         except Exception as e:
             print_colored_traceback(*sys.exc_info())
         finally:
+
+            if new_active_layer > 0:
+                for i in range(new_active_layer):
+                    Melty.active_layer_stack.pop()
+            Melty.shadow_depth = start_shadow_depth
+
             draw_state.frame_count += 1
             if Melty.imgui_crashed:
                 if return_extras:
@@ -1368,7 +1377,6 @@ def render_func(*args, **o_kwargs):
                 return False, None
             if inc_depth:
                 Melty.depth = Melty.depth - 1
-                Melty.shadow_depth = start_shadow_depth
                 Melty.unique_stack.pop()
 
             use_cache = kwargs.get("use_cache", False) and Melty.cache.enabled

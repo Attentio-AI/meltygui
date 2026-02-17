@@ -34,9 +34,9 @@ class Melty:
     on_scroll_buffer = deque(maxlen=5)
 
     # list, full with 32 Nones
-    nested_layer_boost = 15
-    top_layer_boost = 14
-    max_layer = 32
+    nested_layer_boost = 16
+    top_layer_boost = 7
+    max_layer = 64
     drag_layer = 31
     layers = []
     active_layer = 0
@@ -76,7 +76,7 @@ class Melty:
     is_melty_window = False
     melty_window_stack = []
     default_font = None
-    max_depth = 20
+    max_depth = 32
     indent_size = 10
     annotation_mode = True
     depth = 0
@@ -305,6 +305,7 @@ class Melty:
             layer = cls.layers[idx]
             imgui.set_cursor_screen_pos((0, 0))
             Melty.active_layer = idx
+            Melty.active_layer_stack = []
 
             if not Melty.channels_split:
                 imgui.get_window_draw_list().channels_split(Melty.max_depth)
@@ -348,7 +349,7 @@ class Melty:
                 #                            draw_state.top, draw_state.width, draw_state.height,
                 #                            f"view_mask_{draw_state.id}", 4)
 
-                Melty.depth = draw_state.depth + d_idx
+                # Melty.depth = draw_state.depth + d_idx
                 Melty.cache.draw_tile(draw_state)
                 last_bounding_hovered = draw_state._bounding_hovered
                 new_bounding_hovered = draw_state.is_bounding_hovered()
@@ -508,10 +509,12 @@ class Melty:
 
         if not cls.imgui_active:
             window_key = cls.pending_move_to_front[0]
-            window_z_pos = len(Melty.registered_windows) + Melty.top_layer_boost
+            window_z_pos = Melty.max_layer - 1 + Melty.top_layer_boost
             cls.pending_move_to_front[1].layer = window_z_pos
+            draw_state = cls.pending_move_to_front[1]
             if cls.pending_move_to_front[1]._is_nested:
-                cls.pending_move_to_front[1].layer += Melty.nested_layer_boost
+                draw_state.layer += Melty.nested_layer_boost
+                # draw_state.z_pos = (draw_state.layer * Melty.max_depth) + draw_state.depth
             if window_key in Melty.registered_windows:
                 # Remove and re-insert to move to end (top)
                 window = Melty.registered_windows.pop(window_key)

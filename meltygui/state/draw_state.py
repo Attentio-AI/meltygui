@@ -120,7 +120,7 @@ class DrawState(DictConversion):
         self.channel = 0
         self.last_seen = None
         self.z_offset = 0
-        self.shadow_margin = 2
+        self.shadow_margin = 0
         self.bg_depth = 0
 
         self.context_menu_open = False
@@ -156,7 +156,7 @@ class DrawState(DictConversion):
         self.scroll_visible = False
         self._unmanaged_window = False
         self.live = False
-
+        self._shadow_depth = 0
         self.shadow = True
         self.cst = None
         self.window_pos = None

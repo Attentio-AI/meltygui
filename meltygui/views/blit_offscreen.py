@@ -1671,7 +1671,7 @@ class TileCacheMasked:
                     iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
 
                     if use_child_cache:
-                        offset = float(depth_and_layer - t_child.mask_layer) * INV_65535
+                        offset = (float(depth_and_layer) - float(t_child.mask_layer)) * float(INV_65535)
                         self._draw_mask_rect_cached(
                             t_child.mask_tex,
                             ix0,
@@ -1807,7 +1807,8 @@ class TileCacheMasked:
                     depth_and_layer = r.depth_and_layer
 
                     if can_use_cached:
-                        offset = float(depth_and_layer - t.mask_layer) * INV_65535
+                        offset = (float(depth_and_layer) - float(t.mask_layer)) * float(INV_65535)
+
                         shadow_margin = r.draw_state.shadow_margin if r.draw_state is not None else 0.0
 
                         self._draw_mask_rect_cached(t.mask_tex, ix0, iy0, iw, ih, offset,
