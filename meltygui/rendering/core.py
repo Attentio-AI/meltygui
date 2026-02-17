@@ -1256,7 +1256,9 @@ def render_func(*args, **o_kwargs):
                 if "with_header" in kwargs and kwargs.get("with_header", None) is not None and kwargs.get(
                         "show_header",
                         True):
-                    Melty.cache.mark_shadow(layer=draw_state.z_pos, depth_and_layer=draw_state.shadow_depth + 67,
+
+
+                    Melty.cache.mark_shadow(layer=draw_state.z_pos, depth_and_layer=max(30.0, draw_state.shadow_depth) + 20,
                                             x=draw_state.left + 2, y=draw_state.top + 2,
                                             w=draw_state.width - 4,
                                             h=draw_state.header_height,
