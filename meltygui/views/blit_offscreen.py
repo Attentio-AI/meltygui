@@ -84,7 +84,8 @@ class _Rect:
     h: float
     key: str
     order: int
-    corner_radius: float = 0.0  # Corner radius for rounded rectangles
+    corner_radius: float = 6.0  # Corner radius for rounded rectangles
+    blend_max: bool = True
 
 
 # ==============================
@@ -311,9 +312,14 @@ void main() {
     float d = sdRoundedBox(pixelPos, halfSize, r);
 
     if (d > 0.0) {
-        discard;
-    }
+        if (uMargin == 0.0) {
+            oColor = vec4(0.0, 0.0, 0.0, 0.0);
 
+        } else { 
+            discard;
+        }
+    }
+    
     oColor = vec4(uRankNorm, 0.0, 0.0, 1.0);
 }
 """
@@ -881,31 +887,36 @@ class TileCacheMasked:
         self._rect_seq = 0
 
     def mask_mark_rect(
-            self, draw_state:any, layer: int, depth_and_layer: any, x: float, y: float, w: float, h: float, key: str, corner_radius: float = 0.0
+            self, draw_state:any, layer: int, depth_and_layer: any, x: float, y: float, w: float, h: float,
+            key: str, corner_radius: float = 6.0
     ) -> None:
         if key in self._enq_mask_keys:
             return
         self._enq_mask_keys.add(key)
         self._rect_seq = (self._rect_seq + 1) & 0xFF
-        self._mask_rects.append(_Rect(draw_state, layer, depth_and_layer, x, y, w, h, key, self._rect_seq, corner_radius))
+        if draw_state.z_offset < -1:
+            blend_max = False
+        else:
+            blend_max = True
+        self._mask_rects.append(_Rect(draw_state, layer, depth_and_layer, x, y, w, h, key, self._rect_seq, corner_radius, blend_max=blend_max))
 
     def mark_shadow(
-            self, layer: int, depth_and_layer: any, x: float, y: float, w: float, h: float, corner_radius: float = 0.0
+            self, layer: int, depth_and_layer: any, x: float, y: float, w: float, h: float,
+            corner_radius: float = 6.0, draw_state=None,
     ) -> None:
         self._rect_seq = (self._rect_seq + 1) & 0xFF
         key = f"shadow_{self._rect_seq}"
         parent_ctx = self._stack[-1] if self._stack else None
-        layer = parent_ctx.draw_state.z_pos + layer if parent_ctx else layer
-        depth_and_layer = parent_ctx.depth_and_layer + depth_and_layer - 45 if parent_ctx else depth_and_layer
 
         self._mask_rects.append(
-            _Rect(None, layer, depth_and_layer, x, y, w, h, key, self._rect_seq, corner_radius))
+            _Rect(draw_state, layer, depth_and_layer, x, y, w, h, key, self._rect_seq, corner_radius, blend_max=False))
         parent_key = parent_ctx.key if parent_ctx else None
         self._shadow_mask_keys.add(key)
         self.key_to_parent_key[key] = parent_key
 
     def mask_mark_view(
-            self, draw_state:any, layer: int, depth_and_layer: any, x: float, y: float, w: float, h: float, key: str, corner_radius: float = 0.0
+            self, draw_state:any, layer: int, depth_and_layer: any, x: float, y: float, w: float,
+            h: float, key: str, corner_radius: float =6.0
     ) -> None:
         self.mask_mark_rect(draw_state, layer, copy(depth_and_layer),  x, y, w, h, key, corner_radius)
 
@@ -1020,19 +1031,20 @@ class TileCacheMasked:
         imgui.push_id(f"{draw_state._tile_id}")
         rkey = draw_state._tile_id
 
-        if draw_state.parent_window is not None and draw_state.parent_window.window_pos:
+        if draw_state.parent_window is not None:
             draw_state.left = (draw_state.parent_window.window_pos[0] + draw_state.window_pos[0] +
-                               draw_state.anchor_offset[0] + (draw_state.left_offset or 0))
+                               draw_state.anchor_offset[0] + draw_state.left_offset)
             draw_state.top = (draw_state.parent_window.window_pos[1] + draw_state.window_pos[1] +
-                              draw_state.anchor_offset[1] + (draw_state.top_offset or 0))
+                              draw_state.anchor_offset[1] + draw_state.top_offset)
 
         t = self._tiles.get(rkey)
         size = (draw_state.width, draw_state.height)
-        layer = Melty.z_pos
+        layer = draw_state.z_pos
+
         has_area = size is not None and size[0] != 0 and size[1] != 0
         use_image = t and has_area and (t.size == (size[0], size[1])) and (not self._is_dirty(t))
         if has_area and not draw_state.closed and use_image:
-            corner_radius = getattr(draw_state, "corner_radius", 0.0) or 0.0
+            corner_radius = getattr(draw_state, "corner_radius", 6.0) or 6.0
             self.mask_mark_view(
                 draw_state,
                 layer,
@@ -1198,7 +1210,7 @@ class TileCacheMasked:
         clipped = self._clip_rect(x, y, w, h, clip)
         self._key_to_ctx[ctx.key] = ctx
 
-        corner_radius = getattr(ctx.draw_state, "corner_radius", 0.0) or 0.0
+        corner_radius = getattr(ctx.draw_state, "corner_radius", 6.0) or 6.0
 
         if ctx.size:
             if clipped:
@@ -1385,6 +1397,7 @@ class TileCacheMasked:
         ix1, iy1 = int(snap_int(x1)), int(snap_int(y1))
         iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
 
+
         if iw <= 0 or ih <= 0:
             return
 
@@ -1394,31 +1407,22 @@ class TileCacheMasked:
         can_use_cached = use_cached and (t is not None) and (not self._is_dirty(t)) and (t.mask_tex is not None)
 
         if can_use_cached:
-            if r.corner_radius > 0:
-                gl.glUseProgram(self._prog_mask_textured_rounded)
-                gl.glActiveTexture(gl.GL_TEXTURE0)
-                gl.glBindTexture(gl.GL_TEXTURE_2D, t.mask_tex)
-                gl.glUniform1i(self._loc_texr_uTex, 0)
-                gl.glUniform2f(self._loc_texr_uRectSize, float(iw), float(ih))
-                gl.glUniform1f(self._loc_texr_uCornerRadius, r.corner_radius)
-                gl.glUniform1f(self._loc_texr_uMargin, shadow_margin)
+            gl.glUseProgram(self._prog_mask_textured_rounded)
+            gl.glActiveTexture(gl.GL_TEXTURE0)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, t.mask_tex)
+            gl.glUniform1i(self._loc_texr_uTex, 0)
+            gl.glUniform2f(self._loc_texr_uRectSize, float(iw), float(ih))
+            gl.glUniform1f(self._loc_texr_uCornerRadius, r.corner_radius)
+            gl.glUniform1f(self._loc_texr_uMargin, shadow_margin)
 
-            else:
-                gl.glUseProgram(self._prog_mask_textured)
-                gl.glActiveTexture(gl.GL_TEXTURE0)
-                gl.glBindTexture(gl.GL_TEXTURE_2D, t.mask_tex)
-                gl.glUniform1i(self._loc_tex_uTex, 0)
         else:
-            if r.corner_radius > 0:
-                gl.glUseProgram(self._prog_mask_rounded)
-                gl.glUniform1f(self._loc_maskr_uRankNorm, float(r.layer) * INV_65535)
-                gl.glUniform2f(self._loc_maskr_uRectSize, float(iw), float(ih))
-                gl.glUniform1f(self._loc_maskr_uCornerRadius, r.corner_radius)
-                gl.glUniform1f(self._loc_maskr_uMargin, shadow_margin)
+            gl.glUseProgram(self._prog_mask_rounded)
+            gl.glUniform1f(self._loc_maskr_uRankNorm, float(r.layer) * INV_65535)
+            gl.glUniform2f(self._loc_maskr_uRectSize, float(iw), float(ih))
+            gl.glUniform1f(self._loc_maskr_uCornerRadius, r.corner_radius)
+            gl.glUniform1f(self._loc_maskr_uMargin, shadow_margin)
 
-            else:
-                gl.glUseProgram(self._prog_mask)
-                gl.glUniform1f(self._loc_mask_uRankNorm, float(r.layer) * INV_65535)
+
 
         gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
 
@@ -1544,7 +1548,7 @@ class TileCacheMasked:
                 # gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
 
                 for r in subtree_rects_by_root.get(p.key, ()):
-                    self._draw_mask_rect_fresh(r, dp_x, dp_y, s_x, s_y, fb_h, float(r.layer) * INV_65535)
+                    self._draw_mask_rect_fresh(r, dp_x, dp_y, s_x, s_y, fb_h, float(r.layer) * INV_65535, shadow_margin=0.0)
 
                 # Copy pixels to tile
                 gl.glUseProgram(self._prog_copy)
@@ -1610,6 +1614,7 @@ class TileCacheMasked:
                 last_depth_and_layer = -1
 
                 for r in subtree_rects_by_root.get(p.key, ()):
+
                     draw_state = self.key_to_draw_state.get(r.key)
                     size_change = draw_state.size_change if draw_state else False
                     t_child = self._tiles.get(r.key)
@@ -1622,6 +1627,12 @@ class TileCacheMasked:
                             and (not size_change)
                     )
 
+                    if r.blend_max and use_child_cache:
+                        gl.glEnable(gl.GL_BLEND)
+                        gl.glBlendEquation(gl.GL_MAX)
+                        gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
+                    else:
+                        gl.glDisable(gl.GL_BLEND)
                     # For cached tiles, use actual tile size from context to avoid stretching
                     if use_child_cache:
                         child_ctx = self._key_to_ctx.get(r.key)
@@ -1652,6 +1663,7 @@ class TileCacheMasked:
 
                     if iw <= 0 or ih <= 0:
                         continue
+
                     depth_and_layer = r.depth_and_layer
 
                     ix0, iy0 = ix0, iy0
@@ -1668,7 +1680,7 @@ class TileCacheMasked:
                             ih,
                             offset,
                             r.corner_radius,
-                            r.draw_state.shadow_margin if r.draw_state else 0.0
+                            r.draw_state.shadow_margin if r.draw_state is not None else 0.0
                         )
                     else:
                         rank_norm = float(depth_and_layer) / 65535.5
@@ -1679,7 +1691,7 @@ class TileCacheMasked:
                             gl.glUniform1f(self._loc_maskr_uRankNorm, rank_norm)
                             gl.glUniform2f(self._loc_maskr_uRectSize, float(iw), float(ih))
                             gl.glUniform1f(self._loc_maskr_uCornerRadius, r.corner_radius)
-                            shadow_margin = r.draw_state.shadow_margin if r.draw_state else 0.0
+                            shadow_margin = r.draw_state.shadow_margin if r.draw_state is not None else 0.0
                             gl.glUniform1f(self._loc_maskr_uMargin, shadow_margin)
 
                         else:
@@ -1759,6 +1771,15 @@ class TileCacheMasked:
                     # else:
                     gl.glDisable(gl.GL_BLEND)
 
+                    #gl.glDisable(gl.GL_BLEND)
+
+                    # if r.blend_max and can_use_cached:
+                    #     gl.glEnable(gl.GL_BLEND)
+                    #     gl.glBlendEquation(gl.GL_MAX)
+                    #     gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
+                    # else:
+                    #     gl.glDisable(gl.GL_BLEND)
+
                     if (can_use_cached or size_change) and tile_ctx and not draw_state is None:
                         tx, ty = draw_state.left, draw_state.top
                         tw, th = draw_state.width, draw_state.height
@@ -1787,7 +1808,7 @@ class TileCacheMasked:
 
                     if can_use_cached:
                         offset = float(depth_and_layer - t.mask_layer) * INV_65535
-                        shadow_margin = r.draw_state.shadow_margin if r.draw_state else 0.0
+                        shadow_margin = r.draw_state.shadow_margin if r.draw_state is not None else 0.0
 
                         self._draw_mask_rect_cached(t.mask_tex, ix0, iy0, iw, ih, offset,
                                                     r.corner_radius, shadow_margin)
@@ -1802,7 +1823,7 @@ class TileCacheMasked:
                             gl.glUniform1f(self._loc_maskr_uRankNorm, rank_norm)
                             gl.glUniform2f(self._loc_maskr_uRectSize, float(clip_iw), float(clip_ih))
                             gl.glUniform1f(self._loc_maskr_uCornerRadius, cr)
-                            shadow_margin = r.draw_state.shadow_margin if r.draw_state else 0.0
+                            shadow_margin = r.draw_state.shadow_margin if r.draw_state is not None else 0.0
                             gl.glUniform1f(self._loc_maskr_uMargin, shadow_margin)
 
                         else:

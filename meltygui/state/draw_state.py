@@ -120,7 +120,7 @@ class DrawState(DictConversion):
         self.channel = 0
         self.last_seen = None
         self.z_offset = 0
-        self.shadow_margin = 0
+        self.shadow_margin = 2
         self.bg_depth = 0
 
         self.context_menu_open = False
@@ -252,6 +252,8 @@ class DrawState(DictConversion):
         self.expanded_rect = (0,0,200,400)
 
         self.max_column = 1
+        self._window_stack = None
+        self._is_nested = False
 
 
     def mark_column(self, column):

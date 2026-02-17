@@ -34,6 +34,8 @@ class Melty:
     on_scroll_buffer = deque(maxlen=5)
 
     # list, full with 32 Nones
+    nested_layer_boost = 15
+    top_layer_boost = 14
     max_layer = 32
     drag_layer = 31
     layers = []
@@ -313,12 +315,18 @@ class Melty:
 
                 if view is not None:
                     draw_state = view[3]
+                    # draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer)
+
+                    # if draw_state._window_stack is not None:
+                    #     Melty.melty_window_stack = draw_state._window_stack
 
                     parent_ctx = view[5]
                     current_z_pos = view[6]
                     cursor_pos = view[7]
                     Melty.depth = current_z_pos
                     Melty.bg_depth = draw_state.bg_depth - 1
+                    # Melty.shadow_depth = draw_state.depth_and_layer[0]
+                    # Melty.active_layer = draw_state.depth_and_layer[1]
 
                     cls.cache.insert_parent(parent_ctx)
 
@@ -335,7 +343,7 @@ class Melty:
 
                     cls.cache.remove_parent()
 
-            for d_idx, draw_state in enumerate(cls.root_draw_states_by_layer[idx]):
+            for d_idx, draw_state in enumerate(cls.root_draw_states_by_layer[idx - 1]):
                 # Melty.cache.mask_mark_view(draw_state.z_pos, draw_state.left,
                 #                            draw_state.top, draw_state.width, draw_state.height,
                 #                            f"view_mask_{draw_state.id}", 4)
@@ -500,8 +508,10 @@ class Melty:
 
         if not cls.imgui_active:
             window_key = cls.pending_move_to_front[0]
-            window_z_pos = len(Melty.registered_windows) + 8
+            window_z_pos = len(Melty.registered_windows) + Melty.top_layer_boost
             cls.pending_move_to_front[1].layer = window_z_pos
+            if cls.pending_move_to_front[1]._is_nested:
+                cls.pending_move_to_front[1].layer += Melty.nested_layer_boost
             if window_key in Melty.registered_windows:
                 # Remove and re-insert to move to end (top)
                 window = Melty.registered_windows.pop(window_key)
