@@ -35,8 +35,8 @@ class Melty:
 
     # list, full with 32 Nones
     max_depth = 32
-    nested_layer_boost = 16
-    top_layer_boost = 8
+    nested_layer_boost = 5
+    top_layer_boost = 4
     max_layer = 64
     drag_layer = 31
     layers = []

@@ -193,7 +193,6 @@ class DrawState(DictConversion):
         self.top = None
         self.left = None
         self.left_offset = 0
-        self.anchor_offset = (0,0)
         self.top_offset = 0
         self._draggable = False
         self.search_text = ""
@@ -254,6 +253,52 @@ class DrawState(DictConversion):
         self.max_column = 1
         self._window_stack = None
         self._is_nested = False
+        self.anchor_pos = Anchor.TOP_LEFT
+
+    @property
+    def anchor_offset(self):
+        anchor_margin = 3
+        offset = (0, 0)
+
+        if self.anchor_pos == Anchor.TOP_LEFT:
+            offset = (0, 0)
+        elif self.anchor_pos == Anchor.TOP_RIGHT:
+            offset = (-self.width, 0)
+        elif self.anchor_pos == Anchor.BOTTOM_LEFT:
+            offset = (0, -self.height + -anchor_margin)
+        elif self.anchor_pos == Anchor.BOTTOM_RIGHT:
+            offset = (-self.width, -self.height + -anchor_margin)
+        return offset
+
+    def _abs_left(self):
+        parent_left = 0
+        if self.parent_window is not None:
+            parent_left = self.parent_window._abs_left()
+
+        window_pos_x = self.window_pos[0] if self.window_pos is not None else 0
+        # this_left_offset = self.left_offset if not self.melty_window else window_pos_x
+        anchor = self.anchor_offset
+
+        this_left = window_pos_x + parent_left + self.left_offset + anchor[0]
+        return this_left
+
+    def _abs_top(self):
+        parent_top = 0
+        if self.parent_window is not None:
+            parent_top = self.parent_window._abs_top()
+
+        anchor = self.anchor_offset
+        window_pos_y = self.window_pos[1] if self.window_pos is not None else 0
+        this_top = window_pos_y + parent_top + self.top_offset + anchor[1]
+        return this_top
+
+    @property
+    def abs_left(self):
+        return self._abs_left()
+
+    @property
+    def abs_top(self):
+        return self._abs_top()
 
 
     def mark_column(self, column):

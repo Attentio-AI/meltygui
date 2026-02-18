@@ -317,9 +317,7 @@ def render_func(*args, **o_kwargs):
         if len(Melty.melty_window_stack) > 0:
             draw_state.parent_window = Melty.melty_window_stack[-1]
             draw_state.left_offset, draw_state.top_offset = (imgui.get_cursor_screen_pos()[0] - draw_state.parent_window.left,
-                                                             imgui.get_cursor_screen_pos()[1] -
-                                                             draw_state.parent_window.top +
-                                                             draw_state.parent_window.header_height)
+                                                             imgui.get_cursor_screen_pos()[1] - draw_state.parent_window.top)
 
         # Handle untracked object invalidation
         if not hasattr(input_value, "__melty__"):
@@ -342,8 +340,8 @@ def render_func(*args, **o_kwargs):
                 # Indicates this is not a nested window
                 window_z_pos = list(Melty.registered_windows.keys()).index(window_key) \
                     if window_key in Melty.registered_windows else None
-                # if window_z_pos is not None:
-                #     window_z_pos = max(window_z_pos, Melty.active_layer)
+                if window_z_pos is not None:
+                    window_z_pos = max(window_z_pos, Melty.active_layer)
 
                 kwargs['layer'] = window_z_pos
 
@@ -731,15 +729,7 @@ def render_func(*args, **o_kwargs):
 
                 anchor_pos = kwargs.get("anchor", Anchor.TOP_LEFT)
                 anchor_margin = 3
-                draw_state.anchor_offset = (0, 0) # Top Left
-                if anchor_pos == Anchor.TOP_LEFT:
-                    draw_state.anchor_offset = (0, 0)
-                elif anchor_pos == Anchor.TOP_RIGHT:
-                    draw_state.anchor_offset = (-draw_state.width, 0)
-                elif anchor_pos == Anchor.BOTTOM_LEFT:
-                    draw_state.anchor_offset = (0, -draw_state.height + -anchor_margin)
-                elif anchor_pos == Anchor.BOTTOM_RIGHT:
-                    draw_state.anchor_offset = (-draw_state.width, -draw_state.height + -anchor_margin)
+                draw_state.anchor_pos = anchor_pos
 
                 window_origin = cursor_pos
                 if draw_state.parent_window is not None and draw_state.parent_window.window_pos is not None:
@@ -747,10 +737,7 @@ def render_func(*args, **o_kwargs):
                                         draw_state.parent_window.window_pos[1])
 
 
-                imgui.set_cursor_screen_pos((snap_int(window_origin[0] + draw_state.window_pos[0] +
-                                                      draw_state.anchor_offset[0] + draw_state.left_offset),
-                                                snap_int(window_origin[1] + draw_state.window_pos[1] +
-                                                         draw_state.anchor_offset[1] + draw_state.top_offset)))
+                imgui.set_cursor_screen_pos((snap_int(draw_state.abs_left), snap_int(draw_state.abs_top)))
 
 
                 # imgui.set_cursor_screen_pos((snap_int(cursor_pos[0] + draw_state.window_pos[0]),
@@ -789,10 +776,8 @@ def render_func(*args, **o_kwargs):
             draw_state.left, draw_state.top = imgui.get_cursor_screen_pos()
             if (draw_state.parent_window is not None and draw_state.window_pos is not None and
                     draw_state.parent_window.window_pos is not None and closable):
-                draw_state.left = (draw_state.parent_window.window_pos[0] + draw_state.window_pos[0] +
-                                   draw_state.anchor_offset[0] + (draw_state.left_offset))
-                draw_state.top = (draw_state.parent_window.window_pos[1] + draw_state.window_pos[1] +
-                                  draw_state.anchor_offset[1] + (draw_state.top_offset))
+                draw_state.left = draw_state.abs_left
+                draw_state.top = draw_state.abs_top
 
             start_cursor = imgui.get_cursor_screen_pos()
 

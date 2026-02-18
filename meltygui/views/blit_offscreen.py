@@ -1034,10 +1034,8 @@ class TileCacheMasked:
         rkey = draw_state._tile_id
 
         if draw_state.parent_window is not None:
-            draw_state.left = (draw_state.parent_window.window_pos[0] + draw_state.window_pos[0] +
-                               draw_state.anchor_offset[0] + draw_state.left_offset)
-            draw_state.top = (draw_state.parent_window.window_pos[1] + draw_state.window_pos[1] +
-                              draw_state.anchor_offset[1] + draw_state.top_offset)
+            draw_state.left = draw_state.abs_left
+            draw_state.top = draw_state.abs_top
 
         t = self._tiles.get(rkey)
         size = (draw_state.width, draw_state.height)
