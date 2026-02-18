@@ -318,7 +318,7 @@ class Melty:
             for view in layer:
 
                 if view is not None:
-                    Melty.shadow_depth = 0.0
+                    # Melty.shadow_depth = 0.0
                     draw_state = view[3]
                     # draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer)
 
@@ -354,9 +354,8 @@ class Melty:
                 # Melty.cache.mask_mark_view(draw_state.z_pos, draw_state.left,
                 #                            draw_state.top, draw_state.width, draw_state.height,
                 #                            f"view_mask_{draw_state.id}", 4)
-                Melty.shadow_depth = 0.0
 
-                # Melty.depth = draw_state.depth + d_idx
+                Melty.depth = draw_state.depth + d_idx
                 Melty.cache.draw_tile(draw_state)
                 last_bounding_hovered = draw_state._bounding_hovered
                 new_bounding_hovered = draw_state.is_bounding_hovered()
@@ -516,7 +515,7 @@ class Melty:
 
         if not cls.imgui_active:
             window_key = cls.pending_move_to_front[0]
-            window_z_pos = Melty.max_layer - 1 + Melty.top_layer_boost
+            window_z_pos = len(Melty.registered_windows) + Melty.top_layer_boost
             cls.pending_move_to_front[1].layer = window_z_pos
             draw_state = cls.pending_move_to_front[1]
             if cls.pending_move_to_front[1]._is_nested:

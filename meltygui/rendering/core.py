@@ -152,6 +152,7 @@ def render_func(*args, **o_kwargs):
             if annotation is not None:
                 return annotation
 
+
         passed_width = kwargs.get('width', None)
         passed_height = kwargs.get('height', None)
 
@@ -245,11 +246,12 @@ def render_func(*args, **o_kwargs):
         draw_state._tile_id = tile_id
         start_shadow_depth = Melty.shadow_depth
         draw_state.bg_depth = Melty.bg_depth
+        closable = kwargs.get("closable", False)
 
         window_key = tile_id
         draw_state.persistent = kwargs.get("persistent", True)
 
-        if kwargs.get("closable", False):
+        if closable:
             Melty.registered_windows[tile_id].input_value = input_value
             Melty.registered_windows[tile_id].draw_state = draw_state
             Melty.registered_windows[tile_id].window_args = kwargs
@@ -599,12 +601,12 @@ def render_func(*args, **o_kwargs):
                         Melty.last_selected = draw_state
                         request_render()
 
-            if draw_state in Melty.selected and not melty_window:
+            if draw_state in Melty.selected:
                 draw_state.selected = True
                 if kwargs.get("shadow", False):
                     draw_state.z_offset = kwargs.get("z_offset", 0) - 2.0
                 else:
-                    draw_state.z_offset = kwargs.get("z_offset", 0) - 2.0
+                    draw_state.z_offset = kwargs.get("z_offset", 0) - 0.5
 
             else:
                 if kwargs.get("shadow", False):
@@ -616,7 +618,7 @@ def render_func(*args, **o_kwargs):
             new_active_layer = 0
             if draw_state.context_menu_open and draw_state.context_menu_ds is not None:
                 draw_state.selected = True
-                kwargs["z_absolute"] = Melty.active_layer + Melty.nested_layer_boost
+                kwargs["z_absolute"] = Melty.max_layer - 4
 
             if melty_window or kwargs.get("z_absolute", None) is not None or len(Melty.active_layer_stack) == 0:
                 if kwargs.get("z_absolute", None) is not None:
@@ -643,7 +645,7 @@ def render_func(*args, **o_kwargs):
                 draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer_stack[-1])
             else:
                 draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer_stack[-1])
-                if draw_state.z_offset < -1.5:
+                if draw_state.z_offset < 0 and (kwargs.get("shadow", False) or draw_state.selected):
                     draw_state.shadow_margin = 1.5
                 else:
                     draw_state.shadow_margin = 0
@@ -673,7 +675,7 @@ def render_func(*args, **o_kwargs):
             ############ HANDLE WINDOW DRAGGING ########################
             imgui_active = Melty.imgui_active or Melty.imgui_popup_open
 
-            if kwargs.get("closable", False):
+            if closable:
 
                 # melty_hovered = draw_state.on_action("on_hover", view_id="window_hover", priority_delta=1)
                 Melty.melty_window_stack.append(draw_state)
@@ -786,7 +788,7 @@ def render_func(*args, **o_kwargs):
             draw_state.use_cache = use_cache
             draw_state.left, draw_state.top = imgui.get_cursor_screen_pos()
             if (draw_state.parent_window is not None and draw_state.window_pos is not None and
-                    draw_state.parent_window.window_pos is not None):
+                    draw_state.parent_window.window_pos is not None and closable):
                 draw_state.left = (draw_state.parent_window.window_pos[0] + draw_state.window_pos[0] +
                                    draw_state.anchor_offset[0] + (draw_state.left_offset))
                 draw_state.top = (draw_state.parent_window.window_pos[1] + draw_state.window_pos[1] +
@@ -979,7 +981,7 @@ def render_func(*args, **o_kwargs):
                                                    tint=mixed_color,
                                                    width=draw_state.width + 40,
                                                    persistent=False, anchor=Anchor.BOTTOM_LEFT, show_tint=False,
-                                                   with_footer=None,
+                                                   with_footer=None, layer=draw_state.layer + Melty.nested_layer_boost + 1,
                                                    name=f"{name}##context_menu_{unique}", auto_resize=True,
                                                    return_extras=True)
                         ctx_ds = returned_val[2]
@@ -1066,7 +1068,7 @@ def render_func(*args, **o_kwargs):
                     if clip_size is None and not auto_resize:
                         clip_size = (draw_state.width, draw_state.height)
                     current_cursor = imgui.get_cursor_screen_pos()
-                    if kwargs.get("closable", False):
+                    if closable:
                         margin = 0
                     else:
                         margin = 10
@@ -1262,7 +1264,7 @@ def render_func(*args, **o_kwargs):
             draw_state._imgui_is_item_hovered = imgui.is_item_hovered()
             item_rect = imgui.get_item_rect_size()
 
-            if kwargs.get("closable", False):
+            if closable:
                 if "with_header" in kwargs and kwargs.get("with_header", None) is not None and kwargs.get(
                         "show_header",
                         True):
@@ -1294,7 +1296,7 @@ def render_func(*args, **o_kwargs):
                 draw_state._imgui_popover_open = Melty.imgui_popup_open
 
             pop_id()
-            if kwargs.get("closable", False):
+            if closable:
                 Melty.melty_window_stack.pop()
             if has_collection:
                 Melty.collection_stack.pop()

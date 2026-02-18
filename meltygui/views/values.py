@@ -366,7 +366,7 @@ def draw_window(input_value, view_func=None, draw_state=None, **kwargs):
             meta.view_function = draw_collection
 
     kwargs['show_bg'] = False
-    kwargs['selectable'] = False
+    kwargs['selectable'] = True
     kwargs['return_extras'] = True
     # kwargs['draw_state'] = draw_state
     kwargs['indent_size'] = 10

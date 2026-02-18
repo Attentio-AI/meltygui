@@ -894,7 +894,7 @@ class TileCacheMasked:
             return
         self._enq_mask_keys.add(key)
         self._rect_seq = (self._rect_seq + 1) & 0xFF
-        if draw_state.z_offset < -1:
+        if draw_state.z_offset < 0:
             blend_max = False
         else:
             blend_max = True
