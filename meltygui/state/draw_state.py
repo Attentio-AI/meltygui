@@ -86,7 +86,7 @@ class ZoomState(DictConversion):
          "content_region", "value_hash", "drag_window", "content_region", "did_render",
          "bounding_hovered", "dlt_count", "clip_rect",
          "header_height", "scrolled", "is_hovered_last", "frame_count")
-@no_save_exclude( 'render_time', 'content_height', 'invalid_content_height', "header_height", "parent_window",
+@no_save_exclude( 'render_time', 'content_height', 'invalid_content_height', "header_height", "parent_window", "pressed",
                   'hover_rects', 'nested_window', 'use_cache', 'layer', "header_top", "header_left", "left_offset", "top_offset",
                  "header_left_delta", "header_top_delta", "last_seen", "persistent", "shadow_margin", "bg_depth", "anchor_pos",
                  'channel', 'next', 'previous', 'index_in_parent', 'relative_pos', 'context_menu_open', 'context_menu_ds')
@@ -122,6 +122,7 @@ class DrawState(DictConversion):
         self.z_offset = 0
         self.shadow_margin = 0
         self.bg_depth = 0
+        self.pressed = False
 
         self.context_menu_open = False
         self.context_menu_ds = None

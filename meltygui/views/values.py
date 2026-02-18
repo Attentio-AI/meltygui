@@ -326,10 +326,10 @@ def draw_header_end(input_value=None, name="", key=None, melty=None, parent_show
     # pop_style_var(2)
 
 
-@render_func(use_cache=True, auto_resize=False, closable=True,
+@render_func(use_cache=True, auto_resize=False, closable=True, selectable=False,
              show_bg=True, melty_window=True, draggable=True, show_tint=True,
              with_header=draw_header, with_header_end=draw_header_end,
-             with_footer=draw_footer)
+             with_footer=draw_footer, z_offset=-2)
 def draw_window(input_value, view_func=None, draw_state=None, **kwargs):
 
     # if draw_state.width is not None and draw_state.height is not None and draw_state.expanded:
@@ -1806,7 +1806,7 @@ def seperator(height):
 def draw_bg(left=0, top=0, width=20, height=20, depth=0, rounding=5.0,
             global_style=None, outline=True, bg_color=None, opacity=1.0,
             style_manager=None, tint=None, outline_tint=None, selected=False,
-            hovered=False, nested_bg=False, **kwargs):
+            hovered=False, pressed=False, nested_bg=False, **kwargs):
     # Render background
     def current_indent_px():
         return Melty.current_indent
@@ -1837,6 +1837,11 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0, rounding=5.0,
     hovered_offset = 0.0
     if selected:
         hovered_offset = 0.2
+    elif pressed:
+        if opacity > 0.5:
+            hovered_offset = 0.05
+        else:
+            hovered_offset = 0.01
     # elif hovered:
     #     hovered_offset = 0.6
 

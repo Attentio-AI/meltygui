@@ -620,7 +620,7 @@ def render_func(*args, **o_kwargs):
                                                    rect=corner_rect)
 
                 if melty_window:
-                    corner_drag = draw_state.on_action("right_mouse_drag", priority_delta=-2)
+                    corner_drag = draw_state.on_action("right_mouse_drag", priority_delta=0)
                     if handle_drag is None:
                         handle_drag = corner_drag
 
@@ -643,11 +643,13 @@ def render_func(*args, **o_kwargs):
                 if draw_state.height is not None and draw_state.min_height is not None:
                     draw_state.height = max(draw_state.height, draw_state.min_height)
 
+
             cursor_pos = imgui.get_cursor_screen_pos()
             if draw_state.window_pos is not None and closable:
                 on_held = draw_state.on_action("left_mouse_held", "window_move", priority_delta=-2)
                 on_drag = draw_state.on_action("left_mouse_drag", "window_move")
-                left_mouse_down = draw_state.on_action("left_mouse_down", "window_move")
+                left_mouse_down = draw_state.on_action("left_mouse_down", "window_move", priority_delta=2)
+
 
                 if left_mouse_down:
                     if len(Melty.melty_window_stack) > 0 and Melty.melty_window_stack[-1].parent_window is None:
@@ -660,19 +662,14 @@ def render_func(*args, **o_kwargs):
                     pos_x = draw_state._initial_window_pos[0] + on_drag.total_dx
                     pos_y = draw_state._initial_window_pos[1] + on_drag.total_dy
                     draw_state.window_pos = (pos_x, pos_y)
+
+                    # draw_state.window_pos = (draw_state.window_pos[0] + on_drag.dx,
+                    #                          draw_state.window_pos[1] + on_drag.dy)
                 else:
                     draw_state._initial_window_pos = None
 
                 anchor_pos = kwargs.get("anchor", Anchor.TOP_LEFT)
-                anchor_margin = 3
                 draw_state.anchor_pos = anchor_pos
-
-                window_origin = cursor_pos
-                if draw_state.parent_window is not None and draw_state.parent_window.window_pos is not None:
-                    window_origin = (draw_state.parent_window.window_pos[0],
-                                        draw_state.parent_window.window_pos[1])
-
-
                 imgui.set_cursor_screen_pos((snap_int(draw_state.abs_left), snap_int(draw_state.abs_top)))
 
 
@@ -837,14 +834,17 @@ def render_func(*args, **o_kwargs):
                                      draw_state.top + draw_state.height))
 
                 if kwargs.get("selectable", True):
+                    left_mouse_down_press = draw_state.on_action("left_mouse_held", "press", priority_delta=2)
+                    draw_state.pressed = True if left_mouse_down_press else False
                     click = draw_state.on_action("left_mouse_click", priority_delta=2)
-                    # down = draw_state.on_action("left_mouse_down")
                     if click:
                         Melty.previous_select = copy(Melty.selected)
                         if not click.modifiers:
                             if len(Melty.selected) == 1 and draw_state in Melty.selected:
                                 Melty.selected.remove(draw_state)
                             else:
+                                for ds in Melty.selected:
+                                    ds.selected = False
                                 Melty.selected = set()
                                 Melty.selected.add(draw_state)
                                 Melty.last_selected = draw_state
@@ -858,6 +858,7 @@ def render_func(*args, **o_kwargs):
 
                         elif click.modifiers == glfw.MOD_SHIFT:
                             if draw_state in Melty.selected:
+                                draw_state.selected = False
                                 Melty.selected.remove(draw_state)
                                 adding = False
                             else:
@@ -895,9 +896,11 @@ def render_func(*args, **o_kwargs):
                                 if id(next_ds) == id(Melty.last_selected):
                                     for item in items_to_select:
                                         if adding:
+                                            item.selected = True
                                             if item not in Melty.selected:
                                                 Melty.selected.add(item)
                                         else:
+                                            item.selected = False
                                             if item in Melty.selected:
                                                 Melty.selected.remove(item)
 
@@ -910,8 +913,23 @@ def render_func(*args, **o_kwargs):
 
                             Melty.last_selected = draw_state
                             request_render()
-                draw_state.selected = draw_state in Melty.selected
-                if draw_state in Melty.selected:
+
+                    draw_state.selected = draw_state in Melty.selected
+
+
+                if draw_state.pressed:
+                    if kwargs.get("shadow", False):
+                        if draw_state.selected:
+                            draw_state.z_offset = kwargs.get("z_offset", 0) - 3.0
+                        else:
+                            draw_state.z_offset = kwargs.get("z_offset", 0) + 1
+                    else:
+                        if draw_state.selected:
+                            draw_state.z_offset = kwargs.get("z_offset", 0) - 1
+                        else:
+                            draw_state.z_offset = kwargs.get("z_offset", 0)
+
+                elif draw_state.selected:
                     if kwargs.get("shadow", False):
                         draw_state.z_offset = kwargs.get("z_offset", 0) - 2.0
                     else:
@@ -1166,7 +1184,8 @@ def render_func(*args, **o_kwargs):
 
 
                 show_bg = kwargs.get("show_bg", False)
-                if show_bg or (draw_state.selected and draw_state.height < 60) or not draw_state.expanded:
+                highlight = draw_state.selected
+                if show_bg or (highlight and draw_state.height < 60) or not draw_state.expanded:
                     draw_state.corner_radius = 5.0
                     from src.lsd.gl_gui.view.core_views.new_core_view import draw_bg
                     style_manager = Melty.global_attrs['style_manager']
@@ -1181,13 +1200,11 @@ def render_func(*args, **o_kwargs):
                         _, bg_color = draw_bg(bypass=True, left=left, top=top,
                                               width=width, height=height, rounding=draw_state.corner_radius,
                                               depth=Melty.shadow_depth, selected=draw_state.selected,
-                                              global_style=global_style, opacity=1.0,
+                                              global_style=global_style, opacity=1.0 if show_bg else 0.0, pressed=draw_state.pressed,
                                               style_manager=style_manager, nested_bg=nested_bg)
 
                     Melty.bg_color_stack.append(bg_color)
                     # Melty.redo_clip(unique)
-
-
 
                 #### MAIN CALL #######################
                 clip_rect = Melty.get_clip_rect()
@@ -1199,7 +1216,7 @@ def render_func(*args, **o_kwargs):
                                                input_value, kwargs, auto_resize,
                                                melty, tile_id, unique, melty_window)
 
-                if show_bg or (draw_state.selected and draw_state.height < 60) or not draw_state.expanded:
+                if show_bg or (highlight and draw_state.height < 60) or not draw_state.expanded:
                     Melty.bg_depth -= 1 + kwargs.get("bg_offset", 0)
                     Melty.bg_stack.pop()
                     Melty.bg_color_stack.pop()

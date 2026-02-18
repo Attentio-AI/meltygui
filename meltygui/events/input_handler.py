@@ -182,7 +182,8 @@ class InputHandler:
 
     __slots__ = (
         '_states', '_hovered', '_prev_hovered', '_pending', '_cursor_x', '_cursor_y',
-        '_modifiers', '_last_dx', '_last_dy', '_drag_capture', '_drag_activated'
+        '_modifiers', '_last_dx', '_last_dy', '_drag_capture', '_drag_activated',
+        '_down_origins'
     )
 
     def __init__(self):
@@ -197,6 +198,7 @@ class InputHandler:
         self._last_dy = 0.0
         self._drag_capture: dict[str, Any] = {}  # input_id -> view_id that captured it on down
         self._drag_activated: dict[str, bool] = {}  # input_id -> whether drag threshold exceeded
+        self._down_origins: dict[str, set] = {}  # input_id -> set of view_ids hovered at down time
 
     def _state(self, input_id: str) -> _InputState:
         s = self._states.get(input_id)
@@ -477,6 +479,7 @@ class InputHandler:
 
         drag_capture = self._drag_capture
         drag_activated = self._drag_activated
+        down_origins = self._down_origins
         states = self._states
         last_dx, last_dy = self._last_dx, self._last_dy
 
@@ -484,7 +487,7 @@ class InputHandler:
             key = (event.input_id, event.action)
             action = event.action
 
-            # On DOWN, capture drag target
+            # On DOWN, capture drag view and record origin views
             if action == Action.DOWN:
                 drag_key = (event.input_id, Action.DRAGGED)
                 capture_views = resolve(drag_key, key_index)
@@ -492,10 +495,14 @@ class InputHandler:
                     drag_capture[event.input_id] = capture_views[0]
                     drag_activated[event.input_id] = False
 
+                # Record all currently hovered views as origin for this input
+                down_origins[event.input_id] = {v for v, _, _ in self._hovered}
+
             # On UP, emit drag_released only if drag was active
             elif action == Action.UP:
                 captured_view = drag_capture.pop(event.input_id, None)
                 was_activated = drag_activated.pop(event.input_id, False)
+                down_origins.pop(event.input_id, None)
                 if captured_view is not None and was_activated:
                     drag_released_key = (event.input_id, Action.DRAG_RELEASED)
 
@@ -518,9 +525,12 @@ class InputHandler:
             for v in resolve(key, key_index):
                 add_event(v, key, event)
 
-        # --- Continuous held events (independent of drag) ---
+        # --- Continuous held events (only to views hovered at DOWN time) ---
         for input_id, state in states.items():
             if not state.is_down:
+                continue
+            origins = down_origins.get(input_id)
+            if not origins:
                 continue
             held_key = (input_id, Action.HELD)
             held_subs = resolve(held_key, key_index)
@@ -529,6 +539,8 @@ class InputHandler:
                 total_dx = lx - state.down_x
                 total_dy = ly - state.down_y
                 for v in held_subs:
+                    if v not in origins:
+                        continue
                     tile_id = tile_cache_get(v, None)
                     held_event = InputEvent(
                         input_id, Action.HELD, tile_id, lx, ly,
