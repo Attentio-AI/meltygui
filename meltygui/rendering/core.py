@@ -336,92 +336,7 @@ def render_func(*args, **o_kwargs):
 
         draw_state._input_value = input_value
 
-        if kwargs.get("selectable", True):
-            click = draw_state.on_action("left_mouse_click", priority_delta=2)
-            # down = draw_state.on_action("left_mouse_down")
-            if click:
-                Melty.previous_select = copy(Melty.selected)
-                if not click.modifiers:
-                    if len(Melty.selected) == 1 and draw_state in Melty.selected:
-                        Melty.selected.remove(draw_state)
-                    else:
-                        Melty.selected = set()
-                        Melty.selected.add(draw_state)
-                        Melty.last_selected = draw_state
-                elif click.modifiers == glfw.MOD_CONTROL:
-                    if draw_state in Melty.selected:
-                        Melty.selected.remove(draw_state)
-                    else:
-                        Melty.selected.add(draw_state)
 
-                    Melty.cache.invalidate(tile_id)
-
-                elif click.modifiers == glfw.MOD_SHIFT:
-                    if draw_state in Melty.selected:
-                        Melty.selected.remove(draw_state)
-                        adding = False
-                    else:
-                        Melty.selected.add(draw_state)
-                        adding = True
-
-                    if Melty.last_selected is not None:
-                        # Check if both have the same parent
-                        it_count = 0
-                        max_iter = 1000
-                        seen = set()
-                        items_to_select = []
-
-                        ds_index = draw_state.index_in_parent
-                        last_index = Melty.last_selected.index_in_parent
-                        go_back = ds_index > last_index
-                        if go_back:
-                            next_ds = draw_state.previous
-                        else:
-                            next_ds = draw_state.next
-
-                        while (id(next_ds) not in seen and
-                               id(next_ds) != id(Melty.last_selected) and
-                               next_ds is not None
-                               and it_count < max_iter):
-                            seen.add(id(next_ds))
-                            items_to_select.append(next_ds)
-
-                            if go_back:
-                                next_ds = next_ds.previous
-                            else:
-                                next_ds = next_ds.next
-                            it_count += 1
-
-                        if id(next_ds) == id(Melty.last_selected):
-                            for item in items_to_select:
-                                if adding:
-                                    if item not in Melty.selected:
-                                        Melty.selected.add(item)
-                                else:
-                                    if item in Melty.selected:
-                                        Melty.selected.remove(item)
-
-                                Melty.cache.invalidate(item._tile_id)
-
-                        Melty.cache.invalidate(draw_state._parent._tile_id)
-                        Melty.cache.invalidate(Melty.last_selected._parent._tile_id)
-
-                        request_render()
-
-                    Melty.last_selected = draw_state
-                    request_render()
-        draw_state.selected = draw_state in Melty.selected
-        if draw_state in Melty.selected:
-            if kwargs.get("shadow", False):
-                draw_state.z_offset = kwargs.get("z_offset", 0) - 2.0
-            else:
-                draw_state.z_offset = kwargs.get("z_offset", 0) - 0.5
-
-        else:
-            if kwargs.get("shadow", False):
-                draw_state.z_offset = kwargs.get("z_offset", 0) + 1
-            else:
-                draw_state.z_offset = kwargs.get("z_offset", 0)
 
         #############################################
         ###### Layer rendering delay
@@ -729,7 +644,7 @@ def render_func(*args, **o_kwargs):
                     draw_state.height = max(draw_state.height, draw_state.min_height)
 
             cursor_pos = imgui.get_cursor_screen_pos()
-            if draw_state.window_pos is not None and melty_window:
+            if draw_state.window_pos is not None and closable:
                 on_held = draw_state.on_action("left_mouse_held", "window_move", priority_delta=-2)
                 on_drag = draw_state.on_action("left_mouse_drag", "window_move")
                 left_mouse_down = draw_state.on_action("left_mouse_down", "window_move")
@@ -920,6 +835,93 @@ def render_func(*args, **o_kwargs):
                     Melty.push_clip((draw_state.left, draw_state.top,
                                      draw_state.left + draw_state.width,
                                      draw_state.top + draw_state.height))
+
+                if kwargs.get("selectable", True):
+                    click = draw_state.on_action("left_mouse_click", priority_delta=2)
+                    # down = draw_state.on_action("left_mouse_down")
+                    if click:
+                        Melty.previous_select = copy(Melty.selected)
+                        if not click.modifiers:
+                            if len(Melty.selected) == 1 and draw_state in Melty.selected:
+                                Melty.selected.remove(draw_state)
+                            else:
+                                Melty.selected = set()
+                                Melty.selected.add(draw_state)
+                                Melty.last_selected = draw_state
+                        elif click.modifiers == glfw.MOD_CONTROL:
+                            if draw_state in Melty.selected:
+                                Melty.selected.remove(draw_state)
+                            else:
+                                Melty.selected.add(draw_state)
+
+                            Melty.cache.invalidate(tile_id)
+
+                        elif click.modifiers == glfw.MOD_SHIFT:
+                            if draw_state in Melty.selected:
+                                Melty.selected.remove(draw_state)
+                                adding = False
+                            else:
+                                Melty.selected.add(draw_state)
+                                adding = True
+
+                            if Melty.last_selected is not None:
+                                # Check if both have the same parent
+                                it_count = 0
+                                max_iter = 1000
+                                seen = set()
+                                items_to_select = []
+
+                                ds_index = draw_state.index_in_parent
+                                last_index = Melty.last_selected.index_in_parent
+                                go_back = ds_index > last_index
+                                if go_back:
+                                    next_ds = draw_state.previous
+                                else:
+                                    next_ds = draw_state.next
+
+                                while (id(next_ds) not in seen and
+                                       id(next_ds) != id(Melty.last_selected) and
+                                       next_ds is not None
+                                       and it_count < max_iter):
+                                    seen.add(id(next_ds))
+                                    items_to_select.append(next_ds)
+
+                                    if go_back:
+                                        next_ds = next_ds.previous
+                                    else:
+                                        next_ds = next_ds.next
+                                    it_count += 1
+
+                                if id(next_ds) == id(Melty.last_selected):
+                                    for item in items_to_select:
+                                        if adding:
+                                            if item not in Melty.selected:
+                                                Melty.selected.add(item)
+                                        else:
+                                            if item in Melty.selected:
+                                                Melty.selected.remove(item)
+
+                                        Melty.cache.invalidate(item._tile_id)
+
+                                Melty.cache.invalidate(draw_state._parent._tile_id)
+                                Melty.cache.invalidate(Melty.last_selected._parent._tile_id)
+
+                                request_render()
+
+                            Melty.last_selected = draw_state
+                            request_render()
+                draw_state.selected = draw_state in Melty.selected
+                if draw_state in Melty.selected:
+                    if kwargs.get("shadow", False):
+                        draw_state.z_offset = kwargs.get("z_offset", 0) - 2.0
+                    else:
+                        draw_state.z_offset = kwargs.get("z_offset", 0) - 0.5
+
+                else:
+                    if kwargs.get("shadow", False):
+                        draw_state.z_offset = kwargs.get("z_offset", 0) + 1
+                    else:
+                        draw_state.z_offset = kwargs.get("z_offset", 0)
                 # if melty_window:
                 #     previous_tint = style_manager.get_tint()
                 #     if hasattr(input_value, 'tint') and getattr(input_value, "tint") is not None:
@@ -1261,7 +1263,6 @@ def render_func(*args, **o_kwargs):
             item_rect = imgui.get_item_rect_size()
 
             if closable:
-
                 absolute_z = kwargs.get("z_absolute", None)
 
                 if absolute_z is not None and absolute_z < 3:

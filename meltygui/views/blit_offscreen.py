@@ -1627,12 +1627,12 @@ class TileCacheMasked:
                             and (not size_change)
                     )
 
-                    if r.blend_max and use_child_cache:
-                        gl.glEnable(gl.GL_BLEND)
-                        gl.glBlendEquation(gl.GL_MAX)
-                        gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
-                    else:
-                        gl.glDisable(gl.GL_BLEND)
+                    # if r.blend_alpha and use_child_cache:
+                    #     gl.glEnable(gl.GL_BLEND)
+                    #     gl.glBlendEquation(gl.GL_MAX)
+                    #     gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
+                    # else:
+                    gl.glDisable(gl.GL_BLEND)
                     # For cached tiles, use actual tile size from context to avoid stretching
                     if use_child_cache:
                         child_ctx = self._key_to_ctx.get(r.key)

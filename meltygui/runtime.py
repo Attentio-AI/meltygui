@@ -534,7 +534,6 @@ class Melty:
                 print(f"Registered windows: {list(Melty.registered_windows.keys())}")
 
         if not cls.window_drag:
-            print("big invalidate")
             Melty.cache.invalidate_by_obj(Melty.registered_windows)
             Melty.cache.invalidate_up(cls.pending_move_to_front[1]._tile_id, max_depth=4, force=True)
             cls.pending_move_to_front = None
