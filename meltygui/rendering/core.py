@@ -330,11 +330,101 @@ def render_func(*args, **o_kwargs):
                 if isinstance(input_value, (type(None), int, float, str, bool, tuple, set)):
                     if draw_state._input_value != input_value:
                         if kwargs.get("collection", None) is not None:
-                            Melty.cache.invalidate_up_by_obj(collection, name=name)
+                            Melty.cache.invalidate_up_by_obj(collection, name=name, max_depth=3)
                             Melty.last_attr = draw_state.name
                             request_render()
 
         draw_state._input_value = input_value
+
+        if kwargs.get("selectable", True):
+            click = draw_state.on_action("left_mouse_click", priority_delta=2)
+            # down = draw_state.on_action("left_mouse_down")
+            if click:
+                Melty.previous_select = copy(Melty.selected)
+                if not click.modifiers:
+                    if len(Melty.selected) == 1 and draw_state in Melty.selected:
+                        Melty.selected.remove(draw_state)
+                    else:
+                        Melty.selected = set()
+                        Melty.selected.add(draw_state)
+                        Melty.last_selected = draw_state
+                elif click.modifiers == glfw.MOD_CONTROL:
+                    if draw_state in Melty.selected:
+                        Melty.selected.remove(draw_state)
+                    else:
+                        Melty.selected.add(draw_state)
+
+                    Melty.cache.invalidate(tile_id)
+
+                elif click.modifiers == glfw.MOD_SHIFT:
+                    if draw_state in Melty.selected:
+                        Melty.selected.remove(draw_state)
+                        adding = False
+                    else:
+                        Melty.selected.add(draw_state)
+                        adding = True
+
+                    if Melty.last_selected is not None:
+                        # Check if both have the same parent
+                        it_count = 0
+                        max_iter = 1000
+                        seen = set()
+                        items_to_select = []
+
+                        ds_index = draw_state.index_in_parent
+                        last_index = Melty.last_selected.index_in_parent
+                        go_back = ds_index > last_index
+                        if go_back:
+                            next_ds = draw_state.previous
+                        else:
+                            next_ds = draw_state.next
+
+                        while (id(next_ds) not in seen and
+                               id(next_ds) != id(Melty.last_selected) and
+                               next_ds is not None
+                               and it_count < max_iter):
+                            seen.add(id(next_ds))
+                            items_to_select.append(next_ds)
+
+                            if go_back:
+                                next_ds = next_ds.previous
+                            else:
+                                next_ds = next_ds.next
+                            it_count += 1
+
+                        if id(next_ds) == id(Melty.last_selected):
+                            for item in items_to_select:
+                                if adding:
+                                    if item not in Melty.selected:
+                                        Melty.selected.add(item)
+                                else:
+                                    if item in Melty.selected:
+                                        Melty.selected.remove(item)
+
+                                Melty.cache.invalidate(item._tile_id)
+
+                        Melty.cache.invalidate(draw_state._parent._tile_id)
+                        Melty.cache.invalidate(Melty.last_selected._parent._tile_id)
+
+                        request_render()
+
+                    Melty.last_selected = draw_state
+                    request_render()
+        draw_state.selected = draw_state in Melty.selected
+        if draw_state in Melty.selected:
+            if kwargs.get("shadow", False):
+                draw_state.z_offset = kwargs.get("z_offset", 0) - 2.0
+            else:
+                draw_state.z_offset = kwargs.get("z_offset", 0) - 0.5
+
+        else:
+            if kwargs.get("shadow", False):
+                draw_state.z_offset = kwargs.get("z_offset", 0) + 1
+            else:
+                draw_state.z_offset = kwargs.get("z_offset", 0)
+
+        #############################################
+        ###### Layer rendering delay
 
         if active_layer is None:
             if (melty.dragged_item is not None and melty.drag_in_progress and
@@ -409,9 +499,6 @@ def render_func(*args, **o_kwargs):
         if not draw_state.expanded:
             kwargs.pop("width", None)
             kwargs.pop("height", None)
-
-
-
 
         has_collection = collection is not None and not isinstance(collection, tuple)
         if has_collection:
@@ -535,96 +622,12 @@ def render_func(*args, **o_kwargs):
                     draw_state.index_in_parent = new_index_in_parent
             Melty.last_draw_state[Melty.depth] = (draw_state, kwargs.get("collection", None))
 
-            if kwargs.get("selectable", True):
-                click = draw_state.on_action("left_mouse_down")
-                if click:
+            # down = draw_state.on_action("left_mouse_down", priority_delta=2)
+            # drag = draw_state.on_action("left_mouse_drag", priority_delta=2)
+            #
+            # up = draw_state.on_action("left_mouse_up", priority_delta=2)
 
-                    if len(Melty.melty_window_stack) > 0 and Melty.melty_window_stack[-1].parent_window is None:
-                        Melty.move_window_to_front(Melty.melty_window_stack[-1])
-                    Melty.previous_select = copy(Melty.selected)
 
-                    if not click.modifiers:
-                        Melty.selected = set()
-                        Melty.selected.add(draw_state)
-                        Melty.last_selected = draw_state
-                        Melty.cache.invalidate(tile_id)
-                    elif click.modifiers == glfw.MOD_CONTROL and click.action == "down":
-                        if draw_state in Melty.selected:
-                            Melty.selected.remove(draw_state)
-                        else:
-                            Melty.selected.add(draw_state)
-
-                        Melty.cache.invalidate(tile_id)
-                        request_render()
-
-                    elif click.modifiers == glfw.MOD_SHIFT and click.action == "down":
-                        if draw_state in Melty.selected:
-                            Melty.selected.remove(draw_state)
-                            adding = False
-                        else:
-                            Melty.selected.add(draw_state)
-                            adding = True
-
-                        if Melty.last_selected is not None:
-                            # Check if both have the same parent
-                            it_count = 0
-                            max_iter = 1000
-                            seen = set()
-                            items_to_select = []
-
-                            ds_index = draw_state.index_in_parent
-                            last_index = Melty.last_selected.index_in_parent
-                            go_back = ds_index > last_index
-                            if go_back:
-                                next_ds = draw_state.previous
-                            else:
-                                next_ds = draw_state.next
-
-                            while (id(next_ds) not in seen and
-                                   id(next_ds) != id(Melty.last_selected) and
-                                   next_ds is not None
-                                   and it_count < max_iter):
-                                seen.add(id(next_ds))
-                                items_to_select.append(next_ds)
-
-                                if go_back:
-                                    next_ds = next_ds.previous
-                                else:
-                                    next_ds = next_ds.next
-                                it_count += 1
-
-                            if id(next_ds) == id(Melty.last_selected):
-                                for item in items_to_select:
-                                    if adding:
-                                        if item not in Melty.selected:
-                                            Melty.selected.add(item)
-                                    else:
-                                        if item in Melty.selected:
-                                            Melty.selected.remove(item)
-
-                                    Melty.cache.invalidate(item._tile_id)
-
-                            Melty.cache.invalidate(draw_state._parent._tile_id)
-                            Melty.cache.invalidate(Melty.last_selected._parent._tile_id)
-
-                            request_render()
-
-                        Melty.last_selected = draw_state
-                        request_render()
-
-            if draw_state in Melty.selected:
-                draw_state.selected = True
-                if kwargs.get("shadow", False):
-                    draw_state.z_offset = kwargs.get("z_offset", 0) - 2.0
-                else:
-                    draw_state.z_offset = kwargs.get("z_offset", 0) - 0.5
-
-            else:
-                if kwargs.get("shadow", False):
-                    draw_state.z_offset = kwargs.get("z_offset", 0) + 1
-                else:
-                    draw_state.z_offset = kwargs.get("z_offset", 0)
-                draw_state.selected = False
 
             new_active_layer = 0
             if draw_state.context_menu_open and draw_state.context_menu_ds is not None:
@@ -699,7 +702,7 @@ def render_func(*args, **o_kwargs):
             if not auto_resize:
                 corner_rect = get_resize_handle(draw_state)
                 handle_drag = draw_state.on_action("left_mouse_drag", view_id="window_resize",
-                                                   rect=corner_rect, priority_delta=2)
+                                                   rect=corner_rect)
 
                 if melty_window:
                     corner_drag = draw_state.on_action("right_mouse_drag", priority_delta=-2)
@@ -727,8 +730,13 @@ def render_func(*args, **o_kwargs):
 
             cursor_pos = imgui.get_cursor_screen_pos()
             if draw_state.window_pos is not None and melty_window:
+                on_held = draw_state.on_action("left_mouse_held", "window_move", priority_delta=-2)
                 on_drag = draw_state.on_action("left_mouse_drag", "window_move")
+                left_mouse_down = draw_state.on_action("left_mouse_down", "window_move")
 
+                if left_mouse_down:
+                    if len(Melty.melty_window_stack) > 0 and Melty.melty_window_stack[-1].parent_window is None:
+                        Melty.move_window_to_front(Melty.melty_window_stack[-1])
                 if on_drag and not imgui_active:
                     if draw_state._initial_window_pos is None:
                         draw_state._initial_window_pos = (draw_state.window_pos[0],
@@ -782,7 +790,6 @@ def render_func(*args, **o_kwargs):
 
 
             ##########################
-
 
             use_cache = kwargs.get("use_cache", False) and Melty.cache.enabled
             draw_state.use_cache = use_cache
@@ -904,13 +911,10 @@ def render_func(*args, **o_kwargs):
                     needs_invalidate = True
                 draw_state.clipped = inside_clip
 
-                if needs_invalidate and not Melty.on_drag and not imgui.is_mouse_down(2):
+                if needs_invalidate and not Melty.window_drag and not imgui.is_mouse_down(2):
                     Melty.cache.invalidate(tile_id, force=True)
 
-
             push_id(unique)
-
-
             if Melty.cache.mark_start_offscreen(draw_state=draw_state):
                 if melty_window:
                     Melty.push_clip((draw_state.left, draw_state.top,
@@ -1294,7 +1298,7 @@ def render_func(*args, **o_kwargs):
                 is_popup_open = Melty.imgui_popup_open
 
                 if is_popup_open != draw_state._imgui_popover_open and not is_popup_open:
-                    Melty.cache.invalidate_up_by_obj(input_value, max_depth=6)
+                    Melty.cache.invalidate_up_by_obj(input_value, max_depth=4)
                 if is_popup_open:
                     Melty.report_imgui_active()
                 draw_state._imgui_popover_open = Melty.imgui_popup_open
@@ -1361,10 +1365,10 @@ def render_func(*args, **o_kwargs):
                 style.window_padding = Melty.original_window_padding
                 style.frame_padding = Melty.original_frame_padding
 
-                if Melty.previous_select is not None:
-                    for prev_select in Melty.previous_select:
-                        Melty.cache.invalidate(prev_select._tile_id)
-                    Melty.previous_select = None
+                # if Melty.previous_select is not None:
+                #     for prev_select in Melty.previous_select:
+                #         Melty.cache.invalidate(prev_select._tile_id)
+                #     Melty.previous_select = None
 
                 if Melty.channels_split:
                     draw_list = imgui.get_window_draw_list()

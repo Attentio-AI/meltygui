@@ -88,7 +88,7 @@ class ZoomState(DictConversion):
          "header_height", "scrolled", "is_hovered_last", "frame_count")
 @no_save_exclude( 'render_time', 'content_height', 'invalid_content_height', "header_height", "parent_window",
                   'hover_rects', 'nested_window', 'use_cache', 'layer', "header_top", "header_left", "left_offset", "top_offset",
-                 "header_left_delta", "header_top_delta", "last_seen", "persistent", "shadow_margin", "bg_depth",
+                 "header_left_delta", "header_top_delta", "last_seen", "persistent", "shadow_margin", "bg_depth", "anchor_pos",
                  'channel', 'next', 'previous', 'index_in_parent', 'relative_pos', 'context_menu_open', 'context_menu_ds')
 @deep_refresh('scroll_offset', "closed")
 class DrawState(DictConversion):
@@ -251,7 +251,6 @@ class DrawState(DictConversion):
         self.expanded_rect = (0,0,200,400)
 
         self.max_column = 1
-        self._window_stack = None
         self._is_nested = False
         self.anchor_pos = Anchor.TOP_LEFT
 
@@ -447,7 +446,12 @@ class DrawState(DictConversion):
             return False
 
         if rect is None:
-            rect = (self.left or 0, (self.top or 0) - 3, (self.width or 0), (self.height or 0) + 3)
+            left = self.left if self.left is not None else 0
+            top = self.top if self.top is not None else 0
+            width = self.width if self.width is not None else 0
+            height = self.height if self.height is not None else 0
+
+            rect = (left, top - 3, width, height + 3)
             if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
                 return True
         else:

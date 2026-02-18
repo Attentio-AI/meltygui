@@ -25,6 +25,7 @@ class Action:
     HOVERED = "hovered"  # Continuous - fires every frame while hovered
     HOVER_ENTER = "hover_enter"  # Once - when hover starts
     HOVER_EXIT = "hover_exit"  # Once - when hover ends
+    HELD = "held"  # Continuous - fires every frame while down but within drag threshold
 
 
 ACTION_ALIASES = {
@@ -42,18 +43,23 @@ ACTION_ALIASES = {
     "on_hover_exit": Action.HOVER_EXIT,
     "unhovered": Action.HOVER_EXIT,
     "unhover": Action.HOVER_EXIT,
+    # Held (down within drag threshold)
+    "hold": Action.HELD,
+    "holding": Action.HELD,
+    "on_hold": Action.HELD,
 }
 
 ALL_ACTIONS = frozenset({
     Action.DOWN, Action.UP, Action.DRAGGED, Action.DRAG_RELEASED, Action.CLICKED,
     Action.DOUBLE_CLICKED, Action.CHANGED, Action.MOVED,
-    Action.HOVERED, Action.HOVER_ENTER, Action.HOVER_EXIT,
+    Action.HOVERED, Action.HOVER_ENTER, Action.HOVER_EXIT, Action.HELD,
     *ACTION_ALIASES.keys()
 })
 _SORTED_ACTIONS = tuple(sorted(ALL_ACTIONS, key=len, reverse=True))
 
 DOUBLE_CLICK_WINDOW = 0.3
 CLICK_MAX_DISTANCE = 5.0
+DRAG_THRESHOLD = 5.0  # Minimum distance before drag starts
 
 
 @dataclass(slots=True)
@@ -94,15 +100,31 @@ class _InputState:
     click_count: int = 0
 
 
-_parse_cache: dict[str, tuple[str, str, bool]] = {}  # (input_id, action, inverted)
+_parse_cache: dict[str, tuple[str, str, bool, bool]] = {}  # (input_id, action, inverted, non_blocking)
 _view_id_names_cache: dict[Any, dict[tuple[str, str], str]] = {}
+_view_id_flags_cache: dict[
+    Any, dict[tuple[str, str], tuple[bool, bool]]] = {}  # view_id, key -> (inverted, non_blocking)
 _view_id_to_tile_id: dict[str, str] = {}
 
 
-def parse_event_name(name: str) -> tuple[str, str, bool]:
-    """Parse "left_mouse_up" → ("left_mouse", "up", False)
-    Parse "inverted_left_mouse_clicked" → ("left_mouse", "clicked", True)
-    Parse "left_mouse_inverted_clicked" → ("left_mouse", "clicked", True)
+def _strip_flag(name: str, flag: str) -> tuple[str, bool]:
+    """Strip a flag word from anywhere in an underscore-delimited name."""
+    prefix = flag + "_"
+    infix = "_" + flag + "_"
+    suffix = "_" + flag
+    if name.startswith(prefix):
+        return name[len(prefix):], True
+    if infix in name:
+        return name.replace(infix, "_", 1), True
+    if name.endswith(suffix):
+        return name[:-len(suffix)], True
+    return name, False
+
+
+def parse_event_name(name: str) -> tuple[str, str, bool, bool]:
+    """Parse "left_mouse_up" → ("left_mouse", "up", False, False)
+    Parse "inverted_left_mouse_clicked" → ("left_mouse", "clicked", True, False)
+    Parse "non_blocking_left_mouse_clicked" → ("left_mouse", "clicked", False, True)
     """
     if name in _parse_cache:
         return _parse_cache[name]
@@ -111,23 +133,17 @@ def parse_event_name(name: str) -> tuple[str, str, bool]:
     if name.startswith("on_"):
         name = name[3:]
 
-    # Detect and strip "inverted_" prefix or "_inverted" suffix in the name
-    inverted = False
-    if name.startswith("inverted_"):
-        inverted = True
-        name = name[9:]
-    elif "_inverted_" in name:
-        inverted = True
-        name = name.replace("_inverted_", "_", 1)
-    elif name.endswith("_inverted"):
-        inverted = True
-        name = name[:-9]
+    # Strip modifier flags
+    name, inverted = _strip_flag(name, "inverted")
+    name, non_blocking = _strip_flag(name, "non_blocking")
+    if not non_blocking:
+        name, non_blocking = _strip_flag(name, "nonblocking")
 
     # Check if the name itself is an action (e.g., "hovered", "clicked")
     if name in ALL_ACTIONS:
         canonical = ACTION_ALIASES.get(name, name)
-        _parse_cache[original] = ("cursor", canonical, inverted)
-        return ("cursor", canonical, inverted)
+        _parse_cache[original] = ("cursor", canonical, inverted, non_blocking)
+        return ("cursor", canonical, inverted, non_blocking)
 
     # Check for action suffix
     for action in _SORTED_ACTIONS:
@@ -136,11 +152,11 @@ def parse_event_name(name: str) -> tuple[str, str, bool]:
             if input_id.endswith("_key"):
                 input_id = input_id[:-4]
             canonical = ACTION_ALIASES.get(action, action)
-            _parse_cache[original] = (input_id, canonical, inverted)
-            return (input_id, canonical, inverted)
+            _parse_cache[original] = (input_id, canonical, inverted, non_blocking)
+            return (input_id, canonical, inverted, non_blocking)
 
-    _parse_cache[original] = (name, "", inverted)
-    return (name, "", inverted)
+    _parse_cache[original] = (name, "", inverted, non_blocking)
+    return (name, "", inverted, non_blocking)
 
 
 class InputHandler:
@@ -166,7 +182,7 @@ class InputHandler:
 
     __slots__ = (
         '_states', '_hovered', '_prev_hovered', '_pending', '_cursor_x', '_cursor_y',
-        '_modifiers', '_last_dx', '_last_dy', '_drag_capture'
+        '_modifiers', '_last_dx', '_last_dy', '_drag_capture', '_drag_activated'
     )
 
     def __init__(self):
@@ -180,6 +196,7 @@ class InputHandler:
         self._last_dx = 0.0
         self._last_dy = 0.0
         self._drag_capture: dict[str, Any] = {}  # input_id -> view_id that captured it on down
+        self._drag_activated: dict[str, bool] = {}  # input_id -> whether drag threshold exceeded
 
     def _state(self, input_id: str) -> _InputState:
         s = self._states.get(input_id)
@@ -212,22 +229,24 @@ class InputHandler:
         for s in subscribed:
             if selected and s == "scroll_y_changed":
                 priority -= 20
-            input_id, action, inverted = parse_event_name(s)
+            input_id, action, inverted, non_blocking = parse_event_name(s)
             sub = (input_id, action)
             if view_id not in _view_id_names_cache:
                 _view_id_names_cache[view_id] = {}
+                _view_id_flags_cache[view_id] = {}
             _view_id_names_cache[view_id][sub] = s
+            _view_id_flags_cache[view_id][sub] = (inverted, non_blocking)
             _view_id_to_tile_id[view_id] = tile_id
             new_subs.add(sub)
 
-        # # Check if view already registered this frame - merge if so
-        # for i, (vid, pri, subs) in enumerate(self._hovered):
-        #     if vid == view_id:
-        #         # Merge subscriptions, keep lowest priority
-        #         merged_subs = subs | frozenset(new_subs)
-        #         merged_priority = min(pri, priority)
-        #         self._hovered[i] = (view_id, merged_priority, merged_subs)
-        #         return
+        # Check if view already registered this frame - merge if so
+        for i, (vid, pri, subs) in enumerate(self._hovered):
+            if vid == view_id:
+                # Merge subscriptions, keep lowest priority
+                merged_subs = subs | frozenset(new_subs)
+                merged_priority = min(pri, priority)
+                self._hovered[i] = (view_id, merged_priority, merged_subs)
+                return
 
         # New view
         self._hovered.append((view_id, priority, frozenset(new_subs)))
@@ -295,51 +314,82 @@ class InputHandler:
     def feed_change(self, input_id: str, value: float, t: float = None):
         self._emit(input_id, Action.CHANGED, self._cursor_x, self._cursor_y, value=value, t=t)
 
-    def _is_sub_inverted(self, view_id: Any, key: tuple[str, str]) -> bool:
-        """Check if a view's subscription for the given key was registered as inverted."""
-        cache = _view_id_names_cache.get(view_id)
-        if cache is None:
-            return False
-        event_name = cache.get(key)
-        if event_name is None:
-            return False
-        _, _, inverted = parse_event_name(event_name)
-        return inverted
+    @staticmethod
+    def _resolve_subscribers(
+            key: tuple[str, str],
+            index: dict[tuple[str, str], list[tuple[Any, int]]],
+    ) -> list[Any]:
+        """Resolve subscriber chain from precomputed index.
 
-    def _find_top_subscriber(self, key: tuple[str, str], views: list[tuple[Any, int, frozenset]] = None) -> Any:
-        """Find top subscriber for a key, respecting inverted priority.
-
-        Normal subscriptions: lowest priority number wins (child-first).
-        Inverted subscriptions: highest priority number wins (parent-first).
-
-        Among all views subscribed to this key, if ANY subscriber registered it
-        as inverted, the dispatch order is reversed for this key.
+        Normal: lowest priority first (child-first).
+        Inverted: highest priority first (parent-first).
+        Non-blocking: collects multiple views until a blocking one.
         """
-        if views is None:
-            views = self._hovered
-
-        # Collect all subscribers for this key
-        subscribers = [(v, p) for v, p, s in views if key in s]
+        subscribers = index.get(key)
         if not subscribers:
-            return None
+            return ()
 
-        # Check if any subscriber registered this key as inverted
-        any_inverted = any(self._is_sub_inverted(v, key) for v, _ in subscribers)
+        # Single subscriber fast path (most common case)
+        if len(subscribers) == 1:
+            return (subscribers[0][0],)
 
+        # Check flags
+        any_inverted = False
+        any_non_blocking = False
+        flags_cache_get = _view_id_flags_cache.get
+        for v, _ in subscribers:
+            flags = flags_cache_get(v)
+            if flags:
+                f = flags.get(key)
+                if f:
+                    any_inverted = any_inverted or f[0]
+                    any_non_blocking = any_non_blocking or f[1]
+                    if any_inverted and any_non_blocking:
+                        break
+
+        # If no special flags, first subscriber wins (already sorted by priority asc)
+        if not any_inverted and not any_non_blocking:
+            return (subscribers[0][0],)
+
+        # Need to reorder or walk chain
+        ordered = subscribers
         if any_inverted:
-            # Inverted: highest priority number wins (parent view first)
-            return max(subscribers, key=lambda x: x[1])[0]
-        else:
-            # Normal: lowest priority number wins (child first) - already sorted
-            return subscribers[0][0]
+            ordered = sorted(subscribers, key=lambda x: x[1], reverse=True)
+
+        if not any_non_blocking:
+            return (ordered[0][0],)
+
+        # Walk non-blocking chain
+        result = []
+        for v, _ in ordered:
+            result.append(v)
+            flags = flags_cache_get(v)
+            if flags:
+                f = flags.get(key)
+                if not f or not f[1]:
+                    break
+            else:
+                break
+        return result
 
     def process_frame(self):
         """Returns {view_id: {event_name: event}} for all matched subscriptions."""
         self._hovered.sort(key=lambda x: x[1])
 
+        # --- Precompute key → [(view_id, priority)] index (sorted by priority asc) ---
+        key_index: dict[tuple[str, str], list[tuple[Any, int]]] = {}
+        for view_id, priority, subs in self._hovered:
+            vp = (view_id, priority)
+            for key in subs:
+                bucket = key_index.get(key)
+                if bucket is None:
+                    key_index[key] = [vp]
+                else:
+                    bucket.append(vp)
+
+        resolve = self._resolve_subscribers
         result: dict[Any, dict[str, InputEvent]] = {}
         result_by_type: dict[Any, dict[str, InputEvent]] = {}
-
         t = time.perf_counter()
 
         # Build current hover dict with priorities
@@ -347,110 +397,170 @@ class InputHandler:
             view_id: (priority, subs) for view_id, priority, subs in self._hovered
         }
 
-        hover_enter_key = ("cursor", Action.HOVER_ENTER)
-        hovered_key = ("cursor", Action.HOVERED)
-        hover_exit_key = ("cursor", Action.HOVER_EXIT)
+        # Bind frequently-used lookups to locals
+        names_cache_get = _view_id_names_cache.get
+        tile_cache_get = _view_id_to_tile_id.get
+        cx, cy = self._cursor_x, self._cursor_y
+        mods = self._modifiers
 
         def add_event(view_id: Any, key: tuple[str, str], event: InputEvent):
-            """Safely add event to result using cached subscription name."""
-            if view_id is None:
-                return
-            cache = _view_id_names_cache.get(view_id)
+            cache = names_cache_get(view_id)
             if cache is None:
                 return
             event_name = cache.get(key)
             if event_name is None:
                 return
-            if view_id not in result:
-                result[view_id] = {}
+            vdict = result.get(view_id)
+            if vdict is None:
+                vdict = {}
+                result[view_id] = vdict
+            tdict = result_by_type.get(event_name)
+            if tdict is None:
+                tdict = {}
+                result_by_type[event_name] = tdict
+            vdict[event_name] = event
+            tdict[view_id] = event
 
-            if event_name not in result_by_type:
-                result_by_type[event_name] = {}
+        # --- Hover events ---
+        hover_enter_key = ("cursor", Action.HOVER_ENTER)
+        hovered_key = ("cursor", Action.HOVERED)
+        hover_exit_key = ("cursor", Action.HOVER_EXIT)
 
-            result[view_id][event_name] = event
-            result_by_type[event_name][view_id] = event
+        # Build index for newly-entered views (for enter events)
+        prev_hovered = self._prev_hovered
+        newly_index: dict[tuple[str, str], list[tuple[Any, int]]] = {}
+        for view_id, priority, subs in self._hovered:
+            if view_id not in prev_hovered:
+                vp = (view_id, priority)
+                for key in subs:
+                    bucket = newly_index.get(key)
+                    if bucket is None:
+                        newly_index[key] = [vp]
+                    else:
+                        bucket.append(vp)
 
-        # Find top subscriber for each hover event type (respecting inverted)
-        newly_hovered = [(v, p, s) for v, p, s in self._hovered if v not in self._prev_hovered]
-        top_enter = self._find_top_subscriber(hover_enter_key, newly_hovered)
-        top_hovered = self._find_top_subscriber(hovered_key)
+        enter_views = resolve(hover_enter_key, newly_index)
+        hovered_views = resolve(hovered_key, key_index)
 
-        # For exit, sort exited views by their stored priority
-        exited = sorted(
-            ((v, p, s) for v, (p, s) in self._prev_hovered.items() if v not in current_hovered),
-            key=lambda x: x[1]
-        )
-        top_exit = self._find_top_subscriber(hover_exit_key, exited)
+        # Build index for exited views
+        exit_index: dict[tuple[str, str], list[tuple[Any, int]]] = {}
+        for v, (p, subs) in prev_hovered.items():
+            if v not in current_hovered:
+                vp = (v, p)
+                for key in subs:
+                    bucket = exit_index.get(key)
+                    if bucket is None:
+                        exit_index[key] = [vp]
+                    else:
+                        bucket.append(vp)
+        # Sort exit buckets by priority
+        for bucket in exit_index.values():
+            if len(bucket) > 1:
+                bucket.sort(key=lambda x: x[1])
+        exit_views = resolve(hover_exit_key, exit_index)
 
         # Emit hover events
-        def make_hover_event(action: str) -> InputEvent:
-            return InputEvent("cursor", None, action, self._cursor_x, self._cursor_y, 0, 0, 0, t, self._modifiers)
-
-        add_event(top_enter, hover_enter_key, make_hover_event(Action.HOVER_ENTER))
-        add_event(top_hovered, hovered_key, make_hover_event(Action.HOVERED))
-        add_event(top_exit, hover_exit_key, make_hover_event(Action.HOVER_EXIT))
+        for v in enter_views:
+            add_event(v, hover_enter_key, InputEvent("cursor", None, Action.HOVER_ENTER, cx, cy, 0, 0, 0, t, mods))
+        for v in hovered_views:
+            add_event(v, hovered_key, InputEvent("cursor", None, Action.HOVERED, cx, cy, 0, 0, 0, t, mods))
+        for v in exit_views:
+            add_event(v, hover_exit_key, InputEvent("cursor", None, Action.HOVER_EXIT, cx, cy, 0, 0, 0, t, mods))
 
         # Update previous hover for next frame
         self._prev_hovered = current_hovered
 
-        # Process regular events: top priority subscriber gets each event
+        # --- Regular events ---
+        # Hoist import once (sys.modules lookup still has overhead in a loop)
+        from src.lsd.gl_gui.melty import Melty
+        get_latest_mouse = Melty.get_latest_mouse
+
+        drag_capture = self._drag_capture
+        drag_activated = self._drag_activated
+        states = self._states
+        last_dx, last_dy = self._last_dx, self._last_dy
+
         for event in self._pending:
             key = (event.input_id, event.action)
+            action = event.action
 
-            # On DOWN, capture drag target (top hovered view subscribed to drag)
-            if event.action == Action.DOWN:
+            # On DOWN, capture drag target
+            if action == Action.DOWN:
                 drag_key = (event.input_id, Action.DRAGGED)
-                capture_view = self._find_top_subscriber(drag_key)
-                if capture_view is not None:
-                    self._drag_capture[event.input_id] = capture_view
+                capture_views = resolve(drag_key, key_index)
+                if capture_views:
+                    drag_capture[event.input_id] = capture_views[0]
+                    drag_activated[event.input_id] = False
 
-            # On UP, emit drag_released to captured view, then release capture
-            elif event.action == Action.UP:
-                captured_view = self._drag_capture.pop(event.input_id, None)
-                if captured_view is not None:
+            # On UP, emit drag_released only if drag was active
+            elif action == Action.UP:
+                captured_view = drag_capture.pop(event.input_id, None)
+                was_activated = drag_activated.pop(event.input_id, False)
+                if captured_view is not None and was_activated:
                     drag_released_key = (event.input_id, Action.DRAG_RELEASED)
 
-                    from src.lsd.gl_gui.melty import Melty
-                    lx, ly = Melty.get_latest_mouse()
-                    state = self._states.get(event.input_id)
+                    lx, ly = get_latest_mouse()
+                    state = states.get(event.input_id)
                     total_dx = lx - state.down_x if state else 0.0
                     total_dy = ly - state.down_y if state else 0.0
 
                     release_event = InputEvent(
                         event.input_id, Action.DRAG_RELEASED, event.tile_id, lx, ly,
-                        self._last_dx, self._last_dy, 0, t, self._modifiers, total_dx, total_dy
+                        last_dx, last_dy, 0, t, mods, total_dx, total_dy
                     )
                     add_event(captured_view, drag_released_key, release_event)
 
-                    # Reset initial drag state
                     if state:
                         state.down_x = 0.0
                         state.down_y = 0.0
                         state.down_time = 0.0
 
-            top = self._find_top_subscriber(key)
-            add_event(top, key, event)
+            for v in resolve(key, key_index):
+                add_event(v, key, event)
 
-        # Emit continuous drag events only to captured views
-        for input_id, state in self._states.items():
-            if state.is_down:
-                captured_view = self._drag_capture.get(input_id)
-                if captured_view is not None:
-                    drag_key = (input_id, Action.DRAGGED)
-
-                    # JIT: get latest mouse position right before dispatch
-                    from src.lsd.gl_gui.melty import Melty
-                    lx, ly = Melty.get_latest_mouse()
-
-                    total_dx = lx - state.down_x
-                    total_dy = ly - state.down_y
-
-                    tile_id = _view_id_to_tile_id.get(captured_view, None)
-                    drag_event = InputEvent(
-                        input_id, Action.DRAGGED, tile_id, lx, ly,
-                        self._last_dx, self._last_dy, 0, t, self._modifiers, total_dx, total_dy
+        # --- Continuous held events (independent of drag) ---
+        for input_id, state in states.items():
+            if not state.is_down:
+                continue
+            held_key = (input_id, Action.HELD)
+            held_subs = resolve(held_key, key_index)
+            if held_subs:
+                lx, ly = get_latest_mouse()
+                total_dx = lx - state.down_x
+                total_dy = ly - state.down_y
+                for v in held_subs:
+                    tile_id = tile_cache_get(v, None)
+                    held_event = InputEvent(
+                        input_id, Action.HELD, tile_id, lx, ly,
+                        last_dx, last_dy, 0, t, mods, total_dx, total_dy
                     )
-                    add_event(captured_view, drag_key, drag_event)
+                    add_event(v, held_key, held_event)
+
+        # --- Continuous drag events (after threshold) ---
+        drag_threshold_sq = DRAG_THRESHOLD * DRAG_THRESHOLD
+        for input_id, state in states.items():
+            if not state.is_down:
+                continue
+            captured_view = drag_capture.get(input_id)
+            if captured_view is None:
+                continue
+
+            lx, ly = get_latest_mouse()
+            total_dx = lx - state.down_x
+            total_dy = ly - state.down_y
+
+            if not drag_activated.get(input_id, False):
+                if total_dx * total_dx + total_dy * total_dy < drag_threshold_sq:
+                    continue
+                drag_activated[input_id] = True
+
+            drag_key = (input_id, Action.DRAGGED)
+            tile_id = tile_cache_get(captured_view, None)
+            drag_event = InputEvent(
+                input_id, Action.DRAGGED, tile_id, lx, ly,
+                last_dx, last_dy, 0, t, mods, total_dx, total_dy
+            )
+            add_event(captured_view, drag_key, drag_event)
 
         return result, result_by_type
 

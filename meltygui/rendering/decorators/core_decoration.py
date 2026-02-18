@@ -98,7 +98,7 @@ class auto_eval:
         invalidate_all_flag = getattr(self, '__invalidate_all__', set())
         from src.lsd.gl_gui.melty import Melty
 
-        do_deep_refresh = self.name in deep_refresh_names and not Melty.on_drag
+        do_deep_refresh = self.name in deep_refresh_names and not Melty.window_drag
         visible = self.name not in excluded
         visible = visible or do_deep_refresh
 
