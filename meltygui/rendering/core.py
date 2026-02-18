@@ -1175,16 +1175,17 @@ def render_func(*args, **o_kwargs):
                     style_manager = Melty.global_attrs['style_manager']
                     global_style = Melty.global_attrs['global_style']
                     Melty.bg_stack.append(style_manager.get_tint())
-                    Melty.bg_depth += 1
+                    Melty.bg_depth += 1 + kwargs.get("bg_offset", 0)
 
                     # Melty.undo_clip(unique, 1)
                     bg_color = (0,0,0,0)
                     if width > 5 and height > 5:
+                        nested_bg = not melty_window and kwargs.get("bg_offset", 0) >= 0
                         _, bg_color = draw_bg(bypass=True, left=left, top=top,
                                               width=width, height=height, rounding=draw_state.corner_radius,
                                               depth=Melty.shadow_depth, selected=draw_state.selected,
                                               global_style=global_style, opacity=1.0,
-                                              style_manager=style_manager, auto_resize=not melty_window)
+                                              style_manager=style_manager, nested_bg=nested_bg)
 
                     Melty.bg_color_stack.append(bg_color)
                     # Melty.redo_clip(unique)
@@ -1202,7 +1203,7 @@ def render_func(*args, **o_kwargs):
                                                melty, tile_id, unique, melty_window)
 
                 if show_bg or (draw_state.selected and draw_state.height < 60) or not draw_state.expanded:
-                    Melty.bg_depth -= 1
+                    Melty.bg_depth -= 1 + kwargs.get("bg_offset", 0)
                     Melty.bg_stack.pop()
                     Melty.bg_color_stack.pop()
 
@@ -1265,18 +1266,30 @@ def render_func(*args, **o_kwargs):
             item_rect = imgui.get_item_rect_size()
 
             if closable:
+
+                absolute_z = kwargs.get("z_absolute", None)
+
+                if absolute_z is not None and absolute_z < 3:
+                    z_pos = (Melty.active_layer * Melty.max_depth) + Melty.depth
+                    shadow_depth = draw_state.shadow_depth_at(0.5, Melty.active_layer)
+                else:
+                    z_pos = draw_state.z_pos
+                    shadow_depth = draw_state.shadow_depth
+
+
                 if "with_header" in kwargs and kwargs.get("with_header", None) is not None and kwargs.get(
                         "show_header",
                         True):
 
-                    Melty.cache.mark_shadow(layer=draw_state.z_pos, depth_and_layer=draw_state.shadow_depth,
+                    Melty.cache.mark_shadow(layer=z_pos, depth_and_layer=shadow_depth,
                                             x=draw_state.left + 2, y= draw_state.top + draw_state.shadow_margin,
                                             w=draw_state.width - 4,
                                             h=draw_state.header_height,
                                             corner_radius=draw_state.corner_radius)
 
                 if "with_footer" in kwargs and kwargs.get("with_footer", None) is not None:
-                    Melty.cache.mark_shadow(layer=draw_state.z_pos, depth_and_layer=draw_state.shadow_depth,
+                    Melty.cache.mark_shadow(layer=z_pos,
+                                            depth_and_layer=shadow_depth,
                                             x=draw_state.left + 2,
                                             y=draw_state.top + draw_state.height - draw_state.footer_height,
                                             w=draw_state.width - 4,

@@ -670,8 +670,10 @@ def draw_collection(input_value, draw_state, depth, style_manager,
     return changed, input_value
 
 
+def main_header(input_value, name, **kwargs):
+    imgui.text("Main Header")
 
-@render_func(use_cache=False, show_bg=True, selectable=False)
+@render_func(use_cache=False, show_bg=True, selectable=False, show_tint=True, bg_offset=-1, with_header=draw_header)
 def draw_main(input_value, vis, **kwargs):
 
     global test_obj
@@ -1804,7 +1806,7 @@ def seperator(height):
 def draw_bg(left=0, top=0, width=20, height=20, depth=0, rounding=5.0,
             global_style=None, outline=True, bg_color=None, opacity=1.0,
             style_manager=None, tint=None, outline_tint=None, selected=False,
-            hovered=False, auto_resize=False, **kwargs):
+            hovered=False, nested_bg=False, **kwargs):
     # Render background
     def current_indent_px():
         return Melty.current_indent
@@ -1848,12 +1850,12 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0, rounding=5.0,
     outline_offset = global_style.get_global_constant("outline_offset", default=0.0, folder="bg_styles") - 0.09
     outline_factor = global_style.get_global_constant("outline_factor", default=1.0, folder="bg_styles") * 1.05
 
-    if not auto_resize:
+    if not nested_bg:
         outline_factor *= 1.05
         outline_saturation = 0.9
 
 
-    if auto_resize:
+    if nested_bg:
         bleed_factor = 0.2
     else:
         bleed_factor = 0.0

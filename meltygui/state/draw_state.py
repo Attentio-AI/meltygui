@@ -259,15 +259,17 @@ class DrawState(DictConversion):
     def mark_column(self, column):
         self.max_column = max(self.max_column, column)
 
-    @property
-    def shadow_depth(self):
-        depth, active_layer = self.depth_and_layer
 
+    def shadow_depth_at(self, depth, active_layer):
         divisor = max(1.0, depth - 13.0)
         depth_and_layer = active_layer * Melty.max_depth + (depth * (20.0 / (divisor)))
         depth_and_layer *= Melty.layer_inc
-
         return depth_and_layer
+
+    @property
+    def shadow_depth(self):
+        depth, active_layer = self.depth_and_layer
+        return self.shadow_depth_at(depth, active_layer)
 
     @property
     def seen(self):
