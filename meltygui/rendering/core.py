@@ -251,14 +251,22 @@ def render_func(*args, **o_kwargs):
         window_key = tile_id
         draw_state.persistent = kwargs.get("persistent", True)
 
-        if closable:
-            Melty.registered_windows[tile_id].input_value = input_value
-            Melty.registered_windows[tile_id].draw_state = draw_state
-            Melty.registered_windows[tile_id].window_args = kwargs
-            Melty.registered_windows[tile_id].name = name
+        if len(Melty.melty_window_stack) > 0:
+            draw_state.parent_window = Melty.melty_window_stack[-1]
+            draw_state.left_offset, draw_state.top_offset = (
+            imgui.get_cursor_screen_pos()[0] - draw_state.parent_window.left,
+            imgui.get_cursor_screen_pos()[1] - draw_state.parent_window.top)
 
-            if tile_id not in Melty.registered_windows:
-                Melty.cache.invalidate_by_obj(Melty.registered_windows)
+
+        if closable:
+            if draw_state.parent_window is None:
+                Melty.registered_windows[tile_id].input_value = input_value
+                Melty.registered_windows[tile_id].draw_state = draw_state
+                Melty.registered_windows[tile_id].window_args = kwargs
+                Melty.registered_windows[tile_id].name = name
+
+                if tile_id not in Melty.registered_windows:
+                    Melty.cache.invalidate_by_obj(Melty.registered_windows)
 
             if draw_state.closed and not input_value == Melty.registered_windows:
                 if return_extras:
@@ -314,10 +322,7 @@ def render_func(*args, **o_kwargs):
         original_height_b = draw_state.height
         style_manager = Melty.global_attrs.get("style_manager", None)
         collection = kwargs.get("collection", None)
-        if len(Melty.melty_window_stack) > 0:
-            draw_state.parent_window = Melty.melty_window_stack[-1]
-            draw_state.left_offset, draw_state.top_offset = (imgui.get_cursor_screen_pos()[0] - draw_state.parent_window.left,
-                                                             imgui.get_cursor_screen_pos()[1] - draw_state.parent_window.top)
+
 
         # Handle untracked object invalidation
         if not hasattr(input_value, "__melty__"):
@@ -337,13 +342,20 @@ def render_func(*args, **o_kwargs):
                 kwargs['layer'] = Melty.drag_layer
                 kwargs['start_pos'] = imgui.get_cursor_screen_pos()
             else:
-                # Indicates this is not a nested window
-                window_z_pos = list(Melty.registered_windows.keys()).index(window_key) \
-                    if window_key in Melty.registered_windows else None
-                if window_z_pos is not None:
-                    window_z_pos = max(window_z_pos, Melty.active_layer)
 
-                kwargs['layer'] = window_z_pos
+                if closable:
+                    if draw_state is not None and draw_state.parent_window is not None:
+                        # Nested window inherits layer from parent
+                        window_z_pos = draw_state.parent_window.layer + 2
+                    else:
+                        # Managed windows are not nested, so we check the registry directly to find their layer
+                        # Indicates this is not a nested window
+                        window_z_pos = list(Melty.registered_windows.keys()).index(window_key) \
+                            if window_key in Melty.registered_windows else None
+                        if window_z_pos is not None:
+                            window_z_pos = max(window_z_pos, Melty.active_layer)
+
+                    kwargs['layer'] = window_z_pos
 
             if kwargs.get("layer", None) is not None and len(Melty.layers) > 0:
                 layer = kwargs.pop("layer", None)
@@ -526,8 +538,9 @@ def render_func(*args, **o_kwargs):
             if kwargs.get("selectable", True):
                 click = draw_state.on_action("left_mouse_down")
                 if click:
-                    Melty.move_window_to_front(
-                        Melty.melty_window_stack[-1] if len(Melty.melty_window_stack) > 0 else None)
+
+                    if len(Melty.melty_window_stack) > 0 and Melty.melty_window_stack[-1].parent_window is None:
+                        Melty.move_window_to_front(Melty.melty_window_stack[-1])
                     Melty.previous_select = copy(Melty.selected)
 
                     if not click.modifiers:
@@ -674,9 +687,9 @@ def render_func(*args, **o_kwargs):
             imgui_active = Melty.imgui_active or Melty.imgui_popup_open
 
             if closable:
-
                 # melty_hovered = draw_state.on_action("on_hover", view_id="window_hover", priority_delta=1)
                 Melty.melty_window_stack.append(draw_state)
+
                 if draw_state.window_pos is None and draw_state.width is not None:
                     draw_state.window_pos = (0,0)
 
@@ -946,12 +959,14 @@ def render_func(*args, **o_kwargs):
                     right_click = draw_state.on_action("right_mouse_down")
                     if right_click:
                         draw_state.context_menu_open = not draw_state.context_menu_open
-                        if not draw_state.context_menu_open:
-                            if draw_state.context_menu_ds is not None:
-                                draw_state.context_menu_ds.closed = True
-
-                            draw_state.context_menu_ds = None
-                            Melty.cache.invalidate_by_obj(Melty.registered_windows)
+                        if draw_state.context_menu_ds is not None:
+                            draw_state.context_menu_ds.closed = not draw_state.context_menu_open
+                        # if not draw_state.context_menu_open:
+                        #     if draw_state.context_menu_ds is not None:
+                        #         draw_state.context_menu_ds.closed = True
+                        #
+                        #     draw_state.context_menu_ds = None
+                            # Melty.cache.invalidate_by_obj(Melty.registered_windows)
 
                     if draw_state.context_menu_open:
                         bg_offset = 4
@@ -966,7 +981,7 @@ def render_func(*args, **o_kwargs):
                                                    tint=mixed_color,
                                                    width=draw_state.width + 40,
                                                    persistent=False, anchor=Anchor.BOTTOM_LEFT, show_tint=False,
-                                                   with_footer=None, layer=draw_state.layer + Melty.nested_layer_boost + 1,
+                                                   with_footer=None,
                                                    name=f"{name}##context_menu_{unique}", auto_resize=True,
                                                    return_extras=True)
                         ctx_ds = returned_val[2]
@@ -976,18 +991,9 @@ def render_func(*args, **o_kwargs):
                         if ctx_ds.last_seen is None:
                             ctx_ds.closed = False
                             ctx_ds.window_pos = (0, 0)
-                            Melty.move_window_to_front(ctx_ds)
-
 
                         if ctx_ds.closed:
                             draw_state.context_menu_open = False
-
-                    else:
-                        if draw_state.context_menu_ds is not None:
-                            draw_state.context_menu_ds.closed = True
-                            Melty.cache.invalidate_by_obj(Melty.registered_windows)
-
-                        draw_state.context_menu_ds = None
 
                 draw_state.clip_rect = Melty.get_clip_rect()
                 if kwargs.get("show_bg", False):

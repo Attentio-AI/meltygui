@@ -256,6 +256,14 @@ class DrawState(DictConversion):
         self.anchor_pos = Anchor.TOP_LEFT
 
     @property
+    def root_window(self):
+        if self.parent_window is None:
+            return self
+        else:
+            return self.parent_window.root_window
+
+
+    @property
     def anchor_offset(self):
         anchor_margin = 3
         offset = (0, 0)
