@@ -247,6 +247,7 @@ def render_func(*args, **o_kwargs):
         start_shadow_depth = Melty.shadow_depth
         draw_state.bg_depth = Melty.bg_depth
         closable = kwargs.get("closable", False)
+        draw_state.closable = closable
 
         window_key = tile_id
         draw_state.persistent = kwargs.get("persistent", True)
@@ -542,7 +543,35 @@ def render_func(*args, **o_kwargs):
             #
             # up = draw_state.on_action("left_mouse_up", priority_delta=2)
 
+            passed_z_offset = kwargs.get("z_offset", 0)
+            ds_z_offset = draw_state.z_offset
+            internal_z_offset = 0
+            if draw_state.pressed:
+                if kwargs.get("shadow", False):
+                    if draw_state.selected:
+                        internal_z_offset = -3.0
+                    else:
+                        internal_z_offset = 1
+                else:
+                    if draw_state.selected:
+                        internal_z_offset = -1
+                    else:
+                        internal_z_offset = 0
 
+            elif draw_state.selected:
+                if kwargs.get("shadow", False):
+                    internal_z_offset = -2.0
+                else:
+                    internal_z_offset = -0.5
+
+            else:
+                if kwargs.get("shadow", False):
+                    internal_z_offset = 1
+                else:
+                    internal_z_offset = 0
+
+            total_z_offset = ds_z_offset + passed_z_offset + internal_z_offset
+            draw_state.total_z_offset
 
             new_active_layer = 0
             if draw_state.context_menu_open and draw_state.context_menu_ds is not None:
@@ -563,9 +592,9 @@ def render_func(*args, **o_kwargs):
             Melty.depth = Melty.depth + 1
 
             if kwargs.get("shadow", False):
-                Melty.shadow_depth = Melty.shadow_depth + 1 + draw_state.z_offset
+                Melty.shadow_depth = Melty.shadow_depth + 1 + total_z_offset
             else:
-                Melty.shadow_depth = Melty.shadow_depth + draw_state.z_offset
+                Melty.shadow_depth = Melty.shadow_depth + total_z_offset
 
             if kwargs.get("z_absolute", None) is not None:
                 if kwargs.get("z_absolute", 0) < 3:
@@ -574,7 +603,7 @@ def render_func(*args, **o_kwargs):
                 draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer_stack[-1])
             else:
                 draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer_stack[-1])
-                if draw_state.z_offset < 0 and (kwargs.get("shadow", False) or draw_state.selected):
+                if total_z_offset < 0 and (kwargs.get("shadow", False) or draw_state.selected):
                     draw_state.shadow_margin = 1.5
                 else:
                     draw_state.shadow_margin = 0
@@ -617,10 +646,10 @@ def render_func(*args, **o_kwargs):
             if not auto_resize:
                 corner_rect = get_resize_handle(draw_state)
                 handle_drag = draw_state.on_action("left_mouse_drag", view_id="window_resize",
-                                                   rect=corner_rect)
+                                                   rect=corner_rect, priority_delta=1)
 
                 if melty_window:
-                    corner_drag = draw_state.on_action("right_mouse_drag", priority_delta=0)
+                    corner_drag = draw_state.on_action("right_mouse_drag", priority_delta=-2)
                     if handle_drag is None:
                         handle_drag = corner_drag
 
@@ -648,7 +677,7 @@ def render_func(*args, **o_kwargs):
             if draw_state.window_pos is not None and closable:
                 on_held = draw_state.on_action("left_mouse_held", "window_move", priority_delta=-2)
                 on_drag = draw_state.on_action("left_mouse_drag", "window_move")
-                left_mouse_down = draw_state.on_action("left_mouse_down", "window_move", priority_delta=2)
+                left_mouse_down = draw_state.on_action("left_mouse_down", "window_move", priority_delta=-1)
 
 
                 if left_mouse_down:
@@ -826,6 +855,7 @@ def render_func(*args, **o_kwargs):
                 if needs_invalidate and not Melty.window_drag and not imgui.is_mouse_down(2):
                     Melty.cache.invalidate(tile_id, force=True)
 
+
             push_id(unique)
             if Melty.cache.mark_start_offscreen(draw_state=draw_state):
                 if melty_window:
@@ -834,9 +864,9 @@ def render_func(*args, **o_kwargs):
                                      draw_state.top + draw_state.height))
 
                 if kwargs.get("selectable", True):
-                    left_mouse_down_press = draw_state.on_action("left_mouse_held", "press", priority_delta=2)
+                    left_mouse_down_press = draw_state.on_action("left_mouse_held", "press", priority_delta=-1)
                     draw_state.pressed = True if left_mouse_down_press else False
-                    click = draw_state.on_action("left_mouse_click", priority_delta=2)
+                    click = draw_state.on_action("left_mouse_click", priority_delta=0)
                     if click:
                         Melty.previous_select = copy(Melty.selected)
                         if not click.modifiers:
@@ -916,30 +946,6 @@ def render_func(*args, **o_kwargs):
 
                     draw_state.selected = draw_state in Melty.selected
 
-
-                if draw_state.pressed:
-                    if kwargs.get("shadow", False):
-                        if draw_state.selected:
-                            draw_state.z_offset = kwargs.get("z_offset", 0) - 3.0
-                        else:
-                            draw_state.z_offset = kwargs.get("z_offset", 0) + 1
-                    else:
-                        if draw_state.selected:
-                            draw_state.z_offset = kwargs.get("z_offset", 0) - 1
-                        else:
-                            draw_state.z_offset = kwargs.get("z_offset", 0)
-
-                elif draw_state.selected:
-                    if kwargs.get("shadow", False):
-                        draw_state.z_offset = kwargs.get("z_offset", 0) - 2.0
-                    else:
-                        draw_state.z_offset = kwargs.get("z_offset", 0) - 0.5
-
-                else:
-                    if kwargs.get("shadow", False):
-                        draw_state.z_offset = kwargs.get("z_offset", 0) + 1
-                    else:
-                        draw_state.z_offset = kwargs.get("z_offset", 0)
                 # if melty_window:
                 #     previous_tint = style_manager.get_tint()
                 #     if hasattr(input_value, 'tint') and getattr(input_value, "tint") is not None:

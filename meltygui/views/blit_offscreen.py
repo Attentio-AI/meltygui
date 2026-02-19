@@ -57,7 +57,7 @@ class _Ctx:
     pos: Tuple[float, float]
     size: Optional[Tuple[int, int]]
     layer: int
-    depth_and_layer:any
+    depth_and_layer: any
     drew_cached: bool
     auto_resize: bool
 
@@ -85,7 +85,7 @@ class _Rect:
     key: str
     order: int
     corner_radius: float = 6.0  # Corner radius for rounded rectangles
-    blend_max: bool = True
+    blend_max: bool = False
 
 
 # ==============================
@@ -142,7 +142,8 @@ def _create_fbo_with_tex(tex: int, depth_stencil: bool, w, h) -> Tuple[int, Opti
     return fbo, rbo
 
 
-def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, draw_state=None, tile_id=None) -> Optional[Tile]:
+def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, draw_state=None, tile_id=None) -> \
+Optional[Tile]:
     if existing and existing.size == (w, h):
         return existing
 
@@ -155,7 +156,7 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
         existing_size = existing.size if existing else None
         reset = "\033[0m"
         pink = "\033[95m"
-        print(f"{pink}{draw_state.to_dict()}\n{'='*10} "
+        print(f"{pink}{draw_state.to_dict()}\n{'=' * 10} "
               f"Failed to create color texture for tile (size {w}x{h}): {e}"
               f"\nCurrent size {existing_size}\n{'=' * 10}{reset}")
         return None
@@ -202,7 +203,8 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
         finally:
             st.restore()
 
-    t = Tile(draw_state=draw_state, fbo=new_fbo, tex=new_tex, mask_tex=new_mask_tex, rbo=new_rbo, size=(w, h), dirty=True)
+    t = Tile(draw_state=draw_state, fbo=new_fbo, tex=new_tex, mask_tex=new_mask_tex, rbo=new_rbo, size=(w, h),
+             dirty=True)
     t.last_invalidated_frame = frame_id + 1
     request_render()
     return t
@@ -319,7 +321,7 @@ void main() {
             discard;
         }
     }
-    
+
     oColor = vec4(uRankNorm, 0.0, 0.0, 1.0);
 }
 """
@@ -887,28 +889,28 @@ class TileCacheMasked:
         self._rect_seq = 0
 
     def mask_mark_rect(
-            self, draw_state:any, layer: int, depth_and_layer: any, x: float, y: float, w: float, h: float,
+            self, draw_state: any, layer: int, depth_and_layer: any, x: float, y: float, w: float, h: float,
             key: str, corner_radius: float = 6.0
     ) -> None:
         if key in self._enq_mask_keys:
             return
         self._enq_mask_keys.add(key)
         self._rect_seq = (self._rect_seq + 1) & 0xFF
-        if draw_state.z_offset < 0:
-            blend_max = False
-        else:
-            blend_max = True
+        # if draw_state.total_z_offset < 0:
+        #     blend_max = False
+        # else:
+        #     blend_max = True
 
-        self._mask_rects.append(_Rect(draw_state, layer, depth_and_layer, x, y, w, h, key, self._rect_seq, corner_radius, blend_max=blend_max))
+        self._mask_rects.append(
+            _Rect(draw_state, layer, depth_and_layer, x, y, w, h, key, self._rect_seq, corner_radius, blend_max=False))
 
     def mark_shadow(
             self, layer: int, depth_and_layer: any, x: float, y: float, w: float, h: float,
-            corner_radius: float = 6.0, draw_state=None,
+            corner_radius: float = 6.0, draw_state=None, parent_key=None,
     ) -> None:
         self._rect_seq = (self._rect_seq + 1) & 0xFF
         key = f"shadow_{self._rect_seq}"
         parent_ctx = self._stack[-1] if self._stack else None
-
 
         self._mask_rects.append(
             _Rect(draw_state, layer, depth_and_layer, x, y, w, h, key, self._rect_seq, corner_radius, blend_max=False))
@@ -917,10 +919,10 @@ class TileCacheMasked:
         self.key_to_parent_key[key] = parent_key
 
     def mask_mark_view(
-            self, draw_state:any, layer: int, depth_and_layer: any, x: float, y: float, w: float,
-            h: float, key: str, corner_radius: float =6.0
+            self, draw_state: any, layer: int, depth_and_layer: any, x: float, y: float, w: float,
+            h: float, key: str, corner_radius: float = 6.0
     ) -> None:
-        self.mask_mark_rect(draw_state, layer, copy(depth_and_layer),  x, y, w, h, key, corner_radius)
+        self.mask_mark_rect(draw_state, layer, copy(depth_and_layer), x, y, w, h, key, corner_radius)
 
     def _get_current_clip_rect_screen(self) -> Tuple[float, float, float, float]:
         clip = Melty.get_clip_rect()
@@ -1216,10 +1218,12 @@ class TileCacheMasked:
             if clipped:
                 cx, cy, cw, ch = clipped
                 if cw > 0 and ch > 0:
-                    self.mask_mark_view(ctx.draw_state, ctx.layer, ctx.depth_and_layer, cx, cy, cw, ch, ctx.key, corner_radius)
+                    self.mask_mark_view(ctx.draw_state, ctx.layer, ctx.depth_and_layer, cx, cy, cw, ch, ctx.key,
+                                        corner_radius)
             else:
                 if w > 0 and h > 0:
-                    self.mask_mark_view(ctx.draw_state, ctx.layer, ctx.depth_and_layer, x, y, w, h, ctx.key, corner_radius)
+                    self.mask_mark_view(ctx.draw_state, ctx.layer, ctx.depth_and_layer, x, y, w, h, ctx.key,
+                                        corner_radius)
 
         if not self.enabled or ctx.drew_cached or ctx.draw_state.frame_count < 2:
             self._sizes[ctx.key] = ctx.size
@@ -1243,8 +1247,9 @@ class TileCacheMasked:
                 self._tiles[ctx.key] = t
 
             if self._is_dirty(t) and (ctx.key not in self._enq_copy_keys):
-                self._pending.append(_Pending(draw_state=ctx.draw_state, tile=t, pos=ctx.pos, size=ctx.size, layer=ctx.layer,
-                                              depth_and_layer=ctx.depth_and_layer, key=ctx.key))
+                self._pending.append(
+                    _Pending(draw_state=ctx.draw_state, tile=t, pos=ctx.pos, size=ctx.size, layer=ctx.layer,
+                             depth_and_layer=ctx.depth_and_layer, key=ctx.key))
                 self._enq_copy_keys.add(ctx.key)
 
     def \
@@ -1372,7 +1377,7 @@ class TileCacheMasked:
         gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
 
     def _draw_mask_rect_cached(self, tex: int, ix0: int, iy0: int, iw: int, ih: int, offset: float,
-                               corner_radius: float, shadow_margin:float=0.0):
+                               corner_radius: float, shadow_margin: float = 0.0):
         """Draw a cached mask texture with offset and optional rounded corners.
         Note: preserves existing behavior (rounded path effectively always used by callers).
         """
@@ -1396,7 +1401,6 @@ class TileCacheMasked:
         ix0, iy0 = int(snap_int(x0)), int(snap_int(y0))
         ix1, iy1 = int(snap_int(x1)), int(snap_int(y1))
         iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
-
 
         if iw <= 0 or ih <= 0:
             return
@@ -1422,8 +1426,6 @@ class TileCacheMasked:
             gl.glUniform1f(self._loc_maskr_uCornerRadius, r.corner_radius)
             gl.glUniform1f(self._loc_maskr_uMargin, shadow_margin)
 
-
-
         gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
 
     def finalize_captures(self, framebuffer_size: Tuple[int, int], global_toggles=None) -> None:
@@ -1436,7 +1438,7 @@ class TileCacheMasked:
 
         # Grab direct references (we clear at end anyway)
         local_mask_rects = self._mask_rects
-        #Reversed
+        # Reversed
         local_mask_rects_rev = list(reversed(local_mask_rects))
         local_pending = self._pending
         local_pending_rev = list(reversed(local_pending))
@@ -1467,7 +1469,6 @@ class TileCacheMasked:
 
         # Reverse
         subtree_rects_by_root = {k: list(reversed(v)) for k, v in subtree_rects_by_root.items()}
-
 
         st = _GLState()
         try:
@@ -1500,6 +1501,8 @@ class TileCacheMasked:
             gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
 
             for r in local_mask_rects_rev:
+                if r.blend_max:
+                    continue
                 self._draw_mask_rect(r, dp_x, dp_y, s_x, s_y, fb_h, use_cached=False)
 
             gl.glViewport(0, 0, fb_w, fb_h)
@@ -1548,7 +1551,10 @@ class TileCacheMasked:
                 # gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
 
                 for r in subtree_rects_by_root.get(p.key, ()):
-                    self._draw_mask_rect_fresh(r, dp_x, dp_y, s_x, s_y, fb_h, float(r.layer) * INV_65535, shadow_margin=0.0)
+                    if r.blend_max:
+                        continue
+                    self._draw_mask_rect_fresh(r, dp_x, dp_y, s_x, s_y, fb_h, float(r.layer) * INV_65535,
+                                               shadow_margin=0.0)
 
                 # Copy pixels to tile
                 gl.glUseProgram(self._prog_copy)
@@ -1579,7 +1585,8 @@ class TileCacheMasked:
                         p.tile.last_clean_frame = self._frame_id
                         p.tile.dirty = self._is_dirty(p.tile)
                     except Exception as e:
-                        print(f"Error copying to tile {p.key}: {e} {p.tile.draw_state.to_dict()} input_value={p.tile.draw_state._input_value}")
+                        print(
+                            f"Error copying to tile {p.key}: {e} {p.tile.draw_state.to_dict()} input_value={p.tile.draw_state._input_value}")
 
             # ================================================================
             # PASS 4: Build tile.mask_tex for each dirty tile (full subtree)
@@ -1597,7 +1604,6 @@ class TileCacheMasked:
                 sc_x1, sc_y1 = int(ceil(x1)), int(ceil(y1))
                 sc_w, sc_h = max(0, sc_x1 - sc_x0), max(0, sc_y1 - sc_y0)
 
-
                 gl.glEnable(gl.GL_SCISSOR_TEST)
                 gl.glScissor(sc_x0, sc_y0, sc_w, sc_h)
 
@@ -1606,7 +1612,6 @@ class TileCacheMasked:
                 gl.glClearColor(background_depth, 0, 0, 0.0)
                 gl.glClear(gl.GL_COLOR_BUFFER_BIT)
 
-
                 # gl.glEnable(gl.GL_BLEND)
                 # gl.glBlendEquation(gl.GL_MAX)
                 # gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
@@ -1614,6 +1619,8 @@ class TileCacheMasked:
                 last_depth_and_layer = -1
 
                 for r in subtree_rects_by_root.get(p.key, ()):
+                    # if r.blend_max:
+                    #     continue
 
                     draw_state = self.key_to_draw_state.get(r.key)
                     size_change = draw_state.size_change if draw_state else False
@@ -1632,7 +1639,7 @@ class TileCacheMasked:
                     #     gl.glBlendEquation(gl.GL_MAX)
                     #     gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
                     # else:
-                    gl.glDisable(gl.GL_BLEND)
+                    #     gl.glDisable(gl.GL_BLEND)
                     # For cached tiles, use actual tile size from context to avoid stretching
                     if use_child_cache:
                         child_ctx = self._key_to_ctx.get(r.key)
@@ -1658,8 +1665,6 @@ class TileCacheMasked:
                     ix0, iy0 = int(floor(sx0)), int(floor(sy0))
                     ix1, iy1 = int(ceil(sx1)), int(ceil(sy1))
                     iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
-
-
 
                     if iw <= 0 or ih <= 0:
                         continue
@@ -1746,7 +1751,6 @@ class TileCacheMasked:
                 for r in subtree_rects_by_root.get(key, ()):
                     draw_state = self.key_to_draw_state.get(r.key)
 
-
                     t = self._tiles.get(r.key)
                     size_change = draw_state.size_change if draw_state else False
 
@@ -1771,9 +1775,11 @@ class TileCacheMasked:
                     # else:
                     gl.glDisable(gl.GL_BLEND)
 
-                    #gl.glDisable(gl.GL_BLEND)
+                    # gl.glDisable(gl.GL_BLEND)
 
-                    # if r.blend_max and can_use_cached:
+                    # gl.glDisable(gl.GL_BLEND)
+
+                    # if r.blend_max:
                     #     gl.glEnable(gl.GL_BLEND)
                     #     gl.glBlendEquation(gl.GL_MAX)
                     #     gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
@@ -1798,7 +1804,6 @@ class TileCacheMasked:
 
                     if r.w <= 0 or r.h <= 0 or iw <= 0 or ih <= 0 or clip_iw <= 0 or clip_ih <= 0:
                         continue
-
 
                     gl.glEnable(gl.GL_SCISSOR_TEST)
                     gl.glScissor(clip_ix0, clip_iy0, clip_iw, clip_ih)

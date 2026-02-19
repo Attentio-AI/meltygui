@@ -42,16 +42,19 @@ class CSTDrawBits:
         self.anchor: tuple = ()
         self.text_buf: str = ""  # generic edit buffer
 
+
 class DragMode(Enum):
     NONE = 'none'
     WINDOW = 'move'
     RESIZE_BR = 'resize_br'
+
 
 class Anchor(Enum):
     TOP_LEFT = 'top_left'
     TOP_RIGHT = 'top_right'
     BOTTOM_LEFT = 'bottom_left'
     BOTTOM_RIGHT = 'bottom_right'
+
 
 class ZoomState(DictConversion):
     def __init__(self):
@@ -68,8 +71,9 @@ class ZoomState(DictConversion):
         self.hue = 0.0
         self.saturation = 1.0
 
+
 @no_save("mouse_btn_state", "mouse_up", "mouse_down", "unique", "search_active",
-        "shadow", "size_change", "drag_released","clicked", "dragged",
+         "shadow", "size_change", "drag_released", "clicked", "dragged",
          "dragged", "expanded_height", "clipped", "fully_clipped",
          "overhead_time", "scroll_visible", "depth_and_layer", "imgui_is_toggled_open",
          "hotkey_receiver", "use_child", "cst", "search_text", "bg_color", "depth", "z_pos",
@@ -86,10 +90,14 @@ class ZoomState(DictConversion):
          "content_region", "value_hash", "drag_window", "content_region", "did_render",
          "bounding_hovered", "dlt_count", "clip_rect",
          "header_height", "scrolled", "is_hovered_last", "frame_count")
-@no_save_exclude( 'render_time', 'content_height', 'invalid_content_height', "header_height", "parent_window", "pressed",
-                  'hover_rects', 'nested_window', 'use_cache', 'layer', "header_top", "header_left", "left_offset", "top_offset",
-                 "header_left_delta", "header_top_delta", "last_seen", "persistent", "shadow_margin", "bg_depth", "anchor_pos",
-                 'channel', 'next', 'previous', 'index_in_parent', 'relative_pos', 'context_menu_open', 'context_menu_ds')
+@no_save_exclude('render_time', 'content_height', "total_z_offset", 'closable', 'invalid_content_height',
+                 "header_height", "parent_window", "pressed",
+                 'hover_rects', 'nested_window', 'use_cache', 'layer', "header_top", "header_left", "left_offset",
+                 "top_offset",
+                 "header_left_delta", "header_top_delta", "last_seen", "persistent", "shadow_margin", "bg_depth",
+                 "anchor_pos",
+                 'channel', 'next', 'previous', 'index_in_parent', 'relative_pos', 'context_menu_open',
+                 'context_menu_ds', '_hover_eligible')
 @deep_refresh('scroll_offset', "closed")
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
@@ -120,9 +128,11 @@ class DrawState(DictConversion):
         self.channel = 0
         self.last_seen = None
         self.z_offset = 0
+        self.total_z_offset = 0
         self.shadow_margin = 0
         self.bg_depth = 0
         self.pressed = False
+        self.closable = False
 
         self.context_menu_open = False
         self.context_menu_ds = None
@@ -168,7 +178,7 @@ class DrawState(DictConversion):
         self.use_child = False
         self.z_pos = 0
         self.size_change = False
-        self.depth_and_layer = (0,0)
+        self.depth_and_layer = (0, 0)
         self.content_height = 0
         self.invalid_content_height = True
         self.auto_resize = True
@@ -200,7 +210,7 @@ class DrawState(DictConversion):
         self.search_active = False
         self._flow_spacing = 0.0
         self.enabled = True
-        self._end_header_size = (0,0)
+        self._end_header_size = (0, 0)
         self._header_height = 0
         self._max_indent = 0
         self._name_edit = False
@@ -249,11 +259,13 @@ class DrawState(DictConversion):
         self.render_time = 0.0
         self.overhead_time = 0.0
 
-        self.expanded_rect = (0,0,200,400)
+        self.expanded_rect = (0, 0, 200, 400)
 
         self.max_column = 1
         self._is_nested = False
         self.anchor_pos = Anchor.TOP_LEFT
+
+        self._hover_eligible_cache = {}  # path, frame
 
     @property
     def root_window(self):
@@ -261,7 +273,6 @@ class DrawState(DictConversion):
             return self
         else:
             return self.parent_window.root_window
-
 
     @property
     def anchor_offset(self):
@@ -308,10 +319,8 @@ class DrawState(DictConversion):
     def abs_top(self):
         return self._abs_top()
 
-
     def mark_column(self, column):
         self.max_column = max(self.max_column, column)
-
 
     def shadow_depth_at(self, depth, active_layer):
         divisor = max(1.0, depth - 13.0)
@@ -375,7 +384,6 @@ class DrawState(DictConversion):
         if x1 <= mx <= x2 and y1 <= my <= y2:
             return True
         return False
-
 
     def get_rect(self):
         width = self.width or 0
@@ -441,26 +449,27 @@ class DrawState(DictConversion):
                     return False, False, False
         return True, False, False
 
-
     def hover_eligible(self, rect=None):
-        if self.closed or not Melty.imgui_main_window_hovered:
-            return False
-
         if rect is None:
             left = self.left if self.left is not None else 0
             top = self.top if self.top is not None else 0
             width = self.width if self.width is not None else 0
             height = self.height if self.height is not None else 0
+            rect = (left, top - 3, left + width, top + height + 3)
+        if self.closed or not Melty.imgui_main_window_hovered:
+            return False
 
-            rect = (left, top - 3, width, height + 3)
-            if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
+        cached = self._hover_eligible_cache.get(rect, None)
+        if cached is None or cached[1] < Melty.frame_count:
+            this_frame = Melty.frame_count
+            if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[2], rect[3]):
+                self._hover_eligible_cache[rect] = (True, this_frame)
                 return True
-        else:
-            if imgui.is_mouse_hovering_rect(rect[0], rect[1] - 3, rect[2], rect[3] + 3):
-                return True
 
+            self._hover_eligible_cache[rect] = (False, this_frame)
+            return False
 
-        return False
+        return cached[0]
 
     def on_action(self, event_names, view_id=None, priority=None, priority_delta=0, rect=None):
         if view_id is None:
@@ -511,6 +520,7 @@ class DrawState(DictConversion):
             if imgui.is_window_hovered() or Melty.imgui_popup_open:
                 return True
         return False
+
 
 class KeyMod(Enum):
     CTRL = 'ctrl'
