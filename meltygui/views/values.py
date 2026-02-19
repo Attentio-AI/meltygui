@@ -290,6 +290,7 @@ def draw_header_end(input_value=None, name="", key=None, melty=None, parent_show
             draw_state.closed = not draw_state.closed
             Melty.cache.invalidate_up_by_obj(Melty.registered_windows)
 
+
     # if show_search or draw_state.search_active:
     #     imgui.same_line()
     #     imgui.set_cursor_pos_y(imgui.get_cursor_pos()[1] + 2)
@@ -324,8 +325,8 @@ def draw_header_end(input_value=None, name="", key=None, melty=None, parent_show
 
 @render_func(use_cache=True, auto_resize=False, closable=True, selectable=False,
              show_bg=True, melty_window=True, draggable=True, show_tint=True,
-             with_header=draw_header, with_header_end=draw_header_end,
-             with_footer=draw_footer, z_offset=-2)
+             with_header=draw_header, with_header_end=draw_header_end, indent_size=2,
+             with_footer=draw_footer, z_offset=0)
 def draw_window(input_value, view_func=None, draw_state=None, **kwargs):
     # if draw_state.width is not None and draw_state.height is not None and draw_state.expanded:
     #     loading_icon_0 = "\uf00d"
@@ -350,34 +351,48 @@ def draw_window(input_value, view_func=None, draw_state=None, **kwargs):
     #     draw_list.add_text(icon_x - 40, icon_y - 1,
     #                        imgui.get_color_u32_rgba(1, 1, 1, 0.3),
     #                        f"{draw_state.nested_depth}")
-
-    meta = kwargs.get("meta", None)
-    if meta is None:
-        if hasattr(Meta, 'get_child_meta'):
-            meta = Meta.get_child_meta(None, field_name=kwargs.get("name", ''), value=input_value)
-
-    if view_func is None:
-        if meta.view_function is None or 'draw_any' in meta.view_function.__name__:
-            meta.view_function = draw_collection
-
-    kwargs['show_bg'] = False
+    kwargs['show_bg'] = True
     kwargs['selectable'] = True
     kwargs['return_extras'] = True
     # kwargs['draw_state'] = draw_state
-    kwargs['indent_size'] = 2
+    kwargs['closable'] = False
+    # kwargs['indent_size'] = 4
     kwargs['with_header'] = None
     kwargs['with_header_end'] = None
     kwargs['with_footer'] = None
     kwargs['is_tree'] = False
+    return_val =draw_collection(input_value, show_bg=False, use_cache=True, z_offset=-4,
+                                with_header=None, with_header_end=None, width=draw_state.width, selectable=False,
+                                with_footer=None, indent_size=10, bg_offset=-1.5, show_add_delete=False,
+                                height=draw_state.height - draw_state.footer_height - draw_state.header_height - 5)
 
-    kwargs['closable'] = False
-    if view_func is None:
-        return_val = meta.view_function(input_value, **kwargs)
-    else:
-        return_val = view_func(input_value, **kwargs)
-
-    if len(return_val) == 3:
-        return_val = (return_val[0], return_val[1], draw_state)
+    # meta = kwargs.get("meta", None)
+    # if meta is None:
+    #     if hasattr(Meta, 'get_child_meta'):
+    #         meta = Meta.get_child_meta(None, field_name=kwargs.get("suffix", ''), value=input_value)
+    #
+    # if view_func is None:
+    #     if meta.view_function is None or 'draw_any' in meta.view_function.__name__:
+    #         meta.view_function = draw_collection
+    #
+    # kwargs['show_bg'] = False
+    # kwargs['selectable'] = False
+    # kwargs['return_extras'] = True
+    # # kwargs['draw_state'] = draw_state
+    # kwargs['indent_size'] = 2
+    # kwargs['with_header'] = None
+    # kwargs['with_header_end'] = None
+    # kwargs['with_footer'] = None
+    # kwargs['is_tree'] = False
+    #
+    # kwargs['closable'] = False
+    # if view_func is None:
+    #     return_val = meta.view_function(input_value, **kwargs)
+    # else:
+    #     return_val = view_func(input_value, **kwargs)
+    #
+    # if len(return_val) == 3:
+    #     return_val = (return_val[0], return_val[1], draw_state)
 
 
     return return_val
@@ -386,7 +401,7 @@ def draw_window(input_value, view_func=None, draw_state=None, **kwargs):
 @render_func(is_default_for=(MutableMapping, defaultdict), use_cache=False, show_bg=True,
              shadow=True, wrap=False, enable_scroll=True, with_header=draw_header)
 def draw_collection(input_value, draw_state, depth, style_manager,
-                    meta, suffix, melty, show_search=True, on_collapse=False, on_drag_up=False, y_offset=0,
+                    meta, suffix, melty, show_bg=True, show_search=True, on_collapse=False, on_drag_up=False, y_offset=0,
                     on_expand=False, width=None, indent_size=10, global_style=None, global_toggles=None,
                     show_add_delete=True, item_spacing_y=1,
                     show_instance_vars=True, unique=0, horizontal=False, show_indices=False, **kwargs):
@@ -410,6 +425,11 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
     if hasattr(input_value, 'children') and isinstance(input_value.children, (list, dict, defaultdict, deque)):
         input_value = input_value.children
+
+    if show_bg and draw_state.total_z_offset < 0:
+        imgui.dummy(1,3)
+    else:
+        imgui.dummy(1,1)
 
     search_token = norm_string(draw_state.search_text) if show_search else ""
 

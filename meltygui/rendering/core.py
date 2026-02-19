@@ -170,7 +170,7 @@ def render_func(*args, **o_kwargs):
         # first_arg = args[0] if args else None
         input_value = kwargs.get("input_value", input_value)
 
-        content_margin = ((len(Melty.bg_stack) + 2) * 2.0)
+        content_margin = ((len(Melty.bg_stack) + 1) * 2.0)
 
         kwargs = o_kwargs | kwargs
 
@@ -412,6 +412,7 @@ def render_func(*args, **o_kwargs):
                 kwargs['use_cache'] = False
                 return False, None
 
+
         Melty.seen_unique.add(unique)
 
         if not draw_state.expanded:
@@ -573,10 +574,10 @@ def render_func(*args, **o_kwargs):
                     internal_z_offset = 0
 
             total_z_offset = ds_z_offset + passed_z_offset + internal_z_offset
-            if draw_state.scroll_visible:
-                total_z_offset = total_z_offset - 3.0
-                content_margin = 0
-                kwargs["show_bg"] = False
+            # if draw_state.scroll_visible:
+                # total_z_offset = total_z_offset + 3.0
+                # content_margin = 0
+                # kwargs["show_bg"] = False
 
             draw_state.total_z_offset
 
@@ -604,13 +605,14 @@ def render_func(*args, **o_kwargs):
                 Melty.shadow_depth = Melty.shadow_depth + total_z_offset
 
             if kwargs.get("z_absolute", None) is not None:
-                if kwargs.get("z_absolute", 0) < 3:
+                if kwargs.get("z_absolute", 0) < 3 and kwargs.get("show_bg", False):
                     draw_state.shadow_margin = 1.5
                 Melty.shadow_depth = 0
                 draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer_stack[-1])
             else:
                 draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer_stack[-1])
-                if total_z_offset < 0 and (kwargs.get("shadow", False) or draw_state.selected):
+                if total_z_offset < 0 and (kwargs.get("shadow", False) or draw_state.selected) and kwargs.get("show_bg",
+                                                                                                              False):
                     draw_state.shadow_margin = 1.5
                 else:
                     draw_state.shadow_margin = 0
@@ -1201,8 +1203,7 @@ def render_func(*args, **o_kwargs):
                     style_manager = Melty.global_attrs['style_manager']
                     global_style = Melty.global_attrs['global_style']
 
-                    if not closable:
-                        Melty.bg_stack.append(style_manager.get_tint())
+                    Melty.bg_stack.append(style_manager.get_tint())
                     Melty.bg_depth += 1 + kwargs.get("bg_offset", 0)
 
                     # Melty.undo_clip(unique, 1)
@@ -1230,8 +1231,7 @@ def render_func(*args, **o_kwargs):
 
                 if show_bg or (highlight and draw_state.height < 60) or not draw_state.expanded:
                     Melty.bg_depth -= 1 + kwargs.get("bg_offset", 0)
-                    if not closable:
-                        Melty.bg_stack.pop()
+                    Melty.bg_stack.pop()
                     Melty.bg_color_stack.pop()
 
                 draw_state._imgui_is_hovered = draw_state._imgui_is_item_hovered and is_hovered
