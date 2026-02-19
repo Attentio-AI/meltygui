@@ -170,6 +170,8 @@ def render_func(*args, **o_kwargs):
         # first_arg = args[0] if args else None
         input_value = kwargs.get("input_value", input_value)
 
+        content_margin = ((len(Melty.bg_stack) + 2) * 2.0)
+
         kwargs = o_kwargs | kwargs
 
         if header_defaults is not None:
@@ -571,6 +573,11 @@ def render_func(*args, **o_kwargs):
                     internal_z_offset = 0
 
             total_z_offset = ds_z_offset + passed_z_offset + internal_z_offset
+            if draw_state.scroll_visible:
+                total_z_offset = total_z_offset - 3.0
+                content_margin = 0
+                kwargs["show_bg"] = False
+
             draw_state.total_z_offset
 
             new_active_layer = 0
@@ -746,30 +753,27 @@ def render_func(*args, **o_kwargs):
             if len(Melty.fixed_size_stack) > 0 and draw_state.auto_resize and not Melty.is_wrapped() and passed_width is None:
                 fixed_size_draw_state = Melty.fixed_size_stack[-1]
                 x_offset = draw_state.left - fixed_size_draw_state.left
-                draw_state.width = fixed_size_draw_state.width - x_offset - ((len(Melty.bg_stack) + 1) * 2.0)
+                draw_state.width = fixed_size_draw_state.width - x_offset - content_margin
                 if kwargs.get("fill_height", False):
                     draw_state.height = snap_int(fixed_size_draw_state.height - (start_cursor[1] - fixed_size_draw_state.top))
 
-                available_width = (fixed_size_draw_state.width - x_offset - ((len(Melty.bg_stack) + 1) * 2.0) -
+                available_width = (fixed_size_draw_state.width - x_offset - content_margin -
                                             draw_state.header_width - draw_state.header_end_width - 10)
             elif len(Melty.fixed_size_stack) > 0:
                 fixed_size_draw_state = Melty.fixed_size_stack[-1]
                 x_offset = draw_state.left - fixed_size_draw_state.left
-                available_width = (fixed_size_draw_state.width - x_offset - (
-                        (len(Melty.bg_stack) + 1) * 2.0) -
+                available_width = (fixed_size_draw_state.width - x_offset - content_margin -
                                             draw_state.header_width - draw_state.header_end_width - 10)
             else:
                 rect = Melty.get_clip_size()
                 if rect is not None:
-                    available_width = (rect[0] - draw_state.header_width - draw_state.header_end_width - (
-                            (len(Melty.bg_stack) + 2) * 2.0) - 10)
+                    available_width = (rect[0] - draw_state.header_width - draw_state.header_end_width - content_margin - 10)
                 elif not auto_resize:
-                    available_width = draw_state.width - draw_state.header_width - draw_state.header_end_width - 5
+                    available_width = draw_state.width - draw_state.header_width - draw_state.header_end_width
                 else:
                     rect = imgui.get_io().display_size
                     offset = rect[0] - draw_state.left - draw_state.header_width - draw_state.header_end_width
-                    available_width = (offset - (
-                            (len(Melty.bg_stack) + 2) * 2.0) - 10)
+                    available_width = (offset - content_margin - 10)
 
 
 
@@ -778,9 +782,9 @@ def render_func(*args, **o_kwargs):
                 draw_state.multi_line = True
                 rect = Melty.get_clip_size()
                 if rect is not None:
-                    draw_state.content_width = (rect[0] - ((len(Melty.bg_stack) + 1) * 2.0) - 10)
+                    draw_state.content_width = (rect[0] - content_margin - 10)
                 elif not auto_resize:
-                    draw_state.content_width = draw_state.width - ((len(Melty.bg_stack) + 1) * 2.0) - 10
+                    draw_state.content_width = draw_state.width - content_margin - 10
                 else:
                     draw_state.content_width = 30
             else:
@@ -1196,7 +1200,9 @@ def render_func(*args, **o_kwargs):
                     from src.lsd.gl_gui.view.core_views.new_core_view import draw_bg
                     style_manager = Melty.global_attrs['style_manager']
                     global_style = Melty.global_attrs['global_style']
-                    Melty.bg_stack.append(style_manager.get_tint())
+
+                    if not closable:
+                        Melty.bg_stack.append(style_manager.get_tint())
                     Melty.bg_depth += 1 + kwargs.get("bg_offset", 0)
 
                     # Melty.undo_clip(unique, 1)
@@ -1224,7 +1230,8 @@ def render_func(*args, **o_kwargs):
 
                 if show_bg or (highlight and draw_state.height < 60) or not draw_state.expanded:
                     Melty.bg_depth -= 1 + kwargs.get("bg_offset", 0)
-                    Melty.bg_stack.pop()
+                    if not closable:
+                        Melty.bg_stack.pop()
                     Melty.bg_color_stack.pop()
 
                 draw_state._imgui_is_hovered = draw_state._imgui_is_item_hovered and is_hovered
@@ -1295,25 +1302,25 @@ def render_func(*args, **o_kwargs):
                     z_pos = draw_state.z_pos
                     shadow_depth = draw_state.shadow_depth
 
-
-                if "with_header" in kwargs and kwargs.get("with_header", None) is not None and kwargs.get(
-                        "show_header",
-                        True):
-
-                    Melty.cache.mark_shadow(layer=z_pos, depth_and_layer=shadow_depth,
-                                            x=draw_state.left + 2, y= draw_state.top + draw_state.shadow_margin,
-                                            w=draw_state.width - 4,
-                                            h=draw_state.header_height,
-                                            corner_radius=draw_state.corner_radius)
-
-                if "with_footer" in kwargs and kwargs.get("with_footer", None) is not None:
-                    Melty.cache.mark_shadow(layer=z_pos,
-                                            depth_and_layer=shadow_depth,
-                                            x=draw_state.left + 2,
-                                            y=draw_state.top + draw_state.height - draw_state.footer_height,
-                                            w=draw_state.width - 4,
-                                            h=draw_state.footer_height,
-                                            corner_radius=draw_state.corner_radius)
+                #
+                # if "with_header" in kwargs and kwargs.get("with_header", None) is not None and kwargs.get(
+                #         "show_header",
+                #         True):
+                #
+                #     Melty.cache.mark_shadow(layer=z_pos, depth_and_layer=shadow_depth,
+                #                             x=draw_state.left + 2, y= draw_state.top + draw_state.shadow_margin,
+                #                             w=draw_state.width - 4,
+                #                             h= draw_state.header_height,
+                #                             corner_radius=draw_state.corner_radius)
+                #
+                # if "with_footer" in kwargs and kwargs.get("with_footer", None) is not None:
+                #     Melty.cache.mark_shadow(layer=z_pos,
+                #                             depth_and_layer=shadow_depth,
+                #                             x=draw_state.left + 2,
+                #                             y=draw_state.top + draw_state.height - draw_state.footer_height,
+                #                             w=draw_state.width - 4,
+                #                             h=draw_state.footer_height,
+                #                             corner_radius=draw_state.corner_radius)
 
             if use_cache:
                 Melty.cache.mark_end_offscreen()
@@ -1512,10 +1519,8 @@ def render_func(*args, **o_kwargs):
             if clip_size is not None:
                 clip_height = clip_size[1]
                 needs_scroll = draw_state.content_height > clip_height
-            draw_state.scroll_visible = True
-            draw_state._parent.scroll_visible = True
-        else:
-            draw_state.scroll_visible = False
+
+        draw_state.scroll_visible = needs_scroll
 
         if needs_scroll:
             scroll_y_changed = draw_state.on_action("scroll_y_changed", view_id="view_scroll", priority_delta=10)

@@ -364,7 +364,7 @@ def draw_window(input_value, view_func=None, draw_state=None, **kwargs):
     kwargs['selectable'] = True
     kwargs['return_extras'] = True
     # kwargs['draw_state'] = draw_state
-    kwargs['indent_size'] = 10
+    kwargs['indent_size'] = 2
     kwargs['with_header'] = None
     kwargs['with_header_end'] = None
     kwargs['with_footer'] = None
@@ -378,6 +378,7 @@ def draw_window(input_value, view_func=None, draw_state=None, **kwargs):
 
     if len(return_val) == 3:
         return_val = (return_val[0], return_val[1], draw_state)
+
 
     return return_val
 
