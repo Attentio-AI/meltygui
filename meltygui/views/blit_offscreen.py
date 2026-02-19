@@ -892,8 +892,8 @@ class TileCacheMasked:
             self, draw_state: any, layer: int, depth_and_layer: any, x: float, y: float, w: float, h: float,
             key: str, corner_radius: float = 6.0
     ) -> None:
-        if key in self._enq_mask_keys:
-            return
+        # if key in self._enq_mask_keys:
+        #     return
         self._enq_mask_keys.add(key)
         self._rect_seq = (self._rect_seq + 1) & 0xFF
         # if draw_state.total_z_offset < 0:

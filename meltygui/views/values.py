@@ -286,7 +286,7 @@ def draw_header_end(input_value=None, name="", key=None, melty=None, parent_show
 
     if closable:
         close_icon = "\uf00d"
-        if button(f"{close_icon}", shadow=False, color=(9, 1, 1, 0))[0]:
+        if button(f"{close_icon}", shadow=True, z_offset=-5, color=(9, 1, 1, 0))[0]:
             draw_state.closed = not draw_state.closed
             Melty.cache.invalidate_up_by_obj(Melty.registered_windows)
 
@@ -323,11 +323,16 @@ def draw_header_end(input_value=None, name="", key=None, melty=None, parent_show
     # pop_style_var(2)
 
 
+@render_func(use_cache=True, show_bg=False, width=20, height=22, auto_resize=False, selectable=False, no_cursor=True)
+def empty(input_val, width, height):
+    pass
+
+
 @render_func(use_cache=True, auto_resize=False, closable=True, selectable=False,
              show_bg=True, melty_window=True, draggable=True, show_tint=True,
              with_header=draw_header, with_header_end=draw_header_end, indent_size=2,
              with_footer=draw_footer, z_offset=0)
-def draw_window(input_value, view_func=None, draw_state=None, **kwargs):
+def draw_window(input_value, view_func=None, draw_state=None, middle_mouse_clicked=False, **kwargs):
     # if draw_state.width is not None and draw_state.height is not None and draw_state.expanded:
     #     loading_icon_0 = "\uf00d"
     #     loading_icon_1 = "\uf067"
@@ -364,7 +369,10 @@ def draw_window(input_value, view_func=None, draw_state=None, **kwargs):
     return_val =draw_collection(input_value, show_bg=False, use_cache=True, z_offset=-4,
                                 with_header=None, with_header_end=None, width=draw_state.width, selectable=False,
                                 with_footer=None, indent_size=10, bg_offset=-1.5, show_add_delete=False,
-                                height=draw_state.height - draw_state.footer_height - draw_state.header_height - 5)
+                                fill_height=True)
+
+    if middle_mouse_clicked:
+        draw_state.closed = True
 
     # meta = kwargs.get("meta", None)
     # if meta is None:

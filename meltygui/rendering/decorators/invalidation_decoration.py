@@ -2,6 +2,7 @@ import functools
 from typing import Any
 
 from src.lsd.gl_gui.melty import Melty
+from src.lsd.gl_gui.utils.custom_views import print_stack_trace
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import auto_eval
 
@@ -57,6 +58,8 @@ def live(cls):
                 if not initializing and visible and not name.startswith('_') \
                         and name != "driver" and Melty.frame_count > 3:
                     Melty.last_attr = name
+
+
                     if do_deep_refresh:
                         Melty.cache.invalidate_up_by_obj(obj=self, max_depth=2, force=True)
                     else:

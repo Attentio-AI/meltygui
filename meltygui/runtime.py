@@ -404,7 +404,7 @@ class Melty:
         melty.hotkey_stack = []
         melty.unique_stack = []
         Melty.draw_state_stack = []
-
+        cls.frame_count += 1
 
         if not melty.nearest_drop_target is None:
             melty.drag_drop_target = melty.nearest_drop_target
