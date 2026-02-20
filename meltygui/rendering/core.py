@@ -15,7 +15,7 @@ from imgui.core import _DrawList
 
 from imgui.core import _IO
 from src.lsd.gl_gui.view.core_views.core_render_helpers import draw_vertical_scrollbar, floating_text
-from src.lsd.gl_gui.model.core_model.draw_state import DrawState, Hotkey, DragMode, Anchor
+from src.lsd.gl_gui.model.core_model.draw_state import DrawState, Hotkey, DragMode, Anchor, TileMode
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, print_stack_trace, \
     push_style_var, pop_style_var
 from src.lsd.gl_gui.utils.glfw_utils import request_render
@@ -157,6 +157,7 @@ def render_func(*args, **o_kwargs):
         passed_height = kwargs.get('height', None)
 
 
+
         start_time = time.time()
         if kwargs.get("bypass", False):
             kwargs.pop("bypass", None)
@@ -250,6 +251,8 @@ def render_func(*args, **o_kwargs):
         draw_state.bg_depth = Melty.bg_depth
         closable = kwargs.get("closable", False)
         draw_state.closable = closable
+        draw_state.behind = kwargs.get("behind", draw_state.behind)
+        draw_state.tile_mode = kwargs.get("tile_mode", draw_state.tile_mode)
 
         window_key = tile_id
         draw_state.persistent = kwargs.get("persistent", True)
@@ -865,9 +868,7 @@ def render_func(*args, **o_kwargs):
                 draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer_stack[-1])
             else:
                 draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer_stack[-1])
-                if total_z_offset < 0 and (kwargs.get("shadow", False) or draw_state.selected) and kwargs.get(
-                        "show_bg",
-                        False):
+                if draw_state.tile_mode == TileMode.MIN:
                     draw_state.shadow_margin = 1.5
                 else:
                     draw_state.shadow_margin = 0
@@ -878,6 +879,12 @@ def render_func(*args, **o_kwargs):
                     Melty.push_clip((draw_state.left, draw_state.top,
                                      draw_state.left + draw_state.width,
                                      draw_state.top + draw_state.height))
+
+                offscreen_depth = Melty.get_channel()
+                if Melty.channels_split:
+                    draw_list = imgui.get_window_draw_list()
+                    draw_list.channels_set_current(
+                        min(offscreen_depth + kwargs.get("channel_offset", 0), Melty.max_depth - 1))
 
 
 
@@ -1046,12 +1053,12 @@ def render_func(*args, **o_kwargs):
 
                 header_start = imgui.get_cursor_screen_pos()
 
-                if draw_state.closable:
-
-                    imgui.set_cursor_screen_pos(header_start)
-                    from src.lsd.gl_gui.view.core_views.new_core_view import empty
-                    empty(input_value=input_value, name=f"empty{unique}", shadow=True, width=draw_state.width - 2,
-                          show_bg=False, height=draw_state.header_height + 2, z_offset=-2)
+                # if draw_state.closable:
+                #
+                #     imgui.set_cursor_screen_pos(header_start)
+                #     from src.lsd.gl_gui.view.core_views.new_core_view import empty
+                #     empty(input_value=input_value, name=f"shadow{unique}", shadow=True, width=draw_state.width - 2,
+                #           show_bg=False, height=draw_state.header_height + 2, z_offset=-2)
                 if "with_header" in kwargs and kwargs.get("with_header", None) is not None and kwargs.get("show_header",
                                                                                                           True):
 
@@ -1062,9 +1069,9 @@ def render_func(*args, **o_kwargs):
                     draw_header = kwargs.get("with_header", None)
                     reset_cursor = imgui.get_cursor_screen_pos()
 
-                    if Melty.channels_split:
-                        draw_list = imgui.get_window_draw_list()
-                        draw_list.channels_set_current(Melty.get_channel() + kwargs.get("channel_offset", 0))
+                    # if Melty.channels_split:
+                    #     draw_list = imgui.get_window_draw_list()
+                    #     draw_list.channels_set_current(Melty.get_channel() + kwargs.get("channel_offset", 0))
 
                     imgui.begin_group()
                     header_start_cursor = imgui.get_cursor_screen_pos()
@@ -1123,9 +1130,9 @@ def render_func(*args, **o_kwargs):
                                                     imgui.get_cursor_screen_pos()[1] + outline_margin))
 
 
-                    if Melty.channels_split:
-                        draw_list = imgui.get_window_draw_list()
-                        draw_list.channels_set_current(Melty.get_channel() + kwargs.get("channel_offset", 0))
+                    # if Melty.channels_split:
+                    #     draw_list = imgui.get_window_draw_list()
+                    #     draw_list.channels_set_current(Melty.get_channel() + kwargs.get("channel_offset", 0))
 
                     imgui.begin_group()
                     start_c = imgui.get_cursor_screen_pos()
@@ -1221,6 +1228,10 @@ def render_func(*args, **o_kwargs):
                 # left, top, width, height = Melty.apply_clip_ds(draw_state)
 
 
+                    # empty(input_value, name=f"empty{name}_max", mask_mode=TileMode.NONE, width=50, height=50,
+                    #       auto_resize=False,
+                    #       show_bg=False, z_offset=10)
+
 
 
                 show_bg = kwargs.get("show_bg", False)
@@ -1246,6 +1257,7 @@ def render_func(*args, **o_kwargs):
 
                     Melty.bg_color_stack.append(bg_color)
                     # Melty.redo_clip(unique)
+
 
                 #### MAIN CALL #######################
                 clip_rect = Melty.get_clip_rect()
@@ -1365,6 +1377,15 @@ def render_func(*args, **o_kwargs):
 
             if use_cache:
                 Melty.cache.mark_end_offscreen()
+
+            # if closable:
+            #     from src.lsd.gl_gui.view.core_views.new_core_view import empty
+            #     current_cursor = imgui.get_cursor_screen_pos()
+            #     imgui.set_cursor_screen_pos((draw_state.left, draw_state.top))
+            #     empty(input_value, name=f"empty{id}_min", mask_mode=TileMode.MIN, width=50, height=50,
+            #           auto_resize=False, use_cache=False,
+            #           show_bg=True, z_offset=-10)
+            #     imgui.set_cursor_screen_pos(current_cursor)
 
             if draw_state._has_popup:
                 is_popup_open = Melty.imgui_popup_open
@@ -1547,12 +1568,6 @@ def render_func(*args, **o_kwargs):
             jet = jet_color(depth_tint)
             floating_text(f"{func.__name__} w:{Melty.depth}", tint=jet)
 
-        if use_cache:
-            offscreen_depth = Melty.get_channel()
-            if Melty.channels_split:
-                draw_list = imgui.get_window_draw_list()
-                draw_list.channels_set_current(min(offscreen_depth + kwargs.get("channel_offset", 0), Melty.max_depth - 1))
-
         needs_scroll = False
         clip_height = 0
         if draw_state._parent is not None and not draw_state._parent.auto_resize:
@@ -1578,9 +1593,12 @@ def render_func(*args, **o_kwargs):
 
             min_scroll_y = 0
             max_scroll_y = max(0, draw_state.content_height - clip_height)
-            if not imgui.is_mouse_down(0) and not imgui.is_mouse_down(1) and not imgui.is_mouse_down(2):
-                draw_state.scroll_offset = (current_x,
-                                            max(min_scroll_y, min(new_offset_y, max_scroll_y)))
+
+            # Give views time to settle
+            if Melty.frame_count > 2:
+                if not imgui.is_mouse_down(0) and not imgui.is_mouse_down(1) and not imgui.is_mouse_down(2):
+                    draw_state.scroll_offset = (current_x,
+                                                max(min_scroll_y, min(new_offset_y, max_scroll_y)))
 
             current_tint = Melty.global_attrs['style_manager'].get_tint()
             if hasattr(input_value, 'tint'):

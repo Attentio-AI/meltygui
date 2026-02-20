@@ -35,7 +35,7 @@ from src.lsd.gl_gui.view.core_views.core_meta import Meta
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import hotkey
 from src.lsd.gl_gui.view.core_views.core_render import render_func, tmp_undo_stack, redo_stack, push_id, pop_id, \
     render_wrapper, annotation_track, listens_for, begin_window, end_window
-from src.lsd.gl_gui.model.core_model.draw_state import KeyMod, Hotkey, ZoomState
+from src.lsd.gl_gui.model.core_model.draw_state import KeyMod, Hotkey, ZoomState, TileMode
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
 import libcst as cst
 
@@ -325,13 +325,14 @@ def draw_header_end(input_value=None, name="", key=None, melty=None, parent_show
 
 @render_func(use_cache=True, show_bg=False, width=20, height=22, auto_resize=False, selectable=False, no_cursor=True)
 def empty(input_val, width, height):
+    imgui.dummy(width, height)
     pass
 
 
 @render_func(use_cache=True, auto_resize=False, closable=True, selectable=False,
-             show_bg=True, melty_window=True, draggable=True, show_tint=True,
+             show_bg=True, melty_window=True, draggable=True, show_tint=True, tile_mode=TileMode.NONE,
              with_header=draw_header, with_header_end=draw_header_end, indent_size=2,
-             with_footer=draw_footer, z_offset=0)
+             with_footer=draw_footer, z_offset=1)
 def draw_window(input_value, view_func=None, draw_state=None, middle_mouse_clicked=False, **kwargs):
     # if draw_state.width is not None and draw_state.height is not None and draw_state.expanded:
     #     loading_icon_0 = "\uf00d"
@@ -356,66 +357,80 @@ def draw_window(input_value, view_func=None, draw_state=None, middle_mouse_click
     #     draw_list.add_text(icon_x - 40, icon_y - 1,
     #                        imgui.get_color_u32_rgba(1, 1, 1, 0.3),
     #                        f"{draw_state.nested_depth}")
-    kwargs['show_bg'] = True
-    kwargs['selectable'] = True
-    kwargs['return_extras'] = True
-    # kwargs['draw_state'] = draw_state
-    kwargs['closable'] = False
-    # kwargs['indent_size'] = 4
-    kwargs['with_header'] = None
-    kwargs['with_header_end'] = None
-    kwargs['with_footer'] = None
-    kwargs['is_tree'] = False
-    return_val =draw_collection(input_value, show_bg=False, use_cache=True, z_offset=-4,
-                                with_header=None, with_header_end=None, width=draw_state.width, selectable=False,
-                                with_footer=None, indent_size=10, bg_offset=-1.5, show_add_delete=False,
-                                fill_height=True)
 
-    if middle_mouse_clicked:
-        draw_state.closed = True
-
-    # meta = kwargs.get("meta", None)
-    # if meta is None:
-    #     if hasattr(Meta, 'get_child_meta'):
-    #         meta = Meta.get_child_meta(None, field_name=kwargs.get("suffix", ''), value=input_value)
-    #
-    # if view_func is None:
-    #     if meta.view_function is None or 'draw_any' in meta.view_function.__name__:
-    #         meta.view_function = draw_collection
-    #
     # kwargs['show_bg'] = False
-    # kwargs['selectable'] = False
+    # kwargs['selectable'] = True
     # kwargs['return_extras'] = True
     # # kwargs['draw_state'] = draw_state
-    # kwargs['indent_size'] = 2
+    # kwargs['closable'] = False
+    # # kwargs['indent_size'] = 4
     # kwargs['with_header'] = None
     # kwargs['with_header_end'] = None
     # kwargs['with_footer'] = None
     # kwargs['is_tree'] = False
-    #
-    # kwargs['closable'] = False
-    # if view_func is None:
-    #     return_val = meta.view_function(input_value, **kwargs)
-    # else:
-    #     return_val = view_func(input_value, **kwargs)
-    #
-    # if len(return_val) == 3:
-    #     return_val = (return_val[0], return_val[1], draw_state)
+    # return_val = draw_collection([input_value], nested_func=view_func, show_bg=False, use_cache=False, z_offset=-4,
+    #                             with_header=None, with_header_end=None, width=draw_state.width, selectable=False,
+    #                             with_footer=None, indent_size=10, bg_offset=-1.5,
+    #                             fill_height=True)
 
+    if middle_mouse_clicked:
+        draw_state.closed = True
+
+
+
+    if view_func is None:
+        meta = kwargs.get("meta", None)
+        if meta is None:
+            if hasattr(Meta, 'get_child_meta'):
+                meta = Meta.get_child_meta(None, field_name=kwargs.get("name", ''), value=input_value)
+        if meta.view_function is None or 'draw_any' in meta.view_function.__name__:
+            meta.view_function = draw_collection
+
+        view_func = meta.view_function
+
+    name = kwargs.get("name", "None")
+
+
+
+
+    kwargs['show_bg'] = False
+    kwargs['selectable'] = True
+    kwargs['return_extras'] = True
+    # kwargs['draw_state'] = draw_state
+    kwargs['indent_size'] = 2
+    kwargs['with_header'] = None
+    kwargs['with_header_end'] = None
+    kwargs['with_footer'] = None
+    kwargs['is_tree'] = False
+    kwargs['closable'] = False
+    kwargs['behind'] = False
+
+    return_val = view_func(input_value, **kwargs)
+    imgui.set_cursor_screen_pos((draw_state.left + 10, draw_state.top + 30))
+    empty(input_value, name=f"empty{name}_max", z_offset=-10, mask_mode=TileMode.NONE, width=100, height=100,
+          auto_resize=False,
+          show_bg=True)
+    if len(return_val) == 3:
+        return_val = (return_val[0], return_val[1], draw_state)
+
+    # imgui.set_cursor_screen_pos((draw_state.left, draw_state.top + 150))
+    # empty(input_value, name=f"empty{name}", mask_mode=TileMode.MIN, width=100, height=100, auto_resize=False,
+    #       show_bg=True, z_offset=-10)
 
     return return_val
 
 
-@render_func(is_default_for=(MutableMapping, defaultdict), use_cache=False, show_bg=True,
-             shadow=True, wrap=False, enable_scroll=True, with_header=draw_header)
-def draw_collection(input_value, draw_state, depth, style_manager,
-                    meta, suffix, melty, show_bg=True, show_search=True, on_collapse=False, on_drag_up=False, y_offset=0,
-                    on_expand=False, width=None, indent_size=10, global_style=None, global_toggles=None,
-                    show_add_delete=True, item_spacing_y=1,
-                    show_instance_vars=True, unique=0, horizontal=False, show_indices=False, **kwargs):
+@render_func(is_default_for=(MutableMapping, defaultdict), use_cache=True, show_bg=True, show_instance_vars=False,
+             shadow=True, wrap=False, z_offset=-1, enable_scroll=True, with_header=draw_header, indent_size=10)
+def draw_collection(input_value,  draw_state, depth, style_manager, meta,
+                    child_kwargs=None, nested_func=None, show_bg=True, show_search=True, on_collapse=False,
+                    on_expand=False, global_toggles=None, show_add_delete=True, item_spacing_y=1,
+                    horizontal=False, show_indices=False, **kwargs):
     """
     Universal collection renderer
     """
+    if child_kwargs is None:
+        child_kwargs = {}
     if isinstance(input_value, defaultdict):
         pass
     changed = False
@@ -433,11 +448,11 @@ def draw_collection(input_value, draw_state, depth, style_manager,
 
     if hasattr(input_value, 'children') and isinstance(input_value.children, (list, dict, defaultdict, deque)):
         input_value = input_value.children
-
-    if show_bg and draw_state.total_z_offset < 0:
-        imgui.dummy(1,3)
-    else:
-        imgui.dummy(1,1)
+    #
+    # if show_bg and draw_state.total_z_offset < 0:
+    #     imgui.dummy(1,3)
+    # else:
+    #     imgui.dummy(1,1)
 
     search_token = norm_string(draw_state.search_text) if show_search else ""
 
@@ -584,13 +599,32 @@ def draw_collection(input_value, draw_state, depth, style_manager,
             if show_indices or isinstance(collection, (list, tuple, set, deque)):
                 display_name = f"{str(idx)}"
 
-            item_return = draw_any(item, return_extras=True, key=key,
-                                   meta=item_meta, trigger_collapse=trigger_collapse,
-                                   trigger_expand=trigger_expand, y_offset=y_offset,
-                                   on_collapse=on_collapse, on_expand=on_expand,
-                                   collection=input_value, name=key_str, display_name=display_name,
-                                   parent_show_add_delete=show_add_delete,
-                                   show_add_delete=show_add_delete)
+            # item_return = draw_any(item, return_extras=True, key=key,
+            #                        meta=item_meta, trigger_collapse=trigger_collapse,
+            #                        trigger_expand=trigger_expand, y_offset=y_offset,
+            #                        on_collapse=on_collapse, on_expand=on_expand,
+            #                        collection=input_value, name=key_str, display_name=display_name,
+            #                        parent_show_add_delete=show_add_delete,
+            #                        show_add_delete=show_add_delete)
+            if nested_func is None:
+                if item_meta is None:
+                    if hasattr(Meta, 'get_child_meta'):
+                        item_meta = Meta.get_child_meta(None, field_name=kwargs.get("name", ''), value=input_value)
+
+                if item_meta.view_function is None:
+                    item_meta.view_function = draw_collection
+
+                item_func = item_meta.view_function
+            else:
+                item_func = nested_func
+
+
+            item_return = item_func(item, return_extras=True, key=key, trigger_collapse=trigger_collapse,
+                                             trigger_expand=trigger_expand, y_offset=y_offset,
+                                             on_collapse=on_collapse, on_expand=on_expand,
+                                             collection=input_value, name=key_str, display_name=display_name,
+                                             parent_show_add_delete=show_add_delete,
+                                             show_add_delete=show_add_delete)
 
             if len(item_return) == 3:
                 item_changed, out_val, returned_ds = item_return
@@ -2223,7 +2257,7 @@ def draw_float_ctx(input_value):
     draw_float(0.0, name="test")
 
 
-@render_func(is_default_for=float, use_cache=False, shadow=False, show_bg=False, wrap=False, is_tree=False,
+@render_func(is_default_for=float, use_cache=True, shadow=False, show_bg=False, wrap=False, is_tree=False,
              context_menu=draw_float_ctx, with_header=draw_header, with_header_end=draw_header_end)
 def draw_float(input_value: float, draw_state, min_value=-100.0, max_value=100.0, speed=0.01):
     imgui.set_next_item_width(max(30, draw_state.content_width))

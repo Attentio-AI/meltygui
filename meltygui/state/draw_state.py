@@ -71,6 +71,11 @@ class ZoomState(DictConversion):
         self.hue = 0.0
         self.saturation = 1.0
 
+class TileMode(Enum):
+    MAX = 'max'
+    MIN = 'min'
+    NONE = 'none'
+    NO_MASK = 'no_mask'
 
 @no_save("mouse_btn_state", "mouse_up", "mouse_down", "unique", "search_active",
          "shadow", "size_change", "drag_released", "clicked", "dragged",
@@ -133,6 +138,8 @@ class DrawState(DictConversion):
         self.bg_depth = 0
         self.pressed = False
         self.closable = False
+        self.behind = False
+        self.tile_mode = TileMode.MAX
 
         self.context_menu_open = False
         self.context_menu_ds = None

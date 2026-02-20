@@ -12,6 +12,7 @@ import imgui
 
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.model.core_model.core_enums import OffscreenDebugMode
+from src.lsd.gl_gui.model.core_model.draw_state import TileMode
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
 
 """
@@ -715,6 +716,24 @@ class TileCacheMasked:
             if below:
                 return
 
+    def apply_blend_mode(self, r):
+        if r.draw_state is None:
+            gl.glDisable(gl.GL_BLEND)
+            return
+
+        if r.draw_state.tile_mode == TileMode.MIN:
+            # gl.glDisable(gl.GL_BLEND)
+            gl.glEnable(gl.GL_BLEND)
+            gl.glBlendEquation(gl.GL_MIN)
+            gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
+        elif r.draw_state.tile_mode == TileMode.MAX:
+            gl.glEnable(gl.GL_BLEND)
+            gl.glBlendEquation(gl.GL_MAX)
+            gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
+        else:
+            gl.glDisable(gl.GL_BLEND)
+
+
     def get_hash(self, draw_state):
         from src.lsd.gl_gui.model.dict_conversion import DictConversion
 
@@ -911,6 +930,7 @@ class TileCacheMasked:
         self._rect_seq = (self._rect_seq + 1) & 0xFF
         key = f"shadow_{self._rect_seq}"
         parent_ctx = self._stack[-1] if self._stack else None
+
 
         self._mask_rects.append(
             _Rect(draw_state, layer, depth_and_layer, x, y, w, h, key, self._rect_seq, corner_radius, blend_max=False))
@@ -1460,15 +1480,17 @@ class TileCacheMasked:
         # Precompute subtree rect lists once (key -> rects in its subtree, draw order)
         parent_of = self.key_to_parent_key
         subtree_rects_by_root = defaultdict(list)
-        for r in local_mask_rects:
+        for r in local_mask_rects_rev:
             k = r.key
 
             while k is not None:
-                subtree_rects_by_root[k].append(r)
-                k = parent_of.get(k)
+                if r.draw_state is not None:
+
+                    subtree_rects_by_root[k].append(r)
+                    k = parent_of.get(k)
 
         # Reverse
-        subtree_rects_by_root = {k: list(reversed(v)) for k, v in subtree_rects_by_root.items()}
+        subtree_rects_by_root_rev = {k: list(reversed(v)) for k, v in subtree_rects_by_root.items()}
 
         st = _GLState()
         try:
@@ -1496,13 +1518,9 @@ class TileCacheMasked:
             gl.glClearColor(0, 0, 0, 0.0)
             gl.glClear(gl.GL_COLOR_BUFFER_BIT)
 
-            gl.glEnable(gl.GL_BLEND)
-            gl.glBlendEquation(gl.GL_MAX)
-            gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
 
             for r in local_mask_rects_rev:
-                if r.blend_max:
-                    continue
+                self.apply_blend_mode(r)
                 self._draw_mask_rect(r, dp_x, dp_y, s_x, s_y, fb_h, use_cached=False)
 
             gl.glViewport(0, 0, fb_w, fb_h)
@@ -1525,7 +1543,7 @@ class TileCacheMasked:
             gl.glUniform1f(self._loc_copy_uDebugScale, float(self.offscreen_scale))
             gl.glUniform1i(self._loc_copy_uCopyDebugMode, self._copy_debug_mode_to_int())
 
-            for p in local_pending:
+            for p in local_pending_rev:
                 x, y = p.pos
                 w, h = p.size
                 x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(x, y, w, h, dp_x, dp_y, s_x, s_y, fb_h)
@@ -1546,13 +1564,9 @@ class TileCacheMasked:
                 gl.glClearColor(0, 0, 0, 0.0)
                 gl.glClear(gl.GL_COLOR_BUFFER_BIT)
 
-                # gl.glEnable(gl.GL_BLEND)
-                # gl.glBlendEquation(gl.GL_MAX)
-                # gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
 
                 for r in subtree_rects_by_root.get(p.key, ()):
-                    if r.blend_max:
-                        continue
+                    self.apply_blend_mode(r)
                     self._draw_mask_rect_fresh(r, dp_x, dp_y, s_x, s_y, fb_h, float(r.layer) * INV_65535,
                                                shadow_margin=0.0)
 
@@ -1592,7 +1606,9 @@ class TileCacheMasked:
             # PASS 4: Build tile.mask_tex for each dirty tile (full subtree)
             # ================================================================
             background_depth = 0.001
-            for p in local_pending:
+            background_depth = 0
+
+            for p in local_pending_rev:
                 x, y = p.pos
                 w, h = p.size
                 x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(x, y, w, h, dp_x, dp_y, s_x, s_y, fb_h)
@@ -1621,6 +1637,8 @@ class TileCacheMasked:
                 for r in subtree_rects_by_root.get(p.key, ()):
                     # if r.blend_max:
                     #     continue
+                 # self.apply_blend_mode(r)
+                 #    gl.glDisable(gl.GL_BLEND)
 
                     draw_state = self.key_to_draw_state.get(r.key)
                     size_change = draw_state.size_change if draw_state else False
@@ -1635,13 +1653,18 @@ class TileCacheMasked:
                     )
 
                     # if r.blend_alpha and use_child_cache:
-                    #     gl.glEnable(gl.GL_BLEND)
-                    #     gl.glBlendEquation(gl.GL_MAX)
-                    #     gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
+                    # gl.glEnable(gl.GL_BLEND)
+                    # gl.glBlendEquation(gl.GL_MAX)
+                    # gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
                     # else:
                     #     gl.glDisable(gl.GL_BLEND)
+
+                    self.apply_blend_mode(r)
+
                     # For cached tiles, use actual tile size from context to avoid stretching
                     if use_child_cache:
+                        gl.glDisable(gl.GL_BLEND)
+
                         child_ctx = self._key_to_ctx.get(r.key)
                         if child_ctx and child_ctx.size:
                             cx, cy = child_ctx.pos
@@ -1652,6 +1675,7 @@ class TileCacheMasked:
                             sx0, sy0, sx1, sy1 = self._screen_rect_to_fb_xyxy(r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y,
                                                                               fb_h)
                     else:
+
                         child_ctx = self._key_to_ctx.get(r.key)
                         if child_ctx and child_ctx.size:
                             cx, cy = child_ctx.pos
@@ -1676,6 +1700,8 @@ class TileCacheMasked:
                     iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
 
                     if use_child_cache:
+                        gl.glDisable(gl.GL_BLEND)
+
                         offset = (float(depth_and_layer) - float(t_child.mask_layer)) * float(INV_65535)
                         self._draw_mask_rect_cached(
                             t_child.mask_tex,
@@ -1688,6 +1714,8 @@ class TileCacheMasked:
                             r.draw_state.shadow_margin if r.draw_state is not None else 0.0
                         )
                     else:
+                        self.apply_blend_mode(r)
+
                         rank_norm = float(depth_and_layer) / 65535.5
 
                         gl.glViewport(ix0, iy0, iw, ih)
@@ -1746,8 +1774,8 @@ class TileCacheMasked:
             gl.glClearColor(background_depth, 0, 0, 0.0)
             gl.glClear(gl.GL_COLOR_BUFFER_BIT)
 
-            gl.glDisable(gl.GL_BLEND)
-            for key in subtree_rects_by_root.keys():
+            # gl.glDisable(gl.GL_BLEND)
+            for key in reversed(list((subtree_rects_by_root.keys()))):
                 for r in subtree_rects_by_root.get(key, ()):
                     draw_state = self.key_to_draw_state.get(r.key)
 
@@ -1764,16 +1792,14 @@ class TileCacheMasked:
                     clip_iw, clip_ih = max(0, clip_ix1 - clip_ix0), max(0, clip_iy1 - clip_iy0)
 
                     tile_ctx = self._key_to_ctx.get(r.key)
-                    # gl.glEnable(gl.GL_BLEND)
-                    # gl.glBlendEquation(gl.GL_MAX)
-                    # gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
+
 
                     # if size_change:
                     #     gl.glEnable(gl.GL_BLEND)
                     #     gl.glBlendEquation(gl.GL_MAX)
                     #     gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
                     # else:
-                    gl.glDisable(gl.GL_BLEND)
+                    # gl.glDisable(gl.GL_BLEND)
 
                     # gl.glDisable(gl.GL_BLEND)
 
@@ -1785,6 +1811,19 @@ class TileCacheMasked:
                     #     gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
                     # else:
                     #     gl.glDisable(gl.GL_BLEND)
+
+                    # self.apply_blend_mode(r)
+                    if r.draw_state.tile_mode == TileMode.MIN:
+                        # gl.glDisable(gl.GL_BLEND)
+                        gl.glEnable(gl.GL_BLEND)
+                        gl.glBlendEquation(gl.GL_MIN)
+                        gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
+                    elif r.draw_state.tile_mode == TileMode.MAX:
+                        gl.glEnable(gl.GL_BLEND)
+                        gl.glBlendEquation(gl.GL_MAX)
+                        gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
+                    else:
+                        gl.glDisable(gl.GL_BLEND)
 
                     if (can_use_cached or size_change) and tile_ctx and not draw_state is None:
                         tx, ty = draw_state.left, draw_state.top
@@ -1811,6 +1850,8 @@ class TileCacheMasked:
 
                     depth_and_layer = r.depth_and_layer
 
+
+
                     if can_use_cached:
                         offset = (float(depth_and_layer) - float(t.mask_layer)) * float(INV_65535)
 
@@ -1820,9 +1861,7 @@ class TileCacheMasked:
                                                     r.corner_radius, shadow_margin)
                     else:
                         rank_norm = float(depth_and_layer) / 65535.5
-
                         gl.glViewport(clip_ix0, clip_iy0, clip_iw, clip_ih)
-
                         cr = r.corner_radius
                         if cr > 0:
                             gl.glUseProgram(self._prog_mask_rounded)
