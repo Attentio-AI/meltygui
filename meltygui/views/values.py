@@ -335,9 +335,9 @@ def empty(input_val):
              show_bg=True, melty_window=True, draggable=True, show_tint=True, tile_mode=TileMode.MAX,
              with_header=draw_header, with_header_end=draw_header_end, indent_size=10,
              with_footer=draw_footer, z_offset=-4)
-def draw_window(input_value, view_func=None, draw_state=None, middle_mouse_clicked=False, **kwargs):
+def draw_window(input_value, view_func=None, draw_state=None, delete_down=False, glfw_close_down=False, **kwargs):
 
-    if middle_mouse_clicked:
+    if delete_down and imgui.get_io().key_ctrl:
         draw_state.closed = True
 
     if view_func is None:
@@ -1123,6 +1123,11 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
     clip_bottom = min(p_max[1], raw_img_bottom)
 
     draw_list: _DrawList = imgui.get_window_draw_list()
+
+    if imgui.is_mouse_hovering_rect(clip_left, clip_top, clip_right, clip_bottom):
+        draw_state.hover_reported = True
+    else:
+        draw_state.hover_reported = False
 
     Melty.push_clip((clip_left, clip_top, clip_right - 3, clip_bottom))
     draw_list.add_image_rounded(texture_id,

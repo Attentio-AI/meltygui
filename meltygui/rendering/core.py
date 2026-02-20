@@ -246,7 +246,6 @@ def render_func(*args, **o_kwargs):
         draw_state.name = name
         tile_id = strhash(str(unique) + str(draw_state.id))
         draw_state._tile_id = tile_id
-        start_shadow_depth = Melty.shadow_depth
         draw_state.bg_depth = Melty.bg_depth
         closable = kwargs.get("closable", False)
         draw_state.closable = closable
@@ -343,9 +342,9 @@ def render_func(*args, **o_kwargs):
         draw_state._input_value = input_value
 
 
-        original_active_layer = Melty.active_layer
         #############################################
         ###### Layer rendering delay
+        original_active_layer = Melty.active_layer
 
         if active_layer is None:
             if (melty.dragged_item is not None and melty.drag_in_progress and
@@ -408,6 +407,7 @@ def render_func(*args, **o_kwargs):
             Melty.active_layer = active_layer
 
         kwargs['return_extras'] = False
+        start_shadow_depth = Melty.shadow_depth
 
         if unique in Melty.seen_unique:
             if 'draw_state' in wanted_params:
@@ -598,22 +598,6 @@ def render_func(*args, **o_kwargs):
                 # kwargs["show_bg"] = False
 
             draw_state.total_z_offset
-
-            new_active_layer = 0
-            if draw_state.context_menu_open and draw_state.context_menu_ds is not None:
-                kwargs["z_absolute"] = Melty.max_layer - 4
-
-            if melty_window or kwargs.get("z_absolute", None) is not None or len(Melty.active_layer_stack) == 0:
-                if kwargs.get("z_absolute", None) is not None:
-                    Melty.active_layer_stack.append(kwargs.get("z_absolute", Melty.active_layer))
-                    new_active_layer += 1
-
-                elif len(Melty.active_layer_stack) == 0:
-                    Melty.active_layer_stack.append(Melty.active_layer)
-                    new_active_layer += 1
-                else:
-                    Melty.active_layer_stack[-1] = Melty.active_layer
-
             Melty.depth = Melty.depth + 1
 
             draw_state.depth = Melty.depth
@@ -656,10 +640,9 @@ def render_func(*args, **o_kwargs):
                 handle_drag = draw_state.on_action("left_mouse_drag", view_id="window_resize",
                                                    rect=corner_rect, priority_delta=1)
 
-                if melty_window:
-                    corner_drag = draw_state.on_action("right_mouse_drag", priority_delta=-2)
-                    if handle_drag is None:
-                        handle_drag = corner_drag
+                corner_drag = draw_state.on_action("right_mouse_drag", view_id="corner_drag", priority_delta=-1)
+                if handle_drag is None:
+                    handle_drag = corner_drag
 
                 if handle_drag and not auto_resize:
                     if draw_state._initial_window_size is None:
@@ -855,17 +838,12 @@ def render_func(*args, **o_kwargs):
             else:
                 Melty.shadow_depth = Melty.shadow_depth + total_z_offset
 
-            if kwargs.get("z_absolute", None) is not None:
-                if kwargs.get("z_absolute", 0) < 3 and kwargs.get("show_bg", False):
-                    draw_state.shadow_margin = 0
-                Melty.shadow_depth = 0
-                draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer_stack[-1])
+
+            draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer)
+            if draw_state.tile_mode == TileMode.MIN:
+                draw_state.shadow_margin = 0
             else:
-                draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer_stack[-1])
-                if draw_state.tile_mode == TileMode.MIN:
-                    draw_state.shadow_margin = 0
-                else:
-                    draw_state.shadow_margin = 0
+                draw_state.shadow_margin = 0
 
             push_id(unique)
             if Melty.cache.mark_start_offscreen(draw_state=draw_state) and not draw_state.kwargs.just_shadow:
@@ -940,7 +918,14 @@ def render_func(*args, **o_kwargs):
                     left_mouse_down_press = draw_state.on_action("left_mouse_held", "press", priority_delta=-1)
                     draw_state.pressed = True if left_mouse_down_press else False
                     click = draw_state.on_action("left_mouse_click", priority_delta=0)
-                    if click:
+                    middle_down = draw_state.on_action("middle_mouse_down", priority_delta=0)
+
+                    if middle_down:
+                        Melty.selected = set()
+                        Melty.selected.add(draw_state)
+                        Melty.last_selected = draw_state
+
+                    elif click:
                         Melty.previous_select = copy(Melty.selected)
                         if not click.modifiers:
                             if len(Melty.selected) == 1 and draw_state in Melty.selected:
@@ -1031,22 +1016,17 @@ def render_func(*args, **o_kwargs):
                 draw_state.top = snap_int(draw_state.top)
 
                 ########### CONTEXT MENU HANDLING ############
-                context_menu_func = kwargs.get("context_menu", None)
-                if context_menu_func is not None:
+                draw_context_menu = kwargs.get("context_menu", None)
+                if draw_context_menu is not None:
                     right_click = draw_state.on_action("right_mouse_down")
                     if right_click:
                         draw_state.context_menu_open = not draw_state.context_menu_open
                         if draw_state.context_menu_ds is not None:
                             draw_state.context_menu_ds.closed = not draw_state.context_menu_open
-                        # if not draw_state.context_menu_open:
-                        #     if draw_state.context_menu_ds is not None:
-                        #         draw_state.context_menu_ds.closed = True
-                        #
-                        #     draw_state.context_menu_ds = None
-                            # Melty.cache.invalidate_by_obj(Melty.registered_windows)
-
                     if draw_state.context_menu_open:
                         bg_offset = 4
+                        if draw_state._is_nested:
+                            bg_offset = 0
                         Melty.bg_depth += bg_offset
                         tint = style_manager.get_tint()
                         mixed_color = style_manager.make_color_rgb(tint[0], tint[1], tint[2],
@@ -1054,7 +1034,7 @@ def render_func(*args, **o_kwargs):
                                                                    saturation_scale=0.1,
                                                                    alpha=1.0)
                         from src.lsd.gl_gui.view.core_views.new_core_view import draw_window
-                        returned_val = draw_window(input_value=draw_state, view_func=context_menu_func,
+                        returned_val = draw_window(input_value=draw_state, view_func=draw_context_menu,
                                                    tint=mixed_color,
                                                    width=draw_state.width + 40,
                                                    persistent=False, anchor=Anchor.BOTTOM_LEFT, show_tint=False,
@@ -1068,6 +1048,7 @@ def render_func(*args, **o_kwargs):
                         if ctx_ds.last_seen is None:
                             ctx_ds.closed = False
                             ctx_ds.window_pos = (0, 0)
+
 
                         if ctx_ds.closed:
                             draw_state.context_menu_open = False
@@ -1230,8 +1211,11 @@ def render_func(*args, **o_kwargs):
                 imgui.begin_group()
 
                 is_hovered = draw_state.on_action("cursor_hover", view_id="test", priority_delta=-1) is not None
-                hover_eligible = draw_state.hover_eligible()
+
+                hover_eligible = draw_state.hover_eligible() and draw_state.hover_reported
                 if hover_eligible:
+                    if closable:
+                        Melty.any_window_hovered_pending = True
                     max_layer_depth = Melty.max_depth * Melty.max_layer + Melty.max_depth
                     priority = max_layer_depth - draw_state.z_pos
                     event_names = copy(wanted_params)
@@ -1495,9 +1479,6 @@ def render_func(*args, **o_kwargs):
         finally:
 
             Melty.active_layer = original_active_layer
-            if new_active_layer > 0:
-                for i in range(new_active_layer):
-                    Melty.active_layer_stack.pop()
             Melty.shadow_depth = start_shadow_depth
 
             draw_state.frame_count += 1

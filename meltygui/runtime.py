@@ -1,3 +1,4 @@
+import time
 from collections import defaultdict, deque
 from copy import copy
 from enum import Enum
@@ -163,14 +164,24 @@ class Melty:
     fixed_size_stack = []
     nested_collections = 0
     z_pos = 0
+    any_window_hovered_pending = False
+    any_window_hovered = False
+    glfw_close_requested = False
 
     @classmethod
     def begin_frame(cls):
+        cls.any_window_hovered = cls.any_window_hovered_pending
+        cls.any_window_hovered_pending = False
         style = imgui.get_style()
         cls.seen_unique = set()
         cls.original_spacing = style.item_spacing
         cls.original_window_padding = style.window_padding
         cls.original_frame_padding = style.frame_padding
+        cls.backend.pump()
+
+        if cls.glfw_close_requested:
+            cls.event_handler.feed_down(input_id="glfw_close", x=0, y=0, t=time.perf_counter())
+            cls.glfw_close_requested = False
 
         cls.layer_inc = 0.04 / ((Melty.max_layer - 1.0) * (Melty.max_depth - 1.0)) * 65535.0
 
@@ -182,7 +193,6 @@ class Melty:
         is_popup_open = imgui.is_popup_open("", flags=imgui.POPUP_ANY_POPUP)
         Melty.imgui_popup_open = is_popup_open
 
-        cls.backend.pump()
 
         cls.last_draw_state = [(None, None)] * cls.max_layer
 

@@ -18,6 +18,8 @@ from collections import deque
 from typing import TYPE_CHECKING
 import time
 
+import glfw
+
 try:
     from pynput import mouse, keyboard
     from pynput.keyboard import Key, KeyCode
@@ -596,27 +598,27 @@ class ImGuiBackend:
     # ImGui key indices (imgui.KEY_*)
     # This mapping covers common keys; extend as needed
     KEY_NAMES = {
-        imgui.KEY_TAB: "tab",
-        imgui.KEY_LEFT_ARROW: "left",
-        imgui.KEY_RIGHT_ARROW: "right",
-        imgui.KEY_UP_ARROW: "up",
-        imgui.KEY_DOWN_ARROW: "down",
-        imgui.KEY_PAGE_UP: "page_up",
-        imgui.KEY_PAGE_DOWN: "page_down",
-        imgui.KEY_HOME: "home",
-        imgui.KEY_END: "end",
-        imgui.KEY_INSERT: "insert",
-        imgui.KEY_DELETE: "delete",
-        imgui.KEY_BACKSPACE: "backspace",
-        imgui.KEY_SPACE: "space",
-        imgui.KEY_ENTER: "enter",
-        imgui.KEY_ESCAPE: "escape",
-        imgui.KEY_A: "a",
-        imgui.KEY_C: "c",
-        imgui.KEY_V: "v",
-        imgui.KEY_X: "x",
-        imgui.KEY_Y: "y",
-        imgui.KEY_Z: "z",
+        glfw.KEY_TAB: "tab",
+        glfw.KEY_LEFT: "left",
+        glfw.KEY_RIGHT: "right",
+        glfw.KEY_UP: "up",
+        glfw.KEY_DOWN: "down",
+        glfw.KEY_PAGE_UP: "page_up",
+        glfw.KEY_PAGE_DOWN: "page_down",
+        glfw.KEY_HOME: "home",
+        glfw.KEY_END: "end",
+        glfw.KEY_INSERT: "insert",
+        glfw.KEY_DELETE: "delete",
+        glfw.KEY_BACKSPACE: "backspace",
+        glfw.KEY_SPACE: "space",
+        glfw.KEY_ENTER: "enter",
+        glfw.KEY_ESCAPE: "escape",
+        glfw.KEY_A: "a",
+        glfw.KEY_C: "c",
+        glfw.KEY_V: "v",
+        glfw.KEY_X: "x",
+        glfw.KEY_Y: "y",
+        glfw.KEY_Z: "z",
     } if HAS_IMGUI else {}
 
     def __init__(self, handler: InputHandler):
@@ -630,8 +632,6 @@ class ImGuiBackend:
         self._prev_mouse_down = [False] * 5
         self._prev_keys_down: set[int] = set()
         self._prev_scroll = (0.0, 0.0)
-
-
 
     def pump(self):
 
@@ -692,6 +692,8 @@ class ImGuiBackend:
             self.handler.feed_up(key_name, mx, my, t)
 
         self._prev_keys_down = current_keys
+
+
 
         # --- Modifiers ---
         self.handler.set_modifiers(

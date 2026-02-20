@@ -6,7 +6,8 @@ import libcst as cst
 
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import no_save, exclude, deep_refresh, no_save_exclude
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import no_save, exclude, deep_refresh, no_save_exclude, \
+    invalidate_all
 
 
 # class decoration
@@ -70,6 +71,10 @@ class ZoomState(DictConversion):
         self.contrast = 1.0
         self.hue = 0.0
         self.saturation = 1.0
+        self.swirl = 0.0
+        self.warp = 0.0
+
+        self.image_hovered = False
 
 
 class AttrDict:
@@ -118,10 +123,11 @@ class TileMode(Enum):
                  'hover_rects', 'nested_window', 'use_cache', 'layer', "header_top", "header_left", "left_offset",
                  "top_offset", 'kwargs', 'content_width', "just_shadow",
                  "header_left_delta", "header_top_delta", "last_seen", "persistent", "shadow_margin", "bg_depth",
-                 "anchor_pos", "just_shadow",
+                 "anchor_pos", "just_shadow", 'hover_reported',
                  'channel', 'next', 'previous', 'index_in_parent', 'relative_pos', 'context_menu_open',
                  'context_menu_ds', '_hover_eligible')
-@deep_refresh('scroll_offset', "closed")
+@deep_refresh('scroll_offset')
+@invalidate_all('closed')
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
 
@@ -290,6 +296,7 @@ class DrawState(DictConversion):
         self.anchor_pos = Anchor.TOP_LEFT
         self._kwargs = {}
         self.kwargs = AttrDict(self._kwargs)
+        self.hover_reported = True
 
         self._hover_eligible_cache = {}  # path, frame
     #
@@ -491,7 +498,7 @@ class DrawState(DictConversion):
                     return False, False, False
         return True, False, False
 
-    def hover_eligible(self, rect=None):
+    def hover_eligible(self, rect=None, ignore_reports=True):
         if self.kwargs.just_shadow:
             return False
         if rect is None:
@@ -507,8 +514,12 @@ class DrawState(DictConversion):
         if cached is None or cached[1] < Melty.frame_count:
             this_frame = Melty.frame_count
             if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[2], rect[3]):
-                self._hover_eligible_cache[rect] = (True, this_frame)
-                return True
+                if self.hover_reported is None or self.hover_reported or ignore_reports:
+                    self._hover_eligible_cache[rect] = (True, this_frame)
+                    return True
+                else:
+                    self._hover_eligible_cache[rect] = (False, this_frame)
+                    return False
 
             self._hover_eligible_cache[rect] = (False, this_frame)
             return False
