@@ -1158,6 +1158,21 @@ class TileCacheMasked:
         imgui.begin_group()
         has_area = size is not None and size[0] != 0 and size[1] != 0
 
+        if draw_state.kwargs.just_shadow:
+            self._stack.append(
+                _Ctx(
+                    draw_state=draw_state,
+                    key=rkey,
+                    pos=(x, y),
+                    size=size,
+                    layer=layer,
+                    depth_and_layer=draw_state.shadow_depth,
+                    drew_cached=False,
+                    auto_resize=draw_state.auto_resize,
+                )
+            )
+            return False
+
         if size is not None and self.enabled and draw_state.frame_count >= 2:
             t = self._tiles.get(rkey)
             use_image = t and has_area and (t.size == (size[0], size[1])) and (not self._is_dirty(t))
@@ -1628,18 +1643,7 @@ class TileCacheMasked:
                 gl.glClearColor(background_depth, 0, 0, 0.0)
                 gl.glClear(gl.GL_COLOR_BUFFER_BIT)
 
-                # gl.glEnable(gl.GL_BLEND)
-                # gl.glBlendEquation(gl.GL_MAX)
-                # gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
-
-                last_depth_and_layer = -1
-
                 for r in subtree_rects_by_root.get(p.key, ()):
-                    # if r.blend_max:
-                    #     continue
-                 # self.apply_blend_mode(r)
-                 #    gl.glDisable(gl.GL_BLEND)
-
                     draw_state = self.key_to_draw_state.get(r.key)
                     size_change = draw_state.size_change if draw_state else False
                     t_child = self._tiles.get(r.key)
@@ -1651,13 +1655,6 @@ class TileCacheMasked:
                             and (t_child.mask_tex is not None)
                             and (not size_change)
                     )
-
-                    # if r.blend_alpha and use_child_cache:
-                    # gl.glEnable(gl.GL_BLEND)
-                    # gl.glBlendEquation(gl.GL_MAX)
-                    # gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
-                    # else:
-                    #     gl.glDisable(gl.GL_BLEND)
 
                     self.apply_blend_mode(r)
 

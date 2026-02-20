@@ -14,7 +14,6 @@ from src.lsd.gl_gui.view.events.input_handler import InputHandler, InputEvent
 from src.lsd.gl_gui.view.events.pynput_backend import PynputBackend, ImGuiBackend
 from src.lsd.gl_gui.model.core_model.core_enums import generate_id
 from src.lsd.gl_gui.utils.glfw_utils import request_render
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import global_hotkeys
 
 import OpenGL.GL as gl
 
@@ -118,6 +117,7 @@ class Melty:
     type_defaults = {}
     type_to_default_view_func = defaultdict(lambda: set())
 
+    silence_invalidate = False
     unique_stack = []
     suffix_stack = []
     size_stack = []

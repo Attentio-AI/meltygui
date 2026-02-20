@@ -435,7 +435,7 @@ class DictConversion(metaclass=FieldMeta):
         content_str = f"{self.__class__.__name__}:"
 
         # Create set of attributes to exclude
-        excluded_attrs = {'outliner_expanded_h', 'expanded', 'hash', '_parent', '_children', "tensor", "tensor_b", "tensor_c", 'buffer', 'ctx',
+        excluded_attrs = {'outliner_expanded_h', 'expanded', 'hash', '_parent', '_children', 'kwargs', "tensor", "tensor_b", "tensor_c", 'buffer', 'ctx',
                           'texture', "texture3D", "cuda_buffer", "xy_renderer", "xyz_renderer",
                           'previous_mouse_x', 'previous_mouse_y', 'last_mouse_x', 'last_mouse_y'}
         if exclude:

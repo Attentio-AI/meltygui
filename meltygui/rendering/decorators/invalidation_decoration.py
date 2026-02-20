@@ -25,6 +25,7 @@ def live(cls):
 
     @functools.wraps(original_setattr)
     def new_setattr(self, name: str, value: Any) -> None:
+
         # Set the attribute using the original __setattr__
         original_value = getattr(self, name, None)
         if original_setattr == object.__setattr__:
@@ -32,13 +33,14 @@ def live(cls):
         else:
             original_setattr(self, name, value)
 
+        if Melty.silence_invalidate:
+            return
         # Check if we're initializing
         initializing = getattr(self, init_flag, False)
 
         excluded = getattr(self, '__excluded_attrs__', set())
         deep_refresh_names = getattr(self, '__deep_refresh__', set())
         invalidate_all = getattr(self, '__invalidate_all__', set())
-        from src.lsd.gl_gui.melty import Melty
         do_deep_refresh = name in deep_refresh_names
         visible = name not in excluded
         visible = visible or do_deep_refresh

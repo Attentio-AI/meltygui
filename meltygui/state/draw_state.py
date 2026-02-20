@@ -71,6 +71,24 @@ class ZoomState(DictConversion):
         self.hue = 0.0
         self.saturation = 1.0
 
+
+class AttrDict:
+    __slots__ = ('_data',)
+
+    def __init__(self, data):
+        object.__setattr__(self, '_data', data)
+
+    def __getattr__(self, name):
+        return self._data.get(name, None)
+
+
+    def __setattr__(self, name, value):
+        self._data[name] = value
+
+    def rebind(self, data):
+        object.__setattr__(self, '_data', data)
+
+
 class TileMode(Enum):
     MAX = 'max'
     MIN = 'min'
@@ -98,9 +116,9 @@ class TileMode(Enum):
 @no_save_exclude('render_time', 'content_height', "total_z_offset", 'closable', 'invalid_content_height',
                  "header_height", "parent_window", "pressed",
                  'hover_rects', 'nested_window', 'use_cache', 'layer', "header_top", "header_left", "left_offset",
-                 "top_offset",
+                 "top_offset", 'kwargs', 'content_width', "just_shadow",
                  "header_left_delta", "header_top_delta", "last_seen", "persistent", "shadow_margin", "bg_depth",
-                 "anchor_pos",
+                 "anchor_pos", "just_shadow",
                  'channel', 'next', 'previous', 'index_in_parent', 'relative_pos', 'context_menu_open',
                  'context_menu_ds', '_hover_eligible')
 @deep_refresh('scroll_offset', "closed")
@@ -113,7 +131,6 @@ class DrawState(DictConversion):
         self._parent = None
         self._is_header = False
         self._view_func = None
-        self._kwargs = None
         self._cursor_pos = (0, 0)
         self._parent_ctx = None
         self.next = None
@@ -139,7 +156,7 @@ class DrawState(DictConversion):
         self.pressed = False
         self.closable = False
         self.behind = False
-        self.tile_mode = TileMode.NONE
+        self.tile_mode = TileMode.MAX
 
         self.context_menu_open = False
         self.context_menu_ds = None
@@ -271,8 +288,26 @@ class DrawState(DictConversion):
         self.max_column = 1
         self._is_nested = False
         self.anchor_pos = Anchor.TOP_LEFT
+        self._kwargs = {}
+        self.kwargs = AttrDict(self._kwargs)
 
         self._hover_eligible_cache = {}  # path, frame
+    #
+    # def __getattr__(self, name):
+    #     if name.startswith("kw_"):
+    #         key = name[2:]  # strip "arg_" prefix
+    #         try:
+    #             return self._kwargs[key]
+    #         except KeyError:
+    #             print(f"Warning: Attempted to access missing argument '{key}' in DrawState.")
+    #     raise AttributeError(f"'{type(self).__name__}' has no attribute '{name}'")
+    #
+    # def __setattr__(self, name, value):
+    #     if name.startswith("kw_"):
+    #         self._args[name[3:]] = value
+    #     else:
+    #         super().__setattr__(name, value)
+
 
     @property
     def root_window(self):
@@ -457,6 +492,8 @@ class DrawState(DictConversion):
         return True, False, False
 
     def hover_eligible(self, rect=None):
+        if self.kwargs.just_shadow:
+            return False
         if rect is None:
             left = self.left if self.left is not None else 0
             top = self.top if self.top is not None else 0
@@ -479,6 +516,8 @@ class DrawState(DictConversion):
         return cached[0]
 
     def on_action(self, event_names, view_id=None, priority=None, priority_delta=0, rect=None):
+        if self.kwargs.just_shadow:
+            return None
         if view_id is None:
             view_id = self._tile_id
         else:
