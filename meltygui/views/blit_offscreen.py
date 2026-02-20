@@ -1700,7 +1700,6 @@ class TileCacheMasked:
                     iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
 
                     if use_child_cache:
-                        gl.glDisable(gl.GL_BLEND)
 
                         offset = (float(depth_and_layer) - float(t_child.mask_layer)) * float(INV_65535)
                         self._draw_mask_rect_cached(
@@ -1714,7 +1713,6 @@ class TileCacheMasked:
                             r.draw_state.shadow_margin if r.draw_state is not None else 0.0
                         )
                     else:
-                        self.apply_blend_mode(r)
 
                         rank_norm = float(depth_and_layer) / 65535.5
 
@@ -1794,36 +1792,8 @@ class TileCacheMasked:
                     tile_ctx = self._key_to_ctx.get(r.key)
 
 
-                    # if size_change:
-                    #     gl.glEnable(gl.GL_BLEND)
-                    #     gl.glBlendEquation(gl.GL_MAX)
-                    #     gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
-                    # else:
-                    # gl.glDisable(gl.GL_BLEND)
-
-                    # gl.glDisable(gl.GL_BLEND)
-
-                    # gl.glDisable(gl.GL_BLEND)
-
-                    # if r.blend_max:
-                    #     gl.glEnable(gl.GL_BLEND)
-                    #     gl.glBlendEquation(gl.GL_MAX)
-                    #     gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
-                    # else:
-                    #     gl.glDisable(gl.GL_BLEND)
-
                     # self.apply_blend_mode(r)
-                    if r.draw_state.tile_mode == TileMode.MIN:
-                        # gl.glDisable(gl.GL_BLEND)
-                        gl.glEnable(gl.GL_BLEND)
-                        gl.glBlendEquation(gl.GL_MIN)
-                        gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
-                    elif r.draw_state.tile_mode == TileMode.MAX:
-                        gl.glEnable(gl.GL_BLEND)
-                        gl.glBlendEquation(gl.GL_MAX)
-                        gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
-                    else:
-                        gl.glDisable(gl.GL_BLEND)
+
 
                     if (can_use_cached or size_change) and tile_ctx and not draw_state is None:
                         tx, ty = draw_state.left, draw_state.top

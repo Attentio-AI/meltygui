@@ -330,9 +330,9 @@ def empty(input_val, width, height):
 
 
 @render_func(use_cache=True, auto_resize=False, closable=True, selectable=False,
-             show_bg=True, melty_window=True, draggable=True, show_tint=True, tile_mode=TileMode.NONE,
+             show_bg=True, melty_window=True, draggable=True, show_tint=True, tile_mode=TileMode.MAX,
              with_header=draw_header, with_header_end=draw_header_end, indent_size=2,
-             with_footer=draw_footer, z_offset=1)
+             with_footer=draw_footer, z_offset=0)
 def draw_window(input_value, view_func=None, draw_state=None, middle_mouse_clicked=False, **kwargs):
     # if draw_state.width is not None and draw_state.height is not None and draw_state.expanded:
     #     loading_icon_0 = "\uf00d"
