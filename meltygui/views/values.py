@@ -1955,10 +1955,10 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0, rounding=5.0,
 
         if outline_tint is not None:
             outline_color = imgui.get_color_u32_rgba(*outline_tint[:3], 1.0)
-        if Melty.channels_split:
-            draw_list = imgui.get_window_draw_list()
-            channel = max(0, min(Melty.max_depth - 2, Melty.get_channel() + 1))
-            draw_list.channels_set_current(channel)
+        # if Melty.channels_split:
+        #     draw_list = imgui.get_window_draw_list()
+        #     channel = max(0, min(Melty.max_depth - 2, Melty.get_channel() - 1))
+        #     draw_list.channels_set_current(channel)
 
         # if selected:
         #     outline_color = imgui.get_color_u32_rgba(1.0, 0.8, 0.2, 1.0)
@@ -1976,10 +1976,10 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0, rounding=5.0,
     if tint is not None:
         imgui_bg_color = imgui.get_color_u32_rgba(*tint[:3], opacity)
 
-    if Melty.channels_split:
-        draw_list = imgui.get_window_draw_list()
-        channel = max(0, min(Melty.max_depth - 2, Melty.get_channel() - 2))
-        draw_list.channels_set_current(channel)
+    # if Melty.channels_split:
+    #     draw_list = imgui.get_window_draw_list()
+    #     channel = max(0, min(Melty.max_depth - 2, Melty.get_channel() - 2))
+    #     draw_list.channels_set_current(channel)
 
     if opacity > 0.0:
         imgui.get_window_draw_list().add_rect_filled(*rect, col=imgui_bg_color, rounding=rounding)

@@ -863,13 +863,13 @@ def render_func(*args, **o_kwargs):
 
             if kwargs.get("z_absolute", None) is not None:
                 if kwargs.get("z_absolute", 0) < 3 and kwargs.get("show_bg", False):
-                    draw_state.shadow_margin = 1.5
+                    draw_state.shadow_margin = 0
                 Melty.shadow_depth = 0
                 draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer_stack[-1])
             else:
                 draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer_stack[-1])
                 if draw_state.tile_mode == TileMode.MIN:
-                    draw_state.shadow_margin = 1.5
+                    draw_state.shadow_margin = 0
                 else:
                     draw_state.shadow_margin = 0
 
@@ -884,9 +884,60 @@ def render_func(*args, **o_kwargs):
                 if Melty.channels_split:
                     draw_list = imgui.get_window_draw_list()
                     draw_list.channels_set_current(
-                        min(offscreen_depth + kwargs.get("channel_offset", 0), Melty.max_depth - 1))
+                        max(0, min(offscreen_depth + ds_z_offset + passed_z_offset - 3 + kwargs.get("channel_offset", 0), Melty.max_depth - 1)))
 
+                    # if melty_window:
+                    #     previous_tint = style_manager.get_tint()
+                    #     if hasattr(input_value, 'tint') and getattr(input_value, "tint") is not None:
+                    #         style_manager.set_imgui_tint(*getattr(input_value, "tint"))
+                    #     elif draw_state.tint is not None:
+                    #         style_manager.set_imgui_tint(*draw_state.tint)
+                if "tint" in kwargs and kwargs.get("tint", None) is not None:
+                    previous_tint = style_manager.get_tint()
+                    style_manager.set_imgui_tint(*kwargs.get("tint"))
+                elif hasattr(input_value, "tint") and input_value.tint is not None:
+                    previous_tint = style_manager.get_tint()
+                    style_manager.set_imgui_tint(*input_value.tint)
+                elif hasattr(collection, "__tint__") and getattr(collection, "__tint__"):
+                    if name in collection.__tint__:
+                        previous_tint = style_manager.get_tint()
+                        style_manager.set_imgui_tint(*collection.__tint__[name])
+                elif draw_state.tint is not None and kwargs.get("show_bg", False) and kwargs.get("show_tint",
+                                                                                                 False):
+                    previous_tint = style_manager.get_tint()
+                    style_manager.set_imgui_tint(*draw_state.tint)
 
+                show_bg = kwargs.get("show_bg", False)
+                highlight = draw_state.selected
+                if show_bg or (highlight and draw_state.height < 60) or not draw_state.expanded:
+                    draw_state.corner_radius = 5.0
+                    from src.lsd.gl_gui.view.core_views.new_core_view import draw_bg
+                    style_manager = Melty.global_attrs['style_manager']
+                    global_style = Melty.global_attrs['global_style']
+
+                    Melty.bg_stack.append(style_manager.get_tint())
+                    Melty.bg_depth += 1 + kwargs.get("bg_offset", 0)
+
+                    # Melty.undo_clip(unique, 1)
+                    bg_color = (0, 0, 0, 0)
+                    if draw_state.width > 5 and draw_state.height > 5:
+                        nested_bg = not melty_window and kwargs.get("bg_offset", 0) >= 0
+                        _, bg_color = draw_bg(bypass=True, left=draw_state.left, top=draw_state.top,
+                                              width=draw_state.width, height=draw_state.height, rounding=draw_state.corner_radius,
+                                              depth=Melty.shadow_depth, selected=draw_state.selected,
+                                              global_style=global_style, opacity=1.0 if show_bg else 0.0,
+                                              pressed=draw_state.pressed,
+                                              style_manager=style_manager, nested_bg=nested_bg)
+
+                    Melty.bg_color_stack.append(bg_color)
+                    # Melty.redo_clip(unique)
+
+                offscreen_depth = Melty.get_channel()
+                if Melty.channels_split:
+                    draw_list = imgui.get_window_draw_list()
+                    draw_list.channels_set_current(
+                        max(0, min(offscreen_depth + total_z_offset + kwargs.get("channel_offset", 0),
+                                   Melty.max_depth - 1)))
 
                 if kwargs.get("selectable", True):
                     left_mouse_down_press = draw_state.on_action("left_mouse_held", "press", priority_delta=-1)
@@ -966,25 +1017,7 @@ def render_func(*args, **o_kwargs):
 
                     draw_state.selected = draw_state in Melty.selected
 
-                # if melty_window:
-                #     previous_tint = style_manager.get_tint()
-                #     if hasattr(input_value, 'tint') and getattr(input_value, "tint") is not None:
-                #         style_manager.set_imgui_tint(*getattr(input_value, "tint"))
-                #     elif draw_state.tint is not None:
-                #         style_manager.set_imgui_tint(*draw_state.tint)
-                if "tint" in kwargs and kwargs.get("tint", None) is not None:
-                    previous_tint = style_manager.get_tint()
-                    style_manager.set_imgui_tint(*kwargs.get("tint"))
-                elif hasattr(input_value, "tint") and input_value.tint is not None:
-                    previous_tint = style_manager.get_tint()
-                    style_manager.set_imgui_tint(*input_value.tint)
-                elif hasattr(collection, "__tint__") and getattr(collection, "__tint__"):
-                    if name in collection.__tint__:
-                        previous_tint = style_manager.get_tint()
-                        style_manager.set_imgui_tint(*collection.__tint__[name])
-                elif draw_state.tint is not None and kwargs.get("show_bg", False) and kwargs.get("show_tint", False):
-                    previous_tint = style_manager.get_tint()
-                    style_manager.set_imgui_tint(*draw_state.tint)
+
 
 
                 if (draw_state.left is not None and draw_state.top is not None and
@@ -1234,29 +1267,7 @@ def render_func(*args, **o_kwargs):
 
 
 
-                show_bg = kwargs.get("show_bg", False)
-                highlight = draw_state.selected
-                if show_bg or (highlight and draw_state.height < 60) or not draw_state.expanded:
-                    draw_state.corner_radius = 5.0
-                    from src.lsd.gl_gui.view.core_views.new_core_view import draw_bg
-                    style_manager = Melty.global_attrs['style_manager']
-                    global_style = Melty.global_attrs['global_style']
 
-                    Melty.bg_stack.append(style_manager.get_tint())
-                    Melty.bg_depth += 1 + kwargs.get("bg_offset", 0)
-
-                    # Melty.undo_clip(unique, 1)
-                    bg_color = (0,0,0,0)
-                    if width > 5 and height > 5:
-                        nested_bg = not melty_window and kwargs.get("bg_offset", 0) >= 0
-                        _, bg_color = draw_bg(bypass=True, left=left, top=top,
-                                              width=width, height=height, rounding=draw_state.corner_radius,
-                                              depth=Melty.shadow_depth, selected=draw_state.selected,
-                                              global_style=global_style, opacity=1.0 if show_bg else 0.0, pressed=draw_state.pressed,
-                                              style_manager=style_manager, nested_bg=nested_bg)
-
-                    Melty.bg_color_stack.append(bg_color)
-                    # Melty.redo_clip(unique)
 
 
                 #### MAIN CALL #######################

@@ -139,7 +139,7 @@ class DrawState(DictConversion):
         self.pressed = False
         self.closable = False
         self.behind = False
-        self.tile_mode = TileMode.MAX
+        self.tile_mode = TileMode.NONE
 
         self.context_menu_open = False
         self.context_menu_ds = None
