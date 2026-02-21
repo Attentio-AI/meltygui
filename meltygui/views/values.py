@@ -379,6 +379,8 @@ def draw_collection(input_value,  draw_state, depth, style_manager, meta,
     """
     if child_kwargs is None:
         child_kwargs = {}
+    else:
+        pass
     if isinstance(input_value, defaultdict):
         pass
     changed = False
@@ -567,12 +569,24 @@ def draw_collection(input_value,  draw_state, depth, style_manager, meta,
                 item_func = nested_func
 
 
-            item_return = item_func(item, return_extras=True, key=key, trigger_collapse=trigger_collapse,
-                                             trigger_expand=trigger_expand, y_offset=y_offset,
-                                             on_collapse=on_collapse, on_expand=on_expand,
-                                             collection=input_value, name=key_str, display_name=display_name,
-                                             parent_show_add_delete=show_add_delete,
-                                             show_add_delete=show_add_delete)
+            item_kwargs = {
+                'return_extras': True,
+                'key': key,
+                'meta': item_meta,
+                'trigger_collapse': trigger_collapse,
+                'trigger_expand': trigger_expand,
+                'on_collapse': on_collapse,
+                'on_expand': on_expand,
+                'collection': input_value,
+                'name': key_str,
+                'display_name': display_name,
+                'parent_show_add_delete': show_add_delete,
+                'show_add_delete': show_add_delete,
+                'y_offset': y_offset
+
+            }
+            item_kwargs.update(child_kwargs)
+            item_return = item_func(item, **item_kwargs)
 
             if len(item_return) == 3:
                 item_changed, out_val, returned_ds = item_return
@@ -696,7 +710,7 @@ def draw_main(input_value, vis, **kwargs):
     draw_window(input_value=proxy, name="CST Proxy")
 
     draw_window(vis.root.lora_collection, name="Test Window 1")
-    draw_window(vis.root.lora_collection.loras, name="Test Window 2")
+    draw_window(vis.root.lora_collection.loras, name="Test Window 2", child_kwargs={'tint': (1,1,1)})
     draw_window(Melty.last_invalid, show_bg=True, name="Last Invalid")
 
     draw_window(input_value=Melty.type_to_default_view_func, is_tree=True,

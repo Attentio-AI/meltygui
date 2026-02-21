@@ -1500,9 +1500,11 @@ class TileCacheMasked:
 
             while k is not None:
                 if r.draw_state is not None:
-
                     subtree_rects_by_root[k].append(r)
-                    k = parent_of.get(k)
+                    if not r.draw_state.closable:
+                        k = parent_of.get(k)
+                    else:
+                        k = None
 
         # Reverse
         subtree_rects_by_root_rev = {k: list(reversed(v)) for k, v in subtree_rects_by_root.items()}
@@ -1774,6 +1776,7 @@ class TileCacheMasked:
                 for r in subtree_rects_by_root.get(key, ()):
                     draw_state = self.key_to_draw_state.get(r.key)
 
+
                     t = self._tiles.get(r.key)
                     size_change = draw_state.size_change if draw_state else False
 
@@ -1788,10 +1791,6 @@ class TileCacheMasked:
 
                     tile_ctx = self._key_to_ctx.get(r.key)
 
-
-                    # self.apply_blend_mode(r)
-
-
                     if (can_use_cached or size_change) and tile_ctx and not draw_state is None:
                         tx, ty = draw_state.left, draw_state.top
                         tw, th = draw_state.width, draw_state.height
@@ -1803,11 +1802,6 @@ class TileCacheMasked:
                     ix1, iy1 = int(ceil(x1)), int(ceil(y1))
                     iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
 
-                    # if r.draw_state.depth_offset < -1:
-                    #     ix0, iy0 = ix0 + 2, iy0 + 2
-                    #     ix1, iy1 = ix1 - 2, iy1 - 2
-                    #     iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
-
                     if r.w <= 0 or r.h <= 0 or iw <= 0 or ih <= 0 or clip_iw <= 0 or clip_ih <= 0:
                         continue
 
@@ -1816,9 +1810,6 @@ class TileCacheMasked:
                     gl.glViewport(ix0, iy0, iw, ih)
 
                     depth_and_layer = r.depth_and_layer
-
-
-
                     if can_use_cached:
                         offset = (float(depth_and_layer) - float(t.mask_layer)) * float(INV_65535)
 
