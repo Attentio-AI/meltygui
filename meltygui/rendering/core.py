@@ -1042,7 +1042,7 @@ def render_func(*args, **o_kwargs):
 
                 draw_context_menu = kwargs.get("context_menu", default_context_menu)
                 if draw_context_menu is not None:
-                    right_click = draw_state.on_action("right_mouse_down")
+                    right_click = draw_state.on_action("right_mouse_clicked")
                     if right_click:
                         draw_state.context_menu_open = not draw_state.context_menu_open
                         if draw_state.context_menu_ds is not None:

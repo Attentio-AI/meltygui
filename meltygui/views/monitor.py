@@ -23,6 +23,7 @@ class _MonitorMeta(type):
                 if value is _SENTINEL:
                     break
                 try:
+                    value = min(max(1, value), 100)
                     subprocess.run(["ddcutil", "setvcp", "10", str(value)])
                 except Exception as e:
                     print(f"Monitor error: {e}")
@@ -36,7 +37,7 @@ class _MonitorMeta(type):
                 if "current value" in part:
                     cls._brightness = int(part.split("=")[1].strip())
                     return
-            cls._brightness = 0
+            cls._brightness = 1
 
         threading.Thread(target=_fetch, daemon=True).start()
 
