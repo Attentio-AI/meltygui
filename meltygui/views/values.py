@@ -10,6 +10,7 @@ from enum import Enum
 from inspect import Parameter
 from math import sqrt
 from types import NoneType
+from typing import Type
 
 import numpy
 from OpenGL import GL as gl
@@ -45,6 +46,7 @@ from src.lsd.gl_gui.view.core_views.folders_proxy import FolderProxy
 from src.lsd.gl_gui.view.core_views.inspect_utils import set_fn_defaults
 from collections.abc import MutableMapping
 from src.lsd.gl_gui.view.core_views.codec_register import registry as FILE_CODECS
+from src.lsd.gl_gui.view.core_views.monitor import Monitor, _MonitorMeta
 from src.shader_library.shader_manager.texture_manager import PendingTexture
 
 
@@ -63,14 +65,16 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     on_change = False
     return_val = on_action
     push_style_var(imgui.STYLE_ALPHA, opacity)
-    value_factor = global_style.get_global_constant("depth_factor", default=1.0, folder="bg_styles")
-    value_offset = global_style.get_global_constant("depth_offset", default=0.0, folder="bg_styles")
+    value_factor = 0.03500
+    value_offset = 10.6
 
     depth = len(Melty.bg_stack)
-    depth_factor = global_style.get_global_constant("depth_factor", default=1.0, folder="bg_styles")
-    depth_offset = global_style.get_global_constant("depth_offset", default=0.0, folder="bg_styles") + 0.2
+    depth_factor = 0.0350
+    depth_offset = 10.8
+
     dynamic_value = max(0, (float(depth + depth_offset) * depth_factor))
-    bg_style = global_style.get_global_constant("bg_style", default=None, folder="bg_styles")
+    bg_style = {'value': -0.3499999940395355, 'saturation': 1.2699999809265137, 'alpha': 1.0,
+                'max_value': 1.062000036239624}
     saturation = -0.5
 
     saturation = bg_style['saturation'] + saturation
@@ -121,9 +125,6 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         imgui.same_line()
     if show_type:
         imgui.text_colored(f"({input_value.__class__.__name__})", *(0.8, 0.0, 0.5, 1.0))
-        same_line()
-    if draw_state.content_height > 0.0:
-        imgui.text_colored(f"({draw_state.content_height} {draw_state.scroll_visible})", *(0.8, 0.0, 0.5, 1.0))
         same_line()
     if show_unique:
         imgui.text_colored(f"({str(Melty.get_tile_id())})", *(0.4, 0.0, 0.9, 1.0))
@@ -361,6 +362,7 @@ def draw_window(input_value, view_func=None, draw_state=None, delete_down=False,
 
     return_val = view_func(input_value, **kwargs)
 
+
     if len(return_val) == 3:
         return_val = (return_val[0], return_val[1], draw_state)
 
@@ -368,19 +370,19 @@ def draw_window(input_value, view_func=None, draw_state=None, delete_down=False,
     return return_val
 
 
-@render_func(is_default_for=(MutableMapping, defaultdict), use_cache=True, show_bg=True, show_instance_vars=False,
+@render_func(is_default_for=(MutableMapping, defaultdict, types.MappingProxyType), use_cache=True,
+             show_bg=True, show_instance_vars=False, manual_content_height=True,
              shadow=True, wrap=False, enable_scroll=True, with_header=draw_header, indent_size=10)
-def draw_collection(input_value,  draw_state, depth, style_manager, meta,
+def draw_collection(input_value, draw_state, depth, style_manager, meta, keys=None, get_attr=None, set_attr=None, show_excluded=False,
                     child_kwargs=None, nested_func=None, show_bg=True, show_search=True, on_collapse=False,
                     on_expand=False, global_toggles=None, show_add_delete=True, item_spacing_y=1,
                     horizontal=False, show_indices=False, **kwargs):
     """
     Universal collection renderer
     """
+
     if child_kwargs is None:
         child_kwargs = {}
-    else:
-        pass
     if isinstance(input_value, defaultdict):
         pass
     changed = False
@@ -396,7 +398,8 @@ def draw_collection(input_value,  draw_state, depth, style_manager, meta,
             s = ""
         return s.lower().translate(_TRANS)
 
-    if hasattr(input_value, 'children') and isinstance(input_value.children, (list, dict, defaultdict, deque)):
+    if hasattr(input_value, 'children') and isinstance(input_value.children, (list, dict, defaultdict,
+                                                                              types.MappingProxyType, deque)):
         input_value = input_value.children
 
     if show_bg and draw_state.total_z_offset < 0:
@@ -407,40 +410,46 @@ def draw_collection(input_value,  draw_state, depth, style_manager, meta,
     search_token = norm_string(draw_state.search_text) if show_search else ""
 
     # --- Setup per collection type ---
-    ordered_driver = input_value
-    if isinstance(input_value, (dict, list, tuple, set, defaultdict, MutableMapping, deque)):
-        use_tint = True
-        use_child_meta = True
-        apply_change = True
-        parent_type = input_value.__class__
-        if isinstance(input_value, (dict, defaultdict, MutableMapping)):
-            keys = input_value.keys()
-            collection = input_value
-        else:
-            keys = range(len(input_value))
-            collection = list(input_value)
+    collection = input_value
+    use_child_meta = True
+    parent_type = input_value.__class__
 
-    elif hasattr(input_value, "__dict__") and depth < Melty.max_depth:
-        if hasattr(type(input_value), "__field_defaults__") and hasattr(input_value, 'to_dict'):
-            type(input_value).__field_defaults__.update(input_value.__dict__)
-            keys = type(input_value).__field_defaults__.keys()
-        else:
-            keys = input_value.__dict__.keys()
-        collection = input_value.__dict__
-        use_tint = False
-        use_child_meta = True
-        apply_change = True
-        parent_type = input_value.__class__
-    else:
+    if keys is None:
+        ordered_driver = input_value
+        if isinstance(input_value, (dict, list, tuple, set, defaultdict, MutableMapping, types.MappingProxyType, deque)):
+            use_child_meta = True
+            apply_change = True
+            parent_type = input_value.__class__
+            if isinstance(input_value, types.MappingProxyType):
+                keys = input_value.keys()
+            elif isinstance(input_value, (dict, defaultdict, MutableMapping, types.MappingProxyType)):
+                keys = input_value.keys()
+                collection = input_value
+            else:
+                keys = range(len(input_value))
+                collection = list(input_value)
 
-        return False, input_value
+        elif hasattr(input_value, "__dict__") and depth < Melty.max_depth:
+            if hasattr(type(input_value), "__field_defaults__") and hasattr(input_value, 'to_dict'):
+                type(input_value).__field_defaults__.update(input_value.__dict__)
+                keys = type(input_value).__field_defaults__.keys()
+            else:
+                keys = input_value.__dict__.keys()
+            collection = input_value.__dict__
+            use_tint = False
+            use_child_meta = True
+            apply_change = True
+        else:
+
+            return False, input_value
+
+        keys = list(keys)[:]
 
     # --- unified loop ---
     drew_any = False
     all_meta = []
 
     start_cursor = imgui.get_cursor_pos()[1]
-    keys = list(keys)[:]
     rect = Melty.get_clip_rect()
 
     premature_break = False
@@ -479,13 +488,21 @@ def draw_collection(input_value,  draw_state, depth, style_manager, meta,
                             continue
 
         Melty.collection_index_stack[this_collection] = idx
-        if isinstance(collection, dict) and key not in collection:
-            continue
+        item = None
+        if get_attr is None:
+            if isinstance(collection, dict) and key not in collection:
+                imgui.text("Key not found: " + str(key))
+                continue
 
-        if hasattr(input_value, "__dict__") and hasattr(input_value, key):
-            item = getattr(input_value, key, None)
+            if hasattr(input_value, "__dict__") and hasattr(input_value, key):
+                item = getattr(input_value, key, None)
+            else:
+                item = collection[key]
         else:
-            item = collection[key]
+            try:
+                item = get_attr(input_value, key)
+            except Exception as e:
+                imgui.text(f"Error getting key {key}")
 
         # Snap cursor to nearest pixel
         cursor_pos = imgui.get_cursor_screen_pos()
@@ -496,7 +513,7 @@ def draw_collection(input_value,  draw_state, depth, style_manager, meta,
             seperator(Melty.spacing[1])
             continue
 
-        if hasattr(type(input_value), "__excluded_attrs__"):
+        if not show_excluded and hasattr(type(input_value), "__excluded_attrs__"):
             if not global_toggles.force_show_excluded:
                 if str(key) in type(input_value).__excluded_attrs__:
                     continue
@@ -510,7 +527,7 @@ def draw_collection(input_value,  draw_state, depth, style_manager, meta,
         else:
             key_str = str(key)
 
-        if ((key_str.startswith("__") and key_str.endswith("__")) or
+        if not show_excluded and ((key_str.startswith("__") and key_str.endswith("__")) or
                 key_str.endswith("meta") or key_str.startswith("_")):
             continue
 
@@ -617,19 +634,25 @@ def draw_collection(input_value,  draw_state, depth, style_manager, meta,
                 result = Melty.to_apply(out_val)
                 item_changed, out_val = False, None
 
-            if item_changed and apply_change and key is not None:
-                if isinstance(input_value, (dict, defaultdict, MutableMapping)):
-                    input_value[key] = out_val
-                elif isinstance(input_value, list):
-                    input_value[key] = out_val
-                elif isinstance(input_value, deque):
-                    input_value[key] = out_val
-                elif isinstance(input_value, tuple):
-                    temp = list(input_value)
-                    temp[key] = out_val
-                    input_value = parent_type(temp)
-                else:
-                    setattr(input_value, key_str, out_val)
+            if set_attr is not None and item_changed:
+                try:
+                    set_attr(input_value, key, out_val)
+                except Exception as e:
+                    print(f"Error setting key {key} to value {out_val}: {e}")
+            else:
+                if item_changed and apply_change and key is not None:
+                    if isinstance(input_value, (dict, defaultdict, MutableMapping)):
+                        input_value[key] = out_val
+                    elif isinstance(input_value, list):
+                        input_value[key] = out_val
+                    elif isinstance(input_value, deque):
+                        input_value[key] = out_val
+                    elif isinstance(input_value, tuple):
+                        temp = list(input_value)
+                        temp[key] = out_val
+                        input_value = parent_type(temp)
+                    else:
+                        setattr(input_value, key_str, out_val)
 
             changed |= item_changed
             drew_any = True
@@ -693,6 +716,26 @@ def main_header(input_value, name, **kwargs):
     imgui.text("Main Header")
 
 
+@render_func(is_default_for=(property))
+def draw_property(input_value:property, draw_state, **kwargs):
+    imgui.text_colored(f"Property: {input_value.fget.__name__}", 1.0, 0.5, 0.0, 1.0)
+    # value = input_value.fget(input_value)
+    # draw_any(value, name="value", show_bg=True, draw_state=draw_state)
+
+@render_func(is_default_for=(type), show_bg=True, with_header=draw_header, with_footer=draw_footer)
+def draw_type(input_value, draw_state, **kwargs):
+    imgui.text_colored(f"Type: {input_value.__name__}", 1.0, 0.5, 0.0, 1.0)
+    # draw_collection(vars(input_value), name="vars", show_excluded=True)
+    # draw_collection(dir(input_value), name="dir", show_excluded=True)
+    # draw_collection(input_value.__dict__, name="__dict__", show_excluded=True)
+    # draw_collection(inspect.getmembers(input_value), name="inspect")
+    keys = list(set(dir(Monitor)) | set(vars(type(Monitor))))
+    type_get_attr = lambda obj, key: getattr(obj, key, None)
+    type_set_attr = lambda obj, key, value: setattr(obj, key, value)
+    draw_collection(input_value, name="inspect", keys=keys, get_attr=type_get_attr,
+                    set_attr=type_set_attr)
+
+
 @render_func(use_cache=False, show_bg=True, selectable=False, show_tint=True, bg_offset=-1, with_header=draw_header)
 def draw_main(input_value, vis, **kwargs):
     global test_obj
@@ -700,6 +743,10 @@ def draw_main(input_value, vis, **kwargs):
     return_val2 = draw_window(Melty.registered_windows, is_tree=True, show_add_delete=False, return_extras=True,
                               name="Window Manager",
                               z_absolute=-1)
+
+
+    draw_window(Monitor, name="Monitor")
+
     draw_window(draw_main, name="Draw Main Function")
     some_enum = ProfileMode.OFF
     draw_enum(some_enum, name="Test Enum", show_bg=True, is_tree=False)
@@ -710,7 +757,8 @@ def draw_main(input_value, vis, **kwargs):
     draw_window(input_value=proxy, name="CST Proxy")
 
     draw_window(vis.root.lora_collection, name="Test Window 1")
-    draw_window(vis.root.lora_collection.loras, name="Test Window 2", child_kwargs={'tint': (1,1,1)})
+    draw_window(vis.root.lora_collection.loras, name="Test Window 2", child_kwargs={
+        'expanded': False, 'is_tree':False, 'show_add_delete': False})
     draw_window(Melty.last_invalid, show_bg=True, name="Last Invalid")
 
     draw_window(input_value=Melty.type_to_default_view_func, is_tree=True,
@@ -1865,15 +1913,10 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0, rounding=5.0,
 
     rounding = min(max(10.0, current_indent_px()), rounding)
 
-    depth_factor = global_style.get_global_constant("depth_factor", default=1.0, folder="bg_styles") * 1.2
-    depth_offset = global_style.get_global_constant("depth_offset", default=0.0, folder="bg_styles") - 4.0
+    depth_factor = 0.042
+    depth_offset = 6.609
     dynamic_value = max(0, (float(depth + depth_offset) * depth_factor))
-    bg_style = {
-        "value": 0.01,
-        "saturation": 1.6,
-        "alpha": 1.0,
-        'max_value': 1.0
-    }
+
     hovered_offset = 0.0
     if selected:
         hovered_offset = 0.2
@@ -1883,18 +1926,16 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0, rounding=5.0,
         else:
             hovered_offset = 0.01
 
-    # elif hovered:
-    #     hovered_offset = 0.6
-
     def mix_colors(c1, c2, fac):
         return (c1[0] * (1 - fac) + c2[0] * fac,
                 c1[1] * (1 - fac) + c2[1] * fac,
                 c1[2] * (1 - fac) + c2[2] * fac)
 
-    bg_style = global_style.get_global_constant("bg_style", default=bg_style, folder="bg_styles")
-    outline_saturation = global_style.get_global_constant("outline_saturation", default=0.5, folder="bg_styles")
-    outline_offset = global_style.get_global_constant("outline_offset", default=0.0, folder="bg_styles") - 0.09
-    outline_factor = global_style.get_global_constant("outline_factor", default=1.0, folder="bg_styles") * 1.05
+    bg_style = {'value': -0.34, 'saturation': 1.26, 'alpha': 1.0,
+                'max_value': 1.06}
+    outline_saturation = 1.350000023841858
+    outline_offset = 0.1719
+    outline_factor = 0.78750
 
     if not nested_bg:
         outline_factor *= 1.05
@@ -1914,21 +1955,13 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0, rounding=5.0,
                                             value=max(0, dynamic_value * outline_factor +
                                                       outline_offset + hovered_offset)))
     outline_color = mix_colors(outline_color, bg_bleed, 0.01)
-    # if tint is not None:
-    #     outline_color = imgui.get_color_u32_rgba(*tint)
 
     if outline:
         outline_color = imgui.get_color_u32_rgba(*outline_color[:3], 1.0)
 
         if outline_tint is not None:
             outline_color = imgui.get_color_u32_rgba(*outline_tint[:3], 1.0)
-        # if Melty.channels_split:
-        #     draw_list = imgui.get_window_draw_list()
-        #     channel = max(0, min(Melty.max_depth - 2, Melty.get_channel() - 1))
-        #     draw_list.channels_set_current(channel)
 
-        # if selected:
-        #     outline_color = imgui.get_color_u32_rgba(1.0, 0.8, 0.2, 1.0)
 
         imgui.get_window_draw_list().add_rect(*rect_outline, col=outline_color, rounding=rounding, thickness=2.0)
 
@@ -1942,11 +1975,6 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0, rounding=5.0,
 
     if tint is not None:
         imgui_bg_color = imgui.get_color_u32_rgba(*tint[:3], opacity)
-
-    # if Melty.channels_split:
-    #     draw_list = imgui.get_window_draw_list()
-    #     channel = max(0, min(Melty.max_depth - 2, Melty.get_channel() - 2))
-    #     draw_list.channels_set_current(channel)
 
     if opacity > 0.0:
         imgui.get_window_draw_list().add_rect_filled(*rect, col=imgui_bg_color, rounding=rounding)
@@ -1985,7 +2013,7 @@ def open_file(path, app=None):
 
 @render_func(use_cache=True, shadow=True, selectable=False, show_bg=False, width=18, height=18, min_width=10,
              min_height=10)
-def button(input_value="", corner_radius=4, draw_state=None, left_mouse_held=False, left_mouse_up=False,
+def button(input_value="", corner_radius=4, draw_state=None, left_mouse_held=False, left_mouse_down=False,
            color=(1, 1, 1), hovered=False, width=None, height=None, style_manager=None,
            factor=1.0, value=0.4, text_value=1.0, saturation=0.8, unique=0):
     if color is not None:
@@ -2055,7 +2083,7 @@ def button(input_value="", corner_radius=4, draw_state=None, left_mouse_held=Fal
     #     imgui.pop_style_color(4)
     #     imgui.pop_style_var(1)
 
-    if left_mouse_up:
+    if left_mouse_down:
         return True, input_value
 
     return False, input_value

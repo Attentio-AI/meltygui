@@ -9,6 +9,7 @@ import imgui
 import libcst as cst
 
 from src.lsd.gl_gui.collection_action import CollectionAction
+from src.lsd.gl_gui.view.core_views.monitor import Monitor
 from src.shader_library.shader_manager.texture_manager import TextureManager
 from src.shader_library.shader_manager.filter import Filter
 from src.lsd.gl_gui.view.events.input_handler import InputHandler, InputEvent
@@ -28,6 +29,8 @@ class Melty:
     root_draw_states_by_layer = defaultdict(lambda: list())
 
     filter = Filter()
+
+    seen_values = []
 
     window_drag = False
     on_drag = False
@@ -177,7 +180,6 @@ class Melty:
         cls.original_spacing = style.item_spacing
         cls.original_window_padding = style.window_padding
         cls.original_frame_padding = style.frame_padding
-        cls.backend.pump()
 
         if cls.glfw_close_requested:
             cls.event_handler.feed_down(input_id="glfw_close", x=0, y=0, t=time.perf_counter())
@@ -193,6 +195,7 @@ class Melty:
         is_popup_open = imgui.is_popup_open("", flags=imgui.POPUP_ANY_POPUP)
         Melty.imgui_popup_open = is_popup_open
 
+        cls.backend.pump()
 
         cls.last_draw_state = [(None, None)] * cls.max_layer
 
@@ -467,6 +470,7 @@ class Melty:
     def cleanup(cls):
         cls.filter.cleanup()
         cls.texture_manager.clear()
+        Monitor.shutdown()
 
     @classmethod
     def get_channel(cls, depth=None):

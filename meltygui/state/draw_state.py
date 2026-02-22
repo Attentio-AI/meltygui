@@ -71,10 +71,6 @@ class ZoomState(DictConversion):
         self.contrast = 1.0
         self.hue = 0.0
         self.saturation = 1.0
-        self.swirl = 0.0
-        self.warp = 0.0
-
-        self.image_hovered = False
 
 
 class AttrDict:
@@ -125,7 +121,7 @@ class TileMode(Enum):
                  "header_left_delta", "header_top_delta", "last_seen", "persistent", "shadow_margin", "bg_depth",
                  "anchor_pos", "just_shadow", 'hover_reported',
                  'channel', 'next', 'previous', 'index_in_parent', 'relative_pos', 'context_menu_open',
-                 'context_menu_ds', '_hover_eligible')
+                 'context_menu_ds', '_hover_eligible', 'just_shadow')
 @deep_refresh('scroll_offset')
 @invalidate_all('closed')
 class DrawState(DictConversion):
@@ -156,6 +152,7 @@ class DrawState(DictConversion):
         self.channel = 0
         self.last_seen = None
         self.z_offset = 0
+
         self.total_z_offset = 0
         self.shadow_margin = 0
         self.bg_depth = 0
@@ -173,6 +170,7 @@ class DrawState(DictConversion):
         self.melty_window = False
         self.persistent = True
         self.selected = False
+        self.just_shadow = False
 
         self._queued_windows = []
         self.drag_window_pos_x = None
@@ -216,7 +214,7 @@ class DrawState(DictConversion):
         self.imgui_is_toggled_open = False
 
         self._previous_hash = None
-        self.tint = None
+        self.tint = (0,0,0)
         self.current_tint = None
 
         self.unique = None  # stable UI ID
@@ -499,7 +497,7 @@ class DrawState(DictConversion):
         return True, False, False
 
     def hover_eligible(self, rect=None, ignore_reports=True):
-        if self.kwargs.just_shadow:
+        if self.just_shadow:
             return False
         if rect is None:
             left = self.left if self.left is not None else 0
@@ -527,7 +525,7 @@ class DrawState(DictConversion):
         return cached[0]
 
     def on_action(self, event_names, view_id=None, priority=None, priority_delta=0, rect=None):
-        if self.kwargs.just_shadow:
+        if self.just_shadow:
             return None
         if view_id is None:
             view_id = self._tile_id

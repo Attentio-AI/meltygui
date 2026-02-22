@@ -278,7 +278,8 @@ class DictConversion(metaclass=FieldMeta):
 
         default_instance = self.__class__.default_instance
         # Get all attributes that don't start with '_'
-        for key, value in self.__dict__.items():
+        for key in default_instance.__dict__.keys():
+            value = getattr(self, key, None)
             key = str(key)
             if key.startswith('_') or (excluded and key in excluded):
                 continue
@@ -308,7 +309,7 @@ class DictConversion(metaclass=FieldMeta):
                 parsed = self.parse_value(result, objects, key, value, excluded)
                 result[key] = parsed
             else:
-                shallow_parse = self.parse_value(result, objects, key, value, excluded, shallow=True)
+                shallow_parse = self.parse_value(result, objects, key, value, excluded, shallow=True, depth = 0)
                 result[key] = shallow_parse
 
 
@@ -1416,7 +1417,10 @@ class DictConversion(metaclass=FieldMeta):
         """Check if a value is a class instance (non-primitive)."""
         return not self.is_primitive(value)
 
-    def parse_value(self, result, objects, key, value, excluded, shallow=False):
+    def parse_value(self, result, objects, key, value, excluded, shallow=False, depth=0):
+        if depth > 10000:
+            print(f"Max depth reached at key: {key} with value: {value}")
+            return None
         # Handle None
         if value is None:
             return None
@@ -1447,7 +1451,7 @@ class DictConversion(metaclass=FieldMeta):
                 if sub_value is None:
                     continue
 
-                inner_dict[sub_key] = self.parse_value(inner_dict, objects, sub_key, sub_value, excluded, shallow)
+                inner_dict[sub_key] = self.parse_value(inner_dict, objects, sub_key, sub_value, excluded, shallow, depth=depth + 1)
 
                 if hasattr(inner_dict[sub_key], 'id') and inner_dict[sub_key].id is not None:
                     if inner_dict[sub_key].id in sub_key and inner_dict[sub_key].id != sub_key:
@@ -1458,7 +1462,7 @@ class DictConversion(metaclass=FieldMeta):
             inner_list = []
             for item in value:
                 inner_list.append(
-                    self.parse_value(result, objects, key, item, excluded, shallow)
+                    self.parse_value(result, objects, key, item, excluded, shallow, depth=depth + 1)
                 )
             return inner_list
         # Handle nested objects with to_dict method

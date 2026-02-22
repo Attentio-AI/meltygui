@@ -1158,7 +1158,7 @@ class TileCacheMasked:
         imgui.begin_group()
         has_area = size is not None and size[0] != 0 and size[1] != 0
 
-        if draw_state.kwargs.just_shadow:
+        if draw_state.just_shadow:
             self._stack.append(
                 _Ctx(
                     draw_state=draw_state,
@@ -1506,8 +1506,10 @@ class TileCacheMasked:
                     else:
                         k = None
 
+        subtree_pending = []
+
         # Reverse
-        subtree_rects_by_root_rev = {k: list(reversed(v)) for k, v in subtree_rects_by_root.items()}
+        # subtree_rects_by_root_rev = {k: list(reversed(v)) for k, v in subtree_rects_by_root.items()}
 
         st = _GLState()
         try:
@@ -1625,7 +1627,7 @@ class TileCacheMasked:
             background_depth = 0.001
             background_depth = 0
 
-            for p in local_pending_rev:
+            for p in local_pending:
                 x, y = p.pos
                 w, h = p.size
                 x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(x, y, w, h, dp_x, dp_y, s_x, s_y, fb_h)
@@ -1833,7 +1835,7 @@ class TileCacheMasked:
                             gl.glUseProgram(self._prog_mask)
                             gl.glUniform1f(self._loc_mask_uRankNorm, rank_norm)
 
-                        gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
+                        # gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
 
             gl.glDisable(gl.GL_SCISSOR_TEST)
 

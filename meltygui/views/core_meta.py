@@ -27,10 +27,18 @@ class Meta:
                 if isinstance(field_name, str) and field_name in Melty.type_defaults:
                     type_default = Melty.type_defaults.get(field_name, None)
                 else:
-                    type_default = Melty.type_defaults.get(value.__class__, None)
+                    type_default = next(
+                        (Melty.type_defaults[cls] for cls in type(value).__mro__ if cls in Melty.type_defaults),
+                        None
+                    )
                     if type_default is None:
                         # Try string name instead
-                        type_default = Melty.type_defaults.get(str(value.__class__.__name__), None)
+                        type_default = next(
+                            (Melty.type_defaults[name] for name in
+                             (cls.__name__ for cls in type(value).__mro__)
+                             if name in Melty.type_defaults),
+                            None
+                        )
             child_meta = Meta.get_new_defaults(value=value)
             child_meta.name = field_name
             if type_default is not None:

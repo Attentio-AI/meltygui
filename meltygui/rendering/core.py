@@ -241,6 +241,18 @@ def render_func(*args, **o_kwargs):
                                                                   str(key) + func.__name__, idx=index)
 
         draw_state: DrawState = kwargs.get("draw_state", get_draw_state(unique))
+        original_active_layer = Melty.active_layer
+
+        ds_kwargs = copy(kwargs)
+        exclude_ds_kwargs = ["input_value", "wanted_params", "depth", "shadow_depth",
+                             "name", "z_offset", "use_cache", "active_layer", "auto_resize",
+                             "unique", "suffix", "collection", "expanded_rect", "z_pos", "tint", "bg_offset",
+                                               "meta", "depth", "next_kwargs", "param_types"]
+        for exclude_key in exclude_ds_kwargs:
+            ds_kwargs.pop(exclude_key, None)
+        draw_state.__dict__.update(ds_kwargs)
+
+
         draw_state.unique = unique
         draw_state._collection = Melty.collection_stack[-1] if len(Melty.collection_stack) > 0 else None
         draw_state.name = name
@@ -567,6 +579,7 @@ def render_func(*args, **o_kwargs):
 
             passed_z_offset = kwargs.get("z_offset", 0)
             ds_z_offset = draw_state.z_offset
+            internal_z_offset = 0
             if draw_state.pressed:
                 if kwargs.get("shadow", False):
                     if draw_state.selected:
@@ -862,22 +875,23 @@ def render_func(*args, **o_kwargs):
                     #         style_manager.set_imgui_tint(*getattr(input_value, "tint"))
                     #     elif draw_state.tint is not None:
                     #         style_manager.set_imgui_tint(*draw_state.tint)
+                if "tint" in kwargs and kwargs.get("tint", None) is not None:
+                    previous_tint = style_manager.get_tint()
+                    style_manager.set_imgui_tint(*kwargs.get("tint"))
+                elif hasattr(input_value, "tint") and input_value.tint is not None:
+                    previous_tint = style_manager.get_tint()
+                    style_manager.set_imgui_tint(*input_value.tint)
+                elif hasattr(collection, "__tint__") and getattr(collection, "__tint__"):
+                    if name in collection.__tint__:
+                        previous_tint = style_manager.get_tint()
+                        style_manager.set_imgui_tint(*collection.__tint__[name])
+                elif draw_state.tint is not None and kwargs.get("show_bg", False) and kwargs.get("show_tint",
+                                                                                                 False):
+                    previous_tint = style_manager.get_tint()
+                    style_manager.set_imgui_tint(*draw_state.tint)
 
                 if show_bg:
-                    if "tint" in kwargs and kwargs.get("tint", None) is not None:
-                        previous_tint = style_manager.get_tint()
-                        style_manager.set_imgui_tint(*kwargs.get("tint"))
-                    elif hasattr(input_value, "tint") and input_value.tint is not None:
-                        previous_tint = style_manager.get_tint()
-                        style_manager.set_imgui_tint(*input_value.tint)
-                    elif hasattr(collection, "__tint__") and getattr(collection, "__tint__"):
-                        if name in collection.__tint__:
-                            previous_tint = style_manager.get_tint()
-                            style_manager.set_imgui_tint(*collection.__tint__[name])
-                    elif draw_state.tint is not None and kwargs.get("show_bg", False) and kwargs.get("show_tint",
-                                                                                                     False):
-                        previous_tint = style_manager.get_tint()
-                        style_manager.set_imgui_tint(*draw_state.tint)
+
 
                     if Melty.channels_split:
                         offscreen_depth = Melty.get_channel()
@@ -1016,7 +1030,17 @@ def render_func(*args, **o_kwargs):
                 draw_state.top = snap_int(draw_state.top)
 
                 ########### CONTEXT MENU HANDLING ############
-                draw_context_menu = kwargs.get("context_menu", None)
+
+                def default_context_menu(input_val_ds, **kwargs):
+                    imgui.text(f"{input_val_ds.name}")
+                    imgui.text_colored(f"Type: {type(input_val_ds._input_value).__name__}",
+                                       *(0.5, 0.5, 1.0, 1.0))
+                    imgui.text_colored(f"Unique: {input_val_ds.unique}",
+                                       *(0.5, 0.5, 1.0, 1.0))
+
+                    return False, None
+
+                draw_context_menu = kwargs.get("context_menu", default_context_menu)
                 if draw_context_menu is not None:
                     right_click = draw_state.on_action("right_mouse_down")
                     if right_click:
@@ -1024,7 +1048,7 @@ def render_func(*args, **o_kwargs):
                         if draw_state.context_menu_ds is not None:
                             draw_state.context_menu_ds.closed = not draw_state.context_menu_open
                     if draw_state.context_menu_open:
-                        bg_offset = 4
+                        bg_offset = -2
                         if draw_state._is_nested:
                             bg_offset = 0
                         Melty.bg_depth += bg_offset
@@ -1035,9 +1059,9 @@ def render_func(*args, **o_kwargs):
                                                                    alpha=1.0)
                         from src.lsd.gl_gui.view.core_views.new_core_view import draw_window
                         returned_val = draw_window(input_value=draw_state, view_func=draw_context_menu,
-                                                   tint=mixed_color,
-                                                   width=draw_state.width + 40,
-                                                   persistent=False, anchor=Anchor.BOTTOM_LEFT, show_tint=False,
+                                                   tint=mixed_color, show_tint=False, show_add_delete=False,
+                                                   width=350,
+                                                   persistent=False, anchor=Anchor.BOTTOM_LEFT,
                                                    with_footer=None,
                                                    name=f"{name}##context_menu_{unique}", auto_resize=True,
                                                    return_extras=True)
@@ -1415,12 +1439,13 @@ def render_func(*args, **o_kwargs):
             if melty_window:
                 Melty.pop_clip()
 
-
-
             if melty_window and draw_state.width < 30:
                 draw_state.width = 30
             if melty_window and draw_state.height < 30:
                 draw_state.height = 30
+
+            if not draw_state.kwargs.manual_content_height:
+                draw_state.content_height = item_rect[1] - 1
 
             if auto_resize:
                 if len(Melty.fixed_size_stack) == 0 or kwargs.get("wrap", False):
@@ -1492,6 +1517,7 @@ def render_func(*args, **o_kwargs):
                 Melty.depth = Melty.depth - 1
                 Melty.unique_stack.pop()
 
+
             use_cache = kwargs.get("use_cache", False) and Melty.cache.enabled
             if not use_cache:
                 Melty.cache.mark_uncached(draw_state.name, input_value, collection, tile_id, draw_state)
@@ -1555,7 +1581,7 @@ def render_func(*args, **o_kwargs):
                 clip_height = clip_size[1]
                 needs_scroll = draw_state.content_height > clip_height
 
-        if draw_state.kwargs.just_shadow:
+        if draw_state.just_shadow:
             needs_scroll = False
 
         draw_state.scroll_visible = needs_scroll
@@ -1565,6 +1591,8 @@ def render_func(*args, **o_kwargs):
             scroll_delta = 0
             if scroll_y_changed is not None:
                 scroll_delta = scroll_y_changed.value
+                Melty.selected = set()
+                Melty.selected.add(draw_state)
 
             scroll_offset = draw_state.scroll_offset
             current_x = scroll_offset[0]
@@ -1614,8 +1642,19 @@ def render_func(*args, **o_kwargs):
         # If we are using the new callback header, gate rendering behind expanded
         Melty.silence_invalidate = False
         if draw_state.expanded:
-            return_value = func(**clean_args)
-            imgui.set_item_allow_overlap()
+
+            if id(input_value) in Melty.seen_values and Melty.seen_values.count(input_value) > 1 or Melty.depth > 10:
+                imgui.text("Recursive reference detected: " + str(input_value))
+            else:
+
+                is_primitive = input_value is None or isinstance(input_value, (int, float, str, bool))
+                if not is_primitive:
+                    Melty.seen_values.append(id(input_value))
+
+                return_value = func(**clean_args)
+                imgui.set_item_allow_overlap()
+                if not is_primitive:
+                    Melty.seen_values.pop()
 
 
         if do_scroll:
