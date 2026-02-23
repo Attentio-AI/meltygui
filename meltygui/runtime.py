@@ -293,6 +293,32 @@ class Melty:
         pass
 
     @classmethod
+    def draw(cls, draw_state):
+        parent_ctx = draw_state._parent_ctx
+        Melty.depth = draw_state._start_z_pos
+        Melty.bg_depth = draw_state._bg_depth
+
+        original_bg_stack = copy(Melty.bg_stack)
+        if draw_state._bg_stack is not None:
+            Melty.bg_stack = draw_state._bg_stack
+
+        # cls.cache.insert_parent(parent_ctx)
+
+        view_func = draw_state._wrapper
+        input_value = draw_state._input_value
+        kwargs = draw_state._kwargs
+        kwargs['layer_unique'] = draw_state.unique
+        imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
+
+        kwargs['input_value'] = input_value
+        return_val = view_func(**kwargs)
+        if return_val is not None:
+            cls.pending_return_values[draw_state.id] = return_val
+
+        Melty.bg_stack = original_bg_stack
+        # cls.cache.remove_parent()
+
+    @classmethod
     def end_frame(cls):
 
         cls.returned_values = copy(cls.pending_return_values)
@@ -332,46 +358,9 @@ class Melty:
                 imgui.get_window_draw_list().channels_set_current(Melty.max_depth - 1)
                 Melty.channels_split = True
 
-            for view in layer:
-
-                if view is not None:
-                    # Melty.shadow_depth = 0.0
-                    draw_state = view[3]
-                    # draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer)
-                    left = draw_state.left if draw_state.left is not None else 0
-                    top = draw_state.top if draw_state.top is not None else 0
-                    width = draw_state.width if draw_state.width is not None else 0
-                    height = draw_state.height if draw_state.height is not None else 0
-
-
-                    # Melty.push_clip((left, top, left + width, top + height))
-                    # if draw_state._window_stack is not None:
-                    #     Melty.melty_window_stack = draw_state._window_stack
-
-                    parent_ctx = view[5]
-                    current_z_pos = view[6]
-                    cursor_pos = view[7]
-                    Melty.depth = current_z_pos
-                    Melty.bg_depth = draw_state.bg_depth - 1
-                    # Melty.shadow_depth = draw_state.depth_and_layer[0]
-                    # Melty.active_layer = draw_state.depth_and_layer[1]
-
-                    cls.cache.insert_parent(parent_ctx)
-
-                    view_func = view[0]
-                    input_value = draw_state._input_value
-                    kwargs = view[2]
-                    kwargs['layer_unique'] = draw_state.unique
-                    imgui.set_cursor_screen_pos(cursor_pos)
-
-                    return_val = view_func(input_value, **kwargs)
-                    if return_val is not None:
-                        cls.pending_return_values[draw_state.id] = return_val
-
-
-                    cls.cache.remove_parent()
-
-                    # Melty.pop_clip()
+            for draw_state in layer:
+                if draw_state is not None:
+                    cls.draw(draw_state)
 
             # Sort by y position (draw_state.top)
             for d_idx, draw_state in enumerate(cls.root_draw_states_by_layer[idx - 1]):
@@ -379,16 +368,19 @@ class Melty:
                 #                            draw_state.top, draw_state.width, draw_state.height,
                 #                            f"view_mask_{draw_state.id}", 4)
 
-                Melty.depth = draw_state.depth + d_idx
-                Melty.cache.draw_tile(draw_state)
-                last_bounding_hovered = draw_state._bounding_hovered
-                new_bounding_hovered = draw_state.is_bounding_hovered()
-                hover_changed = last_bounding_hovered != new_bounding_hovered
-                draw_state._bounding_hovered = new_bounding_hovered
-                if (draw_state.width is None or draw_state.height is None or hover_changed or
-                        draw_state._bounding_hovered or draw_state._imgui_popover_open):
-                    Melty.cache.invalidate(draw_state._tile_id)
-                    # draw_state.invalidate_rect()
+                if draw_state.unique not in cls.seen_unique:
+                    cls.draw(draw_state)
+
+                # Melty.depth = draw_state.depth + d_idx
+                # Melty.cache.draw_tile(draw_state)
+                # last_bounding_hovered = draw_state._bounding_hovered
+                # new_bounding_hovered = draw_state.is_bounding_hovered()
+                # hover_changed = last_bounding_hovered != new_bounding_hovered
+                # draw_state._bounding_hovered = new_bounding_hovered
+                # if (draw_state.width is None or draw_state.height is None or hover_changed or
+                #         draw_state._bounding_hovered != draw_state._imgui_popover_open):
+                #     Melty.cache.invalidate(draw_state._tile_id)
+                #     # draw_state.draw_rect()
 
 
             Melty.depth = 0

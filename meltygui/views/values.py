@@ -364,6 +364,7 @@ def draw_window(input_value, view_func=None, draw_state=None, delete_down=False,
     if len(return_val) == 3:
         return_val = (return_val[0], return_val[1], draw_state)
 
+
     return return_val
 
 
@@ -1872,9 +1873,14 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0, rounding=5.0,
     def current_indent_px():
         return Melty.current_indent
 
-    sin_depth = sin(Melty.bg_depth * 0.25) * 4
+    # draw_list:_DrawList = imgui.get_overlay_draw_list()
+    # draw_list.add_text(left, top, imgui.get_color_u32_rgba(
+    # 1, 0, 1, 1.0), f"Depth: {len(Melty.bg_stack)}")
 
-    depth = ((max(2.0, sin_depth)) - 1.5) * 2
+
+    # sin_depth = sin(Melty.bg_depth * 0.25) * 7.0
+    clamped = ((max(2.0, Melty.bg_depth) % 9.0) - 1.5)
+    depth = (clamped) * 2
 
     right = left + width
     bottom = top + height

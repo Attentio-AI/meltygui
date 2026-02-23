@@ -1673,8 +1673,9 @@ class TileCacheMasked:
                     clip_ix1, clip_iy1 = int(ceil(clip_x1)), int(ceil(clip_y1))
                     clip_iw, clip_ih = max(0, clip_ix1 - clip_ix0), max(0, clip_iy1 - clip_iy0)
 
-                    gl.glEnable(gl.GL_SCISSOR_TEST)
-                    gl.glScissor(clip_ix0, clip_iy0, clip_iw, clip_ih)
+                    gl.glDisable(gl.GL_SCISSOR_TEST)
+
+
                     # For cached tiles, use actual tile size from context to avoid stretching
                     if use_child_cache:
                         gl.glDisable(gl.GL_BLEND)
@@ -1683,10 +1684,6 @@ class TileCacheMasked:
                         if child_ctx and child_ctx.size:
                             cx, cy = child_ctx.pos
                             cw, ch = draw_state.width, draw_state.height
-                            # clip = draw_state.clip_rect
-                            # clipped = self._clip_rect(cx, cy, cw, ch, clip)
-                            # if clipped:
-                            #     cx, cy, cw, ch = clipped
                             sx0, sy0, sx1, sy1 = self._screen_rect_to_fb_xyxy(cx, cy, cw, ch, dp_x, dp_y, s_x, s_y,
                                                                               fb_h)
                         else:
@@ -1718,7 +1715,6 @@ class TileCacheMasked:
                     iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
 
                     if use_child_cache:
-
                         offset = (float(depth_and_layer) - float(t_child.mask_layer)) * float(INV_65535)
                         self._draw_mask_rect_cached(
                             t_child.mask_tex,
@@ -1731,7 +1727,10 @@ class TileCacheMasked:
                             r.draw_state.shadow_margin if r.draw_state is not None else 0.0
                         )
                     else:
-
+                        if r.draw_state.parent_window is not None:
+                            if r.draw_state.parent_window._is_nested:
+                                gl.glEnable(gl.GL_SCISSOR_TEST)
+                                gl.glScissor(clip_ix0, clip_iy0, clip_iw, clip_ih)
                         rank_norm = float(depth_and_layer) / 65535.5
 
                         gl.glViewport(ix0, iy0, iw, ih)

@@ -243,7 +243,7 @@ def render_func(*args, **o_kwargs):
                                                                   str(key) + func.__name__, idx=index)
 
         draw_state: DrawState = kwargs.get("draw_state", get_draw_state(unique))
-        original_active_layer = Melty.active_layer
+        draw_state._kwargs = kwargs
 
         ds_kwargs = copy(kwargs)
         exclude_ds_kwargs = ["input_value", "wanted_params", "depth", "shadow_depth",
@@ -259,7 +259,7 @@ def render_func(*args, **o_kwargs):
         draw_state.name = name
         tile_id = strhash(str(unique) + str(draw_state.id))
         draw_state._tile_id = tile_id
-        draw_state.bg_depth = Melty.bg_depth
+
         closable = kwargs.get("closable", False)
         draw_state.closable = closable
         draw_state.behind = kwargs.get("behind", draw_state.behind)
@@ -276,8 +276,13 @@ def render_func(*args, **o_kwargs):
             imgui.get_cursor_screen_pos()[0] - draw_state.parent_window.left,
             imgui.get_cursor_screen_pos()[1] - draw_state.parent_window.top)
 
-
         if closable:
+            # Only perform this check on floating windows
+            if draw_state._parent is not None and not draw_state._parent.clipped:
+                if return_extras:
+                    return False, None, draw_state
+                return False, None
+
             if draw_state.parent_window is None:
                 Melty.registered_windows[tile_id].input_value = input_value
                 Melty.registered_windows[tile_id].draw_state = draw_state
@@ -351,10 +356,16 @@ def render_func(*args, **o_kwargs):
                             request_render()
 
         draw_state._input_value = input_value
+        draw_state._wrapper = wrapper
+        draw_state._bg_stack = copy(Melty.bg_stack)
+        draw_state._bg_depth = Melty.bg_depth
+        draw_state.current_tint = style_manager.get_tint()
 
         #############################################
         ###### Layer rendering delay
         original_active_layer = Melty.active_layer
+        draw_state._start_z_pos = min(Melty.z_pos, 3)
+        draw_state._parent_ctx = Melty.cache.get_current_parent()
 
         if active_layer is None:
             if (melty.dragged_item is not None and melty.drag_in_progress and
@@ -391,14 +402,8 @@ def render_func(*args, **o_kwargs):
                 if layer >= len(Melty.layers) - 1:
                     layer = len(Melty.layers) - 1
 
-                current_tint = style_manager.get_tint()
                 draw_state.layer = layer
-
-                cache_parent_ctx = Melty.cache.get_current_parent()
-                Melty.layers[layer].append((wrapper, input_value, kwargs,
-                                            draw_state, current_tint,
-                                            cache_parent_ctx, min(Melty.z_pos, 3),
-                                            imgui.get_cursor_screen_pos(), Melty.depth, Melty.shadow_depth))
+                Melty.layers[layer].append(draw_state)
                 return_value = (False, None)
                 if draw_state.id in Melty.returned_values:
                     return_value = Melty.returned_values.pop(draw_state.id)
@@ -447,7 +452,6 @@ def render_func(*args, **o_kwargs):
             passed_width = None
             passed_height = None
 
-        new_active_layer = 0
         fixed_size = not draw_state.auto_resize or kwargs.get("height", None) or draw_state.height == kwargs.get(
             "max_height", 1e8) or kwargs.get("closable", False)
 
@@ -487,8 +491,10 @@ def render_func(*args, **o_kwargs):
         draw_state.melty_window = melty_window_header
         previous_tint = None
 
+        if closable and draw_state._is_nested and draw_state.current_tint is not None:
+            style_manager.set_imgui_tint(*draw_state.current_tint)
+
         try:
-            draw_state.current_tint = style_manager.get_tint()
 
             meta = kwargs.get("meta", None)
             if meta is None:
@@ -604,10 +610,6 @@ def render_func(*args, **o_kwargs):
                     internal_z_offset = 0
 
             total_z_offset = ds_z_offset + passed_z_offset + internal_z_offset
-            # if draw_state.scroll_visible:
-            # total_z_offset = total_z_offset - 3.0
-            # content_margin = 0
-            # kwargs["show_bg"] = False
 
             draw_state.total_z_offset
             Melty.depth = Melty.depth + 1
@@ -719,11 +721,10 @@ def render_func(*args, **o_kwargs):
             ##########################
             use_cache = kwargs.get("use_cache", False) and Melty.cache.enabled
             draw_state.use_cache = use_cache
-            draw_state.left, draw_state.top = imgui.get_cursor_screen_pos()
-            if (draw_state.parent_window is not None and draw_state.window_pos is not None and
-                    draw_state.parent_window.window_pos is not None and closable):
-                draw_state.left = draw_state.abs_left
-                draw_state.top = draw_state.abs_top
+            # if (draw_state.parent_window is not None and draw_state.window_pos is not None and
+            #         draw_state.parent_window.window_pos is not None and closable):
+            draw_state.left = draw_state.abs_left
+            draw_state.top = draw_state.abs_top
 
             fixed_size = not draw_state.auto_resize or kwargs.get("height", None) or draw_state.height == kwargs.get(
                 "max_height", 1e8) or kwargs.get("closable", False)
@@ -867,20 +868,11 @@ def render_func(*args, **o_kwargs):
             if clip_rect is not None:
                 draw_state.clip_rect = clip_rect
             if Melty.cache.mark_start_offscreen(draw_state=draw_state) and not draw_state.kwargs.just_shadow:
-
-
-
                 highlight = draw_state.selected
 
                 show_bg = kwargs.get("show_bg", False) or (
                         highlight and draw_state.height < 60) or not draw_state.expanded
 
-                # if melty_window:
-                #     previous_tint = style_manager.get_tint()
-                #     if hasattr(input_value, 'tint') and getattr(input_value, "tint") is not None:
-                #         style_manager.set_imgui_tint(*getattr(input_value, "tint"))
-                #     elif draw_state.tint is not None:
-                #         style_manager.set_imgui_tint(*draw_state.tint)
                 if "tint" in kwargs and kwargs.get("tint", None) is not None:
                     previous_tint = style_manager.get_tint()
                     style_manager.set_imgui_tint(*kwargs.get("tint"))
@@ -910,13 +902,9 @@ def render_func(*args, **o_kwargs):
                     style_manager = Melty.global_attrs['style_manager']
                     global_style = Melty.global_attrs['global_style']
 
-                    Melty.bg_stack.append(style_manager.get_tint())
-                    Melty.bg_depth += 1 + kwargs.get("bg_offset", 0)
-
-                    # Melty.undo_clip(unique, 1)
                     bg_color = (0, 0, 0, 0)
                     if draw_state.width > 5 and draw_state.height > 5:
-                        nested_bg = not melty_window and kwargs.get("bg_offset", 0) >= 0
+                        nested_bg = not closable and kwargs.get("bg_offset", 0) >= 0
                         _, bg_color = draw_bg(bypass=True, left=draw_state.left, top=draw_state.top,
                                               width=draw_state.width, height=draw_state.height,
                                               rounding=draw_state.corner_radius,
@@ -926,7 +914,6 @@ def render_func(*args, **o_kwargs):
                                               style_manager=style_manager, nested_bg=nested_bg)
 
                     Melty.bg_color_stack.append(bg_color)
-                    # Melty.redo_clip(unique)
 
                 if Melty.channels_split:
                     offscreen_depth = Melty.get_channel()
@@ -1052,20 +1039,21 @@ def render_func(*args, **o_kwargs):
                         if draw_state.context_menu_ds is not None:
                             draw_state.context_menu_ds.closed = not draw_state.context_menu_open
                     if draw_state.context_menu_open:
-                        bg_offset = 4
-                        # if draw_state._is_nested:
-                        #     bg_offset = 0
+                        bg_offset = 0
+                        if draw_state._is_nested:
+                            bg_offset = 0
                         # Melty.bg_depth += bg_offset
                         tint = style_manager.get_tint()
+
                         mixed_color = style_manager.make_color_rgb(tint[0], tint[1], tint[2],
-                                                                   value=0.03, factor=0.6,
-                                                                   saturation_scale=0.1,
+                                                                   value=0.03, factor=0.2,
+                                                                   saturation_scale=0.5,
                                                                    alpha=1.0)
                         from src.lsd.gl_gui.view.core_views.new_core_view import draw_window
 
                         returned_val = draw_window(input_value=draw_state, view_func=draw_context_menu,
                                                    tint=mixed_color, show_tint=False, show_add_delete=False,
-                                                   width=400, max_height=800,
+                                                   width=400, max_height=800, bg_offset=bg_offset,
                                                    persistent=False, anchor=Anchor.BOTTOM_LEFT,
                                                    with_footer=None, use_cache=True,
                                                    name=f"{name}##context_menu_{unique}", auto_resize=True,
@@ -1292,6 +1280,10 @@ def render_func(*args, **o_kwargs):
                 Melty.push_clip((left, top,
                                  left + width,
                                  top + height - draw_state.footer_height))
+
+                if show_bg:
+                    Melty.bg_depth += 1 + kwargs.get("bg_offset", 0)
+                    Melty.bg_stack.append(style_manager.get_tint())
 
                 return_value = draw_inner_main(clean_args, clip_rect, draw_state,
                                                input_value, kwargs, auto_resize,

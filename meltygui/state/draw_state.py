@@ -131,11 +131,15 @@ class DrawState(DictConversion):
     def __init__(self):
         super().__init__()
         self._children = {}
+        self._wrapper = None
+        self._parent_ctx = None
+        self._bg_depth = 0
+        self._current_tint = None
+        self._bg_stack = None
         self._parent = None
         self._is_header = False
         self._view_func = None
         self._cursor_pos = (0, 0)
-        self._parent_ctx = None
         self.next = None
         self.previous = None
         self.index_in_parent = 0
@@ -294,8 +298,10 @@ class DrawState(DictConversion):
         self._is_nested = False
         self.anchor_pos = Anchor.TOP_LEFT
         self._kwargs = {}
-        self.kwargs = AttrDict(self._kwargs)
+        self.kwargs = AttrDict({})
         self.hover_reported = True
+        self._start_z_pos = 3
+
 
         self._hover_eligible_cache = {}  # path, frame
         self._tile_params = {}
@@ -350,6 +356,8 @@ class DrawState(DictConversion):
         parent_left = 0
         if self.parent_window is not None:
             parent_left = self.parent_window._abs_left()
+        elif not self.closable:
+            parent_left = imgui.get_cursor_screen_pos()[0]
 
         window_pos_x = self.window_pos[0] if self.window_pos is not None else 0
         # this_left_offset = self.left_offset if not self.melty_window else window_pos_x
@@ -362,6 +370,8 @@ class DrawState(DictConversion):
         parent_top = 0
         if self.parent_window is not None:
             parent_top = self.parent_window._abs_top()
+        elif not self.closable:
+            parent_top = imgui.get_cursor_screen_pos()[1]
 
         anchor = self.anchor_offset
         window_pos_y = self.window_pos[1] if self.window_pos is not None else 0
