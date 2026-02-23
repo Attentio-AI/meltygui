@@ -338,7 +338,14 @@ class Melty:
                     # Melty.shadow_depth = 0.0
                     draw_state = view[3]
                     # draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer)
+                    left = draw_state.abs_left
+                    top = draw_state.abs_top
+                    width = draw_state.width if draw_state.width is not None else 0
+                    height = draw_state.height if draw_state.height is not None else 0
 
+                    if draw_state._is_nested:
+                        pass
+                    Melty.push_clip((left, top, left + width, top + height))
                     # if draw_state._window_stack is not None:
                     #     Melty.melty_window_stack = draw_state._window_stack
 
@@ -364,6 +371,8 @@ class Melty:
 
 
                     cls.cache.remove_parent()
+
+                    Melty.pop_clip()
 
             # Sort by y position (draw_state.top)
 
@@ -613,7 +622,16 @@ class Melty:
     @classmethod
     def get_clip_rect(cls):
         if len(cls.clip_stack) == 0:
+            fixed_size = cls.fixed_size_stack[-1] if len(cls.fixed_size_stack) > 0 else None
+            # if fixed_size is not None and fixed_size.width is not None and fixed_size.height is not None:
+            #     return (
+            #         fixed_size.left,
+            #         fixed_size.top,
+            #         fixed_size.left + fixed_size.width,
+            #         fixed_size.top + fixed_size.height
+            #     )
             return None
+
         return cls.clip_stack[-1]
 
     @classmethod

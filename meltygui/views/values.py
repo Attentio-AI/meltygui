@@ -8,7 +8,7 @@ from collections import deque, defaultdict
 from copy import copy
 from enum import Enum
 from inspect import Parameter
-from math import sqrt
+from math import sqrt, sin
 from types import NoneType
 from typing import Type
 
@@ -23,6 +23,7 @@ import OpenGL.GL as gl
 import numpy
 
 from src.lsd.gl_gui.collection_action import OperationType
+from src.lsd.gl_gui.view.core_views.monitor import Monitor
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_style_var, \
@@ -46,7 +47,6 @@ from src.lsd.gl_gui.view.core_views.folders_proxy import FolderProxy
 from src.lsd.gl_gui.view.core_views.inspect_utils import set_fn_defaults
 from collections.abc import MutableMapping
 from src.lsd.gl_gui.view.core_views.codec_register import registry as FILE_CODECS
-from src.lsd.gl_gui.view.core_views.monitor import Monitor, _MonitorMeta
 from src.shader_library.shader_manager.texture_manager import PendingTexture
 
 
@@ -337,7 +337,6 @@ def empty(input_val):
              with_header=draw_header, with_header_end=draw_header_end, indent_size=10,
              with_footer=draw_footer, z_offset=-4)
 def draw_window(input_value, view_func=None, draw_state=None, delete_down=False, glfw_close_down=False, **kwargs):
-
     if delete_down and imgui.get_io().key_ctrl:
         draw_state.closed = True
 
@@ -359,6 +358,7 @@ def draw_window(input_value, view_func=None, draw_state=None, delete_down=False,
     kwargs['with_footer'] = None
     kwargs['is_tree'] = False
     kwargs['closable'] = False
+    kwargs.pop('max_height', None)
 
     return_val = view_func(input_value, **kwargs)
 
@@ -372,7 +372,7 @@ def draw_window(input_value, view_func=None, draw_state=None, delete_down=False,
 
 @render_func(is_default_for=(MutableMapping, defaultdict, types.MappingProxyType), use_cache=True,
              show_bg=True, show_instance_vars=False, manual_content_height=True,
-             shadow=True, wrap=False, enable_scroll=True, with_header=draw_header, indent_size=10)
+             shadow=True, wrap=False, with_header=draw_header, indent_size=10)
 def draw_collection(input_value, draw_state, depth, style_manager, meta, keys=None, get_attr=None, set_attr=None, show_excluded=False,
                     child_kwargs=None, nested_func=None, show_bg=True, show_search=True, on_collapse=False,
                     on_expand=False, global_toggles=None, show_add_delete=True, item_spacing_y=1,
@@ -411,13 +411,11 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, keys=No
 
     # --- Setup per collection type ---
     collection = input_value
-    use_child_meta = True
     parent_type = input_value.__class__
 
     if keys is None:
         ordered_driver = input_value
         if isinstance(input_value, (dict, list, tuple, set, defaultdict, MutableMapping, types.MappingProxyType, deque)):
-            use_child_meta = True
             apply_change = True
             parent_type = input_value.__class__
             if isinstance(input_value, types.MappingProxyType):
@@ -437,7 +435,6 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, keys=No
                 keys = input_value.__dict__.keys()
             collection = input_value.__dict__
             use_tint = False
-            use_child_meta = True
             apply_change = True
         else:
 
@@ -527,8 +524,8 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, keys=No
         else:
             key_str = str(key)
 
-        if not show_excluded and ((key_str.startswith("__") and key_str.endswith("__")) or
-                key_str.endswith("meta") or key_str.startswith("_")):
+        if not show_excluded and ((key_str.startswith("_") or key_str.endswith("_")) or
+                key_str.endswith("meta")):
             continue
 
         # ----- SEARCH CHECK (keys + item.name if present) -----
@@ -538,20 +535,8 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, keys=No
                     (search_token not in norm_string(name_field))):
                 continue
 
-        # meta selection
-        if use_child_meta and hasattr(Meta, 'get_child_meta'):
-            item_meta = Meta.get_child_meta(parent_type, field_name=key, value=item)
-        else:
-            item_meta = meta
-
+        item_meta = Meta.get_child_meta(parent_type, field_name=key, value=item)
         item_meta.collection_type = meta.field_type
-        trigger_collapse = False
-        if isinstance(input_value, (dict, defaultdict, MutableMapping)) and on_collapse:
-            trigger_collapse = True
-
-        trigger_expand = False
-        if isinstance(input_value, (dict, defaultdict, MutableMapping)) and on_expand:
-            trigger_expand = True
 
         prev_tint = None
         try:
@@ -563,16 +548,9 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, keys=No
 
             y_offset = Melty.collection_spacing
             all_meta.append(item_meta)
-            if show_indices or isinstance(collection, (list, tuple, set, deque)):
+            if show_indices:
                 display_name = f"{str(idx)}"
 
-            # item_return = draw_any(item, return_extras=True, key=key,
-            #                        meta=item_meta, trigger_collapse=trigger_collapse,
-            #                        trigger_expand=trigger_expand, y_offset=y_offset,
-            #                        on_collapse=on_collapse, on_expand=on_expand,
-            #                        collection=input_value, name=key_str, display_name=display_name,
-            #                        parent_show_add_delete=show_add_delete,
-            #                        show_add_delete=show_add_delete)
             if nested_func is None:
                 if item_meta is None:
                     if hasattr(Meta, 'get_child_meta'):
@@ -585,13 +563,10 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, keys=No
             else:
                 item_func = nested_func
 
-
             item_kwargs = {
                 'return_extras': True,
                 'key': key,
                 'meta': item_meta,
-                'trigger_collapse': trigger_collapse,
-                'trigger_expand': trigger_expand,
                 'on_collapse': on_collapse,
                 'on_expand': on_expand,
                 'collection': input_value,
@@ -729,7 +704,7 @@ def draw_type(input_value, draw_state, **kwargs):
     # draw_collection(dir(input_value), name="dir", show_excluded=True)
     # draw_collection(input_value.__dict__, name="__dict__", show_excluded=True)
     # draw_collection(inspect.getmembers(input_value), name="inspect")
-    keys = list(set(dir(Monitor)) | set(vars(type(Monitor))))
+    keys = list(set(dir(input_value)) | set(vars(type(input_value))))
     type_get_attr = lambda obj, key: getattr(obj, key, None)
     type_set_attr = lambda obj, key, value: setattr(obj, key, value)
     draw_collection(input_value, name="inspect", keys=keys, get_attr=type_get_attr,
@@ -744,8 +719,10 @@ def draw_main(input_value, vis, **kwargs):
                               name="Window Manager",
                               z_absolute=-1)
 
-
+    from src.lsd.gl_gui.model.app_model import TensorView
+    draw_window(TensorView, name="Tensorview")
     draw_window(Monitor, name="Monitor")
+
 
     draw_window(draw_main, name="Draw Main Function")
     some_enum = ProfileMode.OFF
@@ -874,7 +851,7 @@ def draw_pending_texture(input_value: PendingTexture, draw_state):
 @render_func(is_default_for=numpy.uint32, show_bg=True,
              use_cache=False, show_add_delete=False, z_offset=2, fill_height=True,
              indent_size=0, min_width=100, min_height=100, wrap=False,
-             enable_scroll=True, zoom_speed=0.3, with_header=draw_header)
+             enable_scroll=True, zoom_speed=0.3, with_header=draw_header, manual_content_height=True)
 def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mouse_drag, right_mouse_drag,
                  zoom_state: ZoomState, zoom_speed, header_height=0, min_zoom=0.1,
                  max_zoom=50.0, style_manager=None, max_brightness=5.0, max_contrast=5.0,
@@ -1430,20 +1407,20 @@ def draw_cst_list(input_value: cst.List):
     imgui.text("]")
 
 
-@render_func(is_default_for=CSTDictProxy, header_same_line=True,
-             show_bg=False, indent_size=0, draggable=True, wrap=True)
-def draw_cst_dict(input_value: CSTDictProxy):
-    show_indices = False
-
-    if len(input_value) > 0:
-        # Show line numbers for dicts of simple statements
-        if isinstance(list(input_value.values())[0], cst.SimpleStatementLine):
-            show_indices = True
-    # kwargs['show_name'] = False
-
-    draw_collection(input_value, header_same_line=True, show_bg=False, enable_scroll=False,
-                    show_name=False, show_indices=show_indices, indent_size=0, wrap=True)
-
+# @render_func(is_default_for=CSTDictProxy, header_same_line=True,
+#              show_bg=False, indent_size=0, draggable=True, wrap=True)
+# def draw_cst_dict(input_value: CSTDictProxy):
+#     show_indices = False
+#
+#     if len(input_value) > 0:
+#         # Show line numbers for dicts of simple statements
+#         if isinstance(list(input_value.keys())[0], cst.SimpleStatementLine):
+#             show_indices = True
+#     # kwargs['show_name'] = False
+#
+#     draw_collection(input_value, header_same_line=True, show_bg=False, enable_search=True,
+#                     show_name=False, show_indices=show_indices, indent_size=0, wrap=True)
+#
 
 # --- Parameters ---
 @render_func(is_default_for=cst.Parameters, wrap=True, with_header=draw_header)
@@ -1898,7 +1875,9 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0, rounding=5.0,
     def current_indent_px():
         return Melty.current_indent
 
-    depth = ((max(2, Melty.bg_depth)) - 1.5) * 2
+    sin_depth = sin(Melty.bg_depth * 0.25) * 4
+
+    depth = ((max(2.0, sin_depth)) - 1.5) * 2
 
     right = left + width
     bottom = top + height

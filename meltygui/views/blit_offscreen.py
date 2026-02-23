@@ -63,6 +63,7 @@ class _Ctx:
     auto_resize: bool
 
 
+
 @dataclass
 class _Pending:
     draw_state: any
@@ -1100,6 +1101,7 @@ class TileCacheMasked:
         if not draw_state.use_cache:
             return True
 
+
         input_value = draw_state._input_value
         collection = draw_state._collection
         key = draw_state._tile_id
@@ -1287,8 +1289,7 @@ class TileCacheMasked:
                              depth_and_layer=ctx.depth_and_layer, key=ctx.key))
                 self._enq_copy_keys.add(ctx.key)
 
-    def \
-            _ensure_programs(self):
+    def _ensure_programs(self):
         if self._dummy_vao is None:
             vao = gl.glGenVertexArrays(1)
             if isinstance(vao, (list, tuple)):
@@ -1627,7 +1628,7 @@ class TileCacheMasked:
             background_depth = 0.001
             background_depth = 0
 
-            for p in local_pending:
+            for p in local_pending_rev:
                 x, y = p.pos
                 w, h = p.size
                 x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(x, y, w, h, dp_x, dp_y, s_x, s_y, fb_h)
@@ -1680,7 +1681,7 @@ class TileCacheMasked:
                         child_ctx = self._key_to_ctx.get(r.key)
                         if child_ctx and child_ctx.size:
                             cx, cy = child_ctx.pos
-                            cw, ch = draw_state.width, draw_state.height
+                            cw, ch = child_ctx.size
                             sx0, sy0, sx1, sy1 = self._screen_rect_to_fb_xyxy(cx, cy, cw, ch, dp_x, dp_y, s_x, s_y,
                                                                               fb_h)
                         else:
@@ -1835,7 +1836,7 @@ class TileCacheMasked:
                             gl.glUseProgram(self._prog_mask)
                             gl.glUniform1f(self._loc_mask_uRankNorm, rank_norm)
 
-                        # gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
+                        gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
 
             gl.glDisable(gl.GL_SCISSOR_TEST)
 

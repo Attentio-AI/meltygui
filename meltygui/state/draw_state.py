@@ -508,6 +508,20 @@ class DrawState(DictConversion):
         if self.closed or not Melty.imgui_main_window_hovered:
             return False
 
+        if not self.clipped:
+            return False
+
+        clip_rect = Melty.get_clip_rect()
+        if clip_rect is not None:
+            left = rect[0]
+            top = rect[1]
+            right = rect[2]
+            bottom = rect[3]
+
+            rect = (max(left, clip_rect[0]), max(top, clip_rect[1]),
+                    min(right, clip_rect[2]), min(bottom, clip_rect[3]))
+
+
         cached = self._hover_eligible_cache.get(rect, None)
         if cached is None or cached[1] < Melty.frame_count:
             this_frame = Melty.frame_count
@@ -525,6 +539,8 @@ class DrawState(DictConversion):
         return cached[0]
 
     def on_action(self, event_names, view_id=None, priority=None, priority_delta=0, rect=None):
+        if not Melty.inside_clip(draw_state=self):
+            return None
         if self.just_shadow:
             return None
         if view_id is None:

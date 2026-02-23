@@ -32,12 +32,12 @@ class _MonitorMeta(type):
         cls._thread.start()
 
         def _fetch():
-            result = subprocess.run(["ddcutil", "getvcp", "10"], capture_output=True, text=True)
-            for part in result.stdout.split(","):
-                if "current value" in part:
-                    cls._brightness = int(part.split("=")[1].strip())
-                    return
-            cls._brightness = 1
+            # result = subprocess.run(["ddcutil", "getvcp", "10"], capture_output=True, text=True)
+            # for part in result.stdout.split(","):
+            #     if "current value" in part:
+            #         cls._brightness = int(part.split("=")[1].strip())
+            #         return
+            cls._brightness = 30
 
         threading.Thread(target=_fetch, daemon=True).start()
 
