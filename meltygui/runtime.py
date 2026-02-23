@@ -374,7 +374,6 @@ class Melty:
                     # Melty.pop_clip()
 
             # Sort by y position (draw_state.top)
-
             for d_idx, draw_state in enumerate(cls.root_draw_states_by_layer[idx - 1]):
                 # Melty.cache.mask_mark_view(draw_state.z_pos, draw_state.left,
                 #                            draw_state.top, draw_state.width, draw_state.height,
@@ -390,6 +389,7 @@ class Melty:
                         draw_state._bounding_hovered or draw_state._imgui_popover_open):
                     Melty.cache.invalidate(draw_state._tile_id)
                     # draw_state.invalidate_rect()
+
 
             Melty.depth = 0
             if Melty.channels_split:
@@ -654,7 +654,7 @@ class Melty:
             clip_rect = (
                 fix_sized_ds.left,
                 fix_sized_ds.top,
-                fix_sized_ds.left + fix_sized_ds.width - margin,
+                fix_sized_ds.left + fix_sized_ds.width,
                 fix_sized_ds.top + fix_sized_ds.height
             )
         else:

@@ -383,7 +383,7 @@ def render_func(*args, **o_kwargs):
                 if layer == len(Melty.registered_windows) - 1 and not "z_absolute" in kwargs:
                     layer = len(Melty.registered_windows) + Melty.top_layer_boost
 
-                if kwargs.get("melty_window", False) and Melty.depth > 3:
+                if closable and len(Melty.melty_window_stack) > 0:
                     layer = layer + Melty.nested_layer_boost
                     draw_state._is_nested = True
                 kwargs["active_layer"] = layer
@@ -1053,9 +1053,9 @@ def render_func(*args, **o_kwargs):
                             draw_state.context_menu_ds.closed = not draw_state.context_menu_open
                     if draw_state.context_menu_open:
                         bg_offset = 4
-                        if draw_state._is_nested:
-                            bg_offset = 0
-                        Melty.bg_depth += bg_offset
+                        # if draw_state._is_nested:
+                        #     bg_offset = 0
+                        # Melty.bg_depth += bg_offset
                         tint = style_manager.get_tint()
                         mixed_color = style_manager.make_color_rgb(tint[0], tint[1], tint[2],
                                                                    value=0.03, factor=0.6,
@@ -1065,14 +1065,15 @@ def render_func(*args, **o_kwargs):
 
                         returned_val = draw_window(input_value=draw_state, view_func=draw_context_menu,
                                                    tint=mixed_color, show_tint=False, show_add_delete=False,
-                                                   width=350, max_height=800,
+                                                   width=400, max_height=800,
                                                    persistent=False, anchor=Anchor.BOTTOM_LEFT,
                                                    with_footer=None, use_cache=True,
-                                                   name=f"{name}##context_menu_{unique}", auto_resize=False,
+                                                   name=f"{name}##context_menu_{unique}", auto_resize=True,
                                                    return_extras=True)
 
                         ctx_ds = returned_val[2]
-                        Melty.bg_depth -= bg_offset
+                        ctx_ds.tint = tint
+                        # Melty.bg_depth -= bg_offset
                         draw_state.context_menu_ds = ctx_ds
                         # ctx_ds.parent_window = Melty.melty_window_stack[-1] if len(Melty.melty_window_stack) > 0 else None
                         if ctx_ds.last_seen is None:
@@ -1119,12 +1120,6 @@ def render_func(*args, **o_kwargs):
                     next_kwargs['outer_func'] = wrapper
                     next_kwargs['show_bg'] = kwargs.get("show_bg", True)
                     draw_header = kwargs.get("with_header", None)
-                    reset_cursor = imgui.get_cursor_screen_pos()
-
-                    # if Melty.channels_split:
-                    #     draw_list = imgui.get_window_draw_list()
-                    #     draw_list.channels_set_current(Melty.get_channel() + kwargs.get("channel_offset", 0))
-
                     imgui.begin_group()
                     header_start_cursor = imgui.get_cursor_screen_pos()
 
@@ -1302,8 +1297,6 @@ def render_func(*args, **o_kwargs):
                                                input_value, kwargs, auto_resize,
                                                melty, tile_id, unique, melty_window)
 
-                Melty.pop_clip()
-
                 if show_bg:
                     Melty.bg_depth -= 1 + kwargs.get("bg_offset", 0)
                     Melty.bg_stack.pop()
@@ -1316,7 +1309,7 @@ def render_func(*args, **o_kwargs):
                 #######################
 
                 end_group()
-
+                Melty.pop_clip()
 
                 if closable:
                     imgui.set_cursor_screen_pos((draw_state.left + 2, draw_state.top + draw_state.header_height + 2))

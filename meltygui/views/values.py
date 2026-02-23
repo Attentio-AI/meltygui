@@ -361,11 +361,8 @@ def draw_window(input_value, view_func=None, draw_state=None, delete_down=False,
     kwargs.pop('max_height', None)
 
     return_val = view_func(input_value, **kwargs)
-
-
     if len(return_val) == 3:
         return_val = (return_val[0], return_val[1], draw_state)
-
 
     return return_val
 
