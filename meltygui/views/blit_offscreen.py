@@ -33,6 +33,7 @@ This ensures:
 INV_65535 = 1.0 / 65535.0
 
 
+
 # ==============================
 # Small structs
 # ==============================
@@ -61,7 +62,6 @@ class _Ctx:
     depth_and_layer: any
     drew_cached: bool
     auto_resize: bool
-
 
 
 @dataclass
@@ -526,7 +526,6 @@ class TileCacheMasked:
         self.key_to_draw_state: Dict[str, any] = {}
 
         self._tiles: Dict[str, Tile] = {}
-        self._sizes = {}
         self._stack: List[_Ctx] = []
         self._key_to_ctx: Dict[str, _Ctx] = {}
         self._pending: List[_Pending] = []
@@ -951,10 +950,10 @@ class TileCacheMasked:
 
     @staticmethod
     def _clip_rect(
-            x: float,
-            y: float,
-            w: float,
-            h: float,
+            x: any,
+            y: any,
+            w: any,
+            h: any,
             clip_xyxy: Tuple[float, float, float, float],
     ) -> Optional[Tuple[float, float, float, float]]:
         if clip_xyxy is None:
@@ -964,8 +963,7 @@ class TileCacheMasked:
         y0 = max(y, cy0)
         x1 = min(x + w, cx1)
         y1 = min(y + h, cy1)
-        if x1 <= x0 and y1 <= y0:
-            return None
+
         return (x0, y0, x1 - x0, y1 - y0)
 
     @staticmethod
@@ -1066,6 +1064,16 @@ class TileCacheMasked:
 
         has_area = size is not None and size[0] != 0 and size[1] != 0
         use_image = t and has_area and (t.size == (size[0], size[1])) and (not self._is_dirty(t))
+
+        # x, y = draw_state.left, draw_state.top
+        # w, h = draw_state.width, draw_state.height
+        # clip = draw_state.clip_rect
+        #
+        # clipped = self._clip_rect(x, y, w, h, clip)
+        # if not clipped:
+        #     print(clip)
+        # cx0, cy0, cw, ch = clipped if clipped else (0,0,0,0)
+
         if has_area and not draw_state.closed and use_image:
             corner_radius = getattr(draw_state, "corner_radius", 6.0) or 6.0
             self.mask_mark_view(
@@ -1120,20 +1128,8 @@ class TileCacheMasked:
         rkey = self._resolve_key(key)
         size = (draw_state.width, draw_state.height)
 
-        if not draw_state.auto_resize and draw_state.width is not None and draw_state.height is not None:
+        if draw_state.width is not None and draw_state.height is not None:
             size = snap_int(draw_state.width), snap_int(draw_state.height)
-            self._sizes[rkey] = size
-
-        if size is not None:
-            min_width = draw_state.min_width
-            min_height = draw_state.min_height
-            if draw_state.expanded:
-                if min_width is not None and size[0] < min_width:
-                    size = (snap_int(min_width), size[1])
-                if min_height is not None and size[1] < min_height:
-                    size = (size[0], snap_int(min_height))
-
-            self._sizes[rkey] = size
 
         self.key_to_parent_key[rkey] = parent_ctx.key if parent_ctx else None
         self.key_to_draw_state[rkey] = draw_state
@@ -1263,10 +1259,8 @@ class TileCacheMasked:
                                         corner_radius)
 
         if not self.enabled or ctx.drew_cached or ctx.draw_state.frame_count < 2:
-            self._sizes[ctx.key] = ctx.size
             return
 
-        self._sizes[ctx.key] = ctx.size
         if ctx.size and ctx.size[0] > 0 and ctx.size[1] > 0:
             t = self._tiles.get(ctx.key)
             if self._dummy_vao is None:
@@ -1640,6 +1634,15 @@ class TileCacheMasked:
                 sc_x1, sc_y1 = int(ceil(x1)), int(ceil(y1))
                 sc_w, sc_h = max(0, sc_x1 - sc_x0), max(0, sc_y1 - sc_y0)
 
+
+                # clip = p.draw_state.clip_rect
+                # clipped = self._clip_rect(x, y, w, h, clip)
+                # if clipped:
+                #     cx, cy, cw, ch = clipped
+                #     cx, cy, cw, ch = self._screen_rect_to_fb_xyxy(cx, cy, cw, ch, dp_x, dp_y, s_x, s_y, fb_h)
+                #     sc_x0, sc_y0 = max(0, int(cx)), max(0, int(cy))
+                #     sc_w, sc_h = max(1, int(cw)), max(1, int(ch))
+
                 gl.glEnable(gl.GL_SCISSOR_TEST)
                 gl.glScissor(sc_x0, sc_y0, sc_w, sc_h)
 
@@ -1663,6 +1666,15 @@ class TileCacheMasked:
 
                     self.apply_blend_mode(r)
 
+                    clip_x0, clip_y0, clip_x1, clip_y1 = self._screen_rect_to_fb_xyxy(
+                        r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y, fb_h
+                    )
+                    clip_ix0, clip_iy0 = int(floor(clip_x0)), int(floor(clip_y0))
+                    clip_ix1, clip_iy1 = int(ceil(clip_x1)), int(ceil(clip_y1))
+                    clip_iw, clip_ih = max(0, clip_ix1 - clip_ix0), max(0, clip_iy1 - clip_iy0)
+
+                    gl.glEnable(gl.GL_SCISSOR_TEST)
+                    gl.glScissor(clip_ix0, clip_iy0, clip_iw, clip_ih)
                     # For cached tiles, use actual tile size from context to avoid stretching
                     if use_child_cache:
                         gl.glDisable(gl.GL_BLEND)
@@ -1671,6 +1683,10 @@ class TileCacheMasked:
                         if child_ctx and child_ctx.size:
                             cx, cy = child_ctx.pos
                             cw, ch = draw_state.width, draw_state.height
+                            # clip = draw_state.clip_rect
+                            # clipped = self._clip_rect(cx, cy, cw, ch, clip)
+                            # if clipped:
+                            #     cx, cy, cw, ch = clipped
                             sx0, sy0, sx1, sy1 = self._screen_rect_to_fb_xyxy(cx, cy, cw, ch, dp_x, dp_y, s_x, s_y,
                                                                               fb_h)
                         else:
@@ -1791,6 +1807,7 @@ class TileCacheMasked:
                     clip_ix0, clip_iy0 = int(floor(clip_x0)), int(floor(clip_y0))
                     clip_ix1, clip_iy1 = int(ceil(clip_x1)), int(ceil(clip_y1))
                     clip_iw, clip_ih = max(0, clip_ix1 - clip_ix0), max(0, clip_iy1 - clip_iy0)
+
 
                     tile_ctx = self._key_to_ctx.get(r.key)
 

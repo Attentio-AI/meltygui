@@ -1,3 +1,4 @@
+from copy import copy
 from enum import Enum
 
 import glfw
@@ -297,6 +298,15 @@ class DrawState(DictConversion):
         self.hover_reported = True
 
         self._hover_eligible_cache = {}  # path, frame
+        self._tile_params = {}
+
+
+
+    def tile_params(self):
+        self._tile_params['clip_rect'] = copy(self.clip_rect)
+
+        return self._tile_params
+
     #
     # def __getattr__(self, name):
     #     if name.startswith("kw_"):
