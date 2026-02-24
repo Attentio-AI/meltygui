@@ -24,6 +24,8 @@ import numpy
 
 import src
 from src.lsd.gl_gui.collection_action import OperationType
+from src.lsd.gl_gui.view.core_conversion.libcst_conversion import RawCode
+from src.lsd.gl_gui.view.core_conversion.path_finder import convert
 from src.lsd.gl_gui.view.core_views.monitor import Monitor
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
@@ -288,7 +290,7 @@ def draw_header_end(input_value=None, name="", key=None, melty=None, parent_show
         same_line(spacing=0.0)
         pop_style_color(2)
 
-    if closable:
+    if closable and not input_value == Melty.registered_windows:
         close_icon = "\uf00d"
         if button(f"{close_icon}", show_bg=True, shadow=True, z_offset=10, tile_mode=TileMode.MAX, color=(9, 1, 1, 0))[0]:
             draw_state.closed = not draw_state.closed
@@ -337,7 +339,7 @@ def empty(input_val):
              show_bg=True, melty_window=True, draggable=True, show_tint=True, tile_mode=TileMode.MAX,
              with_header=draw_header, with_header_end=draw_header_end, indent_size=10,
              with_footer=draw_footer, z_offset=-4)
-def draw_window(input_value, view_func=None, draw_state=None, delete_down=False, glfw_close_down=False, **kwargs):
+def draw_window(input_value:any, view_func=None, draw_state=None, delete_down=False, glfw_close_down=False, **kwargs):
     if delete_down and imgui.get_io().key_ctrl:
         draw_state.closed = True
 
@@ -712,6 +714,44 @@ def draw_type(input_value:type, draw_state, **kwargs):
 
 some_float=[0.0]
 
+
+cst_dict = {}
+test_code = (
+"""
+@render_func(is_default_for=(type), show_bg=True, with_header=draw_header, with_footer=draw_footer)
+def draw_type(input_value:type, draw_state, **kwargs):
+    imgui.text_colored(f"Type: {input_value.__name__}", 1.0, 0.5, 0.0, 1.0)
+    # draw_collection(vars(input_value), name="vars", show_excluded=True)
+    # draw_collection(dir(input_value), name="dir", show_excluded=True)
+    # draw_collection(input_value.__dict__, name="__dict__", show_excluded=True)
+    # draw_collection(inspect.getmembers(input_value), name="inspect")
+    keys = list(set(dir(input_value)) | set(vars(type(input_value))))
+    type_get_attr = lambda obj, key: getattr(obj, key, None)
+    type_set_attr = lambda obj, key, value: setattr(obj, key, value)
+    draw_collection(input_value, name="inspect", keys=keys, get_attr=type_get_attr,
+                    set_attr=type_set_attr)
+
+
+"""
+)
+
+
+def code_to_dict():
+    global cst_dict
+    global test_code
+    cst_tree = convert(test_code, cst.Module, registry=Melty)
+    cst_dict = convert(cst_tree, dict, registry=Melty)
+    return cst_dict
+
+def dict_to_code():
+    global cst_dict
+    global test_code
+    cst_tree = convert(cst_dict, cst.Module, registry=Melty)
+    test_code = cst_tree.code
+    return test_code
+
+
+
 @render_func(use_cache=False, show_bg=True, selectable=False, show_tint=True, bg_offset=-1, with_header=draw_header)
 def draw_main(input_value, vis, **kwargs):
     global test_obj
@@ -719,6 +759,18 @@ def draw_main(input_value, vis, **kwargs):
     return_val2 = draw_window(Melty.registered_windows, is_tree=True, show_add_delete=False, return_extras=True,
                               name="Window Manager",
                               z_absolute=-1)
+    global cst_dict
+    global test_code
+    draw_window({"code_to_dict": code_to_dict,
+                 "dict_to_code": dict_to_code}, name="CST Test", show_bg=True, child_kwargs={'show_excluded': True})
+    changed, value = draw_window(test_code, name="test_code", show_bg=True, child_kwargs={'show_excluded': True})
+    if changed:
+        test_code = value
+
+    changed, value = draw_window(cst_dict, name="cst_dict", show_bg=True, child_kwargs={'show_excluded': True})
+    if changed:
+        cst_dict = value
+
 
     from src.lsd.gl_gui.model.app_model import TensorView
     draw_window(TensorView, name="Tensorview")
@@ -2148,16 +2200,28 @@ def draw_bool(input_value: bool):
     return False, None
 
 
+@render_func(is_default_for=(RawCode), shadow=False, wrap=False, with_header=draw_header)
+def draw_raw_code(input_value: RawCode, draw_state):
+
+    imgui.text_wrapped(input_value)
+
+    return False, input_value
+
+
 @render_func(is_default_for=(str), shadow=False, wrap=False, with_header=draw_header)
 def draw_str(input_value: str, draw_state):
     line_count = input_value.count('\n') + 1
-    line_height = imgui.get_text_line_height_with_spacing()
-
+    line_height = imgui.get_text_line_height()
+    text_height = imgui.calc_text_size(input_value)[1] + line_height * 2
     if line_count == 1:
         padding = imgui.get_style().frame_padding.y
         height = imgui.get_text_line_height() + padding
+
     else:
-        height = (max(0, min(200, line_count * line_height + 6)))
+        max_bottom = draw_state.parent_window.top + draw_state.parent_window.height - draw_state.footer_height - line_height * 2
+        text_bottom = draw_state.top + text_height
+        clamped_bottom = min(max_bottom, text_bottom)
+        height = clamped_bottom - draw_state.top
 
     show_controls = True
 
@@ -2169,8 +2233,11 @@ def draw_str(input_value: str, draw_state):
         changed, value = imgui.input_text("##str", input_value,
                                           flags=imgui.INPUT_TEXT_ENTER_RETURNS_TRUE)
     else:
+        imgui.set_cursor_screen_pos((draw_state.left, draw_state.top))
+        # disable scrolling
         changed, value = imgui.input_text_multiline("##str", input_value,
                                                     width=draw_state.content_width, height=height)
+        imgui.dummy(draw_state.content_width, text_height - height + 10)
 
     if not show_controls:
         imgui.pop_style_var(1)
@@ -2332,8 +2399,9 @@ def draw_app_model(input_val):
     imgui.text("An App Model Instance")
 
 
-@render_func(is_default_for=(types.FunctionType, types.MethodType),
-             wraps=render_func, show_add_delete=False, is_tree=False, show_name=False, with_header=draw_header)
+@render_func(is_default_for=(types.FunctionType, types.MethodType), show_add_delete=False,
+             show_bg=True, parent_show_add_delete=False,
+             is_tree=False, show_name=False, with_header=draw_header)
 def draw_function(input_value, name, draw_state, unique):
     if not callable(input_value):
         imgui.text("Not a callable function")
@@ -2362,9 +2430,9 @@ def draw_function(input_value, name, draw_state, unique):
         if changed:
             draw_state.params = new_val
 
-    push_style_var(imgui.STYLE_ITEM_SPACING, (4, 0))
-    push_style_var(imgui.STYLE_FRAME_PADDING, (6, 6))
-    push_style_var(imgui.STYLE_FRAME_ROUNDING, 4)
+    # push_style_var(imgui.STYLE_ITEM_SPACING, (4, 0))
+    # push_style_var(imgui.STYLE_FRAME_PADDING, (6, 6))
+    # push_style_var(imgui.STYLE_FRAME_ROUNDING, 4)
 
     if imgui.button(f"{input_value.__name__}##{unique}"):
         try:
@@ -2377,7 +2445,7 @@ def draw_function(input_value, name, draw_state, unique):
     if draw_state.result is not None:
         draw_any(draw_state.result, name="Result", header_same_line=True, show_header=False, show_add_delete=False)
 
-    pop_style_var(3)
+    # pop_style_var(3)
 
     return False, input_value
 

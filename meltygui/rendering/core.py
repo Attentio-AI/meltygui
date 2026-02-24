@@ -268,6 +268,8 @@ def render_func(*args, **o_kwargs):
                 if return_extras:
                     return False, None, draw_state
                 return False, None
+            elif draw_state.closed and input_value == Melty.registered_windows:
+                draw_state.closed = False
 
         draw_state._kwargs = kwargs
 
@@ -810,14 +812,14 @@ def render_func(*args, **o_kwargs):
             expected_type = param_types[wanted_params.index("input_value")] if "input_value" in wanted_params else None
             annotation_empty = expected_type == inspect.Parameter.empty
             original_value = input_value
-            if "convert" in kwargs:
+            if kwargs.get('convert', True):
                 passed_type = kwargs.get("convert", None)
                 if isinstance(passed_type, type):
                     to_type = passed_type
                 else:
                     to_type = expected_type
-
-                if to_type is not Any and isinstance(to_type, type):
+                is_empty = expected_type is None or expected_type == inspect.Parameter.empty
+                if to_type is not Any and isinstance(to_type, type) and not is_empty:
                     if not isinstance(input_value, to_type):
                         # Try auto-converting via the Melty converter registry
                         try:
@@ -829,7 +831,7 @@ def render_func(*args, **o_kwargs):
 
                             # Update kwargs so the render function sees the converted value
                             kwargs["input_value"] = input_value
-                            draw_state._input_value = input_value
+                            # draw_state._input_value = input_value
 
                         except TypeError:
                             # No conversion path - fall back to the type checking
@@ -926,6 +928,14 @@ def render_func(*args, **o_kwargs):
                                                                                                  False):
                     previous_tint = style_manager.get_tint()
                     style_manager.set_imgui_tint(*draw_state.tint)
+
+                if converted_input:
+                    # reformat icon wrench
+                    converted_icon_text = f"\uf0ad {type(input_value).__name__}"
+                    overlay_list: _DrawList = imgui.get_window_draw_list()
+                    overlay_list.add_text(*(draw_state.left + draw_state.header_width + 5, draw_state.top + 5),
+                                          imgui.get_color_u32_rgba(0.5, 0.0, 0.0, 1.0),
+                                          f"{converted_icon_text}: {draw_state.explain_convert}")
 
                 if show_bg:
 
