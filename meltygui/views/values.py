@@ -22,6 +22,7 @@ from numpy import uint32
 import OpenGL.GL as gl
 import numpy
 
+import src
 from src.lsd.gl_gui.collection_action import OperationType
 from src.lsd.gl_gui.view.core_views.monitor import Monitor
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
@@ -368,7 +369,7 @@ def draw_window(input_value, view_func=None, draw_state=None, delete_down=False,
     return return_val
 
 
-@render_func(is_default_for=(MutableMapping, defaultdict, types.MappingProxyType), use_cache=True,
+@render_func(is_default_for=(dict, MutableMapping, defaultdict, types.MappingProxyType), use_cache=True,
              show_bg=True, show_instance_vars=False, manual_content_height=True,
              shadow=True, wrap=False, with_header=draw_header, indent_size=10)
 def draw_collection(input_value, draw_state, depth, style_manager, meta, keys=None, get_attr=None, set_attr=None, show_excluded=False,
@@ -435,7 +436,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, keys=No
             use_tint = False
             apply_change = True
         else:
-
+            imgui.text("No view for type: " + str(type(input_value)))
             return False, input_value
 
         keys = list(keys)[:]
@@ -696,7 +697,7 @@ def draw_property(input_value:property, draw_state, **kwargs):
     # draw_any(value, name="value", show_bg=True, draw_state=draw_state)
 
 @render_func(is_default_for=(type), show_bg=True, with_header=draw_header, with_footer=draw_footer)
-def draw_type(input_value, draw_state, **kwargs):
+def draw_type(input_value:type, draw_state, **kwargs):
     imgui.text_colored(f"Type: {input_value.__name__}", 1.0, 0.5, 0.0, 1.0)
     # draw_collection(vars(input_value), name="vars", show_excluded=True)
     # draw_collection(dir(input_value), name="dir", show_excluded=True)
@@ -709,6 +710,8 @@ def draw_type(input_value, draw_state, **kwargs):
                     set_attr=type_set_attr)
 
 
+some_float=[0.0]
+
 @render_func(use_cache=False, show_bg=True, selectable=False, show_tint=True, bg_offset=-1, with_header=draw_header)
 def draw_main(input_value, vis, **kwargs):
     global test_obj
@@ -719,7 +722,16 @@ def draw_main(input_value, vis, **kwargs):
 
     from src.lsd.gl_gui.model.app_model import TensorView
     draw_window(TensorView, name="Tensorview")
+
+    global some_float
+    changed, new_float = draw_window(some_float[0], name="Conversion Test", view_func=draw_collection, convert=dict)
+    if changed:
+        some_float[0] = new_float
+
     draw_window(Monitor, name="Monitor")
+
+    from src.lsd.gl_gui.model.core_model import core_model
+    # draw_window(core_model, name="Module test")
 
 
     draw_window(draw_main, name="Draw Main Function")
@@ -2066,6 +2078,7 @@ def button(input_value="", corner_radius=4, draw_state=None, left_mouse_held=Fal
     #     imgui.pop_style_var(1)
 
     if left_mouse_down:
+        request_render()
         return True, input_value
 
     return False, input_value

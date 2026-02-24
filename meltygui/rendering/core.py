@@ -14,6 +14,8 @@ import imgui
 from imgui.core import _DrawList
 
 from imgui.core import _IO
+
+from src.lsd.gl_gui.view.core_conversion.path_finder import convert, explain_chain
 from src.lsd.gl_gui.view.core_views.core_render_helpers import draw_vertical_scrollbar, floating_text
 from src.lsd.gl_gui.model.core_model.draw_state import DrawState, Hotkey, DragMode, Anchor, TileMode, AttrDict
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, print_stack_trace, \
@@ -243,39 +245,9 @@ def render_func(*args, **o_kwargs):
                                                                   str(key) + func.__name__, idx=index)
 
         draw_state: DrawState = kwargs.get("draw_state", get_draw_state(unique))
-        draw_state._kwargs = kwargs
-
-        ds_kwargs = copy(kwargs)
-        exclude_ds_kwargs = ["input_value", "wanted_params", "depth", "shadow_depth",
-                             "name", "z_offset", "use_cache", "active_layer", "auto_resize",
-                             "unique", "suffix", "collection", "expanded_rect", "z_pos", "tint", "bg_offset",
-                             "meta", "depth", "next_kwargs", "param_types"]
-        for exclude_key in exclude_ds_kwargs:
-            ds_kwargs.pop(exclude_key, None)
-        draw_state.__dict__.update(ds_kwargs)
-
-        draw_state.unique = unique
-        draw_state._collection = Melty.collection_stack[-1] if len(Melty.collection_stack) > 0 else None
-        draw_state.name = name
+        closable = kwargs.get("closable", False)
         tile_id = strhash(str(unique) + str(draw_state.id))
         draw_state._tile_id = tile_id
-
-        closable = kwargs.get("closable", False)
-        draw_state.closable = closable
-        draw_state.behind = kwargs.get("behind", draw_state.behind)
-        draw_state.tile_mode = kwargs.get("tile_mode", draw_state.tile_mode)
-
-        window_key = tile_id
-        draw_state.persistent = kwargs.get("persistent", True)
-        if draw_state.kwargs.temp:
-            draw_state.dlt_count = 0
-
-        if len(Melty.melty_window_stack) > 0:
-            draw_state.parent_window = Melty.melty_window_stack[-1]
-            draw_state.left_offset, draw_state.top_offset = (
-            imgui.get_cursor_screen_pos()[0] - draw_state.parent_window.left,
-            imgui.get_cursor_screen_pos()[1] - draw_state.parent_window.top)
-
         if closable:
             # Only perform this check on floating windows
             if draw_state._parent is not None and not draw_state._parent.clipped:
@@ -296,6 +268,41 @@ def render_func(*args, **o_kwargs):
                 if return_extras:
                     return False, None, draw_state
                 return False, None
+
+        draw_state._kwargs = kwargs
+
+        ds_kwargs = copy(kwargs)
+        exclude_ds_kwargs = ["input_value", "wanted_params", "depth", "shadow_depth",
+                             "name", "z_offset", "use_cache", "active_layer", "auto_resize",
+                             "unique", "suffix", "collection", "expanded_rect", "z_pos", "tint", "bg_offset",
+                             "meta", "depth", "next_kwargs", "param_types"]
+        for exclude_key in exclude_ds_kwargs:
+            ds_kwargs.pop(exclude_key, None)
+        draw_state.__dict__.update(ds_kwargs)
+
+        draw_state.unique = unique
+        draw_state._collection = Melty.collection_stack[-1] if len(Melty.collection_stack) > 0 else None
+        draw_state.name = name
+        original_type = type(input_value)
+        converted_input = False
+        original_value = input_value
+
+        draw_state.closable = closable
+        draw_state.behind = kwargs.get("behind", draw_state.behind)
+        draw_state.tile_mode = kwargs.get("tile_mode", draw_state.tile_mode)
+
+        window_key = tile_id
+        draw_state.persistent = kwargs.get("persistent", True)
+        if draw_state.kwargs.temp:
+            draw_state.dlt_count = 0
+
+        if len(Melty.melty_window_stack) > 0:
+            draw_state.parent_window = Melty.melty_window_stack[-1]
+            draw_state.left_offset, draw_state.top_offset = (
+            imgui.get_cursor_screen_pos()[0] - draw_state.parent_window.left,
+            imgui.get_cursor_screen_pos()[1] - draw_state.parent_window.top)
+
+
 
             # Disable cache for this frame to avoid further issues
         computed_unique = unique
@@ -395,14 +402,20 @@ def render_func(*args, **o_kwargs):
                     layer = len(Melty.registered_windows) + Melty.top_layer_boost
 
                 if closable and len(Melty.melty_window_stack) > 0:
-                    layer = layer + Melty.nested_layer_boost
+
                     draw_state._is_nested = True
+
+                    parent_ds = draw_state._parent
+                    Melty.root_draw_states[parent_ds.id].append(draw_state)
+
+                    layer = layer + Melty.nested_layer_boost + len(Melty.root_draw_states[parent_ds.id])
+
                 kwargs["active_layer"] = layer
 
                 if layer >= len(Melty.layers) - 1:
                     layer = len(Melty.layers) - 1
 
-                draw_state.layer = layer
+                # draw_state.layer = layer
                 Melty.layers[layer].append(draw_state)
                 return_value = (False, None)
                 if draw_state.id in Melty.returned_values:
@@ -422,7 +435,6 @@ def render_func(*args, **o_kwargs):
 
         kwargs['return_extras'] = False
         start_shadow_depth = Melty.shadow_depth
-
         if unique in Melty.seen_unique:
             if 'draw_state' in wanted_params:
                 overlay_list: _DrawList = imgui.get_overlay_draw_list()
@@ -775,15 +787,6 @@ def render_func(*args, **o_kwargs):
                 draw_state.multi_line = False
                 draw_state.content_width = available_width
 
-            parent_ds = draw_state._parent
-            if melty_window and active_layer is not None and draw_state._is_nested:
-                Melty.root_draw_states.add(draw_state)
-                if parent_ds is not None:
-                    parent_ds.nested_window = True
-            else:
-                if parent_ds is not None:
-                    parent_ds.nested_window = False
-
             if kwargs.get("live", False):
                 draw_state.live = True
                 fa_live_icon = "\uf0e7  Live"
@@ -806,6 +809,40 @@ def render_func(*args, **o_kwargs):
 
             expected_type = param_types[wanted_params.index("input_value")] if "input_value" in wanted_params else None
             annotation_empty = expected_type == inspect.Parameter.empty
+            original_value = input_value
+            if "convert" in kwargs:
+                passed_type = kwargs.get("convert", None)
+                if isinstance(passed_type, type):
+                    to_type = passed_type
+                else:
+                    to_type = expected_type
+
+                if to_type is not Any and isinstance(to_type, type):
+                    if not isinstance(input_value, to_type):
+                        # Try auto-converting via the Melty converter registry
+                        try:
+                            description = explain_chain(type(input_value), to_type, registry=Melty)
+                            input_value = convert(input_value, to_type, registry=Melty)
+                            converted_input = True
+                            draw_state.explain_convert = description
+                            # imgui.text(draw_state.explain_convert)
+
+                            # Update kwargs so the render function sees the converted value
+                            kwargs["input_value"] = input_value
+                            draw_state._input_value = input_value
+
+                        except TypeError:
+                            # No conversion path - fall back to the type checking
+                            yellow = (1.0, 1.0, 0.0, 1.0)
+                            type_class_path = f"{expected_type.__module__}.{expected_type.__name__}"
+                            actual_type_class_path = f"{original_type.__module__}.{original_type.__name__}"
+                            imgui.text_colored(
+                                f"No converter: {actual_type_class_path} → {type_class_path} "
+                                f"in {func.__name__}",
+                                *yellow)
+                            if return_extras:
+                                return False, None, draw_state
+
             if not annotation_empty:
                 if expected_type is not Any and isinstance(expected_type, type):
                     if not isinstance(input_value, expected_type):
@@ -868,6 +905,8 @@ def render_func(*args, **o_kwargs):
             if clip_rect is not None:
                 draw_state.clip_rect = clip_rect
             if Melty.cache.mark_start_offscreen(draw_state=draw_state) and not draw_state.kwargs.just_shadow:
+
+                Melty.root_draw_states[draw_state.id] = []
                 highlight = draw_state.selected
 
                 show_bg = kwargs.get("show_bg", False) or (
@@ -1258,8 +1297,11 @@ def render_func(*args, **o_kwargs):
                 ##########################################################
 
                 if hasattr(input_value, 'pending_upload') and callable(getattr(input_value, 'pending_upload')):
-                    if input_value.pending_upload():
+                    try:
+                        pending = input_value.pending_upload()
                         request_render()
+                    except Exception as e:
+                        print(f"Error checking pending upload: {e}")
 
                 ############# HANDLE SELECTION
                 top = draw_state.top
@@ -1527,6 +1569,14 @@ def render_func(*args, **o_kwargs):
             else:
                 imgui.text("Unsupported return from render_func")
                 changed, new_value = False, None
+
+            if converted_input and changed and new_value is not None:
+                try:
+                    new_value = convert(new_value, original_type, registry=Melty)
+                except TypeError:
+                    changed = False
+                    new_value = original_value
+                    # Can't convert back - return the raw value and let
 
             end_time = time.time()
             draw_state.render_time = end_time - start_time

@@ -57,9 +57,9 @@ ALL_ACTIONS = frozenset({
 })
 _SORTED_ACTIONS = tuple(sorted(ALL_ACTIONS, key=len, reverse=True))
 
-DOUBLE_CLICK_WINDOW = 0.3
+DOUBLE_CLICK_WINDOW = 0.1
 CLICK_MAX_DISTANCE = 5.0
-DRAG_THRESHOLD = 5.0  # Minimum distance before drag starts
+DRAG_THRESHOLD = 1.0  # Minimum distance before drag activates
 
 
 @dataclass(slots=True)

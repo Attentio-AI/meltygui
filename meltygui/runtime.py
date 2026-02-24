@@ -13,11 +13,13 @@ from src.lsd.gl_gui.view.core_views.monitor import Monitor
 from src.shader_library.shader_manager.texture_manager import TextureManager
 from src.shader_library.shader_manager.filter import Filter
 from src.lsd.gl_gui.view.events.input_handler import InputHandler, InputEvent
-from src.lsd.gl_gui.view.events.pynput_backend import PynputBackend, ImGuiBackend
+from src.lsd.gl_gui.view.events.pynput_backend import ImGuiBackend
 from src.lsd.gl_gui.model.core_model.core_enums import generate_id
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 
 import OpenGL.GL as gl
+
+
 
 
 class Melty:
@@ -25,7 +27,7 @@ class Melty:
     last_selected = None
 
     draw_state_stack = []
-    root_draw_states = set()
+    root_draw_states = defaultdict(lambda: list())
     root_draw_states_by_layer = defaultdict(lambda: list())
 
     filter = Filter()
@@ -36,6 +38,8 @@ class Melty:
     on_drag = False
     on_scroll = False
     on_scroll_buffer = deque(maxlen=5)
+
+    _converters = {}
 
     # list, full with 32 Nones
     max_depth = 32
@@ -338,15 +342,18 @@ class Melty:
 
         cls.root_draw_states_by_layer = defaultdict(list)
         to_discard = set()
-        for idx, ds in enumerate(cls.root_draw_states):
-            if ds.closed:
-                to_discard.add(ds)
-            else:
-                cls.root_draw_states_by_layer[ds.layer].append(ds)
+        dynamic_offset = 0
+        for parent_ds_id, ds_list in cls.root_draw_states.items():
+            for idx, ds in enumerate(ds_list):
+                if ds.abs_closed:
+                    to_discard.add(ds)
+                    ds.closed = True
+                else:
+                    cls.root_draw_states_by_layer[ds.layer + dynamic_offset].append(ds)
 
-        for ds in to_discard:
-            cls.root_draw_states.discard(ds)
-
+            for discard_ds in to_discard:
+                if discard_ds in ds_list:
+                    ds_list.remove(discard_ds)
         for idx in range(len(cls.layers)):
             layer = cls.layers[idx]
             imgui.set_cursor_screen_pos((0, 0))
@@ -363,7 +370,7 @@ class Melty:
                     cls.draw(draw_state)
 
             # Sort by y position (draw_state.top)
-            for d_idx, draw_state in enumerate(cls.root_draw_states_by_layer[idx - 1]):
+            for d_idx, draw_state in enumerate(cls.root_draw_states_by_layer[idx]):
                 # Melty.cache.mask_mark_view(draw_state.z_pos, draw_state.left,
                 #                            draw_state.top, draw_state.width, draw_state.height,
                 #                            f"view_mask_{draw_state.id}", 4)

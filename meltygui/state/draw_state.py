@@ -120,7 +120,7 @@ class TileMode(Enum):
                  'hover_rects', 'nested_window', 'use_cache', 'layer', "header_top", "header_left", "left_offset",
                  "top_offset", 'kwargs', 'content_width', "just_shadow",
                  "header_left_delta", "header_top_delta", "last_seen", "persistent", "shadow_margin", "bg_depth",
-                 "anchor_pos", "just_shadow", 'hover_reported',
+                 "anchor_pos", "just_shadow", 'hover_reported', 'explain_convert',
                  'channel', 'next', 'previous', 'index_in_parent', 'relative_pos', 'context_menu_open',
                  'context_menu_ds', '_hover_eligible', 'just_shadow')
 @deep_refresh('scroll_offset')
@@ -306,7 +306,7 @@ class DrawState(DictConversion):
         self._hover_eligible_cache = {}  # path, frame
         self._tile_params = {}
 
-
+        self.explain_convert = None
 
     def tile_params(self):
         self._tile_params['clip_rect'] = copy(self.clip_rect)
@@ -329,6 +329,15 @@ class DrawState(DictConversion):
     #     else:
     #         super().__setattr__(name, value)
 
+
+    @property
+    def abs_closed(self):
+        if self.closed and self.closable:
+            return True
+        elif self.parent_window is not None:
+            return self.parent_window.abs_closed
+        else:
+            return False
 
     @property
     def root_window(self):
