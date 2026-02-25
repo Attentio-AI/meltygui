@@ -24,7 +24,11 @@ def request_render():
     # stack = traceback.extract_stack()
     # from src.lsd.gl_gui.melty import Melty
     # Melty.last_request_render = stack[-2].name
-    # print_stack_trace(size=5)
+    from src.lsd.gl_gui.melty import Melty
+    from src.lsd.gl_gui.melty import QuickToggles
+    if QuickToggles.invalidate_stack_trace:
+        if Melty.frame_count > 0 and Melty.frame_count % 10 == 0:
+            print_stack_trace(size=5)
     _needs_render.set()
     glfw.post_empty_event()
 

@@ -20,7 +20,8 @@ from src.lsd.gl_gui.utils.glfw_utils import request_render
 import OpenGL.GL as gl
 
 
-
+class QuickToggles:
+    invalidate_stack_trace = False
 
 class Melty:
     selected = set()
@@ -187,6 +188,9 @@ class Melty:
         cls.original_window_padding = style.window_padding
         cls.original_frame_padding = style.frame_padding
 
+        cls.returned_values = copy(cls.pending_return_values)
+        cls.pending_returned_values = {}
+
         if cls.glfw_close_requested:
             cls.event_handler.feed_down(input_id="glfw_close", x=0, y=0, t=time.perf_counter())
             cls.glfw_close_requested = False
@@ -311,7 +315,7 @@ class Melty:
         # cls.cache.insert_parent(parent_ctx)
 
         view_func = draw_state._wrapper
-        input_value = draw_state._input_value
+        input_value = draw_state._raw_input_value
         kwargs = draw_state._kwargs
         kwargs['layer_unique'] = draw_state.unique
         imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
@@ -320,15 +324,14 @@ class Melty:
         return_val = view_func(**kwargs)
         if return_val is not None:
             cls.pending_return_values[draw_state.id] = return_val
+            # if return_val[0]:
+            #     Melty.cache.invalidate_up(draw_state._tile_id, max_depth=7, force=True)
 
         Melty.bg_stack = original_bg_stack
         # cls.cache.remove_parent()
 
     @classmethod
     def end_frame(cls):
-
-        cls.returned_values = copy(cls.pending_return_values)
-        cls.pending_returned_values = {}
 
         cls.apply_move_to_front()
 

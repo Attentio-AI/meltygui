@@ -91,6 +91,7 @@ class AttrDict:
     def rebind(self, data):
         object.__setattr__(self, '_data', data)
 
+UNSET_VALUE = object()
 
 class TileMode(Enum):
     MAX = 'max'
@@ -264,7 +265,9 @@ class DrawState(DictConversion):
         self.dragged = False
         self._screen_pos = (0, 0)
         self.drag_delta = (0, 0)
-        self._input_value = None
+        self._input_value = UNSET_VALUE
+        self._raw_input_value = UNSET_VALUE
+        self._converted_input_value = UNSET_VALUE
         self._collection = None
         self._has_popup = False
         self.is_hovered_last = False

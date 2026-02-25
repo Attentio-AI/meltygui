@@ -10,9 +10,9 @@ from typing import Dict, List, Optional, Tuple, MutableMapping
 from OpenGL import GL as gl
 import imgui
 
-from src.lsd.gl_gui.melty import Melty
+from src.lsd.gl_gui.melty import Melty, QuickToggles
 from src.lsd.gl_gui.model.core_model.core_enums import OffscreenDebugMode
-from src.lsd.gl_gui.model.core_model.draw_state import TileMode
+from src.lsd.gl_gui.model.core_model.draw_state import TileMode, UNSET_VALUE
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
 
 """
@@ -231,7 +231,7 @@ class _GLState:
     def restore(self):
         gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, self.draw_fbo)
         gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, self.read_fbo)
-        gl.glViewport(*self.viewport)
+        # gl.glViewport(*self.viewport)
         (gl.glEnable if self.scissor_enabled else gl.glDisable)(gl.GL_SCISSOR_TEST)
         gl.glScissor(*self.scissor_box)
         if self.blend_enabled:
@@ -645,6 +645,7 @@ class TileCacheMasked:
         self.invalidate_up(self._stack[-1].key, max_depth=max_depth, force=force)
 
     def invalidate_up_by_obj(self, obj, name=None, max_depth=4, force=False):
+
         if name is not None:
             keys = self.py_id_to_keys.get(f"{id(obj)}.{name}", None)
             if keys is not None:
@@ -691,6 +692,7 @@ class TileCacheMasked:
         return all_keys
 
     def invalidate_up(self, k: str, max_depth=4, force=False) -> None:
+
         if k not in self._tiles:
             k = self.key_to_parent_key.get(k, None)
 
@@ -754,8 +756,12 @@ class TileCacheMasked:
         )
 
     def invalidate(self, k: str, force=False) -> None:
+        if QuickToggles.invalidate_stack_trace:
+            if Melty.frame_count > 100 and Melty.frame_count % 30 == 0:
+                print_stack_trace()
         t = self._tiles.get(k)
         if t is not None:
+
             target_frame = self._frame_id + 1
             t.last_invalidated_frame = max(t.last_invalidated_frame, target_frame)
             t.dirty = self._is_dirty(t)
@@ -1107,6 +1113,9 @@ class TileCacheMasked:
             return True
 
         if not draw_state.use_cache:
+            return True
+
+        if draw_state._input_value == UNSET_VALUE:
             return True
 
 

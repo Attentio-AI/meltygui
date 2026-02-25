@@ -619,6 +619,8 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, keys=No
                         setattr(input_value, key_str, out_val)
 
             changed |= item_changed
+            if item_changed:
+                pass
             drew_any = True
 
 
@@ -708,9 +710,6 @@ def draw_type(input_value:type, draw_state, **kwargs):
     draw_collection(input_value, name="inspect", keys=keys, get_attr=type_get_attr,
                     set_attr=type_set_attr)
 
-
-
-
 some_float=[0.0]
 
 import src.lsd.gl_gui.view.core_conversion.libcst_conversion
@@ -755,7 +754,6 @@ def draw_main(input_value, vis, **kwargs):
     # #
     changed, value = draw_window(test_code, name="cst_dict", show_bg=True, mode=Mode.CODE_UI)
     if changed:
-        print("Code changed:", value)
         test_code = value
 
 
@@ -765,6 +763,7 @@ def draw_main(input_value, vis, **kwargs):
     global some_float
     changed, new_float = draw_window(some_float[0], name="Conversion Test", view_func=draw_collection, convert=dict)
     if changed:
+        print("New float value:", new_float)
         some_float[0] = new_float
 
     draw_window(Monitor, name="Monitor")
@@ -1235,7 +1234,7 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
 
     gl.glBindTexture(gl.GL_TEXTURE_2D, original_texture)
 
-    return True, draw_state
+    return False, draw_state
 
     # draw_window(Melty.last_request_render, show_bg=True, name="Last Invalid")
 
@@ -2510,6 +2509,7 @@ def draw_enum(input_value: Enum, global_style=None, style_manager=None, enum_tin
 class ModeOverrides:
     kwargs: Optional[dict] = None
     func: Optional[callable] = None
+    recursive:Optional[bool] = True
 
 
 class Mode(Enum):
@@ -2517,6 +2517,7 @@ class Mode(Enum):
         str: ModeOverrides(
             kwargs={"convert": [str, cst.Module, dict]},
             func=draw_collection,
+            recursive=False
            )
 
     }
