@@ -2,54 +2,42 @@ import inspect
 import os
 import shutil
 import sys
-import time
 import types
 from collections import deque, defaultdict
-from copy import copy
+from collections.abc import MutableMapping
+from dataclasses import dataclass
 from enum import Enum
 from inspect import Parameter
-from math import sqrt, sin
+from math import sqrt
 from types import NoneType
-from typing import Type
-
-import numpy
-from OpenGL import GL as gl
-
-import glfw
-from imgui.core import _DrawList
-from numpy import uint32
+from typing import Optional
 
 import OpenGL.GL as gl
+import glfw
+import libcst as cst
 import numpy
+from imgui.core import _DrawList
 
-import src
-from src.lsd.gl_gui.collection_action import OperationType
-from src.lsd.gl_gui.view.core_conversion.libcst_conversion import RawCode
-from src.lsd.gl_gui.view.core_conversion.path_finder import convert
-from src.lsd.gl_gui.view.core_views.monitor import Monitor
+from src.lsd.gl_gui.melty import Melty, CollectionAction, add_to_collection, \
+    ManagedWindow
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
+from src.lsd.gl_gui.model.core_model.draw_state import ZoomState, TileMode
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_style_var, \
     push_style_color, pop_style_color, pop_style_var, end, begin
-from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
-from src.lsd.gl_gui.melty import Melty, CollectionAction, add_to_collection, \
-    ManagedWindow
+from src.lsd.gl_gui.utils.glfw_utils import request_render
+from src.lsd.gl_gui.view.core_conversion.path_finder import convert
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
+from src.lsd.gl_gui.view.core_views.codec_register import registry as FILE_CODECS
 from src.lsd.gl_gui.view.core_views.core_meta import Meta
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import hotkey
-from src.lsd.gl_gui.view.core_views.core_render import render_func, tmp_undo_stack, redo_stack, push_id, pop_id, \
-    render_wrapper, annotation_track, listens_for, begin_window, end_window
-from src.lsd.gl_gui.model.core_model.draw_state import KeyMod, Hotkey, ZoomState, TileMode
+from src.lsd.gl_gui.view.core_views.core_render import render_func, render_wrapper
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
-import libcst as cst
-
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import hotkey
 from src.lsd.gl_gui.view.core_views.decoration.invalidation_decoration import live
-from src.lsd.gl_gui.view.core_views.decoration.profile_decoration import profile
 from src.lsd.gl_gui.view.core_views.folders_proxy import FolderProxy
 from src.lsd.gl_gui.view.core_views.inspect_utils import set_fn_defaults
-from collections.abc import MutableMapping
-from src.lsd.gl_gui.view.core_views.codec_register import registry as FILE_CODECS
+from src.lsd.gl_gui.view.core_views.monitor import Monitor
 from src.shader_library.shader_manager.texture_manager import PendingTexture
 
 
@@ -138,13 +126,13 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
     if hasattr(input_value, "tint") and input_value.tint is not None:
         draw_state._has_popup = True
-        tint_changed, tint_value = draw_tuple(input_value.tint, show_header=False)
+        tint_changed, tint_value = draw_tuple(input_value.tint, show_name=False, show_header=False)
         if tint_changed:
             input_value.tint = tint_value
         same_line()
     elif show_tint:
         draw_state._has_popup = True
-        tint_changed, tint_value = draw_tuple(draw_state.tint, show_header=False)
+        tint_changed, tint_value = draw_tuple(draw_state.tint, show_name=False, show_header=False)
         if tint_changed:
             draw_state.tint = tint_value
         same_line()
@@ -698,8 +686,17 @@ def draw_property(input_value:property, draw_state, **kwargs):
     # value = input_value.fget(input_value)
     # draw_any(value, name="value", show_bg=True, draw_state=draw_state)
 
-@render_func(is_default_for=(type), show_bg=True, with_header=draw_header, with_footer=draw_footer)
+@render_func(is_default_for=(type), show_bg=True, tint=(0.335, 0.296, 0.178), with_header=draw_header, with_footer=draw_footer)
 def draw_type(input_value:type, draw_state, **kwargs):
+    tint = (0.5, 0, 0.5)
+    bg_color = (0.0, 0.0, 0.0, 0.5)
+    show_bg = True
+    bg_style = {
+        "value": 0.01,
+        "saturation": 1.0,
+        "alpha": 1.0,
+        'max_value': 1.0
+    }
     imgui.text_colored(f"Type: {input_value.__name__}", 1.0, 0.5, 0.0, 1.0)
     # draw_collection(vars(input_value), name="vars", show_excluded=True)
     # draw_collection(dir(input_value), name="dir", show_excluded=True)
@@ -710,31 +707,16 @@ def draw_type(input_value:type, draw_state, **kwargs):
     type_set_attr = lambda obj, key, value: setattr(obj, key, value)
     draw_collection(input_value, name="inspect", keys=keys, get_attr=type_get_attr,
                     set_attr=type_set_attr)
+
+
 
 
 some_float=[0.0]
 
+import src.lsd.gl_gui.view.core_conversion.libcst_conversion
 
 cst_dict = {}
-test_code = (
-"""
-@render_func(is_default_for=(type), show_bg=True, with_header=draw_header, with_footer=draw_footer)
-def draw_type(input_value:type, draw_state, **kwargs):
-    imgui.text_colored(f"Type: {input_value.__name__}", 1.0, 0.5, 0.0, 1.0)
-    # draw_collection(vars(input_value), name="vars", show_excluded=True)
-    # draw_collection(dir(input_value), name="dir", show_excluded=True)
-    # draw_collection(input_value.__dict__, name="__dict__", show_excluded=True)
-    # draw_collection(inspect.getmembers(input_value), name="inspect")
-    keys = list(set(dir(input_value)) | set(vars(type(input_value))))
-    type_get_attr = lambda obj, key: getattr(obj, key, None)
-    type_set_attr = lambda obj, key, value: setattr(obj, key, value)
-    draw_collection(input_value, name="inspect", keys=keys, get_attr=type_get_attr,
-                    set_attr=type_set_attr)
-
-
-"""
-)
-
+test_code = convert(draw_type, str, registry=Melty)
 
 def code_to_dict():
     global cst_dict
@@ -761,15 +743,20 @@ def draw_main(input_value, vis, **kwargs):
                               z_absolute=-1)
     global cst_dict
     global test_code
-    draw_window({"code_to_dict": code_to_dict,
-                 "dict_to_code": dict_to_code}, name="CST Test", show_bg=True, child_kwargs={'show_excluded': True})
-    changed, value = draw_window(test_code, name="test_code", show_bg=True, child_kwargs={'show_excluded': True})
-    if changed:
-        test_code = value
+    # draw_window({"code_to_dict": code_to_dict,
+    #              "dict_to_code": dict_to_code}, name="CST Test", show_bg=True, child_kwargs={'show_excluded': True})
+    # changed, value = draw_window(test_code, name="test_code", show_bg=True, child_kwargs={'show_excluded': True})
+    # if changed:
+    #     test_code = value
 
-    changed, value = draw_window(cst_dict, name="cst_dict", show_bg=True, child_kwargs={'show_excluded': True})
+    # changed, value = draw_window(draw_type, name="function_params", convert=dict, show_bg=True, child_kwargs={'show_excluded': True})
+    # if changed:
+    #     test_code = value
+    # #
+    changed, value = draw_window(test_code, name="cst_dict", show_bg=True, mode=Mode.CODE_UI)
     if changed:
-        cst_dict = value
+        print("Code changed:", value)
+        test_code = value
 
 
     from src.lsd.gl_gui.model.app_model import TensorView
@@ -782,7 +769,6 @@ def draw_main(input_value, vis, **kwargs):
 
     draw_window(Monitor, name="Monitor")
 
-    from src.lsd.gl_gui.model.core_model import core_model
     # draw_window(core_model, name="Module test")
 
 
@@ -2200,19 +2186,12 @@ def draw_bool(input_value: bool):
     return False, None
 
 
-@render_func(is_default_for=(RawCode), shadow=False, wrap=False, with_header=draw_header)
-def draw_raw_code(input_value: RawCode, draw_state):
-
-    imgui.text_wrapped(input_value)
-
-    return False, input_value
-
 
 @render_func(is_default_for=(str), shadow=False, wrap=False, with_header=draw_header)
 def draw_str(input_value: str, draw_state):
     line_count = input_value.count('\n') + 1
     line_height = imgui.get_text_line_height()
-    text_height = imgui.calc_text_size(input_value)[1] + line_height * 2
+    text_height = imgui.calc_text_size(str(input_value))[1] + line_height * 2
     if line_count == 1:
         padding = imgui.get_style().frame_padding.y
         height = imgui.get_text_line_height() + padding
@@ -2230,14 +2209,15 @@ def draw_str(input_value: str, draw_state):
 
     if line_count == 1:
         imgui.set_next_item_width(draw_state.content_width)
-        changed, value = imgui.input_text("##str", input_value,
+        changed, value = imgui.input_text("##str", str(input_value),
                                           flags=imgui.INPUT_TEXT_ENTER_RETURNS_TRUE)
     else:
         imgui.set_cursor_screen_pos((draw_state.left, draw_state.top))
         # disable scrolling
-        changed, value = imgui.input_text_multiline("##str", input_value,
+        changed, value = imgui.input_text_multiline("##str", str(input_value),
                                                     width=draw_state.content_width, height=height)
         imgui.dummy(draw_state.content_width, text_height - height + 10)
+
 
     if not show_controls:
         imgui.pop_style_var(1)
@@ -2248,7 +2228,7 @@ def draw_str(input_value: str, draw_state):
 
 
 @render_func(is_default_for=('tint'), has_popup=True, indent_size=0, is_tree=False,
-             show_name=False, selectable=False,
+             show_name=True, selectable=False,
              use_cache=False, with_header=draw_header)
 def draw_tuple(input_value: tuple, unique):
     if len(input_value) > 0 and isinstance(input_value[0], (float, int)):
@@ -2526,4 +2506,17 @@ def draw_enum(input_value: Enum, global_style=None, style_manager=None, enum_tin
 
     return changed, selected_enum
 
+@dataclass
+class ModeOverrides:
+    kwargs: Optional[dict] = None
+    func: Optional[callable] = None
 
+
+class Mode(Enum):
+    CODE_UI = {
+        str: ModeOverrides(
+            kwargs={"convert": [str, cst.Module, dict]},
+            func=draw_collection,
+           )
+
+    }

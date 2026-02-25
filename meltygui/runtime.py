@@ -39,6 +39,8 @@ class Melty:
     on_scroll = False
     on_scroll_buffer = deque(maxlen=5)
 
+    mode_stack = []
+
     _converters = {}
 
     # list, full with 32 Nones
@@ -329,6 +331,8 @@ class Melty:
         cls.pending_returned_values = {}
 
         cls.apply_move_to_front()
+
+        Melty.mode_stack = []
 
         # cls.draw_blockers_to()
         # Manually mask windows

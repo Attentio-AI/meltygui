@@ -22,14 +22,20 @@ T = TypeVar("T")
 _NO_PATH = object()
 
 
-def convert(value: Any, target: type[T], *, registry) -> T:
+def convert(value: Any, target: type, *, registry, path: list[type] | None = None) -> T:
     """Convert *value* to *target* type using the registry.
 
-    Tries a direct converter first, then searches for a multi-hop path
-    through intermediate types.  Raises TypeError if no path exists.
+    If *path* is provided, follows it exactly:
+        convert(my_obj, dict, registry=R, path=[str, cst.Module, dict])
+
+    Otherwise, tries a direct converter first, then BFS for a multi-hop
+    path through intermediate types.  Raises TypeError if no path exists.
     """
-    if isinstance(value, target):
+    if isinstance(value, target) and path is None:
         return value  # type: ignore[return-value]
+
+    if path is not None:
+        return _run_explicit_path(value, target, path=path, registry=registry)
 
     # Value-aware shortcut: dicts produced by object_to_dict carry a
     # __meta__ key with the original class info.  The graph can't know
@@ -75,6 +81,48 @@ def convert(value: Any, target: type[T], *, registry) -> T:
     return chain(value)
 
 
+def _run_explicit_path(value: Any, target: type, *, path: list[type], registry) -> Any:
+    """Follow an explicit type path, looking up each edge in the registry.
+
+    path=[str, cst.Module, dict] means:
+      1. convert value → str  (if not already str)
+      2. convert str → cst.Module
+      3. convert cst.Module → dict
+
+    Raises TypeError if any edge is missing from the registry.
+    """
+    converters = getattr(registry, "_converters", {})
+    result = value
+
+    # If the value isn't already the first type of the path, prepend
+    # an implicit conversion from type(value) → path[0]
+    full_path = path
+    if not isinstance(result, path[0]):
+        full_path = [type(value)] + path
+
+    for i in range(len(full_path) - 1):
+        step_from, step_to = full_path[i], full_path[i + 1]
+
+        if isinstance(result, step_to):
+            continue  # already there
+
+        fn = converters.get((step_from, step_to))
+        # MRO fallback
+        if fn is None and hasattr(step_from, "__mro__"):
+            for ancestor in step_from.__mro__[1:]:
+                fn = converters.get((ancestor, step_to))
+                if fn is not None:
+                    break
+        if fn is None:
+            raise TypeError(
+                f"No converter registered for {step_from.__name__!r} → {step_to.__name__!r} "
+                f"(step {i + 1} of explicit path)"
+            )
+        result = fn(result)
+
+    return result
+
+
 def find_chain(source: type, target: type, *, registry) -> Callable:
     """Return a single callable that converts *source* → *target*.
 
@@ -99,8 +147,6 @@ def find_chain(source: type, target: type, *, registry) -> Callable:
                 f"No conversion path from {source.__name__!r} to {target.__name__!r} (cached)"
             )
         return cached
-
-    print(f"Finding conversion path from {source.__name__} to {target.__name__}...")
 
     converters = getattr(registry, "_converters", {})
 

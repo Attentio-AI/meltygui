@@ -1,4 +1,5 @@
 from copy import copy
+from dataclasses import dataclass
 from enum import Enum
 
 import glfw
@@ -165,6 +166,7 @@ class DrawState(DictConversion):
         self.closable = False
         self.behind = False
         self.tile_mode = TileMode.MAX
+
 
         self.context_menu_open = False
         self.context_menu_ds = None

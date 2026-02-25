@@ -39,5 +39,3 @@ def converter(converter_fn=None, registry: Any = None):
         print(f"Registered converter: {from_type} -> {to_type}")
 
     return converter_fn
-
-

@@ -9,6 +9,7 @@ The original immutable CST node is never serialized — just referenced.
 """
 
 import enum
+import inspect
 import sys
 
 import libcst as cst
@@ -17,24 +18,13 @@ from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.view.core_conversion.converter_register import converter
 from src.lsd.gl_gui.view.core_conversion.path_finder import convert
 
-
-# Assumes convert is importable from your path_finder module.
-# from src.lsd.gl_gui.view.core_conversion.path_finder import convert
-
-
-class RawCode(str):
-    """A string that represents raw source code, not a string literal.
-
-    Used for CST values that can't be converted to a Python type
-    (variable references, function calls, complex expressions).
-    Displays as a regular string in the UI, but round-trips correctly:
-    - Unchanged → original CST node passes through
-    - Modified  → parsed as a new Python expression
-    """
-    __slots__ = ()
-
-    def __repr__(self):
-        return f"RawCode({super().__repr__()})"
+# Sentinel for arguments with no default value.
+# Shows up in the dict so the UI can display the parameter name,
+# but signals "no default" on the reverse path.
+NO_DEFAULT = type("NO_DEFAULT", (), {
+    "__repr__": lambda self: "NO_DEFAULT",
+    "__bool__": lambda self: False,
+})()
 
 
 def _cst_node_to_code(node):
@@ -47,17 +37,22 @@ def _cst_node_to_code(node):
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║  str ↔ RawCode                                                             ║
+# ║  function / type → str (source code via inspect)                            ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
-@converter(registry=Melty)
-def str_to_rawcode(value: str) -> RawCode:
-    return RawCode(value)
+import types
 
 
 @converter(registry=Melty)
-def rawcode_to_str(value: RawCode) -> str:
-    return value[:]
+def function_to_str(value: types.FunctionType) -> str:
+    """Get the source code of a function as a string."""
+    return inspect.getsource(value)
+
+
+@converter(registry=Melty)
+def type_to_str(value: type) -> str:
+    """Get the source code of a class as a string."""
+    return inspect.getsource(value)
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -115,17 +110,6 @@ def cst_module_to_dict(value: cst.Module) -> dict:
                 readable[stmt.name.value] = convert(stmt, dict, registry=Melty)
             except (TypeError, ValueError):
                 pass
-
-        # Decorated functions/classes - expose decorator kwargs
-        if isinstance(stmt, (cst.FunctionDef, cst.ClassDef)) and stmt.decorators:
-            for dec in stmt.decorators:
-                if isinstance(dec.decorator, cst.Call):
-                    func_name = _call_func_name(dec.decorator)
-                    if func_name:
-                        try:
-                            readable[func_name] = convert(dec.decorator, dict, registry=Melty)
-                        except (TypeError, ValueError):
-                            pass
 
     readable["__cst__"] = value
     return readable
@@ -337,7 +321,7 @@ def cst_list_to_list(value: cst.List) -> list:
     result = []
     for el in value.elements:
         if isinstance(el, cst.StarredElement):
-            result.append(RawCode(_cst_node_to_code(el)))
+            result.append(_cst_node_to_code(el))
             continue
         result.append(_cst_to_python_or_raw(el.value))
     return result
@@ -362,7 +346,7 @@ def cst_tuple_to_tuple(value: cst.Tuple) -> tuple:
     result = []
     for el in value.elements:
         if isinstance(el, cst.StarredElement):
-            result.append(RawCode(_cst_node_to_code(el)))
+            result.append(_cst_node_to_code(el))
             continue
         result.append(_cst_to_python_or_raw(el.value))
     return tuple(result)
@@ -391,9 +375,13 @@ def cst_classdef_to_dict(value: cst.ClassDef) -> dict:
       2. body-level annotated assignments (dataclasses, NamedTuple)
 
     Both produce the same dict shape:
-        {"field": value, ..., "__cst__": <ClassDef>}
+        {"decorators": {...}, "field": value, ..., "__cst__": <ClassDef>}
     """
     readable = {}
+
+    decorators = _extract_decorators(value.decorators)
+    if decorators:
+        readable["decorators"] = decorators
 
     # Pattern 1: body-level AnnAssign (dataclass fields)
     #   debug: bool = False
@@ -437,21 +425,29 @@ def cst_classdef_to_dict(value: cst.ClassDef) -> dict:
 
 @converter(registry=Melty)
 def dict_to_cst_classdef(value: dict) -> cst.ClassDef:
-    """Patch class fields from edited dict values.
+    """Patch class decorators and fields from edited dict values.
 
-    Handles both body-level AnnAssign and __init__ self.X assignments.
+    Handles decorators, body-level AnnAssign, and __init__ self.X assignments.
     """
     old_node = value.get("__cst__")
     if old_node is None or not isinstance(old_node, cst.ClassDef):
         raise TypeError("Dict has no __cst__ ClassDef")
 
+    result = old_node
+
+    # Patch decorators
+    dec_edits = value.get("decorators")
+    if isinstance(dec_edits, dict):
+        result = _patch_decorators(result, dec_edits)
+
     edits = {k: v for k, v in value.items()
-             if not (k.startswith("__") and k.endswith("__"))}
+             if not (k.startswith("__") and k.endswith("__"))
+             and k != "decorators"}
 
     if not edits:
-        return old_node
+        return result
 
-    return old_node.visit(_ClassPatcher(edits))
+    return result.visit(_ClassPatcher(edits))
 
 
 def _find_init(classdef):
@@ -532,7 +528,7 @@ class _ClassPatcher(cst.CSTTransformer):
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║  cst.FunctionDef ↔ dict (default parameter values)                         ║
+# ║         cst.FunctionDef ↔ dict (parameters + local assignments)                   ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
 _SKIP_PARAMS = {"self", "cls"}
@@ -540,49 +536,210 @@ _SKIP_PARAMS = {"self", "cls"}
 
 @converter(registry=Melty)
 def cst_funcdef_to_dict(value: cst.FunctionDef) -> dict:
-    """Extract parameter defaults from a function definition.
+    """Extract parameters, decorators, and body assignments from a function.
 
-    def render(width=800, height=600, antialias=True):
-    → {"width": 800, "height": 600, "antialias": True, "__cst__": <FunctionDef>}
+    @register(name="plugin", version=2)
+    def my_func(param_one=0, param_two=1):
+        some_local = 1
+        return True
 
-    Skips self/cls and params without defaults.
-    Covers regular params, keyword-only params, and **kwargs default.
+    → {
+        "decorators": {"register": {"name": "plugin", "version": 2, ...}},
+        "parameters": {"param_one": 0, "param_two": 1},
+        "some_local": 1,
+        "__cst__": <FunctionDef>
+      }
     """
     readable = {}
 
-    # Regular params and positional-only params
-    all_params = list(value.params.params) + list(value.params.posonly_params)
-    for param in all_params:
-        if param.name.value in _SKIP_PARAMS:
-            continue
-        if param.default is not None:
-            readable[param.name.value] = _cst_to_python_or_raw(param.default)
+    decorators = _extract_decorators(value.decorators)
+    if decorators:
+        readable["decorators"] = decorators
 
-    # Keyword-only params (after *)
-    for param in value.params.kwonly_params:
-        if param.default is not None:
-            readable[param.name.value] = _cst_to_python_or_raw(param.default)
+    params = _extract_param_defaults(value.params)
+    if params:
+        readable["parameters"] = params
+
+    # Locals go directly into the dict
+    locals_ = _extract_body_assignments(value.body)
+    readable.update(locals_)
 
     readable["__cst__"] = value
     return readable
 
 
+def _extract_param_defaults(params_node):
+    """Extract all parameters as a dict.
+
+    Parameters with defaults get their Python value.
+    Parameters without defaults get NO_DEFAULT.
+    """
+    result = {}
+    all_params = (list(params_node.params)
+                  + list(params_node.posonly_params)
+                  + list(params_node.kwonly_params))
+    for param in all_params:
+        if param.name.value in _SKIP_PARAMS:
+            continue
+        if param.default is not None:
+            result[param.name.value] = _cst_to_python_or_raw(param.default)
+        else:
+            result[param.name.value] = NO_DEFAULT
+    return result
+
+
+def _extract_body_assignments(body_node):
+    """Extract name = value assignments from a function/method body."""
+    result = {}
+    if not isinstance(body_node, cst.IndentedBlock):
+        return result
+    for stmt in body_node.body:
+        if not isinstance(stmt, cst.SimpleStatementLine):
+            continue
+        for node in stmt.body:
+            # name = value
+            if isinstance(node, cst.Assign) and len(node.targets) == 1:
+                target = node.targets[0].target
+                if isinstance(target, cst.Name):
+                    result[target.value] = _cst_to_python_or_raw(node.value)
+            # name: type = value
+            elif isinstance(node, cst.AnnAssign):
+                if isinstance(node.target, cst.Name) and node.value is not None:
+                    result[node.target.value] = _cst_to_python_or_raw(node.value)
+    return result
+
+
+def _extract_decorators(decorators):
+    """Extract decorator kwargs as a dict.
+
+    Call decorators → kwargs dict via cst_call_to_dict
+    Bare decorators → raw code string
+    """
+    result = {}
+    for dec in decorators:
+        if isinstance(dec.decorator, cst.Call):
+            func_name = _call_func_name(dec.decorator)
+            if func_name:
+                fn = Melty._converters.get((cst.Call, dict))
+                if fn is not None:
+                    try:
+                        result[func_name] = fn(dec.decorator)
+                    except (TypeError, ValueError):
+                        result[func_name] = _cst_node_to_code(dec.decorator)
+        else:
+            # Bare decorator: @classmethod, @property, etc.
+            code = _cst_node_to_code(dec.decorator)
+            result[code] = code
+    return result
+
+
 @converter(registry=Melty)
 def dict_to_cst_funcdef(value: dict) -> cst.FunctionDef:
-    """Patch parameter defaults from edited dict values."""
+    """Patch decorators, parameter defaults, and body assignments.
+
+    "decorators" sub-dict patches decorator kwargs.
+    "parameters" sub-dict patches param defaults.
+    All other non-dunder keys patch body assignments.
+    """
     old_node = value.get("__cst__")
     if old_node is None or not isinstance(old_node, cst.FunctionDef):
         raise TypeError("Dict has no __cst__ FunctionDef")
 
-    edits = {k: v for k, v in value.items()
-             if not (k.startswith("__") and k.endswith("__"))}
+    result = old_node
 
-    if not edits:
-        return old_node
+    # Patch decorators
+    dec_edits = value.get("decorators")
+    if isinstance(dec_edits, dict):
+        result = _patch_decorators(result, dec_edits)
 
-    # Patch params in place
-    new_params = _patch_params(old_node.params, edits)
-    return old_node.with_changes(params=new_params)
+    # Patch parameter defaults (skip NO_DEFAULT - means unchanged)
+    param_edits = value.get("parameters")
+    if isinstance(param_edits, dict):
+        edits = {k: v for k, v in param_edits.items()
+                 if not (k.startswith("__") and k.endswith("__"))
+                 and v is not NO_DEFAULT}
+        if edits:
+            result = result.with_changes(
+                params=_patch_params(result.params, edits))
+
+    # Patch body assignments (top-level keys minus dunders and reserved)
+    local_edits = {k: v for k, v in value.items()
+                   if not (k.startswith("__") and k.endswith("__"))
+                   and k not in ("parameters", "decorators")}
+    if local_edits:
+        result = result.visit(_BodyAssignPatcher(local_edits))
+
+    return result
+
+
+class _BodyAssignPatcher(cst.CSTTransformer):
+    """Patches name = value assignments in a function body."""
+
+    def __init__(self, edits: dict):
+        super().__init__()
+        self.edits = edits
+
+    def leave_Assign(self, original_node, updated_node):
+        if len(updated_node.targets) != 1:
+            return updated_node
+        target = updated_node.targets[0].target
+        if not isinstance(target, cst.Name):
+            return updated_node
+        if target.value not in self.edits:
+            return updated_node
+
+        new_cst = _python_to_cst_expr(self.edits[target.value], updated_node.value)
+        if new_cst is None:
+            return updated_node
+        return updated_node.with_changes(value=new_cst)
+
+    def leave_AnnAssign(self, original_node, updated_node):
+        if not isinstance(updated_node.target, cst.Name):
+            return updated_node
+        if updated_node.target.value not in self.edits:
+            return updated_node
+        if updated_node.value is None:
+            return updated_node
+
+        new_cst = _python_to_cst_expr(
+            self.edits[updated_node.target.value], updated_node.value)
+        if new_cst is None:
+            return updated_node
+        return updated_node.with_changes(value=new_cst)
+
+
+def _patch_decorators(func_node, dec_edits):
+    """Patch decorator kwargs on a FunctionDef from a decorators dict.
+
+    dec_edits maps decorator name → sub-dict of kwargs.
+    Each sub-dict is passed through dict→cst.Call conversion.
+    """
+    call_to_dict = Melty._converters.get((cst.Call, dict))
+    dict_to_call = Melty._converters.get((dict, cst.Call))
+    if dict_to_call is None:
+        return func_node
+
+    new_decorators = []
+    changed = False
+    for dec in func_node.decorators:
+        if isinstance(dec.decorator, cst.Call):
+            func_name = _call_func_name(dec.decorator)
+            if func_name and func_name in dec_edits:
+                edit_sub = dec_edits[func_name]
+                if isinstance(edit_sub, dict):
+                    edit_sub["__cst__"] = dec.decorator
+                    try:
+                        new_call = dict_to_call(edit_sub)
+                        new_decorators.append(dec.with_changes(decorator=new_call))
+                        changed = True
+                        continue
+                    except (TypeError, ValueError):
+                        pass
+        new_decorators.append(dec)
+
+    if changed:
+        return func_node.with_changes(decorators=new_decorators)
+    return func_node
 
 
 def _patch_params(params, edits):
@@ -833,19 +990,20 @@ def _cst_to_python(node):
 
 
 def _cst_to_python_or_raw(node):
-    """Like _cst_to_python, but returns RawCode instead of _UNREADABLE.
+    """Like _cst_to_python, but returns the raw source code string
+    instead of _UNREADABLE.
 
     Also catches "empty" compound results — e.g. a Call with no kwargs
     produces {"__cst__": <Call>} which isn't useful, so we return
-    RawCode("some_func(1, 2)") instead.
+    the raw code string "some_func(1, 2)" instead.
     """
     val = _cst_to_python(node)
     if val is _UNREADABLE:
-        return RawCode(_cst_node_to_code(node))
+        return _cst_node_to_code(node)
     # Catch dict where every key is a dunder (nothing readable extracted)
     if isinstance(val, dict) and all(
             k.startswith("__") and k.endswith("__") for k in val):
-        return RawCode(_cst_node_to_code(node))
+        return _cst_node_to_code(node)
     return val
 
 
@@ -1012,9 +1170,8 @@ class _ModulePatcher(cst.CSTTransformer):
     Handles:
       - Simple assignments: name = value
       - Annotated assignments: name: type = value
-      - ClassDef: patches __init__ self.X and body-level AnnAssign (dataclass)
-      - FunctionDef: patches default parameter values
-      - Decorated defs: patches decorator kwargs
+      - ClassDef: patches decorators, __init__ self.X, and body-level AnnAssign
+      - FunctionDef: patches decorators, default parameter values, and body assignments
     """
 
     def __init__(self, edits: dict):
@@ -1082,25 +1239,6 @@ class _ModulePatcher(cst.CSTTransformer):
         except (TypeError, ValueError):
             return updated_node
 
-    def leave_Decorator(self, original_node, updated_node):
-        if not isinstance(updated_node.decorator, cst.Call):
-            return updated_node
-
-        func_name = _call_func_name(updated_node.decorator)
-        if func_name is None or func_name not in self.edits:
-            return updated_node
-
-        edit_dict = self.edits[func_name]
-        if not isinstance(edit_dict, dict):
-            return updated_node
-
-        edit_dict["__cst__"] = updated_node.decorator
-        try:
-            new_call = convert(edit_dict, cst.Call, registry=Melty)
-            return updated_node.with_changes(decorator=new_call)
-        except (TypeError, ValueError):
-            return updated_node
-
 
 def _python_to_cst_expr(py_value, old_node=None):
     """Convert a Python value to a CST expression node.
@@ -1109,20 +1247,30 @@ def _python_to_cst_expr(py_value, old_node=None):
     the grafting.  For everything else, builds nodes directly, preserving
     formatting from old_node via with_changes() when types match.
     """
-    # RawCode - pass through if unchanged, parse if modified
-    # Must come before str check since RawCode IS-A str
-    if isinstance(py_value, RawCode):
-        if old_node is not None:
+    # Strings - behavior depends on what old_node was:
+    #   old_node is SimpleString → just/ literal (preserve quotes)
+    #   old_node is something else → code expression, compare/parse
+    #   old_node is None → string literal (safe fallback for new inserts)
+    if isinstance(py_value, str):
+        if old_node is None or isinstance(old_node, cst.SimpleString):
+            # String literal
+            if isinstance(old_node, cst.SimpleString):
+                quote_char = old_node.value[0]
+                escaped = py_value.replace("\\", "\\\\").replace(quote_char, f"\\{quote_char}")
+                return old_node.with_changes(value=f"{quote_char}{escaped}{quote_char}")
+            return cst.SimpleString(repr(py_value))
+        else:
+            # Code expression (Name,Name, Call, Attribute, etc.)
             old_code = _cst_node_to_code(old_node)
             if py_value == old_code:
-                return old_node  # unchanged - pass through
-        # Modified or no old_node - try to parse as expression
-        try:
-            wrapper = cst.parse_module(f"_ = {py_value}\n")
-            assign = wrapper.body[0].body[0]
-            return assign.value
-        except cst.ParserSyntaxError:
-            return old_node  # unparseable - keep original
+                return old_node  # unchanged — pass through
+            # Modified - try to parse as a new expression
+            try:
+                wrapper = cst.parse_module(f"_ = {py_value}\n")
+                assign = wrapper.body[0].body[0]
+                return assign.value
+            except cst.ParserSyntaxError:
+                return old_node  # unparseable - keep original
 
     # Dicts with __cst__ - route based on the type of the stashed CST node
     if isinstance(py_value, dict) and "__cst__" in py_value:
@@ -1147,7 +1295,7 @@ def _python_to_cst_expr(py_value, old_node=None):
             # Preserve formatting (dot whitespace, parens) from old node
             return old_node.with_changes(
                 value=old_node.value.with_changes(value=cls_name)
-                    if isinstance(old_node.value, cst.Name) else cst.Name(cls_name),
+                if isinstance(old_node.value, cst.Name) else cst.Name(cls_name),
                 attr=cst.Name(member_name),
             )
         return cst.Attribute(
@@ -1185,13 +1333,6 @@ def _python_to_cst_expr(py_value, old_node=None):
         if isinstance(old_node, cst.Float):
             return old_node.with_changes(value=repr(py_value))
         return cst.Float(repr(py_value))
-
-    if isinstance(py_value, str):
-        if isinstance(old_node, cst.SimpleString):
-            quote_char = old_node.value[0]
-            escaped = py_value.replace("\\", "\\\\").replace(quote_char, f"\\{quote_char}")
-            return old_node.with_changes(value=f"{quote_char}{escaped}{quote_char}")
-        return cst.SimpleString(repr(py_value))
 
     if py_value is None:
         if isinstance(old_node, cst.Name):

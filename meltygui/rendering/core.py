@@ -2,6 +2,7 @@ import inspect
 import math
 import sys
 import time
+import types
 import zlib
 from copy import copy
 from dataclasses import dataclass
@@ -271,6 +272,23 @@ def render_func(*args, **o_kwargs):
             elif draw_state.closed and input_value == Melty.registered_windows:
                 draw_state.closed = False
 
+        mode = kwargs.get("mode", None)
+        mode_stacked = False
+        if mode is not None:
+            Melty.mode_stack.append(mode)
+            mode_stacked = True
+
+
+        if len(Melty.mode_stack) > 0:
+            current_mode = Melty.mode_stack[-1]
+            mode_config = current_mode.value.get(type(input_value), None)
+            if mode_config is not None:
+                override_kwargs = mode_config.kwargs
+                kwargs = kwargs | override_kwargs
+
+                if mode_config.func is not None:
+                    kwargs['view_func'] = mode_config.func
+
         draw_state._kwargs = kwargs
 
         ds_kwargs = copy(kwargs)
@@ -301,10 +319,8 @@ def render_func(*args, **o_kwargs):
         if len(Melty.melty_window_stack) > 0:
             draw_state.parent_window = Melty.melty_window_stack[-1]
             draw_state.left_offset, draw_state.top_offset = (
-            imgui.get_cursor_screen_pos()[0] - draw_state.parent_window.left,
-            imgui.get_cursor_screen_pos()[1] - draw_state.parent_window.top)
-
-
+                imgui.get_cursor_screen_pos()[0] - draw_state.parent_window.left,
+                imgui.get_cursor_screen_pos()[1] - draw_state.parent_window.top)
 
             # Disable cache for this frame to avoid further issues
         computed_unique = unique
@@ -404,7 +420,6 @@ def render_func(*args, **o_kwargs):
                     layer = len(Melty.registered_windows) + Melty.top_layer_boost
 
                 if closable and len(Melty.melty_window_stack) > 0:
-
                     draw_state._is_nested = True
 
                     parent_ds = draw_state._parent
@@ -504,6 +519,7 @@ def render_func(*args, **o_kwargs):
         melty_window_header = kwargs.get("melty_window", False)
         draw_state.melty_window = melty_window_header
         previous_tint = None
+        convert_path = None
 
         if closable and draw_state._is_nested and draw_state.current_tint is not None:
             style_manager.set_imgui_tint(*draw_state.current_tint)
@@ -766,7 +782,7 @@ def render_func(*args, **o_kwargs):
                 rect = Melty.get_clip_size()
                 if rect is not None:
                     available_width = (
-                                rect[0] - draw_state.header_width - draw_state.header_end_width - content_margin - 10)
+                            rect[0] - draw_state.header_width - draw_state.header_end_width - content_margin - 10)
                 elif not auto_resize:
                     available_width = draw_state.width - draw_state.header_width - draw_state.header_end_width
                 else:
@@ -812,23 +828,35 @@ def render_func(*args, **o_kwargs):
             expected_type = param_types[wanted_params.index("input_value")] if "input_value" in wanted_params else None
             annotation_empty = expected_type == inspect.Parameter.empty
             original_value = input_value
-            if kwargs.get('convert', True):
-                passed_type = kwargs.get("convert", None)
-                if isinstance(passed_type, type):
-                    to_type = passed_type
+            convert_path = None
+            if kwargs.get('convert', False):
+                convert_arg = kwargs.get("convert", None)
+                if isinstance(convert_arg, type):
+                    convert_path = convert_arg
+                    to_type = convert_arg
+                elif isinstance(convert_arg, list):
+                    convert_path = convert_arg
+                    to_type = convert_arg[-1] if len(convert_arg) > 0 else inspect.Parameter.empty
                 else:
+                    convert_path = expected_type
                     to_type = expected_type
+
                 is_empty = expected_type is None or expected_type == inspect.Parameter.empty
-                if to_type is not Any and isinstance(to_type, type) and not is_empty:
+
+                if isinstance(convert_path, (type, list)) and not is_empty:
                     if not isinstance(input_value, to_type):
                         # Try auto-converting via the Melty converter registry
                         try:
-                            description = explain_chain(type(input_value), to_type, registry=Melty)
-                            input_value = convert(input_value, to_type, registry=Melty)
+                            if isinstance(convert_path, list):
+                                description = str(convert_path)
+                                input_value = convert(value=input_value, target=to_type, path=convert_path, registry=Melty)
+                            else:
+                                description = explain_chain(type(input_value), target=to_type, registry=Melty)
+                                input_value = convert(input_value, convert_path, registry=Melty)
+
                             converted_input = True
                             draw_state.explain_convert = description
                             # imgui.text(draw_state.explain_convert)
-
                             # Update kwargs so the render function sees the converted value
                             kwargs["input_value"] = input_value
                             # draw_state._input_value = input_value
@@ -914,9 +942,16 @@ def render_func(*args, **o_kwargs):
                 show_bg = kwargs.get("show_bg", False) or (
                         highlight and draw_state.height < 60) or not draw_state.expanded
 
-                if "tint" in kwargs and kwargs.get("tint", None) is not None:
+                # Input value is indexable
+                if isinstance(input_value, dict) and "decorators" in input_value:
+                    for decorator_name, decorator_value in input_value["decorators"].items():
+                        if "tint" in decorator_value and decorator_value["tint"] is not None:
+                            previous_tint = style_manager.get_tint()
+                            style_manager.set_imgui_tint(*decorator_value["tint"])
+                elif "tint" in kwargs and kwargs.get("tint", None) is not None:
                     previous_tint = style_manager.get_tint()
                     style_manager.set_imgui_tint(*kwargs.get("tint"))
+
                 elif hasattr(input_value, "tint") and input_value.tint is not None:
                     previous_tint = style_manager.get_tint()
                     style_manager.set_imgui_tint(*input_value.tint)
@@ -924,6 +959,7 @@ def render_func(*args, **o_kwargs):
                     if name in collection.__tint__:
                         previous_tint = style_manager.get_tint()
                         style_manager.set_imgui_tint(*collection.__tint__[name])
+
                 elif draw_state.tint is not None and kwargs.get("show_bg", False) and kwargs.get("show_tint",
                                                                                                  False):
                     previous_tint = style_manager.get_tint()
@@ -1324,7 +1360,6 @@ def render_func(*args, **o_kwargs):
                 width = snap_int(width)
                 height = snap_int(height)
 
-
                 # left, top, width, height = Melty.apply_clip_ds(draw_state)
 
                 #### MAIN CALL #######################
@@ -1457,7 +1492,6 @@ def render_func(*args, **o_kwargs):
                 #                             corner_radius=draw_state.corner_radius)
 
             if use_cache:
-
                 Melty.cache.mark_end_offscreen()
 
             if melty_window:
@@ -1481,7 +1515,6 @@ def render_func(*args, **o_kwargs):
             Melty.input_value_stack.pop()
             Melty.size_stack.pop()
             Melty.wrap_stack.pop()
-
 
             if melty_window and draw_state.width < 30:
                 draw_state.width = 30
@@ -1552,6 +1585,9 @@ def render_func(*args, **o_kwargs):
             Melty.active_layer = original_active_layer
             Melty.shadow_depth = start_shadow_depth
 
+            if mode_stacked:
+                Melty.mode_stack.pop()
+
             draw_state.frame_count += 1
             if Melty.imgui_crashed:
                 if return_extras:
@@ -1582,7 +1618,16 @@ def render_func(*args, **o_kwargs):
 
             if converted_input and changed and new_value is not None:
                 try:
-                    new_value = convert(new_value, original_type, registry=Melty)
+                    if isinstance(convert_path, list):
+                        # Reverse the path to convert back up to the original type
+                        convert_path = list(reversed(convert_path))
+                        new_value = convert(new_value, target=original_type, path=convert_path, registry=Melty)
+
+                    else:
+                        convert_path = original_value
+                        new_value = convert(new_value, convert_path, registry=Melty)
+
+
                 except TypeError:
                     changed = False
                     new_value = original_value
