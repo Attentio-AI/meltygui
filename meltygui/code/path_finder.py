@@ -22,7 +22,7 @@ T = TypeVar("T")
 _NO_PATH = object()
 
 
-def convert(value: Any, target: type, *, registry, path: list[type] | None = None, on_frame=None) -> T:
+def convert(value: Any, target=None, *, registry, path: list[type] | None = None, on_frame=None) -> T:
     """Convert *value* to *target* type using the registry.
 
     If *path* is provided, follows it exactly:
@@ -31,11 +31,12 @@ def convert(value: Any, target: type, *, registry, path: list[type] | None = Non
     Otherwise, tries a direct converter first, then BFS for a multi-hop
     path through intermediate types.  Raises TypeError if no path exists.
     """
-    if isinstance(value, target) and path is None:
-        if on_frame is None:
-            return value
-        else:
-            return value, on_frame  # type: ignore[return-value]
+    if target is not None:
+        if isinstance(value, target) and path is None:
+            if on_frame is None:
+                return value
+            else:
+                return value, on_frame  # type: ignore[return-value]
 
     if path is not None:
         result = _run_explicit_path(value, target, path=path, registry=registry)

@@ -11,7 +11,6 @@ The original immutable CST node is never serialized — just referenced.
 import enum
 import inspect
 import sys
-from time import sleep
 
 import libcst as cst
 
@@ -83,9 +82,6 @@ def cst_module_to_dict(value: cst.Module) -> dict:
     """
     readable = {}
 
-    # Sleep to test threading behaviour
-    # sleep(1.0)
-
     for stmt in value.body:
         if isinstance(stmt, cst.SimpleStatementLine):
             for node in stmt.body:
@@ -134,7 +130,7 @@ def dict_to_cst_module(value: dict) -> cst.Module:
 
     edits = {k: v for k, v in value.items()
              if not (k.startswith("__") and k.endswith("__"))}
-    # sleep(1.0)
+
     if not edits:
         return tree
 
@@ -550,7 +546,7 @@ def cst_funcdef_to_dict(value: cst.FunctionDef) -> dict:
     → {
         "decorators": {"register": {"name": "plugin", "version": 2, ...}},
         "parameters": {"param_one": 0, "param_two": 1},
-        "some_local": 1,
+        "locals": {"some_local": 1},
         "__cst__": <FunctionDef>
       }
     """
@@ -564,9 +560,10 @@ def cst_funcdef_to_dict(value: cst.FunctionDef) -> dict:
     if params:
         readable["parameters"] = params
 
-    # Locals go directly into the dict
+    # Body assignments under "locals"
     locals_ = _extract_body_assignments(value.body)
-    readable.update(locals_)
+    if locals_:
+        readable["locals"] = locals_
 
     readable["__cst__"] = value
     return readable
@@ -643,7 +640,7 @@ def dict_to_cst_funcdef(value: dict) -> cst.FunctionDef:
 
     "decorators" sub-dict patches decorator kwargs.
     "parameters" sub-dict patches param defaults.
-    All other non-dunder keys patch body assignments.
+    "locals" sub-dict patches body assignments.
     """
     old_node = value.get("__cst__")
     if old_node is None or not isinstance(old_node, cst.FunctionDef):
@@ -666,12 +663,13 @@ def dict_to_cst_funcdef(value: dict) -> cst.FunctionDef:
             result = result.with_changes(
                 params=_patch_params(result.params, edits))
 
-    # Patch body assignments (top-level keys minus dunders and reserved)
-    local_edits = {k: v for k, v in value.items()
-                   if not (k.startswith("__") and k.endswith("__"))
-                   and k not in ("parameters", "decorators")}
-    if local_edits:
-        result = result.visit(_BodyAssignPatcher(local_edits))
+    # Patch body assignments from "locals" sub-dict
+    local_edits = value.get("locals")
+    if isinstance(local_edits, dict):
+        edits = {k: v for k, v in local_edits.items()
+                 if not (k.startswith("__") and k.endswith("__"))}
+        if edits:
+            result = result.visit(_BodyAssignPatcher(edits))
 
     return result
 

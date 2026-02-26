@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from enum import Enum
 from inspect import Parameter
 from math import sqrt
+from pathlib import Path
 from types import NoneType
 from typing import Optional
 
@@ -327,7 +328,7 @@ def empty(input_val):
              show_bg=True, melty_window=True, draggable=True, show_tint=True, tile_mode=TileMode.MAX,
              with_header=draw_header, with_header_end=draw_header_end, indent_size=10,
              with_footer=draw_footer, z_offset=-4)
-def draw_window(input_value:any, view_func=None, draw_state=None, delete_down=False, glfw_close_down=False, **kwargs):
+def draw_window(input_value:any, view_func=None, draw_state=None, delete_down=False, mode=None, glfw_close_down=False, **kwargs):
     if delete_down and imgui.get_io().key_ctrl:
         draw_state.closed = True
 
@@ -339,6 +340,23 @@ def draw_window(input_value:any, view_func=None, draw_state=None, delete_down=Fa
         if meta.view_function is None or 'draw_any' in meta.view_function.__name__:
             meta.view_function = draw_collection
         view_func = meta.view_function
+
+    if mode is None:
+        mode = Melty.mode_stack[-1] if len(Melty.mode_stack) > 0 else None
+    if mode is not None:
+        # Loop over super types
+        mode_config = None
+        for super_type in type(input_value).__mro__:
+            mode_config = mode.value.get(super_type, None)
+            if mode_config is not None:
+                break
+        if mode_config is not None:
+            override_kwargs = mode_config.kwargs
+            kwargs = kwargs | override_kwargs
+            if mode_config.func is not None:
+                view_func = mode_config.func
+        else:
+            kwargs['mode'] = mode
 
     kwargs['show_bg'] = False
     kwargs['selectable'] = False
@@ -362,7 +380,7 @@ def draw_window(input_value:any, view_func=None, draw_state=None, delete_down=Fa
 @render_func(is_default_for=(dict, MutableMapping, defaultdict, types.MappingProxyType), use_cache=True,
              show_bg=True, show_instance_vars=False, manual_content_height=True,
              shadow=True, wrap=False, with_header=draw_header, indent_size=10)
-def draw_collection(input_value, draw_state, depth, style_manager, meta, keys=None, get_attr=None, set_attr=None, show_excluded=False,
+def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=None, keys=None, get_attr=None, set_attr=None, show_excluded=False,
                     child_kwargs=None, nested_func=None, show_bg=True, show_search=True, on_collapse=False,
                     on_expand=False, global_toggles=None, show_add_delete=True, item_spacing_y=1,
                     horizontal=False, show_indices=False, **kwargs):
@@ -552,7 +570,6 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, keys=No
             else:
                 item_func = nested_func
 
-
             item_kwargs = {
                 'return_extras': True,
                 'key': key,
@@ -567,7 +584,25 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, keys=No
                 'y_offset': y_offset
 
             }
+
             item_kwargs.update(child_kwargs)
+            if mode is None:
+                mode = Melty.mode_stack[-1] if len(Melty.mode_stack) > 0 else None
+            if mode is not None:
+                # Loop through super types
+                mode_config = None
+                for super_type in type(item).__mro__:
+                    mode_config = mode.value.get(super_type, None)
+                    if mode_config is not None:
+                        break
+                if mode_config is not None:
+                    override_kwargs = mode_config.kwargs
+                    item_kwargs = item_kwargs | override_kwargs
+                    if mode_config.func is not None:
+                        item_func = mode_config.func
+                else:
+                    item_kwargs['mode'] = mode
+
             item_return = item_func(item, **item_kwargs)
 
             if len(item_return) == 3:
@@ -731,7 +766,10 @@ def dict_to_code():
     test_code = cst_tree.code
     return test_code
 
-
+def path_to_text():
+    path = Path("/home/lukas/test_folder/test_list.txt")
+    text = convert(path, path=[Path, bytes, str], registry=Melty)
+    return text
 
 @render_func(use_cache=False, show_bg=True, selectable=False, show_tint=True, bg_offset=-1, with_header=draw_header)
 def draw_main(input_value, vis, **kwargs):
@@ -760,6 +798,13 @@ def draw_main(input_value, vis, **kwargs):
     changed, value = draw_window(test_code, name="cst_dict", show_bg=True, mode=Mode.CODE_UI)
     if changed:
         test_code = value
+
+
+    some_path = Path("/home/lukas/test_folder/test_list.txt")
+    changed, value = draw_window(some_path, name="test_path_render", mode=Mode.FILE_META)
+    if changed:
+        print("New path value:", value)
+        path = value
 
     from src.lsd.gl_gui.model.app_model import TensorView
     draw_window(TensorView, name="Tensorview")
@@ -2166,6 +2211,23 @@ def draw_any(input_value, **kwargs):
     if meta.view_function is None or 'draw_any' in meta.view_function.__name__:
         meta.view_function = draw_collection
 
+    mode = kwargs.get("mode", None)
+    if mode is None:
+        mode = Melty.mode_stack[-1] if len(Melty.mode_stack) > 0 else None
+    if mode is not None:
+        # Loop over super types
+        mode_config = None
+        for super_type in type(input_value).__mro__:
+            mode_config = mode.value.get(super_type, None)
+            if mode_config is not None:
+                break
+        if mode_config is not None:
+            override_kwargs = mode_config.kwargs
+            kwargs = kwargs | override_kwargs
+            kwargs['mode'] = mode
+            if mode_config.func is not None:
+                meta.view_function = mode_config.func
+
     kwargs['use_cache'] = True
     return_val = meta.view_function(input_value, **kwargs)
 
@@ -2525,3 +2587,43 @@ class Mode(Enum):
            )
 
     }
+
+    FILE_CODE = {
+        Path: ModeOverrides(
+            kwargs={"convert": [Path, bytes, str, cst.Module, dict]},
+            func=draw_collection,
+            recursive=False,
+        ),
+    }
+
+    # ── File metadata ────────────────────────────────────────
+    #
+    # Path on disk → metadata dict (name, size, modified, raw bytes).
+    # Good for: file browsers, asset inspectors, drag-and-drop targets.
+
+    FILE_META = {
+        Path: ModeOverrides(
+            kwargs={"convert": [Path, dict]},
+            func=draw_collection,
+            recursive=True,
+        ),
+        bytes: ModeOverrides(
+            kwargs={"convert": [bytes, str]},
+            func=draw_str,
+            recursive=True,
+        ),
+    }
+
+    # ── File as plain text ───────────────────────────────────
+    #
+    # Path on disk → byte string, drawn in a text editor.
+    # Good for: README, .txt, .md, .json - anything you want as raw text.
+
+    FILE_TEXT = {
+        Path: ModeOverrides(
+            kwargs={"convert": [Path, bytes, str]},
+            func=draw_str,
+            recursive=True,
+        ),
+    }
+

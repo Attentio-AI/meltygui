@@ -286,12 +286,18 @@ def render_func(*args, **o_kwargs):
 
         if mode is not None:
             current_mode = mode
-            mode_config = current_mode.value.get(type(input_value), None)
+            mode_config = None
+            for super_type in type(input_value).__mro__:
+                mode_config = current_mode.value.get(super_type, None)
+                if mode_config is not None:
+                    break
+
             if mode_config is not None:
                 override_kwargs = mode_config.kwargs
                 kwargs = kwargs | override_kwargs
                 if mode_config.func is not None:
                     kwargs['view_func'] = mode_config.func
+                    kwargs['mode'] = mode
 
         draw_state._kwargs = kwargs
 
@@ -1690,6 +1696,7 @@ def render_func(*args, **o_kwargs):
         return_value = None
         expected_type = param_types[0] if len(param_types) > 0 else None
         annotation_empty = expected_type == inspect.Parameter.empty
+        input_value = clean_args.get('input_value', input_value)
 
         if not annotation_empty:
             if expected_type is not Any and isinstance(expected_type, type):
