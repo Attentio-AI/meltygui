@@ -752,14 +752,13 @@ def draw_main(input_value, vis, **kwargs):
     # if changed:
     #     test_code = value
     # #
-    changed, value = draw_window(test_code, name="cst_dict", show_bg=True, mode=Mode.CODE_UI)
-    if changed:
-        print("did change")
-        test_code = value
 
     changed, value = draw_window(test_code, name="cst_text", show_bg=True, live=True)
     if changed:
-        print("did change")
+        test_code = value
+
+    changed, value = draw_window(test_code, name="cst_dict", show_bg=True, mode=Mode.CODE_UI)
+    if changed:
         test_code = value
 
     from src.lsd.gl_gui.model.app_model import TensorView

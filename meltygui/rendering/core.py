@@ -900,7 +900,7 @@ def render_func(*args, **o_kwargs):
                     to_type = None
 
                 if needs_convert:
-                    input_hash = Background.simple_hash(input_value)
+                    input_hash = Background.simple_hash(draw_state._raw_input_value)
                     cached_hash = Background.simple_hash(draw_state._input_value_cache["external_state"][0])
                     if input_hash == cached_hash:
                         input_changed = False
@@ -908,17 +908,15 @@ def render_func(*args, **o_kwargs):
                         input_changed = True
 
                     if input_changed:
-                        print("Input value changed")
                         draw_state._input_value_cache["external_state"] = (
                         draw_state._raw_input_value, Melty.frame_count, input_hash)
                         Melty.cache.invalidate(draw_state._parent._tile_id, force=True)
                         Melty.cache.invalidate(draw_state._tile_id, force=True)
                         request_render()
 
-                    # if draw_state._input_value == UNSET_VALUE:
                     if input_changed or draw_state._input_value_cache["internal_state"][0] == UNSET_VALUE:
                         internal_value = Background.run(convert, user_id=str(draw_state.unique), invalidate_id=draw_state._parent._tile_id,
-                                                        value=input_value, target=to_type,
+                                                        value=draw_state._raw_input_value, target=to_type,
                                                      path=convert_path, registry=Melty, on_frame=Melty.frame_count)
                         if isinstance(internal_value, Pending):
                             Melty.cache.invalidate(draw_state._parent._tile_id, force=True)
@@ -929,11 +927,8 @@ def render_func(*args, **o_kwargs):
                                 draw_state._input_value_cache["internal_state"][0])
 
                             internal_value, thead_launch_frame = internal_value
-                            if thead_launch_frame >= draw_state._input_value_cache["internal_state"][1]:
-                                print("#################### SETTING INTERNAL VALUE ####################")
+                            if Melty.frame_count >= draw_state._input_value_cache["internal_state"][1] + 2:
                                 draw_state._input_value_cache["internal_state"] = internal_value, thead_launch_frame
-                                print("update internal")
-
                                 new_internal_hash = Background.simple_hash(draw_state._input_value_cache["internal_state"][0])
                                 draw_state._input_value = internal_value
                                 if prev_internal_hash != new_internal_hash:
@@ -941,12 +936,6 @@ def render_func(*args, **o_kwargs):
                                     Melty.cache.invalidate(draw_state._tile_id, force=True)
                                     request_render()
 
-
-                            # else:
-                                # new_internal_hash = Background.simple_hash(draw_state._input_value_cache["internal_state"][0])
-                                # if prev_internal_hash != new_internal_hash:
-                                #     Melty.cache.invalidate(draw_state._parent._tile_id, force=True)
-                                #     request_render()
 
                     converted_input = True
                     draw_state.explain_convert = str(convert_path)
@@ -1499,7 +1488,6 @@ def render_func(*args, **o_kwargs):
                     if child_changed:
                         # draw_state._input_value_cache["external_state"] = ...
                         draw_state._input_value_cache["internal_state"] = new_value_child, Melty.frame_count + 1
-                        print("update internal child_changed")
                         Melty.cache.invalidate(draw_state._parent._tile_id, force=True)
                         Melty.cache.invalidate(draw_state._tile_id, force=True)
                         request_render()
