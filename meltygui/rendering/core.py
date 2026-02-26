@@ -16,6 +16,7 @@ from imgui.core import _DrawList
 
 from imgui.core import _IO
 
+from src.lsd.gl_gui.background import Background, Pending
 from src.lsd.gl_gui.view.core_conversion.path_finder import convert, explain_chain
 from src.lsd.gl_gui.view.core_views.core_render_helpers import draw_vertical_scrollbar, floating_text
 from src.lsd.gl_gui.model.core_model.draw_state import DrawState, Hotkey, DragMode, Anchor, TileMode, AttrDict, \
@@ -134,42 +135,6 @@ def render_wrapper(*o_args, **o_kwargs):
     return wrapper
 
 
-def convert_input(input_value, draw_state, kwargs, expected_type):
-    if kwargs.get('convert', False):
-        original_type = type(input_value)
-        convert_arg = kwargs.get("convert", None)
-        if isinstance(convert_arg, type):
-            convert_path = convert_arg
-            to_type = convert_arg
-        elif isinstance(convert_arg, list):
-            convert_path = convert_arg
-            to_type = convert_arg[-1] if len(convert_arg) > 0 else inspect.Parameter.empty
-        else:
-            convert_path = expected_type
-            to_type = expected_type
-
-        is_empty = expected_type is None or expected_type == inspect.Parameter.empty
-
-        if isinstance(convert_path, (type, list)) and not is_empty:
-            if not isinstance(input_value, to_type):
-                # Try auto-conversion via the Melty type registry
-                try:
-                    if isinstance(convert_path, list):
-                        description = str(convert_path)
-                        input_value = convert(value=input_value, target=to_type, path=convert_path,
-                                              registry=Melty)
-                    else:
-                        description = explain_chain(type(input_value), target=to_type, registry=Melty)
-                        input_value = convert(input_value, convert_path, registry=Melty)
-
-                    draw_state.explain_convert = description
-                    # imgui.text(draw_state.explain_convert)
-                    # Update kwargs so the render function sees the converted value
-
-                except TypeError:
-                    # No conversion path - fall back to the warning UI
-                    return input_value, False
-    return input_value, True
 
 @render_wrapper
 def render_func(*args, **o_kwargs):
@@ -344,7 +309,7 @@ def render_func(*args, **o_kwargs):
         draw_state.name = name
         original_type = type(input_value)
         converted_input = False
-        original_value = input_value
+        original_value = draw_state._raw_input_value
 
         draw_state.closable = closable
         draw_state.behind = kwargs.get("behind", draw_state.behind)
@@ -916,57 +881,51 @@ def render_func(*args, **o_kwargs):
                 draw_state.clip_rect = clip_rect
 
             unset_input = draw_state._input_value == UNSET_VALUE
-            if Melty.cache.mark_start_offscreen(draw_state=draw_state) and not draw_state.kwargs.just_shadow:
-                expected_type = param_types[0] if len(param_types) > 0 else None
+            if Melty.cache.mark_start_offscreen(draw_state=draw_state):
+                # expected_type = param_types[0] if len(param_types) > 0 else None
 
-                original_value = input_value
-                if kwargs.get('convert', False):
-                    if draw_state.expanded:
-                        convert_arg = kwargs.get("convert", None)
-                        if isinstance(convert_arg, type):
-                            convert_path = convert_arg
-                            to_type = convert_arg
-                        elif isinstance(convert_arg, list):
-                            convert_path = convert_arg
-                            to_type = convert_arg[-1] if len(convert_arg) > 0 else inspect.Parameter.empty
+                convert_path = kwargs.get('convert', [])
+                if isinstance(convert_path, list):
+                    to_type = convert_path[-1] if len(convert_path) > 0 else None
+                    if to_type is None or isinstance(input_value, to_type):
+                        needs_convert = False
+                    else:
+                        needs_convert = True
+                else:
+                    needs_convert = False
+                    to_type = None
+
+                if needs_convert:
+                    input_hash = Background.simple_hash(input_value)
+                    cached_hash = draw_state._input_value_cache["external_state"][2]
+                    if input_hash == cached_hash:
+                        input_changed = False
+                    else:
+                        input_changed = True
+
+                    if input_changed:
+                        draw_state._input_value_cache["external_state"] = (input_value, Melty.frame_count, input_hash)
+
+                    # if draw_state._input_value == UNSET_VALUE:
+                    if input_changed or draw_state._input_value_cache["internal_state"][0] == UNSET_VALUE:
+                        internal_value = Background.run(convert, user_id=str(draw_state.unique), invalidate_id=draw_state._tile_id,
+                                                        value=input_value, target=to_type,
+                                                     path=convert_path, registry=Melty, on_frame=Melty.frame_count)
+                        if isinstance(internal_value, Pending):
+                            pass
                         else:
-                            convert_path = expected_type
-                            to_type = expected_type
+                            internal_value, thead_launch_frame = internal_value
+                            if thead_launch_frame >= draw_state._input_value_cache["internal_state"][1]:
+                                draw_state._input_value_cache["internal_state"] = internal_value, thead_launch_frame
 
-                        is_empty = expected_type is None or expected_type == inspect.Parameter.empty
+                    converted_input = True
+                    draw_state.explain_convert = str(convert_path)
+                    draw_state._input_value = draw_state._input_value_cache["internal_state"][0]
+                    kwargs["input_value"] = draw_state._input_value
 
-                        if isinstance(convert_path, (type, list)) and not is_empty:
-                            if not isinstance(input_value, to_type):
-                                # Try auto-converting using the Melty converter registry
-                                try:
-                                    if isinstance(convert_path, list):
-                                        description = str(convert_path)
-                                        input_value = convert(value=input_value, target=to_type, path=convert_path,
-                                                              registry=Melty)
-                                    else:
-                                        description = explain_chain(type(input_value), target=to_type, registry=Melty)
-                                        input_value = convert(input_value, convert_path, registry=Melty)
-
-                                    converted_input = True
-                                    draw_state.explain_convert = description
-                                    # imgui.text(draw_state.explain_convert)
-                                    # Update kwargs so that decorated function sees the converted value
-                                    kwargs["input_value"] = input_value
-                                    # draw_state._input_value = input_value
-
-                                except TypeError:
-                                    # No conversion path - fall back to the warning UI
-                                    yellow = (1.0, 1.0, 0.0, 1.0)
-                                    type_class_path = f"{expected_type.__module__}.{expected_type.__name__}"
-                                    actual_type_class_path = f"{original_type.__module__}.{original_type.__name__}"
-                                    imgui.text_colored(
-                                        f"No converter: {actual_type_class_path} → {type_class_path} "
-                                        f"in {func.__name__}",
-                                        *yellow)
-                                    if return_extras:
-                                        return False, None, draw_state
-                draw_state._input_value = input_value
-                kwargs["input_value"] = input_value
+                else:
+                    draw_state._input_value = input_value
+                    kwargs["input_value"] = draw_state._input_value
 
                 # original_value = input_value
 
@@ -1008,7 +967,6 @@ def render_func(*args, **o_kwargs):
                                           f"{converted_icon_text}: {draw_state.explain_convert}")
 
                 if show_bg:
-
                     if Melty.channels_split:
                         offscreen_depth = Melty.get_channel()
                         draw_list = imgui.get_window_draw_list()
@@ -1051,7 +1009,7 @@ def render_func(*args, **o_kwargs):
                         Melty.selected.add(draw_state)
                         Melty.last_selected = draw_state
 
-                    elif click:
+                    elif click and not Melty.imgui_active:
                         Melty.previous_select = copy(Melty.selected)
                         if not click.modifiers:
                             if len(Melty.selected) == 1 and draw_state in Melty.selected:
@@ -1142,11 +1100,15 @@ def render_func(*args, **o_kwargs):
 
                 ########### CONTEXT MENU HANDLING ############
 
-                @render_func
+                @render_func(show_header=False)
                 def default_context_menu(input_value, draw_state, **kwargs):
                     from src.lsd.gl_gui.view.core_views.new_core_view import draw_collection
-                    draw_collection(input_value)
-                    imgui.text("Default Context Menu")
+                    imgui.new_line()
+                    imgui.text(type(input_value._input_value).__name__)
+                    imgui.text(func.__name__)
+
+
+
                     return False, None
 
                 from src.lsd.gl_gui.view.core_views.new_core_view import draw_collection
@@ -1428,7 +1390,7 @@ def render_func(*args, **o_kwargs):
                     imgui.set_cursor_screen_pos((draw_state.left + 2, draw_state.top + draw_state.header_height + 2))
                     inset_start = imgui.get_cursor_screen_pos()
                     from src.lsd.gl_gui.view.core_views.new_core_view import empty
-                    empty(name="inset", z_offset=-4,
+                    empty(name="inset", z_offset=-2,
                           tile_mode=TileMode.MAX, width=draw_state.width - 4,
                           height=draw_state.height - draw_state.header_height - draw_state.footer_height - 4)
                     imgui.set_cursor_screen_pos(inset_start)
@@ -1496,24 +1458,46 @@ def render_func(*args, **o_kwargs):
                 item_rect = (passed_width, item_rect[1])
 
             if return_value is not None and len(return_value) >= 2:
-                changed = return_value[0]
-                new_value = return_value[1]
-                if converted_input and changed and new_value is not None:
-                    print(f"Attempting to convert back from {type(new_value)} to {original_type} using path {convert_path}")
-                    try:
-                        if isinstance(convert_path, list):
-                            # Reverse the path to go back up to the original type
-                            convert_path = list(reversed(convert_path))
-                            new_value = convert(new_value, target=original_type, path=convert_path, registry=Melty)
-                        else:
-                            convert_path = original_value
-                            new_value = convert(new_value, original_type, registry=Melty)
-                    except TypeError:
-                        changed = False
-                        new_value = original_value
-                        # Can't convert back - retain the raw value and let
+                child_changed = return_value[0]
+                new_value_child = return_value[1]
+                report_value = new_value_child
+                report_changed = False
 
-                return_value = (changed, new_value, *return_value[2:])
+                if converted_input:
+                    if child_changed:
+                        # draw_state._input_value_cache["external_state"] = ...
+                        draw_state._input_value_cache["internal_state"] = new_value_child, Melty.frame_count
+                    if isinstance(convert_path, list):
+                        # Reverse the path to convert back up to the original type
+                        convert_path = list(reversed(convert_path))
+                        external_value = Background.run(convert, user_id=str(unique) + "end", invalidate_id=draw_state._tile_id,
+                                                        value=new_value_child, target=original_type,
+                                                     path=convert_path, registry=Melty, on_frame=Melty.frame_count)
+
+                        if isinstance(external_value, Pending):
+                            report_changed = False
+                        else:
+                            external_value, thead_launch_frame = external_value
+                            if thead_launch_frame >= draw_state._input_value_cache["external_state"][1] - 1:
+
+                                hash_val = Background.simple_hash(external_value)
+                                draw_state._input_value_cache["external_state"] = external_value, thead_launch_frame, hash_val
+                                report_changed = True
+                                report_value = external_value
+
+
+                        # new_value, new_convert_frame = convert(value=new_value, target=original_type,
+                        #                              path=convert_path, registry=Melty, on_frame=draw_state.frame_count)
+
+
+                        # new_value = convert(new_value, target=original_type, path=convert_path, registry=Melty)
+
+                else:
+                    # Synchronous
+                    report_changed = child_changed
+                    report_value = new_value_child
+
+                return_value = (report_changed, report_value, *return_value[2:])
 
             if use_cache and not unset_input:
                 Melty.cache.mark_end_offscreen()
@@ -1629,16 +1613,16 @@ def render_func(*args, **o_kwargs):
 
             return_draw_state = draw_state
             if return_value is None:
-                changed, new_value = False, None
+                child_changed, new_value = False, None
             elif isinstance(return_value, tuple) and len(return_value) == 3:
-                changed, new_value, return_draw_state = return_value
+                child_changed, new_value, return_draw_state = return_value
             elif isinstance(return_value, tuple) and len(return_value) == 2:
-                changed, new_value = return_value
+                child_changed, new_value = return_value
             elif isinstance(return_value, bool):
-                changed, new_value = return_value, input_value
+                child_changed, new_value = return_value, input_value
             else:
                 imgui.text("Unsupported return from render_func")
-                changed, new_value = False, None
+                child_changed, new_value = False, None
 
             end_time = time.time()
             draw_state.render_time = end_time - start_time
@@ -1660,8 +1644,8 @@ def render_func(*args, **o_kwargs):
                     draw_list.channels_merge()
 
             if return_extras:
-                return changed, new_value, return_draw_state
-            return changed, new_value
+                return child_changed, new_value, return_draw_state
+            return child_changed, new_value
 
     def draw_inner_main(clean_args, clip_rect, draw_state, input_value, kwargs,
                         auto_resize, melty, tile_id, unique, melty_window):

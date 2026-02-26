@@ -1192,6 +1192,7 @@ class TileCacheMasked:
                     snap_int(size[1]),
                     uv0=(0.0, 1.0),
                     uv1=(1.0, 0.0),
+                    # tint_color=(self.frame_tint[0], self.frame_tint[1], self.frame_tint[2], self.frame_tint[3] * 0.5)
                 )
                 imgui.set_item_allow_overlap()
                 self._stack.append(

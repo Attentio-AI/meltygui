@@ -8,6 +8,7 @@ import glfw
 import imgui
 import libcst as cst
 
+from src.lsd.gl_gui.background import Background
 from src.lsd.gl_gui.collection_action import CollectionAction
 from src.lsd.gl_gui.view.core_views.monitor import Monitor
 from src.shader_library.shader_manager.texture_manager import TextureManager
@@ -18,6 +19,10 @@ from src.lsd.gl_gui.model.core_model.core_enums import generate_id
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 
 import OpenGL.GL as gl
+
+import threading
+from dataclasses import dataclass
+
 
 
 class QuickToggles:
@@ -332,7 +337,7 @@ class Melty:
 
     @classmethod
     def end_frame(cls):
-
+        Background.tick()
         cls.apply_move_to_front()
 
         Melty.mode_stack = []

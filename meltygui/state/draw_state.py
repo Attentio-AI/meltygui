@@ -267,7 +267,10 @@ class DrawState(DictConversion):
         self.drag_delta = (0, 0)
         self._input_value = UNSET_VALUE
         self._raw_input_value = UNSET_VALUE
-        self._converted_input_value = UNSET_VALUE
+
+        self._input_value_cache = {"external_state": (UNSET_VALUE, 0, -1),  # value, frame, hash
+                                   "internal_state":(UNSET_VALUE, 0)}  # value, frame
+
         self._collection = None
         self._has_popup = False
         self.is_hovered_last = False

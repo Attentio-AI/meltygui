@@ -22,7 +22,7 @@ T = TypeVar("T")
 _NO_PATH = object()
 
 
-def convert(value: Any, target: type, *, registry, path: list[type] | None = None) -> T:
+def convert(value: Any, target: type, *, registry, path: list[type] | None = None, on_frame=None) -> T:
     """Convert *value* to *target* type using the registry.
 
     If *path* is provided, follows it exactly:
@@ -32,10 +32,17 @@ def convert(value: Any, target: type, *, registry, path: list[type] | None = Non
     path through intermediate types.  Raises TypeError if no path exists.
     """
     if isinstance(value, target) and path is None:
-        return value  # type: ignore[return-value]
+        if on_frame is None:
+            return value
+        else:
+            return value, on_frame  # type: ignore[return-value]
 
     if path is not None:
-        return _run_explicit_path(value, target, path=path, registry=registry)
+        result = _run_explicit_path(value, target, path=path, registry=registry)
+        if on_frame is None:
+            return result
+        else:
+            return result, on_frame
 
     # Value-aware shortcut: dicts produced by object_to_dict carry a
     # __meta__ key with the original class info.  The graph can't know
@@ -70,15 +77,24 @@ def convert(value: Any, target: type, *, registry, path: list[type] | None = Non
                 # than `object` - try one more conversion from here.
                 if not isinstance(result, type(value)):  # avoid loops
                     try:
-                        final = convert(result, target, registry=registry)
-                        return final
+                        result = convert(result, target, registry=registry)
+
+                        if on_frame is None:
+                            return result
+                        else:
+                            return result, on_frame
                     except (TypeError, ValueError):
                         pass
             except Exception:
                 pass
 
     chain = find_chain(type(value), target, registry=registry)
-    return chain(value)
+    result = chain(value)
+
+    if on_frame is None:
+        return result
+    else:
+        return result, on_frame
 
 
 def _run_explicit_path(value: Any, target: type, *, path: list[type], registry) -> Any:

@@ -552,6 +552,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, keys=No
             else:
                 item_func = nested_func
 
+
             item_kwargs = {
                 'return_extras': True,
                 'key': key,
@@ -619,9 +620,8 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, keys=No
                         setattr(input_value, key_str, out_val)
 
             changed |= item_changed
-            if item_changed:
-                pass
             drew_any = True
+
 
 
         except Exception as e:
@@ -754,8 +754,13 @@ def draw_main(input_value, vis, **kwargs):
     # #
     changed, value = draw_window(test_code, name="cst_dict", show_bg=True, mode=Mode.CODE_UI)
     if changed:
+        print("did change")
         test_code = value
 
+    changed, value = draw_window(test_code, name="cst_text", show_bg=True, live=True)
+    if changed:
+        print("did change")
+        test_code = value
 
     from src.lsd.gl_gui.model.app_model import TensorView
     draw_window(TensorView, name="Tensorview")
