@@ -1,8 +1,11 @@
 import threading
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import torch
+
+from src.lsd.gl_gui.utils.glfw_utils import request_render
 
 
 @dataclass
@@ -10,97 +13,58 @@ class Pending:
     pass
 
 
+from collections import OrderedDict
+
+
 class Background:
-    _cache_frames = 30
-    _results = {}
-    _age = {}
-    _waiters = {}
-    _readers = {}
+    _user_cache = {}  # user_id -> OrderedDict{hash -> result}
+    _cache_size = 5
     _active = set()
-    _cancelled = set()
     _user_tasks = {}
-    _invalidate_cb = None
     _lock = threading.Lock()
     _pool = ThreadPoolExecutor(max_workers=16)
-    _max_queued = 1
-    _queue_size = 0
-
 
     @classmethod
     def run(cls, func, user_id, invalidate_id=None, *args, **kwargs):
         h = cls.simple_hash(value=(kwargs.get("value", None)))
 
         with cls._lock:
-            prev = cls._user_tasks.get(user_id)
-            if prev and prev != h:
-                cls._waiters[prev] = max(0, cls._waiters.get(prev, 1) - 1)
-                if cls._waiters[prev] == 0 and prev not in cls._results:
-                    cls._cancelled.add(prev)
-                    cls._active.discard(prev)
+            cache = cls._user_cache.get(user_id)
+            if cache and h in cache:
+                cache.move_to_end(h)
+                return cache[h]
 
             cls._user_tasks[user_id] = h
 
-            if h in cls._results:
-                cls._readers[h] = cls._readers.get(h, 0) + 1
-                if cls._readers[h] >= cls._waiters.get(h, 0):
-                    cls._age[h] = 0
-                return cls._results[h]
-
             if h in cls._active:
-                cls._waiters[h] = cls._waiters.get(h, 0) + 1
-                return Pending()
-
-            if cls._queue_size >= cls._max_queued:
                 return Pending()
 
             cls._active.add(h)
-            cls._waiters[h] = 1
-            cls._queue_size += 1
 
         def _task():
             try:
                 result = func(*args, **kwargs)
                 with cls._lock:
-                    cls._queue_size -= 1
-                    if h in cls._cancelled:
-                        cls._cancelled.discard(h)
-                        return
-                    cls._results[h] = result
                     cls._active.discard(h)
+                    for uid, task_h in cls._user_tasks.items():
+                        if task_h == h:
+                            if uid not in cls._user_cache:
+                                cls._user_cache[uid] = OrderedDict()
+                            cls._user_cache[uid][h] = result
+                            cls._user_cache[uid].move_to_end(h)
+                            while len(cls._user_cache[uid]) > cls._cache_size:
+                                cls._user_cache[uid].popitem(last=False)
                 if invalidate_id is not None:
                     from src.lsd.gl_gui.melty import Melty
-                    print(f"Invalidating {invalidate_id} from background task")
-                    Melty.cache.invalidate_up(invalidate_id)
+                    from src.lsd.gl_gui.utils.glfw_utils import request_render
+                    Melty.cache.invalidate(invalidate_id)
+                    request_render()
             except Exception:
                 with cls._lock:
-                    cls._queue_size -= 1
                     cls._active.discard(h)
-                    cls._cancelled.discard(h)
 
         cls._pool.submit(_task)
         return Pending()
-
-    @classmethod
-    def tick(cls):
-        with cls._lock:
-            snapshot = list(cls._age.items())
-
-        expired = []
-        for h, a in snapshot:
-            if a >= cls._cache_frames:
-                expired.append(h)
-
-        with cls._lock:
-            for h in expired:
-                cls._results.pop(h, None)
-                cls._age.pop(h, None)
-                cls._waiters.pop(h, None)
-                cls._readers.pop(h, None)
-
-            for h, a in snapshot:
-                if h in cls._age and h not in expired:
-                    cls._age[h] = a + 1
-
     @staticmethod
     def compute_hash(cls, exclude=None, memo=None, depth=0, do_print=False, include_hidden=False):
         """
