@@ -35,13 +35,11 @@ class Background:
 
 
     @classmethod
-    def run(cls, func, user_id, invalidate_id=None, on_frame=None, *args, **kwargs):
+    def run(cls, func, user_id, no_cache=False, invalidate_id=None, on_frame=None, *args, **kwargs):
         h = cls.simple_hash(value=(kwargs.get("value", None))) + user_id
 
         if kwargs.get("apply", False):
             no_cache = True
-        else:
-            no_cache = False
 
         with cls._lock:
             cache = cls._user_cache.get(user_id)
@@ -50,6 +48,8 @@ class Background:
                 return_val = cache[h]
                 if no_cache:
                     cls._user_cache.pop(user_id, None)
+                else:
+                    print(f"Cache hit for user {kwargs.get('path', None)}. Returning cached result.")
                 return return_val
 
             cls._user_tasks[user_id] = h
@@ -77,15 +77,16 @@ class Background:
                 if invalidate_id is not None:
                     from src.lsd.gl_gui.melty import Melty
                     from src.lsd.gl_gui.utils.glfw_utils import request_render
-                    Melty.cache.invalidate(invalidate_id)
-                    request_render()
+                    if on_frame is None or abs(Melty.frame_count - on_frame) >= 1:
+                        Melty.cache.invalidate(invalidate_id)
+                        request_render()
             except Exception as e:
                 with cls._lock:
                     cls._active.discard(h)
 
-                # print(f"Error in background task for user {user_id} with hash {h}:")
+                print(f"Error in background task for user {user_id} with hash {h}:")
                 # print(e)
-                # print_colored_traceback(*sys.exc_info())
+                print_colored_traceback(*sys.exc_info())
 
         cls._pool.submit(_task)
         return Pending(status="background thread", state=PendingState.BACKGROUND)

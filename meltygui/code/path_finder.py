@@ -86,6 +86,7 @@ def _accepts_apply(fn: Callable) -> bool:
 
 def _call_converter(fn: Callable, value: Any, *, apply: bool) -> Any:
     """Call a converter, passing apply only if it accepts it."""
+
     if _accepts_apply(fn):
         return fn(value, apply=apply)
     return fn(value)

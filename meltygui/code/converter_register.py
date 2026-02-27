@@ -33,7 +33,7 @@ def converter(converter_fn=None, registry: Any = None):
     # Get first return if multiple ie. dict | Path
     if func_signature.return_annotation is not None and hasattr(func_signature.return_annotation, "__args__"):
         to_type = func_signature.return_annotation.__args__[0]
-        print(f"{print_green}Multiple return types detected, using first: {to_type}{print_reset}")
+        # print(f"{print_green}Multiple return types detected, using first: {to_type}{print_reset}")
 
     if not hasattr(registry, '_converters') or not isinstance(registry._converters, dict):
         setattr(registry, '_converters', {})

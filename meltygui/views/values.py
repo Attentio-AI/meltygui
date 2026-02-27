@@ -2,6 +2,7 @@ import inspect
 import os
 import shutil
 import sys
+import threading
 import types
 from collections import deque, defaultdict
 from collections.abc import MutableMapping
@@ -27,6 +28,7 @@ from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_style_var, \
     push_style_color, pop_style_color, pop_style_var, end, begin
 from src.lsd.gl_gui.utils.glfw_utils import request_render
+from src.lsd.gl_gui.view.core_conversion.file_converters import FileWatch
 from src.lsd.gl_gui.view.core_conversion.path_finder import convert
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
@@ -379,6 +381,9 @@ def draw_window(input_value:any, view_func=None, draw_state=None, delete_down=Fa
 
     return return_val
 
+@render_func(is_default_for=(types.ModuleType), use_cache=True, show_bg=True, with_header=draw_header, with_footer=draw_footer)
+def draw_module(input_value: types.ModuleType, draw_state, **kwargs):
+    imgui.text(f"Module: {input_value.__name__}")
 
 @render_func(is_default_for=(dict, MutableMapping, defaultdict, types.MappingProxyType), use_cache=True,
              show_bg=True, show_instance_vars=False, manual_content_height=True,
@@ -819,6 +824,8 @@ def draw_main(input_value, vis, **kwargs):
         some_float[0] = new_float
 
     draw_window(Monitor, name="Monitor")
+
+    draw_window(threading.enumerate(), name="Threads")
 
     # draw_window(core_model, name="Module test")
 
@@ -2636,7 +2643,7 @@ class Mode(Enum):
 
     FILE_META = {
         Path: ModeOverrides(
-            kwargs={"convert": [Path, dict]},
+            kwargs={"convert": [Path, FileWatch, dict]},
             func=draw_collection,
             recursive=True,
         ),
@@ -2652,11 +2659,11 @@ class Mode(Enum):
     # Path on disk → byte string, drawn in a text editor.
     # Good for: README, .txt, .md, .json - anything you want as raw text.
 
-    FILE_TEXT = {
-        Path: ModeOverrides(
-            kwargs={"convert": [Path, bytes, str]},
-            func=draw_str,
-            recursive=True,
-        ),
-    }
+    # FILE_TEXT = {
+    #     Path: ModeOverrides(
+    #         kwargs={"convert": [Path, bytes, str]},
+    #         func=draw_str,
+    #         recursive=True,
+    #     ),
+    # }
 
