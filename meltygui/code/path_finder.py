@@ -13,6 +13,7 @@ Usage:
 from __future__ import annotations
 
 from collections import deque
+from enum import Enum
 from typing import Any, Callable, TypeVar
 
 T = TypeVar("T")
@@ -20,30 +21,93 @@ T = TypeVar("T")
 # Sentinel cached for type pairs with no conversion path,
 # so we don't re-run BFS every frame.
 _NO_PATH = object()
+NO_VALUE = object()
+
+class PendingState(Enum):
+    BACKGROUND = "background"
+    CONFIRM = "blocking"
 
 
-def convert(value: Any, target=None, *, registry, path: list[type] | None = None, on_frame=None) -> T:
+# ── Pending wrapper ──────────────────────────────────────────────────────────
+
+class Pending:
+    """Wraps a converter result that hasn't been fully applied yet.
+
+    Converters that support deferred execution (file I/O, network calls,
+    etc.) return Pending(partial_result) when apply=False.  The UI can
+    inspect pending.wrapped for metadata, then call convert() again with
+    apply=True when ready.
+
+    Usage:
+        result = convert(path, dict, registry=R, apply=False)
+        if isinstance(result, Pending):
+            print(result.wrapped["name"])   # metadata available
+            # later:
+            full = convert(path, dict, registry=R, apply=True)
+    """
+    __slots__ = ("wrapped", "status", "state")
+
+    def __init__(self, wrapped=NO_VALUE, status="pending", state=PendingState.CONFIRM):
+        self.wrapped = wrapped
+        self.status = status
+        self.state = state
+
+    def __repr__(self):
+        return f"Pending({self.wrapped!r})"
+
+    def __bool__(self):
+        return self.wrapped is not None
+
+
+# ── Apply introspection ──────────────────────────────────────────────────────
+
+_accepts_apply_cache: dict[Callable, bool] = {}
+
+
+def _accepts_apply(fn: Callable) -> bool:
+    """Check (cached) whether a converter function accepts an 'apply' kwarg."""
+    cached = _accepts_apply_cache.get(fn)
+    if cached is not None:
+        return cached
+    import inspect
+    try:
+        sig = inspect.signature(fn)
+        result = "apply" in sig.parameters
+    except (ValueError, TypeError):
+        result = False
+    _accepts_apply_cache[fn] = result
+    return result
+
+
+def _call_converter(fn: Callable, value: Any, *, apply: bool) -> Any:
+    """Call a converter, passing apply only if it accepts it."""
+    if _accepts_apply(fn):
+        return fn(value, apply=apply)
+    return fn(value)
+
+
+def convert(value: Any, target: type[T]=None, *, registry, path: list[type] | None = None, apply: bool = False) -> T:
     """Convert *value* to *target* type using the registry.
 
     If *path* is provided, follows it exactly:
         convert(my_obj, dict, registry=R, path=[str, cst.Module, dict])
+
+    If *apply* is False (default), converters that support deferred
+    execution may return Pending(partial_result).  Pass apply=True
+    to force full execution (e.g. file writes, network calls).
+
+    If any link in the chain returns Pending, the chain unwraps it,
+    continues converting, and re-wraps the final result in Pending.
 
     Otherwise, tries a direct converter first, then BFS for a multi-hop
     path through intermediate types.  Raises TypeError if no path exists.
     """
     if target is not None:
         if isinstance(value, target) and path is None:
-            if on_frame is None:
-                return value
-            else:
-                return value, on_frame  # type: ignore[return-value]
+            return value  # type: ignore[return-value]
 
     if path is not None:
-        result = _run_explicit_path(value, target, path=path, registry=registry)
-        if on_frame is None:
-            return result
-        else:
-            return result, on_frame
+        return _run_explicit_path(value, target, path=path, registry=registry, apply=apply)
 
     # Value-aware shortcut: dicts produced by object_to_dict carry a
     # __meta__ key with the original class info.  The graph can't know
@@ -78,27 +142,24 @@ def convert(value: Any, target=None, *, registry, path: list[type] | None = None
                 # than `object` - try one more conversion from here.
                 if not isinstance(result, type(value)):  # avoid loops
                     try:
-                        result = convert(result, target, registry=registry)
-
-                        if on_frame is None:
-                            return result
-                        else:
-                            return result, on_frame
+                        final = convert(result, target, registry=registry)
+                        return final
                     except (TypeError, ValueError):
                         pass
             except Exception:
                 pass
 
-    chain = find_chain(type(value), target, registry=registry)
-    result = chain(value)
+    chain_fn = find_chain(type(value), target, registry=registry)
 
-    if on_frame is None:
-        return result
-    else:
-        return result, on_frame
+    # If we need to pass apply, decompose the chain and walk step by step
+    steps = getattr(chain_fn, "__converter_chain__", None)
+    if steps is not None:
+        return _run_chain_steps(value, steps, apply=apply)
+    # Direct call (single hop)
+    return _call_converter(chain_fn, value, apply=apply)
 
 
-def _run_explicit_path(value: Any, target: type, *, path: list[type], registry) -> Any:
+def _run_explicit_path(value: Any, target: type, *, path: list[type], registry, apply: bool) -> Any:
     """Follow an explicit type path, looking up each edge in the registry.
 
     path=[str, cst.Module, dict] means:
@@ -106,10 +167,14 @@ def _run_explicit_path(value: Any, target: type, *, path: list[type], registry) 
       2. convert str → cst.Module
       3. convert cst.Module → dict
 
+    If any converter returns Pending, the chain unwraps it, continues,
+    and re-wraps the final result in Pending.
+
     Raises TypeError if any edge is missing from the registry.
     """
     converters = getattr(registry, "_converters", {})
     result = value
+    saw_pending = False
 
     # If the value isn't already the first type of the path, prepend
     # an implicit conversion from type(value) → path[0]
@@ -135,9 +200,32 @@ def _run_explicit_path(value: Any, target: type, *, path: list[type], registry) 
                 f"No converter registered for {step_from.__name__!r} → {step_to.__name__!r} "
                 f"(step {i + 1} of explicit path)"
             )
-        result = fn(result)
+        result = _call_converter(fn, result, apply=apply)
 
-    return result
+        # Unwrap Pending so the next link gets the real value
+        if isinstance(result, Pending):
+            saw_pending = True
+            result = result.wrapped
+
+    return Pending(result) if saw_pending else result
+
+
+def _run_chain_steps(value: Any, steps: list[Callable], *, apply: bool) -> Any:
+    """Walk a list of converter functions, passing apply and handling Pending.
+
+    If any step returns Pending, unwraps it, continues, and re-wraps
+    the final result in Pending.
+    """
+    result = value
+    saw_pending = False
+
+    for fn in steps:
+        result = _call_converter(fn, result, apply=apply)
+        if isinstance(result, Pending):
+            saw_pending = True
+            result = result.wrapped
+
+    return Pending(result) if saw_pending else result
 
 
 def find_chain(source: type, target: type, *, registry) -> Callable:

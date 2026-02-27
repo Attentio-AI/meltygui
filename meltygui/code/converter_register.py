@@ -19,8 +19,8 @@ def converter(converter_fn=None, registry: Any = None):
     # Use inspect to check input and return types
     func_signature = inspect.signature(converter_fn)
     fn_params = func_signature.parameters
-    if len(fn_params) != 1:
-        print(f"{print_red}{print_bold}Error: Converter function {converter_fn.__name__} must have exactly one parameter.{print_reset}")
+    if len(fn_params) < 1:
+        print(f"{print_red}{print_bold}Error: Converter function {converter_fn.__name__} must have at least one param.{print_reset}")
         return converter_fn
 
     to_type = func_signature.return_annotation
@@ -30,6 +30,10 @@ def converter(converter_fn=None, registry: Any = None):
 
     from_param = fn_params.get("value", None)
     from_type = from_param.annotation if from_param else None
+    # Get first return if multiple ie. dict | Path
+    if func_signature.return_annotation is not None and hasattr(func_signature.return_annotation, "__args__"):
+        to_type = func_signature.return_annotation.__args__[0]
+        print(f"{print_green}Multiple return types detected, using first: {to_type}{print_reset}")
 
     if not hasattr(registry, '_converters') or not isinstance(registry._converters, dict):
         setattr(registry, '_converters', {})

@@ -358,6 +358,9 @@ def draw_window(input_value:any, view_func=None, draw_state=None, delete_down=Fa
         else:
             kwargs['mode'] = mode
 
+    if 'name' not in kwargs:
+        kwargs['name'] = str(input_value)
+
     kwargs['show_bg'] = False
     kwargs['selectable'] = False
     kwargs['return_extras'] = True
@@ -2251,6 +2254,36 @@ def draw_bool(input_value: bool):
     return False, None
 
 
+@render_func(shadow=False, wrap=False, with_header=draw_header)
+def draw_text(input_value: str, draw_state):
+    line_count = input_value.count('\n') + 1
+    line_height = imgui.get_text_line_height()
+    text_height = imgui.calc_text_size(str(input_value))[1] + line_height * 2
+
+    max_bottom = draw_state.parent_window.top + draw_state.parent_window.height - draw_state.footer_height - line_height * 2
+    text_bottom = draw_state.top + text_height
+    clamped_bottom = min(max_bottom, text_bottom)
+    height = clamped_bottom - draw_state.top
+
+    show_controls = True
+
+    if not show_controls:
+        imgui.push_style_var(imgui.STYLE_ALPHA, 0)
+
+
+    imgui.set_cursor_screen_pos((draw_state.left, draw_state.top))
+    # disable scrolling
+    changed, value = imgui.input_text_multiline("##str", str(input_value),
+                                                width=draw_state.content_width, height=height)
+    imgui.dummy(draw_state.content_width, text_height - height + 10)
+
+    if not show_controls:
+        imgui.pop_style_var(1)
+
+    if changed:
+        return True, value
+    return changed, value
+
 
 @render_func(is_default_for=(str), shadow=False, wrap=False, with_header=draw_header)
 def draw_str(input_value: str, draw_state):
@@ -2609,7 +2642,7 @@ class Mode(Enum):
         ),
         bytes: ModeOverrides(
             kwargs={"convert": [bytes, str]},
-            func=draw_str,
+            func=draw_text,
             recursive=True,
         ),
     }

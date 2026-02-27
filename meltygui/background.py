@@ -1,3 +1,4 @@
+import sys
 import threading
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
@@ -5,15 +6,12 @@ from dataclasses import dataclass
 
 import torch
 
-from src.lsd.gl_gui.utils.glfw_utils import request_render
-
-
-@dataclass
-class Pending:
-    pass
-
+from server.model.render_utils import print_colored_traceback
+from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
 
 from collections import OrderedDict
+
+from src.lsd.gl_gui.view.core_conversion.path_finder import Pending, PendingState
 
 
 class Background:
@@ -25,8 +23,8 @@ class Background:
     _pool = ThreadPoolExecutor(max_workers=16)
 
     @classmethod
-    def run(cls, func, user_id, invalidate_id=None, *args, **kwargs):
-        h = cls.simple_hash(value=(kwargs.get("value", None)))
+    def run(cls, func, user_id, invalidate_id=None, on_frame=None, *args, **kwargs):
+        h = cls.simple_hash(value=(kwargs.get("value", None))) + user_id
 
         with cls._lock:
             cache = cls._user_cache.get(user_id)
@@ -37,13 +35,15 @@ class Background:
             cls._user_tasks[user_id] = h
 
             if h in cls._active:
-                return Pending()
+                return Pending(status="background thread active", state=PendingState.BACKGROUND)
 
             cls._active.add(h)
 
         def _task():
             try:
                 result = func(*args, **kwargs)
+                if on_frame is not None:
+                    result = (result, on_frame)
                 with cls._lock:
                     cls._active.discard(h)
                     for uid, task_h in cls._user_tasks.items():
@@ -59,12 +59,16 @@ class Background:
                     from src.lsd.gl_gui.utils.glfw_utils import request_render
                     Melty.cache.invalidate(invalidate_id)
                     request_render()
-            except Exception:
+            except Exception as e:
                 with cls._lock:
                     cls._active.discard(h)
 
+                # print(f"Error in background task for user {user_id} with hash {h}:")
+                # print(e)
+                # print_colored_traceback(*sys.exc_info())
+
         cls._pool.submit(_task)
-        return Pending()
+        return Pending(status="background thread", state=PendingState.BACKGROUND)
     @staticmethod
     def compute_hash(cls, exclude=None, memo=None, depth=0, do_print=False, include_hidden=False):
         """
@@ -252,6 +256,15 @@ class Background:
                                                                do_print=do_print,
                                                                include_hidden=include_hidden) + ","
             items_str += "]"
+            memo[id(value)] = items_str
+            return items_str
+
+        if isinstance(value, Pending):
+            memo[id(value)] = "tuple:processing"  # Add immediately to avoid recursion
+            items_str = "("
+            items_str += Background.simple_hash(value=Pending.wrapped, exclude=exclude, memo=memo, depth=depth,
+                                                do_print=do_print, include_hidden=include_hidden) + ","
+            items_str += ")"
             memo[id(value)] = items_str
             return items_str
 

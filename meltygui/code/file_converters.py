@@ -13,6 +13,14 @@ Or use convert() with an explicit path for full control:
             registry=Melty,
             path=[Path, bytes, str, cst.Module, dict])
 
+Supports deferred execution via apply=False:
+
+    # Metadata only — no file content loaded
+    result = convert(Path("big.py"), dict, registry=R, apply=False)
+    # result is Pending({"name": "big.py", "size": 50000, ...})
+    # UI can inspect result.value, then:
+    full = convert(Path("big.py"), dict, registry=R, apply=True)
+
 File dicts carry __path__ (like __cst__) for lossless round-trip:
 
     {
@@ -31,6 +39,7 @@ from pathlib import Path
 
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.view.core_conversion.converter_register import converter
+from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -38,11 +47,14 @@ from src.lsd.gl_gui.view.core_conversion.converter_register import converter
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
 @converter(registry=Melty)
-def path_to_dict(value: Path) -> dict:
+def path_to_dict(value: Path, apply: bool = False) -> dict:
     """Read a file from disk into a metadata dict.
 
-    Returns name, stem, suffix, size, modified timestamp, raw bytes,
-    and the original Path under __path__ for round-trip writes.
+    When apply=False (default), returns Pending with metadata but no
+    file content — useful for file browsers that show name/size before
+    deciding to load.
+
+    When apply=True, reads the full file content into "data".
 
     Raises FileNotFoundError if the path doesn't exist.
     Raises IsADirectoryError if the path is a directory.
@@ -56,15 +68,21 @@ def path_to_dict(value: Path) -> dict:
 
     stat = value.stat()
 
-    return {
-        "name": value.name,
-        "stem": value.stem,
-        "suffix": value.suffix,
-        "size": stat.st_size,
+    result = {
+        "name":     value.name,
+        "stem":     value.stem,
+        "suffix":   value.suffix,
+        "size":     stat.st_size,
         "modified": stat.st_mtime,
-        "data": value.read_bytes(),
         "__path__": value.resolve(),
     }
+
+    if apply:
+        result["data"] = value.read_bytes()
+        return result
+    else:
+        result["data"] = b'0'  # Placeholder to indicate content is not loaded
+        return Pending(result)
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -72,20 +90,29 @@ def path_to_dict(value: Path) -> dict:
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
 @converter(registry=Melty)
-def dict_to_path(value: dict) -> Path:
+def dict_to_path(value: dict, apply: bool = False) -> Path:
     """Write file data back to disk from a metadata dict.
+
+    When apply=False (default), returns Pending wrapping the Path
+    without writing — the UI can preview what would be written.
+
+    When apply=True, actually writes to disk and returns the Path.
 
     Requires __path__ (target location) and "data" (bytes or str).
     Creates parent directories if they don't exist.
-    Returns the Path written to.
     """
     path = value.get("__path__")
     if path is None:
+        print("Warning: dict missing __path__, cannot write to disk")
         raise TypeError("Dict has no __path__ — can't determine write location")
     path = Path(path)
 
+    if not apply:
+        return Pending(wrapped=path)
+
     data = value.get("data")
     if data is None:
+        print("Warning: dict missing 'data', nothing to write to disk")
         raise ValueError("Dict has no 'data' key — nothing to write")
 
     # Ensure parents exist
