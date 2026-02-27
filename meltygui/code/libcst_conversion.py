@@ -11,6 +11,7 @@ The original immutable CST node is never serialized — just referenced.
 import enum
 import inspect
 import sys
+from time import sleep
 
 import libcst as cst
 
@@ -82,6 +83,9 @@ def cst_module_to_dict(value: cst.Module) -> dict:
     """
     readable = {}
 
+    # Sleep to test threading behaviour
+    sleep(1.0)
+
     for stmt in value.body:
         if isinstance(stmt, cst.SimpleStatementLine):
             for node in stmt.body:
@@ -130,7 +134,7 @@ def dict_to_cst_module(value: dict) -> cst.Module:
 
     edits = {k: v for k, v in value.items()
              if not (k.startswith("__") and k.endswith("__"))}
-
+    sleep(1.0)
     if not edits:
         return tree
 

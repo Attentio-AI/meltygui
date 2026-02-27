@@ -23,6 +23,7 @@ T = TypeVar("T")
 _NO_PATH = object()
 NO_VALUE = object()
 
+
 class PendingState(Enum):
     BACKGROUND = "background"
     CONFIRM = "blocking"
@@ -37,6 +38,10 @@ class Pending:
     etc.) return Pending(partial_result) when apply=False.  The UI can
     inspect pending.wrapped for metadata, then call convert() again with
     apply=True when ready.
+
+    When a Pending is encountered mid-chain, the chain stops immediately
+    and returns the Pending as-is.  The caller can inspect the partial
+    result and re-run with apply=True to complete.
 
     Usage:
         result = convert(path, dict, registry=R, apply=False)
@@ -86,7 +91,7 @@ def _call_converter(fn: Callable, value: Any, *, apply: bool) -> Any:
     return fn(value)
 
 
-def convert(value: Any, target: type[T]=None, *, registry, path: list[type] | None = None, apply: bool = False) -> T:
+def convert(value: Any, target: type[T] = None, *, registry, path: list[type] | None = None, apply: bool = False) -> T:
     """Convert *value* to *target* type using the registry.
 
     If *path* is provided, follows it exactly:
@@ -96,8 +101,9 @@ def convert(value: Any, target: type[T]=None, *, registry, path: list[type] | No
     execution may return Pending(partial_result).  Pass apply=True
     to force full execution (e.g. file writes, network calls).
 
-    If any link in the chain returns Pending, the chain unwraps it,
-    continues converting, and re-wraps the final result in Pending.
+    If any link in the chain returns Pending, the chain stops
+    immediately and returns that Pending.  The caller can inspect
+    the partial result and re-run with apply=True to complete.
 
     Otherwise, tries a direct converter first, then BFS for a multi-hop
     path through intermediate types.  Raises TypeError if no path exists.
@@ -167,14 +173,13 @@ def _run_explicit_path(value: Any, target: type, *, path: list[type], registry, 
       2. convert str → cst.Module
       3. convert cst.Module → dict
 
-    If any converter returns Pending, the chain unwraps it, continues,
-    and re-wraps the final result in Pending.
+    If any converter returns Pending, the chain stops immediately
+    and returns that Pending — no further links are executed.
 
     Raises TypeError if any edge is missing from the registry.
     """
     converters = getattr(registry, "_converters", {})
     result = value
-    saw_pending = False
 
     # If the value isn't already the first type of the path, prepend
     # an implicit conversion from type(value) → path[0]
@@ -202,30 +207,26 @@ def _run_explicit_path(value: Any, target: type, *, path: list[type], registry, 
             )
         result = _call_converter(fn, result, apply=apply)
 
-        # Unwrap Pending so the next link gets the real value
+        # Pending means "not found" - stop the chain here
         if isinstance(result, Pending):
-            saw_pending = True
-            result = result.wrapped
+            return result
 
-    return Pending(result) if saw_pending else result
+    return result
 
 
 def _run_chain_steps(value: Any, steps: list[Callable], *, apply: bool) -> Any:
     """Walk a list of converter functions, passing apply and handling Pending.
 
-    If any step returns Pending, unwraps it, continues, and re-wraps
-    the final result in Pending.
+    If any step returns Pending, stops immediately and returns it.
     """
     result = value
-    saw_pending = False
 
     for fn in steps:
         result = _call_converter(fn, result, apply=apply)
         if isinstance(result, Pending):
-            saw_pending = True
-            result = result.wrapped
+            return result
 
-    return Pending(result) if saw_pending else result
+    return result
 
 
 def find_chain(source: type, target: type, *, registry) -> Callable:

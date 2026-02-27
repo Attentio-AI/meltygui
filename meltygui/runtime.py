@@ -329,8 +329,8 @@ class Melty:
         return_val = view_func(**kwargs)
         if return_val is not None:
             cls.pending_return_values[draw_state.id] = return_val
-            # if return_val[0]:
-            #     Melty.cache.invalidate_up(draw_state._tile_id, max_depth=7, force=True)
+            if return_val[0]:
+                Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=7, force=True)
 
         Melty.bg_stack = original_bg_stack
         # cls.cache.remove_parent()
@@ -488,6 +488,7 @@ class Melty:
     def cleanup(cls):
         cls.filter.cleanup()
         cls.texture_manager.clear()
+        Background.shutdown()
         Monitor.shutdown()
 
     @classmethod

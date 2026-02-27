@@ -81,7 +81,6 @@ def path_to_dict(value: Path, apply: bool = False) -> dict:
         result["data"] = value.read_bytes()
         return result
     else:
-        result["data"] = b'0'  # Placeholder to indicate content is not loaded
         return Pending(result)
 
 
@@ -101,6 +100,8 @@ def dict_to_path(value: dict, apply: bool = False) -> Path:
     Requires __path__ (target location) and "data" (bytes or str).
     Creates parent directories if they don't exist.
     """
+    if apply:
+        print("Applying dict_to_path: writing to disk")
     path = value.get("__path__")
     if path is None:
         print("Warning: dict missing __path__, cannot write to disk")

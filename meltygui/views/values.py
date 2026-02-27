@@ -2028,7 +2028,7 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0, rounding=5.0,
         bleed_factor = 0.2
     else:
         bleed_factor = 0.0
-    bg_bleed = Melty.get_bg_color(-2)
+    bg_bleed = Melty.get_bg_color(-1)
     bg_bleed = style_manager.make_custom_styled(*bg_bleed, input=bg_style,
                                                 value=0.6,
                                                 alpha=1.0, saturation=1.8)

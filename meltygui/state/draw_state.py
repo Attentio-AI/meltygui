@@ -310,7 +310,13 @@ class DrawState(DictConversion):
         self.hover_reported = True
         self._start_z_pos = 3
 
-        self._pending = None
+        self._internal_pending = False
+        self._apply_load = False
+
+        self._save_pending = None
+        self._apply_save = False
+
+        self._pending_convert = False
 
 
         self._hover_eligible_cache = {}  # path, frame

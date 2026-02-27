@@ -16,21 +16,41 @@ from src.lsd.gl_gui.view.core_conversion.path_finder import Pending, PendingStat
 
 class Background:
     _user_cache = {}  # user_id -> OrderedDict{hash -> result}
-    _cache_size = 5
+    _cache_size = 1
     _active = set()
     _user_tasks = {}
     _lock = threading.Lock()
     _pool = ThreadPoolExecutor(max_workers=16)
 
     @classmethod
+    def shutdown(cls):
+        with cls._lock:
+            cls._active.clear()
+            cls._user_tasks.clear()
+            cls._user_cache.clear()
+
+        print("Shutting down background thread pool...")
+        cls._pool.shutdown(wait=True)
+        print("Background thread pool shut down successfully.")
+
+
+    @classmethod
     def run(cls, func, user_id, invalidate_id=None, on_frame=None, *args, **kwargs):
         h = cls.simple_hash(value=(kwargs.get("value", None))) + user_id
+
+        if kwargs.get("apply", False):
+            no_cache = True
+        else:
+            no_cache = False
 
         with cls._lock:
             cache = cls._user_cache.get(user_id)
             if cache and h in cache:
                 cache.move_to_end(h)
-                return cache[h]
+                return_val = cache[h]
+                if no_cache:
+                    cls._user_cache.pop(user_id, None)
+                return return_val
 
             cls._user_tasks[user_id] = h
 
@@ -69,6 +89,7 @@ class Background:
 
         cls._pool.submit(_task)
         return Pending(status="background thread", state=PendingState.BACKGROUND)
+
     @staticmethod
     def compute_hash(cls, exclude=None, memo=None, depth=0, do_print=False, include_hidden=False):
         """
