@@ -1000,15 +1000,19 @@ def render_func(*args, **o_kwargs):
                                     raise Exception("Pending needs to be handled before saving to cache")
 
                         if isinstance(internal_value, Pending):
-                            draw_list = imgui.get_window_draw_list()
-                            draw_list.add_text(*(draw_state.left + draw_state.footer_width + 3, draw_state.top + draw_state.height - 20),
-                                                imgui.get_color_u32_rgba(1,1,1, 1.0),
-                                                f"\uf110 {internal_value.status}")
+                            draw_state._load_pending_for += 1
+                            # Debounce loading spinner icon
+                            if draw_state._load_pending_for > 2:
+                                draw_list = imgui.get_window_draw_list()
+                                draw_list.add_text(*(draw_state.left + draw_state.footer_width + 3, draw_state.top + draw_state.height - 20),
+                                                    imgui.get_color_u32_rgba(1,1,1, 1.0),
+                                                    f"\uf110 {internal_value.status}")
 
                             Melty.cache.invalidate(draw_state._parent._tile_id, force=True)
                             Melty.cache.invalidate(draw_state._tile_id, force=True)
                             request_render()
                         else:
+                            draw_state._load_pending_for = 0
                             prev_internal_hash = Background.simple_hash(
                                 draw_state._input_value_cache["internal_state"][0])
 
@@ -1464,9 +1468,8 @@ def render_func(*args, **o_kwargs):
                     Melty.bg_depth += 1 + kwargs.get("bg_offset", 0)
                     Melty.bg_stack.append(style_manager.get_tint())
 
-                return_value = draw_inner_main(clean_args, clip_rect, draw_state,
-                                               input_value, kwargs, auto_resize,
-                                               melty, tile_id, unique, melty_window)
+                return_value = draw_inner_main(clean_args, draw_state,
+                                               input_value, unique, kwargs)
 
                 if show_bg:
                     Melty.bg_depth -= 1 + kwargs.get("bg_offset", 0)
@@ -1574,6 +1577,7 @@ def render_func(*args, **o_kwargs):
                         new_value_child = draw_state._input_value_cache["internal_state"][0]
 
                     if isinstance(convert_path, list):
+                        ####################################### SAVE HANDLER
                         # Reverse the path to convert back up to the original type
                         convert_path = list(reversed(convert_path))
                         external_value = Background.run(convert, user_id=str(unique) + "end", invalidate_id=draw_state._parent._tile_id,
@@ -1592,15 +1596,18 @@ def render_func(*args, **o_kwargs):
                                 external_value = external_value.wrapped
 
                         if isinstance(external_value, Pending):
-                            report_changed = False
-                            load_icon = f"\uf110"
-                            draw_list.add_text(*(draw_state.left + 2, draw_state.top + draw_state.height - draw_state.footer_height - 20),
-                                               imgui.get_color_u32_rgba(1,1,1, 0.5),
-                                               f"{load_icon} {external_value.status}")
+                            draw_state._save_pending_for += 1
+                            if draw_state._save_pending_for > 2:
+                                report_changed = False
+                                load_icon = f"\uf110"
+                                draw_list.add_text(*(draw_state.left + 2, draw_state.top + draw_state.height - draw_state.footer_height - 20),
+                                                   imgui.get_color_u32_rgba(1,1,1, 0.5),
+                                                   f"{load_icon} {external_value.status}")
                             Melty.cache.invalidate(draw_state._parent._tile_id, force=True)
                             Melty.cache.invalidate(draw_state._tile_id, force=True)
                             request_render()
                         else:
+                            draw_state._save_pending_for = 0
                             prev_hash = Background.simple_hash(draw_state._input_value_cache["external_state"][0])
                             if Melty.frame_count >= draw_state._input_value_cache["external_state"][1]:
                                 hash_val = Background.simple_hash(external_value)
@@ -1777,8 +1784,7 @@ def render_func(*args, **o_kwargs):
                 return child_changed, new_value, return_draw_state
             return child_changed, new_value
 
-    def draw_inner_main(clean_args, clip_rect, draw_state, input_value, kwargs,
-                        auto_resize, melty, tile_id, unique, melty_window):
+    def draw_inner_main(clean_args, draw_state, input_value, unique, kwargs):
         return_value = None
         expected_type = param_types[0] if len(param_types) > 0 else None
         annotation_empty = expected_type == inspect.Parameter.empty

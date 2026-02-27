@@ -59,6 +59,11 @@ class Anchor(Enum):
     BOTTOM_RIGHT = 'bottom_right'
 
 
+class Results(Enum):
+    INSTANT = 'instant'
+    ON_RELEASE = 'on_release'
+    CONFIRM = 'confirm'
+
 class ZoomState(DictConversion):
     def __init__(self):
         super().__init__()
@@ -315,8 +320,9 @@ class DrawState(DictConversion):
 
         self._save_pending = None
         self._apply_save = False
-
         self._pending_convert = False
+        self._save_pending_for = 0
+        self._load_pending_for = 0
 
 
         self._hover_eligible_cache = {}  # path, frame
