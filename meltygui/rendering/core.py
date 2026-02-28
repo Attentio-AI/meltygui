@@ -252,6 +252,14 @@ def render_func(*args, **o_kwargs):
         closable = kwargs.get("closable", False)
         tile_id = strhash(str(unique) + str(draw_state.id))
         draw_state._tile_id = tile_id
+        if len(Melty.melty_window_stack) > 0:
+            draw_state.parent_window = Melty.melty_window_stack[-1]
+            draw_state.left_offset, draw_state.top_offset = (
+                imgui.get_cursor_screen_pos()[0] - draw_state.parent_window.left,
+                imgui.get_cursor_screen_pos()[1] - draw_state.parent_window.top)
+
+        draw_state.closed = kwargs.get("closed", draw_state.closed)
+
         if closable:
             # Only perform this check on floating windows
             if draw_state._parent is not None and not draw_state._parent.clipped:
@@ -269,6 +277,7 @@ def render_func(*args, **o_kwargs):
                     Melty.cache.invalidate_by_obj(Melty.registered_windows)
 
             if draw_state.closed and not input_value == Melty.registered_windows:
+                Melty.root_draw_states[draw_state.id] = []
                 if return_extras:
                     return False, None, draw_state
                 return False, None
@@ -326,11 +335,7 @@ def render_func(*args, **o_kwargs):
         if draw_state.kwargs.temp:
             draw_state.dlt_count = 0
 
-        if len(Melty.melty_window_stack) > 0:
-            draw_state.parent_window = Melty.melty_window_stack[-1]
-            draw_state.left_offset, draw_state.top_offset = (
-                imgui.get_cursor_screen_pos()[0] - draw_state.parent_window.left,
-                imgui.get_cursor_screen_pos()[1] - draw_state.parent_window.top)
+
 
             # Disable cache for this frame to avoid further issues
         computed_unique = unique
@@ -901,29 +906,24 @@ def render_func(*args, **o_kwargs):
             unset_input = draw_state._input_value == UNSET_VALUE
             if Melty.cache.mark_start_offscreen(draw_state=draw_state):
                 Melty.root_draw_states[draw_state.id] = []
+                from src.lsd.gl_gui.view.core_views.new_core_view import draw_window
+                from src.lsd.gl_gui.view.core_views.new_core_view import pending_window
 
-                if draw_state._save_pending is not None:
-                    from src.lsd.gl_gui.view.core_views.new_core_view import button, draw_window
-
-                    @render_func
-                    def pending_window(input_value, name):
-                        imgui.text("Pending Action")
-                        imgui.text(name)
-                        if button(input_value, width=100, height=20)[0]:
-                            return True, None
-                        return False, None
-
-                    if draw_window(input_value=f"Save", with_footer=None, closed=False,
-                                   name=f"{draw_state.name} Save", anchor_pos=Anchor.TOP_LEFT,
-                                   view_func=pending_window, width=400)[0]:
+                if draw_state._show_save:
+                    if draw_window(
+                            input_value=f"{type(draw_state._raw_input_value).__name__} ->\n {type(draw_state._input_value).__name__}",
+                            with_footer=None, closed=False, tint=draw_state.tint,
+                            pending_name="Save", name=f"Save", anchor_pos=Anchor.TOP_LEFT,
+                            view_func=pending_window, width=400)[0]:
                         draw_state._apply_save = True
-                        Melty.cache.invalidate(draw_state._parent._tile_id, force=True)
-
-                    if draw_window(input_value=f"Load:", with_footer=None, closed=False,
-                                   name=f"{draw_state.name} {type(input_value)} Load", anchor_pos=Anchor.TOP_LEFT,
+                        Melty.cache.invalidate_up(draw_state._parent._tile_id, force=True)
+                #
+                if draw_state._show_load:
+                    if draw_window(input_value=f"{type(draw_state._raw_input_value).__name__} ->\n {type(draw_state._input_value).__name__}", with_footer=None, closed=False,
+                                   pending_name="Load", name=f"Load", anchor_pos=Anchor.TOP_LEFT, tint=draw_state.tint,
                                    view_func=pending_window, width=400)[0]:
                         draw_state._apply_load = True
-                        Melty.cache.invalidate(draw_state._parent._tile_id, force=True)
+                        Melty.cache.invalidate_up(draw_state._parent._tile_id, force=True)
 
                 if (draw_state.left is not None and draw_state.top is not None and
                     draw_state.width is not None and draw_state.height is not None) and melty_window:
@@ -999,6 +999,7 @@ def render_func(*args, **o_kwargs):
 
                         if not isinstance(internal_value, Pending):
                             draw_state._pending_convert = False
+                            draw_state._show_load = False
                             if draw_state._apply_load:
                                 draw_state._apply_load = False
                                 thead_launch_frame = Melty.frame_count
@@ -1007,6 +1008,7 @@ def render_func(*args, **o_kwargs):
 
                         if isinstance(internal_value, Pending):
                             if internal_value.state == PendingState.CONFIRM:
+                                draw_state._show_load = True
                                 draw_state._internal_pending = internal_value
                                 internal_value = internal_value.wrapped
                                 if isinstance(internal_value, Pending):
@@ -1602,12 +1604,15 @@ def render_func(*args, **o_kwargs):
                             external_value, thead_launch_frame = external_value
 
                         if not isinstance(external_value, Pending):
+                            draw_state._show_save = False
                             draw_state._apply_save = False
 
                         if isinstance(external_value, Pending):
                             if external_value.state == PendingState.CONFIRM:
+
                                 draw_state._save_pending = external_value
                                 external_value = external_value.wrapped
+                                draw_state._show_save = True
 
                         if isinstance(external_value, Pending):
                             draw_state._save_pending_for += 1

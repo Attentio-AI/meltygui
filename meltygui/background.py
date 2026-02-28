@@ -269,6 +269,16 @@ class Background:
             memo[id(value)] = enum_repr
             return enum_repr
 
+        if isinstance(value, bytes):
+            bytes_repr = f"bytes:{len(value)}"
+            memo[id(value)] = bytes_repr
+            return bytes_repr
+
+        if isinstance(value, bytearray):
+            bytearray_repr = f"bytearray:{len(value)}"
+            memo[id(value)] = bytearray_repr
+            return bytearray_repr
+
         # Handle lists
         if isinstance(value, list):
             memo[id(value)] = "list:processing"  # Add immediately to avoid recursion

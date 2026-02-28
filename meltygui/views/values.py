@@ -2617,6 +2617,21 @@ class ModeOverrides:
     func: Optional[callable] = None
     recursive:Optional[bool] = True
 
+@render_func(is_default_for=(FileWatch))
+def draw_file_watch(input_value: FileWatch):
+    imgui.text(f"Watching: {input_value._path}")
+    imgui.text(f"Size: {input_value.size} bytes")
+    imgui.text(f"Last Modified: {input_value.modified_time}")
+
+    return False, None
+
+@render_func
+def pending_window(input_value, pending_name):
+    imgui.text("Pending Action")
+    imgui.text(input_value)
+    if button(pending_name, width=100, height=20)[0]:
+        return True, None
+    return False, None
 
 class Mode(Enum):
     CODE_UI = {

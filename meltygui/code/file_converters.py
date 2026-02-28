@@ -40,7 +40,9 @@ File dicts carry __path__ (like __cst__) for lossless round-trip:
 
 import os
 from pathlib import Path
+from typing import Any
 
+from src.lsd.gl_gui.background import Background
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.view.core_conversion.converter_register import converter
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
@@ -154,12 +156,14 @@ def path_to_filewatch(value: Path, apply: bool = False) -> FileWatch:
         # Update stats, clear cache so downstream re-reads
         cached.mtime = stat.st_mtime
         cached.size = stat.st_size
-        cached.changed = False
-        cached.cache.clear()
+        # cached.cache.clear()
+
         return cached
     else:
         # Signal change, UI will short-circuit on Pending
-        cached.changed = True
+        if Any in cached.cache:
+            return Pending(cached.cache[Any])
+
         return Pending(cached)
 
 
@@ -168,7 +172,7 @@ def path_to_filewatch(value: Path, apply: bool = False) -> FileWatch:
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
 @converter(registry=Melty)
-def filewatch_to_dict(value: FileWatch) -> dict:
+def filewatch_to_dict(value: FileWatch, apply=False) -> dict:
     """Read a file via FileWatch into the standard metadata dict.
 
     Uses FileWatch.cache[dict] to avoid re-reading unchanged files.
@@ -178,82 +182,73 @@ def filewatch_to_dict(value: FileWatch) -> dict:
     Produces:
         {"name", "stem", "suffix", "size", "modified", "data", "__path__"}
     """
-    cached = value.cache.get(dict)
-    if cached is not None:
-        return cached
 
-    result = {
-        "name": value._path.name,
-        "stem": value._path.stem,
-        "suffix": value._path.suffix,
-        "size": value.size,
-        "modified": value.mtime,
-        "data": value._path.read_bytes(),
-        "__filewatch__": value,
-    }
-    value.cache[dict] = result
+    if apply:
+        result = {
+            "name": value._path.name,
+            "stem": value._path.stem,
+            "suffix": value._path.suffix,
+            "size": value.size,
+            "modified": value.mtime,
+            "data": value._path.read_bytes(),
+            "__filewatch__": value,
+            "__path__": value._path,
+        }
+        current_hash = len(result["data"])
+        result["__original_data__"] = result["data"]
+        value.cache[Any] = result
+    else:
+        result = {
+            "name": value._path.name,
+            "stem": value._path.stem,
+            "suffix": value._path.suffix,
+            "size": value.size,
+            "modified": value.mtime,
+            "__filewatch__": value,
+            "__path__": value._path,
+            "__original_data__":None,
+        }
+        if Any not in value.cache:
+            return Pending(result)
+        else:
+            result = value.cache[Any]
+
     return result
 
 
 @converter(registry=Melty)
 def dict_to_filewatch(value: dict, apply: bool = False) -> FileWatch:
-    """Look up or create a FileWatch from a file metadata dict.
-
-    Prefers __filewatch__ stored on the dict (round-trip from
-    filewatch_to_dict).  Falls back to __path__ lookup in the
-    module cache, or creates a new FileWatch if needed.
-
-    When apply=False → returns Pending(fw) without writing.
-    When apply=True  → writes "data" to disk, updates FileWatch
-        mtime/size so it doesn't flag its own write as a change.
+    """
+        Meat of the saving logic, write the file back to disk
     """
     # Fast path: dict already carries its FileWatch
     fw = value.get("__filewatch__")
 
-    if fw is not None:
-        # Ensure it's in the module cache
-        if fw._path not in _file_watch_cache:
-            _file_watch_cache[fw._path] = fw
-    else:
-        path = value.get("__path__")
-        if path is None:
-            raise TypeError("Dict has no __filewatch__ or __path__ — can't resolve FileWatch")
-        path = Path(path).resolve()
-
-        fw = _file_watch_cache.get(path)
-        if fw is None:
-            stat = path.stat() if path.exists() else None
-            fw = FileWatch(
-                path=path,
-                mtime=stat.st_mtime if stat else 0.0,
-                size=stat.st_size if stat else 0,
-            )
-            _file_watch_cache[path] = fw
-
-    # Update the dict cache so the round-trip is free
-    fw.cache[dict] = value
-
     if not apply:
-        return Pending(fw)
+        # Update the downstream cache so the round-trip is free
+        if fw is not None and Any in fw.cache:
+            current_hash = value.get("data", [])
+            cached_hash = fw.cache[Any]["__original_data__"]
+            if current_hash == cached_hash:
+                return fw
+            else:
+                return Pending(value)
 
-    data = value.get("data")
-    if data is None:
-        raise ValueError("Dict has no 'data' key — nothing to write")
-
-    fw._path.parent.mkdir(parents=True, exist_ok=True)
-
-    if isinstance(data, bytes):
-        fw._path.write_bytes(data)
-    elif isinstance(data, str):
-        fw._path.write_text(data)
-    else:
-        raise TypeError(f"'data' must be bytes or str, got {type(data).__name__}")
-
+    data = value.get("data", None)
+    if data is not None:
+        fw._path.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(data, bytes):
+            fw._path.write_bytes(data)
+        elif isinstance(data, str):
+            fw._path.write_text(data)
+        else:
+            raise TypeError(f"'data' must be bytes or str, got {type(data).__name__}")
     # Update FW so it doesn't flag its own write as a change
     stat = fw._path.stat()
     fw.mtime = stat.st_mtime
     fw.size = stat.st_size
-    fw.changed = False
+    fw.cache['__original_data__'] = data
+    value["__original_data__"] = fw.cache['__original_data__']
 
     return fw
 

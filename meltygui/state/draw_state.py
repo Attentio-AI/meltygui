@@ -315,6 +315,8 @@ class DrawState(DictConversion):
         self.hover_reported = True
         self._start_z_pos = 3
 
+        self._show_load = False
+        self._show_save = False
         self._internal_pending = False
         self._apply_load = False
 
