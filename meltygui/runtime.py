@@ -31,6 +31,7 @@ class QuickToggles:
 class Melty:
     selected = set()
     last_selected = None
+    large_font = None
 
     draw_state_stack = []
     root_draw_states = defaultdict(lambda: list())

@@ -130,8 +130,7 @@ class TileMode(Enum):
                  "anchor_pos", "just_shadow", 'hover_reported', 'explain_convert',
                  'channel', 'next', 'previous', 'index_in_parent', 'relative_pos', 'context_menu_open',
                  'context_menu_ds', '_hover_eligible', 'just_shadow')
-@deep_refresh('scroll_offset')
-@invalidate_all('closed')
+@deep_refresh('scroll_offset', 'closed')
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
 
@@ -305,7 +304,6 @@ class DrawState(DictConversion):
         self.render_time = 0.0
         self.overhead_time = 0.0
 
-        self.expanded_rect = (0, 0, 200, 400)
 
         self.max_column = 1
         self._is_nested = False
@@ -325,8 +323,10 @@ class DrawState(DictConversion):
         self._pending_convert = False
         self._save_pending_for = 0
         self._load_pending_for = 0
-
-
+        self._content_rect = (100,30)
+        self._last_expanded = None
+        self.expanded_rect = (0, 0, 200, 400)
+        self._collapsed_rect = (0, 0, 200, 30)
         self._hover_eligible_cache = {}  # path, frame
         self._tile_params = {}
 

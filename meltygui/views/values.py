@@ -372,7 +372,11 @@ def draw_window(input_value:any, view_func=None, draw_state=None, delete_down=Fa
     kwargs['with_footer'] = None
     kwargs['is_tree'] = False
     kwargs['closable'] = False
+    kwargs['auto_resize'] = True
+    kwargs['disable_scroll'] = True
     kwargs.pop('max_height', None)
+    kwargs['shadow'] = False
+    kwargs['z_offset'] = 0
 
     return_val = view_func(input_value, **kwargs)
     if len(return_val) == 3:
@@ -386,7 +390,7 @@ def draw_module(input_value: types.ModuleType, draw_state, **kwargs):
     imgui.text(f"Module: {input_value.__name__}")
 
 @render_func(is_default_for=(dict, MutableMapping, defaultdict, types.MappingProxyType), use_cache=True,
-             show_bg=True, show_instance_vars=False, manual_content_height=True,
+             show_bg=True, show_instance_vars=False, manual_content_height=True, disable_scroll=True,
              shadow=True, wrap=False, with_header=draw_header, indent_size=10)
 def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=None, keys=None, get_attr=None, set_attr=None, show_excluded=False,
                     child_kwargs=None, nested_func=None, show_bg=True, show_search=True, on_collapse=False,
@@ -779,6 +783,8 @@ def path_to_text():
     text = convert(path, path=[Path, bytes, str], registry=Melty)
     return text
 
+
+
 @render_func(use_cache=False, show_bg=True, selectable=False, show_tint=True, bg_offset=-1, with_header=draw_header)
 def draw_main(input_value, vis, **kwargs):
     global test_obj
@@ -788,6 +794,7 @@ def draw_main(input_value, vis, **kwargs):
                               z_absolute=-1)
     global cst_dict
     global test_code
+
     # draw_window({"code_to_dict": code_to_dict,
     #              "dict_to_code": dict_to_code}, name="CST Test", show_bg=True, child_kwargs={'show_excluded': True})
     # changed, value = draw_window(test_code, name="test_code", show_bg=True, child_kwargs={'show_excluded': True})
@@ -888,6 +895,7 @@ code_export_str = "Test"
 filesystem_proxy = FolderProxy("/home/lukas/test_folder", text_mode=True)
 
 
+
 # Main draw function, called by the GUI framework
 
 @live
@@ -930,6 +938,8 @@ def draw_melty_windows(vis):
     Melty.window_stack.append((title, True))
 
     draw_main(name="Main Window", vis=vis, width=fb_w, height=fb_h)
+    from src.lsd.gl_gui.applet.test_applet import render_app
+    render_app()
 
     Melty.end_frame()
 
@@ -956,7 +966,7 @@ def draw_pending_texture(input_value: PendingTexture, draw_state):
 
 @render_func(is_default_for=numpy.uint32, show_bg=True,
              use_cache=False, show_add_delete=False, z_offset=2, fill_height=True,
-             indent_size=0, min_width=100, min_height=100, wrap=False,
+             indent_size=0, min_width=100, min_height=100, wrap=False, disable_scroll=True,
              enable_scroll=True, zoom_speed=0.3, with_header=draw_header, manual_content_height=True)
 def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mouse_drag, right_mouse_drag,
                  zoom_state: ZoomState, zoom_speed, header_height=0, min_zoom=0.1,
@@ -964,7 +974,7 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
                  draw_state=None, jet=False, **kwargs):
     original_id = input_value
     texture_id = input_value
-    imgui.dummy(draw_state.width, draw_state.height)
+    imgui.dummy(draw_state.width, draw_state.height - 20)
 
     # Ensure we have valid state if this is the first run
     if not hasattr(zoom_state, 'zoom'):
@@ -1298,7 +1308,7 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
     # draw_window(Melty.last_request_render, show_bg=True, name="Last Invalid")
 
 
-@render_func(is_default_for=ManagedWindow, is_tree=False, show_name=False, use_cache=True, z_offset=-1,
+@render_func(is_default_for=ManagedWindow, is_tree=False, show_name=False, use_cache=True, shadow=False,
              show_bg=False, selectable=False, show_add_delete=False, show_tint=False, wrap=False,
              with_header=draw_header)
 def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, mouse_down=False, **kwargs):
@@ -2625,7 +2635,7 @@ def draw_file_watch(input_value: FileWatch):
 
     return False, None
 
-@render_func
+@render_func(use_cache=True, show_header=False)
 def pending_window(input_value, pending_name):
     imgui.text("Pending Action")
     imgui.text(input_value)
