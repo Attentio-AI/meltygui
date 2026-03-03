@@ -1,16 +1,15 @@
+import io
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
 import threading
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
 
 import torch
 
-from server.model.render_utils import print_colored_traceback
-from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
-
-from collections import OrderedDict
-
+from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace, get_live_frames, _print_lock, trace_group
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending, PendingState
 
 
@@ -20,7 +19,7 @@ class Background:
     _active = set()
     _user_tasks = {}
     _lock = threading.Lock()
-    _pool = ThreadPoolExecutor(max_workers=16)
+    _pool = ThreadPoolExecutor(max_workers=1)
 
     @classmethod
     def shutdown(cls):
@@ -37,6 +36,9 @@ class Background:
     @classmethod
     def run(cls, func, user_id, no_cache=False, invalidate_id=None, on_frame=None, *args, **kwargs):
         h = cls.simple_hash(value=(kwargs.get("value", None))) + user_id
+
+        # store stack trace from caller for better debugging of background tasks from sys
+        frames = get_live_frames()
 
         if kwargs.get("apply", False):
             no_cache = True
@@ -84,9 +86,16 @@ class Background:
                 with cls._lock:
                     cls._active.discard(h)
 
-                print(f"Error in background task for user {user_id} with hash {h}:")
-                # print(e)
-                print_colored_traceback(*sys.exc_info())
+                with trace_group(f"JOB {user_id}", hash=h) as g:
+                    print_stack_trace(frames=frames, section="UI Thread",
+                                      group=g, watch=["draw_state.name", "input_value"])
+                    print_stack_trace(exception=e, section="Background Thread",
+                                      group=g, watch=["value", "path"])
+
+
+
+
+                # cls.shutdown()
 
         cls._pool.submit(_task)
         return Pending(status="background thread", state=PendingState.BACKGROUND)

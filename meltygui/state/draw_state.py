@@ -325,8 +325,8 @@ class DrawState(DictConversion):
         self._load_pending_for = 0
         self._content_rect = (100,30)
         self._last_expanded = None
-        self.expanded_rect = (0, 0, 200, 400)
-        self._collapsed_rect = (0, 0, 200, 30)
+        self.expanded_rect = (0, 0, 0, 0)
+        self._collapsed_rect = (0, 0, 0, 0)
         self._hover_eligible_cache = {}  # path, frame
         self._tile_params = {}
 

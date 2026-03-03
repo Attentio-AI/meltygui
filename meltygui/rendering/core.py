@@ -508,17 +508,25 @@ def render_func(*args, **o_kwargs):
 
         # Restore expanded =================
         if draw_state._last_expanded is not None and draw_state._last_expanded != draw_state.expanded:
+            if draw_state._last_expanded:
+                draw_state.expanded_rect = (draw_state.left, draw_state.top, draw_state.width, draw_state.height)
+            else:
+                draw_state._collapsed_rect = (draw_state.left, draw_state.top, draw_state.width, draw_state.height)
+
             if draw_state.expanded:
                 # Restore rect
                 draw_state.left, draw_state.right, draw_state.width, draw_state.height = draw_state.expanded_rect
+                draw_state.expanded_rect = (0, 0, 0, 0)
             else:
                 # Save rect
                 draw_state.left, draw_state.right, draw_state.width, draw_state.height = draw_state._collapsed_rect
 
+
         if draw_state.expanded:
-            draw_state.expanded_rect = (draw_state.left, draw_state.top, draw_state.width, draw_state.height)
-        else:
-            draw_state._collapsed_rect = (draw_state.left, draw_state.top, draw_state.width, draw_state.height)
+            draw_state.expanded_rect = (0, 0, 0, 0)
+        #     draw_state.expanded_rect = (draw_state.left, draw_state.top, draw_state.width, draw_state.height)
+        # else:
+        #     draw_state._collapsed_rect = (draw_state.left, draw_state.top, draw_state.width, draw_state.height)
 
         draw_state._last_expanded = draw_state.expanded
         # End restore expanded ================
