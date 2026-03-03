@@ -21,9 +21,9 @@ from src.lsd.gl_gui.view.core_conversion.path_finder import convert, explain_cha
 from src.lsd.gl_gui.view.core_views.core_render_helpers import draw_vertical_scrollbar, floating_text
 from src.lsd.gl_gui.model.core_model.draw_state import DrawState, Hotkey, DragMode, Anchor, TileMode, AttrDict, \
     UNSET_VALUE
-from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, print_stack_trace, \
+from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, \
     push_style_var, pop_style_var
-from src.lsd.gl_gui.utils.glfw_utils import request_render
+from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace, trace_group, get_live_frames
 from src.lsd.gl_gui.melty import Melty, apply_collection_action, MeltyState, DepthState, \
     delete_from_collection, ManagedWindow
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
@@ -38,6 +38,13 @@ stack_holder = {}
 
 channels_split_stack = False
 child_stack_holder = {}
+
+
+def path_to_string(path_list):
+    str_list = []
+    for item in path_list:
+        str_list.append(str(item.__name__ if hasattr(item, "__name__") else str(item)))
+    return " -> ".join(str_list)
 
 
 def render_wrapper(*o_args, **o_kwargs):
@@ -309,7 +316,8 @@ def render_func(*args, **o_kwargs):
                     kwargs['mode'] = mode
 
         draw_state._kwargs = kwargs
-
+        input_changed = False
+        internal_changed = False
         ds_kwargs = copy(kwargs)
         exclude_ds_kwargs = ["input_value", "wanted_params", "depth", "shadow_depth",
                              "name", "z_offset", "use_cache", "active_layer", "auto_resize",
@@ -989,12 +997,17 @@ def render_func(*args, **o_kwargs):
                         # Melty.cache.invalidate(draw_state._parent._tile_id, force=True)
                         # Melty.cache.invalidate(draw_state._tile_id, force=True)
                         # request_render()
-                    internal_value = Background.run(convert, user_id=f"{draw_state.unique}",
-                                                    invalidate_id=draw_state._tile_id,
-                                                    on_frame=Melty.frame_count, no_cache=True,
-                                                    value=draw_state._raw_input_value, apply=draw_state._apply_load,
-                                                    target=to_type,
-                                                    path=convert_path, registry=Melty, )
+                    if draw_state._raw_input_value == UNSET_VALUE:
+                        internal_value, thead_launch_frame = draw_state._input_value_cache["internal_state"]
+
+                    else:
+                        internal_value = Background.run(convert,
+                                                        user_id=str(draw_state.unique) + f" | input convert",
+                                                        invalidate_id=draw_state._tile_id,
+                                                        on_frame=Melty.frame_count, no_cache=True,
+                                                        value=draw_state._raw_input_value, apply=draw_state._apply_load,
+                                                        target=to_type,
+                                                        path=convert_path, registry=Melty, )
                     if isinstance(internal_value, tuple):
                         internal_value, thead_launch_frame = internal_value
                     internal_changed = False
@@ -1032,6 +1045,7 @@ def render_func(*args, **o_kwargs):
                                     raise Exception("Pending needs to be handled before saving to cache")
 
                         if isinstance(internal_value, Pending):
+                            draw_state._load_pending = True
                             draw_state._load_pending_for += 1
                             # Debounce loading spinner icon
                             if draw_state._load_pending_for > 2:
@@ -1045,6 +1059,7 @@ def render_func(*args, **o_kwargs):
                             # Melty.cache.invalidate(draw_state._tile_id, force=True)
                             # request_render()
                         else:
+                            draw_state._load_pending = False
                             draw_state._load_pending_for = 0
                             prev_internal_hash = Background.simple_hash(
                                 draw_state._input_value_cache["internal_state"][0])
@@ -1055,10 +1070,10 @@ def render_func(*args, **o_kwargs):
                                 draw_state._input_value_cache["internal_state"] = internal_value, thead_launch_frame
                                 new_internal_hash = Background.simple_hash(draw_state._input_value_cache["internal_state"][0])
                                 draw_state._input_value = internal_value
-                                # if prev_internal_hash != new_internal_hash:
-                                #     Melty.cache.invalidate(draw_state._parent._tile_id, force=True)
-                                #     Melty.cache.invalidate(draw_state._tile_id, force=True)
-                                #     request_render()
+                                if prev_internal_hash != new_internal_hash:
+                                    Melty.cache.invalidate(draw_state._parent._tile_id, force=True)
+                                    Melty.cache.invalidate(draw_state._tile_id, force=True)
+                                    request_render()
 
                     converted_input = True
                     draw_state.explain_convert = str(convert_path)
@@ -1072,10 +1087,6 @@ def render_func(*args, **o_kwargs):
                 else:
                     draw_state._input_value = input_value
                     kwargs["input_value"] = draw_state._input_value
-
-
-                # original_value = input_value
-
 
                 highlight = draw_state.selected
 
@@ -1617,21 +1628,37 @@ def render_func(*args, **o_kwargs):
                         ####################################### SAVE HANDLER
                         # Reverse the path to convert back up to the original type
                         convert_path = list(reversed(convert_path))
-                        external_value = Background.run(convert, user_id=str(unique) + "end", invalidate_id=draw_state._parent._tile_id,
-                                                        on_frame=Melty.frame_count, no_cache=True,
-                                                        value=new_value_child, apply=draw_state._apply_save, target=original_type,
-                                                        path=convert_path, registry=Melty, )
+                        no_bg_needed = (not child_changed and not internal_changed
+                                       and draw_state._save_pending_for == 0
+                                       and not draw_state._apply_save
+                                       and not draw_state._show_load
+                                       and not draw_state._save_pending
+                                       and not draw_state._show_save
+                                       and not draw_state._apply_load
+                                       and not input_changed)
+                        if new_value_child == UNSET_VALUE or no_bg_needed:
+                            external_value = draw_state._input_value_cache["external_state"] = (
+                            input_value, draw_state._input_value_cache["external_state"][1])
+
+                        else:
+                            external_value = Background.run(convert, user_id=str(unique) + f" | output convert",
+                                                            invalidate_id=draw_state._parent._tile_id,
+                                                            on_frame=Melty.frame_count, no_cache=True,
+                                                            value=new_value_child, apply=draw_state._apply_save, target=original_type,
+                                                            path=convert_path, registry=Melty, )
                         if isinstance(external_value, tuple):
                             external_value, thead_launch_frame = external_value
 
                         if not isinstance(external_value, Pending):
                             draw_state._show_save = False
                             draw_state._apply_save = False
+                            draw_state._save_pending = False
+                        else:
+                            draw_state._save_pending = True
 
                         if isinstance(external_value, Pending):
                             if external_value.state == PendingState.CONFIRM:
 
-                                draw_state._save_pending = external_value
                                 external_value = external_value.wrapped
                                 draw_state._show_save = True
 
@@ -1656,9 +1683,11 @@ def render_func(*args, **o_kwargs):
                                 if prev_hash != hash_val or draw_state._apply_save:
                                     report_changed = True
                                     report_value = external_value
-                                    # Melty.cache.invalidate(draw_state._parent._tile_id, force=True)
-                                    # Melty.cache.invalidate(draw_state._tile_id, force=True)
-                                    # request_render()
+                                    Melty.cache.invalidate(draw_state._parent._tile_id, force=True)
+                                    Melty.cache.invalidate(draw_state._tile_id, force=True)
+                                    request_render()
+
+
 
                         # if input_conversion_background:
                         #     draw_state._pending_convert = True
@@ -1774,7 +1803,13 @@ def render_func(*args, **o_kwargs):
                     draw_list.channels_merge()
 
         except Exception as e:
-            print_colored_traceback(*sys.exc_info())
+            with trace_group(f"Drawing {func.__name__} {draw_state.name}", hash=draw_state.unique) as g:
+                watch = ["draw_state.name", "input_value", "clean_args.input_value", "func.__name__", "mode"]
+                print_stack_trace(frames=get_live_frames(), section="UI Thread",
+                                  group=g, watch=watch)
+                print_stack_trace(exception=e, section="Exception",
+                                  group=g, watch=watch)
+
         finally:
 
             Melty.active_layer = original_active_layer

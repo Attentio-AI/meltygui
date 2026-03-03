@@ -1,3 +1,4 @@
+import hashlib
 import io
 import sys
 import threading
@@ -9,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import torch
 
+from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace, get_live_frames, _print_lock, trace_group
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending, PendingState
 
@@ -19,7 +21,7 @@ class Background:
     _active = set()
     _user_tasks = {}
     _lock = threading.Lock()
-    _pool = ThreadPoolExecutor(max_workers=1)
+    _pool = ThreadPoolExecutor(max_workers=16)
 
     @classmethod
     def shutdown(cls):
@@ -38,7 +40,8 @@ class Background:
         h = cls.simple_hash(value=(kwargs.get("value", None))) + user_id
 
         # store stack trace from caller for better debugging of background tasks from sys
-        frames = get_live_frames()
+
+        frames = None
 
         if kwargs.get("apply", False):
             no_cache = True
@@ -50,15 +53,16 @@ class Background:
                 return_val = cache[h]
                 if no_cache:
                     cls._user_cache.pop(user_id, None)
-                else:
-                    print(f"Cache hit for user {kwargs.get('path', None)}. Returning cached result.")
                 return return_val
 
             cls._user_tasks[user_id] = h
 
+
             if h in cls._active:
                 return Pending(status="background thread active", state=PendingState.BACKGROUND)
 
+            if Toggles.debug_threads:
+                frames = get_live_frames()
             cls._active.add(h)
 
         def _task():
@@ -195,7 +199,7 @@ class Background:
         return float_value
 
     @staticmethod
-    def simple_hash(value, exclude=None, memo=None, depth=0, do_print=False, include_hidden=False):
+    def simple_hash(value, exclude=None, memo=None, depth=0, do_print=False, include_hidden=False, internal=False):
         """
         Helper method to convert a value to a string representation based on its type.
 
@@ -209,6 +213,18 @@ class Background:
         Returns:
             A string representation of the value
         """
+
+        if not internal:
+            return_val = Background.simple_hash(value=value, exclude=exclude, memo=memo, depth=depth, do_print=do_print,
+                                            include_hidden=include_hidden, internal=True)
+            hash_result = hashlib.sha256(return_val.encode('utf-8')).hexdigest()
+
+            # Convert the hash to a 16-bit float (Float16)
+            # Take the first 4 hex chars (16 bits) and convert to integer, then normalize to float16 range
+            hash_int = int(hash_result[:4], 16)
+            return str(hash_int)
+
+
         if exclude is None:
             exclude = {}
         depth += 1

@@ -223,7 +223,6 @@ def dict_to_filewatch(value: dict, apply: bool = False) -> FileWatch:
     """
     # Fast path: dict already carries its FileWatch
     fw = value.get("__filewatch__")
-
     if not apply:
         # Update the downstream cache so the round-trip is free
         if fw is not None and Any in fw.cache:

@@ -818,7 +818,6 @@ def draw_main(input_value, vis, **kwargs):
     some_path = Path("/home/lukas/test_folder/test_list.txt")
     changed, value = draw_window(some_path, name="test_path_render", mode=Mode.FILE_META)
     if changed:
-        print("New path value:", value)
         path = value
 
     from src.lsd.gl_gui.model.app_model import TensorView

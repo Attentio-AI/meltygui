@@ -25,9 +25,6 @@ from dataclasses import dataclass
 
 
 
-class QuickToggles:
-    invalidate_stack_trace = False
-
 class Melty:
     selected = set()
     last_selected = None

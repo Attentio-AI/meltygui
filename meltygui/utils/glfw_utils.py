@@ -23,6 +23,8 @@ import os
 import re
 from contextlib import contextmanager
 
+from src.lsd.gl_gui.toggles import Toggles
+
 # ANSI escape codes
 _BOLD = "\033[1m"
 _DIM = "\033[2m"
@@ -74,23 +76,25 @@ def _next_job_color():
 class TraceGroup:
     """Buffers multiple print_stack_trace calls and flushes atomically."""
 
+    bar_size_outer = 58
+    bar_size_inner = 30
     def __init__(self, label, color, **meta):
         self.buf = io.StringIO()
         self.label = label
         self.color = color
         self.meta = meta
 
-    def _bar(self, text=""):
+    def _bar(self, text="", size=bar_size_inner):
         if text:
-            pad = 30 - len(text) - 4
+            pad = size - len(text) - 4
             return f"{self.color}{_BLACK}{_BOLD} ▌ {text} {'─' * max(pad, 0)} {_RESET}"
-        return f"{self.color}{_BLACK}{_BOLD} {'─' * 58} {_RESET}"
+        return f"{self.color}{_BLACK}{_BOLD} {'─' * size} {_RESET}"
 
     def write_header(self):
         meta = ""
         if self.meta:
             meta = "  " + "  ".join(f"{k}={v}" for k, v in self.meta.items())
-        self.buf.write(f"\n{self._bar(self.label)}\n")
+        self.buf.write(f"\n{self._bar(self.label, size=TraceGroup.bar_size_outer)}\n")
         if meta:
             self.buf.write(f"{self.color} {_RESET}{_DIM}{meta}{_RESET}\n")
 
@@ -98,7 +102,7 @@ class TraceGroup:
         self.buf.write(f"{self._bar(name)}\n")
 
     def write_footer(self):
-        self.buf.write(f"{self._bar()}\n\n")
+        self.buf.write(f"{self._bar(size=TraceGroup.bar_size_outer)}\n\n")
 
     def flush(self, dest=None):
         dest = dest or sys.stdout
@@ -125,6 +129,70 @@ def trace_group(label, **meta):
         g.write_footer()
         g.flush()
 
+
+def _resolve_func(name):
+    """
+    Resolve a function name to a callable.
+
+    Tries in order:
+      1. Python builtins (str, len, type, etc.)
+      2. Dotted module path (json.dumps, os.path.basename, etc.)
+      3. Already-imported modules in sys.modules
+    """
+    import builtins
+
+    # 1. Builtin
+    if hasattr(builtins, name):
+        return getattr(builtins, name)
+
+    # 2. Dotted path - walk from leftmost module
+    if "." in name:
+        parts = name.split(".")
+        # Try progressively longer module paths
+        for i in range(len(parts) - 1, 0, -1):
+            mod_path = ".".join(parts[:i])
+            attr_path = parts[i:]
+            try:
+                import importlib
+                obj = importlib.import_module(mod_path)
+                for attr in attr_path:
+                    obj = getattr(obj, attr)
+                return obj
+            except (ImportError, AttributeError):
+                continue
+
+    # 3. Top-level module with a single function
+    # e.g. someone has "myfunc" that's in sys.modules somehow
+    for mod in sys.modules.values():
+        if mod and hasattr(mod, name):
+            return getattr(mod, name)
+
+    return None
+
+
+def _parse_watch(expr):
+    """
+    Parse wrapper functions off a watch expression.
+
+    "str(my_dict.item)"                -> (["str"], "my_dict.item")
+    "json.dumps(config)"               -> (["json.dumps"], "config")
+    "os.path.basename(filepath)"       -> (["os.path.basename"], "filepath")
+    "len(sorted(items))"               -> (["len", "sorted"], "items")
+    "draw_state.name"                  -> ([], "draw_state.name")
+    """
+    funcs = []
+    while True:
+        # Match func_name(...) where func_name can be dotted like json.dumps
+        match = re.match(r'^([\w.]+)\((.+)\)$', expr)
+        if match:
+            func_name = match.group(1)
+            resolved = _resolve_func(func_name)
+            if resolved is not None:
+                funcs.append(func_name)
+                expr = match.group(2)
+                continue
+        break
+    return funcs, expr
 
 def print_stack_trace(size=None, skip=-1, stack=None, frames=None, watch=None,
                       max_str_len=120, max_items=2, max_depth=3, max_output=120,
@@ -210,12 +278,19 @@ def print_stack_trace(size=None, skip=-1, stack=None, frames=None, watch=None,
             continue
 
         found = {}
-        for path in watch_paths:
+        for expr in watch_paths:
+            funcs, path = _parse_watch(expr)
             root = _get_root_name(path)
             if root in local_vars:
                 success, value = _resolve_path(path, local_vars)
                 if success:
-                    found[path] = value
+                    try:
+                        for func_name in reversed(funcs):
+                            value = _resolve_func(func_name)(value)
+                        found[expr] = value
+                    except Exception as ex:
+                        found[expr] = f"<{func_name}() raised {type(ex).__name__}: {ex}>"
+
 
         if not found:
             continue
@@ -233,19 +308,19 @@ def print_stack_trace(size=None, skip=-1, stack=None, frames=None, watch=None,
             root = _get_root_name(path)
             def_line = _find_assignment(filename, lineno, root)
             clickable_name = _osc8_link(filename, def_line, f"{path}")
-
+            indent_size = 8
             if "\n" in formatted_value:
                 indented = "\n".join(
-                    f"             {line}" for line in formatted_value.splitlines()
+                    f"{' '* indent_size * 2}{line}" for line in formatted_value.splitlines()
                 )
                 buf.write(
-                    f"    {_GREEN}⯈ {_BOLD}{clickable_name}{_RESET}"
+                    f"{' ' * indent_size}{_GREEN}⯈ {_BOLD}{clickable_name}{_RESET}"
                     f" {_DIM}{type(value).__name__}{_RESET}\n"
                 )
                 buf.write(f"{_MAGENTA}{indented}{_RESET}\n")
             else:
                 buf.write(
-                    f"    {_GREEN}⯈ {_BOLD}{clickable_name}{_RESET}"
+                    f"{' ' * indent_size}{_GREEN}⯈ {_BOLD}{clickable_name}{_RESET}"
                     f" {_DIM}{type(value).__name__}{_RESET}"
                     f" = {_MAGENTA}{formatted_value}{_RESET}\n"
                 )
@@ -549,8 +624,7 @@ def request_render():
     # from src.lsd.gl_gui.melty import Melty
     # Melty.last_request_render = stack[-2].name
     from src.lsd.gl_gui.melty import Melty
-    from src.lsd.gl_gui.melty import QuickToggles
-    if QuickToggles.invalidate_stack_trace:
+    if Toggles.invalidate_stack_trace:
         if Melty.frame_count > 0 and Melty.frame_count % 10 == 0:
             print_stack_trace(size=5)
     _needs_render.set()

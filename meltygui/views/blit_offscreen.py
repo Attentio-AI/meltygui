@@ -10,9 +10,10 @@ from typing import Dict, List, Optional, Tuple, MutableMapping
 from OpenGL import GL as gl
 import imgui
 
-from src.lsd.gl_gui.melty import Melty, QuickToggles
+from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.model.core_model.core_enums import OffscreenDebugMode
 from src.lsd.gl_gui.model.core_model.draw_state import TileMode, UNSET_VALUE
+from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
 
 """
@@ -756,7 +757,7 @@ class TileCacheMasked:
         )
 
     def invalidate(self, k: str, force=False) -> None:
-        if QuickToggles.invalidate_stack_trace:
+        if Toggles.invalidate_stack_trace:
             if Melty.frame_count > 100 and Melty.frame_count % 30 == 0:
                 print_stack_trace()
         t = self._tiles.get(k)
