@@ -453,40 +453,20 @@ def _summarize(value):
     return f"<{t}>"
 
 
-def _get_root_name(path):
-    """Extract the top-level variable name from a dotted/indexed path."""
-    end = len(path)
-    dot = path.find(".")
-    bracket = path.find("[")
-    if dot != -1:
-        end = min(end, dot)
-    if bracket != -1:
-        end = min(end, bracket)
-    return path[:end]
-
-
-def _resolve_path(path, local_vars):
-    """Walk a dotted/indexed path against local variables."""
-    tokens = _tokenize_path(path)
-    if not tokens:
-        return False, None
-    root = tokens[0]
-    if root not in local_vars:
-        return False, None
-    obj = local_vars[root]
-    for token in tokens[1:]:
-        try:
-            if isinstance(token, str):
-                obj = getattr(obj, token)
-            else:
-                obj = obj[token]
-        except (AttributeError, IndexError, KeyError, TypeError):
-            return False, None
-    return True, obj
+# Token tag to distinguish access types
+_ATTR = 'attr'
+_INDEX = 'index'
 
 
 def _tokenize_path(path):
-    """Break a path string into access tokens."""
+    """
+    Break a path string into tagged access tokens.
+
+    "draw_state.name"       -> [("attr", "draw_state"), ("attr", "name")]
+    "my_dict['key']"        -> [("attr", "my_dict"), ("index", "key")]
+    "items[0].name"         -> [("attr", "items"), ("index", 0), ("attr", "name")]
+    "nested['a']['b'].val"  -> [("attr", "nested"), ("index", "a"), ("index", "b"), ("attr", "val")]
+    """
     tokens = []
     for part in re.split(r'\.', path):
         segments = re.split(r'(\[[^\]]*\])', part)
@@ -497,12 +477,55 @@ def _tokenize_path(path):
             if seg.startswith("[") and seg.endswith("]"):
                 inner = seg[1:-1].strip()
                 try:
-                    tokens.append(int(inner))
+                    tokens.append((_INDEX, int(inner)))
                 except ValueError:
-                    tokens.append(inner.strip("\"'"))
+                    tokens.append((_INDEX, inner.strip("\"'")))
             else:
-                tokens.append(seg)
+                tokens.append((_ATTR, seg))
     return tokens
+
+
+def _resolve_path(path, local_vars):
+    """
+    Walk a dotted/indexed path against local variables.
+
+    Dot access  (.name)    -> tries getattr first, then obj[key]
+    Bracket access ([key]) -> obj[key] only
+
+    Returns (True, value) on success, (False, None) on any failure.
+    """
+    tokens = _tokenize_path(path)
+    if not tokens:
+        return False, None
+
+    _, root = tokens[0]
+    if root not in local_vars:
+        return False, None
+
+    obj = local_vars[root]
+
+    for kind, token in tokens[1:]:
+        try:
+            if kind == _ATTR:
+                # Try attribute first, fall back to key lookup
+                try:
+                    obj = getattr(obj, token)
+                except AttributeError:
+                    obj = obj[token]
+            else:
+                obj = obj[token]
+        except (AttributeError, IndexError, KeyError, TypeError):
+            return False, None
+
+    return True, obj
+
+
+def _get_root_name(path):
+    """Extract the top-level variable name from a dotted/indexed path."""
+    tokens = _tokenize_path(path)
+    if tokens:
+        return tokens[0][1]
+    return path
 
 def _flush(buf, file=None):
     """Write the entire buffer atomically under a lock."""

@@ -88,7 +88,7 @@ class Background:
 
                 with trace_group(f"JOB {user_id}", hash=h) as g:
                     print_stack_trace(frames=frames, section="UI Thread",
-                                      group=g, watch=["draw_state.name", "input_value"])
+                                      group=g, watch=["draw_state.name", "input_value", "clean_args.input_value"])
                     print_stack_trace(exception=e, section="Background Thread",
                                       group=g, watch=["value", "path"])
 
