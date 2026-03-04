@@ -1304,7 +1304,7 @@ def _python_to_cst_expr(py_value, old_node=None):
             # Preserve formatting (dot whitespace, parens) from old node
             return old_node.with_changes(
                 value=old_node.value.with_changes(value=cls_name)
-                if isinstance(old_node.value, cst.Name) else cst.Name(cls_name),
+                    if isinstance(old_node.value, cst.Name) else cst.Name(cls_name),
                 attr=cst.Name(member_name),
             )
         return cst.Attribute(
@@ -1357,6 +1357,8 @@ def _python_to_cst_expr(py_value, old_node=None):
         return None
 
     if isinstance(py_value, list):
+        if isinstance(old_node, cst.List):
+            return _patch_sequence(py_value, old_node, cst.List)
         try:
             return convert(py_value, cst.List, registry=Melty)
         except (TypeError, ValueError):
@@ -1364,6 +1366,8 @@ def _python_to_cst_expr(py_value, old_node=None):
         return None
 
     if isinstance(py_value, tuple):
+        if isinstance(old_node, cst.Tuple):
+            return _patch_sequence(py_value, old_node, cst.Tuple)
         try:
             return convert(py_value, cst.Tuple, registry=Melty)
         except (TypeError, ValueError):
@@ -1371,6 +1375,63 @@ def _python_to_cst_expr(py_value, old_node=None):
         return None
 
     return None
+
+
+def _patch_sequence(py_values, old_node, node_cls):
+    """Patch a cst.List or cst.Tuple in-place, preserving comma formatting.
+
+    Walks old elements in parallel with new Python values:
+      - Surviving positions: update value, keep comma/whitespace
+      - New positions (list grew): clone comma style from last old element
+      - Removed positions (list shrank): drop extras
+      - Last element: strip trailing comma only if original had none
+    """
+    old_els = list(old_node.elements)
+    new_els = []
+
+    # Determine which comma style to clone for new/promoted elements.
+    # Use the first non-last element's comma (inner comma).
+    inner_comma = cst.Comma(whitespace_after=cst.SimpleWhitespace(""))
+    if len(old_els) >= 2:
+        inner_comma = old_els[0].comma
+
+    # Did the original have a trailing comma on its last element?
+    had_trailing = False
+    if old_els and not isinstance(old_els[-1].comma, cst.MaybeSentinel):
+        had_trailing = True
+
+    for i, py_val in enumerate(py_values):
+        if i < len(old_els):
+            # Surviving position - keep comma, update value
+            old_el = old_els[i]
+            new_value = _python_to_cst_expr(py_val, old_el.value)
+            if new_value is None:
+                new_value = old_el.value
+            new_els.append(old_el.with_changes(value=new_value))
+        else:
+            # New position - build element, clone inner comma
+            new_value = _python_to_cst_expr(py_val)
+            if new_value is None:
+                continue
+            new_els.append(cst.Element(value=new_value, comma=inner_comma))
+
+    # Ensure every non-last element has a real comma.
+    # (Old last element had MaybeSentinel.DEFAULT and is no longer last.)
+    for i in range(len(new_els) - 1):
+        if isinstance(new_els[i].comma, cst.MaybeSentinel):
+            new_els[i] = new_els[i].with_changes(comma=inner_comma)
+
+    # Fix last element comma
+    if new_els:
+        last = new_els[-1]
+        if had_trailing:
+            # Preserve trailing comma style from original last element
+            if old_els:
+                new_els[-1] = last.with_changes(comma=old_els[-1].comma)
+        else:
+            new_els[-1] = last.with_changes(comma=cst.MaybeSentinel.DEFAULT)
+
+    return old_node.with_changes(elements=new_els)
 
 
 def _callable_to_cst_expr(py_value, old_node=None):

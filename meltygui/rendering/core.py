@@ -396,8 +396,10 @@ def render_func(*args, **o_kwargs):
             if Melty.frame_count > 2 and draw_state.frame_count > 2:
                 if isinstance(input_value, (type(None), int, float, str, bool, tuple, set)):
                     if draw_state._raw_input_value != input_value:
+                        Melty.cache.invalidate_up(draw_state._tile_id, max_depth=10)
+
                         if kwargs.get("collection", None) is not None:
-                            Melty.cache.invalidate_up_by_obj(collection, name=name, max_depth=3)
+                            Melty.cache.invalidate_up_by_obj(collection, name=name, max_depth=5)
                             Melty.last_attr = draw_state.name
                             request_render()
 
@@ -979,6 +981,7 @@ def render_func(*args, **o_kwargs):
                     needs_convert = False
                     to_type = None
 
+                thead_launch_frame = 0
                 if needs_convert:
                     input_hash = Background.simple_hash(draw_state._raw_input_value)
                     cached_hash = Background.simple_hash(draw_state._input_value_cache["external_state"][0])
@@ -986,6 +989,9 @@ def render_func(*args, **o_kwargs):
                         input_changed = False
                     else:
                         input_changed = True
+                        Melty.cache.invalidate_up(draw_state._tile_id)
+                        Melty.cache.invalidate_up(draw_state._parent._tile_id)
+                        request_render()
 
                     if draw_state._apply_load or draw_state._pending_convert:
                         input_changed = True
@@ -1001,10 +1007,15 @@ def render_func(*args, **o_kwargs):
                         internal_value, thead_launch_frame = draw_state._input_value_cache["internal_state"]
 
                     else:
+                        if input_hash != cached_hash:
+                            start_frame = Melty.frame_count
+                        else:
+                            start_frame = Melty.frame_count
+
                         internal_value = Background.run(convert,
                                                         user_id=str(draw_state.unique) + f" | input convert",
                                                         invalidate_id=draw_state._tile_id,
-                                                        on_frame=Melty.frame_count, no_cache=True,
+                                                        on_frame=start_frame, no_cache=False,
                                                         value=draw_state._raw_input_value, apply=draw_state._apply_load,
                                                         target=to_type,
                                                         path=convert_path, registry=Melty, )
@@ -1013,11 +1024,12 @@ def render_func(*args, **o_kwargs):
                     internal_changed = False
                     # if isinstance(internal_value, Pending):
                     #     input_changed = True
-                    internal_hash = Background.simple_hash(internal_value)
-                    cached_internal_hash = Background.simple_hash(draw_state._input_value_cache["internal_state"][0])
+                    # internal_hash = Background.simple_hash(internal_value)
+                    # cached_internal_hash = Background.simple_hash(draw_state._input_value_cache["internal_state"][0])
                     if internal_value != draw_state._input_value_cache["internal_state"][0]:
                         if isinstance(internal_value, Pending) and internal_value.state != PendingState.BACKGROUND:
                             internal_changed = True
+
                             # draw_state._input_value_cache["internal_state"] = internal_value, thead_launch_frame
                         # Melty.cache.invalidate(draw_state._parent._tile_id, force=True)
                         # Melty.cache.invalidate(draw_state._tile_id, force=True)
@@ -1064,12 +1076,14 @@ def render_func(*args, **o_kwargs):
                             prev_internal_hash = Background.simple_hash(
                                 draw_state._input_value_cache["internal_state"][0])
 
-                            if Melty.frame_count >= draw_state._input_value_cache["internal_state"][1] + 2:
+                            if thead_launch_frame >= draw_state._input_value_cache["internal_state"][1] + 1:
                                 if isinstance(internal_value, Pending):
                                     raise Exception("Pending needs to be handled before saving to cache")
                                 draw_state._input_value_cache["internal_state"] = internal_value, thead_launch_frame
-                                new_internal_hash = Background.simple_hash(draw_state._input_value_cache["internal_state"][0])
                                 draw_state._input_value = internal_value
+                                new_internal_hash = Background.simple_hash(
+                                    draw_state._input_value_cache["internal_state"][0])
+
                                 if prev_internal_hash != new_internal_hash:
                                     Melty.cache.invalidate(draw_state._parent._tile_id, force=True)
                                     Melty.cache.invalidate(draw_state._tile_id, force=True)
@@ -1611,7 +1625,7 @@ def render_func(*args, **o_kwargs):
 
                 if draw_state._apply_save:
                     converted_input = True
-
+                thead_launch_frame = 0
                 if converted_input or draw_state._apply_save:
                     if child_changed:
                         # draw_state._input_value_cache["external_state"] = ...
@@ -1628,22 +1642,21 @@ def render_func(*args, **o_kwargs):
                         ####################################### SAVE HANDLER
                         # Reverse the path to convert back up to the original type
                         convert_path = list(reversed(convert_path))
-                        no_bg_needed = (not child_changed and not internal_changed
-                                       and draw_state._save_pending_for == 0
-                                       and not draw_state._apply_save
-                                       and not draw_state._show_load
-                                       and not draw_state._save_pending
-                                       and not draw_state._show_save
-                                       and not draw_state._apply_load
-                                       and not input_changed)
-                        if new_value_child == UNSET_VALUE or no_bg_needed:
+                        # no_bg_needed = (not child_changed and not input_input
+                        #                and draw_state._save_pending_for == 0
+                        #                and not draw_state._apply_save
+                        #                and not draw_state._show_load
+                        #                and not draw_state._save_pending
+                        #                and not draw_state._show_save
+                        #                and not draw_state._apply_load
+                        #                and not input_changed)
+                        if new_value_child == UNSET_VALUE:
                             external_value = draw_state._input_value_cache["external_state"] = (
                             input_value, draw_state._input_value_cache["external_state"][1])
-
                         else:
                             external_value = Background.run(convert, user_id=str(unique) + f" | output convert",
                                                             invalidate_id=draw_state._parent._tile_id,
-                                                            on_frame=Melty.frame_count, no_cache=True,
+                                                            on_frame=Melty.frame_count, no_cache=False,
                                                             value=new_value_child, apply=draw_state._apply_save, target=original_type,
                                                             path=convert_path, registry=Melty, )
                         if isinstance(external_value, tuple):
@@ -1670,13 +1683,11 @@ def render_func(*args, **o_kwargs):
                                 draw_list.add_text(*(draw_state.left + 2, draw_state.top + draw_state.height - draw_state.footer_height - 20),
                                                    imgui.get_color_u32_rgba(1,1,1, 0.5),
                                                    f"{load_icon} {external_value.status}")
-                            # Melty.cache.invalidate(draw_state._parent._tile_id, force=True)
-                            # Melty.cache.invalidate(draw_state._tile_id, force=True)
-                            # request_render()
+                            Melty.cache.invalidate(draw_state._tile_id, force=True)
                         else:
                             draw_state._save_pending_for = 0
                             prev_hash = Background.simple_hash(draw_state._input_value_cache["external_state"][0])
-                            if Melty.frame_count >= draw_state._input_value_cache["external_state"][1]:
+                            if thead_launch_frame >= draw_state._input_value_cache["external_state"][1]:
                                 hash_val = Background.simple_hash(external_value)
                                 draw_state._input_value_cache[
                                     "external_state"] = external_value, thead_launch_frame, hash_val

@@ -57,7 +57,6 @@ class Background:
 
             cls._user_tasks[user_id] = h
 
-
             if h in cls._active:
                 return Pending(status="background thread active", state=PendingState.BACKGROUND)
 
@@ -84,7 +83,7 @@ class Background:
                     from src.lsd.gl_gui.melty import Melty
                     from src.lsd.gl_gui.utils.glfw_utils import request_render
                     if on_frame is None or abs(Melty.frame_count - on_frame) >= 1:
-                        Melty.cache.invalidate(invalidate_id)
+                        Melty.cache.invalidate_up(invalidate_id)
                         request_render()
             except Exception as e:
                 with cls._lock:
@@ -214,15 +213,15 @@ class Background:
             A string representation of the value
         """
 
-        if not internal:
-            return_val = Background.simple_hash(value=value, exclude=exclude, memo=memo, depth=depth, do_print=do_print,
-                                            include_hidden=include_hidden, internal=True)
-            hash_result = hashlib.sha256(return_val.encode('utf-8')).hexdigest()
-
-            # Convert the hash to a 16-bit float (Float16)
-            # Take the first 4 hex chars (16 bits) and convert to integer, then normalize to float16 range
-            hash_int = int(hash_result[:4], 16)
-            return str(hash_int)
+        # if not internal:
+        #     return_val = Background.simple_hash(value=value, exclude=exclude, memo=memo, depth=depth, do_print=do_print,
+        #                                         include_hidden=include_hidden, internal=True)
+        #     hash_result = hashlib.sha256(return_val.encode('utf-8')).hexdigest()
+        #
+        #     # Convert the hash to a 16-bit float (Float16)
+        #     # Take the first 4 hex chars (16 bits) and convert to integer, then normalize to float16 range
+        #     hash_int = int(hash_result[:4], 16)
+        #     return str(hash_int)
 
 
         if exclude is None:

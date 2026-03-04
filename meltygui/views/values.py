@@ -653,7 +653,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=No
                     print(f"Error setting key {key} to value {out_val}: {e}")
             else:
                 if item_changed and apply_change and key is not None:
-                    if isinstance(input_value, (dict, defaultdict, MutableMapping)):
+                    if isinstance(input_value, (dict, defaultdict, MutableMapping, types.MappingProxyType)):
                         input_value[key] = out_val
                     elif isinstance(input_value, list):
                         input_value[key] = out_val
@@ -809,6 +809,7 @@ def draw_main(input_value, vis, **kwargs):
     changed, value = draw_window(test_code, name="cst_text", show_bg=True, live=True)
     if changed:
         test_code = value
+        # print("Text changed:", test_code)
 
     changed, value = draw_window(test_code, name="cst_dict", show_bg=True, mode=Mode.CODE_UI)
     if changed:
