@@ -153,8 +153,6 @@ def path_to_dict(value: Path, apply: bool = False) -> dict:
         _file_state_cache[resolved] = state
 
         if not apply:
-            result = _build_metadata_shell(resolved, mtime, size)
-            state.cached_dict = result
             return Pending(_build_metadata_shell(resolved, mtime, size))
 
         # Full load
@@ -185,6 +183,9 @@ def path_to_dict(value: Path, apply: bool = False) -> dict:
     # ── File changed on disk ────────────────────────────────────────
 
     if not apply:
+        # Bare Pending with CONFIRM - UI should prompt user to reload
+        if state.cached_dict is None:
+            state.cached_dict = _build_file_dict(resolved, mtime, size, None)
         return Pending(state.cached_dict)
 
     # Re-read
