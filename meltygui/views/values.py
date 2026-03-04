@@ -811,7 +811,7 @@ def draw_main(input_value, vis, **kwargs):
         test_code = value
         # print("Text changed:", test_code)
 
-    changed, value = draw_window(test_code, name="cst_dict", show_bg=True, mode=Mode.CODE_UI)
+    changed, value = draw_window(draw_type, name="cst_dict", show_bg=True, mode=Mode.CODE_UI)
     if changed:
         test_code = value
 
@@ -2645,11 +2645,23 @@ def pending_window(input_value, pending_name):
 
 class Mode(Enum):
     CODE_UI = {
-        str: ModeOverrides(
-            kwargs={"convert": [str, cst.Module, dict]},
+        cst.Module: ModeOverrides(
+            kwargs={"convert": [cst.Module, dict]},
             func=draw_collection,
             recursive=False
-           )
+        ),
+
+        types.FunctionType: ModeOverrides(
+            kwargs={"convert": [types.FunctionType, str, cst.Module]},
+            func=draw_collection,
+            recursive=False
+        ),
+
+        Path: ModeOverrides(
+            kwargs={"convert": [Path, bytes, str, cst.Module]},
+            func=draw_collection,
+            recursive=False,
+        ),
 
     }
 

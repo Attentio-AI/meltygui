@@ -27,6 +27,7 @@ NO_VALUE = object()
 class PendingState(Enum):
     BACKGROUND = "background"
     CONFIRM = "blocking"
+    BROKEN_PATH = "broken_path"
 
 
 # ── Pending wrapper ──────────────────────────────────────────────────────────
@@ -225,10 +226,11 @@ def _run_explicit_path(value: Any, target: type, *, path: list, registry, apply:
 
             fn = _find_converter(converters, type(result), item)
             if fn is None:
-                raise TypeError(
-                    f"No converter registered for {type(result).__name__!r} → "
-                    f"{item.__name__!r} (step {i + 1} of explicit path)"
-                )
+                return Pending(state=PendingState.BROKEN_PATH, wrapped=item)
+                # raise TypeError(
+                #     f"No converter registered for {type(result).__name__!r} → "
+                #     f"{item.__name__!r} (step {i + 1} of explicit path)"
+                # )
             result = _call_converter(fn, result, apply=apply)
         else:
             # Callable edge - skip if already the target type
