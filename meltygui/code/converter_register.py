@@ -5,15 +5,18 @@ import inspect
 from typing import Any, Tuple
 
 
-def converter(converter_fn=None, registry: Any = None):
+
+def converter(converter_fn=None, registry: Any = None, **kwargs):
     print_reset = "\033[0m"
     print_green = "\033[92m"
     print_red = "\033[91m"
     print_bold = "\033[1m"
     print(f"{print_green}Registering converter with registry: {registry}{print_reset}")
     """Class decorator: instantiate + register a Codec. Also mirrors to Melty.ext_to_type if you want."""
+
+
     if converter_fn is None:
-        return lambda fn: converter(fn, registry)
+        return lambda fn: converter(fn, registry, **kwargs)
 
     # Inspect the converter function's type hints to determine from_type and to_type
     # Use inspect to check input and return types
@@ -34,6 +37,11 @@ def converter(converter_fn=None, registry: Any = None):
     if func_signature.return_annotation is not None and hasattr(func_signature.return_annotation, "__args__"):
         to_type = func_signature.return_annotation.__args__[0]
         # print(f"{print_green}Multiple return types detected, using first: {to_type}{print_reset}")
+
+    if hasattr(registry, 'converter_flags') and isinstance(registry.converter_flags, dict):
+        if len(kwargs) > 0:
+            print(f"{print_red}Registering converter flags for {from_type} -> {to_type}: {kwargs}{print_reset}")
+            registry.converter_flags[(from_type, to_type)] = kwargs
 
     if not hasattr(registry, '_converters') or not isinstance(registry._converters, dict):
         setattr(registry, '_converters', {})

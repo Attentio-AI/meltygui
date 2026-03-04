@@ -46,6 +46,7 @@ class Melty:
     mode_stack = []
 
     _converters = {}
+    converter_flags = {}
 
     # list, full with 32 Nones
     max_depth = 32

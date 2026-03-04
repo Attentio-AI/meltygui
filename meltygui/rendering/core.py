@@ -1012,11 +1012,13 @@ def render_func(*args, **o_kwargs):
                         else:
                             start_frame = Melty.frame_count
 
-                        internal_value = Background.run(convert,
+                        converter_kwargs = Melty.converter_flags.get((convert_path[0], convert_path[-1]), {})
+                        no_cache = converter_kwargs.get("stateful", False)
+                        internal_value = Background.run(convert, value=draw_state._raw_input_value,
                                                         user_id=str(draw_state.unique) + f" | input convert",
                                                         invalidate_id=draw_state._tile_id,
-                                                        on_frame=start_frame, no_cache=False,
-                                                        value=draw_state._raw_input_value, apply=draw_state._apply_load,
+                                                        on_frame=start_frame, no_cache=no_cache,
+                                                        apply=draw_state._apply_load,
                                                         target=to_type,
                                                         path=convert_path, registry=Melty, )
                     if isinstance(internal_value, tuple):
@@ -1654,9 +1656,11 @@ def render_func(*args, **o_kwargs):
                             external_value = draw_state._input_value_cache["external_state"] = (
                             input_value, draw_state._input_value_cache["external_state"][1])
                         else:
+                            converter_kwargs = Melty.converter_flags.get((convert_path[0], convert_path[-1]), {})
+                            no_cache = converter_kwargs.get("stateful", False)
                             external_value = Background.run(convert, user_id=str(unique) + f" | output convert",
                                                             invalidate_id=draw_state._parent._tile_id,
-                                                            on_frame=Melty.frame_count, no_cache=False,
+                                                            on_frame=Melty.frame_count, no_cache=no_cache,
                                                             value=new_value_child, apply=draw_state._apply_save, target=original_type,
                                                             path=convert_path, registry=Melty, )
                         if isinstance(external_value, tuple):

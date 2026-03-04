@@ -28,7 +28,6 @@ from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_style_var, \
     push_style_color, pop_style_color, pop_style_var, end, begin
 from src.lsd.gl_gui.utils.glfw_utils import request_render
-from src.lsd.gl_gui.view.core_conversion.file_converters import FileWatch
 from src.lsd.gl_gui.view.core_conversion.path_finder import convert
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
@@ -2627,13 +2626,13 @@ class ModeOverrides:
     func: Optional[callable] = None
     recursive:Optional[bool] = True
 
-@render_func(is_default_for=(FileWatch))
-def draw_file_watch(input_value: FileWatch):
-    imgui.text(f"Watching: {input_value._path}")
-    imgui.text(f"Size: {input_value.size} bytes")
-    imgui.text(f"Last Modified: {input_value.modified_time}")
-
-    return False, None
+# @render_func(is_default_for=(FileWatch))
+# def draw_file_watch(input_value: FileWatch):
+#     imgui.text(f"Watching: {input_value._path}")
+#     imgui.text(f"Size: {input_value.size} bytes")
+#     imgui.text(f"Last Modified: {input_value.modified_time}")
+#
+#     return False, None
 
 @render_func(use_cache=True, show_header=False)
 def pending_window(input_value, pending_name):
@@ -2668,7 +2667,7 @@ class Mode(Enum):
 
     FILE_META = {
         Path: ModeOverrides(
-            kwargs={"convert": [Path, FileWatch, dict]},
+            kwargs={"convert": [Path, dict]},
             func=draw_collection,
             recursive=True,
         ),
