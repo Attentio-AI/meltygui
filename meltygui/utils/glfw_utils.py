@@ -13,6 +13,14 @@ import glfw
 
 from src.lsd.gl_gui.toggles import Toggles
 
+# Add near the top with other constants
+_MODULE_ROOTS = ["src/lsd/"]  # add your module paths here
+
+
+def _is_user_code(filepath):
+    """Check if a file is inside the user's module."""
+    rel = _rel_path(filepath)
+    return any(root in rel for root in _MODULE_ROOTS)
 # ── Syntax highlighting (IntelliJ Darcula) ───────────────
 try:
     from pygments import highlight as _pyg_highlight
@@ -85,8 +93,7 @@ _BLUE = "\033[34m"
 _WHITE = "\033[97m"
 _RED = "\033[31m"
 _BLACK = "\033[30m"
-_BG_DARK = "\033[48;2;43;43;43m"  # #2B2B2B Darcula background
-
+_BG_DARK = "\033[48;2;22;22;22m"  # almost black
 _BG_COLORS = [
     "\033[41m", "\033[42m", "\033[43m",
     "\033[44m", "\033[45m", "\033[46m",
@@ -131,10 +138,14 @@ def _pad(s, width):
     return s + " " * max(0, width - _visible_len(s))
 
 
+_RED_FG = "\033[38;2;255;85;85m"  # #FF5555 for kwarg names
+
+
 def _highlight(code, lineno=None):
     """Syntax-highlight a line of Python with editor-style background and line number."""
     if _pygments_available:
         colored = _pyg_highlight(code, _python_lexer, _terminal_formatter).rstrip('\n')
+        colored = _color_kwargs(colored, code, bg=_BG_DARK)
     else:
         colored = f"{_YELLOW}{code}{_RESET}"
 
@@ -152,9 +163,24 @@ def _highlight_inline(code):
     """Syntax-highlight a short code snippet without background or gutter."""
     if not _pygments_available:
         return f"{_GREEN}{code}{_RESET}"
-    return _pyg_highlight(code, _python_lexer, _terminal_formatter).rstrip('\n')
+    result = _pyg_highlight(code, _python_lexer, _terminal_formatter).rstrip('\n')
+    return _color_kwargs(result, code)
 
-
+def _color_kwargs(highlighted, original, bg=None):
+    """Post-process to color keyword argument names red."""
+    restore = f"{_RESET}{bg}" if bg else _RESET
+    for match in re.finditer(r'(\b\w+)(?=\s*=[^=])', original):
+        name = match.group(1)
+        if name in ('if', 'else', 'elif', 'return', 'yield', 'not',
+                    'and', 'or', 'in', 'is', 'lambda', 'True', 'False', 'None'):
+            continue
+        highlighted = re.sub(
+            rf'(?<!\033\[38;2;255;85;85m)(\033\[[\d;]*m)*({re.escape(name)})(\033\[[\d;]*m)*(?=\s*=[^=])',
+            rf'\1{_RED_FG}{name}{restore}\3',
+            highlighted,
+            count=1
+        )
+    return highlighted
 # ── Table rendering ──────────────────────────────────────
 
 # Column background shades - for alternation
@@ -164,77 +190,82 @@ _BG_COL_B = "\033[48;2;38;38;38m"  # slightly darker
 _TABLE_LINE = "\033[38;2;60;60;60m"  # dark grey for box-drawing chars
 
 
-def _render_frame_table(file_line, code_line, watch_rows, indent=None):
+def _render_frame_table(file_line, code_line, watch_rows, indent=None, dim=False):
     """
-    Render a frame as a unified table:
-    - File line as a spanning top row
-    - Watch variables as columns
-    - Code line as a spanning bottom row
+    Render a frame as a unified table.
+    dim=True uses spaces instead of box chars for external frames.
     """
     pad_str = indent if indent else _INDENT
 
-    # Calculate watch column widths
+    if dim:
+        TL, TR, BL, BR = " ", " ", " ", " "  # corners
+        H, V = " ", " "  # horizontal, vertical
+        LT, RT, TT, BT = " ", " ", " ", " "  # panes
+    else:
+        TL, TR, BL, BR = f"{_TABLE_LINE}┌", f"┐{_RESET}", f"{_TABLE_LINE}└", f"┘{_RESET}"
+        H, V = "─", f"{_TABLE_LINE}│{_RESET}"
+        LT, RT = f"{_TABLE_LINE}├", f"┤{_RESET}"
+        TT, BT = f"┬", f"┴"
+
     if watch_rows:
         cols = list(zip(*watch_rows))
         widths = [max(_visible_len(cell) for cell in col) for col in cols]
-        inner_width = sum(widths) + 3 * len(widths) - 1  # cells + padding + separators
+        inner_width = sum(widths) + 3 * len(widths) - 1
     else:
         inner_width = max(_visible_len(file_line), _visible_len(code_line)) + 2
 
-    # Ensure spanning rows fit
     inner_width = max(inner_width, _visible_len(file_line) + 2, _visible_len(code_line) + 2)
 
+    h_char = "─" if not dim else " "
     buf = []
 
     # Top border
-    buf.append(f"{pad_str}{_TABLE_LINE}┌{'─' * inner_width}┐{_RESET}")
+    buf.append(f"{pad_str}{TL}{h_char * inner_width}{TR}")
 
-    # File line - spanning row
+    # File line
     file_pad = inner_width - _visible_len(file_line) - 1
-    buf.append(f"{pad_str}{_TABLE_LINE}│{_RESET} {file_line}{' ' * file_pad}{_TABLE_LINE}│{_RESET}")
+    buf.append(f"{pad_str}{V} {file_line}{' ' * file_pad}{V}")
 
     if watch_rows:
-        # Separator between file line and watch rows
-        sep = f"─{'─' * widths[0]}─"
+        # Separator with column merges
+        sep = f"{h_char}{h_char * widths[0]}{h_char}"
         for w in widths[1:]:
-            sep += f"┬─{'─' * w}─"
-        # Pad separator to full width
-        sep_visible = _visible_len(sep)
-        if sep_visible < inner_width:
-            sep += "─" * (inner_width - sep_visible)
-        buf.append(f"{pad_str}{_TABLE_LINE}├{sep}┤{_RESET}")
+            sep += f"{TT}{h_char}{h_char * w}{h_char}" if not dim else f" {h_char}{h_char * w}{h_char}"
+        sep_visible = len(sep.replace("┬", "").replace(" ", "")) + len(sep) - len(sep.replace("┬", "").replace(" ", ""))
+        if _visible_len(sep) < inner_width:
+            sep += h_char * (inner_width - _visible_len(sep))
+        buf.append(f"{pad_str}{LT}{sep}{RT}")
 
         # Watch rows
         for name, typ, val, link in watch_rows:
             row = (
                 f" {_pad(name, widths[0])} "
-                f"{_TABLE_LINE}│{_RESET} {_pad(typ, widths[1])} "
-                f"{_TABLE_LINE}│{_RESET} {_pad(val, widths[2])} "
-                f"{_TABLE_LINE}│{_RESET} {_pad(link, widths[3])} "
+                f"{V} {_pad(typ, widths[1])} "
+                f"{V} {_pad(val, widths[2])} "
+                f"{V} {_pad(link, widths[3])} "
             )
             row_pad = inner_width - _visible_len(row)
-            buf.append(f"{pad_str}{_TABLE_LINE}│{_RESET}{row}{' ' * row_pad}{_TABLE_LINE}│{_RESET}")
+            buf.append(f"{pad_str}{V}{row}{' ' * row_pad}{V}")
 
-        # Separator between watch rows and code line
-        sep = f"─{'─' * widths[0]}─"
+        # Separator with column splits
+        sep = f"{h_char}{h_char * widths[0]}{h_char}"
         for w in widths[1:]:
-            sep += f"┴─{'─' * w}─"
-        sep_visible = _visible_len(sep)
-        if sep_visible < inner_width:
-            sep += "─" * (inner_width - sep_visible)
-        buf.append(f"{pad_str}{_TABLE_LINE}├{sep}┤{_RESET}")
+            sep += f"{BT}{h_char}{h_char * w}{h_char}" if not dim else f" {h_char}{h_char * w}{h_char}"
+        if _visible_len(sep) < inner_width:
+            sep += h_char * (inner_width - _visible_len(sep))
+        buf.append(f"{pad_str}{LT}{sep}{RT}")
     else:
-        # Simple separator
-        buf.append(f"{pad_str}{_TABLE_LINE}├{'─' * inner_width}┤{_RESET}")
+        buf.append(f"{pad_str}{LT}{h_char * inner_width}{RT}")
 
-    # Code line - spanning row
+    # Code line
     code_pad = inner_width - _visible_len(code_line) - 1
-    buf.append(f"{pad_str}{_TABLE_LINE}│{_RESET} {code_line}{' ' * max(code_pad, 0)}{_TABLE_LINE}│{_RESET}")
+    buf.append(f"{pad_str}{V} {code_line}{' ' * max(code_pad, 0)}{V}")
 
     # Bottom border
-    buf.append(f"{pad_str}{_TABLE_LINE}└{'─' * inner_width}┘{_RESET}")
+    buf.append(f"{pad_str}{BL}{h_char * inner_width}{BR}")
 
     return "\n".join(buf) + "\n"
+
 def _render_watch_table(rows, indent=None):
     """
     Render watched variables as a compact box-drawing table.
@@ -420,16 +451,30 @@ def print_stack_trace(size=None, skip=-1, stack=None, frames=None, watch=None,
 
     for i, (filename, lineno, funcname, line_text, local_vars) in enumerate(frames):
         rel = _rel_path(filename)
-        file_line = (
-            f"File \"{_DIM}{rel}{_RESET}\", line {_WHITE}{lineno}{_RESET},"
-            f" in {_BOLD}{_WHITE}{funcname}{_RESET}"
-        )
+        is_mine = _is_user_code(filename)
 
-        code_line = _highlight(line_text.strip(), lineno) if line_text else ""
+        if is_mine:
+            file_line = (
+                f"{_YELLOW}File \"{_DIM}{rel}{_RESET}{_YELLOW}\", line {lineno},"
+                f" in {_BOLD}{funcname}{_RESET}"
+            )
+        else:
+            file_line = (
+                f"{_DIM}File \"{rel}\", line {lineno},"
+                f" in {funcname}{_RESET}"
+            )
+
+        code_line = ""
+
+        if line_text:
+            if is_mine:
+                code_line = _highlight(line_text.strip(), lineno)
+            else:
+                code_line = f"{_DIM} {lineno:>4}  {line_text.strip()}{_RESET}"
 
         # Variable watches
         table_rows = []
-        if watch_paths and local_vars is not None:
+        if is_mine and watch_paths and local_vars is not None:
             for expr in watch_paths:
                 funcs, path = _parse_watch(expr)
                 root = _get_root_name(path)
@@ -462,10 +507,9 @@ def print_stack_trace(size=None, skip=-1, stack=None, frames=None, watch=None,
                 table_rows.append((name_cell, type_cell, value_cell, link_cell))
 
         if code_line or table_rows:
-            buf.write(_render_frame_table(file_line, code_line, table_rows))
+            buf.write(_render_frame_table(file_line, code_line, table_rows, dim=not is_mine))
         else:
             buf.write(f"{_INDENT}{file_line}\n")
-
 
 
     if exception is not None:
