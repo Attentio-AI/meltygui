@@ -113,7 +113,7 @@ _IDE_SCHEMES = {
 }
 
 _INDENT = "  "
-
+_TABLE_LINE_RED = "\033[38;2;100;40;40m"  # muted red for error frame borde
 _print_lock = threading.Lock()
 _job_counter = 0
 _job_counter_lock = threading.Lock()
@@ -190,22 +190,30 @@ _BG_COL_B = "\033[48;2;38;38;38m"  # slightly darker
 _TABLE_LINE = "\033[38;2;60;60;60m"  # dark grey for box-drawing chars
 
 
-def _render_frame_table(file_line, code_line, watch_rows, indent=None, dim=False):
+def _render_frame_table(file_line, code_line, watch_rows, indent=None, dim=False, error=False):
     """
     Render a frame as a unified table.
-    dim=True uses spaces instead of box chars for external frames.
+    dim=True uses spaces for external frames.
+    error=True uses muted red for box chars.
     """
     pad_str = indent if indent else _INDENT
 
     if dim:
-        TL, TR, BL, BR = " ", " ", " ", " "  # corners
-        H, V = " ", " "  # horizontal, vertical
-        LT, RT, TT, BT = " ", " ", " ", " "  # panes
+        TL, TR, BL, BR = " ", " ", " ", " "
+        H, V = " ", " "
+        LT, RT, TT, BT = " ", " ", " ", " "
     else:
-        TL, TR, BL, BR = f"{_TABLE_LINE}┌", f"┐{_RESET}", f"{_TABLE_LINE}└", f"┘{_RESET}"
-        H, V = "─", f"{_TABLE_LINE}│{_RESET}"
-        LT, RT = f"{_TABLE_LINE}├", f"┤{_RESET}"
-        TT, BT = f"┬", f"┴"
+        line_color = _TABLE_LINE_RED if error else _TABLE_LINE
+        TL = f"{line_color}┌"
+        TR = f"┐{_RESET}"
+        BL = f"{line_color}└"
+        BR = f"┘{_RESET}"
+        H = "─"
+        V = f"{line_color}│{_RESET}"
+        LT = f"{line_color}├"
+        RT = f"┤{_RESET}"
+        TT = "┬"
+        BT = "┴"
 
     if watch_rows:
         cols = list(zip(*watch_rows))
@@ -449,20 +457,36 @@ def print_stack_trace(size=None, skip=-1, stack=None, frames=None, watch=None,
         buf.write(f"{_BOLD}{bar_color}{title}{_RESET} {_DIM}[{thread_name}]{_RESET}\n")
         buf.write(f"{_BOLD}{bar_color}{'─' * 60}{_RESET}\n")
 
+    # Find the last user-code frame in an exception trace
+    error_frame_idx = None
+    if exception is not None:
+        for j in range(len(frames) - 1, -1, -1):
+            if _is_user_code(frames[j][0]):
+                error_frame_idx = j
+                break
+
     for i, (filename, lineno, funcname, line_text, local_vars) in enumerate(frames):
         rel = _rel_path(filename)
         is_mine = _is_user_code(filename)
+        is_error_frame = i == error_frame_idx
 
         if is_mine:
-            file_line = (
-                f"{_YELLOW}File \"{_DIM}{rel}{_RESET}{_YELLOW}\", line {lineno},"
-                f" in {_BOLD}{funcname}{_RESET}"
-            )
+            if is_error_frame:
+                file_line = (
+                    f"{_RED}File \"{rel}\", line {lineno},"
+                    f" in {_BOLD}{funcname}{_RESET}"
+                )
+            else:
+                file_line = (
+                    f"{_DIM}File \"{rel}\", line {lineno},"
+                    f" in {_RESET}{_BOLD}{_WHITE}{funcname}{_RESET}"
+                )
         else:
             file_line = (
                 f"{_DIM}File \"{rel}\", line {lineno},"
                 f" in {funcname}{_RESET}"
             )
+
 
         code_line = ""
 
@@ -471,6 +495,8 @@ def print_stack_trace(size=None, skip=-1, stack=None, frames=None, watch=None,
                 code_line = _highlight(line_text.strip(), lineno)
             else:
                 code_line = f"{_DIM} {lineno:>4}  {line_text.strip()}{_RESET}"
+
+
 
         # Variable watches
         table_rows = []
@@ -507,7 +533,8 @@ def print_stack_trace(size=None, skip=-1, stack=None, frames=None, watch=None,
                 table_rows.append((name_cell, type_cell, value_cell, link_cell))
 
         if code_line or table_rows:
-            buf.write(_render_frame_table(file_line, code_line, table_rows, dim=not is_mine))
+            buf.write(_render_frame_table(file_line, code_line, table_rows,
+                                          dim=not is_mine, error=is_error_frame))
         else:
             buf.write(f"{_INDENT}{file_line}\n")
 
