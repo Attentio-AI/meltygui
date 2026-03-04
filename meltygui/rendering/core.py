@@ -17,7 +17,7 @@ from imgui.core import _DrawList
 from imgui.core import _IO
 
 from src.lsd.gl_gui.background import Background, Pending
-from src.lsd.gl_gui.view.core_conversion.path_finder import convert, explain_chain, NO_VALUE, PendingState
+from src.lsd.gl_gui.view.core_conversion.path_finder import convert, explain_chain, NO_VALUE, PendingState, invert_path
 from src.lsd.gl_gui.view.core_views.core_render_helpers import draw_vertical_scrollbar, floating_text
 from src.lsd.gl_gui.model.core_model.draw_state import DrawState, Hotkey, DragMode, Anchor, TileMode, AttrDict, \
     UNSET_VALUE
@@ -971,9 +971,12 @@ def render_func(*args, **o_kwargs):
                 draw_state.top = snap_int(draw_state.top)
                 # expected_type = param_types[0] if len(param_types) > 0 else None
                 convert_path = kwargs.get('convert', [])
-                if isinstance(convert_path, list):
-                    to_type = convert_path[-1] if len(convert_path) > 0 else None
-                    if to_type is None or isinstance(input_value, to_type):
+                if isinstance(convert_path, list) and len(convert_path) > 0:
+                    if not isinstance(convert_path[-1], type):
+                        to_type = Melty._converter_to_type.get(convert_path[-1], None)[1]
+                    else:
+                        to_type = convert_path[-1] if len(convert_path) > 0 else None
+                    if to_type is None or (isinstance(to_type, type) and isinstance(input_value, to_type)):
                         needs_convert = False
                     else:
                         needs_convert = True
@@ -1012,14 +1015,17 @@ def render_func(*args, **o_kwargs):
                         else:
                             start_frame = Melty.frame_count
 
-                        converter_kwargs = Melty.converter_flags.get((convert_path[0], convert_path[-1]), {})
+                        if isinstance(convert_path[0], type):
+                            converter_kwargs = Melty.converter_flags_by_type.get((convert_path[0], convert_path[-1]), {})
+                        else:
+                            converter_kwargs = Melty.converter_flags.get(convert_path[0], {})
+
                         no_cache = converter_kwargs.get("stateful", False)
                         internal_value = Background.run(convert, value=draw_state._raw_input_value,
                                                         user_id=str(draw_state.unique) + f" | input convert",
                                                         invalidate_id=draw_state._tile_id,
                                                         on_frame=start_frame, no_cache=no_cache,
                                                         apply=draw_state._apply_load,
-                                                        target=to_type,
                                                         path=convert_path, registry=Melty, )
                     if isinstance(internal_value, tuple):
                         internal_value, thead_launch_frame = internal_value
@@ -1643,7 +1649,7 @@ def render_func(*args, **o_kwargs):
                     if isinstance(convert_path, list):
                         ####################################### SAVE HANDLER
                         # Reverse the path to convert back up to the original type
-                        convert_path = list(reversed(convert_path))
+                        convert_path = invert_path(convert_path, registry=Melty)
                         # no_bg_needed = (not child_changed and not input_input
                         #                and draw_state._save_pending_for == 0
                         #                and not draw_state._apply_save
@@ -1652,16 +1658,23 @@ def render_func(*args, **o_kwargs):
                         #                and not draw_state._show_save
                         #                and not draw_state._apply_load
                         #                and not input_changed)
+
+
                         if new_value_child == UNSET_VALUE:
                             external_value = draw_state._input_value_cache["external_state"] = (
                             input_value, draw_state._input_value_cache["external_state"][1])
                         else:
-                            converter_kwargs = Melty.converter_flags.get((convert_path[0], convert_path[-1]), {})
+                            if isinstance(convert_path[0], type):
+                                converter_kwargs = Melty.converter_flags_by_type.get(
+                                    (convert_path[0], convert_path[-1]), {})
+                            else:
+                                converter_kwargs = Melty.converter_flags.get(convert_path[0], {})
+
                             no_cache = converter_kwargs.get("stateful", False)
                             external_value = Background.run(convert, user_id=str(unique) + f" | output convert",
                                                             invalidate_id=draw_state._parent._tile_id,
                                                             on_frame=Melty.frame_count, no_cache=no_cache,
-                                                            value=new_value_child, apply=draw_state._apply_save, target=original_type,
+                                                            value=new_value_child, apply=draw_state._apply_save,
                                                             path=convert_path, registry=Melty, )
                         if isinstance(external_value, tuple):
                             external_value, thead_launch_frame = external_value
@@ -1819,7 +1832,7 @@ def render_func(*args, **o_kwargs):
 
         except Exception as e:
             with trace_group(f"Drawing {func.__name__} {draw_state.name}", hash=draw_state.unique) as g:
-                watch = ["draw_state.name", "input_value", "clean_args.input_value", "func.__name__", "mode"]
+                watch = ["draw_state.name", "input_value", "convert_path", "clean_args.input_value", "func.__name__", "mode"]
                 print_stack_trace(frames=get_live_frames(), section="UI Thread",
                                   group=g, watch=watch)
                 print_stack_trace(exception=e, section="Exception",

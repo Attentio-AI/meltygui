@@ -202,7 +202,7 @@ def path_to_dict(value: Path, apply: bool = False) -> dict:
 # ║  dict → Path (write file back to disk)                                      ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
-@converter(registry=Melty)
+@converter(registry=Melty, inverse_of=path_to_dict)
 def dict_to_path(value: dict, apply: bool = False) -> Path:
     """Write file data back to disk from a metadata dict.
 
@@ -305,7 +305,7 @@ def bytes_to_str(value: bytes) -> str:
         return value.decode("latin-1")
 
 
-@converter(registry=Melty)
+@converter(registry=Melty, inverse_of=bytes_to_str)
 def str_to_bytes(value: str) -> bytes:
     """Encode string to UTF-8 bytes."""
     return value.encode("utf-8")

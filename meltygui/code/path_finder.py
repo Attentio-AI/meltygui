@@ -92,11 +92,38 @@ def _call_converter(fn: Callable, value: Any, *, apply: bool) -> Any:
     return fn(value)
 
 
-def convert(value: Any, target: type[T] = None, *, registry, path: list[type] | None = None, apply: bool = False) -> T:
+def _is_path_type(item) -> bool:
+    """True if item is a type (waypoint in a path), False if callable (edge)."""
+    return isinstance(item, type)
+
+
+def _find_converter(converters: dict, from_type: type, to_type: type) -> Callable | None:
+    """Look up a converter with MRO fallback."""
+    fn = converters.get((from_type, to_type))
+    if fn is None and hasattr(from_type, "__mro__"):
+        for ancestor in from_type.__mro__[1:]:
+            fn = converters.get((ancestor, to_type))
+            if fn is not None:
+                break
+    return fn
+
+
+def convert(value: Any, target: type[T] = None, *, registry, path: list | None = None, apply: bool = False) -> T:
     """Convert *value* to *target* type using the registry.
 
-    If *path* is provided, follows it exactly:
-        convert(my_obj, dict, registry=R, path=[str, cst.Module, dict])
+    If *path* is provided, follows it exactly.  Path items can be:
+      - types (waypoints):    looked up in the registry
+      - callables (edges):    called directly on the current value
+
+    Examples:
+        # All types — registry lookup between each consecutive pair
+        convert(obj, dict, registry=R, path=[str, cst.Module, dict])
+
+        # All functions — called in sequence
+        convert(obj, registry=R, path=[my_parser, my_formatter])
+
+        # Mixed — types trigger registry lookup, functions called directly
+        convert(obj, dict, registry=R, path=[str, my_custom_parser, dict])
 
     If *apply* is False (default), converters that support deferred
     execution may return Pending(partial_result).  Pass apply=True
@@ -110,7 +137,7 @@ def convert(value: Any, target: type[T] = None, *, registry, path: list[type] | 
     path through intermediate types.  Raises TypeError if no path exists.
     """
     if target is not None:
-        if isinstance(value, target) and path is None:
+        if isinstance(value, target):
             return value  # type: ignore[return-value]
 
     if path is not None:
@@ -166,49 +193,53 @@ def convert(value: Any, target: type[T] = None, *, registry, path: list[type] | 
     return _call_converter(chain_fn, value, apply=apply)
 
 
-def _run_explicit_path(value: Any, target: type, *, path: list[type], registry, apply: bool) -> Any:
-    """Follow an explicit type path, looking up each edge in the registry.
+def _run_explicit_path(value: Any, target: type, *, path: list, registry, apply: bool) -> Any:
+    """Follow an explicit path of types and/or converter functions.
 
-    path=[str, cst.Module, dict] means:
-      1. convert value → str  (if not already str)
-      2. convert str → cst.Module
-      3. convert cst.Module → dict
+    Each path item is either:
+      - a type:     a waypoint — if the value isn't already this type,
+                    look up a converter from type(value) → this type
+      - a callable: an explicit edge — called directly on the value
 
-    If any converter returns Pending, the chain stops immediately
-    and returns that Pending — no further links are executed.
+    Examples:
+        path=[str, cst.Module, dict]
+          → ensure value is str, convert str→Module, convert Module→dict
 
-    Raises TypeError if any edge is missing from the registry.
+        path=[my_parser, my_formatter]
+          → call my_parser(value), then my_formatter(result)
+
+        path=[str, my_custom_parser, dict]
+          → ensure value is str, call my_custom_parser, convert →dict
+
+    If any step returns Pending, the chain stops and returns it.
+    Raises TypeError if a type→type edge is missing from the registry.
     """
     converters = getattr(registry, "_converters", {})
     result = value
 
-    # If the value isn't already the first type of the path, prepend
-    # an implicit conversion from type(value) → path[0]
-    full_path = path
-    if not isinstance(result, path[0]):
-        full_path = [type(value)] + path
+    for i, item in enumerate(path):
+        if _is_path_type(item):
+            # Type waypoint - skip if already there, otherwise look up
+            if isinstance(result, item):
+                continue
 
-    for i in range(len(full_path) - 1):
-        step_from, step_to = full_path[i], full_path[i + 1]
+            fn = _find_converter(converters, type(result), item)
+            if fn is None:
+                raise TypeError(
+                    f"No converter registered for {type(result).__name__!r} → "
+                    f"{item.__name__!r} (step {i + 1} of explicit path)"
+                )
+            result = _call_converter(fn, result, apply=apply)
+        else:
+            # Callable edge - skip if already the target type
+            type_info = getattr(registry, "_converter_to_type", {}).get(item)
+            if type_info is not None:
+                _, to_type = type_info
+                if isinstance(result, to_type):
+                    result = value
+                    continue
+            result = _call_converter(item, result, apply=apply)
 
-        if isinstance(result, step_to):
-            continue  # already there
-
-        fn = converters.get((step_from, step_to))
-        # MRO fallback
-        if fn is None and hasattr(step_from, "__mro__"):
-            for ancestor in step_from.__mro__[1:]:
-                fn = converters.get((ancestor, step_to))
-                if fn is not None:
-                    break
-        if fn is None:
-            raise TypeError(
-                f"No converter registered for {step_from.__name__!r} → {step_to.__name__!r} "
-                f"(step {i + 1} of explicit path)"
-            )
-        result = _call_converter(fn, result, apply=apply)
-
-        # Pending means "not found" - stop the chain here
         if isinstance(result, Pending):
             return result
 
@@ -409,6 +440,35 @@ def invalidate_cache(registry) -> None:
     """
     registry._chain_cache = {}
     registry._graph_cache = None
+
+
+def invert_path(path: list, *, registry) -> list:
+    """Return the reverse of a mixed path, swapping each callable for its inverse.
+
+    Types are kept as-is (just reversed).  Callables are replaced with
+    their inverse via registry.converter_flags[fn].
+
+    Example:
+        path = [str, cst.Module, my_custom_fn, dict]
+        invert_path(path, registry=Melty)
+        → [dict, inverse_of_my_custom_fn, cst.Module, str]
+
+    Raises KeyError if a callable has no registered inverse.
+    """
+    flags = getattr(registry, "converter_flags", {})
+    result = []
+    for item in reversed(path):
+        if _is_path_type(item):
+            result.append(item)
+        else:
+            inverse = flags.get(item, {}).get("inverse_of", None)
+            if inverse is None:
+                raise KeyError(
+                    f"No inverse registered for {getattr(item, '__name__', repr(item))}. "
+                    f"Register with @converter(registry=..., inverse_of=...)"
+                )
+            result.append(inverse)
+    return result
 
 
 def explain_chain(source: type, target: type, *, registry) -> str:

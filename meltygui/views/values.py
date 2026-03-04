@@ -28,6 +28,7 @@ from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_style_var, \
     push_style_color, pop_style_color, pop_style_var, end, begin
 from src.lsd.gl_gui.utils.glfw_utils import request_render
+from src.lsd.gl_gui.view.core_conversion.file_converters import path_to_dict, bytes_to_str
 from src.lsd.gl_gui.view.core_conversion.path_finder import convert
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
@@ -2667,12 +2668,12 @@ class Mode(Enum):
 
     FILE_META = {
         Path: ModeOverrides(
-            kwargs={"convert": [Path, dict]},
+            kwargs={"convert": [path_to_dict]},
             func=draw_collection,
             recursive=True,
         ),
         bytes: ModeOverrides(
-            kwargs={"convert": [bytes, str]},
+            kwargs={"convert": [bytes_to_str]},
             func=draw_text,
             recursive=True,
         ),

@@ -46,6 +46,8 @@ class Melty:
     mode_stack = []
 
     _converters = {}
+    _converter_to_type = {}
+    converter_flags_by_type = {}
     converter_flags = {}
 
     # list, full with 32 Nones

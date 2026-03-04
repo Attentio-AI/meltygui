@@ -38,10 +38,20 @@ def converter(converter_fn=None, registry: Any = None, **kwargs):
         to_type = func_signature.return_annotation.__args__[0]
         # print(f"{print_green}Multiple return types detected, using first: {to_type}{print_reset}")
 
-    if hasattr(registry, 'converter_flags') and isinstance(registry.converter_flags, dict):
+    if hasattr(registry, 'converter_flags_by_type') and isinstance(registry.converter_flags_by_type, dict):
         if len(kwargs) > 0:
             print(f"{print_red}Registering converter flags for {from_type} -> {to_type}: {kwargs}{print_reset}")
-            registry.converter_flags[(from_type, to_type)] = kwargs
+            registry.converter_flags_by_type[(from_type, to_type)] = kwargs
+
+    if hasattr(registry, 'converter_flags') and isinstance(registry.converter_flags, dict):
+        if len(kwargs) > 0:
+            registry.converter_flags[converter_fn] = kwargs
+
+            if "inverse_of" in kwargs:
+                inverse_fn = kwargs["inverse_of"]
+                if inverse_fn not in registry.converter_flags:
+                    registry.converter_flags[inverse_fn] = {}
+                registry.converter_flags[inverse_fn]["inverse_of"] = converter_fn
 
     if not hasattr(registry, '_converters') or not isinstance(registry._converters, dict):
         setattr(registry, '_converters', {})
@@ -49,5 +59,8 @@ def converter(converter_fn=None, registry: Any = None, **kwargs):
     if hasattr(registry, "_converters") and isinstance(registry._converters, dict):
         registry._converters[(from_type, to_type)] = converter_fn
         print(f"Registered converter: {from_type} -> {to_type}")
+
+    if hasattr(registry, "_converter_to_type") and isinstance(registry._converter_to_type, dict):
+        registry._converter_to_type[converter_fn] = (from_type, to_type)
 
     return converter_fn
