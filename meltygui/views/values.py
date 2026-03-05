@@ -736,17 +736,20 @@ def draw_property(input_value:property, draw_state, **kwargs):
     # value = input_value.fget(input_value)
     # draw_any(value, name="value", show_bg=True, draw_state=draw_state)
 
-@render_func(is_default_for=(type), show_bg=True, tint=(0.014537589624524117, 0.11323530226945877, 0.14883720874786377), with_header=draw_header, with_footer=draw_footer)
+@render_func(is_default_for=(type), show_bg=False, tint=(0.01406166236847639, 0.2259240746498108, 0.30232560634613037), with_header=draw_header, with_footer=draw_footer)
 def draw_type(input_value:type, draw_state, **kwargs):
     tint = (0.5921933054924011, 0.39459171891212463, 0.7069767713546753)
-    bg_color = (7.639999866485596, 21.5, 6.46999979019165, 15.859999656677246)
+    bg_color = (7.460000038146973, 29.09000015258789, 12.1899995803833, 17.3799991607666)
     show_bg = True
     bg_style = {
-        "value": 16.910999298095703,
-        "saturation": 9.529999732971191,
-        "alpha": 8.8100004196167,
+        "value": 17.871000289916992,
+        "saturation": 10.5,
+        "alpha": 10.180000305175781,
         'max_value': 3.9000000953674316
     }
+
+
+
     imgui.text_colored(f"Type: {input_value.__name__}", 1.0, 0.5, 0.0, 1.0)
     # draw_collection(vars(input_value), name="vars", show_excluded=True)
     # draw_collection(dir(input_value), name="dir", show_excluded=True)
@@ -755,13 +758,10 @@ def draw_type(input_value:type, draw_state, **kwargs):
     keys = list(set(dir(input_value)) | set(vars(type(input_value))))
     type_get_attr = lambda obj, key: getattr(obj, key, None)
     type_set_attr = lambda obj, key, value: setattr(obj, key, value)
-    draw_collection(input_value, name="inspect", keys=keys, get_attr=type_get_attr,
-                    set_attr=type_set_attr)
+    #draw_collection(input_value, name="inspect", keys=keys, get_attr=type_get_attr, set_attr=type_set_attr)
 
-some_float=[0.0]
 
-import src.lsd.gl_gui.view.core_conversion.libcst_conversion
-
+some_float = [0.0]
 cst_dict = {}
 test_code = convert(draw_type, str, registry=Melty)
 
@@ -807,10 +807,9 @@ def draw_main(input_value, vis, **kwargs):
     #     test_code = value
     # #
 
-    changed, value = draw_window(test_code, name="cst_text", show_bg=True, live=True)
+    changed, value = draw_window(draw_type, name="cst_text", show_bg=True, live=True, mode=Mode.CODE_PLAIN_TEXT)
     if changed:
         test_code = value
-        # print("Text changed:", test_code)
 
     changed, value = draw_window(draw_type, name="cst_dict", show_bg=True, mode=Mode.CODE_UI)
     if changed:
@@ -2649,12 +2648,6 @@ def pending_window(input_value, pending_name, pending=None, draw_state=None):
 
 class Mode(Enum):
     CODE_UI = {
-        types.NoneType: ModeOverrides(
-            kwargs={"convert": None},
-            func=draw_none,
-            recursive=False
-        ),
-
         cst.Module: ModeOverrides(
             kwargs={"convert": [cst.Module, dict]},
             func=draw_collection,
@@ -2675,7 +2668,19 @@ class Mode(Enum):
 
     }
 
-    FILE_CODE = {
+    CODE_PLAIN_TEXT = {
+        types.FunctionType: ModeOverrides(
+            kwargs={"convert": [types.FunctionType, TextSpan, dict]},
+            func=draw_collection,
+            recursive=False
+        ),
+
+        str: ModeOverrides(
+            kwargs={"convert": None, "mode": None},
+            func=draw_text,
+            recursive=False,
+        ),
+
         Path: ModeOverrides(
             kwargs={"convert": [Path, bytes, str, cst.Module, dict]},
             func=draw_collection,
