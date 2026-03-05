@@ -26,7 +26,7 @@ from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
 from src.lsd.gl_gui.model.core_model.draw_state import ZoomState, TileMode
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_style_var, \
-    push_style_color, pop_style_color, pop_style_var, end, begin
+    push_style_color, pop_style_color, pop_style_var, end, begin, text_wrapped
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_conversion.file_converters import path_to_dict, bytes_to_str
 from src.lsd.gl_gui.view.core_conversion.module_conversion import TextSpan
@@ -736,16 +736,16 @@ def draw_property(input_value:property, draw_state, **kwargs):
     # value = input_value.fget(input_value)
     # draw_any(value, name="value", show_bg=True, draw_state=draw_state)
 
-@render_func(is_default_for=(type), show_bg=True, tint=(0.03816116973757744, 0.2254583239555359, 0.2930232286453247), with_header=draw_header, with_footer=draw_footer)
+@render_func(is_default_for=(type), show_bg=True, tint=(0.014537589624524117, 0.11323530226945877, 0.14883720874786377), with_header=draw_header, with_footer=draw_footer)
 def draw_type(input_value:type, draw_state, **kwargs):
-    tint = (0.4697674512863159, 0.2627035677433014, 0.1136181652545929)
-    bg_color = (4.230000019073486, 5.480000019073486, 2.1500000953674316, -3.2200000286102295)
+    tint = (0.5921933054924011, 0.39459171891212463, 0.7069767713546753)
+    bg_color = (7.639999866485596, 21.5, 6.46999979019165, 15.859999656677246)
     show_bg = True
     bg_style = {
-        "value": 3.0810000896453857,
-        "saturation": 1.0,
-        "alpha": 1.0,
-        'max_value': 1.0
+        "value": 16.910999298095703,
+        "saturation": 9.529999732971191,
+        "alpha": 8.8100004196167,
+        'max_value': 3.9000000953674316
     }
     imgui.text_colored(f"Type: {input_value.__name__}", 1.0, 0.5, 0.0, 1.0)
     # draw_collection(vars(input_value), name="vars", show_excluded=True)
@@ -2637,9 +2637,12 @@ class ModeOverrides:
 #     return False, None
 
 @render_func(use_cache=True, show_header=False)
-def pending_window(input_value, pending_name):
-    imgui.text("Pending Action")
-    imgui.text(input_value)
+def pending_window(input_value, pending_name, pending=None, draw_state=None):
+
+
+    imgui.push_text_wrap_pos(imgui.get_cursor_screen_pos()[0] + draw_state.content_width)
+    imgui.text_wrapped(input_value)
+    imgui.pop_text_wrap_pos()
     if button(pending_name, width=100, height=20)[0]:
         return True, None
     return False, None

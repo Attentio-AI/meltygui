@@ -361,8 +361,8 @@ def _parse_watch(expr):
 
 # ── Main entry point ─────────────────────────────────────
 
-def print_stack_trace(size=None, skip=-1, stack=None, frames=None, watch=None,
-                      max_str_len=80, max_items=2, max_depth=3, max_output=80,
+def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
+                      max_str_len=200, max_items=2, max_depth=3, max_output=200,
                       exception=None, section=None, group=None, file=None):
     """
     Print a stack trace with optional variable watching.

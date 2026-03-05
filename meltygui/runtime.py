@@ -318,7 +318,7 @@ class Melty:
         if draw_state._bg_stack is not None:
             Melty.bg_stack = draw_state._bg_stack
 
-        # cls.cache.insert_parent(parent_ctx)
+        cls.cache.insert_parent(parent_ctx)
 
         view_func = draw_state._wrapper
         input_value = draw_state._raw_input_value
@@ -334,7 +334,7 @@ class Melty:
                 Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=7, force=True)
 
         Melty.bg_stack = original_bg_stack
-        # cls.cache.remove_parent()
+        cls.cache.remove_parent()
 
     @classmethod
     def end_frame(cls):

@@ -322,6 +322,7 @@ class DrawState(DictConversion):
         self._apply_save = False
         self._pending_convert = False
         self._save_pending_for = 0
+        self._save_pending_obj = None
         self._load_pending_for = 0
         self._content_rect = (100,30)
         self._last_expanded = None

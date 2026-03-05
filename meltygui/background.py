@@ -42,7 +42,7 @@ class Background:
 
 
     @classmethod
-    def run(cls, func, user_id, no_cache=False, invalidate_id=None, on_frame=None, frames=None, debounce=6, *args, **kwargs):
+    def run(cls, func, user_id, no_cache=False, invalidate_id=None, on_frame=None, frames=None, debounce=6, draw_state=None, *args, **kwargs):
         h = cls.simple_hash(value=(kwargs.get("value", None))) + user_id
 
         from src.lsd.gl_gui.melty import Melty
@@ -148,6 +148,8 @@ class Background:
                                 cls._user_cache[uid] = OrderedDict()
                             cls._user_cache[uid][h] = result
                             cls._user_cache[uid].move_to_end(h)
+
+
                             while len(cls._user_cache[uid]) > cls._cache_size:
                                 cls._user_cache[uid].popitem(last=False)
                 if invalidate_id is not None:
@@ -156,15 +158,16 @@ class Background:
                     if on_frame is None or abs(Melty.frame_count - on_frame) >= 1:
                         Melty.cache.invalidate_up(invalidate_id)
                         request_render()
+
             except Exception as e:
                 with cls._lock:
                     cls._active.discard(h)
 
                 with trace_group(f"JOB {user_id}", hash=h) as g:
                     print_stack_trace(frames=frames, section="UI Thread",
-                                      group=g, watch=["draw_state.name", "input_value", "clean_args.input_value"])
+                                      group=g, watch=["draw_state.name", "input_value", "convert_path", "clean_args.input_value"])
                     print_stack_trace(exception=e, section="Background Thread",
-                                      group=g, watch=["value", "path"])
+                                      group=g, watch=["value", "path", "result"])
 
 
         cls._pool.submit(_task)

@@ -940,16 +940,17 @@ def render_func(*args, **o_kwargs):
                 # draw_state.top = snap_int(draw_state.abs_top)
                 if draw_state._show_save:
                     if draw_window(
-                            input_value=f"{type(draw_state._raw_input_value).__name__} ->\n {type(draw_state._input_value).__name__}",
+                            input_value=f"{draw_state._save_pending_obj.status}",
                             closed=False, tint=draw_state.tint, window_pos=(0,0), auto_resize=True,
-                            pending_name="Save", name=f"Save", anchor=Anchor.BOTTOM_LEFT,
+                            pending_name="Save", name=f"Save", anchor=Anchor.BOTTOM_LEFT, pending=draw_state._save_pending_obj,
                             view_func=pending_window)[0]:
                         draw_state._apply_save = True
                         Melty.cache.invalidate_up(draw_state._parent._tile_id, force=True)
                 #
                 if draw_state._show_load:
-                    if draw_window(input_value=f"{type(draw_state._raw_input_value).__name__} ->\n {type(draw_state._input_value).__name__}",
+                    if draw_window(input_value=f"{draw_state._internal_pending.status} ->\n {type(draw_state._input_value).__name__}",
                                    closed=False, window_pos=(0,0), auto_resize=True,
+                                   pending=draw_state._internal_pending,
                                    pending_name="Load", name=f"Load", anchor=Anchor.BOTTOM_LEFT, tint=draw_state.tint,
                                    view_func=pending_window)[0]:
                         draw_state._apply_load = True
@@ -1023,8 +1024,8 @@ def render_func(*args, **o_kwargs):
 
                         no_cache = converter_kwargs.get("stateful", False)
                         internal_value = Background.run(convert, value=draw_state._raw_input_value,
-                                                        user_id=str(draw_state.unique) + f" | input convert",
-                                                        invalidate_id=draw_state._tile_id,
+                                                        user_id=str(draw_state.unique) + f" | input convert {str(convert_path[-1].__name__)}",
+                                                        invalidate_id=draw_state._tile_id, draw_state=draw_state,
                                                         on_frame=start_frame, no_cache=no_cache,
                                                         apply=draw_state._apply_load,
                                                         path=convert_path, registry=Melty, )
@@ -1054,13 +1055,13 @@ def render_func(*args, **o_kwargs):
                             if draw_state._apply_load:
                                 draw_state._apply_load = False
                                 thead_launch_frame = Melty.frame_count
-                                Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=10, force=True)
-                                Melty.cache.invalidate_up(draw_state._tile_id, max_depth=10, force=True)
+                                # Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=10, force=True)
+                                # Melty.cache.invalidate_up(draw_state._tile_id, max_depth=10, force=True)
 
                         if isinstance(internal_value, Pending):
+                            draw_state._internal_pending = internal_value
                             if internal_value.state == PendingState.CONFIRM:
                                 draw_state._show_load = True
-                                draw_state._internal_pending = internal_value
                                 internal_value = internal_value.wrapped
                                 if isinstance(internal_value, Pending):
                                     raise Exception("Pending needs to be handled before saving to cache")
@@ -1673,7 +1674,7 @@ def render_func(*args, **o_kwargs):
                                 converter_kwargs = Melty.converter_flags.get(convert_path[0], {})
 
                             no_cache = converter_kwargs.get("stateful", False)
-                            external_value = Background.run(convert, user_id=str(unique) + f" | output convert",
+                            external_value = Background.run(convert, user_id=str(unique) + f" | output convert {str(convert_path[-1].__name__)}",
                                                             invalidate_id=draw_state._parent._tile_id,
                                                             on_frame=Melty.frame_count, no_cache=no_cache,
                                                             value=new_value_child, apply=draw_state._apply_save,
@@ -1689,9 +1690,9 @@ def render_func(*args, **o_kwargs):
                             draw_state._save_pending = True
 
                         if isinstance(external_value, Pending):
+                            draw_state._save_pending_obj = external_value
                             if external_value.state == PendingState.CONFIRM:
-
-                                external_value = external_value.wrapped
+                                external_value = external_value.wrapped if isinstance(external_value.wrapped, original_type) else draw_state._raw_input_value
                                 draw_state._show_save = True
 
                         if isinstance(external_value, Pending):
@@ -1702,7 +1703,7 @@ def render_func(*args, **o_kwargs):
                                 draw_list.add_text(*(draw_state.left + 2, draw_state.top + draw_state.height - draw_state.footer_height - 20),
                                                    imgui.get_color_u32_rgba(1,1,1, 0.5),
                                                    f"{load_icon} {external_value.status}")
-                            Melty.cache.invalidate(draw_state._tile_id, force=True)
+                            # Melty.cache.invalidate(draw_state._tile_id, force=True)
                         else:
                             draw_state._save_pending_for = 0
                             prev_hash = Background.simple_hash(draw_state._input_value_cache["external_state"][0])
