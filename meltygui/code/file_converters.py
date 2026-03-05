@@ -309,3 +309,5 @@ def bytes_to_str(value: bytes) -> str:
 def str_to_bytes(value: str) -> bytes:
     """Encode string to UTF-8 bytes."""
     return value.encode("utf-8")
+
+

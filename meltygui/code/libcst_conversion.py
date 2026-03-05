@@ -11,6 +11,7 @@ The original immutable CST node is never serialized — just referenced.
 import enum
 import inspect
 import sys
+from pathlib import Path
 from time import sleep
 
 import libcst as cst
@@ -18,6 +19,7 @@ import libcst as cst
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.view.core_conversion.converter_register import converter
+from src.lsd.gl_gui.view.core_conversion.module_conversion import TextSpan
 from src.lsd.gl_gui.view.core_conversion.path_finder import convert
 
 # Sentinel for arguments with no default value.
@@ -43,6 +45,14 @@ def _cst_node_to_code(node):
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
 import types
+
+# TextSpan → original function object, so the converter can return it
+_span_to_func: dict[TextSpan, types.FunctionType] = {}
+
+
+def clear_function_span_cache():
+    """Clear the span → function lookup.  Useful for tests."""
+    _span_to_func.clear()
 
 
 @converter(registry=Melty)

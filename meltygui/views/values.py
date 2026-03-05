@@ -29,6 +29,7 @@ from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_styl
     push_style_color, pop_style_color, pop_style_var, end, begin
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_conversion.file_converters import path_to_dict, bytes_to_str
+from src.lsd.gl_gui.view.core_conversion.module_conversion import TextSpan
 from src.lsd.gl_gui.view.core_conversion.path_finder import convert
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
@@ -735,13 +736,13 @@ def draw_property(input_value:property, draw_state, **kwargs):
     # value = input_value.fget(input_value)
     # draw_any(value, name="value", show_bg=True, draw_state=draw_state)
 
-@render_func(is_default_for=(type), show_bg=True, tint=(0.335, 0.296, 0.178), with_header=draw_header, with_footer=draw_footer)
+@render_func(is_default_for=(type), show_bg=True, tint=(0.03816116973757744, 0.2254583239555359, 0.2930232286453247), with_header=draw_header, with_footer=draw_footer)
 def draw_type(input_value:type, draw_state, **kwargs):
-    tint = (0.5, 0, 0.5)
-    bg_color = (0.0, 0.0, 0.0, 0.5)
+    tint = (0.4697674512863159, 0.2627035677433014, 0.1136181652545929)
+    bg_color = (4.230000019073486, 5.480000019073486, 2.1500000953674316, -3.2200000286102295)
     show_bg = True
     bg_style = {
-        "value": 0.01,
+        "value": 3.0810000896453857,
         "saturation": 1.0,
         "alpha": 1.0,
         'max_value': 1.0
@@ -2645,6 +2646,12 @@ def pending_window(input_value, pending_name):
 
 class Mode(Enum):
     CODE_UI = {
+        types.NoneType: ModeOverrides(
+            kwargs={"convert": None},
+            func=draw_none,
+            recursive=False
+        ),
+
         cst.Module: ModeOverrides(
             kwargs={"convert": [cst.Module, dict]},
             func=draw_collection,
@@ -2652,14 +2659,14 @@ class Mode(Enum):
         ),
 
         types.FunctionType: ModeOverrides(
-            kwargs={"convert": [types.FunctionType, str, cst.Module]},
+            kwargs={"convert": [types.FunctionType, TextSpan, cst.Module]},
             func=draw_collection,
             recursive=False
         ),
 
-        Path: ModeOverrides(
-            kwargs={"convert": [Path, bytes, str, cst.Module]},
-            func=draw_collection,
+        str: ModeOverrides(
+            kwargs={"convert": None, "mode":None},
+            func=draw_text,
             recursive=False,
         ),
 

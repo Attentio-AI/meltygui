@@ -16,6 +16,8 @@ from collections import deque
 from enum import Enum
 from typing import Any, Callable, TypeVar
 
+from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace
+
 T = TypeVar("T")
 
 # Sentinel cached for type pairs with no conversion path,
@@ -226,11 +228,13 @@ def _run_explicit_path(value: Any, target: type, *, path: list, registry, apply:
 
             fn = _find_converter(converters, type(result), item)
             if fn is None:
-                return Pending(state=PendingState.BROKEN_PATH, wrapped=item)
                 # raise TypeError(
                 #     f"No converter registered for {type(result).__name__!r} → "
                 #     f"{item.__name__!r} (step {i + 1} of explicit path)"
                 # )
+                print_stack_trace(watch=["result", "item"])
+                return Pending(state=PendingState.BROKEN_PATH, wrapped=item, status=f"Missing converter for {type(result).__name__!r} -> {item.__name__!r} at step {i + 1} of explicit path")
+
             result = _call_converter(fn, result, apply=apply)
         else:
             # Callable edge - skip if already the target type

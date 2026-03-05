@@ -199,21 +199,10 @@ def _render_frame_table(file_line, code_line, watch_rows, indent=None, dim=False
     pad_str = indent if indent else _INDENT
 
     if dim:
-        TL, TR, BL, BR = " ", " ", " ", " "
-        H, V = " ", " "
-        LT, RT, TT, BT = " ", " ", " ", " "
+        V = " "
     else:
         line_color = _TABLE_LINE_RED if error else _TABLE_LINE
-        TL = f"{line_color}┌"
-        TR = f"┐{_RESET}"
-        BL = f"{line_color}└"
-        BR = f"┘{_RESET}"
-        H = "─"
         V = f"{line_color}│{_RESET}"
-        LT = f"{line_color}├"
-        RT = f"┤{_RESET}"
-        TT = "┬"
-        BT = "┴"
 
     if watch_rows:
         cols = list(zip(*watch_rows))
@@ -224,26 +213,13 @@ def _render_frame_table(file_line, code_line, watch_rows, indent=None, dim=False
 
     inner_width = max(inner_width, _visible_len(file_line) + 2, _visible_len(code_line) + 2)
 
-    h_char = "─" if not dim else " "
     buf = []
-
-    # Top border
-    buf.append(f"{pad_str}{TL}{h_char * inner_width}{TR}")
 
     # File line
     file_pad = inner_width - _visible_len(file_line) - 1
     buf.append(f"{pad_str}{V} {file_line}{' ' * file_pad}{V}")
 
     if watch_rows:
-        # Separator with column merges
-        sep = f"{h_char}{h_char * widths[0]}{h_char}"
-        for w in widths[1:]:
-            sep += f"{TT}{h_char}{h_char * w}{h_char}" if not dim else f" {h_char}{h_char * w}{h_char}"
-        sep_visible = len(sep.replace("┬", "").replace(" ", "")) + len(sep) - len(sep.replace("┬", "").replace(" ", ""))
-        if _visible_len(sep) < inner_width:
-            sep += h_char * (inner_width - _visible_len(sep))
-        buf.append(f"{pad_str}{LT}{sep}{RT}")
-
         # Watch rows
         for name, typ, val, link in watch_rows:
             row = (
@@ -255,22 +231,9 @@ def _render_frame_table(file_line, code_line, watch_rows, indent=None, dim=False
             row_pad = inner_width - _visible_len(row)
             buf.append(f"{pad_str}{V}{row}{' ' * row_pad}{V}")
 
-        # Separator with column splits
-        sep = f"{h_char}{h_char * widths[0]}{h_char}"
-        for w in widths[1:]:
-            sep += f"{BT}{h_char}{h_char * w}{h_char}" if not dim else f" {h_char}{h_char * w}{h_char}"
-        if _visible_len(sep) < inner_width:
-            sep += h_char * (inner_width - _visible_len(sep))
-        buf.append(f"{pad_str}{LT}{sep}{RT}")
-    else:
-        buf.append(f"{pad_str}{LT}{h_char * inner_width}{RT}")
-
     # Code line
     code_pad = inner_width - _visible_len(code_line) - 1
     buf.append(f"{pad_str}{V} {code_line}{' ' * max(code_pad, 0)}{V}")
-
-    # Bottom border
-    buf.append(f"{pad_str}{BL}{h_char * inner_width}{BR}")
 
     return "\n".join(buf) + "\n"
 

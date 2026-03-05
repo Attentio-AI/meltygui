@@ -1006,7 +1006,8 @@ def render_func(*args, **o_kwargs):
                         # Melty.cache.invalidate(draw_state._parent._tile_id, force=True)
                         # Melty.cache.invalidate(draw_state._tile_id, force=True)
                         # request_render()
-                    if draw_state._raw_input_value == UNSET_VALUE:
+                    if (draw_state._raw_input_value == UNSET_VALUE or
+                            (draw_state._raw_input_value is None and convert_path[0] != types.NoneType)):
                         internal_value, thead_launch_frame = draw_state._input_value_cache["internal_state"]
 
                     else:
@@ -1660,7 +1661,8 @@ def render_func(*args, **o_kwargs):
                         #                and not input_changed)
 
 
-                        if new_value_child == UNSET_VALUE:
+                        if new_value_child == UNSET_VALUE or (
+                                draw_state._raw_input_value is None and convert_path[0] != types.NoneType):
                             external_value = draw_state._input_value_cache["external_state"] = (
                             input_value, draw_state._input_value_cache["external_state"][1])
                         else:
