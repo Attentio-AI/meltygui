@@ -106,11 +106,11 @@ class Background:
                         if Toggles.invalidate_stack_trace:
                             print_stack_trace(frames=frames,)
 
-                        if latest["invalidate_id"] is not None:
-                            from src.lsd.gl_gui.melty import Melty
-                            from src.lsd.gl_gui.utils.glfw_utils import request_render
-                            Melty.cache.invalidate_up(latest["invalidate_id"])
-                            request_render()
+                        # if latest["invalidate_id"] is not None:
+                        #     from src.lsd.gl_gui.melty import Melty
+                        #     from src.lsd.gl_gui.utils.glfw_utils import request_render
+                        #     Melty.cache.invalidate_up(latest["invalidate_id"])
+                        #     request_render()
 
                 timer = threading.Timer(debounce / 1000.0, _fire)
                 cls._debounce_timers[debounce_key] = timer

@@ -486,6 +486,163 @@ def fileref_to_function(value: FileRef) -> str:
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  Recompilation                                                               ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
+"""
+Example converters using FileRef + load_data / save_data + cache_id.
+
+All caching is keyed on cache_id passed through convert().
+No cache_id = no caching, always fresh.
+"""
+
+import inspect
+import textwrap
+import types
+from pathlib import Path
+
+import libcst as cst
+
+from src.lsd.gl_gui.melty import Melty
+from src.lsd.gl_gui.view.core_conversion.converter_register import converter
+from src.lsd.gl_gui.view.core_conversion.fileref import (
+    FileRef, get_original_value,
+)
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  File/O callbacks                                                               ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+def load_file_bytes(ref: FileRef) -> bytes:
+    return ref.path.read_bytes()
+
+
+def save_file_bytes(ref: FileRef, data: bytes) -> FileRef | None:
+    ref.path.parent.mkdir(parents=True, exist_ok=True)
+    if isinstance(data, str):
+        ref.path.write_text(data, encoding="utf-8")
+    else:
+        ref.path.write_bytes(data)
+    return None
+
+
+def _detect_newline(data: bytes) -> str:
+    return "\r\n" if b"\r\n" in data else "\n"
+
+
+def load_span_text(ref: FileRef) -> str:
+    data = ref.path.read_bytes()
+    newline = _detect_newline(data)
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        text = data.decode("latin-1")
+    lines = text.split(newline)
+    return newline.join(lines[ref.start:ref.end])
+
+
+def save_span_text(ref: FileRef, data: str) -> FileRef:
+    full_data = ref.path.read_bytes()
+    newline = _detect_newline(full_data)
+    try:
+        text = full_data.decode("utf-8")
+    except UnicodeDecodeError:
+        text = full_data.decode("latin-1")
+    lines = text.split(newline)
+    new_lines = data.split(newline)
+    lines[ref.start:ref.end] = new_lines
+    ref.path.write_text(newline.join(lines), encoding="utf-8")
+    return FileRef(ref.path, ref.start, ref.start + len(new_lines))
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  Path ↔ dict (whole file)                                                   ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+@converter(registry=Melty, from_type=Path, load_data=load_file_bytes)
+def path_to_dict(data: bytes, ref: FileRef) -> dict:
+    return {
+        "name": ref.path.name,
+        "stem": ref.path.stem,
+        "suffix": ref.path.suffix,
+        "size": len(data),
+        "modified": ref.path.stat().st_mtime,
+        "data": data,
+        "__path__": ref.path,
+        "__original_data__": data,
+    }
+
+
+@converter(registry=Melty, to_type=Path, save_data=save_file_bytes,
+           inverse_of=path_to_dict)
+def dict_to_path(value: dict) -> bytes:
+    data = value.get("data")
+    if data is None:
+        raise ValueError("Dict has no 'data' — nothing to write")
+    return data.encode("utf-8") if isinstance(data, str) else data
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  FileRef ↔ dict (line range as plain text)                                   ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+@converter(registry=Melty, from_type=FileRef, load_data=load_span_text)
+def fileref_to_dict(data: str, ref: FileRef) -> dict:
+    return {
+        "value": data,
+        "__original_value__": data,
+    }
+
+
+@converter(registry=Melty, to_type=FileRef, save_data=save_span_text,
+           inverse_of=fileref_to_dict)
+def dict_to_fileref(value: dict) -> str:
+    data = value.get("value")
+    if data is None:
+        raise ValueError("Dict has no 'value' — nothing to write")
+    return data
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  FileRef ↔ cst.Module (line range parsed into CST)                           ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+@converter(registry=Melty, from_type=FileRef, load_data=load_span_text)
+def fileref_to_cst_module(data: str, ref: FileRef) -> cst.Module:
+    return cst.parse_module(data)
+
+
+@converter(registry=Melty, to_type=FileRef, save_data=save_span_text,
+           inverse_of=fileref_to_cst_module)
+def cst_module_to_fileref(value: cst.Module) -> str:
+    return value.code
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  FunctionType ↔ FileRef                                                      ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+def recompile_function(ref: FileRef, source: str) -> FileRef:
+    """Recompile the function in place.  No file write."""
+    func = get_original_value(ref=ref, of_type=types.FunctionType)
+    if func is not None:
+        _recompile(func, source, str(ref.path))
+    return ref
+
+
+@converter(registry=Melty, from_type=types.FunctionType, load_data=load_span_text)
+def function_to_fileref(data: str, ref: FileRef) -> FileRef:
+    return ref
+
+
+@converter(registry=Melty, to_type=types.FunctionType,
+           save_data=recompile_function,
+           inverse_of=function_to_fileref)
+def fileref_to_function(value: FileRef) -> str:
+    return load_span_text(value)
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  Recompilation                                                               ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
 
 def _recompile(func: types.FunctionType, source: str,
                filename: str) -> None:
@@ -524,8 +681,18 @@ def _recompile(func: types.FunctionType, source: str,
 
     new_func = inspect.unwrap(new_func)
 
+    # Save the original line number before patching - compile() sets
+    # co_firstlineno to 1 (because of dedented string), but inspect
+    # needs the real line number in the file to find the source.
+    original_firstlineno = unwrapped.__code__.co_firstlineno
+
     unwrapped.__code__ = new_func.__code__
     unwrapped.__defaults__ = new_func.__defaults__
     unwrapped.__kwdefaults__ = new_func.__kwdefaults__
     unwrapped.__annotations__ = new_func.__annotations__
     unwrapped.__doc__ = new_func.__doc__
+
+    # Restore the correct line number so inspect.getsourcelines works
+    unwrapped.__code__ = unwrapped.__code__.replace(
+        co_firstlineno=original_firstlineno
+    )

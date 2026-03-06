@@ -1981,8 +1981,8 @@ def seperator(height):
     imgui.dummy(0, snap_int(height / 2))
 
 
-def draw_bg(left=0, top=0, width=20, height=20, depth=0, rounding=4.050000190734863,
-            global_style=None, outline=True, bg_color=None, opacity=1.0,
+def draw_bg(left=2, top=1, width=20, height=20, depth=0, rounding=6.090000152587891,
+            global_style=None, outline=True, bg_color=None, opacity=-0.949999988079071,
             style_manager=None, tint=None, outline_tint=None, selected=False,
             hovered=False, pressed=False, nested_bg=False, **kwargs):
     # Render background
@@ -2001,8 +2001,8 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0, rounding=4.050000190734
     right = left + width
     bottom = top + height
 
-    thickness = 1.0700000524520874
-    half_thickness = 0.8399999737739563
+    thickness = 1.2000000476837158
+    half_thickness = 0.5099999904632568
     rect = (
     snap_int(left) + thickness, snap_int(top) + thickness, snap_int(right) - thickness, snap_int(bottom) - thickness)
     rect_outline = (snap_int(left) + half_thickness, snap_int(top) + half_thickness,
@@ -2029,7 +2029,7 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0, rounding=4.050000190734
                 c1[1] * (1 - fac) + c2[1] * fac,
                 c1[2] * (1 - fac) + c2[2] * fac)
 
-    bg_style = {'value': -0.33000001311302185, 'saturation': 1.5800000429153442, 'alpha': 1.0,
+    bg_style = {'value': -0.2800000011920929, 'saturation': 1.5800000429153442, 'alpha': 1.0,
                 'max_value': 1.06}
     outline_saturation = 1.350000023841858
     outline_offset = 0.1719
