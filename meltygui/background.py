@@ -103,6 +103,9 @@ class Background:
                             debounce=None, frames=frames,
                             *latest["args"], **latest["kwargs"],
                         )
+                        if Toggles.invalidate_stack_trace:
+                            print_stack_trace(frames=frames,)
+
                         if latest["invalidate_id"] is not None:
                             from src.lsd.gl_gui.melty import Melty
                             from src.lsd.gl_gui.utils.glfw_utils import request_render

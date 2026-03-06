@@ -74,25 +74,21 @@ _accepts_apply_cache: dict[Callable, bool] = {}
 
 def _accepts_apply(fn: Callable) -> bool:
     """Check (cached) whether a converter function accepts an 'apply' kwarg."""
-    cached = _accepts_apply_cache.get(fn)
-    if cached is not None:
-        return cached
-    import inspect
-    try:
-        sig = inspect.signature(fn)
-        result = "apply" in sig.parameters
-    except (ValueError, TypeError):
-        result = False
-    _accepts_apply_cache[fn] = result
-    return result
+    return True
+    # cached = _accepts_apply_cache.get(fn)
+    # if cached is not None:
+    #     return cached
+    # import inspect
+    # try:
+    #     sig = inspect.signature(fn)
+    #     result = "apply" in sig.parameters
+    # except (ValueError, TypeError):
+    #     result = False
+    # _accepts_apply_cache[fn] = result
+    # return result
+    #
 
 
-def _call_converter(fn: Callable, value: Any, *, apply: bool) -> Any:
-    """Call a converter, passing apply only if it accepts it."""
-
-    if _accepts_apply(fn):
-        return fn(value, apply=apply)
-    return fn(value)
 
 
 def _is_path_type(item) -> bool:
@@ -111,7 +107,7 @@ def _find_converter(converters: dict, from_type: type, to_type: type) -> Callabl
     return fn
 
 
-def convert(value: Any, target: type[T] = None, *, registry, path: list | None = None, apply: bool = False) -> T:
+def convert(value: Any, target: type[T] = None, *, registry, path: list | None = None, apply: bool = False, cache_id=None) -> T:
     """Convert *value* to *target* type using the registry.
 
     If *path* is provided, follows it exactly.  Path items can be:
@@ -143,8 +139,14 @@ def convert(value: Any, target: type[T] = None, *, registry, path: list | None =
         if isinstance(value, target):
             return value  # type: ignore[return-value]
 
+    if cache_id is None:
+        from src.lsd.gl_gui.melty import Melty
+        cache_id = Melty.unique_stack[-1] if Melty.unique_stack else None
+
     if path is not None:
-        return _run_explicit_path(value, target, path=path, registry=registry, apply=apply)
+        return _run_explicit_path(value, target, cache_id=cache_id, path=path, registry=registry, apply=apply)
+
+
 
     # Value-aware shortcut: dicts produced by object_to_dict carry a
     # __meta__ key with the original class info.  The graph can't know
@@ -191,12 +193,12 @@ def convert(value: Any, target: type[T] = None, *, registry, path: list | None =
     # If we need to pass apply, decompose the chain and walk step by step
     steps = getattr(chain_fn, "__converter_chain__", None)
     if steps is not None:
-        return _run_chain_steps(value, steps, apply=apply)
+        return _run_chain_steps(value, steps,cache_id=cache_id, apply=apply)
     # Direct call (single hop)
-    return _call_converter(chain_fn, value, apply=apply)
+    return chain_fn(value, cache_id=cache_id, apply=apply)
 
 
-def _run_explicit_path(value: Any, target: type, *, path: list, registry, apply: bool) -> Any:
+def _run_explicit_path(value: Any, target: type, *, path: list, registry, apply: bool, cache_id=None) -> Any:
     """Follow an explicit path of types and/or converter functions.
 
     Each path item is either:
@@ -219,6 +221,8 @@ def _run_explicit_path(value: Any, target: type, *, path: list, registry, apply:
     """
     converters = getattr(registry, "_converters", {})
     result = value
+    last_fn = None
+    fn_name = "N/A"
 
     for i, item in enumerate(path):
         if _is_path_type(item):
@@ -228,15 +232,21 @@ def _run_explicit_path(value: Any, target: type, *, path: list, registry, apply:
 
             fn = _find_converter(converters, type(result), item)
             if fn is None:
+                # print(last_fn.__name__ if last_fn else "N/A", item.__name__)
                 # raise TypeError(
                 #     f"No converter registered for {type(result).__name__!r} → "
                 #     f"{item.__name__!r} (step {i + 1} of explicit path)"
                 # )
-                print_stack_trace(watch=["result", "item"])
+                print_stack_trace(watch=["path", "target", "result", "item", "apply",  "value", "cache_id", "last_fn", "fn_name"])
+                # print(f"Missing converter for {type(result).__name__!r} -> {item.__name__!r} at step {i + 1} of explicit path")
 
                 return Pending(state=PendingState.BROKEN_PATH, wrapped=item, status=f"Missing converter for {type(result).__name__!r} -> {item.__name__!r} at step {i + 1} of explicit path")
 
-            result = _call_converter(fn, result, apply=apply)
+            last_fn = fn
+
+            fn_name = fn.__name__ if last_fn else "N/A"
+
+            result = fn(result, cache_id=cache_id, apply=apply)
         else:
             # Callable edge - skip if already the target type
             type_info = getattr(registry, "_converter_to_type", {}).get(item)
@@ -245,7 +255,7 @@ def _run_explicit_path(value: Any, target: type, *, path: list, registry, apply:
                 if isinstance(result, to_type):
                     result = value
                     continue
-            result = _call_converter(item, result, apply=apply)
+            result = item(result, cache_id=cache_id, apply=apply)
 
         if isinstance(result, Pending):
             return result
@@ -253,15 +263,18 @@ def _run_explicit_path(value: Any, target: type, *, path: list, registry, apply:
     return result
 
 
-def _run_chain_steps(value: Any, steps: list[Callable], *, apply: bool) -> Any:
+def _run_chain_steps(value: Any, steps: list[Callable], *, apply: bool, cache_id=None) -> Any:
     """Walk a list of converter functions, passing apply and handling Pending.
 
     If any step returns Pending, stops immediately and returns it.
     """
     result = value
 
+    if apply:
+        pass
+
     for fn in steps:
-        result = _call_converter(fn, result, apply=apply)
+        result = fn(result, cache_id=cache_id, apply=apply)
         if isinstance(result, Pending):
             return result
 

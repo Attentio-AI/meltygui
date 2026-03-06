@@ -11,7 +11,6 @@ The original immutable CST node is never serialized — just referenced.
 import enum
 import inspect
 import sys
-from pathlib import Path
 from time import sleep
 
 import libcst as cst
@@ -19,8 +18,8 @@ import libcst as cst
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.view.core_conversion.converter_register import converter
-from src.lsd.gl_gui.view.core_conversion.module_conversion import TextSpan
 from src.lsd.gl_gui.view.core_conversion.path_finder import convert
+from src.lsd.gl_gui.view.core_conversion.fileref import FileRef
 
 # Sentinel for arguments with no default value.
 # Shows up in the dict so the UI can display the parameter name,
@@ -47,7 +46,7 @@ def _cst_node_to_code(node):
 import types
 
 # TextSpan → original function object, so the converter can return it
-_span_to_func: dict[TextSpan, types.FunctionType] = {}
+_span_to_func: dict[FileRef, types.FunctionType] = {}
 
 
 def clear_function_span_cache():
@@ -300,8 +299,15 @@ def dict_to_cst_dict(value: dict) -> cst.Dict:
             )
             surviving.append(new_el)
 
-        # Pass 3: fix commas - inner elements get inner_comma,
-        # last element gets original last_comma style
+        # Pass 3: fix commas - only override when needed:
+        #   - Last element gets original last_comma style
+        #   - Non-last elements with MaybeSentinel get inner_comma
+        #     (e.g. previously last element after an insert)
+        #   - Non-last elements with bare trailing commas (empty
+        #     whitespace_after) get inner_comma - these were trailing
+        #     commas that are now internal separators
+        #   - Non-last elements with meaningful commas (spaces, newlines)
+        #     are preserved as-is (keeps multiline formatting, etc.)
         if surviving:
             fixed = []
             for i, el in enumerate(surviving):
@@ -311,7 +317,18 @@ def dict_to_cst_dict(value: dict) -> cst.Dict:
                 is_last = (i == len(surviving) - 1)
                 if is_last:
                     fixed.append(el.with_changes(comma=last_comma))
-                elif inner_comma is not None:
+                elif isinstance(el.comma, cst.MaybeSentinel):
+                    # Previously no comma - needs one now
+                    if inner_comma is not None:
+                        fixed.append(el.with_changes(comma=inner_comma))
+                    else:
+                        fixed.append(el)
+                elif (inner_comma is not None
+                      and isinstance(el.comma, cst.Comma)
+                      and isinstance(el.comma.whitespace_after, cst.SimpleWhitespace)
+                      and el.comma.whitespace_after.value == ""):
+                    # Bare trailing comma (no whitespace) - upgrade to
+                    # inner comma since it's now a separator, not trailing
                     fixed.append(el.with_changes(comma=inner_comma))
                 else:
                     fixed.append(el)
@@ -607,22 +624,46 @@ def _extract_param_defaults(params_node):
 
 
 def _extract_body_assignments(body_node):
-    """Extract name = value assignments from a function/method body."""
-    result = {}
+    """Extract name = value assignments from a function/method body.
+
+    Only extracts names that are assigned exactly once at the top level.
+    Variables assigned multiple times (e.g. initial value then reassignment)
+    are part of multi-step computation and not safely editable as a single
+    dict entry — they are left to the CST to preserve unchanged.
+    """
     if not isinstance(body_node, cst.IndentedBlock):
-        return result
+        return {}
+
+    # Pass 1: count top-level assignments per name
+    counts: dict[str, int] = {}
     for stmt in body_node.body:
         if not isinstance(stmt, cst.SimpleStatementLine):
             continue
         for node in stmt.body:
-            # name = value
+            name = None
             if isinstance(node, cst.Assign) and len(node.targets) == 1:
                 target = node.targets[0].target
                 if isinstance(target, cst.Name):
-                    result[target.value] = _cst_to_python_or_raw(node.value)
-            # name: type = value
+                    name = target.value
             elif isinstance(node, cst.AnnAssign):
                 if isinstance(node.target, cst.Name) and node.value is not None:
+                    name = node.target.value
+            if name is not None:
+                counts[name] = counts.get(name, 0) + 1
+
+    # Pass 2: extract only singly-assigned names
+    result = {}
+    for stmt in body_node.body:
+        if not isinstance(stmt, cst.SimpleStatementLine):
+            continue
+        for node in stmt.body:
+            if isinstance(node, cst.Assign) and len(node.targets) == 1:
+                target = node.targets[0].target
+                if isinstance(target, cst.Name) and counts.get(target.value) == 1:
+                    result[target.value] = _cst_to_python_or_raw(node.value)
+            elif isinstance(node, cst.AnnAssign):
+                if (isinstance(node.target, cst.Name) and node.value is not None
+                        and counts.get(node.target.value) == 1):
                     result[node.target.value] = _cst_to_python_or_raw(node.value)
     return result
 
@@ -692,13 +733,30 @@ def dict_to_cst_funcdef(value: dict) -> cst.FunctionDef:
 
 
 class _BodyAssignPatcher(cst.CSTTransformer):
-    """Patches name = value assignments in a function body."""
+    """Patches name = value assignments at the top level of a function body.
+
+    Only patches assignments directly inside the function's IndentedBlock
+    (depth 1).  Assignments nested inside if/for/while/with/try blocks
+    are left untouched — they may reassign the same name with a different
+    value that should be preserved.
+    """
 
     def __init__(self, edits: dict):
         super().__init__()
         self.edits = edits
+        self._depth = 0
+
+    def visit_IndentedBlock(self, node):
+        self._depth += 1
+        return True
+
+    def leave_IndentedBlock(self, original_node, updated_node):
+        self._depth -= 1
+        return updated_node
 
     def leave_Assign(self, original_node, updated_node):
+        if self._depth != 1:
+            return updated_node
         if len(updated_node.targets) != 1:
             return updated_node
         target = updated_node.targets[0].target
@@ -713,6 +771,8 @@ class _BodyAssignPatcher(cst.CSTTransformer):
         return updated_node.with_changes(value=new_cst)
 
     def leave_AnnAssign(self, original_node, updated_node):
+        if self._depth != 1:
+            return updated_node
         if not isinstance(updated_node.target, cst.Name):
             return updated_node
         if updated_node.target.value not in self.edits:
@@ -1336,20 +1396,30 @@ def _python_to_cst_expr(py_value, old_node=None):
     if isinstance(py_value, int):
         if py_value < 0:
             if isinstance(old_node, cst.UnaryOperation) and isinstance(old_node.operator, cst.Minus):
+                old_expr = old_node.expression
+                if isinstance(old_expr, cst.Integer) and int(old_expr.value) == abs(py_value):
+                    return old_node  # unchanged - preserve original repr
                 return old_node.with_changes(
-                    expression=old_node.expression.with_changes(value=str(abs(py_value))))
+                    expression=old_expr.with_changes(value=str(abs(py_value))))
             return cst.UnaryOperation(operator=cst.Minus(), expression=cst.Integer(str(abs(py_value))))
         if isinstance(old_node, cst.Integer):
+            if int(old_node.value) == py_value:
+                return old_node  # unchanged - preserve original repr
             return old_node.with_changes(value=str(py_value))
         return cst.Integer(str(py_value))
 
     if isinstance(py_value, float):
         if py_value < 0:
             if isinstance(old_node, cst.UnaryOperation) and isinstance(old_node.operator, cst.Minus):
+                old_expr = old_node.expression
+                if isinstance(old_expr, cst.Float) and float(old_expr.value) == abs(py_value):
+                    return old_node  # unchanged - preserve original repr
                 return old_node.with_changes(
-                    expression=old_node.expression.with_changes(value=repr(abs(py_value))))
+                    expression=old_expr.with_changes(value=repr(abs(py_value))))
             return cst.UnaryOperation(operator=cst.Minus(), expression=cst.Float(repr(abs(py_value))))
         if isinstance(old_node, cst.Float):
+            if float(old_node.value) == py_value:
+                return old_node  # unchanged - preserve original repr
             return old_node.with_changes(value=repr(py_value))
         return cst.Float(repr(py_value))
 

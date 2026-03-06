@@ -28,8 +28,7 @@ from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_style_var, \
     push_style_color, pop_style_color, pop_style_var, end, begin, text_wrapped
 from src.lsd.gl_gui.utils.glfw_utils import request_render
-from src.lsd.gl_gui.view.core_conversion.file_converters import path_to_dict, bytes_to_str
-from src.lsd.gl_gui.view.core_conversion.module_conversion import TextSpan
+from src.lsd.gl_gui.view.core_conversion.file_converters import path_to_dict, bytes_to_str, FileRef
 from src.lsd.gl_gui.view.core_conversion.path_finder import convert
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
@@ -760,30 +759,29 @@ def draw_type(input_value:type, draw_state, **kwargs):
     type_set_attr = lambda obj, key, value: setattr(obj, key, value)
     #draw_collection(input_value, name="inspect", keys=keys, get_attr=type_get_attr, set_attr=type_set_attr)
 
-
 some_float = [0.0]
 cst_dict = {}
-test_code = convert(draw_type, str, registry=Melty)
-
-def code_to_dict():
-    global cst_dict
-    global test_code
-    cst_tree = convert(test_code, cst.Module, registry=Melty)
-    cst_dict = convert(cst_tree, dict, registry=Melty)
-    return cst_dict
-
-def dict_to_code():
-    global cst_dict
-    global test_code
-    cst_tree = convert(cst_dict, cst.Module, registry=Melty)
-    test_code = cst_tree.code
-    return test_code
-
-def path_to_text():
-    path = Path("/home/lukas/test_folder/test_list.txt")
-    text = convert(path, path=[Path, bytes, str], registry=Melty)
-    return text
-
+test_code = None
+#
+# def code_to_dict():
+#     global cst_dict
+#     global test_code
+#     cst_tree = convert(test_code, cst.Module, registry=Melty)
+#     cst_dict = convert(cst_tree, dict, registry=Melty)
+#     return cst_dict
+#
+# def dict_to_code():
+#     global cst_dict
+#     global test_code
+#     cst_tree = convert(cst_dict, cst.Module, registry=Melty)
+#     test_code = cst_tree.code
+#     return test_code
+#
+# def path_to_text():
+#     path = Path("/home/lukas/test_folder/test_list.txt")
+#     text = convert(path, path=[Path, bytes, str], registry=Melty)
+#     return text
+#
 
 
 @render_func(use_cache=False, show_bg=True, selectable=False, show_tint=True, bg_offset=-1, with_header=draw_header)
@@ -807,11 +805,11 @@ def draw_main(input_value, vis, **kwargs):
     #     test_code = value
     # #
 
-    changed, value = draw_window(draw_type, name="cst_text", show_bg=True, live=True, mode=Mode.CODE_PLAIN_TEXT)
+    changed, value = draw_window(draw_bg, name="cst_text", show_bg=True, live=True, mode=Mode.CODE_PLAIN_TEXT)
     if changed:
         test_code = value
 
-    changed, value = draw_window(draw_type, name="cst_dict", show_bg=True, mode=Mode.CODE_UI)
+    changed, value = draw_window(draw_bg, name="cst_dict", show_bg=True, mode=Mode.CODE_UI)
     if changed:
         test_code = value
 
@@ -1983,7 +1981,7 @@ def seperator(height):
     imgui.dummy(0, snap_int(height / 2))
 
 
-def draw_bg(left=0, top=0, width=20, height=20, depth=0, rounding=5.0,
+def draw_bg(left=0, top=0, width=20, height=20, depth=0, rounding=4.050000190734863,
             global_style=None, outline=True, bg_color=None, opacity=1.0,
             style_manager=None, tint=None, outline_tint=None, selected=False,
             hovered=False, pressed=False, nested_bg=False, **kwargs):
@@ -2003,8 +2001,8 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0, rounding=5.0,
     right = left + width
     bottom = top + height
 
-    thickness = 1.0
-    half_thickness = 0.5
+    thickness = 1.0700000524520874
+    half_thickness = 0.8399999737739563
     rect = (
     snap_int(left) + thickness, snap_int(top) + thickness, snap_int(right) - thickness, snap_int(bottom) - thickness)
     rect_outline = (snap_int(left) + half_thickness, snap_int(top) + half_thickness,
@@ -2013,8 +2011,8 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0, rounding=5.0,
 
     rounding = min(max(10.0, current_indent_px()), rounding)
 
-    depth_factor = 0.042
-    depth_offset = 6.609
+    depth_factor = 0.03200000151991844
+    depth_offset = 9.059000015258789
     dynamic_value = max(0, (float(depth + depth_offset) * depth_factor))
 
     hovered_offset = 0.0
@@ -2031,7 +2029,7 @@ def draw_bg(left=0, top=0, width=20, height=20, depth=0, rounding=5.0,
                 c1[1] * (1 - fac) + c2[1] * fac,
                 c1[2] * (1 - fac) + c2[2] * fac)
 
-    bg_style = {'value': -0.34, 'saturation': 1.26, 'alpha': 1.0,
+    bg_style = {'value': -0.33000001311302185, 'saturation': 1.5800000429153442, 'alpha': 1.0,
                 'max_value': 1.06}
     outline_saturation = 1.350000023841858
     outline_offset = 0.1719
@@ -2655,14 +2653,14 @@ class Mode(Enum):
         ),
 
         types.FunctionType: ModeOverrides(
-            kwargs={"convert": [types.FunctionType, TextSpan, cst.Module]},
+            kwargs={"convert": [types.FunctionType, FileRef, cst.Module]},
             func=draw_collection,
             recursive=False
         ),
 
         str: ModeOverrides(
             kwargs={"convert": None, "mode":None},
-            func=draw_text,
+            func=draw_str,
             recursive=False,
         ),
 
@@ -2670,7 +2668,7 @@ class Mode(Enum):
 
     CODE_PLAIN_TEXT = {
         types.FunctionType: ModeOverrides(
-            kwargs={"convert": [types.FunctionType, TextSpan, dict]},
+            kwargs={"convert": [types.FunctionType, FileRef, dict]},
             func=draw_collection,
             recursive=False
         ),

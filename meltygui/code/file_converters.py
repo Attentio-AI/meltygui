@@ -36,12 +36,17 @@ File dicts carry __path__ for lossless round-trip:
         "__path__": Path("/absolute/path/app.py"),
     }
 """
+import inspect
+import textwrap
+import types
 
 from pathlib import Path
-
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.view.core_conversion.converter_register import converter
-from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
+
+import libcst as cst
+
+from src.lsd.gl_gui.view.core_conversion.fileref import FileRef, get_original_value
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -77,20 +82,6 @@ def clear_file_cache():
 # ║  Path → dict (read file with caching and change detection)                   ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
-def _stat_file(path: Path) -> tuple[Path, float, int]:
-    """Resolve, validate, and stat a file path.
-
-    Returns (resolved_path, mtime, size).
-    Raises FileNotFoundError or IsADirectoryError.
-    """
-    resolved = path.resolve()
-    if not resolved.exists():
-        raise FileNotFoundError(f"No such file: {resolved}")
-    if resolved.is_dir():
-        raise IsADirectoryError(f"Is a directory, not a file: {resolved}")
-    stat = resolved.stat()
-    return resolved, stat.st_mtime, stat.st_size
-
 
 def _build_file_dict(resolved: Path, mtime: float, size: int,
                      data: bytes) -> dict:
@@ -120,168 +111,213 @@ def _build_metadata_shell(resolved: Path, mtime: float, size: int) -> dict:
     }
 
 
-@converter(registry=Melty, stateful=True)
-def path_to_dict(value: Path, apply: bool = False) -> dict:
-    """Read a file from disk into a metadata dict with change detection.
 
-    Manages an internal mtime/size cache per resolved path so that
-    repeated conversions of the same Path are cheap:
+########################### MODULE CONVERTERS
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  TextSpan - address type                                                     ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
 
-    First call:
-        apply=False → Pending with metadata shell (no file read).
-        apply=True  → reads file, caches result, returns full dict.
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  Internal cache                                                              ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
 
-    Subsequent calls (file unchanged):
-        If cached dict exists → returns it directly.
-        If no cached dict yet → Pending (still needs initial load).
+class _SpanFileState:
+    """Whole-file cache shared across all spans into the same file.
 
-    Subsequent calls (file changed on disk):
-        apply=False → bare Pending (CONFIRM state) so the UI can
-                      prompt the user to reload.
-        apply=True  → re-reads file, updates cache, returns fresh dict.
-
-    Raises FileNotFoundError if the path doesn't exist.
-    Raises IsADirectoryError if the path is a directory.
+    We cache at the file level (not per-span) so that multiple spans
+    into the same file share one read and see a consistent snapshot.
     """
-    resolved, mtime, size = _stat_file(Path(value))
-    state = _file_state_cache.get(resolved)
+    __slots__ = ("path", "mtime", "size", "lines", "newline")
 
-    # ── First time (no cached state) ────────────────────────────────
+    def __init__(self, path: Path, mtime: float, size: int):
+        self.path = path
+        self.mtime = mtime
+        self.size = size
+        self.lines: list[str] | None = None
+        self.newline: str = "\n"
+
+
+# resolved absolute path → file state
+_span_file_cache: dict[Path, _SpanFileState] = {}
+
+# (resolved path, start, end) → last returned data string
+_span_data_cache: dict[tuple[Path, int, int | None], str] = {}
+
+
+def clear_span_cache():
+    """Clear all span-related caches.  Useful for tests."""
+    _span_file_cache.clear()
+    _span_data_cache.clear()
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  Helpers                                                                     ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+def _stat_file(path: Path) -> tuple[Path, float, int]:
+    resolved = path.resolve()
+    if not resolved.exists():
+        raise FileNotFoundError(f"No such file: {resolved}")
+    if resolved.is_dir():
+        raise IsADirectoryError(f"Is a directory, not a file: {resolved}")
+    stat = resolved.stat()
+    return resolved, stat.st_mtime, stat.st_size
+
+
+def _read_lines(data: bytes) -> tuple[list[str], str]:
+    """Decode bytes into lines (without trailing newlines) + newline style."""
+    newline = _detect_newline(data)
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        text = data.decode("latin-1")
+
+    lines = text.split(newline)
+
+    return lines, newline
+
+
+def _ensure_file_loaded(resolved: Path, mtime: float, size: int,
+                        apply: bool) -> _SpanFileState | None:
+    """Load or refresh the whole-file cache.
+
+    Returns the state with .lines populated if apply=True and the
+    file was read successfully, or None if apply=False and we
+    haven't read it yet / it changed.
+    """
+    state = _span_file_cache.get(resolved)
 
     if state is None:
-        state = _FileState(resolved, mtime, size)
-        _file_state_cache[resolved] = state
-
-        if not apply:
-            return Pending(_build_metadata_shell(resolved, mtime, size))
-
-        # Full load
-        data = resolved.read_bytes()
-        result = _build_file_dict(resolved, mtime, size, data)
-        state.cached_dict = result
-        state.original_data = data
-        return result
-
-    # ── Cached state exists - check for changes ────────────────────
+        state = _SpanFileState(resolved, mtime, size)
+        _span_file_cache[resolved] = state
 
     changed = (mtime != state.mtime or size != state.size)
 
-    if not changed:
-        # File unchanged - return cached dict if we have one
-        if state.cached_dict is not None:
-            return state.cached_dict
-        # State exists but never loaded (lazy first read, no change yet).
-        # Treat the same as first read - still needs initial load.
+    if changed or state.lines is None:
         if not apply:
-            return Pending(_build_metadata_shell(resolved, mtime, size))
+            return None
         data = resolved.read_bytes()
-        result = _build_file_dict(resolved, mtime, size, data)
-        state.cached_dict = result
-        state.original_data = data
-        return result
+        state.lines, state.newline = _read_lines(data)
+        state.mtime = mtime
+        state.size = size
 
-    # ── File changed on disk ────────────────────────────────────────
+    return state
 
-    if not apply:
-        # Bare Pending with CONFIRM - UI should prompt user to reload
-        if state.cached_dict is None:
-            state.cached_dict = _build_file_dict(resolved, mtime, size, None)
-        return Pending(state.cached_dict)
 
-    # Re-read
-    data = resolved.read_bytes()
-    state.mtime = mtime
-    state.size = size
-    result = _build_file_dict(resolved, mtime, size, data)
-    state.cached_dict = result
-    state.original_data = data
-    return result
+def _extract_span(lines: list[str], start: int, end: int | None,
+                  newline: str) -> str:
+    """Slice lines and rejoin into a string."""
+    selected = lines[start:end]
+    return newline.join(selected)
+
+
+class _FuncEntry:
+    __slots__ = ("func", "source")
+
+    def __init__(self, func: types.FunctionType, source: str):
+        self.func = func
+        self.source = source
+
+
+# Keyed on (resolved path, start) - not end, because end can shift
+# when the edit changes line count.
+_span_to_entry: dict[tuple[Path, int], _FuncEntry] = {}
+
+
+def clear_function_span_cache():
+    """Clear the span → function lookup.  Useful for tests."""
+    _span_to_entry.clear()
+
+
+def _cache_key(span: FileRef) -> tuple[Path, int]:
+    return (span.path.resolve(), span.start)
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║  dict → Path (write file back to disk)                                      ║
+# ║  Recompilation                                                               ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
-@converter(registry=Melty, inverse_of=path_to_dict)
-def dict_to_path(value: dict, apply: bool = False) -> Path:
-    """Write file data back to disk from a metadata dict.
+def _read_span_source(span: FileRef) -> str:
+    """Read the current source for a span, preferring the file cache."""
+    resolved = span.path.resolve()
+    file_state = _span_file_cache.get(resolved)
 
-    If "data" is missing (metadata shell from a lazy first read),
-    there's nothing to write — returns the Path directly when
-    apply=False, or raises ValueError when apply=True.
+    if file_state is not None and file_state.lines is not None:
+        selected = file_state.lines[span.start:span.end]
+        return file_state.newline.join(selected)
 
-    When "data" is present, checks whether it has actually changed
-    (dirty detection) by comparing against "__original_data__".
+    # Fall back to disk
+    text = resolved.read_text(encoding="utf-8")
+    newline = "\r\n" if "\r\n" in text else "\n"
+    lines = text.split(newline)
+    selected = lines[span.start:span.end]
+    return newline.join(selected)
 
-    apply=False:
-        No data / clean (unchanged) → returns the Path.
-        Dirty (data changed)        → returns Pending(Path).
 
-    apply=True:
-        No data → ValueError.
-        Writes data to disk, updates internal cache state so the
-        file's own write isn't flagged as an external change, and
-        returns the Path.
+# (resolved_path, start) → FileRef
+# Keyed on start only (not end) because end can shift on edit.
+_span_by_key: dict[tuple[Path, int], FileRef] = {}
 
-    Requires __path__ (target location).
-    Creates parent directories if they don't exist.
+# Same key → actual source string for dirty detection.
+_source_by_key: dict[tuple[Path, int], str] = {}
+
+# id(cst.Module) → cache key, populated on the forward pass so the
+# reverse can find which span produced a given module even when
+# multiple spans are active.
+_module_id_to_key: dict[int, tuple[Path, int]] = {}
+
+
+def clear_span_module_cache():
+    """Clear all FileRef ↔ cst.Module caches.  Useful for tests."""
+    _span_by_key.clear()
+    _source_by_key.clear()
+    _module_id_to_key.clear()
+
+
+def _cache_key(span: FileRef) -> tuple[Path, int]:
+    return (span.path.resolve(), span.start)
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  FileRef → cst.Module                                                      ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+
+def _find_origin_span(module: cst.Module) -> tuple[FileRef, tuple[Path, int]]:
+    """Find the FileRef that produced this module.
+
+    Primary lookup: id(module) — works when the module object from
+    the forward pass is passed back directly (clean round-trip).
+
+    Fallback: the module was rebuilt by dict_to_cst_module (new
+    object, different id).  In that case, check the dict's __cst__
+    (the original module stashed during cst_module_to_dict) — its
+    id should still be in the cache.
+
+    Last resort: if only one span is active, use it.
+
+    Raises LookupError if nothing matches.
     """
-    path = value.get("__path__")
-    if path is None:
-        raise TypeError("Dict has no __path__ — can't determine write location")
-    path = Path(path)
+    # Direct id match (unmodified module)
+    key = _module_id_to_key.get(id(module))
+    if key is not None and key in _span_by_key:
+        return _span_by_key[key], key
 
-    data = value.get("data")
+    # The module was likely rebuilt via .visit() - try to find the
+    # original via the wrapper attribute that libcst sometimes adds,
+    # or just scan for a matching key.
+    # In practice, dict_to_cst_module builds from __cst__ (the original),
+    # so if we find any stashed span, it's the right one for a
+    # single-file scenario.
+    if len(_span_by_key) == 1:
+        key = next(iter(_span_by_key))
+        return _span_by_key[key], key
 
-    # No data key means content was never loaded (metadata shell).
-    # Nothing to write - just return the path.
-    if data is None:
-        if apply:
-            raise ValueError("Dict has no 'data' key — nothing to write")
-        return path
+    raise LookupError(
+        "No FileRef origin found for this cst.Module — was "
+        "text_span_to_cst_module called first?"
+    )
 
-    # ── Dirty detection ─────────────────────────────────────────────
-
-    original = value.get("__original_data__")
-    is_dirty = (data != original)
-
-    if not apply:
-        if is_dirty:
-            return Pending(path)
-        return path
-
-    # ── Write ───────────────────────────────────────────────────────
-
-    if is_dirty:
-        path.parent.mkdir(parents=True, exist_ok=True)
-
-        if isinstance(data, bytes):
-            path.write_bytes(data)
-        elif isinstance(data, str):
-            path.write_text(data)
-        else:
-            raise TypeError(
-                f"'data' must be bytes or str, got {type(data).__name__}")
-
-        # Update internal cache so we don't flag our own write as a change
-        resolved = path.resolve()
-        stat = resolved.stat()
-        state = _file_state_cache.get(resolved)
-        if state is not None:
-            state.mtime = stat.st_mtime
-            state.size = stat.st_size
-            state.original_data = data if isinstance(data, bytes) \
-                else data.encode("utf-8")
-            # Update cached dict's original_data marker
-            value["__original_data__"] = state.original_data
-            state.cached_dict = value
-
-    return path
-
-
-# ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║  Path → bytes (raw read)                                                    ║
-# ╚══════════════════════════════════════════════════════════════════════════════╝
 
 @converter(registry=Melty)
 def path_to_bytes(value: Path) -> bytes:
@@ -310,4 +346,186 @@ def str_to_bytes(value: str) -> bytes:
     """Encode string to UTF-8 bytes."""
     return value.encode("utf-8")
 
+########################## NEW CONVERTERS
 
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  I/O callbacks                                                               ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+def load_file_bytes(ref: FileRef) -> bytes:
+    return ref.path.read_bytes()
+
+
+def save_file_bytes(ref: FileRef, data: bytes) -> FileRef | None:
+    ref.path.parent.mkdir(parents=True, exist_ok=True)
+    if isinstance(data, str):
+        ref.path.write_text(data, encoding="utf-8")
+    else:
+        ref.path.write_bytes(data)
+    return None
+
+
+def _detect_newline(data: bytes) -> str:
+    return "\r\n" if b"\r\n" in data else "\n"
+
+
+def load_span_text(ref: FileRef) -> str:
+    data = ref.path.read_bytes()
+    newline = _detect_newline(data)
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        text = data.decode("latin-1")
+    lines = text.split(newline)
+    return newline.join(lines[ref.start:ref.end])
+
+
+def save_span_text(ref: FileRef, data: str) -> FileRef:
+    print(f"Saving span {ref} with new data (length {len(data)})")
+    full_data = ref.path.read_bytes()
+    newline = _detect_newline(full_data)
+    try:
+        text = full_data.decode("utf-8")
+    except UnicodeDecodeError:
+        text = full_data.decode("latin-1")
+    lines = text.split(newline)
+    new_lines = data.split(newline)
+    lines[ref.start:ref.end] = new_lines
+    ref.path.write_text(newline.join(lines), encoding="utf-8")
+    return FileRef(ref.path, ref.start, ref.start + len(new_lines))
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  Path ↔ dict (whole file)                                                   ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+@converter(registry=Melty, from_type=Path, load_data=load_file_bytes, stateful=True,)
+def path_to_dict(data: bytes, ref: FileRef) -> dict:
+    return {
+        "name": ref.path.name,
+        "stem": ref.path.stem,
+        "suffix": ref.path.suffix,
+        "size": len(data),
+        "modified": ref.path.stat().st_mtime,
+        "data": data,
+        "__path__": ref.path,
+        "__original_data__": data,
+    }
+
+
+@converter(registry=Melty, to_type=Path, save_data=save_file_bytes,
+           inverse_of=path_to_dict,)
+def dict_to_path(value: dict) -> bytes:
+    data = value.get("data")
+    if data is None:
+        raise ValueError("Dict has no 'data' — nothing to write")
+    return data.encode("utf-8") if isinstance(data, str) else data
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  FileRef ↔ dict (line range as plain text)                                   ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+@converter(registry=Melty, from_type=FileRef, load_data=load_span_text, stateful=True,)
+def fileref_to_dict(data: str, ref: FileRef) -> dict:
+    return {
+        "value": data,
+        "__original_value__": data,
+    }
+
+
+@converter(registry=Melty, to_type=FileRef, save_data=save_span_text,
+           inverse_of=fileref_to_dict,)
+def dict_to_fileref(value: dict) -> str:
+    data = value.get("value")
+    if data is None:
+        raise ValueError("Dict has no 'value' — nothing to write")
+    return data
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  FileRef ↔ cst.Module (line range parsed into CST)                           ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+@converter(registry=Melty, from_type=FileRef, load_data=load_span_text, stateful=True,)
+def fileref_to_cst_module(data: str, ref: FileRef) -> cst.Module:
+    return cst.parse_module(data)
+
+
+@converter(registry=Melty, to_type=FileRef, save_data=save_span_text,
+           inverse_of=fileref_to_cst_module)
+def cst_module_to_fileref(value: cst.Module) -> str:
+    return value.code
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  FunctionType ↔ FileRef                                                      ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+def recompile_function(ref: FileRef, source: str) -> FileRef:
+    """Recompile the function in place.  No file write."""
+    func = get_original_value(ref=ref, of_type=types.FunctionType)
+    if func is not None:
+        _recompile(func, source, str(ref.path))
+    return ref
+
+
+@converter(registry=Melty, from_type=types.FunctionType, load_data=load_span_text, stateful=True,)
+def function_to_fileref(data: str, ref: FileRef) -> FileRef:
+    return ref
+
+
+@converter(registry=Melty, to_type=types.FunctionType,
+           save_data=recompile_function,
+           inverse_of=function_to_fileref,)
+def fileref_to_function(value: FileRef) -> str:
+    return load_span_text(value)
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  Recompilation                                                               ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+def _recompile(func: types.FunctionType, source: str,
+               filename: str) -> None:
+    dedented = textwrap.dedent(source)
+    unwrapped = inspect.unwrap(func)
+    namespace = dict(unwrapped.__globals__)
+
+    freevars = unwrapped.__code__.co_freevars
+    has_closure = bool(freevars and unwrapped.__closure__)
+
+    if has_closure:
+        closure_vals = {}
+        for name, cell in zip(freevars, unwrapped.__closure__):
+            try:
+                closure_vals[name] = cell.cell_contents
+            except ValueError:
+                closure_vals[name] = None
+
+        param_list = ", ".join(freevars)
+        wrapper_source = f"def _closure_wrapper({param_list}):\n"
+        wrapper_source += textwrap.indent(dedented, "    ")
+        wrapper_source += f"\n    return {unwrapped.__name__}\n"
+
+        code = compile(wrapper_source, filename, "exec")
+        exec(code, namespace)
+        new_func = namespace["_closure_wrapper"](**closure_vals)
+    else:
+        code = compile(dedented, filename, "exec")
+        exec(code, namespace)
+        new_func = namespace.get(unwrapped.__name__)
+
+    if new_func is None:
+        raise RuntimeError(f"Recompilation produced no function named '{unwrapped.__name__}'")
+    if not callable(new_func):
+        raise RuntimeError(f"'{unwrapped.__name__}' is {type(new_func).__name__}, not a function")
+
+    new_func = inspect.unwrap(new_func)
+
+    unwrapped.__code__ = new_func.__code__
+    unwrapped.__defaults__ = new_func.__defaults__
+    unwrapped.__kwdefaults__ = new_func.__kwdefaults__
+    unwrapped.__annotations__ = new_func.__annotations__
+    unwrapped.__doc__ = new_func.__doc__

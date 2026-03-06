@@ -13,14 +13,16 @@ import glfw
 
 from src.lsd.gl_gui.toggles import Toggles
 
-# Add near the top with other constants
-_MODULE_ROOTS = ["src/lsd/"]  # add your module paths here
+# ── Module roots for user code detection ─────────────────
+_MODULE_ROOTS = ["src/lsd/"]
 
 
 def _is_user_code(filepath):
     """Check if a file is inside the user's module."""
     rel = _rel_path(filepath)
     return any(root in rel for root in _MODULE_ROOTS)
+
+
 # ── Syntax highlighting (IntelliJ Darcula) ───────────────
 try:
     from pygments import highlight as _pyg_highlight
@@ -77,6 +79,7 @@ try:
 
     _pygments_available = True
     _python_lexer = PythonLexer()
+    _value_lexer = PythonLexer(stripnl=True, stripall=True, ensurenl=False)
     _terminal_formatter = TerminalTrueColorFormatter(style=DarculaIntelliJ)
 except ImportError:
     _pygments_available = False
@@ -93,7 +96,12 @@ _BLUE = "\033[34m"
 _WHITE = "\033[97m"
 _RED = "\033[31m"
 _BLACK = "\033[30m"
-_BG_DARK = "\033[48;2;22;22;22m"  # almost black
+_BG_DARK = "\033[48;2;22;22;22m"
+_NO_BG = "\033[49m"
+_RED_FG = "\033[38;2;255;85;85m"
+_TABLE_LINE = "\033[38;2;60;60;60m"
+_TABLE_LINE_RED = "\033[38;2;100;40;40m"
+
 _BG_COLORS = [
     "\033[41m", "\033[42m", "\033[43m",
     "\033[44m", "\033[45m", "\033[46m",
@@ -112,8 +120,6 @@ _IDE_SCHEMES = {
     "intellij": None,
 }
 
-_INDENT = "  "
-_TABLE_LINE_RED = "\033[38;2;100;40;40m"  # muted red for error frame borde
 _print_lock = threading.Lock()
 _job_counter = 0
 _job_counter_lock = threading.Lock()
@@ -138,25 +144,53 @@ def _pad(s, width):
     return s + " " * max(0, width - _visible_len(s))
 
 
-_RED_FG = "\033[38;2;255;85;85m"  # #FF5555 for kwarg names
+# ── Caller location ─────────────────────────────────────
 
+def _find_caller():
+    """
+    Walk the stack to find where print_stack_trace was called.
+    Returns (rel_path, lineno) or None.
+    """
+    my_file = os.path.abspath(__file__)
+    for info in inspect.stack():
+        filename = info[1]
+        funcname = info[3]
+        lineno = info[2]
+        if os.path.abspath(filename) == my_file:
+            continue
+        if funcname in ('__exit__', 'flush', 'write_section', 'write_header',
+                        'write_footer', '_task'):
+            continue
+        return (_rel_path(filename), lineno)
+    return None
+
+
+def _caller_link():
+    """Build a clickable 'edit watches' link to the call site."""
+    caller = _find_caller()
+    if not caller:
+        return ""
+    return f"  {_DIM}watches → File \"{_BLUE}{caller[0]}{_DIM}\", line {caller[1]}{_RESET}"
+
+
+# ── Syntax highlighting ──────────────────────────────────
 
 def _highlight(code, lineno=None):
     """Syntax-highlight a line of Python with editor-style background and line number."""
     if _pygments_available:
         colored = _pyg_highlight(code, _python_lexer, _terminal_formatter).rstrip('\n')
-        colored = _color_kwargs(colored, code, bg=_BG_DARK)
+        colored = _color_kwargs(colored, code, bg=_NO_BG)
     else:
         colored = f"{_YELLOW}{code}{_RESET}"
 
     if lineno is not None:
-        gutter = f"{_BG_DARK}{_DIM} {lineno:>4} {_RESET}"
+        gutter = f"{_NO_BG}{_DIM} {lineno:>4} {_RESET}"
     else:
         gutter = ""
 
     visible = len(code)
     pad_width = max(80 - visible, 4)
-    return f"{gutter}{_BG_DARK} {colored}{' ' * pad_width}{_RESET}"
+    return f"{gutter}{_NO_BG} {colored}{' ' * pad_width}{_RESET}"
 
 
 def _highlight_inline(code):
@@ -165,6 +199,7 @@ def _highlight_inline(code):
         return f"{_GREEN}{code}{_RESET}"
     result = _pyg_highlight(code, _python_lexer, _terminal_formatter).rstrip('\n')
     return _color_kwargs(result, code)
+
 
 def _color_kwargs(highlighted, original, bg=None):
     """Post-process to color keyword argument names red."""
@@ -181,94 +216,92 @@ def _color_kwargs(highlighted, original, bg=None):
             count=1
         )
     return highlighted
-# ── Table rendering ──────────────────────────────────────
-
-# Column background shades - for alternation
-_BG_COL_A = "\033[48;2;46;46;46m"  # slightly lighter
-_BG_COL_B = "\033[48;2;38;38;38m"  # slightly darker
-
-_TABLE_LINE = "\033[38;2;60;60;60m"  # dark grey for box-drawing chars
 
 
-def _render_frame_table(file_line, code_line, watch_rows, indent=None, dim=False, error=False):
+# ── Rich table rendering ─────────────────────────────────
+
+try:
+    from rich.table import Table as RichTable
+    from rich.text import Text as RichText
+    from rich.console import Console as RichConsole
+
+    _rich_available = True
+except ImportError:
+    _rich_available = False
+
+
+def _render_watch_table(file_line, code_line, watch_rows, error=False):
     """
-    Render a frame as a unified table.
-    dim=True uses spaces for external frames.
-    error=True uses muted red for box chars.
+    Render a frame with watches using rich table.
+    Only called when watch_rows is non-empty.
     """
-    pad_str = indent if indent else _INDENT
+    if not _rich_available:
+        return _render_frame_simple(file_line, code_line, watch_rows)
 
-    if dim:
-        V = " "
+    border_style = "rgb(100,40,40)" if error else "rgb(50,50,55)"
+
+    if error:
+        row_a = "on rgb(45,30,30)"
+        row_b = "on rgb(50,35,35)"
+        name_col = "on rgb(55,35,35)"
     else:
-        line_color = _TABLE_LINE_RED if error else _TABLE_LINE
-        V = f"{line_color}│{_RESET}"
+        row_a = "on rgb(19,19,19)"
+        row_b = "on rgb(23,23,23)"
+        name_col = "on rgb(28,28,28)"
 
-    if watch_rows:
-        cols = list(zip(*watch_rows))
-        widths = [max(_visible_len(cell) for cell in col) for col in cols]
-        inner_width = sum(widths) + 3 * len(widths) - 1
-    else:
-        inner_width = max(_visible_len(file_line), _visible_len(code_line)) + 2
-
-    inner_width = max(inner_width, _visible_len(file_line) + 2, _visible_len(code_line) + 2)
-
-    buf = []
-
-    # File line
-    file_pad = inner_width - _visible_len(file_line) - 1
-    buf.append(f"{pad_str}{V} {file_line}{' ' * file_pad}{V}")
-
-    if watch_rows:
-        # Watch rows
-        for name, typ, val, link in watch_rows:
-            row = (
-                f" {_pad(name, widths[0])} "
-                f"{V} {_pad(typ, widths[1])} "
-                f"{V} {_pad(val, widths[2])} "
-                f"{V} {_pad(link, widths[3])} "
-            )
-            row_pad = inner_width - _visible_len(row)
-            buf.append(f"{pad_str}{V}{row}{' ' * row_pad}{V}")
-
-    # Code line
-    code_pad = inner_width - _visible_len(code_line) - 1
-    buf.append(f"{pad_str}{V} {code_line}{' ' * max(code_pad, 0)}{V}")
-
-    return "\n".join(buf) + "\n"
-
-def _render_watch_table(rows, indent=None):
-    """
-    Render watched variables as a compact box-drawing table.
-    rows: list of (name_styled, type_styled, value_styled, link_styled)
-    """
-    if not rows:
-        return ""
-
-    pad_str = indent if indent else _INDENT
-
-    cols = list(zip(*rows))
-    widths = [max(_visible_len(cell) for cell in col) for col in cols]
-
-    buf = []
-
-    buf.append(
-        f"{pad_str}{_TABLE_LINE}┌─{'─' * widths[0]}─┬─{'─' * widths[1]}─┬─{'─' * widths[2]}─┬─{'─' * widths[3]}─┐{_RESET}"
+    table = RichTable(
+        show_header=False,
+        show_edge=False,
+        show_lines=False,
+        border_style=border_style,
+        pad_edge=True,
+        padding=(0, 1),
+        expand=False,
+        row_styles=[row_a, row_b],
     )
 
-    for name, typ, val, link in rows:
-        buf.append(
-            f"{pad_str}{_TABLE_LINE}│{_RESET} {_pad(name, widths[0])} "
-            f"{_TABLE_LINE}│{_RESET} {_pad(typ, widths[1])} "
-            f"{_TABLE_LINE}│{_RESET} {_pad(val, widths[2])} "
-            f"{_TABLE_LINE}│{_RESET} {_pad(link, widths[3])} {_TABLE_LINE}│{_RESET}"
+    table.add_column(overflow="ellipsis", max_width=40, no_wrap=True, style=name_col)
+    table.add_column(overflow="ellipsis", max_width=12, no_wrap=False)
+    table.add_column(overflow="ellipsis", max_width=60, no_wrap=False)
+    table.add_column(overflow="ellipsis", max_width=120, no_wrap=True)
+
+    for name, typ, val, link in watch_rows:
+        table.add_row(
+            RichText.from_ansi(name),
+            RichText.from_ansi(typ),
+            RichText.from_ansi(val),
+            RichText.from_ansi(link),
         )
 
-    buf.append(
-        f"{pad_str}{_TABLE_LINE}└─{'─' * widths[0]}─┴─{'─' * widths[1]}─┴─{'─' * widths[2]}─┴─{'─' * widths[3]}─┘{_RESET}"
+    table_buf = io.StringIO()
+    console = RichConsole(
+        file=table_buf, highlight=False, markup=False,
+        width=200, force_terminal=True
     )
+    console.print(table, end="")
+    watch_block = table_buf.getvalue()
+
+    buf = []
+    buf.append(f"  {file_line}")
+    if code_line:
+        buf.append(f"    {code_line}")
+    for line in watch_block.rstrip('\n').split('\n'):
+        buf.append(f"      {line}")
 
     return "\n".join(buf) + "\n"
+
+
+def _render_frame_simple(file_line, code_line, watch_rows):
+    """Fallback renderer without rich."""
+    buf = []
+    buf.append(f"  {file_line}")
+    if watch_rows:
+        for name, typ, val, link in watch_rows:
+            buf.append(f"      {name}  {typ}  {val}  {link}")
+    if code_line:
+        buf.append(f"    {code_line}")
+    return "\n".join(buf) + "\n"
+
 
 # ── Trace group ──────────────────────────────────────────
 
@@ -362,7 +395,7 @@ def _parse_watch(expr):
 # ── Main entry point ─────────────────────────────────────
 
 def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
-                      max_str_len=200, max_items=2, max_depth=3, max_output=200,
+                      max_str_len=200, max_items=5, max_depth=2, max_output=200,
                       exception=None, section=None, group=None, file=None):
     """
     Print a stack trace with optional variable watching.
@@ -410,14 +443,15 @@ def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
     watch_paths = watch if watch else []
 
     if group and section:
-        group.write_section(section)
-
-    if not group:
+        link = _caller_link()
+        group.write_section(f"{section}{link}")
+    elif not group:
         thread_name = threading.current_thread().name
         bar_color = _CYAN
         title = "Exception Trace" if exception else "Stack Trace"
+        link = _caller_link()
         buf.write(f"{_BOLD}{bar_color}{'─' * 60}{_RESET}\n")
-        buf.write(f"{_BOLD}{bar_color}{title}{_RESET} {_DIM}[{thread_name}]{_RESET}\n")
+        buf.write(f"{_BOLD}{bar_color}{title}{_RESET} {_DIM}[{thread_name}]{_RESET}{link}\n")
         buf.write(f"{_BOLD}{bar_color}{'─' * 60}{_RESET}\n")
 
     # Find the last user-code frame in an exception trace
@@ -429,7 +463,7 @@ def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
                 break
 
     for i, (filename, lineno, funcname, line_text, local_vars) in enumerate(frames):
-        rel = _rel_path(filename)
+        rel = filename
         is_mine = _is_user_code(filename)
         is_error_frame = i == error_frame_idx
 
@@ -450,16 +484,12 @@ def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
                 f" in {funcname}{_RESET}"
             )
 
-
         code_line = ""
-
         if line_text:
             if is_mine:
-                code_line = _highlight(line_text.strip(), lineno)
+                code_line = _highlight(line_text.strip(), None)
             else:
-                code_line = f"{_DIM} {lineno:>4}  {line_text.strip()}{_RESET}"
-
-
+                code_line = f"{_DIM}{line_text.strip()}{_RESET}"
 
         # Variable watches
         table_rows = []
@@ -485,7 +515,9 @@ def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
                     if cut == -1:
                         cut = max_output
                     formatted_value = formatted_value[:cut] + f"…({len(formatted_value)}ch)"
-                formatted_value = formatted_value.replace("\n", f"{_YELLOW}\\n{_MAGENTA}")
+
+                if _pygments_available:
+                    formatted_value = _pyg_highlight(formatted_value, _python_lexer, _terminal_formatter).rstrip('\n')
 
                 name_cell = _highlight_inline(expr)
                 type_cell = f"{_DIM}{type(value).__name__}{_RESET}"
@@ -495,15 +527,16 @@ def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
 
                 table_rows.append((name_cell, type_cell, value_cell, link_cell))
 
-        if code_line or table_rows:
-            buf.write(_render_frame_table(file_line, code_line, table_rows,
-                                          dim=not is_mine, error=is_error_frame))
+        if table_rows:
+            buf.write(_render_watch_table(file_line, code_line, table_rows,
+                                          error=is_error_frame))
         else:
-            buf.write(f"{_INDENT}{file_line}\n")
-
+            buf.write(f"  {file_line}\n")
+            if code_line:
+                buf.write(f"    {code_line}\n")
 
     if exception is not None:
-        buf.write(f"{_INDENT}{_RED}{_BOLD}{type(exception).__name__}: {exception}{_RESET}\n")
+        buf.write(f"  {_RED}{_BOLD}{type(exception).__name__}: {exception}{_RESET}\n")
 
     if not group:
         bar_color = _CYAN
