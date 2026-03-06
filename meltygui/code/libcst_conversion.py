@@ -145,8 +145,7 @@ def dict_to_cst_module(value: dict) -> cst.Module:
 
     edits = {k: v for k, v in value.items()
              if not (k.startswith("__") and k.endswith("__"))}
-    if Toggles.slow_down_threads:
-        sleep(1.0)
+
     if not edits:
         return tree
 
@@ -626,46 +625,129 @@ def _extract_param_defaults(params_node):
 def _extract_body_assignments(body_node):
     """Extract name = value assignments from a function/method body.
 
-    Only extracts names that are assigned exactly once at the top level.
-    Variables assigned multiple times (e.g. initial value then reassignment)
-    are part of multi-step computation and not safely editable as a single
-    dict entry — they are left to the CST to preserve unchanged.
+    Names assigned once get their plain name as key:
+        x = 1  →  {"x": 1}
+
+    Names assigned multiple times get indexed keys —
+    the first keeps the plain name, subsequent ones get #1, #2, etc:
+        x = 0
+        x = 2
+        →  {"x": 0, "x#1": 2}
+
+    If/elif/else blocks become nested sub-dicts keyed by condition:
+        if selected:
+            x = 0.2
+        elif pressed:
+            x = 0.05
+        else:
+            x = 0.01
+        →  {"if selected": {"x": 0.2},
+            "elif pressed": {"x": 0.05},
+            "else": {"x": 0.01}}
+
+    Occurrence counters reset inside each scope.
     """
     if not isinstance(body_node, cst.IndentedBlock):
         return {}
 
-    # Pass 1: count top-level assignments per name
+    return _extract_block_assignments(body_node.body)
+
+
+def _extract_block_assignments(stmts):
+    """Extract assignments from a sequence of statements.
+
+    Handles SimpleStatementLine (assignments) and If chains.
+    """
+    # Pass 1: count assignments per name (only direct assignments)
     counts: dict[str, int] = {}
-    for stmt in body_node.body:
+    for stmt in stmts:
         if not isinstance(stmt, cst.SimpleStatementLine):
             continue
         for node in stmt.body:
-            name = None
-            if isinstance(node, cst.Assign) and len(node.targets) == 1:
-                target = node.targets[0].target
-                if isinstance(target, cst.Name):
-                    name = target.value
-            elif isinstance(node, cst.AnnAssign):
-                if isinstance(node.target, cst.Name) and node.value is not None:
-                    name = node.target.value
+            name = _assign_target_name(node)
             if name is not None:
                 counts[name] = counts.get(name, 0) + 1
 
-    # Pass 2: extract only singly-assigned names
+    # Pass 2: extract with occurrence-indexed keys + if/elif/else
     result = {}
-    for stmt in body_node.body:
-        if not isinstance(stmt, cst.SimpleStatementLine):
-            continue
-        for node in stmt.body:
-            if isinstance(node, cst.Assign) and len(node.targets) == 1:
-                target = node.targets[0].target
-                if isinstance(target, cst.Name) and counts.get(target.value) == 1:
-                    result[target.value] = _cst_to_python_or_raw(node.value)
-            elif isinstance(node, cst.AnnAssign):
-                if (isinstance(node.target, cst.Name) and node.value is not None
-                        and counts.get(node.target.value) == 1):
-                    result[node.target.value] = _cst_to_python_or_raw(node.value)
+    seen: dict[str, int] = {}
+    for stmt in stmts:
+        if isinstance(stmt, cst.SimpleStatementLine):
+            for node in stmt.body:
+                name = _assign_target_name(node)
+                if name is None:
+                    continue
+                val_node = _assign_value_node(node)
+                if val_node is None:
+                    continue
+
+                occurrence = seen.get(name, 0)
+                seen[name] = occurrence + 1
+
+                if counts[name] == 1:
+                    key = name
+                elif occurrence == 0:
+                    key = name
+                else:
+                    key = f"{name}#{occurrence}"
+
+                result[key] = _cst_to_python_or_raw(val_node)
+
+        elif isinstance(stmt, cst.If):
+            _extract_if_chain(stmt, result)
+
     return result
+
+
+def _extract_if_chain(if_node, result):
+    """Walk an if/elif/else chain, extracting each branch as a sub-dict."""
+    # "if <condition>"
+    condition = _cst_node_to_code(if_node.test)
+    key = f"if {condition}"
+    body = _extract_block_assignments(if_node.body.body)
+    if body:
+        result[key] = body
+
+    # Walk the orelse chain
+    orelse = if_node.orelse
+    while orelse is not None:
+        if isinstance(orelse, cst.If):
+            # elif
+            condition = _cst_node_to_code(orelse.test)
+            key = f"elif {condition}"
+            body = _extract_block_assignments(orelse.body.body)
+            if body:
+                result[key] = body
+            orelse = orelse.orelse
+        elif isinstance(orelse, cst.Else):
+            # else
+            body = _extract_block_assignments(orelse.body.body)
+            if body:
+                result["else"] = body
+            orelse = None
+        else:
+            break
+
+
+def _assign_target_name(node):
+    """Return the target name of a simple assignment, or None."""
+    if isinstance(node, cst.Assign) and len(node.targets) == 1:
+        target = node.targets[0].target
+        if isinstance(target, cst.Name):
+            return target.value
+    elif isinstance(node, cst.AnnAssign):
+        if isinstance(node.target, cst.Name) and node.value is not None:
+            return node.target.value
+    return None
+
+
+def _assign_value_node(node):
+    """Return the value CST node of a simple assignment, or None."""
+    if isinstance(node, cst.Assign) and len(node.targets) == 1:
+        return node.value
+    elif isinstance(node, cst.AnnAssign) and node.value is not None:
+        return node.value
+    return None
 
 
 def _extract_decorators(decorators):
@@ -735,16 +817,42 @@ def dict_to_cst_funcdef(value: dict) -> cst.FunctionDef:
 class _BodyAssignPatcher(cst.CSTTransformer):
     """Patches name = value assignments at the top level of a function body.
 
-    Only patches assignments directly inside the function's IndentedBlock
-    (depth 1).  Assignments nested inside if/for/while/with/try blocks
-    are left untouched — they may reassign the same name with a different
-    value that should be preserved.
+    Matches edit keys to assignments by name and occurrence index:
+      - "x"   → first (or only) assignment to x
+      - "x#1" → second assignment to x
+      - "x#2" → third, etc.
+
+    If/elif/else sub-dicts are matched by condition text:
+      - "if selected"   → patches body of the if block
+      - "elif pressed"  → patches body of the elif
+      - "else"          → patches body of the else
+
+    Only patches direct assignments at depth 1.
+    Nested blocks are handled via sub-dict recursion, not depth.
     """
 
     def __init__(self, edits: dict):
         super().__init__()
-        self.edits = edits
         self._depth = 0
+        self._seen: dict[str, int] = {}
+
+        # Separate assignment edits from block edits
+        self._edits: dict[tuple[str, int], object] = {}
+        self._block_edits: dict[str, dict] = {}
+
+        for key, val in edits.items():
+            if isinstance(val, dict) and (key.startswith("if ") or
+                                          key.startswith("elif ") or
+                                          key == "else"):
+                self._block_edits[key] = val
+            elif "#" in key:
+                name, idx_str = key.rsplit("#", 1)
+                try:
+                    self._edits[(name, int(idx_str))] = val
+                except ValueError:
+                    pass
+            else:
+                self._edits[(key, 0)] = val
 
     def visit_IndentedBlock(self, node):
         self._depth += 1
@@ -754,6 +862,16 @@ class _BodyAssignPatcher(cst.CSTTransformer):
         self._depth -= 1
         return updated_node
 
+    def _try_patch(self, name, updated_node_value):
+        """Look up edit by (name, occurrence), return new CST value or None."""
+        occurrence = self._seen.get(name, 0)
+        self._seen[name] = occurrence + 1
+
+        edit_val = self._edits.get((name, occurrence))
+        if edit_val is None:
+            return None
+        return _python_to_cst_expr(edit_val, updated_node_value)
+
     def leave_Assign(self, original_node, updated_node):
         if self._depth != 1:
             return updated_node
@@ -762,10 +880,8 @@ class _BodyAssignPatcher(cst.CSTTransformer):
         target = updated_node.targets[0].target
         if not isinstance(target, cst.Name):
             return updated_node
-        if target.value not in self.edits:
-            return updated_node
 
-        new_cst = _python_to_cst_expr(self.edits[target.value], updated_node.value)
+        new_cst = self._try_patch(target.value, updated_node.value)
         if new_cst is None:
             return updated_node
         return updated_node.with_changes(value=new_cst)
@@ -775,16 +891,61 @@ class _BodyAssignPatcher(cst.CSTTransformer):
             return updated_node
         if not isinstance(updated_node.target, cst.Name):
             return updated_node
-        if updated_node.target.value not in self.edits:
-            return updated_node
         if updated_node.value is None:
             return updated_node
 
-        new_cst = _python_to_cst_expr(
-            self.edits[updated_node.target.value], updated_node.value)
+        new_cst = self._try_patch(updated_node.target.value, updated_node.value)
         if new_cst is None:
             return updated_node
         return updated_node.with_changes(value=new_cst)
+
+    def leave_If(self, original_node, updated_node):
+        if self._depth != 1 or not self._block_edits:
+            return updated_node
+        return _patch_if_chain(updated_node, self._block_edits)
+
+
+def _patch_if_chain(if_node, block_edits):
+    """Walk an if/elif/else chain, patching bodies from block_edits sub-dicts."""
+    result = if_node
+
+    # Patch the "if" branch's body
+    condition = _cst_node_to_code(result.test)
+    key = f"if {condition}"
+    if key in block_edits:
+        new_body = result.body.visit(_BodyAssignPatcher(block_edits[key]))
+        result = result.with_changes(body=new_body)
+
+    # Walk and patch the orelse chain
+    result = _patch_orelse_chain(result, block_edits)
+    return result
+
+
+def _patch_orelse_chain(node, block_edits):
+    """Recursively patch elif/else branches in an If's orelse chain."""
+    orelse = node.orelse
+    if orelse is None:
+        return node
+
+    if isinstance(orelse, cst.If):
+        # elif - patch its body if we have edits
+        condition = _cst_node_to_code(orelse.test)
+        key = f"elif {condition}"
+        new_orelse = orelse
+        if key in block_edits:
+            new_body = orelse.body.visit(_BodyAssignPatcher(block_edits[key]))
+            new_orelse = orelse.with_changes(body=new_body)
+        # Recurse into this elif's own orelse
+        new_orelse = _patch_orelse_chain(new_orelse, block_edits)
+        return node.with_changes(orelse=new_orelse)
+
+    elif isinstance(orelse, cst.Else):
+        if "else" in block_edits:
+            new_body = orelse.body.visit(_BodyAssignPatcher(block_edits["else"]))
+            new_orelse = orelse.with_changes(body=new_body)
+            return node.with_changes(orelse=new_orelse)
+
+    return node
 
 
 def _patch_decorators(func_node, dec_edits):

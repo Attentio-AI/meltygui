@@ -1163,11 +1163,11 @@ def render_func(*args, **o_kwargs):
 
                 if converted_input:
                     # reformat icon wrench
-                    converted_icon_text = f"\uf0ad {type(input_value).__name__}"
+                    converted_icon_text = f"\uf0ad"
                     overlay_list: _DrawList = imgui.get_window_draw_list()
                     overlay_list.add_text(*(draw_state.left + draw_state.header_width + 5, draw_state.top + 5),
                                           imgui.get_color_u32_rgba(0.5, 0.0, 0.0, 1.0),
-                                          f"{converted_icon_text}: {draw_state.explain_convert}")
+                                          f"{converted_icon_text}")
 
                 if show_bg:
                     if Melty.channels_split:
