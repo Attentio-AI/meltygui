@@ -238,7 +238,7 @@ def _run_explicit_path(value: Any, target: type, *, path: list, registry, apply:
                 #     f"{item.__name__!r} (step {i + 1} of explicit path)"
                 # )
                 print_stack_trace(watch=["path", "target", "result", "item", "apply",  "value", "cache_id", "last_fn", "fn_name"])
-                # print(f"Missing converter for {type(result).__name__!r} -> {item.__name__!r} at step {i + 1} of explicit path")
+                print(f"Missing converter for {type(result).__name__!r} -> {item.__name__!r} at step {i + 1} of explicit path")
 
                 return Pending(state=PendingState.BROKEN_PATH, wrapped=item, status=f"Missing converter for {type(result).__name__!r} -> {item.__name__!r} at step {i + 1} of explicit path")
 

@@ -4,6 +4,9 @@ from typing import Any
 from src.lsd.gl_gui.melty import Melty
 import libcst as cst
 
+from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment
+
+
 class Meta:
     default = None
     field_type = None

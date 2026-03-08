@@ -28,7 +28,8 @@ from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_style_var, \
     push_style_color, pop_style_color, pop_style_var, end, begin, text_wrapped
 from src.lsd.gl_gui.utils.glfw_utils import request_render
-from src.lsd.gl_gui.view.core_conversion.file_converters import path_to_dict, bytes_to_str, FileRef
+from src.lsd.gl_gui.view.core_conversion.file_converters import path_to_dict, bytes_to_str, FileRef, ValueDict
+from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment
 from src.lsd.gl_gui.view.core_conversion.path_finder import convert
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
@@ -1411,11 +1412,6 @@ def draw_cst_single_line(input_value: cst.SimpleStatementLine):
     draw_any(input_value.body, wrap=True)
 
 
-@render_func(is_default_for=cst.Comment, wrap=True, with_header=draw_header)
-def draw_comment(input_value: cst.Comment, **kwargs):
-    # imgui.text(f"# {input_value.value}")
-    pass
-
 
 @render_func(is_default_for=cst.SimpleWhitespace, header_same_line=True, with_header=draw_header, show_name=False,
              shadow=False, wrap=True)
@@ -1981,38 +1977,37 @@ def seperator(height):
     imgui.dummy(0, snap_int(height / 2))
 
 
-def draw_bg(left=2, top=1, width=20, height=20, depth=0, rounding=6.090000152587891,
-            global_style=None, outline=True, bg_color=None, opacity=-0.36000001430511475,
+def draw_bg(left=2, top=3, width=20, height=20, depth=0, rounding=4.16,
+            global_style=None, outline=True, bg_color=None, opacity=-0.2,
             style_manager=None, tint=None, outline_tint=None, selected=False,
             hovered=False, pressed=False, nested_bg=False, **kwargs):
     # Render background
-    def current_indent_px():
+    def current_indent_px(): 
         return Melty.current_indent
-
     # draw_list:_DrawList = imgui.get_overlay_draw_list()
     # draw_list.add_text(left, top, imgui.get_color_u32_rgba(
     # 1, 0, 1, 1.0), f"Depth: {len(Melty.bg_stack)}")
+    # # this is a comment
 
-
-    # sin_depth = sin(Melty.bg_depth * 0.25) * 7.0
+    # sdjfls
     clamped = ((max(2.0, Melty.bg_depth) % 9.0) - 1.5)
     depth = (clamped) * 2.5
 
     right = left + width
     bottom = top + height
 
-    thickness = 0.5699999928474426
-    half_thickness = 1.0399999618530273
+    thickness = -0.098
+    half_thickness = 0.65
     rect = (
     snap_int(left) + thickness, snap_int(top) + thickness, snap_int(right) - thickness, snap_int(bottom) - thickness)
     rect_outline = (snap_int(left) + half_thickness, snap_int(top) + half_thickness,
                     snap_int(right) - half_thickness, snap_int(bottom) - half_thickness)
-    # Outline
+    # skl
 
     rounding = min(max(10.0, current_indent_px()), rounding)
 
-    depth_factor = 0.06199999898672104
-    depth_offset = 1.3489999771118164
+    depth_factor = 0.04
+    depth_offset = 1.169
     dynamic_value = max(0, (float(depth + depth_offset) * depth_factor))
 
     hovered_offset = 0.0
@@ -2022,29 +2017,29 @@ def draw_bg(left=2, top=1, width=20, height=20, depth=0, rounding=6.090000152587
         if opacity > 0.5:
             hovered_offset = 0.05
         else:
-            hovered_offset = 0.1599999964237213
+            hovered_offset = 0.1
 
     def mix_colors(c1, c2, fac):
         return (c1[0] * (1 - fac) + c2[0] * fac,
                 c1[1] * (1 - fac) + c2[1] * fac,
                 c1[2] * (1 - fac) + c2[2] * fac)
 
-    bg_style = {'value': -0.1599999964237213, 'saturation': 1.4500000476837158, 'alpha': 0.9399999976158142,
-                'max_value': 0.3700000047683716}
-    outline_saturation = 1.350000023841858
-    outline_offset = 0.1719
-    outline_factor = 0.8579999804496765
+    bg_style = {'value': 1.91, 'saturation': 0.27, 'alpha': 0.75,
+                'max_value': 0.32}
+    outline_saturation = 1.17
+    outline_offset = 0.092
+    outline_factor = 0.938
 
     if not nested_bg:
         outline_factor *= 1.05
         outline_saturation = 1.5
 
     if nested_bg:
-        bleed_factor = 0.1899999976158142
+        bleed_factor = 0.24
     else:
-        bleed_factor = 0.0
+        bleed_factor = 0.02
     bg_bleed = Melty.get_bg_color(-1)
-    bg_bleed = style_manager.make_custom_styled(*bg_bleed, input=bg_style, value=0.47999998927116394, alpha=0.9399999976158142, saturation=1.7899999618530273)
+    bg_bleed = style_manager.make_custom_styled(*bg_bleed, input=bg_style, value=5.35, alpha=0.68, saturation=1.7899999618530273)
 
     outline_color = (style_manager.
                      make_color_style_value(input=bg_style, saturation=outline_saturation, value=max(0, dynamic_value * outline_factor +
@@ -2075,7 +2070,7 @@ def draw_bg(left=2, top=1, width=20, height=20, depth=0, rounding=6.090000152587
         imgui.get_window_draw_list().add_rect_filled(*rect, col=imgui_bg_color, rounding=rounding)
 
     return False, bg_color
-
+    return False, bg_color
 
 def open_file(path, app=None):
     def default_file_manager():
@@ -2328,6 +2323,26 @@ def draw_str(input_value: str, draw_state):
                                                     width=draw_state.content_width, height=height)
         imgui.dummy(draw_state.content_width, text_height - height + 10)
 
+
+    if not show_controls:
+        imgui.pop_style_var(1)
+
+    if changed:
+        return True, value
+    return changed, value
+
+
+@render_func(is_default_for=(Comment), shadow=False, wrap=False, with_header=None, is_tree=False, tint=(0.2, 0.2, 0.1))
+def draw_comment(input_value: Comment, draw_state):
+    line_height = imgui.get_text_line_height()
+    show_controls = True
+
+    if not show_controls:
+        imgui.push_style_var(imgui.STYLE_ALPHA, 0)
+
+    imgui.set_next_item_width(draw_state.content_width)
+    changed, value = imgui.input_text("##str", str(input_value))
+    value = Comment(value)
 
     if not show_controls:
         imgui.pop_style_var(1)
@@ -2629,6 +2644,16 @@ class ModeOverrides:
 #     imgui.text(f"Last Modified: {input_value.modified_time}")
 #
 #     return False, None
+@render_func(show_header=False)
+def default_context_menu(input_value, draw_state, func, **kwargs):
+    imgui.new_line()
+    imgui.text(type(input_value._input_value).__name__)
+
+    if input_value.explain_convert is not None:
+        imgui.text(str(input_value.explain_convert))
+
+    imgui.text(func.__name__)
+    return False, None
 
 @render_func(use_cache=True, show_header=False)
 def pending_window(input_value, pending_name, pending=None, draw_state=None):
@@ -2650,14 +2675,20 @@ class Mode(Enum):
         ),
 
         types.FunctionType: ModeOverrides(
-            kwargs={"convert": [types.FunctionType, FileRef, cst.Module]},
+            kwargs={"convert": [types.FunctionType, ValueDict, cst.Module]},
             func=draw_collection,
             recursive=False
         ),
 
-        str: ModeOverrides(
-            kwargs={"convert": None, "mode":None},
-            func=draw_str,
+        # str: ModeOverrides(
+        #     kwargs={"convert": None, "mode":None},
+        #     func=draw_str,
+        #     recursive=False,
+        # ),
+
+        Comment: ModeOverrides(
+            kwargs={"convert": None, "mode": None},
+            func=draw_comment,
             recursive=False,
         ),
 

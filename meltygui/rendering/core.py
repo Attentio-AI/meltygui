@@ -17,6 +17,7 @@ from imgui.core import _DrawList
 from imgui.core import _IO
 
 from src.lsd.gl_gui.background import Background, Pending
+from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment
 from src.lsd.gl_gui.view.core_conversion.path_finder import convert, explain_chain, NO_VALUE, PendingState, invert_path
 from src.lsd.gl_gui.view.core_views.core_render_helpers import draw_vertical_scrollbar, floating_text
 from src.lsd.gl_gui.model.core_model.draw_state import DrawState, Hotkey, DragMode, Anchor, TileMode, AttrDict, \
@@ -1120,7 +1121,7 @@ def render_func(*args, **o_kwargs):
                                     request_render()
 
                     converted_input = True
-                    draw_state.explain_convert = str(convert_path)
+                    draw_state.explain_convert = path_to_string(convert_path)
                     draw_state._input_value = draw_state._input_value_cache["internal_state"][0]
                     kwargs["input_value"] = draw_state._input_value_cache["internal_state"][0]
 
@@ -1290,15 +1291,9 @@ def render_func(*args, **o_kwargs):
 
                 ########### CONTEXT MENU HANDLING ############
 
-                @render_func(show_header=False)
-                def default_context_menu(input_value, draw_state, **kwargs):
-                    from src.lsd.gl_gui.view.core_views.new_core_view import draw_collection
-                    imgui.new_line()
-                    imgui.text(type(input_value._input_value).__name__)
-                    imgui.text(func.__name__)
-                    return False, None
 
-                from src.lsd.gl_gui.view.core_views.new_core_view import draw_collection
+
+                from src.lsd.gl_gui.view.core_views.new_core_view import default_context_menu
                 draw_context_menu = kwargs.get("context_menu", default_context_menu)
                 if draw_context_menu is not None:
                     right_click = draw_state.on_action("right_mouse_clicked")
@@ -1319,7 +1314,7 @@ def render_func(*args, **o_kwargs):
                                                                    alpha=1.0)
                         from src.lsd.gl_gui.view.core_views.new_core_view import draw_window
 
-                        returned_val = draw_window(input_value=draw_state, view_func=draw_context_menu,
+                        returned_val = draw_window(input_value=draw_state, view_func=draw_context_menu, func=func,
                                                    tint=mixed_color, show_tint=False, show_add_delete=False,
                                                    width=400, max_height=800, bg_offset=bg_offset,
                                                    persistent=False, anchor=Anchor.BOTTOM_LEFT,
@@ -1934,11 +1929,14 @@ def render_func(*args, **o_kwargs):
         annotation_empty = expected_type == inspect.Parameter.empty
         input_value = clean_args.get('input_value', input_value)
 
+
         if not annotation_empty:
             if expected_type is not Any and isinstance(expected_type, type):
                 if not isinstance(input_value, expected_type):
                     yellow = (1.0, 1.0, 0.0, 1.0)
                     if imgui.button(f"Fix Type##{unique}"):
+                        if expected_type == tuple:
+                            return True, (0,0,0)
                         return True, expected_type()
                     same_line()
                     type_class_path = f"{expected_type.__module__}.{expected_type.__name__}"

@@ -10,16 +10,15 @@ The original immutable CST node is never serialized — just referenced.
 
 import enum
 import inspect
+import math
+import struct
 import sys
-from time import sleep
 
 import libcst as cst
 
 from src.lsd.gl_gui.melty import Melty
-from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.view.core_conversion.converter_register import converter
-from src.lsd.gl_gui.view.core_conversion.path_finder import convert
-from src.lsd.gl_gui.view.core_conversion.fileref import FileRef
+from src.lsd.gl_gui.view.core_conversion.path_finder import convert, Pending
 
 # Sentinel for arguments with no default value.
 # Shows up in the dict so the UI can display the parameter name,
@@ -28,6 +27,96 @@ NO_DEFAULT = type("NO_DEFAULT", (), {
     "__repr__": lambda self: "NO_DEFAULT",
     "__bool__": lambda self: False,
 })()
+
+
+class Comment(str):
+    """A comment, as a str subclass for auto-rendering dispatch.
+
+    isinstance(c, str) → True, so it works everywhere strings do.
+    isinstance(c, Comment) → True, so the UI can render a comment widget.
+
+    The string value IS the comment text (e.g. "# setup vars").
+    The .inline attribute tracks whether it's a trailing comment.
+
+    Used as dict keys (with custom __hash__/__eq__ so they don't collide
+    with plain strings) and as dict values (editable in place).
+    """
+
+    def __new__(cls, text, inline=None):
+        instance = super().__new__(cls, text)
+        instance.inline = inline
+        return instance
+
+    @property
+    def text(self):
+        """The comment text — same as str(self). Provided for readability."""
+        return str(self)
+
+    def __repr__(self):
+        if self.inline:
+            return f"{self.inline}  {self}"
+        return str.__repr__(self)
+
+    def __eq__(self, other):
+        if not isinstance(other, Comment):
+            return False
+        return str(self) == str(other) and self.inline == other.inline
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+    def __hash__(self):
+        return hash(("__comment__", str(self), self.inline))
+
+
+
+class Conditional(dict):
+    """An if/elif/else block's contents, as a dict subclass.
+
+    isinstance(c, dict) → True, so iteration/access works normally.
+    isinstance(c, Conditional) → True, so the UI can render a
+    collapsible conditional block.
+
+    The .condition attribute holds the full condition text
+    (e.g. "if selected", "elif pressed", "else").
+    """
+
+    def __init__(self, *args, condition=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.condition = condition  # e.g. "if selected", "elif pressed", "else"
+
+
+class ParseError(dict):
+    """A dict representing code that failed to parse.
+
+    isinstance(d, dict) → True, so generic code can iterate it.
+    isinstance(d, ParseError) → True, so the UI can show an error editor.
+
+    Always contains:
+      - "__source__": the raw source string
+      - "__error__": the error message
+      - "__line__": line number of the error (1-based)
+      - "__column__": column number (1-based)
+
+    May also contain successfully parsed entries from partial recovery.
+
+    Attributes:
+      .source  — raw source string
+      .error   — error message string
+      .line    — error line number
+      .column  — error column number
+    """
+
+    def __init__(self, *args, source="", error="", line=0, column=0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.source = source
+        self.error = error
+        self.line = line
+        self.column = column
+        self["__source__"] = source
+        self["__error__"] = error
+        self["__line__"] = line
+        self["__column__"] = column
 
 
 def _cst_node_to_code(node):
@@ -39,19 +128,136 @@ def _cst_node_to_code(node):
     return wrapper.code.rstrip("\n")
 
 
+def _is_dunder(key):
+    """True if key is a __dunder__ string — safe on non-string keys."""
+    return isinstance(key, str) and key.startswith("__") and key.endswith("__")
+
+
+# Pre-compiled struct for float32 round-trip tests (avoids per-call overhead)
+_F32_PACK = struct.Struct("f")
+
+
+def _float_decimal_places(s):
+    """Count the number of decimal places in a float string like '0.03'.
+
+    Returns None for scientific notation or strings without a decimal point.
+    """
+    if "e" in s.lower():
+        return None
+    if "." not in s:
+        return 0
+    return len(s.split(".")[1])
+
+
+def _ensure_float_str(s):
+    """Ensure a numeric string is a valid CST float (must contain a decimal point).
+
+    '3' → '3.0', '100' → '100.0', '0.5' → '0.5' (unchanged)
+    """
+    if "." not in s and "e" not in s.lower():
+        s += ".0"
+    return s
+
+
+def _strip_trailing_zeros(s):
+    """Strip trailing zeros from a float string, keeping at least one decimal.
+
+    '0.500' → '0.5', '3.140' → '3.14', '1.0' → '1.0' (kept)
+    """
+    if "." not in s or "e" in s.lower():
+        return s
+    s = s.rstrip("0")
+    if s.endswith("."):
+        s += "0"
+    return s
+
+
+def _clean_float(value):
+    """Detect and clean float32 representation noise, returning a clean string.
+
+    Values like 1.600000023841858 (float32 for 1.6) get cleaned to '1.6'.
+
+    Uses a float32 round-trip test: if the value survives packing to
+    float32 and back, tries progressively shorter %g representations
+    (1-7 significant digits) until one also survives the same round-trip.
+
+    Max 7 iterations for float32 values, instant exit for pure float64.
+    Always returns a valid CST float string (with a decimal point).
+    """
+    if not math.isfinite(value):
+        return repr(value)  # 'inf', 'nan' - caller must handle
+    if value == 0.0:
+        return repr(value)
+
+    # First check: does this value survive float32 round-trip?
+    f32_bytes = _F32_PACK.pack(value)
+    f32 = _F32_PACK.unpack(f32_bytes)[0]
+    if f32 != value:
+        return _ensure_float_str(repr(value))  # pure float64 - no cleaning
+
+    # Float32-representable: find shortest string that preserves it
+    full = repr(value)
+    for sig in range(1, 8):
+        short = f"{value:.{sig}g}"
+        if len(short) >= len(full):
+            break  # not getting shorter
+        if _F32_PACK.unpack(_F32_PACK.pack(float(short)))[0] == f32:
+            return _ensure_float_str(short)
+
+    return _ensure_float_str(full)
+
+
+def _floats_match(a, b):
+    """Check if two floats are the same value, accounting for float32 cleaning.
+
+    1.6 matches 1.600000023841858 because both map to the same float32 bits.
+    Also handles exact equality for pure float64 values.
+    """
+    if a == b:
+        return True
+    # Check if they're the same float32 value (one may have been cleaned)
+    return _F32_PACK.pack(a) == _F32_PACK.pack(b)
+
+
+def _float_to_str(value, old_str=None):
+    """Format a float, capping decimal places to match the original.
+
+    Uses _clean_float as base representation instead of repr() to avoid
+    float32 noise in the output.
+
+    If the old source had 2 decimal places (e.g. '0.03'), and the new
+    value has significantly more (3+ extra), it's likely slider jitter
+    and gets rounded to the original precision.
+
+    Small precision increases (1-2 extra dp) are allowed — they indicate
+    deliberate input, not noise.  Trailing zeros are always stripped.
+    """
+    clean = _clean_float(value)
+
+    if old_str is None:
+        return clean
+
+    old_dp = _float_decimal_places(old_str)
+    if old_dp is None:
+        return clean
+
+    new_dp = _float_decimal_places(clean)
+    if new_dp is None:
+        return clean
+
+    # Only cap if the precision is significantly higher (slider noise)
+    if new_dp > old_dp + 2:
+        rounded = round(value, old_dp)
+        return _ensure_float_str(_strip_trailing_zeros(_clean_float(rounded)))
+
+    return clean
+
+
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  function / type → str (source code via inspect)                            ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
 import types
-
-# TextSpan → original function object, so the converter can return it
-_span_to_func: dict[FileRef, types.FunctionType] = {}
-
-
-def clear_function_span_cache():
-    """Clear the span → function lookup.  Useful for tests."""
-    _span_to_func.clear()
 
 
 @converter(registry=Melty)
@@ -72,7 +278,16 @@ def type_to_str(value: type) -> str:
 
 @converter(registry=Melty)
 def str_to_cst_module(value: str) -> cst.Module:
-    return cst.parse_module(value)
+    try:
+        return cst.parse_module(value)
+    except cst.ParserSyntaxError as e:
+        print(f"Parse error: {e.message} at line {e.raw_line}, column {e.raw_column}")
+        return Pending(wrapped=ParseError(
+            source=value,
+            error=e.message,
+            line=e.raw_line,
+            column=e.raw_column,
+        ))
 
 
 @converter(registry=Melty)
@@ -93,12 +308,18 @@ def cst_module_to_dict(value: cst.Module) -> dict:
     """
     readable = {}
 
-    # Sleep to test threading behaviour
-    if Toggles.slow_down_threads:
-        sleep(1.0)
+    # Module header comments (top-of-file, before first statement)
+    for ll in value.header:
+        if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
+            c = Comment(ll.comment.value)
+            readable[c] = str(c)
 
     for stmt in value.body:
         if isinstance(stmt, cst.SimpleStatementLine):
+            # Leading comments
+            _extract_leading_comments(stmt, readable)
+
+            last_key = None
             for node in stmt.body:
                 # x = 0
                 if isinstance(node, cst.Assign) and len(node.targets) == 1:
@@ -107,20 +328,27 @@ def cst_module_to_dict(value: cst.Module) -> dict:
                         py_value = _cst_to_python_or_raw(node.value)
                         if py_value is not _UNREADABLE:
                             readable[target.value] = py_value
+                            last_key = target.value
                 # x: int = 0
                 elif isinstance(node, cst.AnnAssign):
                     if isinstance(node.target, cst.Name) and node.value is not None:
                         py_value = _cst_to_python_or_raw(node.value)
                         if py_value is not _UNREADABLE:
                             readable[node.target.value] = py_value
+                            last_key = node.target.value
+
+            # Trailing inline comment
+            _extract_trailing_comment(stmt, last_key, readable)
 
         elif isinstance(stmt, cst.ClassDef):
+            _extract_leading_comments(stmt, readable)
             try:
                 readable[stmt.name.value] = convert(stmt, dict, registry=Melty)
             except (TypeError, ValueError):
                 pass
 
         elif isinstance(stmt, cst.FunctionDef):
+            _extract_leading_comments(stmt, readable)
             try:
                 readable[stmt.name.value] = convert(stmt, dict, registry=Melty)
             except (TypeError, ValueError):
@@ -144,12 +372,19 @@ def dict_to_cst_module(value: dict) -> cst.Module:
         raise TypeError(f"Expected cst.Module in __cst__, got {type(tree).__name__}")
 
     edits = {k: v for k, v in value.items()
-             if not (k.startswith("__") and k.endswith("__"))}
+             if not (_is_dunder(k))
+             and not isinstance(k, Comment)}
 
-    if not edits:
-        return tree
+    result = tree
+    if edits:
+        result = result.visit(_ModulePatcher(edits))
 
-    return tree.visit(_ModulePatcher(edits))
+    # Patch comments (module header + body)
+    all_comment_edits = _collect_comment_edits(value)
+    if all_comment_edits:
+        result = _patch_module_comments(result, value)
+
+    return result
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -168,12 +403,14 @@ def int_to_cst_integer(value: int) -> cst.Integer:
 
 @converter(registry=Melty)
 def cst_float_to_float(value: cst.Float) -> float:
-    return float(value.value)
+    return float(_clean_float(float(value.value)))
 
 
 @converter(registry=Melty)
 def float_to_cst_float(value: float) -> cst.Float:
-    return cst.Float(repr(value))
+    if not math.isfinite(value):
+        raise ValueError(f"Cannot represent {value!r} as cst.Float")
+    return cst.Float(_clean_float(value))
 
 
 @converter(registry=Melty)
@@ -231,7 +468,7 @@ def dict_to_cst_dict(value: dict) -> cst.Dict:
     """
     old_node = value.get("__cst__")
     edits = {k: v for k, v in value.items()
-             if not (k.startswith("__") and k.endswith("__"))}
+             if not (_is_dunder(k))}
 
     if isinstance(old_node, cst.Dict):
         # Extract formatting templates from existing elements
@@ -474,7 +711,7 @@ def dict_to_cst_classdef(value: dict) -> cst.ClassDef:
         result = _patch_decorators(result, dec_edits)
 
     edits = {k: v for k, v in value.items()
-             if not (k.startswith("__") and k.endswith("__"))
+             if not (_is_dunder(k))
              and k != "decorators"}
 
     if not edits:
@@ -656,7 +893,10 @@ def _extract_body_assignments(body_node):
 def _extract_block_assignments(stmts):
     """Extract assignments from a sequence of statements.
 
-    Handles SimpleStatementLine (assignments) and If chains.
+    Handles SimpleStatementLine (assignments), If chains, and comments.
+    Comments are emitted as Comment entries following CST's attachment model:
+      - Leading standalone comments → Comment entries before the assignment
+      - Trailing inline comments → Comment entries after the assignment
     """
     # Pass 1: count assignments per name (only direct assignments)
     counts: dict[str, int] = {}
@@ -668,11 +908,15 @@ def _extract_block_assignments(stmts):
             if name is not None:
                 counts[name] = counts.get(name, 0) + 1
 
-    # Pass 2: extract with occurrence-indexed keys + if/elif/else
+    # Pass 2: assignments with occurrence-indexed keys + if/elif/else + comments
     result = {}
     seen: dict[str, int] = {}
     for stmt in stmts:
         if isinstance(stmt, cst.SimpleStatementLine):
+            # Leading comments (standalone lines above this statement)
+            _extract_leading_comments(stmt, result)
+
+            last_key = None
             for node in stmt.body:
                 name = _assign_target_name(node)
                 if name is None:
@@ -692,11 +936,109 @@ def _extract_block_assignments(stmts):
                     key = f"{name}#{occurrence}"
 
                 result[key] = _cst_to_python_or_raw(val_node)
+                last_key = key
+
+            # Trailing inline comment on this statement
+            _extract_trailing_comment(stmt, last_key, result)
 
         elif isinstance(stmt, cst.If):
+            # Leading comments on the if statement itself
+            _extract_leading_comments(stmt, result)
             _extract_if_chain(stmt, result)
 
     return result
+
+
+def _extract_leading_comments(stmt, result):
+    """Extract standalone comment lines from a statement's leading_lines."""
+    for ll in getattr(stmt, "leading_lines", ()):
+        if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
+            c = Comment(ll.comment.value)
+            result[c] = c
+
+
+def _extract_trailing_comment(stmt, var_key, result):
+    """Extract an inline trailing comment from a statement."""
+    tw = getattr(stmt, "trailing_whitespace", None)
+    if tw is not None and hasattr(tw, "comment") and tw.comment is not None:
+        c = Comment(tw.comment.value, inline=var_key)
+        result[c] = c
+
+
+def _collect_comment_edits(edits, text_map=None):
+    """Recursively collect all Comment key→value pairs where text changed.
+
+    Returns {old_text: new_text} for every edited comment in the tree.
+    """
+    if text_map is None:
+        text_map = {}
+    for k, v in edits.items():
+        if isinstance(k, Comment) and isinstance(v, str) and str(k) != v:
+            text_map[str(k)] = v
+        elif isinstance(v, dict):
+            _collect_comment_edits(v, text_map)
+    return text_map
+
+
+def _patch_body_comments(body_node, comment_edits):
+    """Patch comments in an IndentedBlock from Comment edits.
+
+    Builds a flat old_text → new_text map (including nested scopes),
+    then walks the body replacing matching comment nodes.
+    """
+    text_map = _collect_comment_edits(comment_edits)
+    if not text_map:
+        return body_node
+    return body_node.visit(_CommentPatcher(text_map))
+
+
+def _patch_module_comments(module, comment_edits):
+    """Patch comments on a cst.Module (header + body)."""
+    text_map = _collect_comment_edits(comment_edits)
+    if not text_map:
+        return module
+
+    # Patch header comments
+    new_header = list(module.header)
+    changed = False
+    for i, ll in enumerate(new_header):
+        if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
+            new_text = text_map.get(ll.comment.value)
+            if new_text is not None:
+                new_header[i] = ll.with_changes(
+                    comment=cst.Comment(value=new_text))
+                changed = True
+
+    result = module
+    if changed:
+        result = result.with_changes(header=new_header)
+
+    # Patch body comments via transformer
+    return result.visit(_CommentPatcher(text_map))
+
+
+class _CommentPatcher(cst.CSTTransformer):
+    """Replaces comment text by matching original text → new text."""
+
+    def __init__(self, text_map: dict[str, str]):
+        super().__init__()
+        self._text_map = text_map
+
+    def leave_EmptyLine(self, original_node, updated_node):
+        if updated_node.comment is not None:
+            new_text = self._text_map.get(updated_node.comment.value)
+            if new_text is not None:
+                return updated_node.with_changes(
+                    comment=cst.Comment(value=new_text))
+        return updated_node
+
+    def leave_TrailingWhitespace(self, original_node, updated_node):
+        if updated_node.comment is not None:
+            new_text = self._text_map.get(updated_node.comment.value)
+            if new_text is not None:
+                return updated_node.with_changes(
+                    comment=cst.Comment(value=new_text))
+        return updated_node
 
 
 def _extract_if_chain(if_node, result):
@@ -706,7 +1048,7 @@ def _extract_if_chain(if_node, result):
     key = f"if {condition}"
     body = _extract_block_assignments(if_node.body.body)
     if body:
-        result[key] = body
+        result[key] = Conditional(body, condition=key)
 
     # Walk the orelse chain
     orelse = if_node.orelse
@@ -717,13 +1059,13 @@ def _extract_if_chain(if_node, result):
             key = f"elif {condition}"
             body = _extract_block_assignments(orelse.body.body)
             if body:
-                result[key] = body
+                result[key] = Conditional(body, condition=key)
             orelse = orelse.orelse
         elif isinstance(orelse, cst.Else):
             # else
             body = _extract_block_assignments(orelse.body.body)
             if body:
-                result["else"] = body
+                result["else"] = Conditional(body, condition="else")
             orelse = None
         else:
             break
@@ -797,7 +1139,7 @@ def dict_to_cst_funcdef(value: dict) -> cst.FunctionDef:
     param_edits = value.get("parameters")
     if isinstance(param_edits, dict):
         edits = {k: v for k, v in param_edits.items()
-                 if not (k.startswith("__") and k.endswith("__"))
+                 if not (_is_dunder(k))
                  and v is not NO_DEFAULT}
         if edits:
             result = result.with_changes(
@@ -807,9 +1149,16 @@ def dict_to_cst_funcdef(value: dict) -> cst.FunctionDef:
     local_edits = value.get("locals")
     if isinstance(local_edits, dict):
         edits = {k: v for k, v in local_edits.items()
-                 if not (k.startswith("__") and k.endswith("__"))}
+                 if not (_is_dunder(k))
+                 and not isinstance(k, Comment)}
         if edits:
             result = result.visit(_BodyAssignPatcher(edits))
+
+        # Patch comments (walks entire body including nested scopes)
+        all_comment_edits = _collect_comment_edits(local_edits)
+        if all_comment_edits:
+            new_body = _patch_body_comments(result.body, local_edits)
+            result = result.with_changes(body=new_body)
 
     return result
 
@@ -1043,7 +1392,7 @@ def dict_to_cst_call(value: dict) -> cst.Call:
         raise TypeError("Dict has no __cst__ Call")
 
     edits = {k: v for k, v in value.items()
-             if not (k.startswith("__") and k.endswith("__"))}
+             if not (_is_dunder(k))}
 
     if not edits:
         return old_node
@@ -1242,7 +1591,7 @@ def _cst_to_python_or_raw(node):
         return _cst_node_to_code(node)
     # Catch dict where every key is a dunder (nothing readable extracted)
     if isinstance(val, dict) and all(
-            k.startswith("__") and k.endswith("__") for k in val):
+            _is_dunder(k) for k in val):
         return _cst_node_to_code(node)
     return val
 
@@ -1416,7 +1765,7 @@ class _ModulePatcher(cst.CSTTransformer):
 
     def __init__(self, edits: dict):
         super().__init__()
-        self.edits = edits
+        self.edits = {k: v for k, v in edits.items() if not isinstance(k, Comment)}
 
     def leave_Assign(self, original_node, updated_node):
         if len(updated_node.targets) != 1:
@@ -1570,19 +1919,22 @@ def _python_to_cst_expr(py_value, old_node=None):
         return cst.Integer(str(py_value))
 
     if isinstance(py_value, float):
+        if not math.isfinite(py_value):
+            return None  # inf/nan can't be represented as cst.Float
         if py_value < 0:
             if isinstance(old_node, cst.UnaryOperation) and isinstance(old_node.operator, cst.Minus):
                 old_expr = old_node.expression
-                if isinstance(old_expr, cst.Float) and float(old_expr.value) == abs(py_value):
+                if isinstance(old_expr, cst.Float) and _floats_match(abs(py_value), float(old_expr.value)):
                     return old_node  # unchanged - preserve original repr
                 return old_node.with_changes(
-                    expression=old_expr.with_changes(value=repr(abs(py_value))))
-            return cst.UnaryOperation(operator=cst.Minus(), expression=cst.Float(repr(abs(py_value))))
+                    expression=old_expr.with_changes(
+                        value=_float_to_str(abs(py_value), old_expr.value if isinstance(old_expr, cst.Float) else None)))
+            return cst.UnaryOperation(operator=cst.Minus(), expression=cst.Float(_clean_float(abs(py_value))))
         if isinstance(old_node, cst.Float):
-            if float(old_node.value) == py_value:
+            if _floats_match(py_value, float(old_node.value)):
                 return old_node  # unchanged - preserve original repr
-            return old_node.with_changes(value=repr(py_value))
-        return cst.Float(repr(py_value))
+            return old_node.with_changes(value=_float_to_str(py_value, old_node.value))
+        return cst.Float(_clean_float(py_value))
 
     if py_value is None:
         if isinstance(old_node, cst.Name):

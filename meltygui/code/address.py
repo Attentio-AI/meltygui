@@ -55,12 +55,30 @@ class FileRef:
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  FileRef resolution                                                          ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
+class ValueDict:
+    """An if/elif/else block's contents, as a dict subclass.
+
+    isinstance(c, dict) → True, so iteration/access works normally.
+    isinstance(c, Conditional) → True, so the UI can render a
+    collapsible conditional block.
+
+    The .condition attribute holds the full condition text
+    (e.g. "if selected", "elif pressed", "else").
+    """
+
+    def __init__(self, cached_value, others=None):
+        self.others = others or {}
+        self.cached_value = cached_value
 
 def to_fileref(value: Any) -> FileRef:
     """Convert common types to a FileRef.  Unwraps decorated functions."""
     if isinstance(value, FileRef):
         return value
+    if isinstance(value, ValueDict):
+        return to_fileref(value.cached_value)
+
     if isinstance(value, Path):
+
         return FileRef(value)
     import inspect, types
     if isinstance(value, types.FunctionType):
@@ -223,7 +241,7 @@ def make_load_wrapper(fn: Callable, load_data: Callable,
         # ── Reload (uses watch.ref, not re-inspected) ───────────────
 
         data = load_data(watch.ref)
-        result = _call_fn(fn, (data, watch.ref), apply, fn_takes_apply=fn_takes_apply)
+        result = _call_fn(fn, (value, data, watch.ref), apply, fn_takes_apply=fn_takes_apply)
         watch.cached_result = result
         watch.original_data = data
         watch.mark_current()
@@ -297,7 +315,7 @@ def make_save_wrapper(fn: Callable, save_data: Callable,
         # ── Save ────────────────────────────────────────────────────
 
         ref = watch.ref
-        updated_ref = save_data(ref, data)
+        updated_ref = save_data(value, ref, data)
         if isinstance(updated_ref, FileRef):
             ref = updated_ref
 
