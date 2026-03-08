@@ -25,6 +25,8 @@ from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  FileRef                                                                     ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
+ORIGINAL = object()  # sentinel for "no original value found"
+
 
 class FileRef:
     __slots__ = ("path", "start", "end")
@@ -280,7 +282,6 @@ def make_save_wrapper(fn: Callable, save_data: Callable,
             return _call_fn(fn, (value,), apply, fn_takes_apply=fn_takes_apply)
 
         # ── Find this view's paired load watch ──────────────────────
-
         watch = load_cache.get(cache_id) if load_cache else None
         if watch is None:
             return value  # never loaded, nothing to save
@@ -288,6 +289,7 @@ def make_save_wrapper(fn: Callable, save_data: Callable,
         # ── Extract data from converter function ─────────────────────
 
         data = _call_fn(fn, (value,), apply, fn_takes_apply=fn_takes_apply)
+
 
         # ── Dirty detection ─────────────────────────────────────────
 

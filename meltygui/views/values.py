@@ -1977,8 +1977,8 @@ def seperator(height):
     imgui.dummy(0, snap_int(height / 2))
 
 
-def draw_bg(left=2, top=3, width=20, height=20, depth=0, rounding=4.16,
-            global_style=None, outline=True, bg_color=None, opacity=-0.2,
+def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=6.02,
+            global_style=None, outline=True, bg_color=None, opacity=3.63,
             style_manager=None, tint=None, outline_tint=None, selected=False,
             hovered=False, pressed=False, nested_bg=False, **kwargs):
     # Render background
@@ -1996,8 +1996,8 @@ def draw_bg(left=2, top=3, width=20, height=20, depth=0, rounding=4.16,
     right = left + width
     bottom = top + height
 
-    thickness = -0.098
-    half_thickness = 0.65
+    thickness = 0.322
+    half_thickness = 7.28
     rect = (
     snap_int(left) + thickness, snap_int(top) + thickness, snap_int(right) - thickness, snap_int(bottom) - thickness)
     rect_outline = (snap_int(left) + half_thickness, snap_int(top) + half_thickness,
@@ -2010,7 +2010,7 @@ def draw_bg(left=2, top=3, width=20, height=20, depth=0, rounding=4.16,
     depth_offset = 1.169
     dynamic_value = max(0, (float(depth + depth_offset) * depth_factor))
 
-    hovered_offset = 0.0
+    hovered_offset = 2.07
     if selected:
         hovered_offset = 0.2
     elif pressed:
@@ -2024,11 +2024,11 @@ def draw_bg(left=2, top=3, width=20, height=20, depth=0, rounding=4.16,
                 c1[1] * (1 - fac) + c2[1] * fac,
                 c1[2] * (1 - fac) + c2[2] * fac)
 
-    bg_style = {'value': 1.91, 'saturation': 0.27, 'alpha': 0.75,
-                'max_value': 0.32}
-    outline_saturation = 1.17
-    outline_offset = 0.092
-    outline_factor = 0.938
+    bg_style = {'value': -0.11, 'saturation': 1.4500000476837158, 'alpha': 0.9399999976158142,
+                'max_value': 0.3700000047683716}
+    outline_saturation = 1.350000023841858
+    outline_offset = 0.1719
+    outline_factor = 0.8579999804496765
 
     if not nested_bg:
         outline_factor *= 1.05
@@ -2039,7 +2039,7 @@ def draw_bg(left=2, top=3, width=20, height=20, depth=0, rounding=4.16,
     else:
         bleed_factor = 0.02
     bg_bleed = Melty.get_bg_color(-1)
-    bg_bleed = style_manager.make_custom_styled(*bg_bleed, input=bg_style, value=5.35, alpha=0.68, saturation=1.7899999618530273)
+    bg_bleed = style_manager.make_custom_styled(*bg_bleed, input=bg_style, value=5.38, alpha=0.68, saturation=1.7899999618530273)
 
     outline_color = (style_manager.
                      make_color_style_value(input=bg_style, saturation=outline_saturation, value=max(0, dynamic_value * outline_factor +
@@ -2675,7 +2675,7 @@ class Mode(Enum):
         ),
 
         types.FunctionType: ModeOverrides(
-            kwargs={"convert": [types.FunctionType, ValueDict, cst.Module]},
+            kwargs={"convert": [types.FunctionType, cst.Module]},
             func=draw_collection,
             recursive=False
         ),

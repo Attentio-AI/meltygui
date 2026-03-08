@@ -38,6 +38,7 @@ File dicts carry __path__ for lossless round-trip:
 """
 import inspect
 import textwrap
+import time
 import types
 
 from pathlib import Path
@@ -46,7 +47,7 @@ from src.lsd.gl_gui.view.core_conversion.converter_register import converter
 
 import libcst as cst
 
-from src.lsd.gl_gui.view.core_conversion.fileref import FileRef, get_original_value, ValueDict
+from src.lsd.gl_gui.view.core_conversion.fileref import FileRef, get_original_value, ValueDict, ORIGINAL
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -444,6 +445,33 @@ def dict_to_fileref(value: dict) -> str:
     return data
 
 
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  FileRef ↔ cst.Module (line range parsed into CST)                           ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+@converter(registry=Melty, from_type=FileRef, load_data=load_span_text, stateful=True,)
+def fileref_to_cst_module(value, data: str, ref: FileRef) -> cst.Module:
+    return cst.parse_module(data)
+
+
+@converter(registry=Melty, to_type=FileRef, save_data=save_span_text,
+           inverse_of=fileref_to_cst_module)
+def cst_module_to_fileref(value: cst.Module) -> str:
+    return value.code
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  FunctionType ↔ FileRef                                                      ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+def recompile_function(original_value, ref: FileRef, function) -> FileRef:
+    """Recompile the function in place.  No file write."""
+    source = inspect.getsource(function)
+
+    if original_value is not None:
+        _recompile(function, source, str(ref.path))
+    return ref
+
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -478,15 +506,6 @@ def load_file_bytes(ref: FileRef) -> bytes:
     return ref.path.read_bytes()
 
 
-def save_file_bytes(ref: FileRef, data: bytes) -> FileRef | None:
-    ref.path.parent.mkdir(parents=True, exist_ok=True)
-    if isinstance(data, str):
-        ref.path.write_text(data, encoding="utf-8")
-    else:
-        ref.path.write_bytes(data)
-    return None
-
-
 def _detect_newline(data: bytes) -> str:
     return "\r\n" if b"\r\n" in data else "\n"
 
@@ -511,6 +530,24 @@ def save_span_text(value, ref: FileRef, data: str) -> FileRef:
     except UnicodeDecodeError:
         text = full_data.decode("latin-1")
     lines = text.split(newline)
+    new_lines = data.split(newline)
+    lines[ref.start:ref.end] = new_lines
+    ref.path.write_text(newline.join(lines), encoding="utf-8")
+    return FileRef(ref.path, ref.start, ref.start + len(new_lines))
+
+
+def save_span_function(value, ref: FileRef, function: types.FunctionType) -> FileRef:
+    full_data = ref.path.read_bytes()
+    newline = _detect_newline(full_data)
+    try:
+        text = full_data.decode("utf-8")
+    except UnicodeDecodeError:
+        text = full_data.decode("latin-1")
+    lines = text.split(newline)
+
+    data = value.code
+    print(f"saving code")
+
     new_lines = data.split(newline)
     lines[ref.start:ref.end] = new_lines
     ref.path.write_text(newline.join(lines), encoding="utf-8")
@@ -565,32 +602,6 @@ def dict_to_fileref(value: dict) -> str:
     return data
 
 
-
-def load_span_code(ref: FileRef) -> types.FunctionType:
-    data = ref.path.read_bytes()
-    newline = _detect_newline(data)
-    try:
-        text = data.decode("utf-8")
-    except UnicodeDecodeError:
-        text = data.decode("latin-1")
-    lines = text.split(newline)
-    return newline.join(lines[ref.start:ref.end])
-
-
-def save_span_code(value, ref: FileRef, data: str) -> FileRef:
-    full_data = ref.path.read_bytes()
-    newline = _detect_newline(full_data)
-    try:
-        text = full_data.decode("utf-8")
-    except UnicodeDecodeError:
-        text = full_data.decode("latin-1")
-    lines = text.split(newline)
-    new_lines = data.split(newline)
-    lines[ref.start:ref.end] = new_lines
-    ref.path.write_text(newline.join(lines), encoding="utf-8")
-    return FileRef(ref.path, ref.start, ref.start + len(new_lines))
-
-
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  FileRef ↔ cst.Module (line range parsed into CST)                           ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
@@ -610,36 +621,54 @@ def cst_module_to_fileref(value: cst.Module) -> str:
 # ║  FileRef ↔ cst.Module (line range parsed into CST)                           ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
-
-# ╚══════════════════════════════════════════════════════════════════════════════╝
-def recompile_function(value:types.FunctionType, ref: FileRef, source: str) -> FileRef:
-    """Recompile the function in place.  No file write."""
-    # func = get_original_value(ref=ref, of_type=types.FunctionType)
-    if value is not None:
-        _recompile(value, source, str(ref.path))
-    return ref
-
-@converter(registry=Melty)
-def value_dict_to_cst_module(data: ValueDict) -> cst.Module:
-    return cst.parse_module(data.others)
-
-@converter(registry=Melty,
-           inverse_of=value_dict_to_cst_module)
-def cst_module_to_value_dict(value: cst.Module) -> ValueDict:
-    return ValueDict(cached_value=value, others=value.code)
-
-@converter(registry=Melty, from_type=types.FunctionType, load_data=load_span_text)
-def function_to_value_dict(value:types.FunctionType, data: str, ref) -> ValueDict:
-    return ValueDict(cached_value=value, others=data)
+#
+# @converter(registry=Melty)
+# def value_dict_to_cst_module(data: ValueDict) -> cst.Module:
+#     return cst.parse_module(data.others)
+#
+# @converter(registry=Melty,
+#           inverse_of=value_dict_to_cst_module)
+# def cst_module_to_value_dict(value: cst.Module) -> ValueDict:
+#     return ValueDict(cached_value=value, others=value.code)
 
 
-@converter(registry=Melty, from_type=ValueDict, to_type=types.FunctionType,
-           save_data=recompile_function,
-           inverse_of=function_to_value_dict)
-def value_dict_to_function(value: ValueDict) -> types.FunctionType:
-    func = value.cached_value
-    source = value.others
-    return func
+
+@converter(registry=Melty, from_type=types.FunctionType, load_data=load_span_text, stateful=True, )
+def function_to_cst(value, data: str, ref: FileRef) -> cst.Module:
+    return cst.parse_module(data)
+
+
+@converter(registry=Melty, to_type=types.FunctionType, save_data=save_span_function,
+           inverse_of=function_to_cst, stateful=True)
+def cst_module_to_function(value: cst.Module) -> str:
+
+    return value.code
+
+#
+# @converter(registry=Melty, from_type=types.FunctionType, load_data=load_span_text, stateful=True, )
+# def function_to_fileref(value, data: str, ref: FileRef) -> FileRef:
+#     return ref
+#
+#
+# @converter(registry=Melty, to_type=types.FunctionType,
+#            save_data=recompile_function,
+#            inverse_of=function_to_fileref, )
+# def fileref_to_function(value: FileRef) -> types.FunctionType:
+#     return ORIGINAL
+
+
+# @converter(registry=Melty, from_type=types.FunctionType, load_data=load_span_text)
+# def function_to_value_dict(value:types.FunctionType, data: str, ref) -> ValueDict:
+#     return ValueDict(cached_value=value, others=data)
+#
+#
+# @converter(registry=Melty, from_type=ValueDict, to_type=types.FunctionType,
+#            save_data=recompile_function,
+#            inverse_of=function_to_value_dict)
+# def value_dict_to_function(value: ValueDict) -> types.FunctionType:
+#     func = value.cached_value
+#     source = value.others
+#     return func
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  Recompilation                                                               ║
@@ -650,6 +679,9 @@ def _recompile(func: types.FunctionType, source: str,
     dedented = textwrap.dedent(source)
     unwrapped = inspect.unwrap(func)
     namespace = dict(unwrapped.__globals__)
+
+    current_time = time.time()
+    print(f"Recompiling function from source:\n{filename}{current_time}")
 
     freevars = unwrapped.__code__.co_freevars
     has_closure = bool(freevars and unwrapped.__closure__)

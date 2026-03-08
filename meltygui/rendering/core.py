@@ -1693,22 +1693,25 @@ def render_func(*args, **o_kwargs):
                                     converter_kwargs = Melty.converter_flags.get(convert_path[0], {})
 
                                 no_cache = converter_kwargs.get("stateful", False)
+                                if draw_state._apply_save:
+                                    print("Applying save, forcing no cache for convert")
                                 external_value = Background.run(convert, user_id=str(unique) + f" | output convert {str(convert_path[-1].__name__)}",
                                                                 invalidate_id=draw_state._parent._tile_id,
                                                                 cache_id=str(draw_state.unique),
                                                                 on_frame=Melty.frame_count, no_cache=no_cache,
-                                                                value=new_value_child, apply=True,
+                                                                value=new_value_child, apply=draw_state._apply_save,
                                                                 path=convert_path, registry=Melty, )
+                                if not isinstance(external_value, Pending):
+                                    draw_state._show_save = False
+                                    draw_state._apply_save = False
+                                    draw_state._save_pending = False
+
                             else:
                                 external_value = draw_state._input_value_cache["external_state"][0]
                         if isinstance(external_value, tuple):
                             external_value, thead_launch_frame = external_value
 
-                        if not isinstance(external_value, Pending):
-                            draw_state._show_save = False
-                            draw_state._apply_save = False
-                            draw_state._save_pending = False
-                        else:
+                        if isinstance(external_value, Pending):
                             draw_state._save_pending = True
 
                         if isinstance(external_value, Pending):
