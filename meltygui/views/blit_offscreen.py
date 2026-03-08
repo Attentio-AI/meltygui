@@ -1116,10 +1116,6 @@ class TileCacheMasked:
         if not draw_state.use_cache:
             return True
 
-        if draw_state._input_value == UNSET_VALUE:
-            return True
-
-
         input_value = draw_state._input_value
         collection = draw_state._collection
         key = draw_state._tile_id
@@ -1162,9 +1158,25 @@ class TileCacheMasked:
 
         self.py_id_to_keys[f"{id(draw_state)}"].add(rkey)
 
+
         imgui.push_id(f"{rkey}{layer}_offscreen")
         imgui.begin_group()
         has_area = size is not None and size[0] != 0 and size[1] != 0
+
+        if draw_state._input_value == UNSET_VALUE:
+            self._stack.append(
+                _Ctx(
+                    draw_state=draw_state,
+                    key=rkey,
+                    pos=(x, y),
+                    size=size,
+                    layer=layer,
+                    depth_and_layer=draw_state.shadow_depth,
+                    drew_cached=False,
+                    auto_resize=draw_state.auto_resize,
+                )
+            )
+            return True
 
         if draw_state.just_shadow:
             self._stack.append(

@@ -19,7 +19,7 @@ import libcst as cst
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.view.core_conversion.converter_register import converter
 from src.lsd.gl_gui.view.core_conversion.path_finder import convert, Pending
-
+from libcst._nodes.internal import CodegenState as _CodegenState
 # Sentinel for arguments with no default value.
 # Shows up in the dict so the UI can display the parameter name,
 # but signals "no default" on the reverse path.
@@ -85,6 +85,26 @@ class Conditional(dict):
         super().__init__(*args, **kwargs)
         self.condition = condition  # e.g. "if selected", "elif pressed", "else"
 
+    def __bg_hash__(self) -> str:
+        # Cheap hash: condition text + sorted key names + count.
+        # Key names changing (structure edit) invalidates the cache;
+        # value changes inside known-stable keys are ignored intentionally
+        # for performance - the condition + structure is the identity.
+        keys = ",".join(sorted(str(k) for k in self.keys() if not str(k).startswith("_")))
+        return f"Conditional:{self.condition}:{keys}"
+
+
+class GeneralParse(dict):
+    def __init__(self, *args, source="", **kwargs):
+        super().__init__(*args, **kwargs)
+        self.source = source
+        self._bg_hash_cache: str | None = None
+
+    def __bg_hash__(self) -> str:
+        if self._bg_hash_cache is None:
+            # hash() on a str uses a fast SipHash - O(n) once, then O(1)
+            self._bg_hash_cache = str(hash(self.source))
+        return self._bg_hash_cache
 
 class ParseError(dict):
     """A dict representing code that failed to parse.
@@ -107,6 +127,10 @@ class ParseError(dict):
       .column  — error column number
     """
 
+    def __bg_hash__(self) -> str:
+        # Source text is the full content - hashing it is enough.
+        return f"ParseError:{self.source}"
+
     def __init__(self, *args, source="", error="", line=0, column=0, **kwargs):
         super().__init__(*args, **kwargs)
         self.source = source
@@ -120,12 +144,13 @@ class ParseError(dict):
 
 
 def _cst_node_to_code(node):
-    """Get the source code string for a CST expression node."""
-    wrapper = cst.Module(body=[
-        cst.SimpleStatementLine(body=[cst.Expr(value=node)])
-    ])
-    # .code gives us "expr\n", strip the trailing newline
-    return wrapper.code.rstrip("\n")
+    """Get the source code string for a CST expression node.
+
+    Uses direct codegen instead of wrapping in a Module — ~5x faster.
+    """
+    state = _CodegenState(default_indent="    ", default_newline="\n")
+    node._codegen(state)
+    return "".join(state.tokens)
 
 
 def _is_dunder(key):
@@ -281,7 +306,6 @@ def str_to_cst_module(value: str) -> cst.Module:
     try:
         return cst.parse_module(value)
     except cst.ParserSyntaxError as e:
-        print(f"Parse error: {e.message} at line {e.raw_line}, column {e.raw_column}")
         return Pending(wrapped=ParseError(
             source=value,
             error=e.message,
@@ -306,13 +330,16 @@ def cst_module_to_dict(value: cst.Module) -> dict:
     Handles: assignments, annotated assignments, class definitions,
     function definitions (default args), and decorator kwargs.
     """
-    readable = {}
+    readable = GeneralParse(source=value.code)
 
     # Module header comments (top-of-file, before first statement)
     for ll in value.header:
         if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
             c = Comment(ll.comment.value)
             readable[c] = str(c)
+
+    _classdef_to_dict = Melty._converters.get((cst.ClassDef, dict))
+    _funcdef_to_dict = Melty._converters.get((cst.FunctionDef, dict))
 
     for stmt in value.body:
         if isinstance(stmt, cst.SimpleStatementLine):
@@ -342,17 +369,19 @@ def cst_module_to_dict(value: cst.Module) -> dict:
 
         elif isinstance(stmt, cst.ClassDef):
             _extract_leading_comments(stmt, readable)
-            try:
-                readable[stmt.name.value] = convert(stmt, dict, registry=Melty)
-            except (TypeError, ValueError):
-                pass
+            if _classdef_to_dict is not None:
+                try:
+                    readable[stmt.name.value] = _classdef_to_dict(stmt)
+                except (TypeError, ValueError):
+                    pass
 
         elif isinstance(stmt, cst.FunctionDef):
             _extract_leading_comments(stmt, readable)
-            try:
-                readable[stmt.name.value] = convert(stmt, dict, registry=Melty)
-            except (TypeError, ValueError):
-                pass
+            if _funcdef_to_dict is not None:
+                try:
+                    readable[stmt.name.value] = _funcdef_to_dict(stmt)
+                except (TypeError, ValueError):
+                    pass
 
     readable["__cst__"] = value
     return readable
@@ -820,7 +849,7 @@ def cst_funcdef_to_dict(value: cst.FunctionDef) -> dict:
         "__cst__": <FunctionDef>
       }
     """
-    readable = {}
+    readable = GeneralParse(source=_cst_node_to_code(value))
 
     decorators = _extract_decorators(value.decorators)
     if decorators:
@@ -831,6 +860,7 @@ def cst_funcdef_to_dict(value: cst.FunctionDef) -> dict:
         readable["parameters"] = params
 
     # Body assignments under "locals"
+
     locals_ = _extract_body_assignments(value.body)
     if locals_:
         readable["locals"] = locals_
@@ -845,7 +875,8 @@ def _extract_param_defaults(params_node):
     Parameters with defaults get their Python value.
     Parameters without defaults get NO_DEFAULT.
     """
-    result = {}
+    result = GeneralParse(source="\n".join(_cst_node_to_code(stmt) for stmt in params_node.params))
+
     all_params = (list(params_node.params)
                   + list(params_node.posonly_params)
                   + list(params_node.kwonly_params))
@@ -909,7 +940,7 @@ def _extract_block_assignments(stmts):
                 counts[name] = counts.get(name, 0) + 1
 
     # Pass 2: assignments with occurrence-indexed keys + if/elif/else + comments
-    result = {}
+    result = GeneralParse(source="\n".join(_cst_node_to_code(stmt) for stmt in stmts))
     seen: dict[str, int] = {}
     for stmt in stmts:
         if isinstance(stmt, cst.SimpleStatementLine):
@@ -980,27 +1011,17 @@ def _collect_comment_edits(edits, text_map=None):
     return text_map
 
 
-def _patch_body_comments(body_node, comment_edits):
-    """Patch comments in an IndentedBlock from Comment edits.
-
-    Builds a flat old_text → new_text map (including nested scopes),
-    then walks the body replacing matching comment nodes.
-    """
-    text_map = _collect_comment_edits(comment_edits)
-    if not text_map:
-        return body_node
-    return body_node.visit(_CommentPatcher(text_map))
-
-
 def _patch_module_comments(module, comment_edits):
-    """Patch comments on a cst.Module (header + body)."""
+    """Patch comments on a cst.Module (header + body) by direct walk."""
     text_map = _collect_comment_edits(comment_edits)
     if not text_map:
         return module
 
+    result = module
+    changed = False
+
     # Patch header comments
     new_header = list(module.header)
-    changed = False
     for i, ll in enumerate(new_header):
         if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
             new_text = text_map.get(ll.comment.value)
@@ -1009,36 +1030,22 @@ def _patch_module_comments(module, comment_edits):
                     comment=cst.Comment(value=new_text))
                 changed = True
 
-    result = module
     if changed:
         result = result.with_changes(header=new_header)
 
-    # Patch body comments via transformer
-    return result.visit(_CommentPatcher(text_map))
+    # Patch body statement comments by direct walk
+    new_body = list(result.body)
+    body_changed = False
+    for i, stmt in enumerate(new_body):
+        new_stmt = _patch_stmt_comments(stmt, text_map)
+        if new_stmt is not stmt:
+            new_body[i] = new_stmt
+            body_changed = True
 
+    if body_changed:
+        result = result.with_changes(body=new_body)
 
-class _CommentPatcher(cst.CSTTransformer):
-    """Replaces comment text by matching original text → new text."""
-
-    def __init__(self, text_map: dict[str, str]):
-        super().__init__()
-        self._text_map = text_map
-
-    def leave_EmptyLine(self, original_node, updated_node):
-        if updated_node.comment is not None:
-            new_text = self._text_map.get(updated_node.comment.value)
-            if new_text is not None:
-                return updated_node.with_changes(
-                    comment=cst.Comment(value=new_text))
-        return updated_node
-
-    def leave_TrailingWhitespace(self, original_node, updated_node):
-        if updated_node.comment is not None:
-            new_text = self._text_map.get(updated_node.comment.value)
-            if new_text is not None:
-                return updated_node.with_changes(
-                    comment=cst.Comment(value=new_text))
-        return updated_node
+    return result
 
 
 def _extract_if_chain(if_node, result):
@@ -1145,154 +1152,218 @@ def dict_to_cst_funcdef(value: dict) -> cst.FunctionDef:
             result = result.with_changes(
                 params=_patch_params(result.params, edits))
 
-    # Patch body assignments from "locals" sub-dict
+    # Patch body assignments and comments from "locals" sub-dict
     local_edits = value.get("locals")
     if isinstance(local_edits, dict):
         edits = {k: v for k, v in local_edits.items()
                  if not (_is_dunder(k))
                  and not isinstance(k, Comment)}
-        if edits:
-            result = result.visit(_BodyAssignPatcher(edits))
 
-        # Patch comments (walks entire body including nested scopes)
-        all_comment_edits = _collect_comment_edits(local_edits)
-        if all_comment_edits:
-            new_body = _patch_body_comments(result.body, local_edits)
-            result = result.with_changes(body=new_body)
+        # Collect comment edits as a flat text→text map
+        comment_text_map = _collect_comment_edits(local_edits)
+
+        if edits or comment_text_map:
+            new_body = _patch_body_direct(
+                result.body, edits, comment_text_map or None)
+            if new_body is not result.body:
+                result = result.with_changes(body=new_body)
 
     return result
 
 
-class _BodyAssignPatcher(cst.CSTTransformer):
-    """Patches name = value assignments at the top level of a function body.
+def _parse_edit_keys(edits):
+    """Split a locals dict into assignment edits and block edits.
 
-    Matches edit keys to assignments by name and occurrence index:
-      - "x"   → first (or only) assignment to x
-      - "x#1" → second assignment to x
-      - "x#2" → third, etc.
-
-    If/elif/else sub-dicts are matched by condition text:
-      - "if selected"   → patches body of the if block
-      - "elif pressed"  → patches body of the elif
-      - "else"          → patches body of the else
-
-    Only patches direct assignments at depth 1.
-    Nested blocks are handled via sub-dict recursion, not depth.
+    Returns (assign_edits, block_edits) where:
+      assign_edits = {(name, occurrence): value}
+      block_edits = {"if cond": sub_dict, "elif ...": ..., "else": ...}
     """
+    assign_edits: dict[tuple[str, int], object] = {}
+    block_edits: dict[str, dict] = {}
 
-    def __init__(self, edits: dict):
-        super().__init__()
-        self._depth = 0
-        self._seen: dict[str, int] = {}
+    for key, val in edits.items():
+        if isinstance(key, Comment):
+            continue
+        if isinstance(val, dict) and (key.startswith("if ") or
+                                      key.startswith("elif ") or
+                                      key == "else"):
+            block_edits[key] = val
+        elif isinstance(key, str) and "#" in key:
+            name, idx_str = key.rsplit("#", 1)
+            try:
+                assign_edits[(name, int(idx_str))] = val
+            except ValueError:
+                pass
+        elif isinstance(key, str):
+            assign_edits[(key, 0)] = val
 
-        # Separate assignment edits from block edits
-        self._edits: dict[tuple[str, int], object] = {}
-        self._block_edits: dict[str, dict] = {}
+    return assign_edits, block_edits
 
-        for key, val in edits.items():
-            if isinstance(val, dict) and (key.startswith("if ") or
-                                          key.startswith("elif ") or
-                                          key == "else"):
-                self._block_edits[key] = val
-            elif "#" in key:
-                name, idx_str = key.rsplit("#", 1)
-                try:
-                    self._edits[(name, int(idx_str))] = val
-                except ValueError:
-                    pass
-            else:
-                self._edits[(key, 0)] = val
 
-    def visit_IndentedBlock(self, node):
-        self._depth += 1
-        return True
+def _patch_body_direct(body_node, edits, comment_text_map=None):
+    """Patch assignments and comments in an IndentedBlock by direct statement walk.
 
-    def leave_IndentedBlock(self, original_node, updated_node):
-        self._depth -= 1
-        return updated_node
+    No CSTTransformer — walks body.body directly, patches matching
+    assignments with with_changes(), handles if/elif/else by recursing,
+    and patches comments inline.
 
-    def _try_patch(self, name, updated_node_value):
-        """Look up edit by (name, occurrence), return new CST value or None."""
-        occurrence = self._seen.get(name, 0)
-        self._seen[name] = occurrence + 1
+    ~4000x less overhead than CSTTransformer for a noop walk.
+    """
+    if not isinstance(body_node, cst.IndentedBlock):
+        return body_node
 
-        edit_val = self._edits.get((name, occurrence))
+    assign_edits, block_edits = _parse_edit_keys(edits)
+    if not assign_edits and not block_edits and not comment_text_map:
+        return body_node
+
+    new_stmts = list(body_node.body)
+    changed = False
+    seen: dict[str, int] = {}
+
+    for i, stmt in enumerate(new_stmts):
+        if isinstance(stmt, cst.SimpleStatementLine):
+            new_stmt = _patch_simple_stmt(stmt, assign_edits, seen)
+            if comment_text_map:
+                new_stmt = _patch_stmt_comments(new_stmt, comment_text_map)
+            if new_stmt is not stmt:
+                new_stmts[i] = new_stmt
+                changed = True
+
+        elif isinstance(stmt, cst.If):
+            new_stmt = stmt
+            if comment_text_map:
+                new_stmt = _patch_stmt_comments(new_stmt, comment_text_map)
+            if block_edits:
+                new_stmt = _patch_if_chain_direct(new_stmt, block_edits, comment_text_map)
+            if new_stmt is not stmt:
+                new_stmts[i] = new_stmt
+                changed = True
+
+    if not changed:
+        return body_node
+    return body_node.with_changes(body=new_stmts)
+
+
+def _patch_simple_stmt(stmt, assign_edits, seen):
+    """Patch a SimpleStatementLine's assignments by name+occurrence.
+
+    Returns the same stmt object if nothing changed (identity check).
+    """
+    new_body = list(stmt.body)
+    changed = False
+
+    for j, node in enumerate(new_body):
+        name = _assign_target_name(node)
+        if name is None:
+            continue
+
+        occurrence = seen.get(name, 0)
+        seen[name] = occurrence + 1
+
+        edit_val = assign_edits.get((name, occurrence))
         if edit_val is None:
-            return None
-        return _python_to_cst_expr(edit_val, updated_node_value)
+            continue
 
-    def leave_Assign(self, original_node, updated_node):
-        if self._depth != 1:
-            return updated_node
-        if len(updated_node.targets) != 1:
-            return updated_node
-        target = updated_node.targets[0].target
-        if not isinstance(target, cst.Name):
-            return updated_node
+        val_node = _assign_value_node(node)
+        if val_node is None:
+            continue
 
-        new_cst = self._try_patch(target.value, updated_node.value)
-        if new_cst is None:
-            return updated_node
-        return updated_node.with_changes(value=new_cst)
+        new_cst = _python_to_cst_expr(edit_val, val_node)
+        if new_cst is None or new_cst is val_node:
+            continue
 
-    def leave_AnnAssign(self, original_node, updated_node):
-        if self._depth != 1:
-            return updated_node
-        if not isinstance(updated_node.target, cst.Name):
-            return updated_node
-        if updated_node.value is None:
-            return updated_node
+        if isinstance(node, cst.Assign):
+            new_body[j] = node.with_changes(value=new_cst)
+        elif isinstance(node, cst.AnnAssign):
+            new_body[j] = node.with_changes(value=new_cst)
+        changed = True
 
-        new_cst = self._try_patch(updated_node.target.value, updated_node.value)
-        if new_cst is None:
-            return updated_node
-        return updated_node.with_changes(value=new_cst)
-
-    def leave_If(self, original_node, updated_node):
-        if self._depth != 1 or not self._block_edits:
-            return updated_node
-        return _patch_if_chain(updated_node, self._block_edits)
+    if not changed:
+        return stmt
+    return stmt.with_changes(body=new_body)
 
 
-def _patch_if_chain(if_node, block_edits):
-    """Walk an if/elif/else chain, patching bodies from block_edits sub-dicts."""
+def _patch_stmt_comments(stmt, text_map):
+    """Patch leading and trailing comments on a statement by direct access."""
+    result = stmt
+    changed = False
+
+    # Leading comments (EmptyLine nodes)
+    if hasattr(result, "leading_lines") and result.leading_lines:
+        new_lines = list(result.leading_lines)
+        for j, ll in enumerate(new_lines):
+            if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
+                new_text = text_map.get(ll.comment.value)
+                if new_text is not None:
+                    new_lines[j] = ll.with_changes(
+                        comment=cst.Comment(value=new_text))
+                    changed = True
+        if changed:
+            result = result.with_changes(leading_lines=new_lines)
+
+    # Trailing comment
+    tw = getattr(result, "trailing_whitespace", None)
+    if tw is not None and hasattr(tw, "comment") and tw.comment is not None:
+        new_text = text_map.get(tw.comment.value)
+        if new_text is not None:
+            result = result.with_changes(
+                trailing_whitespace=tw.with_changes(
+                    comment=cst.Comment(value=new_text)))
+            changed = True
+
+    return result
+
+
+def _patch_if_chain_direct(if_node, block_edits, comment_text_map=None):
+    """Patch an if/elif/else chain by direct body walk — no CSTTransformer."""
     result = if_node
+    changed = False
 
-    # Patch the "if" branch's body
+    # "if <cond>" body
     condition = _cst_node_to_code(result.test)
     key = f"if {condition}"
     if key in block_edits:
-        new_body = result.body.visit(_BodyAssignPatcher(block_edits[key]))
-        result = result.with_changes(body=new_body)
+        new_body = _patch_body_direct(result.body, block_edits[key], comment_text_map)
+        if new_body is not result.body:
+            result = result.with_changes(body=new_body)
+            changed = True
 
-    # Walk and patch the orelse chain
-    result = _patch_orelse_chain(result, block_edits)
+    # Patch the orelse chain
+    new_result = _patch_orelse_direct(result, block_edits, comment_text_map)
+    if new_result is not result:
+        result = new_result
+        changed = True
+
     return result
 
 
-def _patch_orelse_chain(node, block_edits):
-    """Recursively patch elif/else branches in an If's orelse chain."""
+def _patch_orelse_direct(node, block_edits, comment_text_map=None):
+    """Recursively patch elif/else branches by direct body walk."""
     orelse = node.orelse
     if orelse is None:
         return node
 
     if isinstance(orelse, cst.If):
-        # elif - patch its body if we have edits
         condition = _cst_node_to_code(orelse.test)
         key = f"elif {condition}"
         new_orelse = orelse
         if key in block_edits:
-            new_body = orelse.body.visit(_BodyAssignPatcher(block_edits[key]))
-            new_orelse = orelse.with_changes(body=new_body)
+            new_body = _patch_body_direct(orelse.body, block_edits[key], comment_text_map)
+            if new_body is not orelse.body:
+                new_orelse = orelse.with_changes(body=new_body)
         # Recurse into this elif's own orelse
-        new_orelse = _patch_orelse_chain(new_orelse, block_edits)
-        return node.with_changes(orelse=new_orelse)
+        recursed = _patch_orelse_direct(new_orelse, block_edits, comment_text_map)
+        if recursed is not new_orelse:
+            new_orelse = recursed
+        if new_orelse is not orelse:
+            return node.with_changes(orelse=new_orelse)
 
     elif isinstance(orelse, cst.Else):
         if "else" in block_edits:
-            new_body = orelse.body.visit(_BodyAssignPatcher(block_edits["else"]))
-            new_orelse = orelse.with_changes(body=new_body)
-            return node.with_changes(orelse=new_orelse)
+            new_body = _patch_body_direct(orelse.body, block_edits["else"], comment_text_map)
+            if new_body is not orelse.body:
+                new_orelse = orelse.with_changes(body=new_body)
+                return node.with_changes(orelse=new_orelse)
 
     return node
 
@@ -1485,6 +1556,9 @@ def _call_func_name(call_node):
 
 _UNREADABLE = object()
 
+# Pre-built literals for Name nodes - avoids dict allocation on every call
+_NAME_LITERALS = {"True": True, "False": False, "None": None}
+
 # Map CST node types to their natural Python target types.
 # convert() is called through the registry, so any registered
 # converter pair works - even chained ones.
@@ -1522,9 +1596,8 @@ def _cst_to_python(node):
 
     # Name: True, False, None, or a callable reference
     if isinstance(node, cst.Name):
-        _LITERALS = {"True": True, "False": False, "None": None}
-        if node.value in _LITERALS:
-            return _LITERALS[node.value]
+        if node.value in _NAME_LITERALS:
+            return _NAME_LITERALS[node.value]
         # Try to resolve as a callable (function, class, builtin)
         resolved = _resolve_callable_by_name(node.value)
         if resolved is not _UNREADABLE:
@@ -1766,6 +1839,9 @@ class _ModulePatcher(cst.CSTTransformer):
     def __init__(self, edits: dict):
         super().__init__()
         self.edits = {k: v for k, v in edits.items() if not isinstance(k, Comment)}
+        # Cache converter lookups to avoid BFS on every leave_* call
+        self._classdef_fn = Melty._converters.get((dict, cst.ClassDef))
+        self._funcdef_fn = Melty._converters.get((dict, cst.FunctionDef))
 
     def leave_Assign(self, original_node, updated_node):
         if len(updated_node.targets) != 1:
@@ -1808,10 +1884,13 @@ class _ModulePatcher(cst.CSTTransformer):
             return updated_node
 
         edit_dict["__cst__"] = updated_node
-        try:
-            return convert(edit_dict, cst.ClassDef, registry=Melty)
-        except (TypeError, ValueError):
-            return updated_node
+        fn = self._classdef_fn
+        if fn is not None:
+            try:
+                return fn(edit_dict)
+            except (TypeError, ValueError):
+                pass
+        return updated_node
 
     def leave_FunctionDef(self, original_node, updated_node):
         func_name = updated_node.name.value
@@ -1823,10 +1902,13 @@ class _ModulePatcher(cst.CSTTransformer):
             return updated_node
 
         edit_dict["__cst__"] = updated_node
-        try:
-            return convert(edit_dict, cst.FunctionDef, registry=Melty)
-        except (TypeError, ValueError):
-            return updated_node
+        fn = self._funcdef_fn
+        if fn is not None:
+            try:
+                return fn(edit_dict)
+            except (TypeError, ValueError):
+                pass
+        return updated_node
 
 
 def _python_to_cst_expr(py_value, old_node=None):
@@ -1865,15 +1947,19 @@ def _python_to_cst_expr(py_value, old_node=None):
     if isinstance(py_value, dict) and "__cst__" in py_value:
         cst_node = py_value["__cst__"]
         if isinstance(cst_node, cst.Call):
-            try:
-                return convert(py_value, cst.Call, registry=Melty)
-            except (TypeError, ValueError):
-                pass
+            fn = Melty._converters.get((dict, cst.Call))
+            if fn is not None:
+                try:
+                    return fn(py_value)
+                except (TypeError, ValueError):
+                    pass
         elif isinstance(cst_node, cst.Dict):
-            try:
-                return convert(py_value, cst.Dict, registry=Melty)
-            except (TypeError, ValueError):
-                pass
+            fn = Melty._converters.get((dict, cst.Dict))
+            if fn is not None:
+                try:
+                    return fn(py_value)
+                except (TypeError, ValueError):
+                    pass
 
     # Enum members → Attribute(Name("ClassName"), Name("MEMBER"))
     # Must come before bool/int checks since IntEnum IS-A int
@@ -1943,28 +2029,34 @@ def _python_to_cst_expr(py_value, old_node=None):
 
     if isinstance(py_value, dict):
         # Plain dict without __cst__ - build from scratch
-        try:
-            return convert(py_value, cst.Dict, registry=Melty)
-        except (TypeError, ValueError):
-            pass
+        fn = Melty._converters.get((dict, cst.Dict))
+        if fn is not None:
+            try:
+                return fn(py_value)
+            except (TypeError, ValueError):
+                pass
         return None
 
     if isinstance(py_value, list):
         if isinstance(old_node, cst.List):
             return _patch_sequence(py_value, old_node, cst.List)
-        try:
-            return convert(py_value, cst.List, registry=Melty)
-        except (TypeError, ValueError):
-            pass
+        fn = Melty._converters.get((list, cst.List))
+        if fn is not None:
+            try:
+                return fn(py_value)
+            except (TypeError, ValueError):
+                pass
         return None
 
     if isinstance(py_value, tuple):
         if isinstance(old_node, cst.Tuple):
             return _patch_sequence(py_value, old_node, cst.Tuple)
-        try:
-            return convert(py_value, cst.Tuple, registry=Melty)
-        except (TypeError, ValueError):
-            pass
+        fn = Melty._converters.get((tuple, cst.Tuple))
+        if fn is not None:
+            try:
+                return fn(py_value)
+            except (TypeError, ValueError):
+                pass
         return None
 
     return None

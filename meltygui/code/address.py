@@ -99,15 +99,18 @@ def to_fileref(value: Any) -> FileRef:
 class _WatchState:
     """Everything a single view needs for one converter on one file."""
     __slots__ = ("ref", "mtime", "size", "cached_result",
-                 "original_data", "original_value")
+                 "original_output_load", "original_input_load",
+                 "original_output_save", "original_input_save")
 
     def __init__(self, ref: FileRef):
         self.ref = ref
         self.mtime: float = 0.0
         self.size: int = 0
         self.cached_result: Any = None
-        self.original_data: Any = None
-        self.original_value: Any = None
+        self.original_output_load: Any = None
+        self.original_input_load: Any = None
+        self.original_output_save: Any = None
+        self.original_input_save: Any = None
 
     def stat_file(self) -> tuple[float, int]:
         s = self.ref.path.stat()
@@ -152,9 +155,9 @@ def get_original_value(cache_id: str | None = None,
                     return watch.original_value
         if ref is not None:
             for watch in cache.values():
-                if watch.ref == ref and watch.original_value is not None:
-                    if of_type is None or isinstance(watch.original_value, of_type):
-                        return watch.original_value
+                if watch.ref == ref and watch.original_input_load is not None:
+                    if of_type is None or isinstance(watch.original_input_load, of_type):
+                        return watch.original_input_load
     return None
 
 
@@ -224,11 +227,12 @@ def make_load_wrapper(fn: Callable, load_data: Callable,
         if watch is None:
             ref = to_fileref(value)
             watch = _WatchState(ref)
-            watch.original_value = value
             local_cache[cache_id] = watch
 
         if watch is None and not apply:
             return Pending(value)
+
+        watch.original_input_load = value
 
         # ── Check this view's own mtime/size ────────────────────────
 
@@ -245,7 +249,7 @@ def make_load_wrapper(fn: Callable, load_data: Callable,
         data = load_data(watch.ref)
         result = _call_fn(fn, (value, data, watch.ref), apply, fn_takes_apply=fn_takes_apply)
         watch.cached_result = result
-        watch.original_data = data
+        watch.original_output_load = data
         watch.mark_current()
         return result
 
@@ -274,59 +278,59 @@ def make_save_wrapper(fn: Callable, save_data: Callable,
     fn_takes_apply = _accepts_apply(fn)
 
     @functools.wraps(fn)
-    def wrapper(value, apply=False, cache_id=None):
+    def wrapper(converter_input, apply=False, cache_id=None):
 
         # ── No cache_id → stateless pass-through ────────────────────
 
         if cache_id is None:
-            return _call_fn(fn, (value,), apply, fn_takes_apply=fn_takes_apply)
+            return _call_fn(fn, (converter_input,), apply, fn_takes_apply=fn_takes_apply)
 
         # ── Find this view's paired load watch ──────────────────────
-        watch = load_cache.get(cache_id) if load_cache else None
+        watch: _WatchState = load_cache.get(cache_id) if load_cache else None
         if watch is None:
-            return value  # never loaded, nothing to save
+            return converter_input  # never loaded, nothing to save
 
         # ── Extract data from converter function ─────────────────────
 
-        data = _call_fn(fn, (value,), apply, fn_takes_apply=fn_takes_apply)
-
+        converter_output = _call_fn(fn, (converter_input,), apply, fn_takes_apply=fn_takes_apply)
 
         # ── Dirty detection ─────────────────────────────────────────
 
-        is_dirty = (watch.original_data is not None
-                    and data != watch.original_data)
+        is_dirty = (watch.original_output_load is not None
+                    and converter_output != watch.original_output_load)
 
         if not is_dirty:
-            return watch.original_value
+
+            return watch.original_input_load
 
         if not apply:
             status = "dirty"
             try:
-                lines1 = str(watch.original_data).splitlines(keepends=True)
-                lines2 = str(data).splitlines(keepends=True)
+                lines1 = str(watch.original_output_load).splitlines(keepends=True)
+                lines2 = str(converter_output).splitlines(keepends=True)
 
                 # Unified diff (like `git diff`)
                 diff = difflib.unified_diff(lines1, lines2, fromfile="original.py", tofile="modified.py")
-                print("".join(diff))
+                # print("".join(diff))
                 status = diff
             except Exception as e:
                 print(f"Diff failed: {e}")
 
-            return Pending(watch.original_value, status=status)
+            return Pending(watch.original_input_load, status=status)
 
         # ── Save ────────────────────────────────────────────────────
 
         ref = watch.ref
-        updated_ref = save_data(value, ref, data)
+        updated_ref = save_data(converter_input, ref, converter_output, watch)
         if isinstance(updated_ref, FileRef):
             ref = updated_ref
 
-        watch.original_data = data
+        watch.original_output_load = converter_output
         watch.ref = ref
         watch.mark_current()
         _update_ref_for_id(cache_id, ref)
 
-        return watch.original_value
+        return watch.original_input_load
 
     wrapper._watched_to_type = to_type
     wrapper._accepts_apply = True

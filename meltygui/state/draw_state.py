@@ -59,7 +59,7 @@ class Anchor(Enum):
     BOTTOM_RIGHT = 'bottom_right'
 
 
-class Results(Enum):
+class ApplyMode(Enum):
     INSTANT = 'instant'
     ON_RELEASE = 'on_release'
     CONFIRM = 'confirm'

@@ -358,7 +358,7 @@ def load_file_bytes(ref: FileRef) -> bytes:
     return ref.path.read_bytes()
 
 
-def save_file_bytes(value, ref: FileRef, data: bytes) -> FileRef | None:
+def save_file_bytes(value, ref: FileRef, data: bytes, watch) -> FileRef | None:
     ref.path.parent.mkdir(parents=True, exist_ok=True)
     if isinstance(data, str):
         ref.path.write_text(data, encoding="utf-8")
@@ -382,7 +382,7 @@ def load_span_text(ref: FileRef) -> str:
     return newline.join(lines[ref.start:ref.end])
 
 
-def save_span_text(ref: FileRef, data: str) -> FileRef:
+def save_span_text(value, ref: FileRef, data: str, watch) -> FileRef:
     print(f"Saving span {ref} with new data (length {len(data)})")
     full_data = ref.path.read_bytes()
     newline = _detect_newline(full_data)
@@ -416,7 +416,7 @@ def path_to_dict(value, data: bytes, ref: FileRef) -> dict:
 
 
 @converter(registry=Melty, to_type=Path, save_data=save_file_bytes,
-           inverse_of=path_to_dict,)
+           inverse_of=path_to_dict, stateful=True)
 def dict_to_path(value: dict) -> bytes:
     data = value.get("data")
     if data is None:
@@ -437,7 +437,7 @@ def fileref_to_dict(value, data: str, ref: FileRef) -> dict:
 
 
 @converter(registry=Melty, to_type=FileRef, save_data=save_span_text,
-           inverse_of=fileref_to_dict,)
+           inverse_of=fileref_to_dict, stateful=True)
 def dict_to_fileref(value: dict) -> str:
     data = value.get("value")
     if data is None:
@@ -452,25 +452,6 @@ def dict_to_fileref(value: dict) -> str:
 @converter(registry=Melty, from_type=FileRef, load_data=load_span_text, stateful=True,)
 def fileref_to_cst_module(value, data: str, ref: FileRef) -> cst.Module:
     return cst.parse_module(data)
-
-
-@converter(registry=Melty, to_type=FileRef, save_data=save_span_text,
-           inverse_of=fileref_to_cst_module)
-def cst_module_to_fileref(value: cst.Module) -> str:
-    return value.code
-
-
-# ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║  FunctionType ↔ FileRef                                                      ║
-# ╚══════════════════════════════════════════════════════════════════════════════╝
-
-def recompile_function(original_value, ref: FileRef, function) -> FileRef:
-    """Recompile the function in place.  No file write."""
-    source = inspect.getsource(function)
-
-    if original_value is not None:
-        _recompile(function, source, str(ref.path))
-    return ref
 
 
 
@@ -503,6 +484,7 @@ from src.lsd.gl_gui.view.core_conversion.fileref import (
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
 def load_file_bytes(ref: FileRef) -> bytes:
+    print(f"Loading bytes from {ref.path} for cache_id")
     return ref.path.read_bytes()
 
 
@@ -573,7 +555,7 @@ def path_to_dict(value, data: bytes, ref: FileRef) -> dict:
 
 
 @converter(registry=Melty, to_type=Path, save_data=save_file_bytes,
-           inverse_of=path_to_dict)
+           inverse_of=path_to_dict, stateful=True)
 def dict_to_path(value: dict) -> bytes:
     data = value.get("data")
     if data is None:
@@ -581,11 +563,7 @@ def dict_to_path(value: dict) -> bytes:
     return data.encode("utf-8") if isinstance(data, str) else data
 
 
-# ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║  FileRef ↔ dict (line range as plain text)                                   ║
-# ╚══════════════════════════════════════════════════════════════════════════════╝
-
-@converter(registry=Melty, from_type=FileRef, load_data=load_span_text)
+@converter(registry=Melty, from_type=FileRef, load_data=load_span_text, stateful=True,)
 def fileref_to_dict(value, data: str, ref: FileRef) -> dict:
     return {
         "value": data,
@@ -602,77 +580,45 @@ def dict_to_fileref(value: dict) -> str:
     return data
 
 
-# ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║  FileRef ↔ cst.Module (line range parsed into CST)                           ║
-# ╚══════════════════════════════════════════════════════════════════════════════╝
-
 @converter(registry=Melty, from_type=FileRef, load_data=load_span_text, stateful=True, )
 def fileref_to_cst_module(value, data: str, ref: FileRef) -> cst.Module:
     return cst.parse_module(data)
 
-
 @converter(registry=Melty, to_type=FileRef, save_data=save_span_text,
-           inverse_of=fileref_to_cst_module)
+           inverse_of=fileref_to_cst_module, statful=True)
 def cst_module_to_fileref(value: cst.Module) -> str:
     return value.code
 
 
-# ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║  FileRef ↔ cst.Module (line range parsed into CST)                           ║
-# ╚══════════════════════════════════════════════════════════════════════════════╝
-
-#
-# @converter(registry=Melty)
-# def value_dict_to_cst_module(data: ValueDict) -> cst.Module:
-#     return cst.parse_module(data.others)
-#
-# @converter(registry=Melty,
-#           inverse_of=value_dict_to_cst_module)
-# def cst_module_to_value_dict(value: cst.Module) -> ValueDict:
-#     return ValueDict(cached_value=value, others=value.code)
-
-
-
 @converter(registry=Melty, from_type=types.FunctionType, load_data=load_span_text, stateful=True, )
 def function_to_cst(value, data: str, ref: FileRef) -> cst.Module:
+    print(f"Parsing function from source with length {len(data)}")
     return cst.parse_module(data)
 
+def recompile_function(value, ref: FileRef, data: str, watch) -> FileRef:
+    # source = inspect.getsource(function)
+    if value is not None:
+        function = watch.original_input_load
+        source = data
+        _recompile(function, source, str(ref.path))
+    # return ref
+    full_data = ref.path.read_bytes()
+    newline = _detect_newline(full_data)
+    try:
+        text = full_data.decode("utf-8")
+    except UnicodeDecodeError:
+        text = full_data.decode("latin-1")
+    lines = text.split(newline)
+    new_lines = data.split(newline)
+    lines[ref.start:ref.end] = new_lines
+    ref.path.write_text(newline.join(lines), encoding="utf-8")
+    return FileRef(ref.path, ref.start, ref.start + len(new_lines))
 
-@converter(registry=Melty, to_type=types.FunctionType, save_data=save_span_function,
+
+@converter(registry=Melty, to_type=types.FunctionType, save_data=recompile_function,
            inverse_of=function_to_cst, stateful=True)
 def cst_module_to_function(value: cst.Module) -> str:
-
     return value.code
-
-#
-# @converter(registry=Melty, from_type=types.FunctionType, load_data=load_span_text, stateful=True, )
-# def function_to_fileref(value, data: str, ref: FileRef) -> FileRef:
-#     return ref
-#
-#
-# @converter(registry=Melty, to_type=types.FunctionType,
-#            save_data=recompile_function,
-#            inverse_of=function_to_fileref, )
-# def fileref_to_function(value: FileRef) -> types.FunctionType:
-#     return ORIGINAL
-
-
-# @converter(registry=Melty, from_type=types.FunctionType, load_data=load_span_text)
-# def function_to_value_dict(value:types.FunctionType, data: str, ref) -> ValueDict:
-#     return ValueDict(cached_value=value, others=data)
-#
-#
-# @converter(registry=Melty, from_type=ValueDict, to_type=types.FunctionType,
-#            save_data=recompile_function,
-#            inverse_of=function_to_value_dict)
-# def value_dict_to_function(value: ValueDict) -> types.FunctionType:
-#     func = value.cached_value
-#     source = value.others
-#     return func
-
-# ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║  Recompilation                                                               ║
-# ╚══════════════════════════════════════════════════════════════════════════════╝
 
 def _recompile(func: types.FunctionType, source: str,
                filename: str) -> None:

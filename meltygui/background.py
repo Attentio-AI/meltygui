@@ -1,9 +1,4 @@
 import hashlib
-import io
-import sys
-import threading
-from concurrent.futures import ThreadPoolExecutor
-
 import threading
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
@@ -24,6 +19,36 @@ class Background:
     _pool = ThreadPoolExecutor(max_workers=16)
     _debounce_timers = {}   # debounce_key -> Timer
     _debounce_latest = {}   # debounce_key -> dict of latest call params
+    _hash_times = {}        # type_name -> [total_time_sec, count]
+    _dict_key_times = {}    # dict key name -> [total_time_sec, count]
+    _task_times = {}        # func_name -> [total_time_sec, count]
+
+    @classmethod
+    def _record_dict_key_time(cls, key: str, elapsed: float):
+        # No lock here - called from simple_hash which may recurse deeply;
+        # some inaccuracy from races is acceptable for profiling.
+        entry = cls._dict_key_times.get(key)
+        if entry is None:
+            cls._dict_key_times[key] = [elapsed, 1]
+        else:
+            entry[0] += elapsed
+            entry[1] += 1
+
+    @classmethod
+    def _timed_hash(cls, value, user_id):
+        import time
+        type_name = type(value).__name__
+        t0 = time.perf_counter()
+        h = cls.simple_hash(value=value) + user_id
+        elapsed = time.perf_counter() - t0
+
+        with cls._lock:
+            if type_name not in cls._hash_times:
+                cls._hash_times[type_name] = [0.0, 0]
+            cls._hash_times[type_name][0] += elapsed
+            cls._hash_times[type_name][1] += 1
+
+        return h
 
     @classmethod
     def shutdown(cls):
@@ -36,21 +61,41 @@ class Background:
             cls._debounce_timers.clear()
             cls._debounce_latest.clear()
 
+        print("\n--- Hash timing averages (by type) ---")
+        for type_name, (total, count) in sorted(cls._hash_times.items()):
+            avg_ms = (total / count) * 1000
+            print(f"  {type_name:<30} avg={avg_ms:.3f}ms  n={count}")
+        print("--------------------------------------\n")
+
+        print("--- Hash timing averages (dict keys, sorted by avg) ---")
+        sorted_keys = sorted(cls._dict_key_times.items(), key=lambda x: x[1][0] / x[1][1], reverse=True)
+        for key_name, (total, count) in sorted_keys:
+            avg_ms = (total / count) * 1000
+            print(f"  {key_name:<40} avg={avg_ms:.3f}ms  n={count}")
+        print("-------------------------------------------------------\n")
+
+        print("--- Task timing averages (by function, sorted by avg) ---")
+        sorted_tasks = sorted(cls._task_times.items(), key=lambda x: x[1][0] / x[1][1], reverse=True)
+        for func_name, (total, count) in sorted_tasks:
+            avg_ms = (total / count) * 1000
+            print(f"  {func_name:<50} avg={avg_ms:.3f}ms  n={count}")
+        print("----------------------------------------------------------\n")
+
         print("Shutting down background thread pool...")
         cls._pool.shutdown(wait=True)
         print("Background thread pool shut down successfully.")
 
-
     @classmethod
-    def run(cls, func, user_id, no_cache=False, invalidate_id=None, on_frame=None, frames=None, debounce=6, draw_state=None, *args, **kwargs):
-        h = cls.simple_hash(value=(kwargs.get("value", None))) + user_id
+    def run(cls, func, user_id, no_cache=False, invalidate_id=None, on_frame=None, frames=None, debounce=6,
+            draw_state=None, *args, **kwargs):
+        h = cls._timed_hash(kwargs.get("value", None), user_id)
 
         from src.lsd.gl_gui.melty import Melty
         if Melty.frame_count < 2:
             debounce = None
 
-        if kwargs.get("apply", False):
-            no_cache = True
+        # if kwargs.get("apply", False):
+        #     no_cache = True
 
         # --- debounce path ---
         if debounce is not None:
@@ -104,7 +149,7 @@ class Background:
                             *latest["args"], **latest["kwargs"],
                         )
                         if Toggles.invalidate_stack_trace:
-                            print_stack_trace(frames=frames,)
+                            print_stack_trace(frames=frames, )
 
                         # if latest["invalidate_id"] is not None:
                         #     from src.lsd.gl_gui.melty import Melty
@@ -118,7 +163,7 @@ class Background:
 
             return Pending(status="debounce waiting", state=PendingState.BACKGROUND)
 
-        # --- normal path (unchanged below) ---
+        # --- normal path ---
 
         with cls._lock:
             cache = cls._user_cache.get(user_id)
@@ -140,7 +185,27 @@ class Background:
 
         def _task():
             try:
+                import time
+                func_name = getattr(func, "__qualname__", None) or getattr(func, "__name__", repr(func))
+                task_path = kwargs.get("path", None)
+                if task_path:
+                    def _type_name(t):
+                        if isinstance(t, type):
+                            return t.__qualname__
+                        fn = getattr(t, "__qualname__", None) or getattr(t, "__name__", None)
+                        return fn if fn else type(t).__qualname__
+                    sig = f"{func_name}({' → '.join(_type_name(t) for t in task_path)})"
+                else:
+                    sig = func_name
+                _t0 = time.perf_counter()
                 result = func(*args, **kwargs)
+                elapsed = time.perf_counter() - _t0
+                entry = cls._task_times.get(sig)
+                if entry is None:
+                    cls._task_times[sig] = [elapsed, 1]
+                else:
+                    entry[0] += elapsed
+                    entry[1] += 1
                 if on_frame is not None:
                     result = (result, on_frame)
                 with cls._lock:
@@ -152,14 +217,14 @@ class Background:
                             cls._user_cache[uid][h] = result
                             cls._user_cache[uid].move_to_end(h)
 
-
                             while len(cls._user_cache[uid]) > cls._cache_size:
                                 cls._user_cache[uid].popitem(last=False)
                 if invalidate_id is not None:
                     from src.lsd.gl_gui.melty import Melty
                     from src.lsd.gl_gui.utils.glfw_utils import request_render
-                    if on_frame is None or abs(Melty.frame_count - on_frame) >= 1:
-                        Melty.cache.invalidate_up(invalidate_id)
+                    if on_frame is None or abs(Melty.frame_count - on_frame) >= 2:
+                        print("Invalidate from background")
+                        # Melty.cache.invalidate_up(invalidate_id)
                         request_render()
 
             except Exception as e:
@@ -171,7 +236,6 @@ class Background:
                                       group=g, watch=["draw_state.name", "input_value", "convert_path", "fn", "clean_args.input_value"])
                     print_stack_trace(exception=e, section="Background Thread",
                                       group=g, watch=["value", "path", "watch", "watch.original_data", "data", "result", "result", "fn"])
-
 
         cls._pool.submit(_task)
         return Pending(status="background thread", state=PendingState.BACKGROUND)
@@ -191,10 +255,6 @@ class Background:
         Returns:
             A 16-bit float value representing the instance's content.
         """
-        if exclude is None:
-            exclude = {}
-        import hashlib
-
         if exclude is None:
             exclude = set()
 
@@ -232,15 +292,12 @@ class Background:
         # Add all non-excluded attributes to the string representation
         if hasattr(cls, '__dict__'):
             for key, value in cls.__dict__.items():
-                # Exclude private attributes (starting with underscore)
                 key = str(key)
-
                 if not include_hidden:
                     if key.startswith('_'):
                         continue
                 if key in excluded_attrs or value is None:
                     continue
-                # Get string representation of the value
                 value_str = cls._hash_value_to_str(value, exclude, memo, depth, do_print,
                                                               include_hidden=include_hidden)
                 content_str += f"{value_str}"
@@ -263,8 +320,7 @@ class Background:
         memo[id(cls)] = float_value
 
         if do_print:
-            print(
-                f"Depth: {depth}, Class: {cls.__class__.__name__}, Hash: {hash_result[:8]}..., Float16: {float_value}")
+            print(f"Depth: {depth}, Class: {cls.__class__.__name__}, Hash: {hash_result[:8]}..., Float16: {float_value}")
 
         if hasattr(cls, 'hash'):
             cls.hash = float_value
@@ -295,7 +351,6 @@ class Background:
         #     # Take the first 4 hex chars (16 bits) and convert to integer, then normalize to float16 range
         #     hash_int = int(hash_result[:4], 16)
         #     return str(hash_int)
-
 
         if exclude is None:
             exclude = {}
@@ -408,8 +463,16 @@ class Background:
             memo[id(value)] = items_str
             return items_str
 
+        # Fast path for dict subclasses that know how to hash themselves cheaply.
+        # Implement __bg_hash__(self) -> str on any dict subclass to skip this recursion.
+        if isinstance(value, dict) and hasattr(value, "__bg_hash__"):
+            result = value.__bg_hash__()
+            memo[id(value)] = result
+            return result
+
         # Handle dictionaries
         if isinstance(value, dict):
+            import time
             memo[id(value)] = "dict:processing"  # Add immediately to avoid recursion
             items_str = "{"
             for k, v in value.items():
@@ -418,11 +481,11 @@ class Background:
                     continue
                 if k in exclude:
                     continue
-                # Convert the key to string representation
-                # Get value string representation
+                _t0 = time.perf_counter()
                 val_str = Background.simple_hash(value=v, exclude=exclude, memo=memo, depth=depth,
                                                             do_print=do_print,
                                                             include_hidden=include_hidden)
+                Background._record_dict_key_time(k, time.perf_counter() - _t0)
                 items_str += f"{val_str}"
             items_str += "}"
             memo[id(value)] = items_str
@@ -447,4 +510,3 @@ class Background:
         other_repr = f"{str(type(value).__name__)}"  # Just use ID to prevent recursion
         memo[id(value)] = other_repr
         return other_repr
-
