@@ -493,7 +493,7 @@ def _detect_newline(data: bytes) -> str:
 
 
 
-def load_span_text(ref: FileRef) -> str:
+def load_text(ref: FileRef) -> str:
     data = ref.path.read_bytes()
     newline = _detect_newline(data)
     try:
@@ -563,7 +563,7 @@ def dict_to_path(value: dict) -> bytes:
     return data.encode("utf-8") if isinstance(data, str) else data
 
 
-@converter(registry=Melty, from_type=FileRef, load_data=load_span_text, stateful=True,)
+@converter(registry=Melty, from_type=FileRef, load_data=load_text, stateful=True, )
 def fileref_to_dict(value, data: str, ref: FileRef) -> dict:
     return {
         "value": data,
@@ -580,7 +580,7 @@ def dict_to_fileref(value: dict) -> str:
     return data
 
 
-@converter(registry=Melty, from_type=FileRef, load_data=load_span_text, stateful=True, )
+@converter(registry=Melty, from_type=FileRef, load_data=load_text, stateful=True, )
 def fileref_to_cst_module(value, data: str, ref: FileRef) -> cst.Module:
     return cst.parse_module(data)
 
@@ -590,12 +590,12 @@ def cst_module_to_fileref(value: cst.Module) -> str:
     return value.code
 
 
-@converter(registry=Melty, from_type=types.FunctionType, load_data=load_span_text, stateful=True, )
+@converter(registry=Melty, from_type=types.FunctionType, load_data=load_text, stateful=True, )
 def function_to_cst(value, data: str, ref: FileRef) -> cst.Module:
     print(f"Parsing function from source with length {len(data)}")
     return cst.parse_module(data)
 
-def recompile_function(value, ref: FileRef, data: str, watch) -> FileRef:
+def recompile(value, ref: FileRef, data: str, watch) -> FileRef:
     # source = inspect.getsource(function)
     if value is not None:
         function = watch.original_input_load
@@ -615,7 +615,7 @@ def recompile_function(value, ref: FileRef, data: str, watch) -> FileRef:
     return FileRef(ref.path, ref.start, ref.start + len(new_lines))
 
 
-@converter(registry=Melty, to_type=types.FunctionType, save_data=recompile_function,
+@converter(registry=Melty, to_type=types.FunctionType, save_data=recompile,
            inverse_of=function_to_cst, stateful=True)
 def cst_module_to_function(value: cst.Module) -> str:
     return value.code
@@ -627,8 +627,6 @@ def _recompile(func: types.FunctionType, source: str,
     namespace = dict(unwrapped.__globals__)
 
     current_time = time.time()
-    print(f"Recompiling function from source:\n{filename}{current_time}")
-
     freevars = unwrapped.__code__.co_freevars
     has_closure = bool(freevars and unwrapped.__closure__)
 

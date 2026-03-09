@@ -26,7 +26,7 @@ from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
 # ║  FileRef                                                                     ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 ORIGINAL = object()  # sentinel for "no original value found"
-
+APPLY_ALL = object()  # sentinel for "apply to all views, not just the one that originated this Pending"
 
 class FileRef:
     __slots__ = ("path", "start", "end")
@@ -213,11 +213,19 @@ def make_load_wrapper(fn: Callable, load_data: Callable,
     def wrapper(value, apply=False, cache_id=None):
 
         # ── No cache_id → stateless, always load ──────────────────
+        apply_load = apply and  apply.__name__ == load_data.__name__ or apply is APPLY_ALL
+
+        if apply:
+            if not apply_load:
+                print(
+                    f"Converter {fn.__name__} got apply={apply} but will not apply because it did not originate from {value.__name__}")
+            else:
+                print(f"Applying converter {fn.__name__} with apply={apply}")
 
         if cache_id is None:
             ref = to_fileref(value)
-            if not apply:
-                return Pending(None)
+            if not apply_load:
+                return Pending(originated=load_data, wrapped=None)
             data = load_data(ref)
             return _call_fn(fn, (data, ref), apply, fn_takes_apply=fn_takes_apply)
 
@@ -229,8 +237,8 @@ def make_load_wrapper(fn: Callable, load_data: Callable,
             watch = _WatchState(ref)
             local_cache[cache_id] = watch
 
-        if watch is None and not apply:
-            return Pending(value)
+        if watch is None and not apply_load:
+            return Pending(originated=load_data, wrapped=value)
 
         watch.original_input_load = value
 
@@ -241,8 +249,8 @@ def make_load_wrapper(fn: Callable, load_data: Callable,
         if not stale and watch.cached_result is not None:
             return watch.cached_result
 
-        if not apply:
-            return Pending(watch.cached_result)
+        if not apply_load:
+            return Pending(originated=load_data, wrapped=watch.cached_result)
 
         # ── Reload (uses watch.ref, not re-inspected) ───────────────
 
@@ -280,6 +288,14 @@ def make_save_wrapper(fn: Callable, save_data: Callable,
     @functools.wraps(fn)
     def wrapper(converter_input, apply=False, cache_id=None):
 
+        apply_save = apply and apply.__name__ == save_data.__name__ or apply is APPLY_ALL
+
+        if apply:
+            if not apply_save:
+                print(f"Converter {fn.__name__} got apply={apply} but will not apply because it did not originate from {save_data.__name__}")
+            else:
+                print(f"Applying converter {fn.__name__} with apply={apply}")
+
         # ── No cache_id → stateless pass-through ────────────────────
 
         if cache_id is None:
@@ -303,7 +319,7 @@ def make_save_wrapper(fn: Callable, save_data: Callable,
 
             return watch.original_input_load
 
-        if not apply:
+        if not apply_save:
             status = "dirty"
             try:
                 lines1 = str(watch.original_output_load).splitlines(keepends=True)
@@ -316,7 +332,7 @@ def make_save_wrapper(fn: Callable, save_data: Callable,
             except Exception as e:
                 print(f"Diff failed: {e}")
 
-            return Pending(watch.original_input_load, status=status)
+            return Pending(originated=save_data, wrapped=watch.original_input_load, status=status)
 
         # ── Save ────────────────────────────────────────────────────
 

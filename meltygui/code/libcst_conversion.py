@@ -303,15 +303,15 @@ def type_to_str(value: type) -> str:
 
 @converter(registry=Melty)
 def str_to_cst_module(value: str) -> cst.Module:
-    try:
-        return cst.parse_module(value)
-    except cst.ParserSyntaxError as e:
-        return Pending(wrapped=ParseError(
-            source=value,
-            error=e.message,
-            line=e.raw_line,
-            column=e.raw_column,
-        ))
+    # try:
+    return cst.parse_module(value)
+    # except cst.ParserSyntaxError as e:
+    #     return Pending(WrappedPythonParseError(
+    #         source=value,
+    #         error=e.message,
+    #         line=e.raw_line,
+    #         column=e.raw_column,
+    #     ))
 
 
 @converter(registry=Melty)

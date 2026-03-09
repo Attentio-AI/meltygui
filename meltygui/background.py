@@ -16,7 +16,7 @@ class Background:
     _active = set()
     _user_tasks = {}
     _lock = threading.Lock()
-    _pool = ThreadPoolExecutor(max_workers=16)
+    _pool = ThreadPoolExecutor(max_workers=32)
     _debounce_timers = {}   # debounce_key -> Timer
     _debounce_latest = {}   # debounce_key -> dict of latest call params
     _hash_times = {}        # type_name -> [total_time_sec, count]
@@ -42,24 +42,24 @@ class Background:
         h = cls.simple_hash(value=value) + user_id
         elapsed = time.perf_counter() - t0
 
-        with cls._lock:
-            if type_name not in cls._hash_times:
-                cls._hash_times[type_name] = [0.0, 0]
-            cls._hash_times[type_name][0] += elapsed
-            cls._hash_times[type_name][1] += 1
+        # with cls._lock:
+        if type_name not in cls._hash_times:
+            cls._hash_times[type_name] = [0.0, 0]
+        cls._hash_times[type_name][0] += elapsed
+        cls._hash_times[type_name][1] += 1
 
         return h
 
     @classmethod
     def shutdown(cls):
-        with cls._lock:
-            cls._active.clear()
-            cls._user_tasks.clear()
-            cls._user_cache.clear()
-            for timer in cls._debounce_timers.values():
-                timer.cancel()
-            cls._debounce_timers.clear()
-            cls._debounce_latest.clear()
+        # with cls._lock:
+        cls._active.clear()
+        cls._user_tasks.clear()
+        cls._user_cache.clear()
+        for timer in cls._debounce_timers.values():
+            timer.cancel()
+        cls._debounce_timers.clear()
+        cls._debounce_latest.clear()
 
         print("\n--- Hash timing averages (by type) ---")
         for type_name, (total, count) in sorted(cls._hash_times.items()):
@@ -91,7 +91,7 @@ class Background:
         h = cls._timed_hash(kwargs.get("value", None), user_id)
 
         from src.lsd.gl_gui.melty import Melty
-        if Melty.frame_count < 2:
+        if Melty.frame_count < 10:
             debounce = None
 
         # if kwargs.get("apply", False):
@@ -101,71 +101,7 @@ class Background:
         if debounce is not None:
             debounce_key = user_id
 
-            with cls._lock:
-                # Cache hit - return immediately, no wait
-                cache = cls._user_cache.get(user_id)
-                if cache and h in cache:
-                    cache.move_to_end(h)
-                    return_val = cache[h]
-                    if no_cache:
-                        cls._user_cache.pop(user_id, None)
-                    return return_val
-
-                # Task is already running, just wait for it
-                if h in cls._active:
-                    return Pending(status="background thread active", state=PendingState.BACKGROUND)
-
-                # Same hash already pending - don't reset the timer, just keep waiting
-                latest = cls._debounce_latest.get(debounce_key)
-                if latest is not None and latest.get("hash") == h:
-                    return Pending(status="debounce waiting", state=PendingState.BACKGROUND)
-
-                # New content - cancel existing timer and reschedule
-                prev = cls._debounce_timers.pop(debounce_key, None)
-                if prev is not None:
-                    prev.cancel()
-
-                cls._debounce_latest[debounce_key] = dict(
-                    hash=h,
-                    func=func, user_id=user_id, no_cache=no_cache,
-                    invalidate_id=invalidate_id, on_frame=on_frame,
-                    args=args, kwargs=kwargs,
-                )
-
-                if Toggles.debug_threads:
-                    frames = get_live_frames()
-
-                def _fire():
-                    with cls._lock:
-                        cls._debounce_timers.pop(debounce_key, None)
-                        latest = cls._debounce_latest.pop(debounce_key, None)
-                    if latest is not None:
-                        cls.run(
-                            latest["func"], latest["user_id"],
-                            no_cache=latest["no_cache"],
-                            invalidate_id=latest["invalidate_id"],
-                            on_frame=latest["on_frame"],
-                            debounce=None, frames=frames,
-                            *latest["args"], **latest["kwargs"],
-                        )
-                        if Toggles.invalidate_stack_trace:
-                            print_stack_trace(frames=frames, )
-
-                        # if latest["invalidate_id"] is not None:
-                        #     from src.lsd.gl_gui.melty import Melty
-                        #     from src.lsd.gl_gui.utils.glfw_utils import request_render
-                        #     Melty.cache.invalidate_up(latest["invalidate_id"])
-                        #     request_render()
-
-                timer = threading.Timer(debounce / 1000.0, _fire)
-                cls._debounce_timers[debounce_key] = timer
-                timer.start()
-
-            return Pending(status="debounce waiting", state=PendingState.BACKGROUND)
-
-        # --- normal path ---
-
-        with cls._lock:
+            # Cache hit - return immediately, no wait
             cache = cls._user_cache.get(user_id)
             if cache and h in cache:
                 cache.move_to_end(h)
@@ -174,14 +110,76 @@ class Background:
                     cls._user_cache.pop(user_id, None)
                 return return_val
 
-            cls._user_tasks[user_id] = h
-
+            # Task is already running - just wait for it
             if h in cls._active:
-                return Pending(status="background thread active", state=PendingState.BACKGROUND)
+                return Pending(originated=cls, status="background thread active", state=PendingState.BACKGROUND)
 
-            if Toggles.debug_threads and frames is None:
+            # Same hash already pending - don't restart the timer, just keep waiting
+            latest = cls._debounce_latest.get(debounce_key)
+            if latest is not None and latest.get("hash") == h:
+                return Pending(originated=cls, status="debounce waiting", state=PendingState.BACKGROUND)
+
+            # New content - cancel existing timer and reschedule
+            prev = cls._debounce_timers.pop(debounce_key, None)
+            if prev is not None:
+                prev.cancel()
+
+            cls._debounce_latest[debounce_key] = dict(
+                hash=h,
+                func=func, user_id=user_id, no_cache=no_cache,
+                invalidate_id=invalidate_id, on_frame=on_frame,
+                args=args, kwargs=kwargs,
+            )
+
+            if Toggles.debug_threads:
                 frames = get_live_frames()
-            cls._active.add(h)
+
+            def _fire():
+                # with cls._lock:
+                cls._debounce_timers.pop(debounce_key, None)
+                latest = cls._debounce_latest.pop(debounce_key, None)
+                if latest is not None:
+                    cls.run(
+                        latest["func"], latest["user_id"],
+                        no_cache=latest["no_cache"],
+                        invalidate_id=latest["invalidate_id"],
+                        on_frame=latest["on_frame"],
+                        debounce=None, frames=frames,
+                        *latest["args"], **latest["kwargs"],
+                    )
+                    if Toggles.invalidate_stack_trace:
+                        print_stack_trace(frames=frames, )
+
+                    # if latest["invalidate_id"] is not None:
+                    #     from src.lsd.gl_gui.melty import Melty
+                    #     from src.lsd.gl_gui.utils.glfw_utils import request_render
+                    #     Melty.cache.invalidate_up(latest["invalidate_id"])
+                        # request_render()
+
+            timer = threading.Timer(debounce / 1000.0, _fire)
+            cls._debounce_timers[debounce_key] = timer
+            timer.start()
+
+            return Pending(originated=cls, status="debounce waiting", state=PendingState.BACKGROUND)
+
+        # --- normal path ---
+
+        cache = cls._user_cache.get(user_id)
+        if cache and h in cache:
+            cache.move_to_end(h)
+            return_val = cache[h]
+            if no_cache:
+                cls._user_cache.pop(user_id, None)
+            return return_val
+
+        cls._user_tasks[user_id] = h
+
+        if h in cls._active:
+            return Pending(originated=cls, status="background thread active", state=PendingState.BACKGROUND)
+
+        if Toggles.debug_threads and frames is None:
+            frames = get_live_frames()
+        cls._active.add(h)
 
         def _task():
             try:
@@ -208,28 +206,28 @@ class Background:
                     entry[1] += 1
                 if on_frame is not None:
                     result = (result, on_frame)
-                with cls._lock:
-                    cls._active.discard(h)
-                    for uid, task_h in cls._user_tasks.items():
-                        if task_h == h:
-                            if uid not in cls._user_cache:
-                                cls._user_cache[uid] = OrderedDict()
-                            cls._user_cache[uid][h] = result
-                            cls._user_cache[uid].move_to_end(h)
+                # with cls._lock:
+                cls._active.discard(h)
+                for uid, task_h in cls._user_tasks.items():
+                    if task_h == h:
+                        if uid not in cls._user_cache:
+                            cls._user_cache[uid] = OrderedDict()
+                        cls._user_cache[uid][h] = result
+                        cls._user_cache[uid].move_to_end(h)
 
-                            while len(cls._user_cache[uid]) > cls._cache_size:
-                                cls._user_cache[uid].popitem(last=False)
+                        while len(cls._user_cache[uid]) > cls._cache_size:
+                            cls._user_cache[uid].popitem(last=False)
                 if invalidate_id is not None:
                     from src.lsd.gl_gui.melty import Melty
                     from src.lsd.gl_gui.utils.glfw_utils import request_render
-                    if on_frame is None or abs(Melty.frame_count - on_frame) >= 2:
+                    if on_frame is None or abs(Melty.frame_count - on_frame) >= 1:
                         print("Invalidate from background")
-                        # Melty.cache.invalidate_up(invalidate_id)
+                        Melty.cache.invalidate_up(invalidate_id)
                         request_render()
 
             except Exception as e:
-                with cls._lock:
-                    cls._active.discard(h)
+                # with cls._lock:
+                #     cls._active.discard(h)
 
                 with trace_group(f"JOB {user_id}", hash=h) as g:
                     print_stack_trace(frames=frames, section="UI Thread",
@@ -238,7 +236,7 @@ class Background:
                                       group=g, watch=["value", "path", "watch", "watch.original_data", "data", "result", "result", "fn"])
 
         cls._pool.submit(_task)
-        return Pending(status="background thread", state=PendingState.BACKGROUND)
+        return Pending(originated=cls, status="background thread", state=PendingState.BACKGROUND)
 
     @staticmethod
     def compute_hash(cls, exclude=None, memo=None, depth=0, do_print=False, include_hidden=False):

@@ -12,6 +12,7 @@ Usage:
 
 from __future__ import annotations
 
+import types
 from collections import deque
 from enum import Enum
 from typing import Any, Callable, TypeVar
@@ -53,12 +54,13 @@ class Pending:
             # later:
             full = convert(path, dict, registry=R, apply=True)
     """
-    __slots__ = ("wrapped", "status", "state")
+    __slots__ = ("wrapped", "status", "state", "originated")
 
-    def __init__(self, wrapped=NO_VALUE, status="pending", state=PendingState.CONFIRM):
+    def __init__(self, originated: types.FunctionType | type, wrapped=NO_VALUE, status="pending", state=PendingState.CONFIRM):
         self.wrapped = wrapped
         self.status = status
         self.state = state
+        self.originated = originated
 
     def __repr__(self):
         return f"Pending({self.wrapped!r})"
@@ -198,7 +200,7 @@ def convert(value: Any, target: type[T] = None, *, registry, path: list | None =
     return chain_fn(value, cache_id=cache_id, apply=apply)
 
 
-def _run_explicit_path(value: Any, target: type, *, path: list, registry, apply: bool, cache_id=None) -> Any:
+def _run_explicit_path(value: Any, target: type, *, path: list, registry, apply: any, cache_id=None) -> Any:
     """Follow an explicit path of types and/or converter functions.
 
     Each path item is either:
@@ -225,6 +227,8 @@ def _run_explicit_path(value: Any, target: type, *, path: list, registry, apply:
     fn_name = "N/A"
 
     for i, item in enumerate(path):
+
+
         if _is_path_type(item):
             # Type waypoint - skip if already there, otherwise look up
             if isinstance(result, item):
@@ -240,12 +244,19 @@ def _run_explicit_path(value: Any, target: type, *, path: list, registry, apply:
                 print_stack_trace(watch=["path", "target", "result", "item", "apply",  "value", "cache_id", "last_fn", "fn_name"])
                 print(f"Missing converter for {type(result).__name__!r} -> {item.__name__!r} at step {i + 1} of explicit path")
 
-                return Pending(state=PendingState.BROKEN_PATH, wrapped=item, status=f"Missing converter for {type(result).__name__!r} -> {item.__name__!r} at step {i + 1} of explicit path")
+                return Pending(originated=fn, state=PendingState.BROKEN_PATH, wrapped=item, status=f"Missing converter for {type(result).__name__!r} -> {item.__name__!r} at step {i + 1} of explicit path")
 
+            # if apply is not False and apply is not None:
+            #     if fn.__name__ == apply.__name__:
+            #         do_apply = True
+            #         print(f"Applying at step {i + 1} of explicit path via {getattr(item, '__name__', repr(item))}")
+            #     else:
+            #         do_apply = False
+            #         print(
+            #             f"Not applying at step {i + 1} of explicit path: apply={apply}, item={fn} ")
+            # else:
+            #     do_apply = False
             last_fn = fn
-
-            fn_name = fn.__name__ if last_fn else "N/A"
-
             result = fn(result, cache_id=cache_id, apply=apply)
         else:
             # Callable edge - skip if already the target type
@@ -255,6 +266,8 @@ def _run_explicit_path(value: Any, target: type, *, path: list, registry, apply:
                 if isinstance(result, to_type):
                     result = value
                     continue
+
+
             result = item(result, cache_id=cache_id, apply=apply)
 
         if isinstance(result, Pending):

@@ -315,11 +315,11 @@ class DrawState(DictConversion):
 
         self._show_load = False
         self._show_save = False
-        self._internal_pending = False
-        self._apply_load = False
+        self._internal_pending = None
+        self._apply_load = None
 
         self._save_pending = None
-        self._apply_save = False
+        self._apply_save = None
         self._pending_convert = False
         self._save_pending_for = 0
         self._save_pending_obj = None
