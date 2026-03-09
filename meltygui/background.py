@@ -95,7 +95,7 @@ class Background:
             debounce = None
 
         # if kwargs.get("apply", False):
-        #     no_cache = True
+        #     debounce = None
 
         # --- debounce path ---
         if debounce is not None:
@@ -220,7 +220,7 @@ class Background:
                 if invalidate_id is not None:
                     from src.lsd.gl_gui.melty import Melty
                     from src.lsd.gl_gui.utils.glfw_utils import request_render
-                    if on_frame is None or abs(Melty.frame_count - on_frame) >= 1:
+                    if on_frame is None or abs(Melty.frame_count - on_frame) >= 2:
                         print("Invalidate from background")
                         Melty.cache.invalidate_up(invalidate_id)
                         request_render()

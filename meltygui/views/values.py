@@ -1978,8 +1978,8 @@ def seperator(height):
     imgui.dummy(0, snap_int(height / 2))
 
 
-def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=3.22,
-            global_style=None, outline=True, bg_color=None, opacity=-0.73,
+def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=4.37,
+            global_style=None, outline=True, bg_color=None, opacity=-1.0,
             style_manager=None, tint=None, outline_tint=None, selected=False,
             hovered=False, pressed=False, nested_bg=False, **kwargs):
     # Render background
@@ -1990,24 +1990,24 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=3.22,
     # 1, 0, 1, 1.0), f"Depth: {len(Melty.bg_stack)}")
     # Render thi
 
-    # sd;jkljdf
+    # f;jk how are you
     clamped = ((max(2.0, Melty.bg_depth) % 9.0) - 1.5)
     depth = (clamped) * 2.59
 
     right = left + width
     bottom = top + height
 
-    thickness = 4.34
-    half_thickness = 1.85
+    thickness = 1.38
+    half_thickness = 0.71
     rect = (
     snap_int(left) + thickness, snap_int(top) + thickness, snap_int(right) - thickness, snap_int(bottom) - thickness)
     rect_outline = (snap_int(left) + half_thickness, snap_int(top) + half_thickness,
                     snap_int(right) - half_thickness, snap_int(bottom) - half_thickness)
     # skl
 
-    rounding = 11.4
-    depth_factor = -0.7
-    depth_offset = -0.03
+    rounding = 6.49
+    depth_factor = 0.07
+    depth_offset = 0.83
     dynamic_value = max(0, (float(depth + depth_offset) * depth_factor))
 
     hovered_offset = -0.06
@@ -2024,11 +2024,11 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=3.22,
                 c1[1] * (1 - fac) + c2[1] * fac,
                 c1[2] * (1 - fac) + c2[2] * fac)
 
-    bg_style = {'value': 0.082, 'saturation': 1.46, 'alpha': 0.36,
-                'max_value': 1.96}
-    outline_saturation = 1.44
-    outline_offset = 0.16
-    outline_factor = 0.548
+    bg_style = {'value': -0.078, 'saturation': 1.42, 'alpha': 0.22,
+                'max_value': 1.39}
+    outline_saturation = 1.55
+    outline_offset = 0.13
+    outline_factor = 0.618
 
     if not nested_bg:
         outline_factor *= 1.00
@@ -2039,7 +2039,7 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=3.22,
     else:
         bleed_factor = 0.07
     bg_bleed = Melty.get_bg_color(-1)
-    bg_bleed = style_manager.make_custom_styled(*bg_bleed, input=bg_style, value=0.61, alpha=0.63, saturation=0.99)
+    bg_bleed = style_manager.make_custom_styled(*bg_bleed, input=bg_style, value=-0.23, alpha=0.63, saturation=0.99)
 
     outline_color = (style_manager.
                      make_color_style_value(input=bg_style, saturation=outline_saturation, value=max(0, dynamic_value * outline_factor +
