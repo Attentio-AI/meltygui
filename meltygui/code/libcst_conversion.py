@@ -15,11 +15,13 @@ import struct
 import sys
 
 import libcst as cst
+from libcst._nodes.internal import CodegenState as _CodegenState
 
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.view.core_conversion.converter_register import converter
-from src.lsd.gl_gui.view.core_conversion.path_finder import convert, Pending
-from libcst._nodes.internal import CodegenState as _CodegenState
+from src.lsd.gl_gui.view.core_conversion.path_finder import convert, PendingState
+from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
+
 # Sentinel for arguments with no default value.
 # Shows up in the dict so the UI can display the parameter name,
 # but signals "no default" on the reverse path.
@@ -67,7 +69,6 @@ class Comment(str):
 
     def __hash__(self):
         return hash(("__comment__", str(self), self.inline))
-
 
 
 class Conditional(dict):
@@ -303,15 +304,15 @@ def type_to_str(value: type) -> str:
 
 @converter(registry=Melty)
 def str_to_cst_module(value: str) -> cst.Module:
-    # try:
-    return cst.parse_module(value)
-    # except cst.ParserSyntaxError as e:
-    #     return Pending(WrappedPythonParseError(
-    #         source=value,
-    #         error=e.message,
-    #         line=e.raw_line,
-    #         column=e.raw_column,
-    #     ))
+    try:
+        return cst.parse_module(value)
+    except cst.ParserSyntaxError as e:
+        return Pending(wrapped=ParseError(
+            source=value,
+            error=e.message,
+            line=e.raw_line,
+            column=e.raw_column,
+        ), originated=str_to_cst_module, state=PendingState.ERROR, status=e.message)
 
 
 @converter(registry=Melty)
@@ -860,7 +861,6 @@ def cst_funcdef_to_dict(value: cst.FunctionDef) -> dict:
         readable["parameters"] = params
 
     # Body assignments under "locals"
-
     locals_ = _extract_body_assignments(value.body)
     if locals_:
         readable["locals"] = locals_
@@ -1970,7 +1970,7 @@ def _python_to_cst_expr(py_value, old_node=None):
             # Preserve formatting (dot whitespace, parens) from old node
             return old_node.with_changes(
                 value=old_node.value.with_changes(value=cls_name)
-                    if isinstance(old_node.value, cst.Name) else cst.Name(cls_name),
+                if isinstance(old_node.value, cst.Name) else cst.Name(cls_name),
                 attr=cst.Name(member_name),
             )
         return cst.Attribute(
@@ -2014,7 +2014,8 @@ def _python_to_cst_expr(py_value, old_node=None):
                     return old_node  # unchanged - preserve original repr
                 return old_node.with_changes(
                     expression=old_expr.with_changes(
-                        value=_float_to_str(abs(py_value), old_expr.value if isinstance(old_expr, cst.Float) else None)))
+                        value=_float_to_str(abs(py_value),
+                                            old_expr.value if isinstance(old_expr, cst.Float) else None)))
             return cst.UnaryOperation(operator=cst.Minus(), expression=cst.Float(_clean_float(abs(py_value))))
         if isinstance(old_node, cst.Float):
             if _floats_match(py_value, float(old_node.value)):

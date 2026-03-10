@@ -1,3 +1,4 @@
+from collections import defaultdict
 from copy import copy
 from dataclasses import dataclass
 from enum import Enum
@@ -323,6 +324,7 @@ class DrawState(DictConversion):
         self._pending_convert = False
         self._save_pending_for = 0
         self._save_pending_obj = None
+        self._all_pending = defaultdict(dict)
         self._load_pending_for = 0
         self._content_rect = (100,30)
         self._last_expanded = None

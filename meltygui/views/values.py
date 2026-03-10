@@ -31,7 +31,7 @@ from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_conversion.file_converters import path_to_dict, bytes_to_str, FileRef, ValueDict, \
     load_text, recompile
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment
-from src.lsd.gl_gui.view.core_conversion.path_finder import convert
+from src.lsd.gl_gui.view.core_conversion.path_finder import convert, Pending, PendingState
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
 from src.lsd.gl_gui.view.core_views.codec_register import registry as FILE_CODECS
@@ -244,7 +244,13 @@ def draw_footer(input_value=None, name="", key=None, melty=None, parent_show_add
                 draw_state=None, show_tint=False, opacity=1.0, show_add_delete=True,
                 on_drag=False, on_action=None, style_manager=None,
                 global_style=None, global_toggles=None, **kwargs):
-    imgui.text(f"Footer: {name}")
+
+    for key, pending in draw_state._all_pending.items():
+        if pending is not None:
+            if pending.state == PendingState.ERROR:
+                draw_pending(pending, name=f"{key}", tint=(1, 0, 0))
+
+    imgui.text(f"{name}")
 
 
 def draw_header_end(input_value=None, name="", key=None, melty=None, parent_show_add_delete=False,
@@ -1990,22 +1996,20 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=4.37,
     # 1, 0, 1, 1.0), f"Depth: {len(Melty.bg_stack)}")
     # Render thi
 
-    # f;jk how are you
+    # sdjhk how are hkjhkjh\
     clamped = ((max(2.0, Melty.bg_depth) % 9.0) - 1.5)
     depth = (clamped) * 2.59
-
     right = left + width
     bottom = top + height
-
-    thickness = 1.38
+    thickness = 1.22
     half_thickness = 0.71
     rect = (
     snap_int(left) + thickness, snap_int(top) + thickness, snap_int(right) - thickness, snap_int(bottom) - thickness)
     rect_outline = (snap_int(left) + half_thickness, snap_int(top) + half_thickness,
                     snap_int(right) - half_thickness, snap_int(bottom) - half_thickness)
-    # skl
+    #Outlline
 
-    rounding = 6.49
+    rounding = 6.02
     depth_factor = 0.07
     depth_offset = 0.83
     dynamic_value = max(0, (float(depth + depth_offset) * depth_factor))
@@ -2267,28 +2271,30 @@ def draw_text(input_value: str, draw_state):
     line_height = imgui.get_text_line_height()
     text_height = imgui.calc_text_size(str(input_value))[1] + line_height * 2
 
-    max_bottom = draw_state.parent_window.top + draw_state.parent_window.height - draw_state.footer_height - line_height * 2
+    max_bottom = draw_state.parent_window.top + draw_state.parent_window.height - draw_state.parent_window.footer_height - 5
     text_bottom = draw_state.top + text_height
     clamped_bottom = min(max_bottom, text_bottom)
     height = clamped_bottom - draw_state.top
+    changed, value = False, input_value
+    if height > 10:
 
-    show_controls = True
+        show_controls = True
 
-    if not show_controls:
-        imgui.push_style_var(imgui.STYLE_ALPHA, 0)
+        if not show_controls:
+            imgui.push_style_var(imgui.STYLE_ALPHA, 0)
 
 
-    imgui.set_cursor_screen_pos((draw_state.left, draw_state.top))
-    # disable scrolling
-    changed, value = imgui.input_text_multiline("##str", str(input_value),
-                                                width=draw_state.content_width, height=height)
-    imgui.dummy(draw_state.content_width, text_height - height + 10)
+        imgui.set_cursor_screen_pos((draw_state.left, draw_state.top))
+        # disable scrolling
+        changed, value = imgui.input_text_multiline("##str", str(input_value),
+                                                    width=draw_state.content_width, height=height)
+        imgui.dummy(draw_state.content_width, text_height - height + 10)
 
-    if not show_controls:
-        imgui.pop_style_var(1)
+        if not show_controls:
+            imgui.pop_style_var(1)
 
-    if changed:
-        return True, value
+        if changed:
+            return True, value
     return changed, value
 
 
@@ -2654,6 +2660,17 @@ def default_context_menu(input_value, draw_state, func, **kwargs):
 
     imgui.text(func.__name__)
     return False, None
+
+
+@render_func(use_cache=True, with_header=draw_header, show_bg=True, is_default_for=Pending)
+def draw_pending(input_value, draw_state=None):
+    imgui.text(input_value.originated.__name__)
+    imgui.push_text_wrap_pos(draw_state.left + draw_state.content_width)
+    imgui.text_wrapped(str(input_value.status))
+    imgui.pop_text_wrap_pos()
+
+    return False, None
+
 
 @render_func(use_cache=True, show_header=False)
 def pending_window(input_value, pending_name, pending=None, draw_state=None):

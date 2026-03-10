@@ -406,14 +406,14 @@ def render_func(*args, **o_kwargs):
                             Melty.last_attr = draw_state.name
                             request_render()
 
-        if isinstance(input_value, Pending):
-            raise Exception("Pending needs to be handled before saving to cache")
+        # if isinstance(input_value, Pending):
+        #     raise Exception("Pending needs to be handled before saving to cache")
         draw_state._raw_input_value = input_value
         if draw_state._input_value_cache["external_state"][0] == UNSET_VALUE:
             if not isinstance(input_value, Pending):
                 input_hash = Background.simple_hash(input_value)
-                if isinstance(input_value, Pending):
-                    raise Exception("Pending needs to be handled before saving to cache")
+                # if isinstance(input_value, Pending):
+                #     raise Exception("Pending needs to be handled before saving to cache")
                 draw_state._input_value_cache["external_state"] = (input_value, Melty.frame_count, input_hash)
 
 
@@ -961,6 +961,19 @@ def render_func(*args, **o_kwargs):
 
                 # draw_state.left = snap_int(draw_state.abs_left)
                 # draw_state.top = snap_int(draw_state.abs_top)
+                # if len(draw_state._all_pending) > 0:
+                #     draw_window(
+                #             input_value=draw_state._all_pending,
+                #             closed=False, tint=draw_state.tint,
+                #             pending_name="All Pending", name=f"{unique} Pending")
+                #
+                # for key, pending in draw_state._all_pending.items():
+                #     if pending is not None:
+                #         from src.lsd.gl_gui.view.core_views.new_core_view import draw_pending
+                #         if pending.state == PendingState.ERROR:
+                #             draw_window(pending, name=f"{key}", tint=(1,0,0))
+
+
                 if draw_state._show_save and not draw_state._save_pending_obj.originated in auto_apply:
                     if draw_window(
                             input_value=f"save",
@@ -1032,9 +1045,9 @@ def render_func(*args, **o_kwargs):
                     if draw_state._apply_load is not None or draw_state._pending_convert:
                         input_changed = True
 
-                    if input_changed:
-                        if isinstance(draw_state._raw_input_value, Pending):
-                            raise Exception("Pending needs to be handled before saving to cache")
+                    # if input_changed:
+                        # if isinstance(draw_state._raw_input_value, Pending):
+                        #     raise Exception("Pending needs to be handled before passed to cache")
 
                         # Melty.cache.invalidate(draw_state._parent._tile_id, force=True)
                         # Melty.cache.invalidate(draw_state._tile_id, force=True)
@@ -1083,6 +1096,10 @@ def render_func(*args, **o_kwargs):
                                 draw_state._pending_convert = False
                                 draw_state._internal_pending = None
                                 draw_state._show_load = False
+                                draw_state._all_pending['load_pending'] = None
+                            else:
+                                if internal_value.state != PendingState.BACKGROUND:
+                                    draw_state._all_pending['load_pending'] = internal_value
 
                         else:
                             internal_value = draw_state._input_value_cache["internal_state"][0]
@@ -1114,8 +1131,6 @@ def render_func(*args, **o_kwargs):
 
 
                     if input_changed or internal_changed or draw_state._input_value_cache["internal_state"][0] == UNSET_VALUE:
-
-
                         if isinstance(internal_value, Pending):
                             if internal_value.state == PendingState.CONFIRM:
                                 draw_state._internal_pending = internal_value
@@ -1128,21 +1143,15 @@ def render_func(*args, **o_kwargs):
                                 else:
                                     internal_value = internal_value.wrapped
 
-                                if isinstance(internal_value, Pending):
-                                    raise Exception("Pending needs to be handled before saving to cache")
+                                # if isinstance(internal_value, Pending):
+                                #     raise Exception("Pending needs to be handled before saving to cache")
 
                         if isinstance(internal_value, Pending):
                             draw_state._load_pending = True
                             draw_state._load_pending_for += 1
                             # Debounce loading spinner icon
                             if draw_state._load_pending_for > 2:
-                                draw_list = imgui.get_window_draw_list()
-                                draw_list.add_text(*(draw_state.left + draw_state.footer_width + 3, draw_state.top + draw_state.height - 20),
-                                                    imgui.get_color_u32_rgba(1,1,1, 1.0),
-                                                    f"\uf110 {internal_value.status}")
-
-
-
+                                draw_pending_status(draw_state, internal_value)
                             # print(f"Internal value pending for {draw_state.name}, invalidating cache. Status: {internal_value.status}")
                             # Melty.cache.invalidate_up(draw_state._tile_id, force=True)
                             # request_render()
@@ -1153,8 +1162,8 @@ def render_func(*args, **o_kwargs):
                                 draw_state._input_value_cache["internal_state"][0])
 
                             if thead_launch_frame >= draw_state._input_value_cache["internal_state"][1] + 1:
-                                if isinstance(internal_value, Pending):
-                                    raise Exception("Pending needs to be handled before saving to cache")
+                                # if isinstance(internal_value, Pending):
+                                #     raise Exception("Pending needs to be handled before saving to cache")
                                 draw_state._input_value_cache["internal_state"] = internal_value, thead_launch_frame
                                 draw_state._input_value = internal_value
                                 new_internal_hash = Background.simple_hash(
@@ -1171,8 +1180,8 @@ def render_func(*args, **o_kwargs):
                     kwargs["input_value"] = draw_state._input_value_cache["internal_state"][0]
 
                     draw_state._input_value = draw_state._input_value_cache["internal_state"][0]
-                    if isinstance(draw_state._input_value_cache["external_state"][0], Pending):
-                        raise Exception("Pending needs to be handled before saving to cache")
+                    # if isinstance(draw_state._input_value_cache["external_state"][0], Pending):
+                    #     raise Exception("Pending needs to be handled before saving to cache")
                     draw_state._raw_input_value = draw_state._input_value_cache["external_state"][0]
                 else:
                     draw_state._input_value = input_value
@@ -1423,6 +1432,7 @@ def render_func(*args, **o_kwargs):
                                                  imgui.get_cursor_screen_pos()[1] + outline_margin))
                     draw_header(**kwargs)
 
+
                     imgui.set_cursor_screen_pos(header_start_cursor)
                     end_group()
                     if imgui.is_item_active() or imgui.is_item_activated():
@@ -1599,6 +1609,7 @@ def render_func(*args, **o_kwargs):
                 return_value = draw_inner_main(clean_args, draw_state,
                                                input_value, unique, kwargs)
 
+
                 if show_bg:
                     Melty.bg_depth -= 1 + kwargs.get("bg_offset", 0)
                     Melty.bg_stack.pop()
@@ -1644,17 +1655,17 @@ def render_func(*args, **o_kwargs):
                     foot_start = imgui.get_cursor_screen_pos()
 
                     draw_footer(**kwargs)
-
                     imgui.set_cursor_screen_pos(foot_start)
 
                     if imgui.is_item_active() or imgui.is_item_activated():
                         Melty.report_imgui_active()
                     push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
                     push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
-                    footer_rect = imgui.get_item_rect_size()
+
 
                     end_group()
                     pop_style_var(2)
+                    footer_rect = imgui.get_item_rect_size()
                     draw_state.footer_height = footer_rect[1]
                     draw_state.footer_width = footer_rect[0]
                     pop_id()
@@ -1662,6 +1673,7 @@ def render_func(*args, **o_kwargs):
                 else:
                     draw_state.footer_height = 0
                     draw_state.footer_width = 0
+
 
                 if not kwargs.get("imgui_padding", True):
                     push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
@@ -1700,9 +1712,9 @@ def render_func(*args, **o_kwargs):
                 thead_launch_frame = 0
                 if converted_input or draw_state._apply_save:
                     if child_changed:
-                        # draw_state._input_value_cache["external_state"] = ...
-                        if isinstance(new_value_child, Pending):
-                            raise Exception("Pending needs to be handled before saving to cache")
+                        # # draw_state._input_value_cache["external_state"] = ...
+                        # if isinstance(new_value_child, Pending):
+                        #     raise Exception("Pending needs to be handled before saving to cache")
                         draw_state._input_value_cache["internal_state"] = new_value_child, Melty.frame_count + 1
                         # Melty.cache.invalidate(draw_state._parent._tile_id, force=True)
                         # Melty.cache.invalidate(draw_state._tile_id, force=True)
@@ -1770,6 +1782,12 @@ def render_func(*args, **o_kwargs):
                                         draw_state._apply_save = None
                                         Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=4, force=True)
 
+                                    draw_state._all_pending["save_pending"] = None
+
+                                else:
+                                    if external_value.state != PendingState.BACKGROUND:
+                                        draw_state._all_pending["save_pending"] = external_value
+
 
                             else:
                                 external_value = draw_state._input_value_cache["external_state"][0]
@@ -1779,8 +1797,6 @@ def render_func(*args, **o_kwargs):
                         if not isinstance(external_value, Pending):
                             if draw_state._show_save or draw_state._apply_save is not None:
                                 Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=4, force=True)
-
-                                # Melty.cache.invalidate(draw_state._tile_id, force=True)
                                 request_render()
 
                             draw_state._save_pending_obj = None
@@ -1797,12 +1813,9 @@ def render_func(*args, **o_kwargs):
 
                         if isinstance(external_value, Pending):
                             draw_state._save_pending_for += 1
+                            report_changed = False
                             if draw_state._save_pending_for > 2:
-                                report_changed = False
-                                load_icon = f"\uf110"
-                                draw_list.add_text(*(draw_state.left + 2, draw_state.top + draw_state.height - draw_state.footer_height - 20),
-                                                   imgui.get_color_u32_rgba(1,1,1, 0.5),
-                                                   f"{load_icon} {external_value.status}")
+                                draw_pending_status(draw_state, external_value)
                             # Melty.cache.invalidate(draw_state._tile_id, force=True)
                         else:
                             draw_state._save_pending_for = 0
@@ -1833,8 +1846,8 @@ def render_func(*args, **o_kwargs):
                     report_changed = child_changed
                     report_value = new_value_child
 
-                if isinstance(report_value, Pending):
-                    raise Exception("Pending needs to be handled before saving to cache")
+                # if isinstance(report_value, Pending):
+                #     raise Exception("Pending needs to be handled before saving to cache")
                 return_value = (report_changed, report_value, *return_value[2:])
 
             if use_cache:
@@ -2026,6 +2039,25 @@ def render_func(*args, **o_kwargs):
             if return_extras:
                 return child_changed, new_value, return_draw_state
             return child_changed, new_value
+
+    def draw_pending_status(draw_state, pending_obj):
+        load_icon = f"\uf110"
+        draw_list: _DrawList = imgui.get_window_draw_list()
+        if pending_obj.state == PendingState.ERROR:
+            pass
+            # imgui.set_next_cursor_pos((draw_state.left + 2,
+            #                              draw_state.top + draw_state.height - draw_state.footer_height - 20))
+            # imgui.text_colored(f"{pending_obj.status}", *(1, 0.0, 0.0, 1.0))
+            #
+            # draw_list.add_text(*(draw_state.left + 2,
+            #                      draw_state.top + draw_state.height - draw_state.footer_height - 20),
+            #                    imgui.get_color_u32_rgba(1, 0, 0, 1.0),
+            #                    f"{load_icon} {pending_obj.status}")
+        else:
+            draw_list.add_text(
+                *(draw_state.left + 2, draw_state.top + draw_state.height - draw_state.footer_height - 20),
+                imgui.get_color_u32_rgba(1, 1, 1, 0.5),
+                f"{load_icon} {pending_obj.status}")
 
     def draw_inner_main(clean_args, draw_state, input_value, unique, kwargs):
         return_value = None

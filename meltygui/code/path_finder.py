@@ -31,6 +31,7 @@ class PendingState(Enum):
     BACKGROUND = "background"
     CONFIRM = "blocking"
     BROKEN_PATH = "broken_path"
+    ERROR = "error"
 
 
 # ── Pending wrapper ──────────────────────────────────────────────────────────
