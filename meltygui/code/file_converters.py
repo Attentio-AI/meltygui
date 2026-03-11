@@ -36,6 +36,8 @@ File dicts carry __path__ for lossless round-trip:
         "__path__": Path("/absolute/path/app.py"),
     }
 """
+import builtins
+import dis
 import inspect
 import textwrap
 import time
@@ -596,7 +598,7 @@ def function_to_cst(value, data: str, ref: FileRef) -> cst.Module:
     return cst.parse_module(data)
 
 def recompile(value, ref: FileRef, data: str, watch) -> FileRef:
-    from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
+    from src.lsd.gl_gui.view.core_conversion.path_finder import Pending, PendingState
     # source = inspect.getsource(function)
     if value is not None:
         function = watch.original_input_load
@@ -604,7 +606,7 @@ def recompile(value, ref: FileRef, data: str, watch) -> FileRef:
         try:
             _recompile(function, source, str(ref.path))
         except Exception as e:
-            return Pending(originated=recompile, status=str(e))
+            return Pending(originated=recompile, status=str(e), state=PendingState.ERROR)
     # return ref
     full_data = ref.path.read_bytes()
     newline = _detect_newline(full_data)
@@ -623,6 +625,27 @@ def recompile(value, ref: FileRef, data: str, watch) -> FileRef:
            inverse_of=function_to_cst, stateful=True)
 def cst_module_to_function(value: cst.Module) -> str:
     return value.code
+
+_BUILTIN_NAMES = set(dir(builtins))
+
+
+def _validate_global_names(code, namespace: dict) -> None:
+    """Check LOAD_GLOBAL names against namespace + builtins before hotswap.
+
+    Raises NameError for any global reference that can't be resolved,
+    preventing a broken function from being patched into the live code.
+    Recurses into nested code objects (comprehensions, lambdas, etc.).
+    """
+    for instr in dis.get_instructions(code):
+        if instr.opname in ("LOAD_GLOBAL", "LOAD_NAME"):
+            name = instr.argval
+            if name not in namespace and name not in _BUILTIN_NAMES:
+                raise NameError(f"name '{name}' is not defined")
+    # Check nested code objects (comprehensions, inner functions, etc.)
+    for const in code.co_consts:
+        if isinstance(const, types.CodeType):
+            _validate_global_names(const, namespace)
+
 
 def _recompile(func: types.FunctionType, source: str,
                filename: str) -> None:
@@ -661,6 +684,11 @@ def _recompile(func: types.FunctionType, source: str,
         raise RuntimeError(f"'{unwrapped.__name__}' is {type(new_func).__name__}, not a function")
 
     new_func = inspect.unwrap(new_func)
+
+    # Validate that all global name lookups resolve before patching.
+    # This catches typos like "Outlllj" that would compile but would
+    # NameError at runtime - at which it's too late to undo.
+    _validate_global_names(new_func.__code__, namespace)
 
     # Save the original line number before patching - compile() sets
     # co_firstlineno to 1 (because of dedented string), but inspect

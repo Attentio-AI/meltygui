@@ -338,6 +338,8 @@ def make_save_wrapper(fn: Callable, save_data: Callable,
 
         ref = watch.ref
         updated_ref = save_data(converter_input, ref, converter_output, watch)
+        if isinstance(updated_ref, Pending):
+            return updated_ref
         if isinstance(updated_ref, FileRef):
             ref = updated_ref
 

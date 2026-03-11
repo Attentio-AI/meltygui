@@ -423,6 +423,12 @@ def dict_to_cst_module(value: dict) -> cst.Module:
             line=e.raw_line,
             column=e.raw_column,
         ), originated=dict_to_cst_module, state=PendingState.ERROR, status=e.message)
+    except cst.CSTValidationError as e:
+        print("Validation error during CST patching:", e, file=sys.stderr)
+        return Pending(wrapped=ParseError(
+            source=tree.code,
+            error=str(e),
+        ), originated=dict_to_cst_module, state=PendingState.ERROR, status=str(e))
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗

@@ -248,6 +248,7 @@ def draw_footer(input_value=None, name="", key=None, melty=None, parent_show_add
     for key, pending in draw_state._all_pending.items():
         if pending is not None:
             if pending.state == PendingState.ERROR:
+                print(f"FROM UI Error pending: {pending.error}")
                 draw_pending(pending, name=f"{key}", tint=(1, 0, 0))
 
     imgui.text(f"{name}")
@@ -792,6 +793,16 @@ test_code = None
 #
 
 
+@render_func(show_bg=True, with_header=draw_header)
+def test_columns():
+    draw_str("Column 1", name="col1", column=0)
+    draw_int(123, name="col2", column=1)
+    draw_float(0.5, name="col3", column=2)
+
+    for i in range(10):
+        draw_float(0.4, name=f"float_{i}", column=2)
+
+
 @render_func(use_cache=False, show_bg=True, selectable=False, show_tint=True, bg_offset=-1, with_header=draw_header)
 def draw_main(input_value, vis, **kwargs):
     global test_obj
@@ -842,6 +853,7 @@ def draw_main(input_value, vis, **kwargs):
 
     # draw_window(core_model, name="Module test")
 
+    draw_window(None, view_func=test_columns, name="Test columns")
 
     draw_window(draw_main, name="Draw Main Function")
     some_enum = ProfileMode.OFF
@@ -1312,6 +1324,9 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
     return False, draw_state
 
     # draw_window(Melty.last_request_render, show_bg=True, name="Last Invalid")
+
+
+
 
 
 @render_func(is_default_for=ManagedWindow, is_tree=False, show_name=False, use_cache=True, shadow=False,
@@ -1991,29 +2006,27 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=4.37,
     # Render background
     def current_indent_px(): 
         return Melty.current_indent
-    # draw_list:_DrawList = imgui.get_overlay_draw_list()
-    # draw_list.add_text(left, top, imgui.get_color_u32_rgba(
-    # 1, 0, 1, 1.0), f"Depth: {len(Melty.bg_stack)}")
-    # Render thi
+    #draw_list:_DrawList = imgui.get_window_draw_list()
+    #draw_list.add_text(left, top, imgui.get_color_u32_rgba(
+    #1, 0, 1, 1.0), f"Depth: {len(Melty.bg_stack)}")
+    #Hello sdjklj;lkjlkjlkj
 
-    # sd;jk how are you? 
+    #sd;jk how are you today 
     clamped = ((max(2.0, Melty.bg_depth) % 9.0) - 1.5)
     depth = (clamped) * 2.59
     right = left + width
     bottom = top + height
-    thickness = 1.73
-    half_thickness = 1.09
+    thickness = 1.12
+    half_thickness = 1.0
     rect = (
     snap_int(left) + thickness, snap_int(top) + thickness, snap_int(right) - thickness, snap_int(bottom) - thickness)
     rect_outline = (snap_int(left) + half_thickness, snap_int(top) + half_thickness,
                     snap_int(right) - half_thickness, snap_int(bottom) - half_thickness)
-    #Outlineslj
-
-    rounding = 6.02
+    rounding = 4.13
     depth_factor = 0.07
-    depth_offset = 0.83
+    depth_offset = 0.47
     dynamic_value = max(0, (float(depth + depth_offset) * depth_factor))
-
+    
     hovered_offset = -0.06
     if selected:
         hovered_offset = 0.00
@@ -2022,28 +2035,28 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=4.37,
             hovered_offset = 0.0
         else:
             hovered_offset = 1.739
-
+    
     def mix_colors(c1, c2, fac):
         return (c1[0] * (1 - fac) + c2[0] * fac,
                 c1[1] * (1 - fac) + c2[1] * fac,
                 c1[2] * (1 - fac) + c2[2] * fac)
-
-    bg_style = {'value': -0.078, 'saturation': 1.42, 'alpha': 0.22,
-                'max_value': 1.39}
-    outline_saturation = 1.55
-    outline_offset = 0.13
-    outline_factor = 0.618
+    
+    bg_style = {'value': 0.092, 'saturation': 1.69, 'alpha': 0.22,
+                'max_value': 3.02}
+    outline_saturation = 1.57
+    outline_offset = 0.19
+    outline_factor = -0.142
 
     if not nested_bg:
         outline_factor *= 1.00
         outline_saturation = 1.38
-
+    
     if nested_bg:
-        bleed_factor = 0.15
+        bleed_factor = 0.59
     else:
-        bleed_factor = 0.07
+        bleed_factor = 0.47
     bg_bleed = Melty.get_bg_color(-1)
-    bg_bleed = style_manager.make_custom_styled(*bg_bleed, input=bg_style, value=-0.23, alpha=0.63, saturation=0.99)
+    bg_bleed = style_manager.make_custom_styled(*bg_bleed, input=bg_style, value=-0.27, alpha=0.5, saturation=1.17)
 
     outline_color = (style_manager.
                      make_color_style_value(input=bg_style, saturation=outline_saturation, value=max(0, dynamic_value * outline_factor +
@@ -2073,7 +2086,6 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=4.37,
     if opacity > 0.0:
         imgui.get_window_draw_list().add_rect_filled(*rect, col=imgui_bg_color, rounding=rounding)
 
-    return False, bg_color
     return False, bg_color
 
 def open_file(path, app=None):
@@ -2653,6 +2665,8 @@ class ModeOverrides:
 def default_context_menu(input_value, draw_state, func, **kwargs):
     imgui.new_line()
     imgui.text(type(input_value._input_value).__name__)
+
+    draw_collection(draw_state._all_pending)
 
     if input_value.explain_convert is not None:
         imgui.text(str(input_value.explain_convert))

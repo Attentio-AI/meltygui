@@ -305,8 +305,12 @@ class DrawState(DictConversion):
         self.render_time = 0.0
         self.overhead_time = 0.0
 
+        ### Columns
+        self.final_max_column = 1
+        self._current_max_column = 1
+        self.column_cursor = defaultdict(lambda: [0, 0])  # column -> (x, y)
 
-        self.max_column = 1
+        ### End Columns
         self._is_nested = False
         self.anchor_pos = Anchor.TOP_LEFT
         self._kwargs = {}
@@ -324,7 +328,7 @@ class DrawState(DictConversion):
         self._pending_convert = False
         self._save_pending_for = 0
         self._save_pending_obj = None
-        self._all_pending = defaultdict(dict)
+        self._all_pending = {"save_pending":None, "load_pending":None}
         self._load_pending_for = 0
         self._content_rect = (100,30)
         self._last_expanded = None

@@ -4,6 +4,7 @@ import sys
 import time
 import types
 import zlib
+from collections import defaultdict
 from copy import copy
 from dataclasses import dataclass
 from enum import Enum
@@ -793,13 +794,7 @@ def render_func(*args, **o_kwargs):
             cursor_pos = imgui.get_cursor_pos()
             imgui.set_cursor_pos((snap_int(cursor_pos[0]), snap_int(cursor_pos[1])))
 
-            ################# Columns
 
-            column = kwargs.get("column", None)
-            if column is not None:
-                pass
-
-            ##########################
             use_cache = kwargs.get("use_cache", False) and Melty.cache.enabled
             draw_state.use_cache = use_cache
             # if (draw_state.parent_window is not None and draw_state.window_pos is not None and
@@ -810,11 +805,11 @@ def render_func(*args, **o_kwargs):
             if fixed_size:
                 Melty.fixed_size_stack.append(draw_state)
 
-            start_cursor = imgui.get_cursor_screen_pos()
 
             if fixed_size and auto_resize and closable and draw_state.multi_line:
                 draw_state.width = 400
 
+            header_width = draw_state.header_width + draw_state.header_end_width
 
             if len(Melty.fixed_size_stack) > 0 and draw_state.auto_resize and not closable and not Melty.is_wrapped() and passed_width is None:
                 fixed_size_draw_state = Melty.fixed_size_stack[-1]
@@ -824,41 +819,73 @@ def render_func(*args, **o_kwargs):
 
                 if kwargs.get("fill_height", False) and passed_height is None:
                     draw_state.height = snap_int(
-                        fixed_size_draw_state.height - (start_cursor[1] - fixed_size_draw_state.top))
+                        fixed_size_draw_state.height - (imgui.get_cursor_screen_pos()[1] - fixed_size_draw_state.top))
 
-                available_width = (fixed_size_draw_state.width - x_offset - content_margin -
-                                   draw_state.header_width - draw_state.header_end_width - 10)
+                available_width = (fixed_size_draw_state.width - x_offset - content_margin - 10)
             elif len(Melty.fixed_size_stack) > 0:
                 fixed_size_draw_state = Melty.fixed_size_stack[-1]
                 x_offset = draw_state.left - fixed_size_draw_state.left
-                available_width = (fixed_size_draw_state.width - x_offset - content_margin -
-                                   draw_state.header_width - draw_state.header_end_width - 10)
+                available_width = (fixed_size_draw_state.width - x_offset - content_margin - 10)
             else:
                 rect = Melty.get_clip_size()
                 if rect is not None:
                     available_width = (
-                            rect[0] - draw_state.header_width - draw_state.header_end_width - content_margin - 10)
+                            rect[0] - content_margin - 10)
                 elif not auto_resize:
-                    available_width = draw_state.width - draw_state.header_width - draw_state.header_end_width
+                    available_width = draw_state.width
                 else:
                     rect = imgui.get_io().display_size
-                    offset = rect[0] - draw_state.left - draw_state.header_width - draw_state.header_end_width
+                    offset = rect[0] - draw_state.left
                     available_width = (offset - content_margin - 10)
 
+            single_line_avail = available_width - header_width
+
             header_same_line = kwargs.get("header_same_line", False)
-            if ((available_width < 100 or draw_state.height - draw_state.footer_height > 50)
+            if ((single_line_avail < 100 or draw_state.height - draw_state.footer_height > 50)
                     and not header_same_line and not Melty.is_wrapped()):
                 draw_state.multi_line = True
-                rect = Melty.get_clip_size()
-                if rect is not None:
-                    draw_state.content_width = (rect[0] - content_margin - 10)
-                elif not auto_resize:
-                    draw_state.content_width = draw_state.width - content_margin - 10
-                else:
-                    draw_state.content_width = 30
+                draw_state.content_width = available_width
             else:
                 draw_state.multi_line = False
-                draw_state.content_width = available_width
+                draw_state.content_width = single_line_avail
+
+
+            ################# Columns
+
+            draw_state.final_max_column = draw_state._current_max_column
+            draw_state._current_max_column = 0
+            draw_state.column_cursor = defaultdict(lambda: [0, 0])  # column -> (x, y)
+
+            column = kwargs.get("column", None)
+            column_width = draw_state.content_width
+            parent = draw_state._parent
+
+            if column is not None and parent is not None:
+                parent._current_max_column = max(parent.final_max_column, column)
+                column_width = parent.width / (parent._current_max_column + 1)
+                column_cursor_y = parent.column_cursor[column][1]
+                new_left = imgui.get_cursor_screen_pos()[0] + snap_int(column_width * column)
+                imgui.set_cursor_screen_pos((new_left, parent.abs_top + column_cursor_y))
+
+                draw_state.left_offset = new_left - parent.left
+                draw_state.left = new_left
+                # draw_state.width = column_width + content_margin
+                parent.column_cursor[column][1] += draw_state.height # This will lag behind a frame, but keeping code tidy instead
+
+            if draw_state.final_max_column > 1:
+                column_width = draw_state.content_width / (draw_state.final_max_column + 1)
+                draw_list: _DrawList = imgui.get_window_draw_list()
+                for c in range(1, draw_state.final_max_column + 1):
+                    # Draw divider lines, we are the parent now
+                    draw_list.add_line(draw_state.left + snap_int(column_width * c), draw_state.top,
+                                       draw_state.left + snap_int(column_width * c), draw_state.top + snap_int(draw_state.height),
+                                       imgui.get_color_u32_rgba(0.0, 0.0, 0.0, 0.3), 1)
+
+            draw_state.content_width = column_width - content_margin
+
+            ##########################
+
+
 
             if kwargs.get("live", False):
                 draw_state.live = True
@@ -932,12 +959,22 @@ def render_func(*args, **o_kwargs):
                 draw_state.clip_rect = clip_rect
 
 
-            if draw_state._save_pending_obj is not None and draw_state._save_pending_obj.originated in auto_apply:
-                draw_state._apply_save = draw_state._save_pending_obj.originated
-                Melty.cache.invalidate_up(draw_state._parent._tile_id, force=True)
-                request_render()
+            # Filter out originated functions that have an error pending state
+            # no point auto-applying a converter that will just error out.
+            _error_originated = set()
+            for _p in draw_state._all_pending.values():
+                if isinstance(_p, Pending) and _p.state == PendingState.ERROR:
+                    _error_originated.add(_p.originated)
 
-            if draw_state._internal_pending is not None and draw_state._internal_pending.originated in auto_apply:
+            _active_auto_apply = tuple(f for f in auto_apply if f not in _error_originated)
+
+            if draw_state._save_pending_obj is not None and draw_state._save_pending_obj.originated in _active_auto_apply:
+                if draw_state._save_pending_obj.originated not in _error_originated:
+                    draw_state._apply_save = draw_state._save_pending_obj.originated
+                    Melty.cache.invalidate_up(draw_state._parent._tile_id, force=True)
+                    request_render()
+
+            if draw_state._internal_pending is not None and draw_state._internal_pending.originated in _active_auto_apply:
                 draw_state._apply_load = draw_state._internal_pending.originated
                 Melty.cache.invalidate_up(draw_state._parent._tile_id, force=True)
                 request_render()
@@ -1072,7 +1109,8 @@ def render_func(*args, **o_kwargs):
                         else:
                             converter_kwargs = Melty.converter_flags.get(convert_path[0], {})
                         if draw_state._apply_load is not None:
-                            print("OUTSIDE Applying load during convert, invalidating cache")
+                            print(f"{unique} "
+                            f"OUTSIDE Applying load during convert, invalidating cache")
                         if (not Melty.on_drag and not imgui.is_mouse_down(2) and not imgui.is_mouse_down(1)) or draw_state._input_value_cache["internal_state"][0] == UNSET_VALUE:
 
                             no_cache = converter_kwargs.get("stateful", False)
@@ -1711,6 +1749,13 @@ def render_func(*args, **o_kwargs):
                     converted_input = True
                 thead_launch_frame = 0
                 if converted_input or draw_state._apply_save:
+                    # Clear ERROR pending if the user edits the code -
+                    # the new code might be valid, so allow auto_apply to retry.
+                    if child_changed:
+                        _cur_sp = draw_state._all_pending.get("save_pending")
+                        if isinstance(_cur_sp, Pending) and _cur_sp.state == PendingState.ERROR:
+                            # print(f"Clearing ERROR pending for {draw_state.name} since user edited the value. Error pending status: {_cur_sp.status}")
+                            draw_state._all_pending["save_pending"] = None
                     if child_changed:
                         # # draw_state._input_value_cache["external_state"] = ...
                         # if isinstance(new_value_child, Pending):
@@ -1766,7 +1811,6 @@ def render_func(*args, **o_kwargs):
 
 
                                 if draw_state._apply_save is not None:
-                                    print(f"{draw_state._apply_save}")
                                     no_cache=True
                                 external_value = Background.run(convert, user_id=str(unique) + f" | output convert {str(convert_path[-1].__name__)}",
                                                                 invalidate_id=draw_state._parent._tile_id,
@@ -1782,11 +1826,23 @@ def render_func(*args, **o_kwargs):
                                         draw_state._apply_save = None
                                         Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=4, force=True)
 
-                                    draw_state._all_pending["save_pending"] = None
+                                    _cur_sp = draw_state._all_pending.get("save_pending")
+                                    if _cur_sp is not None and not (isinstance(_cur_sp, Pending) and _cur_sp.state == PendingState.ERROR):
+                                        # print(f"Clearing pending for {draw_state.name} since conversion returned non-pending value {external_value}")
+                                        draw_state._all_pending["save_pending"] = None
 
                                 else:
+                                    if external_value.state == PendingState.ERROR:
+                                        print(f"Error in converter for {draw_state.name}: {external_value.status}")
+                                        draw_state._apply_save = None
+                                        draw_state._save_pending_obj = None
+                                        draw_state._show_save = False
                                     if external_value.state != PendingState.BACKGROUND:
-                                        draw_state._all_pending["save_pending"] = external_value
+                                        # Don't let a successful error overwrite an ERROR in _all_pending
+                                        _cur_sp = draw_state._all_pending.get("save_pending")
+                                        if not (isinstance(_cur_sp, Pending) and _cur_sp.state == PendingState.ERROR and external_value.state != PendingState.ERROR):
+                                            print(f"add to all pending {external_value.state} {draw_state.name} {type(draw_state._raw_input_value).__name__} -> {type(external_value).__name__}")
+                                            draw_state._all_pending["save_pending"] = external_value
 
 
                             else:
@@ -1803,7 +1859,11 @@ def render_func(*args, **o_kwargs):
                             draw_state._show_save = False
 
                         if isinstance(external_value, Pending):
-                            if external_value.state == PendingState.CONFIRM:
+                            if external_value.state == PendingState.ERROR:
+                                # Clear save dialog, the error is tracked via _all_pending only.
+                                draw_state._save_pending_obj = None
+                                draw_state._show_save = False
+                            elif external_value.state == PendingState.CONFIRM:
                                 draw_state._save_pending_obj = external_value
                                 if not draw_state._show_save:
                                     Melty.cache.invalidate_up(draw_state._parent._tile_id, force=True)
@@ -1843,6 +1903,7 @@ def render_func(*args, **o_kwargs):
 
                 else:
                     # Synchronous
+
                     report_changed = child_changed
                     report_value = new_value_child
 
@@ -2044,15 +2105,11 @@ def render_func(*args, **o_kwargs):
         load_icon = f"\uf110"
         draw_list: _DrawList = imgui.get_window_draw_list()
         if pending_obj.state == PendingState.ERROR:
-            pass
-            # imgui.set_next_cursor_pos((draw_state.left + 2,
-            #                              draw_state.top + draw_state.height - draw_state.footer_height - 20))
-            # imgui.text_colored(f"{pending_obj.status}", *(1, 0.0, 0.0, 1.0))
-            #
-            # draw_list.add_text(*(draw_state.left + 2,
-            #                      draw_state.top + draw_state.height - draw_state.footer_height - 20),
-            #                    imgui.get_color_u32_rgba(1, 0, 0, 1.0),
-            #                    f"{load_icon} {pending_obj.status}")
+            draw_list.add_text(
+                *(draw_state.left + 2,
+                  draw_state.top + draw_state.height - draw_state.footer_height - 20),
+                imgui.get_color_u32_rgba(1, 0, 0, 1.0),
+                f"{load_icon} {pending_obj.status}")
         else:
             draw_list.add_text(
                 *(draw_state.left + 2, draw_state.top + draw_state.height - draw_state.footer_height - 20),
