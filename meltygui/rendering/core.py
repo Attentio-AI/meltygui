@@ -1108,9 +1108,7 @@ def render_func(*args, **o_kwargs):
                                 converter_kwargs = Melty.converter_flags_by_type.get((convert_path[0], None), {})
                         else:
                             converter_kwargs = Melty.converter_flags.get(convert_path[0], {})
-                        if draw_state._apply_load is not None:
-                            print(f"{unique} "
-                            f"OUTSIDE Applying load during convert, invalidating cache")
+
                         if (not Melty.on_drag and not imgui.is_mouse_down(2) and not imgui.is_mouse_down(1)) or draw_state._input_value_cache["internal_state"][0] == UNSET_VALUE:
 
                             no_cache = converter_kwargs.get("stateful", False)
@@ -1278,13 +1276,15 @@ def render_func(*args, **o_kwargs):
                     bg_color = (0, 0, 0, 0)
                     if draw_state.width > 5 and draw_state.height > 5:
                         nested_bg = not closable and kwargs.get("bg_offset", 0) >= 0
-                        _, bg_color = draw_bg(bypass=True, left=draw_state.left, top=draw_state.top,
+                        bg_return = draw_bg(bypass=True, left=draw_state.left, top=draw_state.top,
                                               width=draw_state.width, height=draw_state.height,
                                               rounding=draw_state.corner_radius,
                                               depth=Melty.shadow_depth, selected=draw_state.selected,
                                               global_style=global_style, opacity=1.0 if show_bg else 0.0,
                                               pressed=draw_state.pressed,
                                               style_manager=style_manager, nested_bg=nested_bg)
+                        if bg_return is not None:
+                            bg_color = bg_return[1]
 
                     Melty.bg_color_stack.append(bg_color)
 
@@ -1833,7 +1833,6 @@ def render_func(*args, **o_kwargs):
 
                                 else:
                                     if external_value.state == PendingState.ERROR:
-                                        print(f"Error in converter for {draw_state.name}: {external_value.status}")
                                         draw_state._apply_save = None
                                         draw_state._save_pending_obj = None
                                         draw_state._show_save = False
@@ -1841,7 +1840,6 @@ def render_func(*args, **o_kwargs):
                                         # Don't let a successful error overwrite an ERROR in _all_pending
                                         _cur_sp = draw_state._all_pending.get("save_pending")
                                         if not (isinstance(_cur_sp, Pending) and _cur_sp.state == PendingState.ERROR and external_value.state != PendingState.ERROR):
-                                            print(f"add to all pending {external_value.state} {draw_state.name} {type(draw_state._raw_input_value).__name__} -> {type(external_value).__name__}")
                                             draw_state._all_pending["save_pending"] = external_value
 
 
@@ -1887,13 +1885,9 @@ def render_func(*args, **o_kwargs):
                                 if prev_hash != hash_val or draw_state._apply_save is not None:
                                     report_changed = True
                                     report_value = external_value
-                                    print(f"External value changed, invalidating cache")
                                     Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=4, force=True)
                                     # Melty.cache.invalidate_up(draw_state._tile_id, max_depth=10, force=True)
                                     request_render()
-
-
-
                         # if input_conversion_background:
                         #     draw_state._pending_convert = True
                         #     Melty.cache.invalidate_up_by_obj(draw_state._collection)

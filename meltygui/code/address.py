@@ -215,12 +215,12 @@ def make_load_wrapper(fn: Callable, load_data: Callable,
         # ── No cache_id → stateless, always load ──────────────────
         apply_load = apply and  apply.__name__ == load_data.__name__ or apply is APPLY_ALL
 
-        if apply:
-            if not apply_load:
-                print(
-                    f"Converter {fn.__name__} got apply={apply} but will not apply because it did not originate from {value.__name__}")
-            else:
-                print(f"Applying converter {fn.__name__} with apply={apply}")
+        # if apply:
+        #     if not apply_load:
+        #         print(
+        #             f"Converter {fn.__name__} got apply={apply} but will not apply because it did not originate from {value.__name__}")
+        #     else:
+        #         print(f"Applying converter {fn.__name__} with apply={apply}")
 
         if cache_id is None:
             ref = to_fileref(value)
@@ -290,11 +290,11 @@ def make_save_wrapper(fn: Callable, save_data: Callable,
 
         apply_save = apply and apply.__name__ == save_data.__name__ or apply is APPLY_ALL
 
-        if apply:
-            if not apply_save:
-                print(f"Converter {fn.__name__} got apply={apply} but will not apply because it did not originate from {save_data.__name__}")
-            else:
-                print(f"Applying converter {fn.__name__} with apply={apply}")
+        # if apply:
+        #     if not apply_save:
+        #         print(f"Converter {fn.__name__} got apply={apply} but will not apply because it did not originate from {save_data.__name__}")
+        #     else:
+        #         print(f"Applying converter {fn.__name__} with apply={apply}")
 
         # ── No cache_id → stateless pass-through ────────────────────
 

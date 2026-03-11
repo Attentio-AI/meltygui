@@ -248,7 +248,6 @@ def draw_footer(input_value=None, name="", key=None, melty=None, parent_show_add
     for key, pending in draw_state._all_pending.items():
         if pending is not None:
             if pending.state == PendingState.ERROR:
-                print(f"FROM UI Error pending: {pending.error}")
                 draw_pending(pending, name=f"{key}", tint=(1, 0, 0))
 
     imgui.text(f"{name}")
@@ -2022,7 +2021,7 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=4.37,
     snap_int(left) + thickness, snap_int(top) + thickness, snap_int(right) - thickness, snap_int(bottom) - thickness)
     rect_outline = (snap_int(left) + half_thickness, snap_int(top) + half_thickness,
                     snap_int(right) - half_thickness, snap_int(bottom) - half_thickness)
-    rounding = 4.13
+    rounding = 3.73
     depth_factor = 0.07
     depth_offset = 0.47
     dynamic_value = max(0, (float(depth + depth_offset) * depth_factor))
@@ -2032,20 +2031,23 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=4.37,
         hovered_offset = 0.00
     elif pressed:
         if opacity > 0.5:
+            # new comment
             hovered_offset = 0.0
         else:
             hovered_offset = 1.739
-    
+
+
     def mix_colors(c1, c2, fac):
         return (c1[0] * (1 - fac) + c2[0] * fac,
                 c1[1] * (1 - fac) + c2[1] * fac,
                 c1[2] * (1 - fac) + c2[2] * fac)
-    
+    # test hello world
+    # comm
     bg_style = {'value': 0.092, 'saturation': 1.69, 'alpha': 0.22,
-                'max_value': 3.02}
-    outline_saturation = 1.57
-    outline_offset = 0.19
-    outline_factor = -0.142
+                'max_value': 2.58}
+    outline_saturation = 1.38
+    outline_offset = 0.34
+    outline_factor = -0.322
 
     if not nested_bg:
         outline_factor *= 1.00
@@ -2310,7 +2312,17 @@ def draw_text(input_value: str, draw_state):
 
 
 @render_func(is_default_for=(str), shadow=False, wrap=False, with_header=draw_header)
-def draw_str(input_value: str, draw_state):
+def draw_str(input_value: str, draw_state, editable=True, alpha=1.0):
+
+    if not editable:
+        imgui.push_style_var(imgui.STYLE_ALPHA, alpha)
+        imgui.push_text_wrap_pos(draw_state.left + draw_state.content_width - 2)
+        imgui.text(str(input_value))
+        imgui.pop_text_wrap_pos()
+        imgui.pop_style_var(1)
+        return False, input_value
+
+
     line_count = input_value.count('\n') + 1
     line_height = imgui.get_text_line_height()
     text_height = imgui.calc_text_size(str(input_value))[1] + line_height * 2
@@ -2349,20 +2361,46 @@ def draw_str(input_value: str, draw_state):
     return changed, value
 
 
-@render_func(is_default_for=(Comment), shadow=False, wrap=False, with_header=None, is_tree=False, tint=(0.2, 0.2, 0.1))
-def draw_comment(input_value: Comment, draw_state):
+@render_func(is_default_for=(Comment), shadow=True, with_header=None, is_tree=False, tint=(0.2, 0.2, 0.1))
+def draw_comment(input_value: Comment, draw_state, cursor_hover=False):
     line_height = imgui.get_text_line_height()
     show_controls = True
+    changed, value = False, input_value
+    help_yellow= (0.8, 0.8, 0.3)
+    help_icon = "\u2753"
+    draw_list: _DrawList = imgui.get_window_draw_list()
+    character_width = imgui.calc_text_size(help_icon)[0]
+    # Draw circle background for comment
+    radius = 18 / 2
+    center_x = draw_state.left + radius
+    center_y = draw_state.top + radius
+    color = imgui.get_color_u32_rgba(*help_yellow, 0.3)
+    imgui.dummy(min(max(30, 30), 300), radius * 2)
+    cursor_hover = imgui.is_item_hovered()
+    draw_list.add_circle_filled(center_x, center_y, radius, color)
+    draw_list.add_text(center_x - character_width / 2, center_y - line_height / 2,
+    imgui.get_color_u32_rgba(0.8, 0.8, 0.7, 1.0), help_icon)
 
-    if not show_controls:
-        imgui.push_style_var(imgui.STYLE_ALPHA, 0)
+    if cursor_hover:
+        popup_max_width = 300
+        text_size = imgui.calc_text_size(str(input_value), wrap_width=popup_max_width)
+        popup_width = popup_max_width
 
-    imgui.set_next_item_width(draw_state.content_width)
-    changed, value = imgui.input_text("##str", str(input_value))
-    value = Comment(value)
+        imgui.set_cursor_screen_pos((draw_state.left + radius * 2 + 5, draw_state.top))
+        draw_window(str(input_value), editable=False, window_pos=(0,0), width=popup_width, height=text_size[1] + 5,
+        with_header_end=None, with_header=None, with_footer=None)
+    imgui.same_line(spacing=0)
+    draw_str(str(input_value[1:]), alpha=0.1, editable=False, is_tree=False, with_header=None, show_name=False)
 
-    if not show_controls:
-        imgui.pop_style_var(1)
+    # if not show_controls:
+    #     imgui.push_style_var(imgui.STYLE_ALPHA, 0)
+    #
+    # imgui.set_next_item_width(draw_state.content_width)
+    # changed, value = imgui.input_text("##str", str(input_value))
+    # value = Comment(value)
+    #
+    # if not show_controls:
+    #     imgui.pop_style_var(1)
 
     if changed:
         return True, value
@@ -2701,7 +2739,7 @@ def pending_window(input_value, pending_name, pending=None, draw_state=None):
 class Mode(Enum):
     CODE_UI = {
         cst.Module: ModeOverrides(
-            kwargs={"convert": [cst.Module, dict]},
+            kwargs={"convert": [cst.Module, dict], "horizontal":True},
             func=draw_collection,
             recursive=False
         ),

@@ -594,7 +594,6 @@ def cst_module_to_fileref(value: cst.Module) -> str:
 
 @converter(registry=Melty, from_type=types.FunctionType, load_data=load_text, stateful=True, )
 def function_to_cst(value, data: str, ref: FileRef) -> cst.Module:
-    print(f"Parsing function from source with length {len(data)}")
     return cst.parse_module(data)
 
 def recompile(value, ref: FileRef, data: str, watch) -> FileRef:
@@ -647,6 +646,59 @@ def _validate_global_names(code, namespace: dict) -> None:
             _validate_global_names(const, namespace)
 
 
+def _validate_local_names(code) -> None:
+    """Check for local variables loaded before being stored.
+
+    Catches two cases that compile fine but raise UnboundLocalError:
+
+    1. Typo — variable is never stored anywhere:
+        some_int = 42
+        print(some_intt)   # NameError-like, but local scope
+
+    2. Load before store — variable is stored later (or in another
+       branch), so Python marks it as local, but the load executes
+       first in instruction order:
+        print(some_int)    # LOAD_FAST — UnboundLocalError
+        some_int = 42      # STORE_FAST exists, but too late
+
+    Heuristic: in bytecode instruction order, if the first reference
+    to a non-parameter variable is a LOAD_FAST, flag it.  This is
+    conservative (may flag branch-dependent code that's actually safe)
+    but prevents broken functions from being hotswapped in.
+
+    Recurses into nested code objects (comprehensions, inner functions, etc.).
+    """
+    # Parameter count: positional + keyword-only + positional-only
+    n_params = code.co_argcount + code.co_kwonlyargcount
+    if hasattr(code, 'co_posonlyargcount'):
+        n_params += code.co_posonlyargcount
+    param_names = set(code.co_varnames[:n_params])
+
+    # Track the first reference type for each local variable name.
+    # "store" = safe, "load" = potentially unbound.
+    first_ref: dict[str, str] = {}
+    for instr in dis.get_instructions(code):
+        if instr.opname in ("STORE_FAST", "STORE_NAME"):
+            if instr.argval not in first_ref:
+                first_ref[instr.argval] = "store"
+        elif instr.opname in ("LOAD_FAST", "LOAD_FAST_CHECK",
+                               "LOAD_FAST_AND_CLEAR"):
+            if instr.argval not in first_ref:
+                first_ref[instr.argval] = "load"
+
+    for name, ref_type in first_ref.items():
+        if name not in param_names and ref_type == "load":
+            raise UnboundLocalError(
+                f"cannot access local variable '{name}' where it is "
+                f"not associated with a value"
+            )
+
+    # Check nested code objects (comprehensions, inner functions, etc.)
+    for const in code.co_consts:
+        if isinstance(const, types.CodeType):
+            _validate_local_names(const)
+
+
 def _recompile(func: types.FunctionType, source: str,
                filename: str) -> None:
     dedented = textwrap.dedent(source)
@@ -689,6 +741,7 @@ def _recompile(func: types.FunctionType, source: str,
     # This catches typos like "Outlllj" that would compile but would
     # NameError at runtime - at which it's too late to undo.
     _validate_global_names(new_func.__code__, namespace)
+    _validate_local_names(new_func.__code__)
 
     # Save the original line number before patching - compile() sets
     # co_firstlineno to 1 (because of dedented string), but inspect
