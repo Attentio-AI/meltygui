@@ -1996,13 +1996,13 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=4.37,
     # 1, 0, 1, 1.0), f"Depth: {len(Melty.bg_stack)}")
     # Render thi
 
-    # sdjhk how are hkjhkjh\
+    # sd;jk how are you? 
     clamped = ((max(2.0, Melty.bg_depth) % 9.0) - 1.5)
     depth = (clamped) * 2.59
     right = left + width
     bottom = top + height
-    thickness = 1.22
-    half_thickness = 0.71
+    thickness = 1.73
+    half_thickness = 1.09
     rect = (
     snap_int(left) + thickness, snap_int(top) + thickness, snap_int(right) - thickness, snap_int(bottom) - thickness)
     rect_outline = (snap_int(left) + half_thickness, snap_int(top) + half_thickness,
@@ -2277,7 +2277,6 @@ def draw_text(input_value: str, draw_state):
     height = clamped_bottom - draw_state.top
     changed, value = False, input_value
     if height > 10:
-
         show_controls = True
 
         if not show_controls:
