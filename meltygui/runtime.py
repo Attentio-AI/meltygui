@@ -633,14 +633,14 @@ class Melty:
     @classmethod
     def get_clip_rect(cls):
         if len(cls.clip_stack) == 0:
-            fixed_size = cls.fixed_size_stack[-1] if len(cls.fixed_size_stack) > 0 else None
-            # if fixed_size is not None and fixed_size.width is not None and fixed_size.height is not None:
-            #     return (
-            #         fixed_size.left,
-            #         fixed_size.top,
-            #         fixed_size.left + fixed_size.width,
-            #         fixed_size.top + fixed_size.height
-            #     )
+            # fixed_size = cls.fixed_size_stack[-1] if len(cls.fixed_size_stack) > 0 else None
+            # # if fixed_size is not None and fixed_size.width is not None and fixed_size.height is not None:
+            # #     return (
+            # #         fixed_size.left,
+            # #         fixed_size.top,
+            # #         fixed_size.left + fixed_size.width,
+            # #         fixed_size.top + fixed_size.height
+            # #     )
             return None
 
         return cls.clip_stack[-1]

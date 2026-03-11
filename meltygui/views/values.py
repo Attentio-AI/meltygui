@@ -797,6 +797,7 @@ def test_columns():
     draw_str("Column 1", name="col1", column=0)
     draw_int(123, name="col2", column=1)
     draw_float(0.5, name="col3", column=2)
+    draw_float(0.5, name="test_5", column=5)
 
     for i in range(10):
         draw_float(0.4, name=f"float_{i}", column=2)
@@ -2021,7 +2022,7 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=4.37,
     snap_int(left) + thickness, snap_int(top) + thickness, snap_int(right) - thickness, snap_int(bottom) - thickness)
     rect_outline = (snap_int(left) + half_thickness, snap_int(top) + half_thickness,
                     snap_int(right) - half_thickness, snap_int(bottom) - half_thickness)
-    rounding = 3.73
+    rounding = 4.14
     depth_factor = 0.07
     depth_offset = 0.47
     dynamic_value = max(0, (float(depth + depth_offset) * depth_factor))
@@ -2032,7 +2033,7 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=4.37,
     elif pressed:
         if opacity > 0.5:
             # new comment
-            hovered_offset = 0.0
+            hovered_offset = 2.1
         else:
             hovered_offset = 1.739
 
@@ -2043,7 +2044,7 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=4.37,
                 c1[2] * (1 - fac) + c2[2] * fac)
     # test hello world
     # comm
-    bg_style = {'value': 0.092, 'saturation': 1.69, 'alpha': 0.22,
+    bg_style = {'value': 0.092, 'saturation': 1.69, 'alpha': -2.0,
                 'max_value': 2.58}
     outline_saturation = 1.38
     outline_offset = 0.34

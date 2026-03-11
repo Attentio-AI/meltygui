@@ -187,7 +187,7 @@ def render_func(*args, **o_kwargs):
         # first_arg = args[0] if args else None
         input_value = kwargs.get("input_value", input_value)
 
-        content_margin = ((len(Melty.bg_stack) + 1) * 2.0)
+        content_margin = ((len(Melty.bg_stack)) * 2.0)
 
         kwargs = o_kwargs | kwargs
 
@@ -810,36 +810,47 @@ def render_func(*args, **o_kwargs):
                 draw_state.width = 400
 
             header_width = draw_state.header_width + draw_state.header_end_width
-
-            if len(Melty.fixed_size_stack) > 0 and draw_state.auto_resize and not closable and not Melty.is_wrapped() and passed_width is None:
+            if len(Melty.fixed_size_stack) > 0:
                 fixed_size_draw_state = Melty.fixed_size_stack[-1]
-                x_offset = draw_state.left - fixed_size_draw_state.left
-                draw_state.width = fixed_size_draw_state.width - x_offset - content_margin
-
-
-                if kwargs.get("fill_height", False) and passed_height is None:
-                    draw_state.height = snap_int(
-                        fixed_size_draw_state.height - (imgui.get_cursor_screen_pos()[1] - fixed_size_draw_state.top))
-
-                available_width = (fixed_size_draw_state.width - x_offset - content_margin - 10)
-            elif len(Melty.fixed_size_stack) > 0:
-                fixed_size_draw_state = Melty.fixed_size_stack[-1]
-                x_offset = draw_state.left - fixed_size_draw_state.left
-                available_width = (fixed_size_draw_state.width - x_offset - content_margin - 10)
+                parent_wrap_width = fixed_size_draw_state.width
+                parent_wrap_height = fixed_size_draw_state.height
+                parent_wrap_left = fixed_size_draw_state.left
+                parent_wrap_top = fixed_size_draw_state.top
             else:
-                rect = Melty.get_clip_size()
-                if rect is not None:
-                    available_width = (
-                            rect[0] - content_margin - 10)
-                elif not auto_resize:
-                    available_width = draw_state.width
+                clip_size = Melty.get_clip_size()
+                clip_rect = Melty.get_clip_rect()
+                if clip_size is not None:
+                    parent_wrap_width = clip_size[0]
+                    parent_wrap_left = clip_rect[0]
+                    parent_wrap_top = clip_rect[1]
+                    parent_wrap_height = clip_size[1]
                 else:
-                    rect = imgui.get_io().display_size
-                    offset = rect[0] - draw_state.left
-                    available_width = (offset - content_margin - 10)
+                    parent_wrap_width = imgui.get_io().display_size[0]
+                    parent_wrap_left = 0
+                    parent_wrap_top = 0
+                    parent_wrap_height = imgui.get_io().display_size[1]
 
-            single_line_avail = available_width - header_width
+            column_parent = draw_state._parent
+            column = kwargs.get("column", None)
+            draw_state.final_max_column = draw_state._current_max_column
+            draw_state._current_max_column = 0
+            x_offset = draw_state.left - parent_wrap_left
+            if kwargs.get("fill_height", False) and passed_height is None:
+                                draw_state.height = snap_int(parent_wrap_height - (imgui.get_cursor_screen_pos()[1] - parent_wrap_top))
+            if column is not None and column_parent is not None:
+                column_parent._current_max_column = max(column_parent._current_max_column, column)
+                parent_wrap_width = column_parent.content_width / (column_parent.final_max_column + 1)
+                parent_wrap_left = draw_state.left + snap_int(parent_wrap_width * column)
+                available_width = parent_wrap_width - 2
+            else:
+                available_width = (parent_wrap_width - x_offset - content_margin)
 
+            if len(Melty.fixed_size_stack) > 0:
+                if (draw_state.auto_resize and not closable and not
+                    Melty.is_wrapped() and passed_width is None):
+                    draw_state.width = available_width
+
+            single_line_avail = available_width - header_width - 5
             header_same_line = kwargs.get("header_same_line", False)
             if ((single_line_avail < 100 or draw_state.height - draw_state.footer_height > 50)
                     and not header_same_line and not Melty.is_wrapped()):
@@ -851,26 +862,14 @@ def render_func(*args, **o_kwargs):
 
 
             ################# Columns
-
-            draw_state.final_max_column = draw_state._current_max_column
-            draw_state._current_max_column = 0
             draw_state.column_cursor = defaultdict(lambda: [0, 0])  # column -> (x, y)
 
-            column = kwargs.get("column", None)
-            column_width = draw_state.content_width
-            parent = draw_state._parent
-
-            if column is not None and parent is not None:
-                parent._current_max_column = max(parent.final_max_column, column)
-                column_width = parent.width / (parent._current_max_column + 1)
-                column_cursor_y = parent.column_cursor[column][1]
-                new_left = imgui.get_cursor_screen_pos()[0] + snap_int(column_width * column)
-                imgui.set_cursor_screen_pos((new_left, parent.abs_top + column_cursor_y))
-
-                draw_state.left_offset = new_left - parent.left
-                draw_state.left = new_left
-                # draw_state.width = column_width + content_margin
-                parent.column_cursor[column][1] += draw_state.height # This will lag behind a frame, but keeping code tidy instead
+            if column is not None and column_parent is not None:
+                column_cursor_y = column_parent.column_cursor[column][1]
+                imgui.set_cursor_screen_pos((parent_wrap_left, column_parent.abs_top + column_cursor_y))
+                draw_state.left_offset = parent_wrap_left - column_parent.left
+                draw_state.left = parent_wrap_left
+                column_parent.column_cursor[column][1] += draw_state.height # This will lag behind a frame, but keeping code tidy instead
 
             if draw_state.final_max_column > 1:
                 column_width = draw_state.content_width / (draw_state.final_max_column + 1)
@@ -881,7 +880,6 @@ def render_func(*args, **o_kwargs):
                                        draw_state.left + snap_int(column_width * c), draw_state.top + snap_int(draw_state.height),
                                        imgui.get_color_u32_rgba(0.0, 0.0, 0.0, 0.3), 1)
 
-            draw_state.content_width = column_width - content_margin
 
             ##########################
 
