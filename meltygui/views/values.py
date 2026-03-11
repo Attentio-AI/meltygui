@@ -853,7 +853,7 @@ def draw_main(input_value, vis, **kwargs):
 
     # draw_window(core_model, name="Module test")
 
-    draw_window(None, view_func=test_columns, name="Test columns")
+    test_columns(input_value="Nolkjlkjne", as_window=True, name="Test columns")
 
     draw_window(draw_main, name="Draw Main Function")
     some_enum = ProfileMode.OFF
@@ -862,7 +862,7 @@ def draw_main(input_value, vis, **kwargs):
 
     draw_window(filesystem_proxy, name="Filesystem Test")
 
-    draw_window(input_value=proxy, name="CST Proxy")
+    draw_any(input_value=proxy, name="CST Proxy", as_window=True)
 
     draw_window(vis.root.lora_collection, name="Test Window 1")
     draw_window(vis.root.lora_collection.loras, name="Test Window 2", child_kwargs={
