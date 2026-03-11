@@ -405,16 +405,24 @@ def dict_to_cst_module(value: dict) -> cst.Module:
              if not (_is_dunder(k))
              and not isinstance(k, Comment)}
 
-    result = tree
-    if edits:
-        result = result.visit(_ModulePatcher(edits))
+    try:
+        result = tree
+        if edits:
+            result = result.visit(_ModulePatcher(edits))
 
-    # Patch comments (module header + body)
-    all_comment_edits = _collect_comment_edits(value)
-    if all_comment_edits:
-        result = _patch_module_comments(result, value)
+        # Patch comments (module header & body)
+        all_comment_edits = _collect_comment_edits(value)
+        if all_comment_edits:
+            result = _patch_module_comments(result, value)
 
-    return result
+        return result
+    except cst.ParserSyntaxError as e:
+        return Pending(wrapped=ParseError(
+            source=tree.code,
+            error=e.message,
+            line=e.raw_line,
+            column=e.raw_column,
+        ), originated=dict_to_cst_module, state=PendingState.ERROR, status=e.message)
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗

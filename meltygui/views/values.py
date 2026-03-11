@@ -2007,7 +2007,7 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=4.37,
     snap_int(left) + thickness, snap_int(top) + thickness, snap_int(right) - thickness, snap_int(bottom) - thickness)
     rect_outline = (snap_int(left) + half_thickness, snap_int(top) + half_thickness,
                     snap_int(right) - half_thickness, snap_int(bottom) - half_thickness)
-    #Outlline
+    #Outlineslj
 
     rounding = 6.02
     depth_factor = 0.07

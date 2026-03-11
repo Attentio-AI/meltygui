@@ -596,11 +596,15 @@ def function_to_cst(value, data: str, ref: FileRef) -> cst.Module:
     return cst.parse_module(data)
 
 def recompile(value, ref: FileRef, data: str, watch) -> FileRef:
+    from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
     # source = inspect.getsource(function)
     if value is not None:
         function = watch.original_input_load
         source = data
-        _recompile(function, source, str(ref.path))
+        try:
+            _recompile(function, source, str(ref.path))
+        except Exception as e:
+            return Pending(originated=recompile, status=str(e))
     # return ref
     full_data = ref.path.read_bytes()
     newline = _detect_newline(full_data)
