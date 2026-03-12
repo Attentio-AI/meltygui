@@ -18,6 +18,7 @@ from imgui.core import _DrawList
 from imgui.core import _IO
 
 from src.lsd.gl_gui.background import Background, Pending
+from src.lsd.gl_gui.collision import Collisions
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment
 from src.lsd.gl_gui.view.core_conversion.path_finder import convert, explain_chain, NO_VALUE, PendingState, invert_path
 from src.lsd.gl_gui.view.core_views.core_render_helpers import draw_vertical_scrollbar, floating_text
@@ -170,20 +171,30 @@ def render_func(*args, **o_kwargs):
             if annotation is not None:
                 return annotation
 
+        modes = kwargs.get("mode", None)
+        if not isinstance(modes, tuple):
+            modes = (modes,) if modes is not None else None
+
+        mode_stacked = False
+        if modes is not None:
+            mode_config = modes[0].value.get(type(input_value), None)
+            if mode_config is not None and mode_config.recursive:
+                Melty.mode_stack.append(modes)
+                mode_stacked = True
+
+            for mode in modes:
+                if mode is not None:
+                    mode_config = mode.get_config_for(input_value)
+                    if mode_config is not None:
+                        override_kwargs = mode_config.kwargs
+                        kwargs = kwargs | override_kwargs
+                        if not mode_config.recursive:
+                            kwargs.pop('mode', None)
+                        else:
+                            kwargs['mode'] = mode
+
         as_window = kwargs.get("as_window", False)
         if as_window:
-            # kwargs['show_bg'] = False
-            # kwargs['selectable'] = False
-            # kwargs['return_extras'] = True
-            # kwargs['indent_size'] = 2
-            # kwargs['with_header'] = None
-            # kwargs['with_header_end'] = None
-            # kwargs['with_footer'] = None
-            # kwargs['is_tree'] = False
-            # kwargs['closable'] = False
-            # kwargs['auto_resize'] = True
-            # kwargs['disable_scroll'] = True
-            # kwargs.pop('max_height', None)
             kwargs['show_bg'] = True
             kwargs['z_offset'] = 0
             kwargs['selectable'] = False
@@ -192,6 +203,7 @@ def render_func(*args, **o_kwargs):
             kwargs['closable'] = True
             kwargs['auto_resize'] = False
             kwargs['draggable'] = True
+            kwargs['show_tint'] = True
             # kwargs['return_extras'] = True
             kwargs['show_header'] = True
             kwargs['z_offset'] = -3
@@ -200,8 +212,6 @@ def render_func(*args, **o_kwargs):
             from src.lsd.gl_gui.view.core_views.new_core_view import draw_header_end, draw_header
             kwargs['with_header_end'] = draw_header_end
             kwargs['with_header'] = draw_header
-            # imgui.set_cursor_screen_pos((0,0))
-
 
         passed_width = kwargs.get('width', None)
         passed_height = kwargs.get('height', None)
@@ -305,7 +315,6 @@ def render_func(*args, **o_kwargs):
 
         draw_state.closed = kwargs.get("closed", draw_state.closed)
 
-
         if closable:
             # Only perform this check on floating windows
             if draw_state._parent is not None and not draw_state._parent.clipped:
@@ -330,33 +339,9 @@ def render_func(*args, **o_kwargs):
             elif draw_state.closed and input_value == Melty.registered_windows:
                 draw_state.closed = False
 
-        mode = kwargs.get("mode", None)
-        mode_stacked = False
-        if mode is not None:
-            mode_config = mode.value.get(type(input_value), None)
-            if mode_config is not None and mode_config.recursive:
-                Melty.mode_stack.append(mode)
-                mode_stacked = True
 
-
-        if mode is not None:
-            current_mode = mode
-            mode_config = None
-            for super_type in type(input_value).__mro__:
-                mode_config = current_mode.value.get(super_type, None)
-                if mode_config is not None:
-                    break
-
-            if mode_config is not None:
-                override_kwargs = mode_config.kwargs
-                kwargs = kwargs | override_kwargs
-                if mode_config.func is not None:
-                    kwargs['view_func'] = mode_config.func
-                    kwargs['mode'] = mode
 
         draw_state._kwargs = kwargs
-        input_changed = False
-        internal_changed = False
         ds_kwargs = copy(kwargs)
         exclude_ds_kwargs = ["input_value", "wanted_params", "depth", "shadow_depth",
                              "name", "z_offset", "use_cache", "active_layer", "auto_resize",
@@ -371,7 +356,6 @@ def render_func(*args, **o_kwargs):
         draw_state.name = name
         original_type = type(input_value)
         converted_input = False
-        input_conversion_background = False
 
         draw_state.closable = closable
         draw_state.behind = kwargs.get("behind", draw_state.behind)
@@ -382,9 +366,7 @@ def render_func(*args, **o_kwargs):
         if draw_state.kwargs.temp:
             draw_state.dlt_count = 0
 
-            # Disable cache for this frame to avoid further issues
         computed_unique = unique
-
         # -------------------------------------------------------------------------
         if is_root:
             # NOTE: We already computed 'unique' correctly for root scope; do not recompute.
@@ -758,6 +740,8 @@ def render_func(*args, **o_kwargs):
 
                 if 'window_pos' in kwargs:
                     draw_state.window_pos = kwargs.get('window_pos', draw_state.window_pos)
+            else:
+                draw_state.window_pos = (0,0)
 
             if not auto_resize and (passed_width is None or passed_height is None):
                 corner_rect = get_resize_handle(draw_state)
@@ -868,7 +852,7 @@ def render_func(*args, **o_kwargs):
             column = kwargs.get("column", None)
             draw_state.final_max_column = draw_state._current_max_column
             # draw_state._current_max_column = 0
-            draw_state.column_cursor = defaultdict(lambda: [0, 0])  # column : (x, y)
+            draw_state._column_cursor = defaultdict(lambda: [0, 0])  # column -> (x, y)
             x_offset = draw_state.abs_left - parent_wrap_left
             if kwargs.get("fill_height", False) and passed_height is None:
                                 draw_state.height = snap_int(parent_wrap_height - (imgui.get_cursor_screen_pos()[1] - parent_wrap_top))
@@ -899,10 +883,17 @@ def render_func(*args, **o_kwargs):
             ################# Columns
 
             if column is not None and column_parent is not None:
-                column_cursor_y = column_parent.column_cursor[column][1]
+                column_cursor_y = column_parent._column_cursor[column][1]
+                current_cursor = imgui.get_cursor_screen_pos()
                 imgui.set_cursor_screen_pos((parent_wrap_left, column_parent.abs_top + column_cursor_y + draw_state.header_height))
-                draw_state.left_offset = parent_wrap_left - column_parent.left
+                draw_state.left_offset = parent_wrap_left - column_parent.abs_left
+                draw_state.top_offset = column_parent.abs_top + column_cursor_y + draw_state.header_height - column_parent.abs_top
                 draw_state.left = parent_wrap_left
+                draw_state.top = parent_wrap_top + column_cursor_y + draw_state.header_height
+
+                Collisions.register(column_parent)
+                # Collisions.register(draw_state)
+
                 # column_parent.column_cursor[column][1] += draw_state.height # This will lag behind a frame, but keeping code tidy instead
 
             if draw_state.final_max_column > 1:
@@ -2035,8 +2026,9 @@ def render_func(*args, **o_kwargs):
             if draw_state.height > 30000:
                 draw_state.height = 30000
 
+            column = kwargs.get("column", None)
             if column is not None and column_parent is not None:
-                column_parent.column_cursor[column][1] += draw_state.height # This will lag behind a frame, but keeping code tidy instead
+                column_parent._column_cursor[column][1] += draw_state.height # This will lag behind a frame, but keeping code tidy instead
 
             draw_state._hovered = False
             draw_state.hotkey_receiver = False

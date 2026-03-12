@@ -10,6 +10,7 @@ import libcst as cst
 
 from src.lsd.gl_gui.background import Background
 from src.lsd.gl_gui.collection_action import CollectionAction
+from src.lsd.gl_gui.collision import Collisions
 from src.lsd.gl_gui.view.core_views.monitor import Monitor
 from src.shader_library.shader_manager.texture_manager import TextureManager
 from src.shader_library.shader_manager.filter import Filter
@@ -210,6 +211,7 @@ class Melty:
         gl.glBindVertexArray(0)
         is_popup_open = imgui.is_popup_open("", flags=imgui.POPUP_ANY_POPUP)
         Melty.imgui_popup_open = is_popup_open
+
 
         cls.backend.pump()
 
@@ -457,6 +459,7 @@ class Melty:
         # cls._root_by_module[module_id] = root
         # cls._gen_by_module.setdefault(module_id, 0)
         # cls._path_stack.clear()
+        Collisions.handle_collisions()
 
     @classmethod
     def get_latest_mouse(cls):

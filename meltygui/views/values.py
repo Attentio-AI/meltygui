@@ -12,7 +12,7 @@ from inspect import Parameter
 from math import sqrt
 from pathlib import Path
 from types import NoneType
-from typing import Optional
+from typing import Optional, Any
 
 import OpenGL.GL as gl
 import glfw
@@ -338,35 +338,9 @@ def empty(input_val):
              show_bg=True, melty_window=True, draggable=True, show_tint=True, tile_mode=TileMode.MAX,
              with_header=draw_header, with_header_end=draw_header_end, indent_size=10,
              with_footer=draw_footer, z_offset=-4)
-def draw_window(input_value:any, view_func=None, draw_state=None, delete_down=False, mode=None, glfw_close_down=False, **kwargs):
+def draw_window(input_value:any, view_func=None, draw_state=None, delete_down=False, glfw_close_down=False, **kwargs):
     if delete_down and imgui.get_io().key_ctrl:
         draw_state.closed = True
-
-    if view_func is None:
-        meta = kwargs.get("meta", None)
-        if meta is None:
-            if hasattr(Meta, 'get_child_meta'):
-                meta = Meta.get_child_meta(None, field_name=kwargs.get("name", ''), value=input_value)
-        if meta.view_function is None or 'draw_any' in meta.view_function.__name__:
-            meta.view_function = draw_collection
-        view_func = meta.view_function
-
-    if mode is None:
-        mode = Melty.mode_stack[-1] if len(Melty.mode_stack) > 0 else None
-    if mode is not None:
-        # Loop over super types
-        mode_config = None
-        for super_type in type(input_value).__mro__:
-            mode_config = mode.value.get(super_type, None)
-            if mode_config is not None:
-                break
-        if mode_config is not None:
-            override_kwargs = mode_config.kwargs
-            kwargs = kwargs | override_kwargs
-            if mode_config.func is not None:
-                view_func = mode_config.func
-        else:
-            kwargs['mode'] = mode
 
     if 'name' not in kwargs:
         kwargs['name'] = str(input_value)
@@ -386,7 +360,7 @@ def draw_window(input_value:any, view_func=None, draw_state=None, delete_down=Fa
     kwargs['shadow'] = False
     kwargs['z_offset'] = 0
 
-    return_val = view_func(input_value, **kwargs)
+    return_val = draw_any(input_value, view_func=view_func, **kwargs)
     if len(return_val) == 3:
         return_val = (return_val[0], return_val[1], draw_state)
 
@@ -407,6 +381,8 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=No
     """
     Universal collection renderer
     """
+    if draw_state.name == "cst_dict":
+        pass
 
     if child_kwargs is None:
         child_kwargs = {}
@@ -587,8 +563,9 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=No
                     item_meta.view_function = draw_collection
 
                 item_func = item_meta.view_function
-            else:
-                item_func = nested_func
+            # else:
+
+            item_func = nested_func
 
             item_kwargs = {
                 'return_extras': True,
@@ -601,29 +578,32 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=No
                 'display_name': display_name,
                 'parent_show_add_delete': show_add_delete,
                 'show_add_delete': show_add_delete,
-                'y_offset': y_offset
+                'y_offset': y_offset,
+                'mode': mode,
 
             }
 
             item_kwargs.update(child_kwargs)
-            if mode is None:
-                mode = Melty.mode_stack[-1] if len(Melty.mode_stack) > 0 else None
-            if mode is not None:
-                # Loop through super types
-                mode_config = None
-                for super_type in type(item).__mro__:
-                    mode_config = mode.value.get(super_type, None)
-                    if mode_config is not None:
-                        break
-                if mode_config is not None:
-                    override_kwargs = mode_config.kwargs
-                    item_kwargs = item_kwargs | override_kwargs
-                    if mode_config.func is not None:
-                        item_func = mode_config.func
-                else:
-                    item_kwargs['mode'] = mode
+            # if mode is None:
+            #     mode = Melty.mode_stack[-1] if len(Melty.mode_stack) > 0 else None
+            # if mode is not None:
+            #     # Loop over super types
+            #     mode_config = None
+            #     for super_type in type(item).__mro__:
+            #         mode_config = mode.value.get(super_type, None)
+            #         if mode_config is not None:
+            #             break
+            #     if mode_config is not None:
+            #         override_kwargs = mode_config.kwargs
+            #         item_kwargs = item_kwargs | override_kwargs
+            #         if mode_config.func is not None:
+            #             item_func = mode_config.func
+            #     else:
+            #         item_kwargs['mode'] = mode
 
-            item_return = item_func(item, **item_kwargs)
+            item_return = draw_any(item, **item_kwargs)
+
+            # item_return = item_func(item, **item_kwargs)
 
             if len(item_return) == 3:
                 item_changed, out_val, returned_ds = item_return
@@ -798,6 +778,7 @@ def test_columns():
     draw_int(123, name="col2", column=1)
     draw_float(0.5, name="col3", column=2)
     draw_float(0.5, name="test_5", column=5)
+    draw_float(0.5, name="test_5_b", column=5)
 
     for i in range(10):
         draw_float(0.4, name=f"float_{i}", column=2)
@@ -828,7 +809,7 @@ def draw_main(input_value, vis, **kwargs):
     if changed:
         test_code = value
 
-    changed, value = draw_window(draw_bg, name="cst_dict", show_bg=True, mode=Mode.CODE_UI)
+    changed, value = draw_any(input_value=draw_bg, name="cst_dict", show_bg=True, mode=(Mode.CODE_UI, Mode.AS_WINDOW))
     if changed:
         test_code = value
 
@@ -853,7 +834,7 @@ def draw_main(input_value, vis, **kwargs):
 
     # draw_window(core_model, name="Module test")
 
-    test_columns(input_value="Nolkjlkjne", as_window=True, name="Test columns")
+    test_columns(input_value="Nolkjlkjne", mode=Mode.AS_WINDOW, name="Test columns")
 
     draw_window(draw_main, name="Draw Main Function")
     some_enum = ProfileMode.OFF
@@ -862,7 +843,7 @@ def draw_main(input_value, vis, **kwargs):
 
     draw_window(filesystem_proxy, name="Filesystem Test")
 
-    draw_any(input_value=proxy, name="CST Proxy", as_window=True)
+    draw_any(input_value=proxy, name="CST Proxy", mode=Mode.AS_WINDOW)
 
     draw_window(vis.root.lora_collection, name="Test Window 1")
     draw_window(vis.root.lora_collection.loras, name="Test Window 2", child_kwargs={
@@ -2016,7 +1997,7 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=4.37,
     depth = (clamped) * 2.59
     right = left + width
     bottom = top + height
-    thickness = 1.12
+    thickness = 1.548
     half_thickness = 1.0
     rect = (
     snap_int(left) + thickness, snap_int(top) + thickness, snap_int(right) - thickness, snap_int(bottom) - thickness)
@@ -2027,13 +2008,13 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=4.37,
     depth_offset = 0.47
     dynamic_value = max(0, (float(depth + depth_offset) * depth_factor))
     
-    hovered_offset = -0.06
+    hovered_offset = -1.99
     if selected:
         hovered_offset = 0.00
     elif pressed:
         if opacity > 0.5:
             # new comment
-            hovered_offset = 2.1
+            hovered_offset = -0.09
         else:
             hovered_offset = 1.739
 
@@ -2044,9 +2025,9 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=4.37,
                 c1[2] * (1 - fac) + c2[2] * fac)
     # test hello world
     # comm
-    bg_style = {'value': 0.092, 'saturation': 1.69, 'alpha': -2.0,
+    bg_style = {'value': 0.065, 'saturation': 1.741, 'alpha': -2.0,
                 'max_value': 2.58}
-    outline_saturation = 1.38
+    outline_saturation = 1.306
     outline_offset = 0.34
     outline_factor = -0.322
 
@@ -2230,35 +2211,34 @@ def render_profiler_time(input_value=None, brief=False, style_manager=None,
     return False, input_value
 
 
-def draw_any(input_value, **kwargs):
+def draw_any(input_value:any, view_func=None, mode:any=None, **kwargs):
     # # meta handlin
-    meta = kwargs.get("meta", None)
-    if meta is None:
-        if hasattr(Meta, 'get_child_meta'):
-            meta = Meta.get_child_meta(None, field_name=kwargs.get("name", ''), value=input_value)
+    if view_func is None:
+        meta = kwargs.get("meta", None)
+        if meta is None:
+            if hasattr(Meta, 'get_child_meta'):
+                meta = Meta.get_child_meta(None, field_name=kwargs.get("name", ''), value=input_value)
+        if meta.view_function is None or 'draw_any' in meta.view_function.__name__:
+            meta.view_function = draw_collection
+        view_func = meta.view_function
 
-    if meta.view_function is None or 'draw_any' in meta.view_function.__name__:
-        meta.view_function = draw_collection
-
-    mode = kwargs.get("mode", None)
     if mode is None:
         mode = Melty.mode_stack[-1] if len(Melty.mode_stack) > 0 else None
-    if mode is not None:
+
+    if isinstance(mode, tuple) and len(mode) > 0:
+        main_mode = mode[0]
+    else:
+        main_mode = mode
+
+    if main_mode is not None:
         # Loop over super types
-        mode_config = None
-        for super_type in type(input_value).__mro__:
-            mode_config = mode.value.get(super_type, None)
-            if mode_config is not None:
-                break
-        if mode_config is not None:
-            override_kwargs = mode_config.kwargs
-            kwargs = kwargs | override_kwargs
-            kwargs['mode'] = mode
-            if mode_config.func is not None:
-                meta.view_function = mode_config.func
+        mode_config = main_mode.get_config_for(input_value)
+        if mode_config is not None and mode_config.func is not None:
+            view_func = mode_config.func
 
     kwargs['use_cache'] = True
-    return_val = meta.view_function(input_value, **kwargs)
+    kwargs['mode'] = mode
+    return_val = view_func(input_value, **kwargs)
 
     return return_val
 
@@ -2298,7 +2278,7 @@ def draw_text(input_value: str, draw_state):
             imgui.push_style_var(imgui.STYLE_ALPHA, 0)
 
 
-        imgui.set_cursor_screen_pos((draw_state.left, draw_state.top))
+        imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
         # disable scrolling
         changed, value = imgui.input_text_multiline("##str", str(input_value),
                                                     width=draw_state.content_width, height=height)
@@ -2473,13 +2453,26 @@ def draw_float_ctx(input_value):
     imgui.text('Float content menu')
     imgui.dummy(30, 30)
     draw_float(0.0, name="test")
+    imgui.text(f"WxH {input_value.width} {input_value.height}")
+    imgui.text(f"Content width {input_value.content_width} {input_value.height}")
+
+    imgui.text(f"Abs Left/Top {input_value.abs_left} {input_value.abs_top}")
+    imgui.text(f"Header WxH {input_value.header_width} {input_value.header_height}")
+
+    draw_list: _DrawList = imgui.get_overlay_draw_list()
+    draw_list.add_rect(upper_left_x=input_value.abs_left, upper_left_y=input_value.abs_top,
+                         lower_right_x=input_value.abs_left + input_value.width,
+                         lower_right_y=input_value.abs_top + input_value.height,
+                         col=imgui.get_color_u32_rgba(1, 0, 0, 0.5), thickness=1.0)
 
 
-@render_func(is_default_for=float, use_cache=False, shadow=False, show_bg=False, wrap=False, is_tree=False,
+
+@render_func(is_default_for=float, use_cache=False, shadow=False, window_pos=(0,0), show_bg=False, wrap=False, is_tree=False,
              context_menu=draw_float_ctx, with_header=draw_header, with_header_end=draw_header_end)
-def draw_float(input_value: float, draw_state, min_value=-100.0, max_value=100.0, speed=0.01):
-    imgui.set_next_item_width(max(30, draw_state.content_width))
-    changed, value = imgui.drag_float("##float", input_value,
+def draw_float(input_value: float, draw_state, min_value=-100.0, max_value=100.0, speed=0.001):
+    imgui.set_next_item_width(min(600, max(30, draw_state.content_width)))
+    changed, value = imgui.drag_float("", input_value,
+                                        format='%.3f',
                                       change_speed=speed,
                                       min_value=min_value,
                                       max_value=max_value)
@@ -2738,17 +2731,36 @@ def pending_window(input_value, pending_name, pending=None, draw_state=None):
     return False, None
 
 class Mode(Enum):
+
+    def get_config_for(self, input_value):
+        for super_type in type(input_value).__mro__:
+            config = self.value.get(super_type, None)
+            if config is not None:
+                return config
+            elif Any in self.value:
+                return self.value[Any]
+        return None
+
+    AS_WINDOW = {
+        Any: ModeOverrides(
+            kwargs={"show_bg":True, "selectable":False, "use_cache":True, "melty_window":True, "closable":True,
+                    "auto_resize":False, "draggable":True, "show_tint":True, "show_header":True, "z_offset":-3,
+                    "disable_scroll":False},
+            recursive=False
+        )
+    }
+
     CODE_UI = {
         cst.Module: ModeOverrides(
             kwargs={"convert": [cst.Module, dict], "horizontal":True},
             func=draw_collection,
-            recursive=False
+            recursive=True
         ),
 
         types.FunctionType: ModeOverrides(
-            kwargs={"convert": [types.FunctionType, cst.Module], "auto_apply": [load_text, recompile]},
+            kwargs={"convert": [types.FunctionType, cst.Module, dict], "auto_apply": [load_text, recompile]},
             func=draw_collection,
-            recursive=False
+            recursive=True
         ),
 
         # str: ModeOverrides(
@@ -2760,7 +2772,7 @@ class Mode(Enum):
         Comment: ModeOverrides(
             kwargs={"convert": None, "mode": None},
             func=draw_comment,
-            recursive=False,
+            recursive=True,
         ),
 
     }
@@ -2769,13 +2781,13 @@ class Mode(Enum):
         types.FunctionType: ModeOverrides(
             kwargs={"convert": [types.FunctionType, cst.Module, str], "auto_apply": [recompile, load_text]},
             func=draw_collection,
-            recursive=False
+            recursive=True
         ),
 
         str: ModeOverrides(
             kwargs={"convert": None, "mode": None},
             func=draw_text,
-            recursive=False,
+            recursive=True,
         ),
 
         Path: ModeOverrides(

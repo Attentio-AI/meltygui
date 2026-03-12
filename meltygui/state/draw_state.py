@@ -308,7 +308,7 @@ class DrawState(DictConversion):
         ### Columns
         self.final_max_column = 1
         self._current_max_column = 1
-        self.column_cursor = defaultdict(lambda: [0, 0])  # column -> (x, y)
+        self._column_cursor = defaultdict(lambda: [0, 0])  # column -> (x, y)
 
         ### End Columns
         self._is_nested = False
@@ -317,6 +317,7 @@ class DrawState(DictConversion):
         self.kwargs = AttrDict({})
         self.hover_reported = True
         self._start_z_pos = 3
+        self._column_width = 0
 
         self._show_load = False
         self._show_save = False
@@ -599,6 +600,12 @@ class DrawState(DictConversion):
             return False
 
         return cached[0]
+
+    @property
+    def priority(self):
+        max_layer_depth = Melty.max_depth * Melty.max_layer + Melty.max_depth
+        layer_and_depth = Melty.active_layer * Melty.max_depth + Melty.depth
+        return max_layer_depth - layer_and_depth
 
     def on_action(self, event_names, view_id=None, priority=None, priority_delta=0, rect=None):
         if not Melty.inside_clip(draw_state=self):
