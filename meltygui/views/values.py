@@ -18,7 +18,7 @@ import OpenGL.GL as gl
 import glfw
 import libcst as cst
 import numpy
-from imgui.core import _DrawList
+from imgui.core import _DrawList, _ImGuiInputTextCallbackData
 
 from src.lsd.gl_gui.melty import Melty, CollectionAction, add_to_collection, \
     ManagedWindow
@@ -809,7 +809,7 @@ def draw_main(input_value, vis, **kwargs):
     if changed:
         test_code = value
 
-    changed, value = draw_any(input_value=draw_bg, name="cst_dict", show_bg=True, mode=(Mode.CODE_UI, Mode.AS_WINDOW))
+    changed, value = draw_any(input_value=draw_bg, name="cst_dict", show_bg=True, mode=(Mode.CODE_UI, Mode.WINDOW))
     if changed:
         test_code = value
 
@@ -834,7 +834,7 @@ def draw_main(input_value, vis, **kwargs):
 
     # draw_window(core_model, name="Module test")
 
-    test_columns(input_value="Nolkjlkjne", mode=Mode.AS_WINDOW, name="Test columns")
+    test_columns(input_value="Nolkjlkjne", mode=Mode.WINDOW_CLEAN, name="Test columns")
 
     draw_window(draw_main, name="Draw Main Function")
     some_enum = ProfileMode.OFF
@@ -843,7 +843,7 @@ def draw_main(input_value, vis, **kwargs):
 
     draw_window(filesystem_proxy, name="Filesystem Test")
 
-    draw_any(input_value=proxy, name="CST Proxy", mode=Mode.AS_WINDOW)
+    draw_any(input_value=proxy, name="CST Proxy", mode=Mode.WINDOW)
 
     draw_window(vis.root.lora_collection, name="Test Window 1")
     draw_window(vis.root.lora_collection.loras, name="Test Window 2", child_kwargs={
@@ -1980,25 +1980,23 @@ def seperator(height):
     imgui.dummy(0, snap_int(height / 2))
 
 
-def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=4.37,
+def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=4.44,
             global_style=None, outline=True, bg_color=None, opacity=-1.0,
             style_manager=None, tint=None, outline_tint=None, selected=False,
             hovered=False, pressed=False, nested_bg=False, **kwargs):
+    
     # Render background
     def current_indent_px(): 
         return Melty.current_indent
-    #draw_list:_DrawList = imgui.get_window_draw_list()
-    #draw_list.add_text(left, top, imgui.get_color_u32_rgba(
-    #1, 0, 1, 1.0), f"Depth: {len(Melty.bg_stack)}")
-    #Hello sdjklj;lkjlkjlkj
-
-    #sd;jk how are you today 
+        
     clamped = ((max(2.0, Melty.bg_depth) % 9.0) - 1.5)
     depth = (clamped) * 2.59
     right = left + width
     bottom = top + height
     thickness = 1.548
-    half_thickness = 1.0
+    half_thickness = 1
+    
+    # Some commet here 
     rect = (
     snap_int(left) + thickness, snap_int(top) + thickness, snap_int(right) - thickness, snap_int(bottom) - thickness)
     rect_outline = (snap_int(left) + half_thickness, snap_int(top) + half_thickness,
@@ -2007,7 +2005,6 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=4.37,
     depth_factor = 0.07
     depth_offset = 0.47
     dynamic_value = max(0, (float(depth + depth_offset) * depth_factor))
-    
     hovered_offset = -1.99
     if selected:
         hovered_offset = 0.00
@@ -2017,20 +2014,24 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=4.37,
             hovered_offset = -0.09
         else:
             hovered_offset = 1.739
-
-
+    
     def mix_colors(c1, c2, fac):
         return (c1[0] * (1 - fac) + c2[0] * fac,
                 c1[1] * (1 - fac) + c2[1] * fac,
                 c1[2] * (1 - fac) + c2[2] * fac)
     # test hello world
+    
     # comm
+    
     bg_style = {'value': 0.065, 'saturation': 1.741, 'alpha': -2.0,
                 'max_value': 2.58}
     outline_saturation = 1.306
     outline_offset = 0.34
     outline_factor = -0.322
-
+    
+    
+    some_int = 15
+    some_list = [8,-24,1]
     if not nested_bg:
         outline_factor *= 1.00
         outline_saturation = 1.38
@@ -2041,12 +2042,11 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=4.37,
         bleed_factor = 0.47
     bg_bleed = Melty.get_bg_color(-1)
     bg_bleed = style_manager.make_custom_styled(*bg_bleed, input=bg_style, value=-0.27, alpha=0.5, saturation=1.17)
-
+    
     outline_color = (style_manager.
                      make_color_style_value(input=bg_style, saturation=outline_saturation, value=max(0, dynamic_value * outline_factor +
                                                       outline_offset + hovered_offset)))
     outline_color = mix_colors(outline_color, bg_bleed, 0.01)
-
     if outline:
         outline_color = imgui.get_color_u32_rgba(*outline_color[:3], 1.0)
 
@@ -2238,6 +2238,7 @@ def draw_any(input_value:any, view_func=None, mode:any=None, **kwargs):
 
     kwargs['use_cache'] = True
     kwargs['mode'] = mode
+    kwargs['view_func'] = view_func
     return_val = view_func(input_value, **kwargs)
 
     return return_val
@@ -2258,41 +2259,685 @@ def draw_bool(input_value: bool):
         return True, is_checked
 
     return False, None
+import time
+import imgui
+
+_cursor_pos = 0
+_selection_start = 0
+_selection_end = 0
+_is_focused = False
+_cursor_blink_time = 0.0
+_is_dragging = False
+_double_click_time = 0.0
+_last_click_pos = -1
+_prev_keys_down = set()
+
+def _hex(h):
+    """Convert '#rrggbb' to imgui packed u32 color (ABGR format)."""
+    r = int(h[1:3], 16)
+    g = int(h[3:5], 16)
+    b = int(h[5:7], 16)
+    a = 255
+    # ImGui uses ABGR packing for color u32
+    return (a << 24) | (b << 16) | (g << 8) | r
+
+COLORS = {
+    'default':       _hex('#a9b7c6'),  # Token (from Darcula)
+    'keyword':       _hex('#cc7832'),  # Keyword
+    'keyword_const': _hex('#cc7832'),  # Keyword.Constant (True/False/None)
+    'operator_word': _hex('#cc7832'),  # Operator.Word (or, or, not, in, is)
+    'builtin_pseudo': _hex('#94558d'), # Name.Builtin.Pseudo (self, cls)
+    'decorator':     _hex('#bbb529'),  # Name.Decorator
+    'string':        _hex('#6a8759'),  # String
+    'string_doc':    _hex('#629755'),  # String.Doc (docstrings)
+    'comment':       _hex('#808080'),  # Comment
+    'number':        _hex('#6897bb'),  # Number
+}
+
+KEYWORDS = {'def', 'class', 'if', 'else', 'elif', 'for', 'while',
+            'return', 'import', 'from', 'with', 'as', 'try', 'except',
+            'finally', 'raise', 'yield', 'pass', 'break', 'continue',
+            'lambda', 'global', 'nonlocal', 'del', 'assert', 'async', 'await'}
+
+KEYWORD_CONSTS = {'True', 'False', 'None'}
+
+OPERATOR_WORDS = {'and', 'or', 'not', 'in', 'is'}
+
+BUILTIN_PSEUDO = {'self', 'cls'}
+
+WORD_DELIMITERS = ' \t\n\r,.;:!?()[]{}\'\"=+-*/<>@#$%^&|~`\\'
+
+# GLFW key to character mapping (unshifted, shifted)
+_KEY_CHAR_MAP = {
+    glfw.KEY_SPACE: (' ', ' '),
+    glfw.KEY_APOSTROPHE: ("'", '"'),
+    glfw.KEY_COMMA: (',', '<'),
+    glfw.KEY_MINUS: ('-', '_'),
+    glfw.KEY_PERIOD: ('.', '>'),
+    glfw.KEY_SLASH: ('/', '?'),
+    glfw.KEY_0: ('0', ')'),
+    glfw.KEY_1: ('1', '!'),
+    glfw.KEY_2: ('2', '@'),
+    glfw.KEY_3: ('3', '#'),
+    glfw.KEY_4: ('4', '$'),
+    glfw.KEY_5: ('5', '%'),
+    glfw.KEY_6: ('6', '^'),
+    glfw.KEY_7: ('7', '&'),
+    glfw.KEY_8: ('8', '*'),
+    glfw.KEY_9: ('9', '('),
+    glfw.KEY_SEMICOLON: (';', ':'),
+    glfw.KEY_EQUAL: ('=', '+'),
+    glfw.KEY_LEFT_BRACKET: ('[', '{'),
+    glfw.KEY_BACKSLASH: ('\\', '|'),
+    glfw.KEY_RIGHT_BRACKET: (']', '}'),
+    glfw.KEY_GRAVE_ACCENT: ('`', '~'),
+}
+
+# Add letter keys to map
+for _i in range(26):
+    _key = glfw.KEY_A + _i
+    _ch = chr(ord('a') + _i)
+    _KEY_CHAR_MAP[_key] = (_ch, _ch.upper())
+
+# All typeable keys we track for press events
+_TYPEABLE_KEYS = set(_KEY_CHAR_MAP.keys())
+
+# Special keys we also need to track
+_SPECIAL_KEYS = {
+    glfw.KEY_ENTER, glfw.KEY_KP_ENTER,
+    glfw.KEY_BACKSPACE, glfw.KEY_DELETE, glfw.KEY_TAB,
+    glfw.KEY_LEFT, glfw.KEY_RIGHT, glfw.KEY_UP, glfw.KEY_DOWN,
+    glfw.KEY_HOME, glfw.KEY_END,
+    glfw.KEY_PAGE_UP, glfw.KEY_PAGE_DOWN,
+}
+
+_ALL_TRACKED_KEYS = _TYPEABLE_KEYS | _SPECIAL_KEYS
 
 
-@render_func(shadow=False, wrap=False, with_header=draw_header)
-def draw_text(input_value: str, draw_state):
-    line_count = input_value.count('\n') + 1
+def tokenize(text):
+    """Yields (text, color_key) tuples with Darcula-style token categories."""
+    i = 0
+    n = len(text)
+
+    while i < n:
+        # --- Comments ---
+        if text[i] == '#':
+            end = text.find('\n', i)
+            end = end if end != -1 else n
+            yield text[i:end], 'comment'
+            i = end
+
+        # --- Decorators ---
+        elif text[i] == '@' and (i == 0 or text[i - 1] in '\n '):
+            end = i + 1
+            while end < n and (text[end].isalnum() or text[end] in '_.'):
+                end += 1
+            yield text[i:end], 'decorator'
+            i = end
+
+        # --- Triple-quoted strings ---
+        elif i + 2 < n and text[i:i + 3] in ('"""', "'''"):
+            quote = text[i:i + 3]
+            end = text.find(quote, i + 3)
+            end = end + 3 if end != -1 else n
+            yield text[i:end], 'string_doc'
+            i = end
+
+        # --- String prefixes ("f", r", b", rb", etc.) ---
+        elif (text[i] in 'fFrRbBuU'
+              and i + 1 < n
+              and (text[i + 1] in ('"', "'")
+                   or (i + 2 < n and text[i + 1] in 'fFrRbBuU' and text[i + 2] in ('"', "'")))):
+            prefix_end = i + 1
+            if prefix_end < n and text[prefix_end] in 'fFrRbBuU':
+                prefix_end += 1
+            quote = text[prefix_end]
+            if prefix_end + 2 < n and text[prefix_end:prefix_end + 3] in ('"""', "'''"):
+                triple = text[prefix_end:prefix_end + 3]
+                end = text.find(triple, prefix_end + 3)
+                end = end + 3 if end != -1 else n
+            else:
+                end = prefix_end + 1
+                escaped = False
+                while end < n:
+                    if escaped:
+                        escaped = False
+                        end += 1
+                        continue
+                    if text[end] == '\\':
+                        escaped = True
+                        end += 1
+                        continue
+                    if text[end] == quote:
+                        end += 1
+                        break
+                    end += 1
+            yield text[i:end], 'string'
+            i = end
+
+        # --- Strings ---
+        elif text[i] in ('"', "'"):
+            quote = text[i]
+            end = i + 1
+            escaped = False
+            while end < n:
+                if escaped:
+                    escaped = False
+                    end += 1
+                    continue
+                if text[end] == '\\':
+                    escaped = True
+                    end += 1
+                    continue
+                if text[end] == quote:
+                    end += 1
+                    break
+                end += 1
+            yield text[i:end], 'string'
+            i = end
+
+        # --- Words ---
+        elif text[i].isalpha() or text[i] == '_':
+            end = i
+            while end < n and (text[end].isalnum() or text[end] == '_'):
+                end += 1
+            word = text[i:end]
+
+            if word in KEYWORD_CONSTS:
+                yield word, 'keyword_const'
+            elif word in OPERATOR_WORDS:
+                yield word, 'operator_word'
+            elif word in KEYWORDS:
+                yield word, 'keyword'
+            elif word in BUILTIN_PSEUDO:
+                yield word, 'builtin_pseudo'
+            else:
+                yield word, 'default'
+            i = end
+
+        # --- Numbers ---
+        elif text[i].isdigit() or (text[i] == '.' and i + 1 < n and text[i + 1].isdigit()):
+            end = i
+            if end + 1 < n and text[end] == '0' and text[end + 1] in 'xXoObB':
+                end += 2
+                while end < n and text[end] in '0123456789abcdefABCDEF_':
+                    end += 1
+            else:
+                has_dot = False
+                while end < n and (text[end].isdigit() or text[end] in '._eE'):
+                    if text[end] == '.':
+                        if has_dot:
+                            break
+                        has_dot = True
+                    if text[end] in 'eE' and end + 1 < n and text[end + 1] in '+-':
+                        end += 1
+                    end += 1
+            yield text[i:end], 'number'
+            i = end
+
+        # --- Everything else (operators, punctuation, whitespace) ---
+        else:
+            yield text[i], 'default'
+            i += 1
+
+
+def _index_to_line_col(text, index):
+    line = text[:index].count('\n')
+    last_nl = text.rfind('\n', 0, index)
+    col = index - (last_nl + 1) if last_nl != -1 else index
+    return line, col
+
+
+def _line_col_to_index(text, line, col):
+    idx = 0
+    for _ in range(line):
+        nl = text.find('\n', idx)
+        if nl == -1:
+            return len(text)
+        idx = nl + 1
+    line_end = text.find('\n', idx)
+    line_end = line_end if line_end != -1 else len(text)
+    return min(idx + col, line_end)
+
+
+def _get_line_start(text, index):
+    nl = text.rfind('\n', 0, index)
+    return nl + 1 if nl != -1 else 0
+
+
+def _get_line_end(text, index):
+    nl = text.find('\n', index)
+    return nl if nl != -1 else len(text)
+
+
+def _char_pos_to_xy(text, index, origin_x, origin_y, line_height):
+    line, col = _index_to_line_col(text, index)
+    col_text = text[_get_line_start(text, index):index]
+    x = origin_x + imgui.calc_text_size(col_text).x
+    y = origin_y + line * line_height
+    return x, y
+
+
+def _xy_to_char_index(text, mx, my, origin_x, origin_y, line_height):
+    lines = text.split('\n')
+    line_num = int((my - origin_y) / line_height)
+    line_num = max(0, min(line_num, len(lines) - 1))
+
+    line_text = lines[line_num]
+    best_idx = 0
+    for i in range(len(line_text) + 1):
+        cx = origin_x + imgui.calc_text_size(line_text[:i]).x
+        if cx > mx:
+            if i > 0:
+                prev_cx = origin_x + imgui.calc_text_size(line_text[:i - 1]).x
+                if mx - prev_cx < cx - mx:
+                    best_idx = i - 1
+                else:
+                    best_idx = i
+            break
+        best_idx = i
+
+    abs_idx = 0
+    for l in range(line_num):
+        abs_idx += len(lines[l]) + 1
+    abs_idx += best_idx
+    return min(abs_idx, len(text))
+
+
+def _word_boundary_left(text, pos):
+    if pos <= 0:
+        return 0
+    pos -= 1
+    while pos > 0 and text[pos] in WORD_DELIMITERS:
+        pos -= 1
+    while pos > 0 and text[pos - 1] not in WORD_DELIMITERS:
+        pos -= 1
+    return pos
+
+
+def _word_boundary_right(text, pos):
+    n = len(text)
+    if pos >= n:
+        return n
+    while pos < n and text[pos] in WORD_DELIMITERS:
+        pos += 1
+    while pos < n and text[pos] not in WORD_DELIMITERS:
+        pos += 1
+    return pos
+
+
+def _get_indent(text, index):
+    ls = _get_line_start(text, index)
+    indent = 0
+    while ls + indent < len(text) and text[ls + indent] == ' ':
+        indent += 1
+    return indent
+
+
+def _has_selection():
+    return _selection_start != _selection_end
+
+
+def _sel_range():
+    return min(_selection_start, _selection_end), max(_selection_start, _selection_end)
+
+
+def _delete_selection(text):
+    lo, hi = _sel_range()
+    return text[:lo] + text[hi:], lo
+
+
+def _key_just_pressed(io, key):
+    """Detect a key press this frame using io.keys_down and prev state tracking."""
+    global _prev_keys_down
+    return io.keys_down[key] and key not in _prev_keys_down
+
+
+@render_func(shadow=False, wrap=False, use_cache=True, disable_scroll=True, with_header=draw_header)
+def draw_text(input_value: str, cursor_hover=False, draw_state=None):
+    global _cursor_pos, _selection_start, _selection_end, _is_focused
+    global _cursor_blink_time, _is_dragging, _double_click_time, _last_click_pos
+    global _prev_keys_down
+
+    changed = False
+    text = input_value
+    io = imgui.get_io()
     line_height = imgui.get_text_line_height()
-    text_height = imgui.calc_text_size(str(input_value))[1] + line_height * 2
+    text_height = imgui.calc_text_size(str(text))[1] + line_height * 2
 
     max_bottom = draw_state.parent_window.top + draw_state.parent_window.height - draw_state.parent_window.footer_height - 5
     text_bottom = draw_state.top + text_height
     clamped_bottom = min(max_bottom, text_bottom)
     height = clamped_bottom - draw_state.top
-    changed, value = False, input_value
-    if height > 10:
-        show_controls = True
 
-        if not show_controls:
-            imgui.push_style_var(imgui.STYLE_ALPHA, 0)
+    if height <= 10:
+        return False, input_value
+
+    padding_x = imgui.get_style().frame_padding.x
+    padding_y = imgui.get_style().frame_padding.y
+    origin_x = draw_state.abs_left + padding_x
+    origin_y = draw_state.abs_top + padding_y
+
+    # --- Invisible button for mouse interaction ---
+    #imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
+    imgui.invisible_button("##editor_area", draw_state.content_width, text_height)
+    is_hovered = imgui.is_item_hovered()
+
+    # --- Read current key state ---
+    current_keys = set()
+    for key in _ALL_TRACKED_KEYS:
+        if io.keys_down[key]:
+            current_keys.add(key)
+    just_pressed = current_keys - _prev_keys_down
+
+    # --- Mouse handling ---
+    if is_hovered and imgui.is_mouse_clicked(0):
+        _is_focused = True
+        _cursor_blink_time = time.time()
+        click_pos = _xy_to_char_index(text, io.mouse_pos.x, io.mouse_pos.y,
+                                       origin_x, origin_y, line_height)
+
+        now = time.time()
+        if (now - _double_click_time < 0.3
+                and abs(click_pos - _last_click_pos) <= 1):
+            _selection_start = _word_boundary_left(text, click_pos)
+            _selection_end = _word_boundary_right(text, click_pos)
+            _cursor_pos = _selection_end
+            _double_click_time = 0
+        else:
+            _double_click_time = now
+            _last_click_pos = click_pos
+            _cursor_pos = click_pos
+            if io.key_shift:
+                _selection_end = click_pos
+            else:
+                _selection_start = click_pos
+                _selection_end = click_pos
+            _is_dragging = True
+
+    elif not is_hovered and imgui.is_mouse_clicked(0):
+        _is_focused = False
+
+    if _is_dragging and imgui.is_mouse_down(0):
+        drag_pos = _xy_to_char_index(text, io.mouse_pos.x, io.mouse_pos.y,
+                                      origin_x, origin_y, line_height)
+        _selection_end = drag_pos
+        _cursor_pos = drag_pos
+        _cursor_blink_time = time.time()
+    elif _is_dragging and not imgui.is_mouse_down(0):
+        _is_dragging = False
+
+    # --- Keyboard handling ---
+    if _is_focused:
+        shift = io.key_shift
+        ctrl = io.key_ctrl
+
+        # --- Typed characters ---
+        for key in just_pressed:
+            if key in _KEY_CHAR_MAP and not ctrl:
+                _cursor_blink_time = time.time()
+                unshifted, shifted = _KEY_CHAR_MAP[key]
+                ch = shifted if shift else unshifted
+
+                if _has_selection():
+                    text, _cursor_pos = _delete_selection(text)
+                text = text[:_cursor_pos] + ch + text[_cursor_pos:]
+                _cursor_pos += len(ch)
+                _selection_start = _cursor_pos
+                _selection_end = _cursor_pos
+                changed = True
+
+        # --- Tab ---
+        if glfw.KEY_TAB in just_pressed and not ctrl:
+            _cursor_blink_time = time.time()
+            insert = '    '
+            if _has_selection():
+                text, _cursor_pos = _delete_selection(text)
+            text = text[:_cursor_pos] + insert + text[_cursor_pos:]
+            _cursor_pos += len(insert)
+            _selection_start = _cursor_pos
+            _selection_end = _cursor_pos
+            changed = True
+
+        # --- Enter ---
+        if glfw.KEY_ENTER in just_pressed or glfw.KEY_KP_ENTER in just_pressed:
+            _cursor_blink_time = time.time()
+            indent = _get_indent(text, _cursor_pos)
+            if _has_selection():
+                text, _cursor_pos = _delete_selection(text)
+            insert = '\n' + ' ' * indent
+            text = text[:_cursor_pos] + insert + text[_cursor_pos:]
+            _cursor_pos += len(insert)
+            _selection_start = _cursor_pos
+            _selection_end = _cursor_pos
+            changed = True
+
+        # --- Backspace ---
+        if glfw.KEY_BACKSPACE in just_pressed:
+            _cursor_blink_time = time.time()
+            if _has_selection():
+                text, _cursor_pos = _delete_selection(text)
+                _selection_start = _cursor_pos
+                _selection_end = _cursor_pos
+                changed = True
+            elif _cursor_pos > 0:
+                if ctrl:
+                    new_pos = _word_boundary_left(text, _cursor_pos)
+                    text = text[:new_pos] + text[_cursor_pos:]
+                    _cursor_pos = new_pos
+                elif (_cursor_pos >= 4
+                      and text[_cursor_pos - 4:_cursor_pos] == '    '):
+                    text = text[:_cursor_pos - 4] + text[_cursor_pos:]
+                    _cursor_pos -= 4
+                else:
+                    text = text[:_cursor_pos - 1] + text[_cursor_pos:]
+                    _cursor_pos -= 1
+                _selection_start = _cursor_pos
+                _selection_end = _cursor_pos
+                changed = True
+
+        # --- Delete ---
+        if glfw.KEY_DELETE in just_pressed:
+            _cursor_blink_time = time.time()
+            if _has_selection():
+                text, _cursor_pos = _delete_selection(text)
+                _selection_start = _cursor_pos
+                _selection_end = _cursor_pos
+                changed = True
+            elif _cursor_pos < len(text):
+                if ctrl:
+                    new_pos = _word_boundary_right(text, _cursor_pos)
+                    text = text[:_cursor_pos] + text[new_pos:]
+                else:
+                    text = text[:_cursor_pos] + text[_cursor_pos + 1:]
+                changed = True
+
+        # --- Left ---
+        if glfw.KEY_LEFT in just_pressed:
+            _cursor_blink_time = time.time()
+            if ctrl:
+                _cursor_pos = _word_boundary_left(text, _cursor_pos)
+            elif _has_selection() and not shift:
+                _cursor_pos = min(_selection_start, _selection_end)
+            elif _cursor_pos > 0:
+                _cursor_pos -= 1
+            if shift:
+                _selection_end = _cursor_pos
+            else:
+                _selection_start = _cursor_pos
+                _selection_end = _cursor_pos
+
+        # --- Right ---
+        if glfw.KEY_RIGHT in just_pressed:
+            _cursor_blink_time = time.time()
+            if ctrl:
+                _cursor_pos = _word_boundary_right(text, _cursor_pos)
+            elif _has_selection() and not shift:
+                _cursor_pos = max(_selection_start, _selection_end)
+            elif _cursor_pos < len(text):
+                _cursor_pos += 1
+            if shift:
+                _selection_end = _cursor_pos
+            else:
+                _selection_start = _cursor_pos
+                _selection_end = _cursor_pos
+
+        # --- Up ---
+        if glfw.KEY_UP in just_pressed:
+            _cursor_blink_time = time.time()
+            line, col = _index_to_line_col(text, _cursor_pos)
+            if line > 0:
+                _cursor_pos = _line_col_to_index(text, line - 1, col)
+            else:
+                _cursor_pos = 0
+            if shift:
+                _selection_end = _cursor_pos
+            else:
+                _selection_start = _cursor_pos
+                _selection_end = _cursor_pos
+
+        # --- Down ---
+        if glfw.KEY_DOWN in just_pressed:
+            _cursor_blink_time = time.time()
+            line, col = _index_to_line_col(text, _cursor_pos)
+            total_lines = text.count('\n')
+            if line < total_lines:
+                _cursor_pos = _line_col_to_index(text, line + 1, col)
+            else:
+                _cursor_pos = len(text)
+            if shift:
+                _selection_end = _cursor_pos
+            else:
+                _selection_start = _cursor_pos
+                _selection_end = _cursor_pos
+
+        # --- Home ---
+        if glfw.KEY_HOME in just_pressed:
+            _cursor_blink_time = time.time()
+            if ctrl:
+                _cursor_pos = 0
+            else:
+                _cursor_pos = _get_line_start(text, _cursor_pos)
+            if shift:
+                _selection_end = _cursor_pos
+            else:
+                _selection_start = _cursor_pos
+                _selection_end = _cursor_pos
+
+        # --- End ---
+        if glfw.KEY_END in just_pressed:
+            _cursor_blink_time = time.time()
+            if ctrl:
+                _cursor_pos = len(text)
+            else:
+                _cursor_pos = _get_line_end(text, _cursor_pos)
+            if shift:
+                _selection_end = _cursor_pos
+            else:
+                _selection_start = _cursor_pos
+                _selection_end = _cursor_pos
+
+        # --- Ctrl+A ---
+        if ctrl and glfw.KEY_A in just_pressed:
+            _selection_start = 0
+            _selection_end = len(text)
+            _cursor_pos = len(text)
+
+        # --- Ctrl+C ---
+        if ctrl and glfw.KEY_C in just_pressed:
+            if _has_selection():
+                lo, hi = _sel_range()
+                imgui.set_clipboard_text(text[lo:hi])
+
+        # --- Ctrl+X ---
+        if ctrl and glfw.KEY_X in just_pressed:
+            if _has_selection():
+                lo, hi = _sel_range()
+                imgui.set_clipboard_text(text[lo:hi])
+                text, _cursor_pos = _delete_selection(text)
+                _selection_start = _cursor_pos
+                _selection_end = _cursor_pos
+                changed = True
+
+        # --- Ctrl+V ---
+        if ctrl and glfw.KEY_V in just_pressed:
+            _cursor_blink_time = time.time()
+            clipboard = imgui.get_clipboard_text()
+            if clipboard:
+                if _has_selection():
+                    text, _cursor_pos = _delete_selection(text)
+                text = text[:_cursor_pos] + clipboard + text[_cursor_pos:]
+                _cursor_pos += len(clipboard)
+                _selection_start = _cursor_pos
+                _selection_end = _cursor_pos
+                changed = True
+
+    # Update prev key state
+    _prev_keys_down = current_keys
+
+    # Clamp
+    _cursor_pos = max(0, min(_cursor_pos, len(text)))
+    _selection_start = max(0, min(_selection_start, len(text)))
+    _selection_end = max(0, min(_selection_end, len(text)))
+
+    # --- Drawing ---
+    draw_list = imgui.get_window_draw_list()
+    rect_min_x = draw_state.abs_left
+    rect_min_y = draw_state.abs_top
+    rect_max_x = draw_state.abs_left + draw_state.content_width
+    rect_max_y = draw_state.abs_top + height
+
+    draw_list.push_clip_rect(rect_min_x, rect_min_y, rect_max_x, rect_max_y, True)
+
+    # Selection
+    if _has_selection():
+        sel_color = (102 << 24) | (204 << 16) | (102 << 8) | 51  # rgba(51, 102, 204, 0.4)
+        lo, hi = _sel_range()
+        lines = text.split('\n')
+        line_abs_start = 0
+        for line_idx, line_text in enumerate(lines):
+            line_abs_end = line_abs_start + len(line_text)
+            if line_abs_end >= lo and line_abs_start <= hi:
+                sel_start_in_line = max(0, lo - line_abs_start)
+                sel_end_in_line = min(len(line_text), hi - line_abs_start)
+                sx = origin_x + imgui.calc_text_size(line_text[:sel_start_in_line]).x
+                ex = origin_x + imgui.calc_text_size(line_text[:sel_end_in_line]).x
+                sy = origin_y + line_idx * line_height
+                if hi > line_abs_end and line_abs_end >= lo:
+                    ex = origin_x + imgui.calc_text_size(line_text).x + imgui.calc_text_size(' ').x
+                draw_list.add_rect_filled(sx, sy, ex, sy + line_height, sel_color)
+            line_abs_start = line_abs_end + 1
+
+    # Syntax highlighted text
+    x = origin_x
+    y = origin_y
+    for token, color_key in tokenize(text):
+        color = COLORS[color_key]
+        for ch in token:
+            if ch == '\n':
+                x = origin_x
+                y += line_height
+                continue
+            if y + line_height >= rect_min_y and y <= rect_max_y:
+                draw_list.add_text(x, y, color, ch)
+            x += imgui.calc_text_size(ch).x
+
+    # Cursor
+    if _is_focused and not _has_selection():
+        if (time.time() - _cursor_blink_time) % 1.0 < 0.5:
+            cx, cy = _char_pos_to_xy(text, _cursor_pos, origin_x, origin_y, line_height)
+            cursor_color = 0xFFFFFFFF  # white
+            draw_list.add_line(cx, cy, cx, cy + line_height, cursor_color, 1.0)
+
+    draw_list.pop_clip_rect()
 
 
-        imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
-        # disable scrolling
-        changed, value = imgui.input_text_multiline("##str", str(input_value),
-                                                    width=draw_state.content_width, height=height)
-        imgui.dummy(draw_state.content_width, text_height - height + 10)
-
-        if not show_controls:
-            imgui.pop_style_var(1)
-
-        if changed:
-            return True, value
-    return changed, value
+    if changed:
+        return True, text
+    return False, input_value
 
 
-@render_func(is_default_for=(str), shadow=False, wrap=False, with_header=draw_header)
+@render_func(is_default_for=(str), shadow=False, wrap=False, use_cache=True, disable_scroll=True, with_header=draw_header)
 def draw_str(input_value: str, draw_state, editable=True, alpha=1.0):
 
     if not editable:
@@ -2718,15 +3363,13 @@ def draw_pending(input_value, draw_state=None):
 
 
 @render_func(use_cache=True, show_header=False)
-def pending_window(input_value, pending_name, pending=None, draw_state=None):
-
-
+def pending_window(input_value, button_name, pending=None, draw_state=None):
     imgui.push_text_wrap_pos(imgui.get_cursor_screen_pos()[0] + draw_state.content_width)
-    imgui.text_wrapped(input_value)
+    imgui.text_wrapped(str(pending.status))
     imgui.pop_text_wrap_pos()
 
     imgui.text(pending.originated.__name__)
-    if button(pending_name, width=100, height=20)[0]:
+    if button(str(button_name), width=100, height=20)[0]:
         return True, None
     return False, None
 
@@ -2741,10 +3384,19 @@ class Mode(Enum):
                 return self.value[Any]
         return None
 
-    AS_WINDOW = {
+    WINDOW = {
         Any: ModeOverrides(
             kwargs={"show_bg":True, "selectable":False, "use_cache":True, "melty_window":True, "closable":True,
                     "auto_resize":False, "draggable":True, "show_tint":True, "show_header":True, "z_offset":-3,
+                    "disable_scroll":False},
+            recursive=False
+        )
+    }
+
+    WINDOW_CLEAN = {
+        Any: ModeOverrides(
+            kwargs={"show_bg":True, "selectable":False, "use_cache":True, "melty_window":True, "closable":True,
+                    "auto_resize":True, "draggable":True, "is_tree":False, "show_tint":False, "show_header":False, "z_offset":-3,
                     "disable_scroll":False},
             recursive=False
         )

@@ -488,8 +488,8 @@ def render_func(*args, **o_kwargs):
                 # draw_state.layer = layer
                 Melty.layers[layer].append(draw_state)
                 return_value = (False, None)
-                if draw_state.id in Melty.returned_values:
-                    return_value = Melty.returned_values.pop(draw_state.id)
+                if draw_state._tile_id in Melty.returned_values:
+                    return_value = Melty.returned_values.pop(draw_state._tile_id)
 
                 Melty.cache.mark_uncached(name, input_value, collection, tile_id, draw_state)
 
@@ -854,8 +854,8 @@ def render_func(*args, **o_kwargs):
             # draw_state._current_max_column = 0
             draw_state._column_cursor = defaultdict(lambda: [0, 0])  # column -> (x, y)
             x_offset = draw_state.abs_left - parent_wrap_left
-            if kwargs.get("fill_height", False) and passed_height is None:
-                                draw_state.height = snap_int(parent_wrap_height - (imgui.get_cursor_screen_pos()[1] - parent_wrap_top))
+            if kwargs.get("fill_height", False) and passed_height is None and auto_resize:
+                draw_state.height = snap_int(parent_wrap_height - (imgui.get_cursor_screen_pos()[1] - parent_wrap_top))
             if column is not None and column_parent is not None:
                 column_parent._current_max_column = max(column_parent._current_max_column, column)
                 parent_wrap_width = column_parent.content_width / (column_parent.final_max_column + 1)
@@ -885,16 +885,13 @@ def render_func(*args, **o_kwargs):
             if column is not None and column_parent is not None:
                 column_cursor_y = column_parent._column_cursor[column][1]
                 current_cursor = imgui.get_cursor_screen_pos()
-                imgui.set_cursor_screen_pos((parent_wrap_left, column_parent.abs_top + column_cursor_y + draw_state.header_height))
+                imgui.set_cursor_screen_pos((parent_wrap_left, column_parent.abs_top + column_cursor_y + column_parent.header_height))
                 draw_state.left_offset = parent_wrap_left - column_parent.abs_left
                 draw_state.top_offset = column_parent.abs_top + column_cursor_y + draw_state.header_height - column_parent.abs_top
                 draw_state.left = parent_wrap_left
                 draw_state.top = parent_wrap_top + column_cursor_y + draw_state.header_height
 
                 Collisions.register(column_parent)
-                # Collisions.register(draw_state)
-
-                # column_parent.column_cursor[column][1] += draw_state.height # This will lag behind a frame, but keeping code tidy instead
 
             if draw_state.final_max_column > 1:
                 column_width = draw_state.content_width / (draw_state.final_max_column + 1)
@@ -1034,24 +1031,27 @@ def render_func(*args, **o_kwargs):
 
 
                 if draw_state._show_save and not draw_state._save_pending_obj.originated in auto_apply:
-                    if draw_window(
-                            input_value=f"save",
-                            closed=False, tint=draw_state.tint, window_pos=(0,0), auto_resize=True,
-                            pending_name="Save", name=f"Save", anchor=Anchor.BOTTOM_LEFT, pending=draw_state._save_pending_obj,
-                            view_func=pending_window)[0]:
+                    from src.lsd.gl_gui.view.core_views.new_core_view import Mode
+                    if pending_window(
+                            input_value=f"save", return_extras=True,
+                            closed=False, tint=draw_state.tint, window_pos=(0,0), auto_resize=True, wrap=True,
+                            button_name="Save", name=f"Save", anchor=Anchor.BOTTOM_LEFT, pending=draw_state._save_pending_obj,
+                            mode=Mode.WINDOW_CLEAN)[0]:
+                        print(f"Applying save for {draw_state._save_pending_obj.originated}")
                         draw_state._apply_save = draw_state._save_pending_obj.originated
                         draw_state._pending_convert = True
                         Melty.cache.invalidate_up(draw_state._parent._tile_id, force=True)
                         Melty.cache.invalidate_up(draw_state._tile_id, force=True)
-
                         request_render()
 
                 if draw_state._show_load and not draw_state._internal_pending.originated in auto_apply:
-                    if draw_window(input_value=f"load",
+                    from src.lsd.gl_gui.view.core_views.new_core_view import Mode
+
+                    if pending_window(input_value=f"load",
                                    closed=False, window_pos=(0,0), auto_resize=True,
-                                   pending=draw_state._internal_pending,
-                                   pending_name="Load", name=f"Load", anchor=Anchor.BOTTOM_LEFT, tint=draw_state.tint,
-                                   view_func=pending_window)[0]:
+                                   pending=draw_state._internal_pending, wrap=True,
+                                   button_name="Load", name=f"Load", anchor=Anchor.BOTTOM_LEFT, tint=draw_state.tint,
+                                   mode=Mode.WINDOW_CLEAN)[0]:
                         draw_state._apply_load = draw_state._internal_pending.originated
                         Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=5, force=True)
                         Melty.cache.invalidate_up(draw_state._tile_id, max_depth=5, force=True)

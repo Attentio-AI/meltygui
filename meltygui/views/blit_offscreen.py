@@ -645,30 +645,30 @@ class TileCacheMasked:
             return
         self.invalidate_up(self._stack[-1].key, max_depth=max_depth, force=force)
 
-    def invalidate_up_by_obj(self, obj, name=None, max_depth=4, force=False):
+    def invalidate_up_by_obj(self, obj, name=None, max_depth=4, force=False, frame_delta=0):
 
         if name is not None:
             keys = self.py_id_to_keys.get(f"{id(obj)}.{name}", None)
             if keys is not None:
                 for k in keys:
-                    self.invalidate_up(k, max_depth=max_depth, force=force)
+                    self.invalidate_up(k, max_depth=max_depth, force=force, frame_delta=frame_delta)
         else:
             keys = self.py_id_to_keys.get(f"{id(obj)}", None)
             if keys is not None:
                 for k in keys:
-                    self.invalidate_up(k, max_depth=max_depth, force=force)
+                    self.invalidate_up(k, max_depth=max_depth, force=force, frame_delta=frame_delta)
 
-    def invalidate_by_obj(self, obj, name=None):
+    def invalidate_by_obj(self, obj, name=None, frame_delta=0):
         if name is not None:
             keys = self.py_id_to_keys.get(f"{id(obj)}.{name}", None)
             if keys is not None:
                 for k in keys:
-                    self.invalidate(k)
+                    self.invalidate(k, frame_delta=frame_delta)
         else:
             keys = self.py_id_to_keys.get(f"{id(obj)}", None)
             if keys is not None:
                 for k in keys:
-                    self.invalidate(k)
+                    self.invalidate(k, frame_delta=frame_delta)
 
     def apply_invalid(self):
         for t in self.pending_invalid:
@@ -692,7 +692,7 @@ class TileCacheMasked:
             all_keys.update(self.get_child_keys(ck[1], depth + 1, max_depth=max_depth))
         return all_keys
 
-    def invalidate_up(self, k: str, max_depth=4, force=False) -> None:
+    def invalidate_up(self, k: str, max_depth=4, force=False, frame_delta=0) -> None:
 
         if k not in self._tiles:
             k = self.key_to_parent_key.get(k, None)
@@ -710,7 +710,7 @@ class TileCacheMasked:
                 if child != k:
                     pt = self._tiles.get(child)
                     if pt is not None:
-                        pt.last_invalidated_frame = max(pt.last_invalidated_frame, self._frame_id + 1)
+                        pt.last_invalidated_frame = max(pt.last_invalidated_frame, self._frame_id + 1) + frame_delta
                         pt.dirty = self._is_dirty(pt)
                         pt.force_invalidate = True
                         self.pending_invalid.append(pt)
@@ -756,7 +756,7 @@ class TileCacheMasked:
             input_val_hash,
         )
 
-    def invalidate(self, k: str, force=False) -> None:
+    def invalidate(self, k: str, force=False, frame_delta=0) -> None:
         if Toggles.invalidate_stack_trace:
             if Melty.frame_count > 100 and Melty.frame_count % 30 == 0:
                 print_stack_trace()
@@ -776,7 +776,7 @@ class TileCacheMasked:
                 pt = self._tiles.get(parent)
                 if pt is not None:
                     pt.force_invalidate = True
-                    pt.last_invalidated_frame = max(pt.last_invalidated_frame, self._frame_id + 1)
+                    pt.last_invalidated_frame = max(pt.last_invalidated_frame, self._frame_id + 1) + frame_delta
                     pt.dirty = self._is_dirty(pt)
                     self.pending_invalid.append(pt)
 

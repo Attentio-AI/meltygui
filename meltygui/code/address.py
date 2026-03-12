@@ -328,7 +328,7 @@ def make_save_wrapper(fn: Callable, save_data: Callable,
                 # Unified diff (like `git diff`)
                 diff = difflib.unified_diff(lines1, lines2, fromfile="original.py", tofile="modified.py")
                 # print("".join(diff))
-                status = diff
+                status = "".join(diff)
             except Exception as e:
                 print(f"Diff failed: {e}")
 

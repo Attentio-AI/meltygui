@@ -195,8 +195,9 @@ class Melty:
         cls.original_window_padding = style.window_padding
         cls.original_frame_padding = style.frame_padding
 
-        cls.returned_values = copy(cls.pending_return_values)
+        cls.returned_values.update(cls.pending_return_values)
         cls.pending_returned_values = {}
+
 
         if cls.glfw_close_requested:
             cls.event_handler.feed_down(input_id="glfw_close", x=0, y=0, t=time.perf_counter())
@@ -331,9 +332,13 @@ class Melty:
         kwargs['input_value'] = input_value
         return_val = view_func(**kwargs)
         if return_val is not None:
-            cls.pending_return_values[draw_state.id] = return_val
+            cls.pending_return_values[draw_state._tile_id] = return_val
             if return_val[0]:
-                Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=7, force=True)
+                Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=7, force=True, frame_delta=2)
+                if draw_state.parent_window is not None:
+                    Melty.cache.invalidate_up(draw_state._tile_id,max_depth=7, frame_delta=2)
+                    Melty.cache.invalidate_up(draw_state.parent_window._tile_id,max_depth=7, frame_delta=2)
+                request_render()
 
         Melty.bg_stack = original_bg_stack
         # cls.cache.remove_parent()
