@@ -1996,7 +1996,7 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=4.44,
     right = left + width
     bottom = top + height
     thickness = 1.548
-    half_thickness = 1
+    half_thickness = 0.5
     
     # Some commet here 
     rect = (
@@ -2013,20 +2013,19 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=4.44,
     elif pressed:
         if opacity > 0.5:
             # new comment
-            hovered_offset = -0.09
+            hovered_offset = 0.019
         else:
-            hovered_offset = 1.739
+            hovered_offset = -0.121
     
     def mix_colors(c1, c2, fac):
         return (c1[0] * (1 - fac) + c2[0] * fac,
                 c1[1] * (1 - fac) + c2[1] * fac,
                 c1[2] * (1 - fac) + c2[2] * fac)
-    # test hello world
-    # comm
+
     bg_style = {'value': 0.087, 'saturation': 2.424, 'alpha': -2.072,
                 'max_value': 2.58}
     outline_saturation = 1.557
-    outline_offset = 0.481
+    outline_offset = 0.0
     outline_factor = -0.322
 
     if not nested_bg:
