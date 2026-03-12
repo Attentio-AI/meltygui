@@ -889,8 +889,7 @@ def render_func(*args, **o_kwargs):
                 draw_state.left_offset = parent_wrap_left - column_parent.abs_left
                 draw_state.top_offset = column_parent.abs_top + column_cursor_y + draw_state.header_height - column_parent.abs_top
                 draw_state.left = parent_wrap_left
-                draw_state.top = parent_wrap_top + column_cursor_y + draw_state.header_height
-
+                draw_state.top = parent_wrap_top + column_cursor_y + draw_state.header_height + 3
                 Collisions.register(column_parent)
 
             if draw_state.final_max_column > 1:
@@ -904,9 +903,6 @@ def render_func(*args, **o_kwargs):
 
 
             ##########################
-
-
-
             if kwargs.get("live", False):
                 draw_state.live = True
                 fa_live_icon = "\uf0e7  Live"
@@ -1049,7 +1045,7 @@ def render_func(*args, **o_kwargs):
 
                     if pending_window(input_value=f"load",
                                    closed=False, window_pos=(0,0), auto_resize=True,
-                                   pending=draw_state._internal_pending, wrap=True,
+                                   pending=draw_state._internal_pending,
                                    button_name="Load", name=f"Load", anchor=Anchor.BOTTOM_LEFT, tint=draw_state.tint,
                                    mode=Mode.WINDOW_CLEAN)[0]:
                         draw_state._apply_load = draw_state._internal_pending.originated
@@ -1845,6 +1841,14 @@ def render_func(*args, **o_kwargs):
 
                                 if not isinstance(external_value, Pending):
                                     if draw_state._show_save or draw_state._apply_save is not None:
+                                        Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=4, force=True)
+                                        request_render()
+
+                                    draw_state._save_pending_obj = None
+                                    draw_state._show_save = False
+
+                                if not isinstance(external_value, Pending):
+                                    if draw_state._show_save or draw_state._apply_save is not None:
                                         draw_state._apply_save = None
                                         Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=4, force=True)
 
@@ -1870,13 +1874,7 @@ def render_func(*args, **o_kwargs):
                         if isinstance(external_value, tuple):
                             external_value, thead_launch_frame = external_value
 
-                        if not isinstance(external_value, Pending):
-                            if draw_state._show_save or draw_state._apply_save is not None:
-                                Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=4, force=True)
-                                request_render()
 
-                            draw_state._save_pending_obj = None
-                            draw_state._show_save = False
 
                         if isinstance(external_value, Pending):
                             if external_value.state == PendingState.ERROR:
