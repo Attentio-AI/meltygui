@@ -564,7 +564,7 @@ class Melty:
             cls.pending_move_to_front[1].layer = window_z_pos
             draw_state = cls.pending_move_to_front[1]
             if cls.pending_move_to_front[1]._is_nested:
-                draw_state.layer += Melty.nested_layer_boost
+                draw_state.layer += Melty.nested_layer_boost + 3
                 # draw_state.z_pos = (draw_state.layer * Melty.max_depth) + draw_state.depth
             if window_key in Melty.registered_windows:
                 # Remove and re-insert to move to end (top)

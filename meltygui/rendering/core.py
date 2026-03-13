@@ -265,7 +265,7 @@ def render_func(*args, **o_kwargs):
         if Melty.depth <= 3:
             style = imgui.get_style()
             style.frame_rounding = 5.0
-            style.item_spacing = (4, 0)
+            style.item_spacing = (5, 0)
             style.window_padding = (3, 0)
             style.frame_padding = (4, 1)
 
@@ -1657,10 +1657,7 @@ def render_func(*args, **o_kwargs):
                 width = snap_int(width)
                 height = snap_int(height)
 
-                # left, top, width, height = Melty.apply_clip_ds(draw_state)
-
                 #### MAIN CALL #######################
-                clip_rect = Melty.get_clip_rect()
                 Melty.push_clip((left, top,
                                  left + width,
                                  top + height - draw_state.footer_height))
@@ -1669,11 +1666,21 @@ def render_func(*args, **o_kwargs):
                     Melty.bg_depth += 1 + kwargs.get("bg_offset", 0)
                     Melty.bg_stack.append(style_manager.get_tint())
 
+                if not closable and show_bg:
+                    imgui.dummy(outline_margin/2, outline_margin/2)
+
+                # imgui.set_cursor_screen_pos((snap_int(imgui.get_cursor_screen_pos()[0]),
+                #                              snap_int(imgui.get_cursor_screen_pos()[1] + outline_margin/2)))
+
                 return_value = draw_inner_main(clean_args, draw_state,
                                                input_value, unique, kwargs)
 
 
-                if show_bg:
+                # if not draw_state.multi_line:
+                #     imgui.same_line(spacing=0.0)
+                #     imgui.dummy(outline_margin,0)
+
+                if show_bg and show_bg:
                     Melty.bg_depth -= 1 + kwargs.get("bg_offset", 0)
                     Melty.bg_stack.pop()
                     Melty.bg_color_stack.pop()
@@ -1683,10 +1690,19 @@ def render_func(*args, **o_kwargs):
                 if imgui.is_item_active() or imgui.is_item_activated():
                     Melty.report_imgui_active()
                 #######################
+
+                if not closable and show_bg:
+                    imgui.same_line(spacing=0)
+                    imgui.dummy(outline_margin, 1)
+
                 content_rect = imgui.get_item_rect_size()
                 draw_state._content_rect = content_rect
+
+
                 end_group()
                 Melty.pop_clip()
+
+
 
 
                 if draw_state.scroll_visible:
@@ -1751,8 +1767,6 @@ def render_func(*args, **o_kwargs):
 
                 if previous_tint is not None:
                     style_manager.set_imgui_tint(*previous_tint)
-
-
 
             draw_state._imgui_is_edited = imgui.is_item_edited()
             draw_state._imgui_is_activated = imgui.is_item_activated()

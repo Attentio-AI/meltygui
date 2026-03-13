@@ -112,7 +112,7 @@ class TileMode(Enum):
          "hotkey_receiver", "use_child", "cst", "search_text", "bg_color", "depth", "z_pos",
          "is_active", "clip_rect", "wrapped_top", "current_tint", "wrapped_left", "multi_line",
          "min_width", "min_height", "is_focused", "drag_window_pos_x", "drag_window_pos_y", "corner_radius",
-         "drag_mode", "is_hovered_last", "bg_shown", "draw_window_pos_x", "z_offset",
+         "drag_mode", "is_hovered_last", "bg_shown", "draw_window_pos_x", "z_offset", "content_width",
          "misc_used", "draw_window_pos_y", "drag_delta", "screen_pos", "hover_rects", "melty_window", "auto_resize",
          "imgui_is_item_activated", "frame_count")
 @exclude("current_tint", "overhead_time", "premature_break",
@@ -126,7 +126,7 @@ class TileMode(Enum):
 @no_save_exclude('render_time', 'content_height', "total_z_offset", 'closable', 'invalid_content_height',
                  "header_height", "parent_window", "pressed",
                  'hover_rects', 'nested_window', 'use_cache', 'layer', "header_top", "header_left", "left_offset",
-                 "top_offset", 'kwargs', 'content_width', "just_shadow",
+                 "top_offset", 'kwargs', "just_shadow",
                  "header_left_delta", "header_top_delta", "last_seen", "persistent", "shadow_margin", "bg_depth",
                  "anchor_pos", "just_shadow", 'hover_reported', 'explain_convert',
                  'channel', 'next', 'previous', 'index_in_parent', 'relative_pos', 'context_menu_open',

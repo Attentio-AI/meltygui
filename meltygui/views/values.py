@@ -69,13 +69,13 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     }
     name_rounding       = 2.0
     max_name_chars      = 40
-    min_name_text_width = 60
+    min_name_text_width = 62
 
     # Tree arrow
     arrow_style = {
-        'value': 0.213, 'saturation': 1.492,
+        'value': 0.145, 'saturation': 1.468,
         'alpha': 0.266, 'max_value': 1.161,
-        'depth_factor': 0.654
+        'depth_factor': 0.452
     }
 
     # Type / unique label colors
@@ -109,7 +109,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         push_style_color(imgui.COLOR_TEXT, *arrow_color[:3])
         imgui.set_cursor_screen_pos(imgui.get_cursor_screen_pos())
         imgui.dummy(0, 0)
-        imgui.same_line(spacing=1)
+        imgui.same_line(spacing=0)
 
         imgui.push_style_color(imgui.COLOR_BUTTON, 0.0, 0.0, 0.0, 0.0)
         imgui.push_style_color(imgui.COLOR_BUTTON_HOVERED, 0.0, 0.0, 0.0, 0.0)
@@ -228,6 +228,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         same_line(spacing=3)
 
     pop_style_var(1)
+
     return on_change, return_val
 
 def draw_footer(input_value=None, name="", key=None, melty=None, parent_show_add_delete=False, width=0, suffix="",
@@ -1974,12 +1975,12 @@ def seperator(height):
     imgui.dummy(0, snap_int(height / 2))
 
 def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=4.44,
-            global_style=None, outline=True, bg_color=None, opacity=-1.131,
+            global_style=None, outline=True, bg_color=None, opacity=-0.812,
             style_manager=None, tint=None, outline_tint=None, selected=False,
             hovered=False, pressed=False, nested_bg=False, **kwargs):
 
     # ── Constants ──────────────────────────────────────────────
-    depth_wrap        = 8.909
+    depth_wrap        = 9.222
     depth_scale       = 1.875
     corner_radius     = 4.14
     border_inset      = 1.548
@@ -1987,13 +1988,13 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=4.44,
     stroke_width      = 2.0
 
     # How depth relates to color intensity
-    intensity_factor  = 0.333
+    intensity_factor  = 0.391
     intensity_offset  = -4.777
 
     # Outline color tuning
-    outline_base      = 2.057
+    outline_base      = 2.074
     outline_depth_mul = 0.929
-    outline_sat       = {'default': 2.452, 'nested': 3.051}
+    outline_sat       = {'default': 2.61, 'nested': 3.051}
 
     # Bleed mixing
     bleed_mix         = {'nested': 0.333, 'default': 0.454}
@@ -2507,6 +2508,11 @@ def draw_vis(input_val):
     imgui.text("An LSD Studio Instance")
 
 
+@render_func(is_default_for="ImGuiStyleManager", show_bg=True, tint=(0.7, 0.7, 0.1), with_header=draw_header)
+def draw_vis(input_val):
+    imgui.text("Style Manager")
+
+
 @render_func(is_default_for="AppModel", show_bg=True, tint=(0.6, 0.2, 0.8), with_header=draw_header)
 def draw_app_model(input_val):
     imgui.text("An App Model Instance")
@@ -2539,7 +2545,7 @@ def draw_function(input_value, name, draw_state, unique):
 
         draw_state.params = param_dict
     if len(draw_state.params) > 0:
-        changed, new_val = draw_any(draw_state.params, name="Parameters", show_add_delete=False)
+        changed, new_val = draw_collection(draw_state.params, name="Parameters", show_add_delete=False, horizontal=True, child_kwargs={"wrap":True, "show_bg":True})
         if changed:
             draw_state.params = new_val
 
