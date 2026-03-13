@@ -20,6 +20,7 @@ import libcst as cst
 import numpy
 from imgui.core import _DrawList, _ImGuiInputTextCallbackData
 
+from server.server_gui import open_file
 from src.lsd.gl_gui.melty import Melty, CollectionAction, add_to_collection, \
     ManagedWindow
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
@@ -30,7 +31,7 @@ from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_styl
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_conversion.file_converters import path_to_dict, bytes_to_str, FileRef, ValueDict, \
     load_text, recompile
-from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment
+from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment, Conditional, GeneralParse
 from src.lsd.gl_gui.view.core_conversion.path_finder import convert, Pending, PendingState
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
@@ -46,7 +47,6 @@ from src.lsd.gl_gui.view.core_views.monitor import Monitor
 from src.lsd.gl_gui.view.core_views.text_editor import draw_text
 from src.shader_library.shader_manager.texture_manager import PendingTexture
 
-
 def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add_delete=False, width=0, suffix="",
                 collection=None, display_name=None, meta=None, unique=None, is_tree=True,
                 show_name=True, name_func=None, show_type=False, show_unique=False,
@@ -54,6 +54,35 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
                 draw_state=None, show_tint=False, opacity=1.0, show_add_delete=True,
                 on_drag=False, on_action=None, style_manager=None,
                 global_style=None, global_toggles=None, **kwargs):
+
+    # ── Constants ──────────────────────────────────────────────
+    # Depth drives name color
+    depth_scale       = 0.563
+    depth_offset      = -1.487
+    name_value_factor = 1.0
+
+    # Name text (value is the base offset, updated by depth below)
+    name_style = {
+        'value': 0.011, 'saturation': 1.42,
+        'alpha': 1.998, 'max_value': 0.973,
+        'depth_factor': 0.226
+    }
+    name_rounding       = 2.0
+    max_name_chars      = 40
+    min_name_text_width = 60
+
+    # Tree arrow
+    arrow_style = {
+        'value': 0.213, 'saturation': 1.492,
+        'alpha': 0.266, 'max_value': 1.161,
+        'depth_factor': 0.654
+    }
+
+    # Type / unique label colors
+    type_label_color   = (2.865, 1.835, 2.861, 1.0)
+    unique_label_color = (-1.535, 0.0, 0.9, 1.0)
+
+    # ── Setup ──────────────────────────────────────────────────
     if display_name is not None:
         name = display_name
 
@@ -62,74 +91,57 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     on_change = False
     return_val = on_action
     push_style_var(imgui.STYLE_ALPHA, opacity)
-    value_factor = 0.03500
-    value_offset = 10.6
 
-    depth = len(Melty.bg_stack)
-    depth_factor = 0.0350
-    depth_offset = 10.8
+    # ── Depth-driven color computation ─────────────────────────
+    depth = max(0.0, Melty.bg_depth)
 
-    dynamic_value = max(0, (float(depth + depth_offset) * depth_factor))
-    bg_style = {'value': -0.3499999940395355, 'saturation': 1.2699999809265137, 'alpha': 1.0,
-                'max_value': 1.062000036239624}
-    saturation = -0.5
+    depth_intensity = float(depth + depth_offset) * depth_scale
+    name_style['value'] = depth_intensity * name_style['depth_factor'] + name_style['value']
+    arrow_style['value'] = depth_intensity * arrow_style['depth_factor'] + arrow_style['value']
 
-    saturation = bg_style['saturation'] + saturation
-    name_color = (style_manager.
-                  make_color_style_value(input=bg_style, saturation=saturation,
-                                         value=max(0, dynamic_value * value_factor + value_offset)))
-    hover_color = (style_manager.
-                   make_color_style_value(input=bg_style, saturation=1.2, alpha=1.0,
-                                          value=0.67))
+    name_color = style_manager.make_color_style_value(input=name_style)
+    arrow_color = style_manager.make_color_style_value(input=arrow_style)
 
-    outline_color = (style_manager.
-                     make_color_style_value(input=bg_style, saturation=0.8, alpha=1.0,
-                                            value=0.9))
-
+    # ── Tree arrow ─────────────────────────────────────────────
     imgui.align_text_to_frame_padding()
 
     if is_tree:
-        # if trigger_collapse:
-        #     draw_state.expanded = False
-        # if trigger_expand:
-        #     draw_state.expanded = True
-
-        push_style_color(imgui.COLOR_TEXT, *outline_color)
-        imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0], imgui.get_cursor_screen_pos()[1]))
+        push_style_color(imgui.COLOR_TEXT, *arrow_color[:3])
+        imgui.set_cursor_screen_pos(imgui.get_cursor_screen_pos())
         imgui.dummy(0, 0)
         imgui.same_line(spacing=1)
 
-        # no background
-        imgui.push_style_color(imgui.COLOR_BUTTON, *(0.0, 0.0, 0.0, 0.0))
-        imgui.push_style_color(imgui.COLOR_BUTTON_HOVERED, *(0.0, 0.0, 0.0, 0.0))
+        imgui.push_style_color(imgui.COLOR_BUTTON, 0.0, 0.0, 0.0, 0.0)
+        imgui.push_style_color(imgui.COLOR_BUTTON_HOVERED, 0.0, 0.0, 0.0, 0.0)
+        imgui.push_style_var(imgui.STYLE_ALPHA, arrow_style['alpha'])
         imgui.set_item_allow_overlap()
 
-        if imgui.arrow_button(f"##tree",
-                              imgui.DIRECTION_DOWN if draw_state.expanded else imgui.DIRECTION_RIGHT):
+        arrow_dir = imgui.DIRECTION_DOWN if draw_state.expanded else imgui.DIRECTION_RIGHT
+        if imgui.arrow_button("##tree", arrow_dir):
             draw_state.expanded = not draw_state.expanded
             print(f"Expanded: {draw_state.expanded}")
             draw_state.content_height = 0
             draw_state.invalid_content_height = True
             request_render()
-        # imgui.set_item_allow_overlap()
+        imgui.pop_style_var(1)
         imgui.pop_style_color(2)
-
-        # draw_state.expanded = checkbox(f"{down_icon}##tree", draw_state.expanded, width=50)
-
         pop_style_color(1)
         same_line()
     else:
         imgui.same_line()
+
+    # ── Type / unique labels ───────────────────────────────────
     if show_type:
-        imgui.text_colored(f"({input_value.__class__.__name__})", *(0.8, 0.0, 0.5, 1.0))
+        imgui.text_colored(f"({input_value.__class__.__name__})", *type_label_color)
         same_line()
     if show_unique:
-        imgui.text_colored(f"({str(Melty.get_tile_id())})", *(0.4, 0.0, 0.9, 1.0))
+        imgui.text_colored(f"({str(Melty.get_tile_id())})", *unique_label_color)
         same_line()
     if show_name and name != "":
         same_line()
         imgui.set_item_allow_overlap()
 
+    # ── Tint widget ────────────────────────────────────────────
     if hasattr(input_value, "tint") and input_value.tint is not None:
         draw_state._has_popup = True
         tint_changed, tint_value = draw_tuple(input_value.tint, show_name=False, show_header=False)
@@ -143,10 +155,10 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
             draw_state.tint = tint_value
         same_line()
 
+    # ── Add button ─────────────────────────────────────────────
     if show_add_delete and isinstance(input_value, (list, dict)) or hasattr(input_value, "__dict__"):
         if show_add_delete:
             if imgui.small_button(f"\uf067##add{unique}"):
-                # Use str as default hinted type
                 hinted_type = NoneType
                 if meta.field_type is not None and hasattr(meta.field_type, "__args__"):
                     if len(meta.field_type.__args__) == 2:
@@ -156,87 +168,67 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
                 return_val = input_value
             same_line()
 
-    min_text_width = 60
-    if show_name and name != "" and name is not None and name != "None":
+    # ── Name label / edit ──────────────────────────────────────
+    has_visible_name = show_name and name not in ("", None, "None")
+
+    if has_visible_name:
+        # Folder open button for dicts
         if isinstance(input_value, (dict, MutableMapping)):
-            folder_icon = "\uf07b"
-            push_style_color(imgui.COLOR_BUTTON, *(0.0, 0.0, 0.0, 0.0))
+            push_style_color(imgui.COLOR_BUTTON, 0.0, 0.0, 0.0, 0.0)
             push_style_color(imgui.COLOR_TEXT, *name_color)
-            if imgui.button(f"{folder_icon}##open_folder"):
+            if imgui.button("##open_folder"):
                 if hasattr(input_value, "file_path"):
                     open_file(input_value.file_path)
-
             pop_style_color(2)
             same_line()
-        elif isinstance(collection, (FolderProxy)):
-            file_icon = "\uf15b"
-            # imgui.text_colored(folder_icon, *name_color)
 
-            push_style_color(imgui.COLOR_BUTTON, *(0.0, 0.0, 0.0, 0.0))
+        # File open button for folder proxies
+        elif isinstance(collection, FolderProxy):
+            push_style_color(imgui.COLOR_BUTTON, 0.0, 0.0, 0.0, 0.0)
             push_style_color(imgui.COLOR_TEXT, name_color[0], name_color[1], name_color[2], 0.5)
-            if imgui.button(f"{file_icon}##open_file"):
+            if imgui.button("##open_file"):
                 if hasattr(collection, "file_path"):
-                    folder_path = collection.file_path
-                    file_path = os.path.join(folder_path, str(name))
+                    file_path = os.path.join(collection.file_path, str(name))
                     open_file(file_path)
-
             pop_style_color(2)
             same_line()
 
-        clipped_name = name.split("##")[0][:40]
-        padding = imgui.get_style().frame_padding.x
+        clipped_name = name.split("##")[0][:max_name_chars]
         text_width = imgui.calc_text_size(clipped_name)[0]
-        push_style_color(imgui.COLOR_BUTTON, *(0.0, 0.0, 0.0, 0.0))
-        push_style_color(imgui.COLOR_TEXT, *name_color)
 
-        if Melty.is_window_enabled():
-            push_style_color(imgui.COLOR_BUTTON_HOVERED, *hover_color)
-        else:
-            push_style_color(imgui.COLOR_BUTTON_HOVERED, *(0.0, 0.0, 0.0, 0.0))
 
-        push_style_color(imgui.COLOR_BUTTON_ACTIVE, *hover_color)
-        push_style_var(imgui.STYLE_FRAME_ROUNDING, 2.0)
-        name_width = min(text_width, min_text_width)
+        push_style_var(imgui.STYLE_FRAME_ROUNDING, name_rounding)
+
         if not draw_state._name_edit:
             draw_list: _DrawList = imgui.get_window_draw_list()
             cursor_pos = imgui.get_cursor_screen_pos()
-            draw_list.add_text(cursor_pos[0], cursor_pos[1], imgui.get_color_u32_rgba(*name_color[:3], 1.0),
-                               clipped_name)
+            packed_name_color = imgui.get_color_u32_rgba(*name_color[:3], 1.0)
+            draw_list.add_text(cursor_pos[0], cursor_pos[1], packed_name_color, clipped_name)
             imgui.dummy(text_width, imgui.get_frame_height())
-
-            pop_style_color(4)
             pop_style_var(1)
         else:
+            name_width = min(text_width, min_name_text_width)
             imgui.set_next_item_width(name_width)
-            # Selected text on focus
-            flags = imgui.INPUT_TEXT_ENTER_RETURNS_TRUE | imgui.INPUT_TEXT_AUTO_SELECT_ALL
-            changed, new_name = imgui.input_text(f"##edit{name}_{unique}", name,
-                                                 flags=flags)
-            pop_style_color(4)
+            edit_flags = imgui.INPUT_TEXT_ENTER_RETURNS_TRUE | imgui.INPUT_TEXT_AUTO_SELECT_ALL
+            changed, new_name = imgui.input_text(f"##edit{name}_{unique}", name, flags=edit_flags)
             pop_style_var(1)
-            if changed:
-                draw_state._name_edit = False
 
-            if imgui.is_key_pressed(imgui.KEY_ESCAPE):
-                draw_state._name_edit = False
-
-            if not imgui.is_item_active():
+            if changed or imgui.is_key_pressed(imgui.KEY_ESCAPE) or not imgui.is_item_active():
                 draw_state._name_edit = False
 
         same_line(spacing=3)
 
-    do_profile = global_toggles.profiler == ProfileMode.ON
-    if do_profile:
-        profile_time = draw_state.render_time
-        render_profiler_time(input_value=profile_time, brief=True,
-                             style_manager=style_manager, global_style=global_style)
+    # ── Profiler ──────────────────────────────────────────────
+    is_profiling = global_toggles.profiler == ProfileMode.ON
+    if is_profiling:
+        render_profiler_time(
+            input_value=draw_state.render_time, brief=True,
+            style_manager=style_manager, global_style=global_style,
+        )
         same_line(spacing=3)
+
     pop_style_var(1)
-
-    # pop_style_var(2)
-
     return on_change, return_val
-
 
 def draw_footer(input_value=None, name="", key=None, melty=None, parent_show_add_delete=False, width=0, suffix="",
                 collection=None, display_name=None, meta=None, unique=None, is_tree=True,
@@ -805,10 +797,13 @@ def draw_main(input_value, vis, **kwargs):
     # if changed:
     #     test_code = value
     # #
+    changed, value = draw_any(draw_header, name="draw_header", show_bg=True, mode=(Mode.CODE_UI, Mode.WINDOW))
+    if changed:
+        test_code = value
 
     changed, value = draw_window(draw_bg, name="cst_text", show_bg=True, live=True, mode=Mode.CODE_PLAIN_TEXT)
     if changed:
-        test_code = value
+        Melty.cache.invalidate_all()
 
     changed, value = draw_any(input_value=draw_bg, name="cst_dict", show_bg=True, mode=(Mode.CODE_UI, Mode.WINDOW))
     if changed:
@@ -1306,8 +1301,6 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
     return False, draw_state
 
     # draw_window(Melty.last_request_render, show_bg=True, name="Last Invalid")
-
-
 
 
 
@@ -1980,123 +1973,128 @@ def seperator(height):
     imgui.separator()
     imgui.dummy(0, snap_int(height / 2))
 
-
 def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=4.44,
             global_style=None, outline=True, bg_color=None, opacity=-1.131,
             style_manager=None, tint=None, outline_tint=None, selected=False,
             hovered=False, pressed=False, nested_bg=False, **kwargs):
-    
-    # Render background
-    def current_indent_px(): 
+
+    # ── Constants ──────────────────────────────────────────────
+    depth_wrap        = 8.909
+    depth_scale       = 1.875
+    corner_radius     = 4.14
+    border_inset      = 1.548
+    border_inset_half = 0.5
+    stroke_width      = 2.0
+
+    # How depth relates to color intensity
+    intensity_factor  = 0.333
+    intensity_offset  = -4.777
+
+    # Outline color tuning
+    outline_base      = 2.057
+    outline_depth_mul = 0.929
+    outline_sat       = {'default': 2.452, 'nested': 3.051}
+
+    # Bleed mixing
+    bleed_mix         = {'nested': 0.333, 'default': 0.454}
+    bleed_style       = {'value': -0.1, 'alpha': 0.768, 'saturation': 5.459}
+    outline_bleed_mix = 0.232
+
+    # Hover offset per interaction state
+    hover_offset_by_state = {
+        'default':    -2.063,
+        'selected':    -2.203,
+        'pressed_hi': -2.288,   # pressed + opacity > 0.5
+        'pressed_lo':  -0.371,
+    }
+
+    bg_style = {
+        'value': 0.127, 'saturation': 2.808,
+        'alpha': -2.072, 'max_value': 0.81,
+    }
+
+    # ── Helpers ────────────────────────────────────────────────
+    def current_indent_px():
         return Melty.current_indent
-    
-        
-    clamped = ((max(2.0, Melty.bg_depth) % 9.0) - 1.5)
-    depth = (clamped) * 2.59
+
+    def mix_colors(color_a, color_b, factor):
+        return (
+            color_a[0] * (1 - factor) + color_b[0] * factor,
+            color_a[1] * (1 - factor) + color_b[1] * factor,
+            color_a[2] * (1 - factor) + color_b[2] * factor,
+        )
+
+    # ── Depth calculation ──────────────────────────────────────
+    wrapped_depth = max(0.0, Melty.bg_depth) % depth_wrap
+    scaled_depth = wrapped_depth * depth_scale
+    depth_intensity = max(0, (scaled_depth + intensity_offset) * intensity_factor)
+
+    # ── Geometry ───────────────────────────────────────────────
     right = left + width
     bottom = top + height
-    thickness = 1.548
-    half_thickness = 0.5
-    
-    # Some commet here 
-    rect = (
-    snap_int(left) + thickness, snap_int(top) + thickness, snap_int(right) - thickness, snap_int(bottom) - thickness)
-    rect_outline = (snap_int(left) + half_thickness, snap_int(top) + half_thickness,
-                    snap_int(right) - half_thickness, snap_int(bottom) - half_thickness)
-    rounding = 4.14
-    depth_factor = 0.07
-    depth_offset = 0.47
-    dynamic_value = max(0, (float(depth + depth_offset) * depth_factor))
-    hovered_offset = -1.99
+
+    fill_rect = (
+        snap_int(left) + border_inset,     snap_int(top) + border_inset,
+        snap_int(right) - border_inset,    snap_int(bottom) - border_inset,
+    )
+    outline_rect = (
+        snap_int(left) + border_inset_half,  snap_int(top) + border_inset_half,
+        snap_int(right) - border_inset_half, snap_int(bottom) - border_inset_half,
+    )
+
+    # ── Interaction hover offset ───────────────────────────────
+    hover_offset = hover_offset_by_state['default']
     if selected:
-        hovered_offset = 0.00
+        hover_offset = hover_offset_by_state['selected']
     elif pressed:
         if opacity > 0.5:
-            # new comment
-            hovered_offset = 0.019
+            hover_offset = hover_offset_by_state['pressed_hi']
         else:
-            hovered_offset = -0.121
-    
-    def mix_colors(c1, c2, fac):
-        return (c1[0] * (1 - fac) + c2[0] * fac,
-                c1[1] * (1 - fac) + c2[1] * fac,
-                c1[2] * (1 - fac) + c2[2] * fac)
+            hover_offset = hover_offset_by_state['pressed_lo']
 
-    bg_style = {'value': 0.087, 'saturation': 2.424, 'alpha': -2.072,
-                'max_value': 2.58}
-    outline_saturation = 1.557
-    outline_offset = 0.0
-    outline_factor = -0.322
-
+    # ── Outline style ──────────────────────────────────────────
+    sat = outline_sat['default']
+    depth_mul = outline_depth_mul
     if not nested_bg:
-        outline_factor *= 1.00
-        outline_saturation = 1.38
-    
-    if nested_bg:
-        bleed_factor = 0.59
-    else:
-        bleed_factor = 0.47
+        depth_mul *= 1.00
+        sat = outline_sat['nested']
 
-    bg_bleed = Melty.get_bg_color(-1)
-    bg_bleed = style_manager.make_custom_styled(*bg_bleed, input=bg_style, value=-0.27, alpha=0.5, saturation=1.17)
+    # ── Background bleed color ─────────────────────────────────
+    bleed_factor = bleed_mix['nested'] if nested_bg else bleed_mix['default']
 
-    outline_color = (style_manager.
-                     make_color_style_value(input=bg_style, saturation=outline_saturation, value=max(0, dynamic_value * outline_factor +
-                                                      outline_offset + hovered_offset)))
-    outline_color = mix_colors(outline_color, bg_bleed, 0.01)
+    bleed_base = Melty.get_bg_color(-1)
+    bleed_color = style_manager.make_custom_styled(
+        *bleed_base, input=bg_style, **bleed_style,
+    )
+
+    # ── Outline rendering ────────────────────────────────────
+    outline_value = max(0, depth_intensity * depth_mul + outline_base + hover_offset)
+    outline_color = style_manager.make_color_style_value(
+        input=bg_style, saturation=sat, value=outline_value,
+    )
+    outline_color = mix_colors(outline_color, bleed_color, outline_bleed_mix)
 
     if outline:
-        outline_color = imgui.get_color_u32_rgba(*outline_color[:3], 1.0)
-
+        packed_outline = imgui.get_color_u32_rgba(*outline_color[:3], 1.0)
         if outline_tint is not None:
-            outline_color = imgui.get_color_u32_rgba(*outline_tint[:3], 1.0)
+            packed_outline = imgui.get_color_u32_rgba(*outline_tint[:3], 1.0)
+        imgui.get_window_draw_list().add_rect(
+            *outline_rect, col=packed_outline, rounding=corner_radius, thickness=stroke_width,
+        )
 
-
-        imgui.get_window_draw_list().add_rect(*rect_outline, col=outline_color, rounding=rounding, thickness=2.0)
-
+    # ── Fill rendering ─────────────────────────────────────────
     if bg_color is None:
-        bg_color = (style_manager.
-                    make_color_style_value(input=bg_style, value=max(0, dynamic_value)))
+        bg_color = style_manager.make_color_style_value(input=bg_style, value=max(0, depth_intensity))
+        bg_color = mix_colors(bg_color, bleed_color, bleed_factor)
 
-        bg_color = mix_colors(bg_color, bg_bleed, bleed_factor)
-
-    imgui_bg_color = imgui.get_color_u32_rgba(bg_color[0], bg_color[1], bg_color[2], 1.0)
-
+    packed_fill = imgui.get_color_u32_rgba(bg_color[0], bg_color[1], bg_color[2], 1.0)
     if tint is not None:
-        imgui_bg_color = imgui.get_color_u32_rgba(*tint[:3], opacity)
+        packed_fill = imgui.get_color_u32_rgba(*tint[:3], opacity)
 
     if opacity > 0.0:
-        imgui.get_window_draw_list().add_rect_filled(*rect, col=imgui_bg_color, rounding=rounding)
+        imgui.get_window_draw_list().add_rect_filled(*fill_rect, col=packed_fill, rounding=corner_radius)
 
     return False, bg_color
-
-def open_file(path, app=None):
-    def default_file_manager():
-        # Detect platform
-        if sys.platform.startswith('darwin'):
-            return "open"
-        elif os.name == 'nt':
-            return "explorer"
-        elif os.name == 'posix':
-            return "nemo"
-
-    if app is None:
-        app = default_file_manager()
-
-    import subprocess
-    if os.path.exists(path):
-        codec = FILE_CODECS.for_name(path)
-        if codec is not None and codec.default_app is not None:
-            if hasattr(codec, 'default_app'):
-                app = codec.default_app
-                # Check if app exists
-                if not shutil.which(app):
-                    print(f"App not found: {app}, falling back to default.")
-                    app = "nemo"
-
-        subprocess.Popen([app, path])
-    else:
-        print(f"Path does not exist: {path}")
 
 
 @render_func(use_cache=True, shadow=True, selectable=False, show_bg=False, width=18, height=18, min_width=10,
@@ -2262,12 +2260,14 @@ def draw_bool(input_value: bool):
 
 @render_func(is_default_for=(str), shadow=False, wrap=False, use_cache=True, disable_scroll=True, with_header=draw_header)
 def draw_str(input_value: str, draw_state, editable=True, alpha=1.0):
-
     if not editable:
         imgui.push_style_var(imgui.STYLE_ALPHA, alpha)
-        imgui.push_text_wrap_pos(draw_state.left + draw_state.content_width - 2)
-        imgui.text(str(input_value))
+
+        text_size = imgui.calc_text_size(str(input_value), wrap_width=draw_state.content_width)
+        imgui.push_text_wrap_pos(draw_state.left + draw_state.width)
+        imgui.text_wrapped(str(input_value))
         imgui.pop_text_wrap_pos()
+
         imgui.pop_style_var(1)
         return False, input_value
 
@@ -2310,7 +2310,7 @@ def draw_str(input_value: str, draw_state, editable=True, alpha=1.0):
     return changed, value
 
 
-@render_func(is_default_for=(Comment), shadow=True, with_header=None, is_tree=False, tint=(0.2, 0.2, 0.1))
+@render_func(is_default_for=(Comment), shadow=False, with_header=None, is_tree=False, tint=(0.2, 0.2, 0.1))
 def draw_comment(input_value: Comment, draw_state, cursor_hover=False):
     line_height = imgui.get_text_line_height()
     show_controls = True
@@ -2339,17 +2339,8 @@ def draw_comment(input_value: Comment, draw_state, cursor_hover=False):
         draw_window(str(input_value), editable=False, window_pos=(0,0), width=popup_width, height=text_size[1] + 5,
         with_header_end=None, with_header=None, with_footer=None)
     imgui.same_line(spacing=0)
-    draw_str(str(input_value[1:]), alpha=0.1, editable=False, is_tree=False, with_header=None, show_name=False)
+    draw_str(str(input_value[1:]), alpha=0.2, selectable=False, editable=False, is_tree=False, with_header=None, show_name=False)
 
-    # if not show_controls:
-    #     imgui.push_style_var(imgui.STYLE_ALPHA, 0)
-    #
-    # imgui.set_next_item_width(draw_state.content_width)
-    # changed, value = imgui.input_text("##str", str(input_value))
-    # value = Comment(value)
-    #
-    # if not show_controls:
-    #     imgui.pop_style_var(1)
 
     if changed:
         return True, value
@@ -2666,6 +2657,8 @@ def default_context_menu(input_value, draw_state, func, **kwargs):
     imgui.new_line()
     imgui.text(type(input_value._input_value).__name__)
 
+    imgui.text(f"Mode {str(input_value._kwargs.get('mode', None))}")
+
     draw_collection(draw_state._all_pending)
 
     if input_value.explain_convert is not None:
@@ -2737,6 +2730,16 @@ class Mode(Enum):
             func=draw_collection,
             recursive=True
         ),
+        Conditional: ModeOverrides(
+                  kwargs={"tint": (0.2, 0.2, 0.1), 'show_add_delete': False, 'is_tree':False},
+                  recursive=True,
+              ),
+
+        GeneralParse: ModeOverrides(
+                     kwargs={'show_add_delete': False},
+                     recursive=True,
+                 ),
+
 
         # str: ModeOverrides(
         #     kwargs={"convert": None, "mode":None},
@@ -2744,11 +2747,7 @@ class Mode(Enum):
         #     recursive=False,
         # ),
 
-        Comment: ModeOverrides(
-            kwargs={"convert": None, "mode": None},
-            func=draw_comment,
-            recursive=True,
-        ),
+
 
     }
 
@@ -2758,6 +2757,7 @@ class Mode(Enum):
             func=draw_collection,
             recursive=True
         ),
+
 
         str: ModeOverrides(
             kwargs={"convert": None, "mode": None},

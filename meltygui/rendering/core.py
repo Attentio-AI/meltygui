@@ -174,14 +174,16 @@ def render_func(*args, **o_kwargs):
         modes = kwargs.get("mode", None)
         if not isinstance(modes, tuple):
             modes = (modes,) if modes is not None else None
-
+        if type(input_value).__name__ == "Conditional":
+            pass
         mode_stacked = False
         if modes is not None:
             mode_config = modes[0].value.get(type(input_value), None)
             if mode_config is not None and mode_config.recursive:
-                Melty.mode_stack.append(modes)
+                Melty.mode_stack.append(modes[0])
                 mode_stacked = True
 
+            not_recursive = []
             for mode in modes:
                 if mode is not None:
                     mode_config = mode.get_config_for(input_value)
@@ -189,9 +191,14 @@ def render_func(*args, **o_kwargs):
                         override_kwargs = mode_config.kwargs
                         kwargs = kwargs | override_kwargs
                         if not mode_config.recursive:
-                            kwargs.pop('mode', None)
+                            not_recursive.append(mode)
                         else:
                             kwargs['mode'] = mode
+
+            for mode in not_recursive:
+                if kwargs['mode'] == mode:
+                    kwargs.pop('mode', None)
+
 
         as_window = kwargs.get("as_window", False)
         if as_window:

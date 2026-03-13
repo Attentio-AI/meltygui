@@ -52,6 +52,7 @@ class Background:
 
     @classmethod
     def shutdown(cls):
+        print("Shutting down background system...")
         # with cls._lock:
         cls._active.clear()
         cls._user_tasks.clear()
