@@ -57,7 +57,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
     # ── Constants ──────────────────────────────────────────────
     # Depth drives name color
-    depth_scale       = 0.563
+    depth_scale       = 0.543
     depth_offset      = -1.487
     name_value_factor = 1.0
 
@@ -73,8 +73,8 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
     # Tree arrow
     arrow_style = {
-        'value': 0.145, 'saturation': 1.468,
-        'alpha': 0.266, 'max_value': 1.161,
+        'value': 0.867, 'saturation': 1.468,
+        'alpha': 0.122, 'max_value': 1.161,
         'depth_factor': 0.452
     }
 
@@ -778,8 +778,13 @@ def test_columns():
         draw_float(0.4, name=f"float_{i}", column=2)
 
 
+@render_func(use_cache=True, show_bg=True, with_header=draw_header)
+def draw_with_modes(input_value, modes):
+    for idx, mode in enumerate(modes):
+        draw_any(input_value, name=f"Mode: {mode}", mode=mode, show_header=True, disable_scroll=False, show_bg=True, column=idx)
+
 @render_func(use_cache=False, show_bg=True, selectable=False, show_tint=True, bg_offset=-1, with_header=draw_header)
-def draw_main(input_value, vis, **kwargs):
+def draw_main(input_value, vis):
     global test_obj
     return_val = draw_window(Melty.profiles_results, show_bg=True, name="Profile Results")
     return_val2 = draw_window(Melty.registered_windows, is_tree=True, show_add_delete=False, return_extras=True,
@@ -802,11 +807,10 @@ def draw_main(input_value, vis, **kwargs):
     if changed:
         test_code = value
 
-    changed, value = draw_window(draw_bg, name="cst_text", show_bg=True, live=True, mode=Mode.CODE_PLAIN_TEXT)
-    if changed:
-        Melty.cache.invalidate_all()
+    draw_window(draw_bg, name="cst_text", show_bg=True, live=True, mode=Mode.CODE_PLAIN_TEXT)
 
-    changed, value = draw_any(input_value=draw_bg, name="cst_dict", show_bg=True, mode=(Mode.CODE_UI, Mode.WINDOW))
+    changed, value = draw_with_modes(input_value=draw_bg, name="draw_bg",
+                                     show_bg=True, mode=(Mode.WINDOW), modes=[Mode.CODE_UI, Mode.CODE_PLAIN_TEXT])
     if changed:
         test_code = value
 
@@ -1974,14 +1978,14 @@ def seperator(height):
     imgui.separator()
     imgui.dummy(0, snap_int(height / 2))
 
-def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=4.44,
-            global_style=None, outline=True, bg_color=None, opacity=-0.812,
+def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=3.606,
+            global_style=None, outline=True, bg_color=None, opacity=-1.705,
             style_manager=None, tint=None, outline_tint=None, selected=False,
             hovered=False, pressed=False, nested_bg=False, **kwargs):
 
     # ── Constants ──────────────────────────────────────────────
-    depth_wrap        = 9.222
-    depth_scale       = 1.875
+    depth_wrap        = 9.0
+    depth_scale       = 1.85
     corner_radius     = 4.14
     border_inset      = 1.548
     border_inset_half = 0.5
@@ -1996,8 +2000,8 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=4.44,
     outline_depth_mul = 0.929
     outline_sat       = {'default': 2.61, 'nested': 3.051}
 
-    # Bleed mixing
-    bleed_mix         = {'nested': 0.333, 'default': 0.454}
+    # Beed color
+    bleed_mix         = {'nested': 0.403, 'default': 0.454}
     bleed_style       = {'value': -0.1, 'alpha': 0.768, 'saturation': 5.459}
     outline_bleed_mix = 0.232
 
@@ -2012,12 +2016,12 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=4.44,
     bg_style = {
         'value': 0.127, 'saturation': 2.808,
         'alpha': -2.072, 'max_value': 0.81,
-    }
+        }
 
     # ── Helpers ────────────────────────────────────────────────
     def current_indent_px():
         return Melty.current_indent
-
+        
     def mix_colors(color_a, color_b, factor):
         return (
             color_a[0] * (1 - factor) + color_b[0] * factor,
@@ -2039,6 +2043,7 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=4.44,
         snap_int(right) - border_inset,    snap_int(bottom) - border_inset,
     )
     outline_rect = (
+    
         snap_int(left) + border_inset_half,  snap_int(top) + border_inset_half,
         snap_int(right) - border_inset_half, snap_int(bottom) - border_inset_half,
     )
@@ -2298,8 +2303,7 @@ def draw_str(input_value: str, draw_state, editable=True, alpha=1.0):
     else:
         imgui.set_cursor_screen_pos((draw_state.left, draw_state.top))
         # disable scrolling
-        changed, value = imgui.input_text_multiline("##str", str(input_value),
-                                                    width=draw_state.content_width, height=height)
+        changed, value = draw_text(str(input_value), editable=True, with_header=None, show_name=False, is_tree=False)
         imgui.dummy(draw_state.content_width, text_height - height + 10)
 
 
@@ -2760,7 +2764,7 @@ class Mode(Enum):
     CODE_PLAIN_TEXT = {
         types.FunctionType: ModeOverrides(
             kwargs={"convert": [types.FunctionType, cst.Module, str], "auto_apply": [recompile, load_text]},
-            func=draw_collection,
+            func=draw_text,
             recursive=True
         ),
 

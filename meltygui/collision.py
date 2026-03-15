@@ -24,9 +24,9 @@ class Collisions:
 
         for obj in cls.tracked_objects_by_id.values():
             draw_list: _DrawList = imgui.get_overlay_draw_list()
-            draw_list.add_rect(upper_left_x=obj.abs_left, upper_left_y=obj.abs_top,
-                                 lower_right_x=obj.abs_left + obj.width, lower_right_y=obj.abs_top + obj.height,
-                                 col=imgui.get_color_u32_rgba(1, 0, 0, 0.5), thickness=1.0)
+            # draw_list.add_rect(upper_left_x=obj.abs_left, upper_left_y=obj.abs_top,
+            #                      lower_right_x=obj.abs_left + obj.width, lower_right_y=obj.abs_top + obj.height,
+            #                      col=imgui.get_color_u32_rgba(1, 0, 0, 0.5), thickness=1.0)
 
 
 

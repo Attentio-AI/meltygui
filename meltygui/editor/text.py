@@ -337,9 +337,9 @@ def _key_just_pressed(io, key):
 
 
 @render_func(shadow=True, show_bg=True, wrap=False, use_cache=True)
-def draw_text(input_value: str, cursor_hover=False, draw_state=None):
+def draw_text(input_value: str, cursor_hover=False, left_mouse_drag=False, draw_state=None):
     global _cursor_pos, _selection_start, _selection_end, _is_focused
-    global _cursor_blink_time, _is_dragging, _double_click_time, _last_click_pos
+    global _cursor_blink_time, _double_click_time, _last_click_pos
     global _prev_keys_down
 
     changed = False
@@ -348,23 +348,17 @@ def draw_text(input_value: str, cursor_hover=False, draw_state=None):
     line_height = imgui.get_text_line_height()
     text_height = imgui.calc_text_size(str(text))[1] + line_height * 2
 
-    max_bottom = draw_state.parent_window.top + draw_state.parent_window.height - draw_state.parent_window.footer_height - 5
-    text_bottom = draw_state.top + text_height
-    clamped_bottom = min(max_bottom, text_bottom)
-    height = clamped_bottom - draw_state.top
-
-    if height <= 10:
-        return False, input_value
+    top = imgui.get_cursor_screen_pos()[1]
+    left = draw_state.abs_left
 
     padding_x = imgui.get_style().frame_padding.x
     padding_y = imgui.get_style().frame_padding.y
     origin_x = draw_state.abs_left + padding_x
-    origin_y = draw_state.abs_top + padding_y
+    origin_y = top + padding_y + draw_state.header_height
 
     # --- Invisible button for mouse interaction ---
-    # imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
-    imgui.invisible_button("##editor_area", draw_state.content_width, text_height)
-    is_hovered = imgui.is_item_hovered()
+    imgui.dummy(draw_state.content_width, text_height)
+    is_hovered = cursor_hover
 
     # --- Read current keyboard state ---
     current_keys = set()
@@ -396,19 +390,16 @@ def draw_text(input_value: str, cursor_hover=False, draw_state=None):
             else:
                 _selection_start = click_pos
                 _selection_end = click_pos
-            _is_dragging = True
 
     elif not is_hovered and imgui.is_mouse_clicked(0):
         _is_focused = False
 
-    if _is_dragging and imgui.is_mouse_down(0):
-        drag_pos = _xy_to_char_index(text, io.mouse_pos.x, io.mouse_pos.y,
+    if left_mouse_drag and imgui.is_mouse_down(0):
+        drag_pos = _xy_to_char_index(text, left_mouse_drag.x, left_mouse_drag.y,
                                       origin_x, origin_y, line_height)
         _selection_end = drag_pos
         _cursor_pos = drag_pos
         _cursor_blink_time = time.time()
-    elif _is_dragging and not imgui.is_mouse_down(0):
-        _is_dragging = False
 
     # --- Keyboard handling ---
     if _is_focused:
@@ -625,10 +616,10 @@ def draw_text(input_value: str, cursor_hover=False, draw_state=None):
 
     # --- Drawing ---
     draw_list = imgui.get_window_draw_list()
-    rect_min_x = draw_state.abs_left
-    rect_min_y = draw_state.abs_top
-    rect_max_x = draw_state.abs_left + draw_state.content_width
-    rect_max_y = draw_state.abs_top + height
+    rect_min_x = left
+    rect_min_y = draw_state.clip_rect[1]
+    rect_max_x = left + draw_state.content_width
+    rect_max_y = draw_state.clip_rect[3]
 
     draw_list.push_clip_rect(rect_min_x, rect_min_y, rect_max_x, rect_max_y, True)
 

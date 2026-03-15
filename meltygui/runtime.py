@@ -229,7 +229,14 @@ class Melty:
 
 
         cls.window_drag = (("left_mouse_drag" in cls.events_by_type) or ("left_mouse_held" in cls.events_by_type))
-        cls.on_drag = (("left_mouse_drag" in cls.events_by_type) or ("left_mouse_down" in cls.events_by_type)) and (not cls.imgui_active)
+
+        left_mouse_drag_event = cls.events_by_type.get("left_mouse_drag", None)
+        if left_mouse_drag_event is not None:
+            is_window_drag = "window_move" in str(left_mouse_drag_event.keys())
+        else:
+            is_window_drag = False
+
+        cls.on_drag = (is_window_drag or ("left_mouse_down" in cls.events_by_type)) and (not cls.imgui_active)
 
         cls.event_handler.begin_frame()
 
