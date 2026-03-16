@@ -34,7 +34,6 @@ try:
         Operator, Punctuation, Literal, Generic, Error
     )
 
-
     class DarculaIntelliJ(Style):
         background_color = "#2b2b2b"
         styles = {
@@ -75,7 +74,6 @@ try:
             Generic.Strong: "bold",
             Error: "#ff5555",
         }
-
 
     _pygments_available = True
     _python_lexer = PythonLexer()
@@ -170,7 +168,46 @@ def _caller_link():
     caller = _find_caller()
     if not caller:
         return ""
-    return f"  {_DIM}watches → File \"{_BLUE}{caller[0]}{_DIM}\", line {caller[1]}{_RESET}"
+    return f"  {_DIM}watches \u2192 File \"{_BLUE}{caller[0]}{_DIM}\", line {caller[1]}{_RESET}"
+
+
+# ── Function argument extraction ─────────────────────────
+
+def _get_func_args(filename, lineno, funcname, local_vars):
+    """
+    Get function argument names from the source.
+    Searches backward from current line for the def statement
+    and parses argument names from the signature.
+    """
+    try:
+        lines = linecache.getlines(filename)
+        for j in range(min(lineno - 1, len(lines) - 1), max(lineno - 50, -1), -1):
+            line = lines[j].strip()
+            if line.startswith(f"def {funcname}(") or line.startswith(f"def {funcname} ("):
+                # Gather full signature if it spans multiple lines
+                sig = line
+                k = j + 1
+                while ')' not in sig and k < len(lines):
+                    sig += " " + lines[k].strip()
+                    k += 1
+                # Parse arg names from signature
+                match = re.search(r'def\s+\w+\s*\(([^)]*)\)', sig)
+                if match:
+                    params = match.group(1)
+                    args = []
+                    for param in params.split(','):
+                        param = param.strip()
+                        if not param or param == '/':
+                            continue
+                        name = re.match(r'\*{0,2}\s*(\w+)', param)
+                        if name:
+                            n = name.group(1)
+                            if n not in ('self', 'cls') and n in local_vars:
+                                args.append(n)
+                    return args
+    except Exception:
+        pass
+    return []
 
 
 # ── Syntax highlighting ──────────────────────────────────
@@ -207,7 +244,7 @@ def _color_kwargs(highlighted, original, bg=None):
     for match in re.finditer(r'(\b\w+)(?=\s*=[^=])', original):
         name = match.group(1)
         if name in ('if', 'else', 'elif', 'return', 'yield', 'not',
-                    'and', 'or', 'in', 'is', 'lambda', 'True', 'False', 'None'):
+                     'and', 'or', 'in', 'is', 'lambda', 'True', 'False', 'None'):
             continue
         highlighted = re.sub(
             rf'(?<!\033\[38;2;255;85;85m)(\033\[[\d;]*m)*({re.escape(name)})(\033\[[\d;]*m)*(?=\s*=[^=])',
@@ -224,7 +261,6 @@ try:
     from rich.table import Table as RichTable
     from rich.text import Text as RichText
     from rich.console import Console as RichConsole
-
     _rich_available = True
 except ImportError:
     _rich_available = False
@@ -320,8 +356,8 @@ class TraceGroup:
         size = size or self.bar_size_inner
         if text:
             pad = size - len(text) - 4
-            return f"{self.color}{_BLACK}{_BOLD} ▌ {text} {'─' * max(pad, 0)} {_RESET}"
-        return f"{self.color}{_BLACK}{_BOLD} {'─' * size} {_RESET}"
+            return f"{self.color}{_BLACK}{_BOLD} \u258c {text} {'\u2500' * max(pad, 0)} {_RESET}"
+        return f"{self.color}{_BLACK}{_BOLD} {'\u2500' * size} {_RESET}"
 
     def write_header(self):
         self.buf.write(f"\n{self._bar(self.label, size=self.bar_size_outer)}\n")
@@ -392,11 +428,53 @@ def _parse_watch(expr):
     return funcs, expr
 
 
+# ── Watch resolution helper ──────────────────────────────
+
+def _resolve_watch(expr, filename, lineno, local_vars,
+                   max_str_len, max_items, max_depth, max_output):
+    """
+    Resolve a single watch expression into a table row tuple,
+    or return None if the expression can't be resolved.
+    """
+    funcs, path = _parse_watch(expr)
+    root = _get_root_name(path)
+    if root not in local_vars:
+        return None
+    success, value = _resolve_path(path, local_vars)
+    if not success:
+        return None
+    try:
+        for func_name in reversed(funcs):
+            value = _resolve_func(func_name)(value)
+    except Exception as ex:
+        value = f"<{func_name}() raised {type(ex).__name__}: {ex}>"
+
+    display_val = _truncate(value, max_str_len, max_items, max_depth)
+    formatted_value = pprint.pformat(display_val, width=50)
+    if max_output and len(formatted_value) > max_output:
+        cut = formatted_value[:max_output].rfind('\n')
+        if cut == -1:
+            cut = max_output
+        formatted_value = formatted_value[:cut] + f"\u2026({len(formatted_value)}ch)"
+
+    if _pygments_available:
+        formatted_value = _pyg_highlight(formatted_value, _python_lexer, _terminal_formatter).rstrip('\n')
+
+    name_cell = _highlight_inline(expr)
+    type_cell = f"{_DIM}{type(value).__name__}{_RESET}"
+    value_cell = f"{_MAGENTA}{formatted_value}{_RESET}"
+    def_line = _find_assignment(filename, lineno, root)
+    link_cell = _make_link(filename, def_line)
+
+    return (name_cell, type_cell, value_cell, link_cell)
+
+
 # ── Main entry point ─────────────────────────────────────
 
 def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
                       max_str_len=200, max_items=5, max_depth=2, max_output=200,
-                      exception=None, section=None, group=None, file=None):
+                      exception=None, section=None, group=None, file=None,
+                      print_args=True):
     """
     Print a stack trace with optional variable watching.
 
@@ -414,6 +492,7 @@ def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
         section:     Section label when used inside a trace_group.
         group:       TraceGroup instance — buffers output into the group.
         file:        Output stream override.
+        print_args:  Auto-add function arguments to watches (default True).
     """
     buf = io.StringIO()
 
@@ -450,9 +529,9 @@ def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
         bar_color = _CYAN
         title = "Exception Trace" if exception else "Stack Trace"
         link = _caller_link()
-        buf.write(f"{_BOLD}{bar_color}{'─' * 60}{_RESET}\n")
+        buf.write(f"{_BOLD}{bar_color}{'\u2500' * 60}{_RESET}\n")
         buf.write(f"{_BOLD}{bar_color}{title}{_RESET} {_DIM}[{thread_name}]{_RESET}{link}\n")
-        buf.write(f"{_BOLD}{bar_color}{'─' * 60}{_RESET}\n")
+        buf.write(f"{_BOLD}{bar_color}{'\u2500' * 60}{_RESET}\n")
 
     # Find the last user-code frame in an exception trace
     error_frame_idx = None
@@ -493,39 +572,22 @@ def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
 
         # Variable watches
         table_rows = []
-        if is_mine and watch_paths and local_vars is not None:
-            for expr in watch_paths:
-                funcs, path = _parse_watch(expr)
-                root = _get_root_name(path)
-                if root not in local_vars:
-                    continue
-                success, value = _resolve_path(path, local_vars)
-                if not success:
-                    continue
-                try:
-                    for func_name in reversed(funcs):
-                        value = _resolve_func(func_name)(value)
-                except Exception as ex:
-                    value = f"<{func_name}() raised {type(ex).__name__}: {ex}>"
+        if is_mine and local_vars is not None:
+            # Build effective watch list: auto args + explicit watches
+            effective_watches = []
+            if print_args:
+                func_args = _get_func_args(filename, lineno, funcname, local_vars)
+                existing_roots = {_get_root_name(_parse_watch(w)[1]) for w in watch_paths}
+                for arg in func_args:
+                    if arg not in existing_roots:
+                        effective_watches.append(arg)
+            effective_watches.extend(watch_paths)
 
-                display_val = _truncate(value, max_str_len, max_items, max_depth)
-                formatted_value = pprint.pformat(display_val, width=50)
-                if max_output and len(formatted_value) > max_output:
-                    cut = formatted_value[:max_output].rfind('\n')
-                    if cut == -1:
-                        cut = max_output
-                    formatted_value = formatted_value[:cut] + f"…({len(formatted_value)}ch)"
-
-                if _pygments_available:
-                    formatted_value = _pyg_highlight(formatted_value, _python_lexer, _terminal_formatter).rstrip('\n')
-
-                name_cell = _highlight_inline(expr)
-                type_cell = f"{_DIM}{type(value).__name__}{_RESET}"
-                value_cell = f"{_MAGENTA}{formatted_value}{_RESET}"
-                def_line = _find_assignment(filename, lineno, root)
-                link_cell = _make_link(filename, def_line)
-
-                table_rows.append((name_cell, type_cell, value_cell, link_cell))
+            for expr in effective_watches:
+                row = _resolve_watch(expr, filename, lineno, local_vars,
+                                     max_str_len, max_items, max_depth, max_output)
+                if row is not None:
+                    table_rows.append(row)
 
         if table_rows:
             buf.write(_render_watch_table(file_line, code_line, table_rows,
@@ -540,7 +602,7 @@ def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
 
     if not group:
         bar_color = _CYAN
-        buf.write(f"{_BOLD}{bar_color}{'─' * 60}{_RESET}\n")
+        buf.write(f"{_BOLD}{bar_color}{'\u2500' * 60}{_RESET}\n")
 
     _dispatch(buf, group, file)
 
@@ -729,23 +791,23 @@ def _truncate(value, max_str_len=120, max_items=5, max_depth=3, _current_depth=0
     next_depth = _current_depth + 1
     if isinstance(value, str):
         if max_str_len and len(value) > max_str_len:
-            return value[:max_str_len] + f"…({len(value)}ch)"
+            return value[:max_str_len] + f"\u2026({len(value)}ch)"
         return value
     if isinstance(value, bytes):
         if max_str_len and len(value) > max_str_len:
-            return value[:max_str_len] + f"…({len(value)}b)".encode()
+            return value[:max_str_len] + f"\u2026({len(value)}b)".encode()
         return value
     if isinstance(value, dict):
         items = list(value.items())
         show = max_items or len(items)
         truncated = {
             _truncate(k, max_str_len, max_items, max_depth, next_depth):
-                _truncate(v, max_str_len, max_items, max_depth, next_depth)
+            _truncate(v, max_str_len, max_items, max_depth, next_depth)
             for k, v in items[:show]
         }
         remaining = len(items) - show
         if remaining > 0:
-            truncated[f"…+{remaining}"] = "…"
+            truncated[f"\u2026+{remaining}"] = "\u2026"
         return truncated
     if isinstance(value, (list, tuple)):
         items = list(value)
@@ -754,7 +816,7 @@ def _truncate(value, max_str_len=120, max_items=5, max_depth=3, _current_depth=0
                      for item in items[:show]]
         remaining = len(items) - show
         if remaining > 0:
-            truncated.append(f"…+{remaining}")
+            truncated.append(f"\u2026+{remaining}")
         return type(value)(truncated) if isinstance(value, tuple) else truncated
     if isinstance(value, (set, frozenset)):
         items = list(value)
@@ -763,7 +825,7 @@ def _truncate(value, max_str_len=120, max_items=5, max_depth=3, _current_depth=0
                      for item in items[:show]}
         remaining = len(items) - show
         if remaining > 0:
-            truncated.add(f"…+{remaining}")
+            truncated.add(f"\u2026+{remaining}")
         return truncated
     if hasattr(value, 'shape'):
         return _summarize(value)

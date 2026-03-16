@@ -336,7 +336,7 @@ def _key_just_pressed(io, key):
     return io.keys_down[key] and key not in _prev_keys_down
 
 
-@render_func(shadow=True, show_bg=True, wrap=False, use_cache=True)
+@render_func(show_bg=False, wrap=False, use_cache=True)
 def draw_text(input_value: str, cursor_hover=False, left_mouse_drag=False, draw_state=None):
     global _cursor_pos, _selection_start, _selection_end, _is_focused
     global _cursor_blink_time, _double_click_time, _last_click_pos

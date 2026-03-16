@@ -21,6 +21,7 @@ import numpy
 from imgui.core import _DrawList, _ImGuiInputTextCallbackData
 
 from server.server_gui import open_file
+from src.lsd.gl_gui import toggles
 from src.lsd.gl_gui.melty import Melty, CollectionAction, add_to_collection, \
     ManagedWindow
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
@@ -30,7 +31,7 @@ from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_styl
     push_style_color, pop_style_color, pop_style_var, end, begin, text_wrapped
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_conversion.file_converters import path_to_dict, bytes_to_str, FileRef, ValueDict, \
-    load_text, recompile
+    load_text, recompile, recompile_module
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment, Conditional, GeneralParse
 from src.lsd.gl_gui.view.core_conversion.path_finder import convert, Pending, PendingState
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
@@ -64,7 +65,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     # Name text (value is the base offset, updated by depth below)
     name_style = {
         'value': 0.011, 'saturation': 1.42,
-        'alpha': 1.998, 'max_value': 0.973,
+        'alpha': 2.06, 'max_value': 0.973,
         'depth_factor': 0.226
     }
     name_rounding       = 2.0
@@ -79,7 +80,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     }
 
     # Type / unique label colors
-    type_label_color   = (2.865, 1.835, 2.861, 1.0)
+    type_label_color   = (2.865, 1.955, 2.861, 1.0)
     unique_label_color = (-1.535, 0.0, 0.9, 1.0)
 
     # ── Setup ──────────────────────────────────────────────────
@@ -331,10 +332,11 @@ def empty(input_val):
 @render_func(use_cache=True, auto_resize=False, closable=True, selectable=False,
              show_bg=True, melty_window=True, draggable=True, show_tint=True, tile_mode=TileMode.MAX,
              with_header=draw_header, with_header_end=draw_header_end, indent_size=10,
-             with_footer=draw_footer, z_offset=-4)
+             with_footer=draw_footer)
 def draw_window(input_value:any, view_func=None, draw_state=None, delete_down=False, glfw_close_down=False, **kwargs):
     if delete_down and imgui.get_io().key_ctrl:
         draw_state.closed = True
+
 
     if 'name' not in kwargs:
         kwargs['name'] = str(input_value)
@@ -349,10 +351,8 @@ def draw_window(input_value:any, view_func=None, draw_state=None, delete_down=Fa
     kwargs['is_tree'] = False
     kwargs['closable'] = False
     kwargs['auto_resize'] = True
-    kwargs['disable_scroll'] = True
     kwargs.pop('max_height', None)
     kwargs['shadow'] = False
-    kwargs['z_offset'] = 0
 
     return_val = draw_any(input_value, view_func=view_func, **kwargs)
     if len(return_val) == 3:
@@ -411,7 +411,6 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=No
     parent_type = input_value.__class__
 
     if keys is None:
-        ordered_driver = input_value
         if isinstance(input_value, (dict, list, tuple, set, defaultdict, MutableMapping, types.MappingProxyType, deque)):
             apply_change = True
             parent_type = input_value.__class__
@@ -429,6 +428,8 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=No
                 type(input_value).__field_defaults__.update(input_value.__dict__)
                 keys = type(input_value).__field_defaults__.keys()
             else:
+                if input_value is None or input_value.__dict__ is None:
+                    return False, input_value
                 keys = input_value.__dict__.keys()
             collection = input_value.__dict__
             use_tint = False
@@ -778,10 +779,10 @@ def test_columns():
         draw_float(0.4, name=f"float_{i}", column=2)
 
 
-@render_func(use_cache=True, show_bg=True, with_header=draw_header)
+@render_func(use_cache=True, show_bg=False, shadow=False, disable_scroll=True, selectable=False, with_header=draw_header)
 def draw_with_modes(input_value, modes):
     for idx, mode in enumerate(modes):
-        draw_any(input_value, name=f"Mode: {mode}", mode=mode, show_header=True, disable_scroll=False, show_bg=True, column=idx)
+        draw_any(input_value, name=f"Mode: {mode}", mode=mode, fill_height=True, disable_scroll=False, show_header=True, show_bg=True, column=idx)
 
 @render_func(use_cache=False, show_bg=True, selectable=False, show_tint=True, bg_offset=-1, with_header=draw_header)
 def draw_main(input_value, vis):
@@ -810,9 +811,13 @@ def draw_main(input_value, vis):
     draw_window(draw_bg, name="cst_text", show_bg=True, live=True, mode=Mode.CODE_PLAIN_TEXT)
 
     changed, value = draw_with_modes(input_value=draw_bg, name="draw_bg",
-                                     show_bg=True, mode=(Mode.WINDOW), modes=[Mode.CODE_UI, Mode.CODE_PLAIN_TEXT])
+                                     show_bg=True, mode=(Mode.WINDOW), modes=[Mode.CODE_PLAIN_TEXT, Mode.CODE_UI])
     if changed:
         test_code = value
+
+    changed, value = draw_with_modes(input_value=toggles, name="Toggles",
+                                      show_bg=True, mode=(Mode.WINDOW), modes=[Mode.CODE_PLAIN_TEXT_MODULE, Mode.CODE_UI_MODULE])
+
 
 
     some_path = Path("/home/lukas/test_folder/test_list.txt")
@@ -1983,8 +1988,8 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=3.606,
             style_manager=None, tint=None, outline_tint=None, selected=False,
             hovered=False, pressed=False, nested_bg=False, **kwargs):
 
-    # ── Constants ──────────────────────────────────────────────
-    depth_wrap        = 9.0
+    # -- Constants ---------------------------------
+    depth_wrap        = 11.635
     depth_scale       = 1.85
     corner_radius     = 4.14
     border_inset      = 1.548
@@ -1996,7 +2001,7 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=3.606,
     intensity_offset  = -4.777
 
     # Outline color tuning
-    outline_base      = 2.074
+    outline_base      = 2.149
     outline_depth_mul = 0.929
     outline_sat       = {'default': 2.61, 'nested': 3.051}
 
@@ -2029,7 +2034,7 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=3.606,
             color_a[2] * (1 - factor) + color_b[2] * factor,
         )
 
-    # ── Depth calculation ──────────────────────────────────────
+    # -- Depth calculation -------------------
     wrapped_depth = max(0.0, Melty.bg_depth) % depth_wrap
     scaled_depth = wrapped_depth * depth_scale
     depth_intensity = max(0, (scaled_depth + intensity_offset) * intensity_factor)
@@ -2668,7 +2673,13 @@ def default_context_menu(input_value, draw_state, func, **kwargs):
     imgui.text(type(input_value._input_value).__name__)
 
     imgui.text(f"Mode {str(input_value._kwargs.get('mode', None))}")
+    imgui.text(f"Content height {str(input_value.content_height)}")
+    imgui.text(f"Height {str(input_value.height)}")
+    imgui.text(f"Height source {str(input_value._height_source)}")
 
+    imgui.text(f"Scroll Enabled {input_value.scroll_visible}")
+    imgui.text(f"Disable Scroll {input_value._kwargs.get('disable_scroll', False)}")
+    imgui.text("Scroll_offset " + str(input_value.scroll_offset))
     draw_collection(draw_state._all_pending)
 
     if input_value.explain_convert is not None:
@@ -2713,7 +2724,7 @@ class Mode(Enum):
     WINDOW = {
         Any: ModeOverrides(
             kwargs={"show_bg":True, "selectable":False, "use_cache":True, "melty_window":True, "closable":True,
-                    "auto_resize":False, "draggable":True, "show_tint":True, "show_header":True, "z_offset":-3,
+                    "auto_resize":False, "draggable":True, "show_tint":True, "show_header":True,
                     "disable_scroll":False},
             recursive=False
         )
@@ -2722,11 +2733,59 @@ class Mode(Enum):
     WINDOW_CLEAN = {
         Any: ModeOverrides(
             kwargs={"show_bg":True, "selectable":False, "use_cache":True, "melty_window":True, "closable":True,
-                    "auto_resize":True, "draggable":True, "is_tree":False, "show_tint":False, "show_header":False, "z_offset":-3,
+                    "auto_resize":True, "draggable":True, "is_tree":False, "show_tint":False, "show_header":False,
                     "disable_scroll":False},
             recursive=False
         )
     }
+
+    CODE_UI_MODULE = {
+        cst.Module: ModeOverrides(
+            kwargs={"convert": [cst.Module, dict], "horizontal":True},
+            func=draw_collection,
+            recursive=True
+        ),
+
+        types.ModuleType: ModeOverrides(
+                 kwargs={"convert": [types.ModuleType, cst.Module, dict], "auto_apply": [load_text, recompile_module]},
+                 func=draw_collection,
+                 recursive=True
+             ),
+
+        Conditional: ModeOverrides(
+                  kwargs={"tint": (0.2, 0.2, 0.1), 'show_add_delete': False, 'is_tree':False},
+                  recursive=True,
+              ),
+
+        GeneralParse: ModeOverrides(
+                     kwargs={'show_add_delete': False, "disable_scroll": False},
+                     recursive=True,
+
+                 ),
+
+    }
+
+    CODE_PLAIN_TEXT_MODULE = {
+
+          types.ModuleType: ModeOverrides(
+              kwargs={"convert": [types.ModuleType, cst.Module, str], "auto_apply": [recompile_module, load_text]},
+              func=draw_text,
+              recursive=True
+          ),
+
+          str: ModeOverrides(
+              kwargs={"convert": None, "mode": None},
+              func=draw_text,
+              recursive=True,
+          ),
+
+          Path: ModeOverrides(
+              kwargs={"convert": [Path, bytes, str, cst.Module, dict]},
+              func=draw_collection,
+              recursive=False,
+          ),
+      }
+
 
     CODE_UI = {
         cst.Module: ModeOverrides(
@@ -2740,14 +2799,22 @@ class Mode(Enum):
             func=draw_collection,
             recursive=True
         ),
+
+        types.ModuleType: ModeOverrides(
+                 kwargs={"convert": [types.ModuleType, cst.Module, dict], "auto_apply": [load_text, recompile_module]},
+                 func=draw_collection,
+                 recursive=True
+             ),
+
         Conditional: ModeOverrides(
                   kwargs={"tint": (0.2, 0.2, 0.1), 'show_add_delete': False, 'is_tree':False},
                   recursive=True,
               ),
 
         GeneralParse: ModeOverrides(
-                     kwargs={'show_add_delete': False},
+                     kwargs={'show_add_delete': False, "disable_scroll": False},
                      recursive=True,
+
                  ),
 
 
@@ -2768,6 +2835,11 @@ class Mode(Enum):
             recursive=True
         ),
 
+        types.ModuleType: ModeOverrides(
+            kwargs={"convert": [types.ModuleType, cst.Module, str], "auto_apply": [recompile_module, load_text]},
+            func=draw_text,
+            recursive=True
+        ),
 
         str: ModeOverrides(
             kwargs={"convert": None, "mode": None},

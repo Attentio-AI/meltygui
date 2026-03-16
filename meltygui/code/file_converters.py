@@ -625,6 +625,43 @@ def recompile(value, ref: FileRef, data: str, watch) -> FileRef:
 def cst_module_to_function(value: cst.Module) -> str:
     return value.code
 
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  types.ModuleType ↔ cst.Module                                              ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+@converter(registry=Melty, from_type=types.ModuleType, load_data=load_text, stateful=True)
+def module_to_cst(value, data: str, ref: FileRef) -> cst.Module:
+    return cst.parse_module(data)
+
+
+def recompile_module(value, ref: FileRef, data: str, watch) -> FileRef:
+    from src.lsd.gl_gui.view.core_conversion.path_finder import Pending, PendingState
+    if value is not None:
+        module = watch.original_input_load
+        source = data
+        try:
+            _recompile_module(module, source, str(ref.path))
+        except Exception as e:
+            return Pending(originated=recompile_module, status=str(e), state=PendingState.ERROR)
+    # Module FileRefs cover the whole file (start=None, end=None),
+    # so write the data directly rather than splicing lines.
+    ref.path.write_text(data, encoding="utf-8")
+    return ref
+
+
+@converter(registry=Melty, to_type=types.ModuleType, save_data=recompile_module,
+           inverse_of=module_to_cst, stateful=True)
+def cst_module_to_module(value: cst.Module) -> str:
+    return value.code
+
+
+def _recompile_module(module: types.ModuleType, source: str,
+                      filename: str) -> None:
+    code = compile(source, filename, "exec")
+    exec(code, module.__dict__)
+
+
 _BUILTIN_NAMES = set(dir(builtins))
 
 

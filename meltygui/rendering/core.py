@@ -188,7 +188,7 @@ def render_func(*args, **o_kwargs):
                 if mode is not None:
                     mode_config = mode.get_config_for(input_value)
                     if mode_config is not None:
-                        override_kwargs = mode_config.kwargs
+                        override_kwargs = mode_config.kwargs.copy()
                         kwargs = kwargs | override_kwargs
                         if not mode_config.recursive:
                             not_recursive.append(mode)
@@ -556,10 +556,14 @@ def render_func(*args, **o_kwargs):
             if draw_state.expanded:
                 # Restore rect
                 draw_state.left, draw_state.right, draw_state.width, draw_state.height = draw_state.expanded_rect
+                draw_state._height_source = "expanded_rect"
+
                 draw_state.expanded_rect = (0, 0, 0, 0)
             else:
                 # Save rect
                 draw_state.left, draw_state.right, draw_state.width, draw_state.height = draw_state._collapsed_rect
+                draw_state._height_source = "collapsed_rect"
+
 
 
         if draw_state.expanded:
@@ -579,6 +583,8 @@ def render_func(*args, **o_kwargs):
             draw_state.width = snap_int(passed_width)
         if passed_height is not None:
             draw_state.height = snap_int(passed_height)
+            draw_state._height_source = "passed height"
+
 
         Melty.input_value_stack.append(input_value)
         inc_depth = False
@@ -771,6 +777,8 @@ def render_func(*args, **o_kwargs):
                     size_h = draw_state._initial_window_size[1] + handle_drag.total_dy
                     if passed_height is None:
                         draw_state.height = snap_int(max(size_h, 25))
+                        draw_state._height_source = "initial window size"
+
 
                     if passed_width is None:
                         draw_state.width = snap_int(max(size_w, 25))
@@ -785,7 +793,12 @@ def render_func(*args, **o_kwargs):
                     draw_state.width = max(draw_state.width, draw_state.min_width)
 
                 if draw_state.height is not None and draw_state.min_height is not None:
+                    if draw_state.height < draw_state.min_height:
+                        draw_state._height_source = "initial window size"
+
                     draw_state.height = max(draw_state.height, draw_state.min_height)
+
+
 
             if draw_state.window_pos is not None and closable:
                 on_held = draw_state.on_action("left_mouse_held", "window_move", priority_delta=-2)
@@ -841,7 +854,7 @@ def render_func(*args, **o_kwargs):
             if len(Melty.fixed_size_stack) > 0:
                 fixed_size_draw_state = Melty.fixed_size_stack[-1]
                 parent_wrap_width = fixed_size_draw_state.width
-                parent_wrap_height = fixed_size_draw_state.height
+                parent_wrap_height = fixed_size_draw_state.height - fixed_size_draw_state.header_height - fixed_size_draw_state.footer_height
                 parent_wrap_left = fixed_size_draw_state.abs_left
                 parent_wrap_top = fixed_size_draw_state.abs_top
             else:
@@ -864,8 +877,7 @@ def render_func(*args, **o_kwargs):
             # draw_state._current_max_column = 0
             draw_state._column_cursor = defaultdict(lambda: [0, 0])  # column -> (x, y)
             x_offset = draw_state.abs_left - parent_wrap_left
-            if kwargs.get("fill_height", False) and passed_height is None and auto_resize:
-                draw_state.height = snap_int(parent_wrap_height - (imgui.get_cursor_screen_pos()[1] - parent_wrap_top))
+
             if column is not None and column_parent is not None:
                 column_parent._current_max_column = max(column_parent._current_max_column, column)
                 parent_wrap_width = column_parent.content_width / (column_parent.final_max_column + 1)
@@ -881,7 +893,7 @@ def render_func(*args, **o_kwargs):
 
             single_line_avail = available_width - header_width - 5
             header_same_line = kwargs.get("header_same_line", False)
-            if ((single_line_avail < 100 or draw_state.height - draw_state.footer_height > 50)
+            if ((single_line_avail < 100 or (draw_state.height is not None and draw_state.height - draw_state.footer_height > 50))
                     and not header_same_line and not Melty.is_wrapped()):
                 draw_state.multi_line = True
                 draw_state.content_width = available_width
@@ -889,20 +901,28 @@ def render_func(*args, **o_kwargs):
                 draw_state.multi_line = False
                 draw_state.content_width = single_line_avail
 
+            if kwargs.get("fill_height", False) and passed_height is None and auto_resize:
+
+                draw_state.height = snap_int(parent_wrap_height)
+                draw_state._height_source = "fill height"
+
 
             ################# Columns
-
             if column is not None and column_parent is not None:
                 column_cursor_y = column_parent._column_cursor[column][1]
-                current_cursor = imgui.get_cursor_screen_pos()
                 imgui.set_cursor_screen_pos((parent_wrap_left, parent_wrap_top + column_cursor_y + column_parent.header_height))
-                draw_state.left_offset = parent_wrap_left - column_parent.abs_left
-                draw_state.top_offset = parent_wrap_top + column_cursor_y + draw_state.header_height - column_parent.abs_top
-                draw_state.left = parent_wrap_left
-                draw_state.top = parent_wrap_top + column_cursor_y + draw_state.header_height + 3
+
+                draw_state.left_offset, draw_state.top_offset = (
+                                imgui.get_cursor_screen_pos()[0] - draw_state.parent_window.left,
+                                imgui.get_cursor_screen_pos()[1] - draw_state.parent_window.top)
+
+                draw_state.left = draw_state.abs_left
+                draw_state.top = draw_state.abs_top
                 Collisions.register(column_parent)
 
                 Melty.fixed_size_stack.append(draw_state)
+                # Melty.push_clip((parent_wrap_left, parent_wrap_top + column_cursor_y + column_parent.header_height,
+                #                  parent_wrap_left + parent_wrap_width, parent_wrap_top + column_cursor_y + column_parent.header_height + parent_wrap_height))
 
             if draw_state.final_max_column > 1:
                 column_width = draw_state.content_width / (draw_state.final_max_column + 1)
@@ -922,7 +942,7 @@ def render_func(*args, **o_kwargs):
                 draw_list.add_text(draw_state.left + 5, draw_state.top - 20,
                                    imgui.get_color_u32_rgba(1.0, 0.0,
                                                             0.0, 1.0), fa_live_icon)
-                Melty.cache.invalidate(tile_id)
+                Melty.cache.invalidate_up(tile_id, max_depth=1)
             kwargs.pop("live", None)
             if not meta.visible_in_ui:
                 if return_extras:
@@ -978,9 +998,9 @@ def render_func(*args, **o_kwargs):
             push_id(unique)
 
             if melty_window:
-                Melty.push_clip((draw_state.left, draw_state.top,
-                                 draw_state.left + draw_state.width,
-                                 draw_state.top + draw_state.height))
+                Melty.push_clip((draw_state.abs_left, draw_state.abs_top,
+                                 draw_state.abs_left + draw_state.width,
+                                 draw_state.abs_top + draw_state.height))
             clip_rect = Melty.get_clip_rect()
             if clip_rect is not None:
                 draw_state.clip_rect = clip_rect
@@ -1409,12 +1429,7 @@ def render_func(*args, **o_kwargs):
 
                     draw_state.selected = draw_state in Melty.selected
 
-
-
                 ########### CONTEXT MENU HANDLING ############
-
-
-
                 from src.lsd.gl_gui.view.core_views.new_core_view import default_context_menu
                 draw_context_menu = kwargs.get("context_menu", default_context_menu)
                 if draw_context_menu is not None:
@@ -1568,13 +1583,14 @@ def render_func(*args, **o_kwargs):
                     end_header_rect = imgui.get_item_rect_size()
                     draw_state.header_end_width = end_header_rect[0]
 
-                    if closable:
+                    if closable and draw_state.scroll_visible:
                         current_cursor = imgui.get_cursor_screen_pos()
                         imgui.set_cursor_screen_pos((draw_state.left, draw_state.top))
                         from src.lsd.gl_gui.view.core_views.new_core_view import empty
-                        empty(name="header_shadow", z_offset=-1,
-                              tile_mode=TileMode.MAX, width=draw_state.width - 2,
-                              height=draw_state.header_height)
+
+                        # empty(name="header_shadow", z_offset=-1,
+                        #       tile_mode=TileMode.MAX, width=draw_state.width - 2,
+                        #       height=draw_state.header_height)
                         imgui.set_cursor_screen_pos(current_cursor)
 
                     if not draw_state.multi_line:
@@ -1623,6 +1639,11 @@ def render_func(*args, **o_kwargs):
 
                 ###########################################################
                 kwargs['next_kwargs'] = kwargs
+                if "height" in wanted_params and "height" not in kwargs:
+                    kwargs["height"] = draw_state.height
+                if "width" in wanted_params and "width" not in kwargs:
+                    kwargs["width"] = draw_state.width
+
                 if 'kwargs' in wanted_params:
                     clean_args = kwargs
                 else:
@@ -1984,6 +2005,7 @@ def render_func(*args, **o_kwargs):
 
             if kwargs.get("column", None) is not None:
                 Melty.fixed_size_stack.pop()
+                # Melty.pop_clip()
             if draw_state._has_popup:
                 is_popup_open = Melty.imgui_popup_open
 
@@ -2006,22 +2028,24 @@ def render_func(*args, **o_kwargs):
                 draw_state.width = 30
             if melty_window and draw_state.height < 30:
                 draw_state.height = 30
+                draw_state._height_source = "min 30"
+
 
             if not draw_state.kwargs.manual_content_height:
                 draw_state.content_height = draw_state._content_rect[1]
 
-            if auto_resize:
+            if auto_resize and kwargs.get("fill_height", None) is None:
                 if kwargs.get("wrap", False):
                     if passed_width is None:
                         max_width = kwargs.get("max_width", 1e9)
                         draw_state.width = snap_int(min(item_rect[0], max_width))
-
 
                 if passed_height is None:
                     max_height = kwargs.get("max_height", 1e9)
 
                     if not closable:
                         draw_state.height = snap_int(min(item_rect[1], max_height))
+                        draw_state._height_source = "not closable, item_rect[1]"
                     else:
                         display_height = imgui.get_io().display_size[1]
                         if draw_state.expanded:
@@ -2029,6 +2053,8 @@ def render_func(*args, **o_kwargs):
                         else:
                             min_height = 0
                         draw_state.height = snap_int(max(min_height, min(item_rect[1], min(display_height, max_height))))
+                        draw_state._height_source = "closable, item_rect[1]"
+
 
             if (draw_state.width != original_width_b or
                     draw_state.height != original_height_b):
@@ -2049,6 +2075,8 @@ def render_func(*args, **o_kwargs):
 
             if draw_state.height > 30000:
                 draw_state.height = 30000
+                draw_state._height_source = "30000 max height"
+
 
             column = kwargs.get("column", None)
             if column is not None and column_parent is not None:
@@ -2202,7 +2230,6 @@ def render_func(*args, **o_kwargs):
         draw_state.scroll_visible = needs_scroll
 
         if needs_scroll:
-
             scroll_y_changed = draw_state.on_action("scroll_y_changed", view_id="view_scroll", priority_delta=10)
             scroll_delta = 0
             if scroll_y_changed is not None:
@@ -2243,9 +2270,10 @@ def render_func(*args, **o_kwargs):
         scroll_offset = draw_state.scroll_offset if do_scroll else (0, 0)
 
         if do_scroll:
-            Melty.push_clip((draw_state.left, draw_state.top + draw_state.header_height + 2,
+            header_height = draw_state.header_height
+            Melty.push_clip((draw_state.left, draw_state.top + header_height + 2,
                              draw_state.left + draw_state.width,
-                             draw_state.top + draw_state.header_height + draw_state.height + 2))
+                             draw_state.top + header_height + draw_state.height + 2))
             start_cursor = imgui.get_cursor_screen_pos()
             imgui.set_cursor_screen_pos((start_cursor[0],
                                          start_cursor[1] - scroll_offset[1]))
@@ -2261,7 +2289,6 @@ def render_func(*args, **o_kwargs):
                                      Melty.seen_values.count(input_value) > 1 or Melty.depth > 15):
                 imgui.text("Recursive reference detected: " + str(input_value))
             else:
-
                 if not is_primitive:
                     Melty.seen_values.append(id(input_value))
                 #################################################################################################
