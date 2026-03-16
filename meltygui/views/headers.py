@@ -26,15 +26,15 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
     # ── Constants ──────────────────────────────────────────────
     # Depth-driven name brightness
-    depth_scale       = 0.543
-    depth_offset      = -1.487
-    name_value_factor = 1.0
+    depth_scale       = 0.347
+    depth_offset      = -1.647
+    name_value_factor = 0.769
 
     # Name text (value is the base offset, updated to depth below)
     name_style = {
-        'value': 0.011, 'saturation': 1.42,
-        'alpha': 2.06, 'max_value': 0.973,
-        'depth_factor': 0.226
+        'value': -0.126, 'saturation': 0.401,
+        'alpha': 0.848, 'max_value': 3.205,
+        'depth_factor': 0.405
     }
     name_rounding       = 2.0
     max_name_chars      = 40
@@ -42,9 +42,9 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
     # Tree arrow
     arrow_style = {
-        'value': 0.867, 'saturation': 1.468,
-        'alpha': 0.122, 'max_value': 1.161,
-        'depth_factor': 0.452
+        'value': 0.828, 'saturation': 1.639,
+        'alpha': 0.122, 'max_value': 1.601,
+        'depth_factor': 0.332
     }
 
     # Type / unique label colors

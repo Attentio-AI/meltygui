@@ -874,6 +874,7 @@ def render_func(*args, **o_kwargs):
 
             column_parent = draw_state._parent
             column = kwargs.get("column", None)
+         
             draw_state.final_max_column = draw_state._current_max_column
             # draw_state._current_max_column = 0
 
@@ -1133,7 +1134,6 @@ def render_func(*args, **o_kwargs):
                         input_changed = True
                         Melty.cache.invalidate_up(draw_state._tile_id)
                         Melty.cache.invalidate_up(draw_state._parent._tile_id)
-                        print(f"Input changed for {draw_state.name}, invalidating cache. New hash: {input_hash}, Old hash: {cached_hash}")
                         request_render()
 
                     if draw_state._apply_load is not None or draw_state._pending_convert:
@@ -1166,7 +1166,8 @@ def render_func(*args, **o_kwargs):
                         else:
                             converter_kwargs = Melty.converter_flags.get(convert_path[0], {})
 
-                        if (not Melty.on_drag and not imgui.is_mouse_down(2) and not imgui.is_mouse_down(1)) or draw_state._input_value_cache["internal_state"][0] == UNSET_VALUE:
+                        if ((not Melty.on_drag and not imgui.is_mouse_down(2) and not imgui.is_mouse_down(1)) or
+                                draw_state._input_value_cache["internal_state"][0] == UNSET_VALUE and draw_state._save_pending is None):
 
                             no_cache = converter_kwargs.get("stateful", False)
                             if input_changed:
@@ -1215,7 +1216,6 @@ def render_func(*args, **o_kwargs):
                     if internal_value != draw_state._input_value_cache["internal_state"][0]:
                         if isinstance(internal_value, Pending) and internal_value.state != PendingState.BACKGROUND:
                             internal_changed = True
-                            # Melty.cache.invalidate(draw_state._parent._tile_id, force=True)
                             request_render()
 
                             # draw_state._input_value_cache["internal_state"] = internal_value, thead_launch_frame
@@ -1254,11 +1254,11 @@ def render_func(*args, **o_kwargs):
                             prev_internal_hash = Background.simple_hash(
                                 draw_state._input_value_cache["internal_state"][0])
 
-                            if thead_launch_frame >= draw_state._input_value_cache["internal_state"][1] + 1:
-                                # if isinstance(internal_value, Pending):
-                                #     raise Exception("Pending needs to be handled before saving to cache")
-                                draw_state._input_value_cache["internal_state"] = internal_value, thead_launch_frame
-                                draw_state._input_value = internal_value
+                            if thead_launch_frame >= draw_state._input_value_cache["internal_state"][1]:
+
+                                if draw_state._apply_load is not None or draw_state._apply_save is None:
+                                    draw_state._input_value_cache["internal_state"] = internal_value, thead_launch_frame
+                                    draw_state._input_value = internal_value
                                 new_internal_hash = Background.simple_hash(
                                     draw_state._input_value_cache["internal_state"][0])
 
@@ -1719,18 +1719,17 @@ def render_func(*args, **o_kwargs):
                 Melty.pop_clip()
 
                 content_rect = imgui.get_item_rect_size()
-                draw_state._content_rect = content_rect
 
-
-
-                # if draw_state.final_max_column > 1:
-                #     max_height = 0
-                #     for i in range(draw_state.final_max_column):
-                #         column_height = draw_state._column_cursor[i][1]
-                #         if column_height > max_height:
-                #             max_height = column_height
-                #     draw_state._max_column_height = max_height
-                #     draw_state._content_rect = (draw_state._column_width, max_height)
+                if draw_state.final_max_column > 1:
+                    max_height = 0
+                    for i in range(draw_state.final_max_column):
+                        column_height = draw_state._column_cursor[i][1]
+                        if column_height > max_height:
+                            max_height = column_height
+                    draw_state._max_column_height = max_height
+                    draw_state._content_rect = (draw_state._column_width, max_height)
+                else:
+                    draw_state._content_rect = content_rect
 
                 #
                 # if draw_state.scroll_visible:
@@ -1869,16 +1868,13 @@ def render_func(*args, **o_kwargs):
                                 #     do_apply = draw_state._apply_save
                                 # elif apply_mode == ApplyMode.INSTANT:
                                 #     do_apply = True
-
-
-
                                 no_cache = converter_kwargs.get("stateful", False)
                                 if child_changed:
                                     no_cache = True
 
-
                                 if draw_state._apply_save is not None:
                                     no_cache=True
+
                                 external_value = Background.run(convert, user_id=str(unique) + f" | output convert {str(convert_path[-1].__name__)}",
                                                                 invalidate_id=draw_state._parent._tile_id,
                                                                 cache_id=str(draw_state.unique),
@@ -1887,6 +1883,9 @@ def render_func(*args, **o_kwargs):
                                                                 path=convert_path, registry=Melty, )
                                 if isinstance(external_value, tuple):
                                     external_value, thead_launch_frame = external_value
+
+                                if draw_state._apply_save:
+                                    pass
 
                                 if not isinstance(external_value, Pending):
                                     if draw_state._show_save or draw_state._apply_save is not None:
@@ -1951,12 +1950,17 @@ def render_func(*args, **o_kwargs):
                                 hash_val = Background.simple_hash(external_value)
                                 draw_state._input_value_cache[
                                     "external_state"] = external_value, thead_launch_frame, hash_val
-                                if prev_hash != hash_val or draw_state._apply_save is not None:
+                                if prev_hash != hash_val:
                                     report_changed = True
                                     report_value = external_value
                                     Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=4, force=True)
                                     # Melty.cache.invalidate_up(draw_state._tile_id, max_depth=10, force=True)
                                     request_render()
+
+                        if draw_state._apply_save is not None:
+                            Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=4, force=True)
+                            # Melty.cache.invalidate_up(draw_state._tile_id, max_depth=10, force=True)
+                            request_render()
                         # if input_conversion_background:
                         #     draw_state._pending_convert = True
                         #     Melty.cache.invalidate_up_by_obj(draw_state._collection)

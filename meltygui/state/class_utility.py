@@ -7,7 +7,6 @@ from typing import Optional, Dict, List, Tuple
 
 from src.lsd.gl_gui.utils.custom_views import print_stack_trace
 
-
 def find_repo_root(start_path: Path | str = None) -> Path:
     # Check if __file is defined
     if '__file__' in globals():

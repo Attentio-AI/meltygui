@@ -501,9 +501,17 @@ def test_columns():
 
 @render_func(use_cache=True, show_bg=False, shadow=False, disable_scroll=True, selectable=False, with_header=draw_header)
 def draw_with_modes(input_value, modes):
+    changed = False
+    value = input_value
     for idx, mode in enumerate(modes):
-        draw_any(input_value, name=f"Mode: {mode}", mode=mode, z_offset=3, selectable=False, auto_resize=True, disable_scroll=False,
+        mode_changed, value = draw_any(input_value, name=f"Mode: {mode}", mode=mode, z_offset=3, selectable=False, auto_resize=True, disable_scroll=False,
                   show_bg=True, shadow=True, column=idx)
+        changed |= mode_changed
+
+    return changed, value
+
+
+
 
 @render_func(use_cache=False, show_bg=True, selectable=False, show_tint=True, bg_offset=-1, with_header=draw_header)
 def draw_main(input_value, vis):
@@ -537,6 +545,7 @@ def draw_main(input_value, vis):
 
     changed, value = draw_with_modes(input_value=toggles, name="Toggles",
                                       show_bg=True, mode=(Mode.WINDOW), modes=[Mode.CODE_PLAIN_TEXT, Mode.CODE_UI])
+
 
 
 
@@ -1452,38 +1461,38 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=3.606,
             hovered=False, pressed=False, nested_bg=False, **kwargs):
 
     # -- Constants ---------------------------------
-    depth_wrap        = 11.635
+    depth_wrap        = 11.681
     depth_scale       = 1.85
-    corner_radius     = 4.14
+    corner_radius     = 4.143
     border_inset      = 1.548
-    border_inset_half = 0.192
-    stroke_width      = 1.742
+    border_inset_half = 0.988
+    stroke_width      = 1.286
 
     # How depth relates to color intensity
-    intensity_factor  = 0.599
-    intensity_offset  = -4.777
+    intensity_factor  = 0.17
+    intensity_offset  = -2.798
 
     # Outline color tuning
-    outline_base      = 2.149
-    outline_depth_mul = 0.929
-    outline_sat       = {'default': 2.04, 'nested': 3.211}
+    outline_base      = 2.022
+    outline_depth_mul = 0.785
+    outline_sat       = {'default': 1.357, 'nested': 2.659}
 
     # Beed color
-    bleed_mix         = {'nested': 0.403, 'default': 0.454}
-    bleed_style       = {'value': -0.1, 'alpha': 0.768, 'saturation': 5.459}
-    outline_bleed_mix = 0.232
+    bleed_mix         = {'nested': 0.351, 'default': 0.324}
+    bleed_style       = {'value': -0.024, 'alpha': 0.175, 'saturation': 4.115}
+    outline_bleed_mix = 0.267
 
     # Hover offset per interaction state
     hover_offset_by_state = {
-        'default':    -2.063,
+        'default':    -1.994,
         'selected':    -2.203,
         'pressed_hi': -2.288,   # pressed + opacity > 0.5
         'pressed_lo':  -0.371,
     }
 
     bg_style = {
-        'value': 0.127, 'saturation': 2.808,
-        'alpha': -2.072, 'max_value': 0.81,
+        'value': 0.115, 'saturation': 3.199,
+        'alpha': -2.072, 'max_value': 0.627,
         }
 
     # ── Helpers ────────────────────────────────────────────────
@@ -2190,7 +2199,7 @@ class Mode(Enum):
         Any: ModeOverrides(
             kwargs={"show_bg":True, "selectable":False, "use_cache":True, "melty_window":True, "closable":True,
                     "auto_resize":False, "draggable":True, "show_tint":True, "show_header":True,
-                    "disable_scroll":True},
+                    "disable_scroll":False},
             recursive=False
         )
     }
@@ -2198,8 +2207,8 @@ class Mode(Enum):
     WINDOW_CLEAN = {
         Any: ModeOverrides(
             kwargs={"show_bg":True, "selectable":False, "use_cache":True, "melty_window":True, "closable":True,
-                    "auto_resize":True, "draggable":True, "is_tree":False, "show_tint":False, "show_header":False,
-                    "disable_scroll":True},
+                    "auto_resize":True, 'min_width':300, "draggable":True, "is_tree":False, "show_tint":False, "show_header":False,
+                    "disable_scroll":False},
             recursive=False
         )
     }
@@ -2238,7 +2247,7 @@ class Mode(Enum):
     CODE_PLAIN_TEXT = {
         types.FunctionType: ModeOverrides(
             kwargs={"convert": [types.FunctionType, cst.Module, str],
-                    "auto_apply": [recompile, load_text],
+                    "auto_apply": [load_text],
                     "indent_size": 30, "with_header": draw_header},
             func=draw_text,
             recursive=True
@@ -2246,7 +2255,7 @@ class Mode(Enum):
 
         types.ModuleType: ModeOverrides(
             kwargs={"convert": [types.ModuleType, cst.Module, str],
-                    "auto_apply": [recompile_module, load_text],
+                    "auto_apply": [load_text],
                     "indent_size": 30, "with_header": draw_header},
             func=draw_text,
             recursive=True

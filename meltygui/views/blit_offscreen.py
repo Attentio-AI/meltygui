@@ -140,6 +140,7 @@ def _create_fbo_with_tex(tex: int, depth_stencil: bool, w, h) -> Tuple[int, Opti
 
     status = gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER)
     if status != gl.GL_FRAMEBUFFER_COMPLETE:
+        print_stack_trace()
         raise RuntimeError(f"FBO incomplete: 0x{status:04X}")
     gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
     return fbo, rbo
@@ -871,7 +872,7 @@ class TileCacheMasked:
         rf = self._rand
         self.frame_tint = (0.5 + 0.5 * rf(), 0.5 + 0.5 * rf(), 0.5 + 0.5 * rf(), 1.0)
 
-        if (fb_w, fb_h) != self._fb_size or self._snapshot_fbo is None:
+        if ((fb_w, fb_h) != self._fb_size or self._snapshot_fbo is None) and fb_w > 0 and fb_h > 0:
             self._fb_size = (fb_w, fb_h)
 
             def safe_del_tex(t):

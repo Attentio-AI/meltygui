@@ -94,6 +94,36 @@ class Conditional(dict):
         keys = ",".join(sorted(str(k) for k in self.keys() if not str(k).startswith("_")))
         return f"Conditional:{self.condition}:{keys}"
 
+class Loop(dict):
+    """A for-loop block's contents, as a dict subclass.
+
+    isinstance(l, dict) → True, so iteration/access works normally.
+    isinstance(l, Loop) → True, so the UI can render a loop widget.
+
+    The .target attribute holds the loop variable(s) (e.g. "i", "x, y").
+    The .iter attribute holds the iterator code (e.g. "range(10)", "items").
+
+    For range() loops, a "range" key holds the editable args as a list:
+        Loop({"range": [0, 100, 5], "x": "i * 2"}, target="i", iter="range(0, 100, 5)")
+
+    For non-range loops, no "range" key — just body assignments:
+        Loop({"z": "process(item)"}, target="item", iter="items")
+    """
+
+    def __init__(self, *args, target=None, iter=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.target = target    # e.g. "i", "x, y"
+        self.iter = iter        # e.g. "range(10)", "items"
+        self._bg_hash_cache: str | None = None
+
+
+    def __bg_hash__(self) -> str:
+            if self._bg_hash_cache is None:
+                # hash() on a str uses a fast SipHash - O(n) once, then O(1)
+                self._bg_hash_cache = str(hash(self.iter + self.target))
+            return self._bg_hash_cache
+
+
 
 class GeneralParse(dict):
     def __init__(self, *args, source="", **kwargs):
@@ -684,12 +714,13 @@ def tuple_to_cst_tuple(value: tuple) -> cst.Tuple:
 def cst_classdef_to_dict(value: cst.ClassDef) -> dict:
     """Extract readable fields from a class definition.
 
-    Handles two patterns:
-      1. __init__ self.X = literal  (traditional classes)
-      2. body-level annotated assignments (dataclasses, NamedTuple)
+    Handles three patterns:
+      1. body-level Assign:     invalidate_stack_trace = False
+      2. body-level AnnAssign:  debug: bool = False  (dataclass fields)
+      3. __init__ self.X = literal  (traditional classes)
 
-    Both produce the same dict shape:
-        {"decorators": {...}, "field": value, ..., "__cst__": <ClassDef>}
+    Comments are extracted via Comment keys.
+    Decorators go in a "decorators" sub-dict.
     """
     readable = {}
 
@@ -697,17 +728,30 @@ def cst_classdef_to_dict(value: cst.ClassDef) -> dict:
     if decorators:
         readable["decorators"] = decorators
 
-    # Pattern 1: body-level AnnAssign (dataclass fields)
-    #   debug: bool = False
+    # Body-level assignments and annotations
     for stmt in value.body.body:
         if not isinstance(stmt, cst.SimpleStatementLine):
             continue
+
+        _extract_leading_comments(stmt, readable)
+
+        last_key = None
         for node in stmt.body:
-            if isinstance(node, cst.AnnAssign) and isinstance(node.target, cst.Name):
+            # x = False  (plain assignment)
+            if isinstance(node, cst.Assign) and len(node.targets) == 1:
+                target = node.targets[0].target
+                if isinstance(target, cst.Name):
+                    readable[target.value] = _cst_to_python_or_raw(node.value)
+                    last_key = target.value
+            # debug: bool = False  (annotated assignment)
+            elif isinstance(node, cst.AnnAssign) and isinstance(node.target, cst.Name):
                 if node.value is not None:
                     readable[node.target.value] = _cst_to_python_or_raw(node.value)
+                    last_key = node.target.value
 
-    # Pattern 2: __init__ self.X = literal
+        _extract_trailing_comment(stmt, last_key, readable)
+
+    # __init__ self.X = literal
     init_fn = _find_init(value)
     if init_fn is not None:
         for stmt in init_fn.body.body:
@@ -739,9 +783,9 @@ def cst_classdef_to_dict(value: cst.ClassDef) -> dict:
 
 @converter(registry=Melty)
 def dict_to_cst_classdef(value: dict) -> cst.ClassDef:
-    """Patch class decorators and fields from edited dict values.
+    """Patch class decorators, fields, and comments from edited dict values.
 
-    Handles decorators, body-level AnnAssign, and __init__ self.X assignments.
+    Handles decorators, body-level Assign/AnnAssign, __init__ self.X, and comments.
     """
     old_node = value.get("__cst__")
     if old_node is None or not isinstance(old_node, cst.ClassDef):
@@ -756,12 +800,20 @@ def dict_to_cst_classdef(value: dict) -> cst.ClassDef:
 
     edits = {k: v for k, v in value.items()
              if not (_is_dunder(k))
-             and k != "decorators"}
+             and k != "decorators"
+             and not isinstance(k, Comment)}
 
-    if not edits:
-        return result
+    if edits:
+        result = result.visit(_ClassPatcher(edits))
 
-    return result.visit(_ClassPatcher(edits))
+    # Patch comments in class body
+    comment_text_map = _collect_comment_edits(value)
+    if comment_text_map:
+        new_body = _patch_body_direct(result.body, {}, comment_text_map)
+        if new_body is not result.body:
+            result = result.with_changes(body=new_body)
+
+    return result
 
 
 def _find_init(classdef):
@@ -776,6 +828,7 @@ class _ClassPatcher(cst.CSTTransformer):
     """Patches class field values.
 
     Handles:
+      - Body-level Assign: x = False  (class variables)
       - Body-level AnnAssign: debug: bool = False  (dataclass fields)
       - __init__ self.X = val  (traditional classes)
       - __init__ self.X: type = val  (annotated init assignments)
@@ -783,7 +836,7 @@ class _ClassPatcher(cst.CSTTransformer):
 
     def __init__(self, edits: dict):
         super().__init__()
-        self.edits = edits
+        self.edits = {k: v for k, v in edits.items() if not isinstance(k, Comment)}
         self._in_init = False
 
     def visit_FunctionDef(self, node):
@@ -819,12 +872,21 @@ class _ClassPatcher(cst.CSTTransformer):
         return updated_node
 
     def leave_Assign(self, original_node, updated_node):
-        if not self._in_init:
-            return updated_node
         if len(updated_node.targets) != 1:
             return updated_node
 
         target = updated_node.targets[0].target
+
+        # Body-level: x = False
+        if not self._in_init and isinstance(target, cst.Name):
+            name = target.value
+            if name in self.edits:
+                new_cst = _python_to_cst_expr(self.edits[name], updated_node.value)
+                if new_cst is not None:
+                    return updated_node.with_changes(value=new_cst)
+            return updated_node
+
+        # __init__: self.x = val
         if not (isinstance(target, cst.Attribute)
                 and isinstance(target.value, cst.Name)
                 and target.value.value == "self"):
@@ -991,6 +1053,10 @@ def _extract_block_assignments(stmts):
             _extract_leading_comments(stmt, result)
             _extract_if_chain(stmt, result)
 
+        elif isinstance(stmt, cst.For):
+            _extract_leading_comments(stmt, result)
+            _extract_for_loop(stmt, result)
+
     return result
 
 
@@ -1090,6 +1156,58 @@ def _extract_if_chain(if_node, result):
             orelse = None
         else:
             break
+
+
+def _extract_for_loop(for_node, result):
+    """Extract a for loop as a Loop dict entry.
+
+    Key is the full loop header: "for i in range(10)"
+    Value is a Loop dict containing:
+      - "range": [args...]  if the iterator is a range() call
+      - body assignments (recursively extracted)
+    """
+    target_code = _cst_node_to_code(for_node.target)
+    iter_code = _cst_node_to_code(for_node.iter)
+    key = f"for {target_code} in {iter_code}"
+
+    body = _extract_block_assignments(for_node.body.body)
+
+    # Extract range() args as editable values
+    range_args = _extract_range_args(for_node.iter)
+    if range_args is not None:
+        body["range"] = range_args
+
+    result[key] = Loop(body, target=target_code, iter=iter_code)
+
+    # for/else
+    if for_node.orelse is not None and isinstance(for_node.orelse, cst.Else):
+        else_body = _extract_block_assignments(for_node.orelse.body.body)
+        if else_body:
+            result[f"{key} else"] = Conditional(else_body, condition="else")
+
+
+def _extract_range_args(iter_node):
+    """Extract positional args from a range() call, or None if not range().
+
+    range(10)       → [10]
+    range(0, 100)   → [0, 100]
+    range(0, 100, 5) → [0, 100, 5]
+    """
+    if not isinstance(iter_node, cst.Call):
+        return None
+    func = iter_node.func
+    if not (isinstance(func, cst.Name) and func.value == "range"):
+        return None
+
+    args = []
+    for arg in iter_node.args:
+        if arg.keyword is not None:
+            return None  # keyword in range() - unusual, bail
+        val = _cst_to_python(arg.value)
+        if val is _UNREADABLE:
+            return None
+        args.append(val)
+    return args if args else None
 
 
 def _assign_target_name(node):
@@ -1200,7 +1318,8 @@ def _parse_edit_keys(edits):
             continue
         if isinstance(val, dict) and (key.startswith("if ") or
                                       key.startswith("elif ") or
-                                      key == "else"):
+                                      key == "else" or
+                                      key.startswith("for ")):
             block_edits[key] = val
         elif isinstance(key, str) and "#" in key:
             name, idx_str = key.rsplit("#", 1)
@@ -1249,6 +1368,16 @@ def _patch_body_direct(body_node, edits, comment_text_map=None):
                 new_stmt = _patch_stmt_comments(new_stmt, comment_text_map)
             if block_edits:
                 new_stmt = _patch_if_chain_direct(new_stmt, block_edits, comment_text_map)
+            if new_stmt is not stmt:
+                new_stmts[i] = new_stmt
+                changed = True
+
+        elif isinstance(stmt, cst.For):
+            new_stmt = stmt
+            if comment_text_map:
+                new_stmt = _patch_stmt_comments(new_stmt, comment_text_map)
+            if block_edits:
+                new_stmt = _patch_for_loop_direct(new_stmt, block_edits, comment_text_map)
             if new_stmt is not stmt:
                 new_stmts[i] = new_stmt
                 changed = True
@@ -1380,6 +1509,80 @@ def _patch_orelse_direct(node, block_edits, comment_text_map=None):
                 return node.with_changes(orelse=new_orelse)
 
     return node
+
+
+def _patch_for_loop_direct(for_node, block_edits, comment_text_map=None):
+    """Patch a for loop's body and range args from block_edits."""
+    target_code = _cst_node_to_code(for_node.target)
+    iter_code = _cst_node_to_code(for_node.iter)
+    key = f"for {target_code} in {iter_code}"
+
+    if key not in block_edits:
+        return for_node
+
+    loop_edits = block_edits[key]
+    result = for_node
+
+    # Patch range() args if present
+    range_edits = loop_edits.get("range")
+    if range_edits is not None and isinstance(range_edits, list):
+        new_iter = _patch_range_args(result.iter, range_edits)
+        if new_iter is not result.iter:
+            result = result.with_changes(iter=new_iter)
+
+    # Patch body assignments (exclude "range" key)
+    body_edits = {k: v for k, v in loop_edits.items() if k != "range"}
+    if body_edits or comment_text_map:
+        new_body = _patch_body_direct(result.body, body_edits, comment_text_map)
+        if new_body is not result.body:
+            result = result.with_changes(body=new_body)
+
+    return result
+
+
+def _patch_range_args(iter_node, new_args):
+    """Patch positional args on a range() Call node.
+
+    Returns the original node if it's not a range() call or args are unchanged.
+    """
+    if not isinstance(iter_node, cst.Call):
+        return iter_node
+    func = iter_node.func
+    if not (isinstance(func, cst.Name) and func.value == "range"):
+        return iter_node
+
+    old_args = list(iter_node.args)
+    if len(new_args) != len(old_args):
+        # Arg count changed - rebuild all args
+        new_cst_args = []
+        for i, val in enumerate(new_args):
+            new_expr = _python_to_cst_expr(val)
+            if new_expr is None:
+                return iter_node
+            comma = cst.MaybeSentinel.DEFAULT
+            if i < len(new_args) - 1:
+                # Clone comma from old args if pre
+                if i < len(old_args):
+                    comma = old_args[i].comma
+                else:
+                    comma = cst.Comma(whitespace_after=cst.SimpleWhitespace(" "))
+            new_cst_args.append(cst.Arg(value=new_expr, comma=comma))
+        return iter_node.with_changes(args=new_cst_args)
+
+    # Same arg count - patch in place
+    changed = False
+    patched = []
+    for i, (old_arg, new_val) in enumerate(zip(old_args, new_args)):
+        new_expr = _python_to_cst_expr(new_val, old_arg.value)
+        if new_expr is not None and new_expr is not old_arg.value:
+            patched.append(old_arg.with_changes(value=new_expr))
+            changed = True
+        else:
+            patched.append(old_arg)
+
+    if not changed:
+        return iter_node
+    return iter_node.with_changes(args=patched)
 
 
 def _patch_decorators(func_node, dec_edits):

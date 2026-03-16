@@ -520,6 +520,7 @@ def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
         frames = frames[-size:]
 
     watch_paths = watch if watch else []
+    watch_paths.append("watch")
 
     if group and section:
         link = _caller_link()
