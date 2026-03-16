@@ -117,13 +117,13 @@ class TileMode(Enum):
          "imgui_is_item_activated", "frame_count")
 @exclude("current_tint", "overhead_time", "premature_break",
          "clip_rect", "_input_value", "flow_spacing", "expanded_rect", 'max_column',
-         'width', "height", "size_change", 'left', 'top',
+         'width', "height", "size_change", 'left', 'top', 'content_height',
          "hovered", "wrapped_top", "params", "scroll_visible", "depth_and_layer",
          "premature_break", "wrapped_left", "_did_use_cache", "hover_rects",
          "content_region", "value_hash", "drag_window", "content_region", "did_render",
          "bounding_hovered", "dlt_count", "clip_rect",
          "header_height", "scrolled", "is_hovered_last", "frame_count")
-@no_save_exclude('render_time', 'content_height', "total_z_offset", 'closable', 'invalid_content_height',
+@no_save_exclude('render_time',  "total_z_offset", 'closable', 'invalid_content_height',
                  "header_height", "parent_window", "pressed",
                  'hover_rects', 'nested_window', 'use_cache', 'layer', "header_top", "header_left", "left_offset",
                  "top_offset", 'kwargs', "just_shadow",
@@ -310,7 +310,7 @@ class DrawState(DictConversion):
         self.final_max_column = 1
         self._current_max_column = 1
         self._column_cursor = defaultdict(lambda: [0, 0])  # column -> (x, y)
-
+        self._max_column_height = 0
         ### End Columns
         self._is_nested = False
         self.anchor_pos = Anchor.TOP_LEFT

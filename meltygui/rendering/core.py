@@ -216,7 +216,8 @@ def render_func(*args, **o_kwargs):
             kwargs['z_offset'] = -3
             kwargs['disable_scroll'] = False
 
-            from src.lsd.gl_gui.view.core_views.new_core_view import draw_header_end, draw_header
+            from src.lsd.gl_gui.view.core_views.headers import draw_header_end
+            from src.lsd.gl_gui.view.core_views.headers import draw_header
             kwargs['with_header_end'] = draw_header_end
             kwargs['with_header'] = draw_header
 
@@ -291,12 +292,14 @@ def render_func(*args, **o_kwargs):
 
         index = key if isinstance(key, int) else 0
         suffix = Melty.unique_stack[-1] if len(Melty.unique_stack) > 0 else (name or "")
+        column = str(kwargs.get("column", ""))
 
         # Keep original behavior of always appending name (even if empty)
         if hasattr(input_value, 'id'):
             suffix = f"{suffix}_{str(getattr(input_value, 'id'))}"
         else:
-            suffix = f"{old_suffix}_{suffix}_{unique_name}_{key}"
+            suffix = f"{old_suffix}_{suffix}_{unique_name}_{key}{column}"
+
 
         if "layer_unique" in kwargs:
             unique = kwargs.pop("layer_unique")
@@ -306,7 +309,7 @@ def render_func(*args, **o_kwargs):
                 unique = ui_id(datatype=type(input_value), suffix=name + unique_name + str(key) + func.__name__)
                 suffix = f"{unique_name}_{func.__name__}_{unique}_{key}"
             else:
-                unique = ui_id(datatype=type(input_value), suffix=suffix + unique_name +
+                unique = ui_id(datatype=type(input_value), suffix=suffix + unique_name + column +
                                                                   name + root_window_name +
                                                                   str(key) + func.__name__, idx=index)
 
@@ -525,8 +528,6 @@ def render_func(*args, **o_kwargs):
                 # return False, None
 
         Melty.seen_unique.add(unique)
-
-        no_cursor_reset = imgui.get_cursor_screen_pos()
 
         if not draw_state.expanded:
             kwargs.pop("width", None)
@@ -875,16 +876,19 @@ def render_func(*args, **o_kwargs):
             column = kwargs.get("column", None)
             draw_state.final_max_column = draw_state._current_max_column
             # draw_state._current_max_column = 0
+
+
             draw_state._column_cursor = defaultdict(lambda: [0, 0])  # column -> (x, y)
             x_offset = draw_state.abs_left - parent_wrap_left
+            indent_x = kwargs.get("indent_size", 0)
 
             if column is not None and column_parent is not None:
                 column_parent._current_max_column = max(column_parent._current_max_column, column)
                 parent_wrap_width = column_parent.content_width / (column_parent.final_max_column + 1)
                 parent_wrap_left = draw_state.abs_left + snap_int(parent_wrap_width * column)
-                available_width = parent_wrap_width - 2
+                available_width = parent_wrap_width - 2 - indent_x
             else:
-                available_width = (parent_wrap_width - x_offset - content_margin)
+                available_width = (parent_wrap_width - x_offset - content_margin )
 
             if len(Melty.fixed_size_stack) > 0:
                 if (draw_state.auto_resize and not closable and not
@@ -902,15 +906,16 @@ def render_func(*args, **o_kwargs):
                 draw_state.content_width = single_line_avail
 
             if kwargs.get("fill_height", False) and passed_height is None and auto_resize:
-
-                draw_state.height = snap_int(parent_wrap_height)
+                draw_state.height = snap_int(parent_wrap_height) - content_margin
                 draw_state._height_source = "fill height"
 
 
             ################# Columns
             if column is not None and column_parent is not None:
                 column_cursor_y = column_parent._column_cursor[column][1]
-                imgui.set_cursor_screen_pos((parent_wrap_left, parent_wrap_top + column_cursor_y + column_parent.header_height))
+
+                imgui.set_cursor_screen_pos((parent_wrap_left + indent_x,
+                                             -column_parent.scroll_offset[1] + parent_wrap_top + column_cursor_y + column_parent.header_height))
 
                 draw_state.left_offset, draw_state.top_offset = (
                                 imgui.get_cursor_screen_pos()[0] - draw_state.parent_window.left,
@@ -933,6 +938,8 @@ def render_func(*args, **o_kwargs):
                                        draw_state.left + snap_int(column_width * c), draw_state.top + snap_int(draw_state.height),
                                        imgui.get_color_u32_rgba(0.0, 0.0, 0.0, 0.3), 1)
 
+
+            no_cursor_reset = imgui.get_cursor_screen_pos()
 
             ##########################
             if kwargs.get("live", False):
@@ -1478,6 +1485,8 @@ def render_func(*args, **o_kwargs):
 
                 header_start = imgui.get_cursor_screen_pos()
 
+
+
                 #
                 # if "with_footer" in kwargs and kwargs.get("with_footer", None) is not None:
                 #     imgui.set_cursor_screen_pos(
@@ -1489,7 +1498,7 @@ def render_func(*args, **o_kwargs):
                         imgui.set_cursor_screen_pos(
                             (draw_state.left, draw_state.top + draw_state.height - draw_state.footer_height))
                         from src.lsd.gl_gui.view.core_views.new_core_view import empty
-                        empty(name="footer_shadow", z_offset=0,
+                        empty(name=f"footer_shadow{unique}", z_offset=0,
                               tile_mode=TileMode.MAX, width=draw_state.width - 2,
                               height=draw_state.footer_height)
                         imgui.set_cursor_screen_pos(header_start)
@@ -1502,7 +1511,6 @@ def render_func(*args, **o_kwargs):
                 #           show_bg=False, height=draw_state.header_height + 2, z_offset=-2)
                 if "with_header" in kwargs and kwargs.get("with_header", None) is not None and kwargs.get("show_header",
                                                                                                           True):
-
                     next_kwargs = kwargs.get('next_kwargs', {})
                     next_kwargs['func'] = func
                     next_kwargs['outer_func'] = wrapper
@@ -1583,16 +1591,6 @@ def render_func(*args, **o_kwargs):
                     end_header_rect = imgui.get_item_rect_size()
                     draw_state.header_end_width = end_header_rect[0]
 
-                    if closable and draw_state.scroll_visible:
-                        current_cursor = imgui.get_cursor_screen_pos()
-                        imgui.set_cursor_screen_pos((draw_state.left, draw_state.top))
-                        from src.lsd.gl_gui.view.core_views.new_core_view import empty
-
-                        # empty(name="header_shadow", z_offset=-1,
-                        #       tile_mode=TileMode.MAX, width=draw_state.width - 2,
-                        #       height=draw_state.header_height)
-                        imgui.set_cursor_screen_pos(current_cursor)
-
                     if not draw_state.multi_line:
                         imgui.same_line()
                         imgui.set_cursor_screen_pos(current_cursor)
@@ -1614,7 +1612,6 @@ def render_func(*args, **o_kwargs):
                     draw_state.header_left_delta = draw_state.left - draw_state.header_left
                     draw_state.header_top_delta = draw_state.top - draw_state.header_top
 
-                indent_x = kwargs.get("indent_size", 0)
                 if indent_x > 0:
                     sc = imgui.get_cursor_screen_pos()
                     imgui.set_cursor_screen_pos((sc[0] + indent_x,
@@ -1683,6 +1680,7 @@ def render_func(*args, **o_kwargs):
                 width = snap_int(width)
                 height = snap_int(height)
 
+
                 #### MAIN CALL #######################
                 Melty.push_clip((left, top,
                                  left + width,
@@ -1717,25 +1715,32 @@ def render_func(*args, **o_kwargs):
                     Melty.report_imgui_active()
                 #######################
 
-                # if not closable and show_bg:
-                #     imgui.same_line(spacing=0)
-                #     imgui.dummy(outline_margin, 0)
+                end_group()
+                Melty.pop_clip()
 
                 content_rect = imgui.get_item_rect_size()
                 draw_state._content_rect = content_rect
 
 
-                end_group()
-                Melty.pop_clip()
 
-                if draw_state.scroll_visible:
-                    imgui.set_cursor_screen_pos((draw_state.left + 2, draw_state.top + draw_state.header_height + 2))
-                    inset_start = imgui.get_cursor_screen_pos()
-                    from src.lsd.gl_gui.view.core_views.new_core_view import empty
-                    empty(name="inset", z_offset=-2,
-                          tile_mode=TileMode.MAX, width=draw_state.width - 4,
-                          height=draw_state.height - draw_state.header_height - draw_state.footer_height - 4)
-                    imgui.set_cursor_screen_pos(inset_start)
+                # if draw_state.final_max_column > 1:
+                #     max_height = 0
+                #     for i in range(draw_state.final_max_column):
+                #         column_height = draw_state._column_cursor[i][1]
+                #         if column_height > max_height:
+                #             max_height = column_height
+                #     draw_state._max_column_height = max_height
+                #     draw_state._content_rect = (draw_state._column_width, max_height)
+
+                #
+                # if draw_state.scroll_visible:
+                #     imgui.set_cursor_screen_pos((draw_state.left + 2, draw_state.top + draw_state.header_height + 2))
+                #     inset_start = imgui.get_cursor_screen_pos()
+                #     from src.lsd.gl_gui.view.core_views.empty_core_view import empty
+                #     empty(name=f"inset{unique}", zorder=-2,
+                #           tile_mode=TileMode.MAX, width=parent_wrap_width,
+                #           height=draw_state.height - draw_state.header_height - draw_state.footer_height - 4)
+                #     imgui.set_cursor_screen_pos(inset_start)
 
                 if ("with_footer" in kwargs and kwargs.get("with_footer", None) is not None and
                         draw_state.expanded):
@@ -1969,8 +1974,14 @@ def render_func(*args, **o_kwargs):
                 #     raise Exception("Pending needs to be handled before saving to cache")
                 return_value = (report_changed, report_value, *return_value[2:])
 
+
+
+
             if use_cache:
                 Melty.cache.mark_end_offscreen()
+
+            if not draw_state.kwargs.manual_content_height and not Melty.on_drag and not imgui.is_mouse_down(1) and not imgui.is_mouse_down(2):
+                draw_state.content_height = draw_state._content_rect[1]
 
             # if draw_state._save_pending_obj is not None and draw_state._save_pending_obj.originated in auto_apply:
             #     # draw_state._apply_save = draw_state._save_pending_obj.originated
@@ -2031,8 +2042,7 @@ def render_func(*args, **o_kwargs):
                 draw_state._height_source = "min 30"
 
 
-            if not draw_state.kwargs.manual_content_height:
-                draw_state.content_height = draw_state._content_rect[1]
+
 
             if auto_resize and kwargs.get("fill_height", None) is None:
                 if kwargs.get("wrap", False):
@@ -2042,6 +2052,8 @@ def render_func(*args, **o_kwargs):
 
                 if passed_height is None:
                     max_height = kwargs.get("max_height", 1e9)
+                    if column is not None:
+                        max_height = parent_wrap_height - draw_state._column_cursor[column][1]
 
                     if not closable:
                         draw_state.height = snap_int(min(item_rect[1], max_height))
@@ -2086,9 +2098,9 @@ def render_func(*args, **o_kwargs):
             draw_state.hotkey_receiver = False
             draw_state.last_seen = Melty.frame_count
 
-            if kwargs.get("no_cursor", False):
-                imgui.set_cursor_screen_pos(no_cursor_reset)
-                imgui.dummy(0, 0)
+            # if kwargs.get("no_cursor", False):
+            #     imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
+            #     imgui.dummy(0, 0)
 
             if is_root:
                 style = imgui.get_style()
@@ -2221,13 +2233,15 @@ def render_func(*args, **o_kwargs):
             floating_text(f"{func.__name__} w:{Melty.depth}", tint=jet)
 
 
-        clip_height = draw_state.height - draw_state.footer_height - draw_state.header_height
+        clip_height = draw_state.height
         needs_scroll = draw_state.content_height > clip_height and draw_state.multi_line
 
         if draw_state.just_shadow or kwargs.get("disable_scroll", False):
             needs_scroll = False
 
         draw_state.scroll_visible = needs_scroll
+        if not needs_scroll:
+            draw_state.scroll_offset = (0,0)
 
         if needs_scroll:
             scroll_y_changed = draw_state.on_action("scroll_y_changed", view_id="view_scroll", priority_delta=10)
@@ -2245,7 +2259,7 @@ def render_func(*args, **o_kwargs):
             new_offset_y = current_y + scroll_delta * direction * scroll_speed
 
             min_scroll_y = 0
-            max_scroll_y = max(0, draw_state.content_height - clip_height + 5)
+            max_scroll_y = max(0, draw_state.content_height - clip_height + 5 + draw_state.footer_height + draw_state.header_height)
 
             # Give views time to settle
             if Melty.frame_count > 2:
@@ -2269,11 +2283,21 @@ def render_func(*args, **o_kwargs):
 
         scroll_offset = draw_state.scroll_offset if do_scroll else (0, 0)
 
+        if draw_state.content_height > draw_state.height + draw_state.header_height:
+            current_cursor = imgui.get_cursor_screen_pos()
+            imgui.set_cursor_screen_pos((draw_state.abs_left , draw_state.abs_top))
+            from src.lsd.gl_gui.view.core_views.new_core_view import empty
+
+            empty(name=f"header_shadow{unique}", z_offset=0.0,
+                  tile_mode=TileMode.MAX, width=draw_state.width,
+                  height=draw_state.header_height)
+            imgui.set_cursor_screen_pos(current_cursor)
+
         if do_scroll:
             header_height = draw_state.header_height
-            Melty.push_clip((draw_state.left, draw_state.top + header_height + 2,
-                             draw_state.left + draw_state.width,
-                             draw_state.top + header_height + draw_state.height + 2))
+            Melty.push_clip((draw_state.abs_left, draw_state.abs_top + header_height,
+                             draw_state.abs_left + draw_state.width,
+                             draw_state.abs_top + header_height + draw_state.height + 2))
             start_cursor = imgui.get_cursor_screen_pos()
             imgui.set_cursor_screen_pos((start_cursor[0],
                                          start_cursor[1] - scroll_offset[1]))

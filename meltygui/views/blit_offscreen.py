@@ -1208,6 +1208,7 @@ class TileCacheMasked:
                     # tint_color=(self.frame_tint[0], self.frame_tint[1], self.frame_tint[2], self.frame_tint[3] * 0.5)
                 )
                 imgui.set_item_allow_overlap()
+                imgui.set_cursor_screen_pos((draw_state.left, draw_state.top + draw_state.content_height))
                 self._stack.append(
                     _Ctx(
                         draw_state=draw_state,

@@ -1,6 +1,4 @@
 import inspect
-import os
-import shutil
 import sys
 import threading
 import types
@@ -16,24 +14,20 @@ from typing import Optional, Any
 
 import OpenGL.GL as gl
 import glfw
-import libcst as cst
 import numpy
-from imgui.core import _DrawList, _ImGuiInputTextCallbackData
+from imgui.core import _DrawList
 
-from server.server_gui import open_file
 from src.lsd.gl_gui import toggles
-from src.lsd.gl_gui.melty import Melty, CollectionAction, add_to_collection, \
-    ManagedWindow
+from src.lsd.gl_gui.melty import Melty, CollectionAction, ManagedWindow
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
 from src.lsd.gl_gui.model.core_model.draw_state import ZoomState, TileMode
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_style_var, \
-    push_style_color, pop_style_color, pop_style_var, end, begin, text_wrapped
+    push_style_color, pop_style_color, pop_style_var, end, begin
 from src.lsd.gl_gui.utils.glfw_utils import request_render
-from src.lsd.gl_gui.view.core_conversion.file_converters import path_to_dict, bytes_to_str, FileRef, ValueDict, \
-    load_text, recompile, recompile_module
+from src.lsd.gl_gui.view.core_conversion.file_converters import path_to_dict, bytes_to_str, load_text, recompile, recompile_module
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment, Conditional, GeneralParse
-from src.lsd.gl_gui.view.core_conversion.path_finder import convert, Pending, PendingState
+from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
 from src.lsd.gl_gui.view.core_views.codec_register import registry as FILE_CODECS
@@ -43,284 +37,11 @@ from src.lsd.gl_gui.view.core_views.cst_proxy import *
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import hotkey
 from src.lsd.gl_gui.view.core_views.decoration.invalidation_decoration import live
 from src.lsd.gl_gui.view.core_views.folders_proxy import FolderProxy
+from src.lsd.gl_gui.view.core_views.headers import draw_header, draw_footer, draw_header_end
 from src.lsd.gl_gui.view.core_views.inspect_utils import set_fn_defaults
 from src.lsd.gl_gui.view.core_views.monitor import Monitor
 from src.lsd.gl_gui.view.core_views.text_editor import draw_text
 from src.shader_library.shader_manager.texture_manager import PendingTexture
-
-def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add_delete=False, width=0, suffix="",
-                collection=None, display_name=None, meta=None, unique=None, is_tree=True,
-                show_name=True, name_func=None, show_type=False, show_unique=False,
-                on_search=False, trigger_collapse=False, trigger_expand=False,
-                draw_state=None, show_tint=False, opacity=1.0, show_add_delete=True,
-                on_drag=False, on_action=None, style_manager=None,
-                global_style=None, global_toggles=None, **kwargs):
-
-    # ── Constants ──────────────────────────────────────────────
-    # Depth drives name color
-    depth_scale       = 0.543
-    depth_offset      = -1.487
-    name_value_factor = 1.0
-
-    # Name text (value is the base offset, updated by depth below)
-    name_style = {
-        'value': 0.011, 'saturation': 1.42,
-        'alpha': 2.06, 'max_value': 0.973,
-        'depth_factor': 0.226
-    }
-    name_rounding       = 2.0
-    max_name_chars      = 40
-    min_name_text_width = 62
-
-    # Tree arrow
-    arrow_style = {
-        'value': 0.867, 'saturation': 1.468,
-        'alpha': 0.122, 'max_value': 1.161,
-        'depth_factor': 0.452
-    }
-
-    # Type / unique label colors
-    type_label_color   = (2.865, 1.955, 2.861, 1.0)
-    unique_label_color = (-1.535, 0.0, 0.9, 1.0)
-
-    # ── Setup ──────────────────────────────────────────────────
-    if display_name is not None:
-        name = display_name
-
-    imgui.dummy(0, 0)
-
-    on_change = False
-    return_val = on_action
-    push_style_var(imgui.STYLE_ALPHA, opacity)
-
-    # ── Depth-driven color computation ─────────────────────────
-    depth = max(0.0, Melty.bg_depth)
-
-    depth_intensity = float(depth + depth_offset) * depth_scale
-    name_style['value'] = depth_intensity * name_style['depth_factor'] + name_style['value']
-    arrow_style['value'] = depth_intensity * arrow_style['depth_factor'] + arrow_style['value']
-
-    name_color = style_manager.make_color_style_value(input=name_style)
-    arrow_color = style_manager.make_color_style_value(input=arrow_style)
-
-    # ── Tree arrow ─────────────────────────────────────────────
-    imgui.align_text_to_frame_padding()
-
-    if is_tree:
-        push_style_color(imgui.COLOR_TEXT, *arrow_color[:3])
-        imgui.set_cursor_screen_pos(imgui.get_cursor_screen_pos())
-        imgui.dummy(0, 0)
-        imgui.same_line(spacing=0)
-
-        imgui.push_style_color(imgui.COLOR_BUTTON, 0.0, 0.0, 0.0, 0.0)
-        imgui.push_style_color(imgui.COLOR_BUTTON_HOVERED, 0.0, 0.0, 0.0, 0.0)
-        imgui.push_style_var(imgui.STYLE_ALPHA, arrow_style['alpha'])
-        imgui.set_item_allow_overlap()
-
-        arrow_dir = imgui.DIRECTION_DOWN if draw_state.expanded else imgui.DIRECTION_RIGHT
-        if imgui.arrow_button("##tree", arrow_dir):
-            draw_state.expanded = not draw_state.expanded
-            print(f"Expanded: {draw_state.expanded}")
-            draw_state.content_height = 0
-            draw_state.invalid_content_height = True
-            request_render()
-        imgui.pop_style_var(1)
-        imgui.pop_style_color(2)
-        pop_style_color(1)
-        same_line()
-    else:
-        imgui.same_line()
-
-    # ── Type / unique labels ───────────────────────────────────
-    if show_type:
-        imgui.text_colored(f"({input_value.__class__.__name__})", *type_label_color)
-        same_line()
-    if show_unique:
-        imgui.text_colored(f"({str(Melty.get_tile_id())})", *unique_label_color)
-        same_line()
-    if show_name and name != "":
-        same_line()
-        imgui.set_item_allow_overlap()
-
-    # ── Tint widget ────────────────────────────────────────────
-    if hasattr(input_value, "tint") and input_value.tint is not None:
-        draw_state._has_popup = True
-        tint_changed, tint_value = draw_tuple(input_value.tint, show_name=False, show_header=False)
-        if tint_changed:
-            input_value.tint = tint_value
-        same_line()
-    elif show_tint:
-        draw_state._has_popup = True
-        tint_changed, tint_value = draw_tuple(draw_state.tint, show_name=False, show_header=False)
-        if tint_changed:
-            draw_state.tint = tint_value
-        same_line()
-
-    # ── Add button ─────────────────────────────────────────────
-    if show_add_delete and isinstance(input_value, (list, dict)) or hasattr(input_value, "__dict__"):
-        if show_add_delete:
-            if imgui.small_button(f"\uf067##add{unique}"):
-                hinted_type = NoneType
-                if meta.field_type is not None and hasattr(meta.field_type, "__args__"):
-                    if len(meta.field_type.__args__) == 2:
-                        hinted_type = meta.field_type.__args__[1]
-                add_to_collection(input_value, hinted_type())
-                on_change = True
-                return_val = input_value
-            same_line()
-
-    # ── Name label / edit ──────────────────────────────────────
-    has_visible_name = show_name and name not in ("", None, "None")
-
-    if has_visible_name:
-        # Folder open button for dicts
-        if isinstance(input_value, (dict, MutableMapping)):
-            push_style_color(imgui.COLOR_BUTTON, 0.0, 0.0, 0.0, 0.0)
-            push_style_color(imgui.COLOR_TEXT, *name_color)
-            if imgui.button("##open_folder"):
-                if hasattr(input_value, "file_path"):
-                    open_file(input_value.file_path)
-            pop_style_color(2)
-            same_line()
-
-        # File open button for folder proxies
-        elif isinstance(collection, FolderProxy):
-            push_style_color(imgui.COLOR_BUTTON, 0.0, 0.0, 0.0, 0.0)
-            push_style_color(imgui.COLOR_TEXT, name_color[0], name_color[1], name_color[2], 0.5)
-            if imgui.button("##open_file"):
-                if hasattr(collection, "file_path"):
-                    file_path = os.path.join(collection.file_path, str(name))
-                    open_file(file_path)
-            pop_style_color(2)
-            same_line()
-
-        clipped_name = name.split("##")[0][:max_name_chars]
-        text_width = imgui.calc_text_size(clipped_name)[0]
-
-
-        push_style_var(imgui.STYLE_FRAME_ROUNDING, name_rounding)
-
-        if not draw_state._name_edit:
-            draw_list: _DrawList = imgui.get_window_draw_list()
-            cursor_pos = imgui.get_cursor_screen_pos()
-            packed_name_color = imgui.get_color_u32_rgba(*name_color[:3], 1.0)
-            draw_list.add_text(cursor_pos[0], cursor_pos[1], packed_name_color, clipped_name)
-            imgui.dummy(text_width, imgui.get_frame_height())
-            pop_style_var(1)
-        else:
-            name_width = min(text_width, min_name_text_width)
-            imgui.set_next_item_width(name_width)
-            edit_flags = imgui.INPUT_TEXT_ENTER_RETURNS_TRUE | imgui.INPUT_TEXT_AUTO_SELECT_ALL
-            changed, new_name = imgui.input_text(f"##edit{name}_{unique}", name, flags=edit_flags)
-            pop_style_var(1)
-
-            if changed or imgui.is_key_pressed(imgui.KEY_ESCAPE) or not imgui.is_item_active():
-                draw_state._name_edit = False
-
-        same_line(spacing=3)
-
-    # ── Profiler ──────────────────────────────────────────────
-    is_profiling = global_toggles.profiler == ProfileMode.ON
-    if is_profiling:
-        render_profiler_time(
-            input_value=draw_state.render_time, brief=True,
-            style_manager=style_manager, global_style=global_style,
-        )
-        same_line(spacing=3)
-
-    pop_style_var(1)
-
-    return on_change, return_val
-
-def draw_footer(input_value=None, name="", key=None, melty=None, parent_show_add_delete=False, width=0, suffix="",
-                collection=None, display_name=None, meta=None, unique=None, is_tree=True,
-                show_name=True, name_func=None, show_type=False, show_unique=False,
-                on_search=False, trigger_collapse=False, trigger_expand=False,
-                draw_state=None, show_tint=False, opacity=1.0, show_add_delete=True,
-                on_drag=False, on_action=None, style_manager=None,
-                global_style=None, global_toggles=None, **kwargs):
-
-    for key, pending in draw_state._all_pending.items():
-        if pending is not None:
-            if pending.state == PendingState.ERROR:
-                draw_pending(pending, name=f"{key}", tint=(1, 0, 0))
-
-    imgui.text(f"{name}")
-
-
-def draw_header_end(input_value=None, name="", key=None, melty=None, parent_show_add_delete=False,
-                    collection=None, draw_state=None, closable=False, style_manager=None,
-                    global_style=None, global_toggles=None, **kwargs):
-    bg_style = {
-        "value": 0.01,
-        "saturation": 1.0,
-        "alpha": 1.0,
-        'max_value': 1.0
-    }
-    bg_style = global_style.get_global_constant("bg_style", default=bg_style, folder="bg_styles")
-    search_color = (style_manager.
-                    make_color_style_value(input=bg_style, saturation=0.7,
-                                           value=1.0))
-
-    # push_style_var(imgui.STYLE_FRAME_PADDING, (4, 0))
-    # push_style_var(imgui.STYLE_ITEM_SPACING, (4, 0))
-
-    if parent_show_add_delete:
-        bg_style = {
-            "value": 0.01,
-            "saturation": 1.0,
-            "alpha": 1.0,
-            'max_value': 1.0
-        }
-        bg_style = global_style.get_global_constant("bg_style", default=bg_style, folder="bg_styles")
-        search_color = (style_manager.
-                        make_color_style_value(input=bg_style, saturation=0.7,
-                                               value=1.0))
-        push_style_color(imgui.COLOR_TEXT, *search_color)
-        push_style_color(imgui.COLOR_BUTTON, *(0.0, 0.0, 0.0, 0.0))
-        if imgui.button(f"\uf1f8##del"):
-            melty.to_delete(key, collection)
-            print("No selected_views or remove_view method")
-        same_line(spacing=0.0)
-        pop_style_color(2)
-
-    if closable and not input_value == Melty.registered_windows:
-        close_icon = "\uf00d"
-        if button(f"{close_icon}", show_bg=True, shadow=True, z_offset=10, tile_mode=TileMode.MAX, color=(9, 1, 1, 0))[0]:
-            draw_state.closed = not draw_state.closed
-            Melty.cache.invalidate_up_by_obj(Melty.registered_windows)
-
-
-    # if show_search or draw_state.search_active:
-    #     imgui.same_line()
-    #     imgui.set_cursor_pos_y(imgui.get_cursor_pos()[1] + 2)
-    #
-    #     icon = "\uf002"
-    #     imgui.text_colored(icon, *search_color)
-    #     imgui.same_line()
-    #     search_width = 150.0
-    #     imgui.set_next_item_width(search_width)
-    #     search_changed, new_search = imgui.input_text(f"##search{unique}", draw_state.search_text)
-    #
-    #     if search_changed:
-    #         draw_state.search_text = new_search
-    #         imgui.set_keyboard_focus_here(-1)
-    #         request_render()
-    #
-    #     if not draw_state.search_active:
-    #         draw_state.search_text = ""
-    #
-    #     if on_search:
-    #         draw_state.search_active = True
-    #         imgui.set_keyboard_focus_here(-1)
-    #         request_render()
-    #
-    #     draw_state.search_active = imgui.is_item_focused()
-    # pop_style_var(2)
-
-    # push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
-
-    # pop_style_var(2)
 
 
 @render_func(use_cache=True, show_bg=False, width=20, height=22, tile_mode=TileMode.MAX,
@@ -331,7 +52,7 @@ def empty(input_val):
 
 @render_func(use_cache=True, auto_resize=False, closable=True, selectable=False,
              show_bg=True, melty_window=True, draggable=True, show_tint=True, tile_mode=TileMode.MAX,
-             with_header=draw_header, with_header_end=draw_header_end, indent_size=10,
+             with_header=draw_header, with_header_end=draw_header_end, indent_size=5,
              with_footer=draw_footer)
 def draw_window(input_value:any, view_func=None, draw_state=None, delete_down=False, glfw_close_down=False, **kwargs):
     if delete_down and imgui.get_io().key_ctrl:
@@ -344,7 +65,6 @@ def draw_window(input_value:any, view_func=None, draw_state=None, delete_down=Fa
     kwargs['show_bg'] = False
     kwargs['selectable'] = False
     kwargs['return_extras'] = True
-    kwargs['indent_size'] = 2
     kwargs['with_header'] = None
     kwargs['with_header_end'] = None
     kwargs['with_footer'] = None
@@ -367,7 +87,7 @@ def draw_module(input_value: types.ModuleType, draw_state, **kwargs):
 
 @render_func(is_default_for=(dict, MutableMapping, defaultdict, types.MappingProxyType), use_cache=True,
              show_bg=True, show_instance_vars=False, manual_content_height=True, disable_scroll=True,
-             shadow=True, wrap=False, with_header=draw_header, indent_size=10)
+             shadow=True, wrap=False, with_header=draw_header, indent_size=5)
 def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=None, keys=None, get_attr=None, set_attr=None, show_excluded=False,
                     child_kwargs=None, nested_func=None, show_bg=True, show_search=True, on_collapse=False,
                     on_expand=False, global_toggles=None, show_add_delete=True, item_spacing_y=1,
@@ -782,7 +502,8 @@ def test_columns():
 @render_func(use_cache=True, show_bg=False, shadow=False, disable_scroll=True, selectable=False, with_header=draw_header)
 def draw_with_modes(input_value, modes):
     for idx, mode in enumerate(modes):
-        draw_any(input_value, name=f"Mode: {mode}", mode=mode, fill_height=True, disable_scroll=False, show_header=True, show_bg=True, column=idx)
+        draw_any(input_value, name=f"Mode: {mode}", mode=mode, z_offset=3, selectable=False, auto_resize=True, disable_scroll=False,
+                  show_bg=True, shadow=True, column=idx)
 
 @render_func(use_cache=False, show_bg=True, selectable=False, show_tint=True, bg_offset=-1, with_header=draw_header)
 def draw_main(input_value, vis):
@@ -795,7 +516,7 @@ def draw_main(input_value, vis):
     global test_code
 
     # draw_window({"code_to_dict": code_to_dict,
-    #              "dict_to_code": dict_to_code}, name="CST Test", show_bg=True, child_kwargs={'show_excluded': True})
+    #              "dict_to_code": dict_to_code}, namFe="CST Test", show_bg=True, child_kwargs={'show_excluded': True})
     # changed, value = draw_window(test_code, name="test_code", show_bg=True, child_kwargs={'show_excluded': True})
     # if changed:
     #     test_code = value
@@ -808,7 +529,6 @@ def draw_main(input_value, vis):
     if changed:
         test_code = value
 
-    draw_window(draw_bg, name="cst_text", show_bg=True, live=True, mode=Mode.CODE_PLAIN_TEXT)
 
     changed, value = draw_with_modes(input_value=draw_bg, name="draw_bg",
                                      show_bg=True, mode=(Mode.WINDOW), modes=[Mode.CODE_PLAIN_TEXT, Mode.CODE_UI])
@@ -816,7 +536,7 @@ def draw_main(input_value, vis):
         test_code = value
 
     changed, value = draw_with_modes(input_value=toggles, name="Toggles",
-                                      show_bg=True, mode=(Mode.WINDOW), modes=[Mode.CODE_PLAIN_TEXT_MODULE, Mode.CODE_UI_MODULE])
+                                      show_bg=True, mode=(Mode.WINDOW), modes=[Mode.CODE_PLAIN_TEXT, Mode.CODE_UI])
 
 
 
@@ -888,7 +608,7 @@ def draw_main(input_value, vis):
 @render_func
 def test_widget(input_value, name, unique, **kwargs):
     imgui.text("Test Widget")
-    draw_window("Nested Window", name=f"{name} Nested")
+    draw_text("Editable Text", name="editable_text", show_bg=True)
 
 
 source = "x = foo(val=1)\nprint(x)\nsome_list=[0, 1, 2, 3]\n"
@@ -1410,263 +1130,6 @@ def export_code(test_param_2: int = 5):
     code_export_str = proxy.node.code
 
 
-######################## libCST START ##########################
-
-
-@render_func(is_default_for=cst.SimpleStatementLine, with_header=draw_header, header_same_line=True, wrap=True)
-def draw_cst_single_line(input_value: cst.SimpleStatementLine):
-    # An Assign has one or more targets, an AssignEqual token, and a value
-    draw_any(input_value.body, wrap=True)
-
-
-
-@render_func(is_default_for=cst.SimpleWhitespace, header_same_line=True, with_header=draw_header, show_name=False,
-             shadow=False, wrap=True)
-def draw_cst_simple_whitespace(input_value: cst.SimpleWhitespace):
-    # An Assign has one or more targets, an AssignEqual token, and a value
-    # imgui.same_line()
-    pass
-
-    # imgui.button("SWS")
-    # imgui.set_item_allow_overlap()
-    # imgui.same_line()
-
-
-# --- Assignments ---
-def assign_name(input_value: cst.Assign):
-    if len(input_value.targets) == 1:
-        target = list(input_value.targets.values())[0]
-        if isinstance(target, cst.AssignTarget):
-            if isinstance(target.target, cst.Name):
-                return target.target.value
-            else:
-                return str(target.target)
-        else:
-            return str(target)
-    else:
-        return "Multiple Targets"
-
-
-@render_func(is_default_for=cst.Assign, header_same_line=True, name_func=assign_name, wrap=True,
-             with_header=draw_header)
-def draw_cst_assign(input_value: cst.Assign):
-    # An Assign has one or more targets, an AssignEqual token, and a value
-
-    imgui.text_colored("=", *(1, 1.1, 1, 0.5))
-    imgui.same_line()
-    draw_any(input_value.value)
-
-
-# --- Names ---
-@render_func(is_default_for=cst.AssignTarget, wrap=True, with_header=draw_header)
-def draw_assign_target(input_value: cst.AssignTarget):
-    draw_any(input_value.target)
-
-
-# --- Names ---
-@render_func(is_default_for=cst.Name, wrap=True)
-def draw_cst_name(input_value: cst.Name):
-    # imgui.text(f"{input_value.value}")
-    pass
-
-
-@render_func(is_default_for=(cst.Expr, cst.Element), header_same_line=True, show_header=False,
-             with_header=draw_header,
-             show_bg=False, show_name=True, wrap=True)
-def draw_cst_expr(input_value):
-    # Just render the wrapped expression
-    imgui.dummy(0, 0)
-    if hasattr(input_value, 'value'):
-        imgui.text("Expr(?)")
-        return draw_any(input_value.value)
-
-    else:
-        imgui.text("Expr(?)")
-
-
-# --- Function Calls ---
-
-# Call name
-def call_name(call: cst.Call):
-    if isinstance(call.func, cst.Name):
-        return call.func.value
-    else:
-        return ""
-
-
-@render_func(is_default_for=cst.Call, header_same_line=True, name_func=call_name, wrap=True, with_header=draw_header)
-def draw_cst_call(input_value: cst.Call):
-    imgui.same_line()
-    imgui.align_text_to_frame_padding()
-    imgui.text(" (")
-    imgui.same_line()
-    draw_any(input_value.args, wrap=True, horizontal=True)
-    imgui.same_line()
-    imgui.align_text_to_frame_padding()
-    imgui.text(" )")
-
-
-#
-# @with_header(is_default_for=cst.Module, use_cache=True, show_add_delete=False)
-# def draw_cst_module(input_value: cst.Module):
-#     return draw_any(input_value.body, show_name=False)
-
-@render_func(is_default_for=cst.List, show_name=False, show_bg=False,
-             header_same_line=True, wrap=True, with_header=draw_header)
-def draw_cst_list(input_value: cst.List):
-    imgui.same_line()
-    imgui.align_text_to_frame_padding()
-    imgui.text("[")
-    imgui.same_line()
-    draw_any(input_value.elements, wrap=True, horizontal=True)
-    imgui.same_line()
-    imgui.align_text_to_frame_padding()
-    imgui.text("]")
-
-
-# @render_func(is_default_for=CSTDictProxy, header_same_line=True,
-#              show_bg=False, indent_size=0, draggable=True, wrap=True)
-# def draw_cst_dict(input_value: CSTDictProxy):
-#     show_indices = False
-#
-#     if len(input_value) > 0:
-#         # Show line numbers for dicts of simple statements
-#         if isinstance(list(input_value.keys())[0], cst.SimpleStatementLine):
-#             show_indices = True
-#     # kwargs['show_name'] = False
-#
-#     draw_collection(input_value, header_same_line=True, show_bg=False, enable_search=True,
-#                     show_name=False, show_indices=show_indices, indent_size=0, wrap=True)
-#
-
-# --- Parameters ---
-@render_func(is_default_for=cst.Parameters, wrap=True, with_header=draw_header)
-def draw_cst_parameters(input_value: cst.Parameters):
-    first = True
-    for param in input_value.params:
-        if not first:
-            imgui.same_line()
-            imgui.text(",")
-            imgui.same_line()
-        draw_any(param)
-        first = False
-
-
-# --- Individual Parameter ---
-@render_func(is_default_for=cst.Param, wrap=True, with_header=draw_header)
-def draw_cst_param(input_value: cst.Param):
-    draw_any(input_value.name)
-    if input_value.default:
-        imgui.same_line()
-        imgui.text_colored("=", *(1, 1, 1, 0.5))
-        imgui.same_line()
-        draw_any(input_value.default)
-
-
-# @with_header(is_default_for=cst.Module, show_add_delete=False)
-# def draw_cst_module(input_value: cst.Module):
-#
-#     return draw_any(input_value.body, show_name=False)
-
-# --- Arguments ---
-def arg_name(arg: cst.Arg):
-    if arg.keyword:
-        return arg.keyword.value
-    elif isinstance(arg.value, cst.Name):
-        return arg.value.value
-    else:
-        return None
-
-
-@render_func(is_default_for=cst.Arg, show_bg=True, name_attrib="keyword", with_header=draw_header,
-             name_func=arg_name, show_add_delete=False, header_same_line=True,
-             wrap=True)
-def draw_cst_arg(input_value: cst.Arg):
-    draw_any(input_value.value, wrap=True)
-
-
-# --- Individual Parameter ---
-@render_func(is_default_for=(cst.UnaryOperation, cst.Integer), header_same_line=True, show_add_delete=False, wrap=True)
-def draw_cst_int(input_value, width=None):
-    # Format the magnitude to match the original literal's base/prefix/case.
-    def _format_like(template: str, magnitude: int) -> str:
-        if template.startswith(("0x", "0X")):
-            s = hex(magnitude)  # '0x2a'
-            return s if template.startswith("0x") else "0X" + s[2:].upper()
-        elif template.startswith(("0o", "0O")):
-            s = oct(magnitude)  # '0o52'
-            return s if template.startswith("0o") else "0O" + s[2:]
-        elif template.startswith(("0b", "0B")):
-            s = bin(magnitude)  # '0b101010'
-            return s if template.startswith("0b") else "0B" + s[2:]
-        else:
-            return str(magnitude)
-
-    # Determine current signed value and the template string to preserve formatting.
-    if input_value.__class__ == cst.UnaryOperation:
-        expr = input_value.expression  # expect an Integer
-        op = input_value.operator
-        inner_text = expr.value
-        try:
-            magnitude = int(inner_text, 0)
-        except:
-            magnitude = 0
-
-        sign = -1 if isinstance(op, cst.Minus) else 1
-        current_val = sign * magnitude
-        fmt_template = inner_text
-        is_unary = True
-    else:  # cst.Integer
-        inner_text = input_value.value
-        current_val = int(inner_text, 0)
-        fmt_template = inner_text
-        is_unary = False
-
-    changed, new_val = draw_int(current_val, indent_size=0, show_name=False, show_add_delete=False)
-    if not changed:
-        return False, input_value
-
-    if is_unary:
-        if new_val < 0:
-            # Keep UnaryOperation with Minus; update inner Integer magnitude.
-            if not isinstance(input_value.operator, cst.Minus):
-                input_value.operator = cst.Minus()
-            input_value.expression.value = _format_like(fmt_template, -new_val)
-            return True, input_value
-        else:
-            # Collapse to a plain Integer.
-            replacement = cst.Integer(value=_format_like(fmt_template, new_val))
-            return True, replacement
-    else:
-        if new_val < 0:
-            # Expand to UnaryOperation(Minus(), Integer(abs)).
-            replacement = cst.UnaryOperation(
-                operator=cst.Minus(),
-                expression=cst.Integer(value=_format_like(fmt_template, -new_val)),
-            )
-            return True, replacement
-        else:
-            # Stay as Integer; update literal text.
-            input_value.value = _format_like(fmt_template, new_val)
-            return True, input_value
-
-
-# @render_func(is_default_for=cst.Integer, header_same_line=True, show_add_delete=False)
-# def draw_cst_int(input_value, width=None):
-#     int_str = input_value.value
-#     cast_str_to_int = int(int_str, 0)
-#     if cast_str_to_int == 25:
-#         pass
-#
-#
-#     changed, new_val = draw_int(cast_str_to_int, indent_size=0, show_name=False,
-#                                 show_add_delete=False)
-#     if changed:
-#         input_value.value = str(new_val)
-
-####################### libCST END ##########################
-
-
 @render_wrapper(wraps=render_func)
 def render_with_foo(func, **kwargs):
     def wrapper(window_stack=None, **kwargs):
@@ -1993,17 +1456,17 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=3.606,
     depth_scale       = 1.85
     corner_radius     = 4.14
     border_inset      = 1.548
-    border_inset_half = 0.5
-    stroke_width      = 2.0
+    border_inset_half = 0.192
+    stroke_width      = 1.742
 
     # How depth relates to color intensity
-    intensity_factor  = 0.391
+    intensity_factor  = 0.599
     intensity_offset  = -4.777
 
     # Outline color tuning
     outline_base      = 2.149
     outline_depth_mul = 0.929
-    outline_sat       = {'default': 2.61, 'nested': 3.051}
+    outline_sat       = {'default': 2.04, 'nested': 3.211}
 
     # Beed color
     bleed_mix         = {'nested': 0.403, 'default': 0.454}
@@ -2106,6 +1569,8 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=3.606,
         imgui.get_window_draw_list().add_rect_filled(*fill_rect, col=packed_fill, rounding=corner_radius)
 
     return False, bg_color
+    
+
 
 
 @render_func(use_cache=True, shadow=True, selectable=False, show_bg=False, width=18, height=18, min_width=10,
@@ -2308,7 +1773,7 @@ def draw_str(input_value: str, draw_state, editable=True, alpha=1.0):
     else:
         imgui.set_cursor_screen_pos((draw_state.left, draw_state.top))
         # disable scrolling
-        changed, value = draw_text(str(input_value), editable=True, with_header=None, show_name=False, is_tree=False)
+        changed, value = draw_text(str(input_value), editable=True, with_header=draw_header, show_name=False, is_tree=False)
         imgui.dummy(draw_state.content_width, text_height - height + 10)
 
 
@@ -2725,7 +2190,7 @@ class Mode(Enum):
         Any: ModeOverrides(
             kwargs={"show_bg":True, "selectable":False, "use_cache":True, "melty_window":True, "closable":True,
                     "auto_resize":False, "draggable":True, "show_tint":True, "show_header":True,
-                    "disable_scroll":False},
+                    "disable_scroll":True},
             recursive=False
         )
     }
@@ -2734,58 +2199,10 @@ class Mode(Enum):
         Any: ModeOverrides(
             kwargs={"show_bg":True, "selectable":False, "use_cache":True, "melty_window":True, "closable":True,
                     "auto_resize":True, "draggable":True, "is_tree":False, "show_tint":False, "show_header":False,
-                    "disable_scroll":False},
+                    "disable_scroll":True},
             recursive=False
         )
     }
-
-    CODE_UI_MODULE = {
-        cst.Module: ModeOverrides(
-            kwargs={"convert": [cst.Module, dict], "horizontal":True},
-            func=draw_collection,
-            recursive=True
-        ),
-
-        types.ModuleType: ModeOverrides(
-                 kwargs={"convert": [types.ModuleType, cst.Module, dict], "auto_apply": [load_text, recompile_module]},
-                 func=draw_collection,
-                 recursive=True
-             ),
-
-        Conditional: ModeOverrides(
-                  kwargs={"tint": (0.2, 0.2, 0.1), 'show_add_delete': False, 'is_tree':False},
-                  recursive=True,
-              ),
-
-        GeneralParse: ModeOverrides(
-                     kwargs={'show_add_delete': False, "disable_scroll": False},
-                     recursive=True,
-
-                 ),
-
-    }
-
-    CODE_PLAIN_TEXT_MODULE = {
-
-          types.ModuleType: ModeOverrides(
-              kwargs={"convert": [types.ModuleType, cst.Module, str], "auto_apply": [recompile_module, load_text]},
-              func=draw_text,
-              recursive=True
-          ),
-
-          str: ModeOverrides(
-              kwargs={"convert": None, "mode": None},
-              func=draw_text,
-              recursive=True,
-          ),
-
-          Path: ModeOverrides(
-              kwargs={"convert": [Path, bytes, str, cst.Module, dict]},
-              func=draw_collection,
-              recursive=False,
-          ),
-      }
-
 
     CODE_UI = {
         cst.Module: ModeOverrides(
@@ -2801,48 +2218,42 @@ class Mode(Enum):
         ),
 
         types.ModuleType: ModeOverrides(
-                 kwargs={"convert": [types.ModuleType, cst.Module, dict], "auto_apply": [load_text, recompile_module]},
-                 func=draw_collection,
-                 recursive=True
-             ),
+            kwargs={"convert": [types.ModuleType, cst.Module, dict], "auto_apply": [load_text, recompile_module]},
+            func=draw_collection,
+            recursive=True
+        ),
 
         Conditional: ModeOverrides(
-                  kwargs={"tint": (0.2, 0.2, 0.1), 'show_add_delete': False, 'is_tree':False},
-                  recursive=True,
-              ),
+            kwargs={"tint": (0.2, 0.2, 0.1), 'show_add_delete': False, 'is_tree':False},
+            recursive=True,
+        ),
 
         GeneralParse: ModeOverrides(
-                     kwargs={'show_add_delete': False, "disable_scroll": False},
-                     recursive=True,
-
-                 ),
-
-
-        # str: ModeOverrides(
-        #     kwargs={"convert": None, "mode":None},
-        #     func=draw_str,
-        #     recursive=False,
-        # ),
-
-
+             kwargs={'show_add_delete': False, "disable_scroll": False},
+             recursive=True,
+        ),
 
     }
 
     CODE_PLAIN_TEXT = {
         types.FunctionType: ModeOverrides(
-            kwargs={"convert": [types.FunctionType, cst.Module, str], "auto_apply": [recompile, load_text]},
+            kwargs={"convert": [types.FunctionType, cst.Module, str],
+                    "auto_apply": [recompile, load_text],
+                    "indent_size": 30, "with_header": draw_header},
             func=draw_text,
             recursive=True
         ),
 
         types.ModuleType: ModeOverrides(
-            kwargs={"convert": [types.ModuleType, cst.Module, str], "auto_apply": [recompile_module, load_text]},
+            kwargs={"convert": [types.ModuleType, cst.Module, str],
+                    "auto_apply": [recompile_module, load_text],
+                    "indent_size": 30, "with_header": draw_header},
             func=draw_text,
             recursive=True
         ),
 
         str: ModeOverrides(
-            kwargs={"convert": None, "mode": None},
+            kwargs={"convert": None, "mode": None, "indent_size": 30, "with_header": draw_header},
             func=draw_text,
             recursive=True,
         ),

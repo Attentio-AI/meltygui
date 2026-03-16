@@ -4,6 +4,7 @@ import glfw
 import imgui
 
 from src.lsd.gl_gui.view.core_views.core_render import render_func
+from src.lsd.gl_gui.view.core_views.headers import draw_header
 
 _cursor_pos = 0
 _selection_start = 0
@@ -336,7 +337,7 @@ def _key_just_pressed(io, key):
     return io.keys_down[key] and key not in _prev_keys_down
 
 
-@render_func(show_bg=False, wrap=False, use_cache=True)
+@render_func(show_bg=True, wrap=False, use_cache=True, with_header=draw_header, selectable=False, indent_size=30)
 def draw_text(input_value: str, cursor_hover=False, left_mouse_drag=False, draw_state=None):
     global _cursor_pos, _selection_start, _selection_end, _is_focused
     global _cursor_blink_time, _double_click_time, _last_click_pos
@@ -346,18 +347,14 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_drag=False, draw_
     text = input_value
     io = imgui.get_io()
     line_height = imgui.get_text_line_height()
-    text_height = imgui.calc_text_size(str(text))[1] + line_height * 2
 
+    left = imgui.get_cursor_screen_pos()[0]
     top = imgui.get_cursor_screen_pos()[1]
-    left = draw_state.abs_left
 
-    padding_x = imgui.get_style().frame_padding.x
-    padding_y = imgui.get_style().frame_padding.y
-    origin_x = draw_state.abs_left + padding_x
-    origin_y = top + padding_y + draw_state.header_height
+    origin_x = left
+    origin_y = top
 
     # --- Invisible button for mouse interaction ---
-    imgui.dummy(draw_state.content_width, text_height)
     is_hovered = cursor_hover
 
     # --- Read current keyboard state ---
@@ -664,6 +661,14 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_drag=False, draw_
             draw_list.add_line(cx, cy, cx, cy + line_height, cursor_color, 1.0)
 
     draw_list.pop_clip_rect()
+
+    if changed:
+        text_height = imgui.calc_text_size(str(text) + " ")[1] + 2
+    else:
+        text_height = imgui.calc_text_size(str(input_value) + " ")[1] + 2
+
+    imgui.dummy(draw_state.content_width, text_height)
+
 
 
     if changed:
