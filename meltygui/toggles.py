@@ -1,11 +1,10 @@
-# This works?
+# Testing commentlkj
 class Toggles:
     invalidate_stack_trace = False
     debug_threads = False
-    slow_down_threads = True
+    slow_down_threads = False
     render_depth = False
     
-    # This works
 def my_func():
     for i in range(43):
         print("someting")

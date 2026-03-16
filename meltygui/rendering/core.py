@@ -874,7 +874,7 @@ def render_func(*args, **o_kwargs):
 
             column_parent = draw_state._parent
             column = kwargs.get("column", None)
-         
+
             draw_state.final_max_column = draw_state._current_max_column
             # draw_state._current_max_column = 0
 

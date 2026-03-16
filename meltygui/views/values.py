@@ -189,7 +189,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=No
         if not horizontal:
             if child_draw_state is not None and (
                     not draw_state.invalid_content_height or imgui.is_mouse_down(0) or imgui.is_mouse_down(
-                    1) or imgui.is_mouse_down(2)):
+                1) or imgui.is_mouse_down(2)):
                 if not Melty.frame_count <= 2:
                     if child_draw_state.relative_pos is not None:
                         screen_pos = (true_left + child_draw_state.relative_pos[0],
@@ -243,7 +243,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=No
             key_str = str(key)
 
         if not show_excluded and ((key_str.startswith("_") or key_str.endswith("_")) or
-                key_str.endswith("meta")):
+                                  key_str.endswith("meta")):
             continue
 
         # ----- SEARCH CHECK (keys + item.name if present) -----
@@ -505,7 +505,7 @@ def draw_with_modes(input_value, modes):
     value = input_value
     for idx, mode in enumerate(modes):
         mode_changed, value = draw_any(input_value, name=f"Mode: {mode}", mode=mode, z_offset=3, selectable=False, auto_resize=True, disable_scroll=False,
-                  show_bg=True, shadow=True, column=idx)
+                                       show_bg=True, shadow=True, column=idx)
         changed |= mode_changed
 
     return changed, value
@@ -544,7 +544,7 @@ def draw_main(input_value, vis):
         test_code = value
 
     changed, value = draw_with_modes(input_value=toggles, name="Toggles",
-                                      show_bg=True, mode=(Mode.WINDOW), modes=[Mode.CODE_PLAIN_TEXT, Mode.CODE_UI])
+                                     show_bg=True, mode=(Mode.WINDOW), modes=[Mode.CODE_PLAIN_TEXT, Mode.CODE_UI])
 
 
 
@@ -1461,44 +1461,45 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=3.606,
             hovered=False, pressed=False, nested_bg=False, **kwargs):
 
     # -- Constants ---------------------------------
-    depth_wrap        = 11.681
+    depth_wrap        = 11.635
     depth_scale       = 1.85
     corner_radius     = 4.143
     border_inset      = 1.548
-    border_inset_half = 0.988
-    stroke_width      = 1.286
+    border_inset_half = 0.192
+    stroke_width      = 1.7
+
 
     # How depth relates to color intensity
-    intensity_factor  = 0.17
-    intensity_offset  = -2.798
+    intensity_factor  = 0.599
+    intensity_offset  = -4.777
 
     # Outline color tuning
-    outline_base      = 2.022
-    outline_depth_mul = 0.785
-    outline_sat       = {'default': 1.357, 'nested': 2.659}
+    outline_base      = 2.149
+    outline_depth_mul = 0.929
+    outline_sat       = {'default': 2.04, 'nested': 3.211}
 
     # Beed color
-    bleed_mix         = {'nested': 0.351, 'default': 0.324}
-    bleed_style       = {'value': -0.024, 'alpha': 0.175, 'saturation': 4.115}
-    outline_bleed_mix = 0.267
+    bleed_mix         = {'nested': 0.403, 'default': 0.454}
+    bleed_style       = {'value': -0.1, 'alpha': 0.768, 'saturation': 5.459}
+    outline_bleed_mix = 0.232
 
     # Hover offset per interaction state
     hover_offset_by_state = {
-        'default':    -1.994,
+        'default':    -2.063,
         'selected':    -2.203,
         'pressed_hi': -2.288,   # pressed + opacity > 0.5
         'pressed_lo':  -0.371,
     }
 
     bg_style = {
-        'value': 0.115, 'saturation': 3.199,
-        'alpha': -2.072, 'max_value': 0.627,
-        }
+        'value': 0.127, 'saturation': 2.808,
+        'alpha': -2.072, 'max_value': 0.81,
+    }
 
     # ── Helpers ────────────────────────────────────────────────
     def current_indent_px():
         return Melty.current_indent
-        
+
     def mix_colors(color_a, color_b, factor):
         return (
             color_a[0] * (1 - factor) + color_b[0] * factor,
@@ -1520,7 +1521,7 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=3.606,
         snap_int(right) - border_inset,    snap_int(bottom) - border_inset,
     )
     outline_rect = (
-    
+
         snap_int(left) + border_inset_half,  snap_int(top) + border_inset_half,
         snap_int(right) - border_inset_half, snap_int(bottom) - border_inset_half,
     )
@@ -1578,7 +1579,7 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=3.606,
         imgui.get_window_draw_list().add_rect_filled(*fill_rect, col=packed_fill, rounding=corner_radius)
 
     return False, bg_color
-    
+
 
 
 
@@ -1812,7 +1813,7 @@ def draw_comment(input_value: Comment, draw_state, cursor_hover=False):
     cursor_hover = imgui.is_item_hovered()
     draw_list.add_circle_filled(center_x, center_y, radius, color)
     draw_list.add_text(center_x - character_width / 2, center_y - line_height / 2,
-    imgui.get_color_u32_rgba(0.8, 0.8, 0.7, 1.0), help_icon)
+                       imgui.get_color_u32_rgba(0.8, 0.8, 0.7, 1.0), help_icon)
 
     if cursor_hover:
         popup_max_width = 300
@@ -1821,7 +1822,7 @@ def draw_comment(input_value: Comment, draw_state, cursor_hover=False):
 
         imgui.set_cursor_screen_pos((draw_state.left + radius * 2 + 5, draw_state.top))
         draw_window(str(input_value), editable=False, window_pos=(0,0), width=popup_width, height=text_size[1] + 5,
-        with_header_end=None, with_header=None, with_footer=None)
+                    with_header_end=None, with_header=None, with_footer=None)
     imgui.same_line(spacing=0)
     draw_str(str(input_value[1:]), alpha=0.2, selectable=False, editable=False, is_tree=False, with_header=None, show_name=False)
 
@@ -1904,9 +1905,9 @@ def draw_float_ctx(input_value):
 
     draw_list: _DrawList = imgui.get_overlay_draw_list()
     draw_list.add_rect(upper_left_x=input_value.abs_left, upper_left_y=input_value.abs_top,
-                         lower_right_x=input_value.abs_left + input_value.width,
-                         lower_right_y=input_value.abs_top + input_value.height,
-                         col=imgui.get_color_u32_rgba(1, 0, 0, 0.5), thickness=1.0)
+                       lower_right_x=input_value.abs_left + input_value.width,
+                       lower_right_y=input_value.abs_top + input_value.height,
+                       col=imgui.get_color_u32_rgba(1, 0, 0, 0.5), thickness=1.0)
 
 
 
@@ -1915,7 +1916,7 @@ def draw_float_ctx(input_value):
 def draw_float(input_value: float, draw_state, min_value=-100.0, max_value=100.0, speed=0.001):
     imgui.set_next_item_width(min(600, max(30, draw_state.content_width)))
     changed, value = imgui.drag_float("", input_value,
-                                        format='%.3f',
+                                      format='%.3f',
                                       change_speed=speed,
                                       min_value=min_value,
                                       max_value=max_value)
@@ -2207,7 +2208,7 @@ class Mode(Enum):
     WINDOW_CLEAN = {
         Any: ModeOverrides(
             kwargs={"show_bg":True, "selectable":False, "use_cache":True, "melty_window":True, "closable":True,
-                    "auto_resize":True, 'min_width':300, "draggable":True, "is_tree":False, "show_tint":False, "show_header":False,
+                    "auto_resize":True, 'min_width':100, "draggable":True, "is_tree":False, "show_tint":False, "show_header":False,
                     "disable_scroll":False},
             recursive=False
         )
@@ -2238,8 +2239,8 @@ class Mode(Enum):
         ),
 
         GeneralParse: ModeOverrides(
-             kwargs={'show_add_delete': False, "disable_scroll": False},
-             recursive=True,
+            kwargs={'show_add_delete': False, "disable_scroll": False},
+            recursive=True,
         ),
 
     }
