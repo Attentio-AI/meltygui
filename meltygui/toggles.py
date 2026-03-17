@@ -6,7 +6,7 @@ class Toggles:
     render_depth = False
     
 def my_func():
-    for i in range(43):
+    for i in range(30):
         print("someting")
-        my_var = 46
+        my_var = 76
     

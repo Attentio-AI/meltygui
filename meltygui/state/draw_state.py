@@ -322,6 +322,7 @@ class DrawState(DictConversion):
 
         self._show_load = False
         self._show_save = False
+        self._read_only = False
         self._internal_pending = None
         self._apply_load = None
 

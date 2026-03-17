@@ -87,7 +87,7 @@ class Background:
         print("Background thread pool shut down successfully.")
 
     @classmethod
-    def run(cls, func, user_id, no_cache=False, invalidate_id=None, on_frame=None, frames=None, debounce=6,
+    def run(cls, func, user_id, no_cache=False, invalidate_id=None, on_frame=None, frames=None, debounce=0,
             draw_state=None, *args, **kwargs):
         h = cls._timed_hash(kwargs.get("value", None), user_id)
 
@@ -183,58 +183,61 @@ class Background:
         cls._active.add(h)
 
         def _task():
+            import time
+            func_name = getattr(func, "__qualname__", None) or getattr(func, "__name__", repr(func))
+            task_path = kwargs.get("path", None)
+            if task_path:
+                def _type_name(t):
+                    if isinstance(t, type):
+                        return t.__qualname__
+                    fn = getattr(t, "__qualname__", None) or getattr(t, "__name__", None)
+                    return fn if fn else type(t).__qualname__
+                sig = f"{func_name}({' → '.join(_type_name(t) for t in task_path)})"
+            else:
+                sig = func_name
+            _t0 = time.perf_counter()
+
             try:
-                import time
-                func_name = getattr(func, "__qualname__", None) or getattr(func, "__name__", repr(func))
-                task_path = kwargs.get("path", None)
-                if task_path:
-                    def _type_name(t):
-                        if isinstance(t, type):
-                            return t.__qualname__
-                        fn = getattr(t, "__qualname__", None) or getattr(t, "__name__", None)
-                        return fn if fn else type(t).__qualname__
-                    sig = f"{func_name}({' → '.join(_type_name(t) for t in task_path)})"
-                else:
-                    sig = func_name
-                _t0 = time.perf_counter()
                 result = func(*args, **kwargs)
-                elapsed = time.perf_counter() - _t0
-                entry = cls._task_times.get(sig)
-                if entry is None:
-                    cls._task_times[sig] = [elapsed, 1]
-                else:
-                    entry[0] += elapsed
-                    entry[1] += 1
-                if on_frame is not None:
-                    result = (result, on_frame)
-                # with cls._lock:
-                cls._active.discard(h)
-                for uid, task_h in cls._user_tasks.items():
-                    if task_h == h:
-                        if uid not in cls._user_cache:
-                            cls._user_cache[uid] = OrderedDict()
-                        cls._user_cache[uid][h] = result
-                        cls._user_cache[uid].move_to_end(h)
-
-                        while len(cls._user_cache[uid]) > cls._cache_size:
-                            cls._user_cache[uid].popitem(last=False)
-                if invalidate_id is not None:
-                    from src.lsd.gl_gui.melty import Melty
-                    from src.lsd.gl_gui.utils.glfw_utils import request_render
-                    if on_frame is None or abs(Melty.frame_count - on_frame) >= 2:
-                        print("Invalidate from background")
-                        Melty.cache.invalidate_up(invalidate_id)
-                        request_render()
-
             except Exception as e:
                 # with cls._lock:
                 #     cls._active.discard(h)
-
                 with trace_group(f"JOB {user_id}", hash=h) as g:
                     print_stack_trace(frames=frames, section="UI Thread",
                                       group=g, watch=["draw_state.name", "input_value", "convert_path", "fn", "clean_args.input_value"])
                     print_stack_trace(exception=e, section="Background Thread",
                                       group=g, watch=["value", "path", "watch", "watch.original_data", "data", "result", "result", "fn"])
+
+                result = Pending(originated=cls, status="Read Only", state=PendingState.ERROR)
+
+            elapsed = time.perf_counter() - _t0
+            entry = cls._task_times.get(sig)
+            if entry is None:
+                cls._task_times[sig] = [elapsed, 1]
+            else:
+                entry[0] += elapsed
+                entry[1] += 1
+            if on_frame is not None:
+                result = (result, on_frame)
+            # with cls._lock:
+            cls._active.discard(h)
+            for uid, task_h in cls._user_tasks.items():
+                if task_h == h:
+                    if uid not in cls._user_cache:
+                        cls._user_cache[uid] = OrderedDict()
+                    cls._user_cache[uid][h] = result
+                    cls._user_cache[uid].move_to_end(h)
+
+                    while len(cls._user_cache[uid]) > cls._cache_size:
+                        cls._user_cache[uid].popitem(last=False)
+            if invalidate_id is not None:
+                from src.lsd.gl_gui.melty import Melty
+                from src.lsd.gl_gui.utils.glfw_utils import request_render
+                if on_frame is None or abs(Melty.frame_count - on_frame) >= 2:
+                    print("Invalidate from background")
+                    Melty.cache.invalidate_up(invalidate_id)
+                    request_render()
+
 
         cls._pool.submit(_task)
         return Pending(originated=cls, status="background thread", state=PendingState.BACKGROUND)

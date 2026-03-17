@@ -1147,7 +1147,7 @@ def render_func(*args, **o_kwargs):
                         # Melty.cache.invalidate(draw_state._tile_id, force=True)
                         # request_render()
                     if (draw_state._raw_input_value == UNSET_VALUE or
-                            (draw_state._raw_input_value is None and convert_path[0] != types.NoneType)):
+                            (draw_state._raw_input_value is None and convert_path[0] != types.NoneType)) or not draw_state.expanded:
                         internal_value, thead_launch_frame = draw_state._input_value_cache["internal_state"]
 
                     else:
@@ -1172,6 +1172,9 @@ def render_func(*args, **o_kwargs):
                             no_cache = converter_kwargs.get("stateful", False)
                             if input_changed:
                                 no_cache = True
+
+                            if no_cache:
+                                print(f"Running converter without cache for {draw_state.name} because it is stateful or input changed. Converter: {convert_path[-1].__name__ if isinstance(convert_path[-1], type) else convert_path[-1]}")
 
                             internal_value = Background.run(convert, value=draw_state._raw_input_value,
                                                             user_id=str(draw_state.unique) + f" | input convert {str(convert_path[-1].__name__)}",
@@ -1814,7 +1817,7 @@ def render_func(*args, **o_kwargs):
                 if draw_state._apply_save:
                     converted_input = True
                 thead_launch_frame = 0
-                if converted_input or draw_state._apply_save:
+                if (converted_input or draw_state._apply_save) and not draw_state._read_only:
                     # Clear ERROR pending if the user edits the code -
                     # the new code might be valid, so allow auto_apply to retry.
                     if child_changed:
@@ -1848,7 +1851,7 @@ def render_func(*args, **o_kwargs):
 
 
                         if new_value_child == UNSET_VALUE or (
-                                draw_state._raw_input_value is None and convert_path[0] != types.NoneType):
+                                draw_state._raw_input_value is None and convert_path[0] != types.NoneType) or not draw_state.expanded:
                             external_value = draw_state._input_value_cache["external_state"] = (
                             input_value, draw_state._input_value_cache["external_state"][1])
                         else:
@@ -1875,17 +1878,16 @@ def render_func(*args, **o_kwargs):
                                 if draw_state._apply_save is not None:
                                     no_cache=True
 
+                                print(f"output convert {draw_state.name}")
                                 external_value = Background.run(convert, user_id=str(unique) + f" | output convert {str(convert_path[-1].__name__)}",
                                                                 invalidate_id=draw_state._parent._tile_id,
                                                                 cache_id=str(draw_state.unique),
                                                                 on_frame=Melty.frame_count, no_cache=no_cache,
                                                                 value=new_value_child, apply=draw_state._apply_save,
                                                                 path=convert_path, registry=Melty, )
+
                                 if isinstance(external_value, tuple):
                                     external_value, thead_launch_frame = external_value
-
-                                if draw_state._apply_save:
-                                    pass
 
                                 if not isinstance(external_value, Pending):
                                     if draw_state._show_save or draw_state._apply_save is not None:
@@ -1910,12 +1912,13 @@ def render_func(*args, **o_kwargs):
                                         draw_state._apply_save = None
                                         draw_state._save_pending_obj = None
                                         draw_state._show_save = False
+                                        draw_state._read_only = True
+
                                     if external_value.state != PendingState.BACKGROUND:
                                         # Don't let a successful error overwrite an ERROR in _all_pending
                                         _cur_sp = draw_state._all_pending.get("save_pending")
                                         if not (isinstance(_cur_sp, Pending) and _cur_sp.state == PendingState.ERROR and external_value.state != PendingState.ERROR):
                                             draw_state._all_pending["save_pending"] = external_value
-
 
                             else:
                                 external_value = draw_state._input_value_cache["external_state"][0]
@@ -1929,6 +1932,7 @@ def render_func(*args, **o_kwargs):
                                 # Clear save dialog, the error is tracked via _all_pending only.
                                 draw_state._save_pending_obj = None
                                 draw_state._show_save = False
+                                draw_state._read_only = True
                             elif external_value.state == PendingState.CONFIRM:
                                 draw_state._save_pending_obj = external_value
                                 if not draw_state._show_save:

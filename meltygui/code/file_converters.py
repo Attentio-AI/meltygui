@@ -39,6 +39,7 @@ File dicts carry __path__ for lossless round-trip:
 import builtins
 import dis
 import inspect
+import json
 import textwrap
 import time
 import types
@@ -349,6 +350,28 @@ def str_to_bytes(value: str) -> bytes:
     """Encode string to UTF-8 bytes."""
     return value.encode("utf-8")
 
+
+@converter(registry=Melty)
+def str_to_dict(value: str) -> dict:
+    """Wrap a string in a dict for editing."""
+    try:
+        dict_value = json.loads(value)
+        return dict_value
+
+    except (TypeError, ValueError) as e:
+        return {"error": f"Value is not JSON-serializable: {e}"}
+
+
+@converter(registry=Melty, inverse_of=str_to_dict)
+def dict_to_str(value: dict) -> str:
+    """Dump a dict back to a string."""
+    try:
+        return str(value)
+    except (TypeError, ValueError) as e:
+        return f"Error serializing dict to JSON: {e}"
+
+
+
 ########################## NEW CONVERTERS
 
 
@@ -658,8 +681,29 @@ def cst_module_to_module(value: cst.Module) -> str:
 
 def _recompile_module(module: types.ModuleType, source: str,
                       filename: str) -> None:
+    # Snapshot existing functions so we can hotswap them in place
+    old_funcs = {name: obj for name, obj in module.__dict__.items()
+                 if isinstance(obj, types.FunctionType)}
+
     code = compile(source, filename, "exec")
     exec(code, module.__dict__)
+
+    # Hotswap: patch old function objects with new code so existing
+    # references (e.g. from `from module import func`) see the change
+    for name, old_func in old_funcs.items():
+        new_func = module.__dict__.get(name)
+        if not isinstance(new_func, types.FunctionType):
+            continue
+        if new_func is old_func:
+            continue
+        old_func.__code__ = new_func.__code__
+        old_func.__defaults__ = new_func.__defaults__
+        old_func.__kwdefaults__ = new_func.__kwdefaults__
+        old_func.__annotations__ = new_func.__annotations__
+        old_func.__doc__ = new_func.__doc__
+        # Put the old (now patched) object back so module.func
+        # returns the same identity as before
+        module.__dict__[name] = old_func
 
 
 _BUILTIN_NAMES = set(dir(builtins))

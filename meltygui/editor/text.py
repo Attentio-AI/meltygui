@@ -344,6 +344,10 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_drag=False, draw_
     global _prev_keys_down
 
     changed = False
+    original_input = input_value
+    max_lines = 1000  # limit for performance; can be adjusted or removed
+    input_value = '\n'.join(input_value.split('\n')[:max_lines])
+
     text = input_value
     io = imgui.get_io()
     line_height = imgui.get_text_line_height()
@@ -356,6 +360,8 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_drag=False, draw_
 
     # --- Invisible button for mouse interaction ---
     is_hovered = cursor_hover
+
+
 
     # --- Read current keyboard state ---
     current_keys = set()
@@ -642,6 +648,7 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_drag=False, draw_
     # Syntax highlighted text
     x = origin_x
     y = origin_y
+    t_idx= 0
     for token, color_key in tokenize(text):
         color = COLORS[color_key]
         for ch in token:
@@ -652,6 +659,8 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_drag=False, draw_
             if y + line_height >= rect_min_y and y <= rect_max_y:
                 draw_list.add_text(x, y, color, ch)
             x += imgui.calc_text_size(ch).x
+        t_idx += 1
+
 
     # Cursor
     if _is_focused and not _has_selection():
@@ -670,7 +679,7 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_drag=False, draw_
     imgui.dummy(draw_state.content_width, text_height)
 
 
-
     if changed:
-        return True, text
-    return False, input_value
+        rebuilt_text = text + '\n'.join(original_input.split('\n')[max_lines:])
+        return True, rebuilt_text
+    return False, original_input

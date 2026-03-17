@@ -539,7 +539,7 @@ def draw_main(input_value, vis):
 
 
     changed, value = draw_with_modes(input_value=draw_bg, name="draw_bg",
-                                     show_bg=True, mode=(Mode.WINDOW), modes=[Mode.CODE_PLAIN_TEXT, Mode.CODE_UI])
+                                     show_bg=True, mode=(Mode.WINDOW), modes=[Mode.CODE_PLAIN_TEXT, Mode.CODE_UI, Mode.CODE_DICT_STR])
     if changed:
         test_code = value
 
@@ -1455,13 +1455,13 @@ def seperator(height):
     imgui.separator()
     imgui.dummy(0, snap_int(height / 2))
 
-def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=3.606,
+def draw_bg(left=1, top=3, width=24, height=20, depth=0, rounding=3.606,
             global_style=None, outline=True, bg_color=None, opacity=-1.705,
             style_manager=None, tint=None, outline_tint=None, selected=False,
             hovered=False, pressed=False, nested_bg=False, **kwargs):
 
     # -- Constants ---------------------------------
-    depth_wrap        = 11.635
+    depth_wrap        = 11.477
     depth_scale       = 1.85
     corner_radius     = 4.143
     border_inset      = 1.548
@@ -1471,7 +1471,7 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=3.606,
 
     # How depth relates to color intensity
     intensity_factor  = 0.599
-    intensity_offset  = -4.777
+    intensity_offset  = -4.777\
 
     # Outline color tuning
     outline_base      = 2.149
@@ -1479,7 +1479,7 @@ def draw_bg(left=5, top=3, width=24, height=20, depth=0, rounding=3.606,
     outline_sat       = {'default': 2.04, 'nested': 3.211}
 
     # Beed color
-    bleed_mix         = {'nested': 0.403, 'default': 0.454}
+    bleed_mix         = {'nested': 0.407, 'default': 0.454}
     bleed_style       = {'value': -0.1, 'alpha': 0.768, 'saturation': 5.459}
     outline_bleed_mix = 0.232
 
@@ -1798,7 +1798,6 @@ def draw_str(input_value: str, draw_state, editable=True, alpha=1.0):
 @render_func(is_default_for=(Comment), shadow=False, with_header=None, is_tree=False, tint=(0.2, 0.2, 0.1))
 def draw_comment(input_value: Comment, draw_state, cursor_hover=False):
     line_height = imgui.get_text_line_height()
-    show_controls = True
     changed, value = False, input_value
     help_yellow= (0.8, 0.8, 0.3)
     help_icon = "\u2753"
@@ -2147,6 +2146,10 @@ def default_context_menu(input_value, draw_state, func, **kwargs):
     imgui.new_line()
     imgui.text(type(input_value._input_value).__name__)
 
+    def draw_overlay_rect(rect, color=(1, 0, 0, 0.5)):
+        draw_list: _DrawList = imgui.get_overlay_draw_list()
+        draw_list.add_rect(rect[0], rect[1], rect[2], rect[3], imgui.get_color_u32_rgba(*color), thickness=1.0)
+
     imgui.text(f"Mode {str(input_value._kwargs.get('mode', None))}")
     imgui.text(f"Content height {str(input_value.content_height)}")
     imgui.text(f"Height {str(input_value.height)}")
@@ -2155,7 +2158,12 @@ def default_context_menu(input_value, draw_state, func, **kwargs):
     imgui.text(f"Scroll Enabled {input_value.scroll_visible}")
     imgui.text(f"Disable Scroll {input_value._kwargs.get('disable_scroll', False)}")
     imgui.text("Scroll_offset " + str(input_value.scroll_offset))
+    imgui.text(f"Clip Rect {str(input_value.clip_rect)}")
+    if imgui.is_item_hovered():
+        draw_overlay_rect(input_value.clip_rect, color=(0, 1, 0, 0.5))
     draw_collection(draw_state._all_pending)
+
+
 
     if input_value.explain_convert is not None:
         imgui.text(str(input_value.explain_convert))
@@ -2214,6 +2222,32 @@ class Mode(Enum):
         )
     }
 
+    CODE_DICT_STR = {
+        GeneralParse: ModeOverrides(
+            kwargs={"convert": [dict, str], "horizontal":True},
+            recursive=True,
+            func=draw_text
+        ),
+
+        cst.Module: ModeOverrides(
+            kwargs={"convert": [cst.Module, dict], "horizontal":True},
+            recursive=True
+        ),
+
+        types.FunctionType: ModeOverrides(
+            kwargs={"convert": [types.FunctionType, cst.Module, dict, str]},
+            recursive=True,
+            func=draw_text
+        ),
+
+        types.ModuleType: ModeOverrides(
+            kwargs={"convert": [types.ModuleType, cst.Module, dict]},
+            recursive=True
+        ),
+
+
+    }
+
     CODE_UI = {
         cst.Module: ModeOverrides(
             kwargs={"convert": [cst.Module, dict], "horizontal":True},
@@ -2235,6 +2269,12 @@ class Mode(Enum):
 
         Conditional: ModeOverrides(
             kwargs={"tint": (0.2, 0.2, 0.1), 'show_add_delete': False, 'is_tree':False},
+            recursive=True,
+        ),
+
+        Comment: ModeOverrides(
+            kwargs={"tint": (0.2, 0.2, 0.1), 'show_add_delete': False, 'is_tree':False},
+            func=draw_comment,
             recursive=True,
         ),
 
