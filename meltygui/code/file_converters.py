@@ -679,31 +679,144 @@ def cst_module_to_module(value: cst.Module) -> str:
     return value.code
 
 
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  type ↔ cst.Module                                                     ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+@converter(registry=Melty, from_type=type, load_data=load_text, stateful=True)
+def type_to_cst(value, data: str, ref: FileRef) -> cst.Module:
+    return cst.parse_module(data)
+
+
+def recompile_class(value, ref: FileRef, data: str, watch) -> FileRef:
+    from src.lsd.gl_gui.view.core_conversion.path_finder import Pending, PendingState
+    if value is not None:
+        cls = watch.original_input_load
+        source = data
+        try:
+            _recompile_class(cls, source, str(ref.path))
+        except Exception as e:
+            return Pending(originated=recompile_class, status=str(e), state=PendingState.ERROR)
+    full_data = ref.path.read_bytes()
+    newline = _detect_newline(full_data)
+    try:
+        text = full_data.decode("utf-8")
+    except UnicodeDecodeError:
+        text = full_data.decode("latin-1")
+    lines = text.split(newline)
+    new_lines = data.split(newline)
+    lines[ref.start:ref.end] = new_lines
+    ref.path.write_text(newline.join(lines), encoding="utf-8")
+    return FileRef(ref.path, ref.start, ref.start + len(new_lines))
+
+
+@converter(registry=Melty, to_type=type, save_data=recompile_class,
+           inverse_of=type_to_cst, stateful=True)
+def cst_module_to_type(value: cst.Module) -> str:
+    return value.code
+
+
+def _recompile_class(cls: type, source: str, filename: str) -> None:
+    import sys
+    dedented = textwrap.dedent(source)
+
+    # Execute in the class's original module namespace so references resolve
+    mod = sys.modules.get(cls.__module__)
+    namespace = dict(vars(mod)) if mod is not None else {}
+
+    code = compile(dedented, filename, "exec")
+    exec(code, namespace)
+
+    new_cls = namespace.get(cls.__name__)
+    if new_cls is None:
+        raise RuntimeError(f"Recompilation produced no class named '{cls.__name__}'")
+    if not isinstance(new_cls, type):
+        raise RuntimeError(f"'{cls.__name__}' is {type(new_cls).__name__}, not a class")
+
+    _hotswap_class(cls, new_cls)
+
+
 def _recompile_module(module: types.ModuleType, source: str,
                       filename: str) -> None:
-    # Snapshot existing functions so we can hotswap them in place
-    old_funcs = {name: obj for name, obj in module.__dict__.items()
-                 if isinstance(obj, types.FunctionType)}
+    # Snapshot everything before exec so we can hotswap in place
+    old_attrs = dict(module.__dict__)
 
     code = compile(source, filename, "exec")
     exec(code, module.__dict__)
 
-    # Hotswap: patch old function objects with new code so existing
-    # references (e.g. from `from module import func`) see the change
-    for name, old_func in old_funcs.items():
-        new_func = module.__dict__.get(name)
-        if not isinstance(new_func, types.FunctionType):
+    for name, old_obj in old_attrs.items():
+        new_obj = module.__dict__.get(name)
+        if new_obj is old_obj or new_obj is None:
             continue
-        if new_func is old_func:
+
+        # --- Functions: patch code/defaults in place ---
+        if isinstance(old_obj, types.FunctionType) and isinstance(new_obj, types.FunctionType):
+            old_obj.__code__ = new_obj.__code__
+            old_obj.__defaults__ = new_obj.__defaults__
+            old_obj.__kwdefaults__ = new_obj.__kwdefaults__
+            old_obj.__annotations__ = new_obj.__annotations__
+            old_obj.__doc__ = new_obj.__doc__
+            module.__dict__[name] = old_obj
+
+        # --- Classes: patch methods and class-level attributes ---
+        elif isinstance(old_obj, type) and isinstance(new_obj, type):
+            _hotswap_class(old_obj, new_obj)
+            module.__dict__[name] = old_obj
+
+
+def _hotswap_class(old_cls: type, new_cls: type) -> None:
+    """Patch an existing class in place with new methods and attributes."""
+    # Remove attributes that were deleted in the new version
+    for name in list(vars(old_cls)):
+        if name.startswith("__") and name.endswith("__"):
             continue
-        old_func.__code__ = new_func.__code__
-        old_func.__defaults__ = new_func.__defaults__
-        old_func.__kwdefaults__ = new_func.__kwdefaults__
-        old_func.__annotations__ = new_func.__annotations__
-        old_func.__doc__ = new_func.__doc__
-        # Put the old (now patched) object back so module.func
-        # returns the same identity as before
-        module.__dict__[name] = old_func
+        if name not in vars(new_cls):
+            try:
+                delattr(old_cls, name)
+            except AttributeError:
+                pass
+
+    # Update all attributes from the new class
+    for name, new_val in vars(new_cls).items():
+        if name in ("__dict__", "__weakref__"):
+            continue
+
+        old_val = vars(old_cls).get(name)
+
+        # Hotswap methods in place so existing references work
+        if (isinstance(old_val, types.FunctionType)
+                and isinstance(new_val, types.FunctionType)):
+            old_val.__code__ = new_val.__code__
+            old_val.__defaults__ = new_val.__defaults__
+            old_val.__kwdefaults__ = new_val.__kwdefaults__
+            old_val.__annotations__ = new_val.__annotations__
+            old_val.__doc__ = new_val.__doc__
+        # staticmethod / classmethod: unwrap, patch inner func, re-wrap
+        elif type(old_val) is staticmethod and type(new_val) is staticmethod:
+            old_fn = old_val.__func__
+            new_fn = new_val.__func__
+            old_fn.__code__ = new_fn.__code__
+            old_fn.__defaults__ = new_fn.__defaults__
+            old_fn.__kwdefaults__ = new_fn.__kwdefaults__
+            old_fn.__annotations__ = new_fn.__annotations__
+            old_fn.__doc__ = new_fn.__doc__
+        elif type(old_val) is classmethod and type(new_val) is classmethod:
+            old_fn = old_val.__func__
+            new_fn = new_val.__func__
+            old_fn.__code__ = new_fn.__code__
+            old_fn.__defaults__ = new_fn.__defaults__
+            old_fn.__kwdefaults__ = new_fn.__kwdefaults__
+            old_fn.__annotations__ = new_fn.__annotations__
+            old_fn.__doc__ = new_fn.__doc__
+        # Properties: replace wholesale
+        elif isinstance(new_val, property):
+            setattr(old_cls, name, new_val)
+        # Everything else (class vars, constants, nested classes, etc.)
+        else:
+            try:
+                setattr(old_cls, name, new_val)
+            except (AttributeError, TypeError):
+                pass
 
 
 _BUILTIN_NAMES = set(dir(builtins))

@@ -9,6 +9,7 @@ from server.server_gui import open_file
 from src.lsd.gl_gui.melty import Melty, add_to_collection
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
 from src.lsd.gl_gui.model.core_model.draw_state import TileMode
+from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.utils.custom_views import push_style_var, push_style_color, pop_style_color, pop_style_var
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_conversion.path_finder import PendingState
@@ -207,7 +208,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     imgui.same_line()
 
     # ── Profiler ───────────────────────────────────────────────
-    is_profiling = global_toggles.profiler == ProfileMode.ON
+    is_profiling = Toggles.profile_mode == ProfileMode.ON
     if is_profiling:
         from src.lsd.gl_gui.view.core_views.new_core_view import render_profiler_time
         render_profiler_time(

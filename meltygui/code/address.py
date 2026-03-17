@@ -92,6 +92,11 @@ def to_fileref(value: Any) -> FileRef:
     if isinstance(value, types.ModuleType):
         source_file = inspect.getfile(value)
         return FileRef(Path(source_file))
+    if isinstance(value, type):
+        source_file = inspect.getfile(value)
+        source_lines, start_lineno = inspect.getsourcelines(value)
+        return FileRef(Path(source_file), start_lineno - 1,
+                       start_lineno - 1 + len(source_lines))
     raise TypeError(f"Cannot convert {type(value).__name__} to FileRef")
 
 
