@@ -367,7 +367,7 @@ def cst_module_to_dict(value: cst.Module) -> dict:
     for ll in value.header:
         if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
             c = Comment(ll.comment.value)
-            readable[c] = str(c)
+            readable[c] = c
 
     _classdef_to_dict = Melty._converters.get((cst.ClassDef, dict))
     _funcdef_to_dict = Melty._converters.get((cst.FunctionDef, dict))

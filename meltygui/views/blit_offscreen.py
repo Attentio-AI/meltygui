@@ -14,7 +14,7 @@ from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.model.core_model.core_enums import OffscreenDebugMode
 from src.lsd.gl_gui.model.core_model.draw_state import TileMode, UNSET_VALUE
 from src.lsd.gl_gui.toggles import Toggles
-from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
+from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace, get_live_frames
 
 """
 Per-view tile caching with a post-frame mask.
@@ -704,13 +704,17 @@ class TileCacheMasked:
         child_keys_list.sort(key=lambda x: x[0] if x[0] is not None else 0)
 
         parent_draw_state = self.key_to_draw_state.get(k, None)
-
+        if parent_draw_state is not None and parent_draw_state._print_last_invalid:
+            print_stack_trace()
         for top, child, child_draw_state in child_keys_list:
             inside_clip, below, above = parent_draw_state.inside_clip(child_draw_state)
+            if child_draw_state is not None and child_draw_state._print_last_invalid:
+                print_stack_trace()
             if child_draw_state.clipped and inside_clip:
                 if child != k:
                     pt = self._tiles.get(child)
                     if pt is not None:
+
                         pt.last_invalidated_frame = max(pt.last_invalidated_frame, self._frame_id + 1) + frame_delta
                         pt.dirty = self._is_dirty(pt)
                         pt.force_invalidate = True
@@ -757,10 +761,16 @@ class TileCacheMasked:
             input_val_hash,
         )
 
-    def invalidate(self, k: str, force=False, frame_delta=0) -> None:
+    def invalidate(self, k: str, force=False, do_store=True, frame_delta=0) -> None:
+        if Melty.frame_count > 100 and Melty.frame_count % 30 == 0:
+            draw_state = self.key_to_draw_state.get(k, None)
+            if draw_state is not None and draw_state._print_last_invalid:
+                print_stack_trace()
+
         if Toggles.invalidate_stack_trace:
             if Melty.frame_count > 100 and Melty.frame_count % 30 == 0:
                 print_stack_trace()
+
         t = self._tiles.get(k)
         if t is not None:
 
@@ -776,6 +786,9 @@ class TileCacheMasked:
             if parent and parent != k:
                 pt = self._tiles.get(parent)
                 if pt is not None:
+                    parent_draw_state = self.key_to_draw_state.get(parent, None)
+                    if parent_draw_state is not None and parent_draw_state._print_last_invalid:
+                        print_stack_trace()
                     pt.force_invalidate = True
                     pt.last_invalidated_frame = max(pt.last_invalidated_frame, self._frame_id + 1) + frame_delta
                     pt.dirty = self._is_dirty(pt)

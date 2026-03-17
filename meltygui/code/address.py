@@ -335,7 +335,7 @@ def make_save_wrapper(fn: Callable, save_data: Callable,
             except Exception as e:
                 print(f"Diff failed: {e}")
 
-            return Pending(originated=save_data, wrapped=watch.original_input_load, status=status)
+            return Pending(originated=save_data, wrapped=converter_output, status=status)
 
         # ── Save ────────────────────────────────────────────────────
 

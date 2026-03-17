@@ -24,7 +24,7 @@ from src.lsd.gl_gui.model.core_model.draw_state import ZoomState, TileMode
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_style_var, \
     push_style_color, pop_style_color, pop_style_var, end, begin
-from src.lsd.gl_gui.utils.glfw_utils import request_render
+from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
 from src.lsd.gl_gui.view.core_conversion.file_converters import path_to_dict, bytes_to_str, load_text, recompile, recompile_module
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment, Conditional, GeneralParse
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
@@ -557,6 +557,32 @@ def draw_main(input_value, vis):
     from src.lsd.gl_gui.model.app_model import TensorView
     draw_window(TensorView, name="Tensorview")
 
+
+    global_toggles = vis.root.global_toggles
+    draw_any(global_toggles, name="Toggles", auto_resize=True, wrap=True, use_cache=True, show_bg=True, mode=Mode.WINDOW)
+    changed, new_val = draw_any(Melty.cache.enabled, name="Offscreen Rendering", wrap=True, show_bg=True, use_cache=True)
+    if changed:
+        if new_val:
+            Melty.cache.set_enabled(True)
+        else:
+            Melty.cache.set_enabled(False)
+        Melty.cache.invalidate_all()
+        request_render()
+
+    changed, new_val = draw_any(Melty.cache.copy_debug_mode, name="Offscreen Debug", wrap=True, use_cache=True)
+    if changed:
+        # Melty.cache.offscreen_debug_mode = new_val
+        Melty.cache.copy_debug_mode = new_val
+        Melty.cache.invalidate_all()
+        request_render()
+
+    changed, new_val = draw_any(Melty.cache.offscreen_scale, name="Debug Scale",
+                                min_value=0.0, max_value=255.0, wrap=True, use_cache=True)
+    if changed:
+        Melty.cache.offscreen_scale = new_val
+        Melty.cache.invalidate_all()
+        request_render()
+
     global some_float
     changed, new_float = draw_window(some_float[0], name="Conversion Test", view_func=draw_collection, convert=dict)
     if changed:
@@ -572,8 +598,7 @@ def draw_main(input_value, vis):
     test_columns(input_value="Nolkjlkjne", mode=Mode.WINDOW, name="Test columns")
 
     draw_window(draw_main, name="Draw Main Function")
-    some_enum = ProfileMode.OFF
-    draw_enum(some_enum, name="Test Enum", show_bg=True, is_tree=False)
+
     draw_window(test_obj, name="Layer 1")
 
     draw_window(filesystem_proxy, name="Filesystem Test")
@@ -1455,18 +1480,18 @@ def seperator(height):
     imgui.separator()
     imgui.dummy(0, snap_int(height / 2))
 
-def draw_bg(left=1, top=3, width=24, height=20, depth=0, rounding=3.606,
-            global_style=None, outline=True, bg_color=None, opacity=-1.705,
+def draw_bg(left=24, top=3, width=0, height=33, depth=0, rounding=4.203,
+            global_style=None, outline=True, bg_color=None, opacity=-1.57,
             style_manager=None, tint=None, outline_tint=None, selected=False,
             hovered=False, pressed=False, nested_bg=False, **kwargs):
 
     # -- Constants ---------------------------------
-    depth_wrap        = 11.477
-    depth_scale       = 1.85
-    corner_radius     = 4.143
+    depth_wrap        = 30.7866
+    depth_scale       = 1.900
+    corner_radius     = 4.14
     border_inset      = 1.548
-    border_inset_half = 0.192
-    stroke_width      = 1.7
+    border_inset_half = 0.19
+    stroke_width      = 1.00
 
 
     # How depth relates to color intensity
@@ -1474,7 +1499,7 @@ def draw_bg(left=1, top=3, width=24, height=20, depth=0, rounding=3.606,
     intensity_offset  = -4.777\
 
     # Outline color tuning
-    outline_base      = 2.149
+    outline_base      = 2.14
     outline_depth_mul = 0.929
     outline_sat       = {'default': 2.04, 'nested': 3.211}
 
@@ -1583,8 +1608,8 @@ def draw_bg(left=1, top=3, width=24, height=20, depth=0, rounding=3.606,
 
 
 
-@render_func(use_cache=True, shadow=True, selectable=False, show_bg=False, width=18, height=18, min_width=10,
-             min_height=10)
+@render_func(use_cache=True, shadow=True, selectable=False, show_bg=False, min_width=10,
+             min_height=10, wrap=True)
 def button(input_value="", corner_radius=4, draw_state=None, left_mouse_held=False, left_mouse_down=False,
            color=(1, 1, 1), hovered=False, width=None, height=None, style_manager=None,
            factor=1.0, value=0.4, text_value=1.0, saturation=0.8, unique=0):
@@ -1609,7 +1634,10 @@ def button(input_value="", corner_radius=4, draw_state=None, left_mouse_held=Fal
         mixed_color = (0, 0, 0)
 
     draw_state.corner_radius = corner_radius
-    imgui.dummy(width or 0, height or 0)
+    min_size = imgui.calc_text_size(input_value)
+    width = max(min_size[0] + 15, width or 0)
+    height = max(min_size[1], height or 0)
+    imgui.dummy(width, height)
     draw_list: _DrawList = imgui.get_window_draw_list()
     draw_list.add_rect_filled(draw_state.left, draw_state.top, draw_state.left + width,
                               draw_state.top + height, imgui.get_color_u32_rgba(*mixed_color[:3], 1.0),
@@ -1617,43 +1645,9 @@ def button(input_value="", corner_radius=4, draw_state=None, left_mouse_held=Fal
 
     text_size = imgui.calc_text_size(input_value)
 
-    draw_list.add_text(draw_state.left + (width - text_size[0]) / 2.0 + 1,
+    draw_list.add_text(draw_state.left + (width - text_size[0]) / 2.0 + 2,
                        draw_state.top + (height - text_size[1]) / 2.0 - 1,
                        imgui.get_color_u32_rgba(*text_color[:3], 1.0), input_value)
-    # if height is None:
-    #     height = imgui.get_frame_height()
-    #
-    # if width is None:
-    #     width = imgui.calc_text_size(input_value)[0] + imgui.get_style().frame_padding.x * 2
-    #     width = max(height, width)
-    #
-    # if text_value is None:
-    #     text_value = value + 0.5
-    # if color is not None:
-    #     mixed_color = style_manager.make_color_rgb(color[0], color[1], color[2],
-    #                                             value=value, factor=factor, saturation_scale=saturation, alpha=1.0)
-    #     text_color = style_manager.make_color_rgb(color[0], color[1], color[2],
-    #                                              value=text_value, factor=factor, saturation_scale=0.4, alpha=1.0)
-    #     rounding = 4.0
-    #
-    #     imgui.push_style_var(imgui.STYLE_FRAME_ROUNDING, rounding)
-    #     alpha = color[3] if len(color) > 3 else 1.0
-    #
-    #     imgui.push_style_color(imgui.COLOR_BUTTON, *mixed_color[:3], alpha)
-    #     imgui.push_style_color(imgui.COLOR_BUTTON_HOVERED, *(min(mixed_color[0]+0.1,1.0),
-    #                                                         min(mixed_color[1]+0.1,1.0),
-    #                                                         min(mixed_color[2]+0.1,1.0),
-    #                                                         max(0.3, alpha)))
-    #     imgui.push_style_color(imgui.COLOR_BUTTON_ACTIVE, *(max(mixed_color[0]-0.1,0.0),
-    #                                                           max(mixed_color[1]-0.1,0.0),
-    #                                                           max(mixed_color[2]-0.1,0.0),
-    #                                                         alpha))
-    #     imgui.push_style_color(imgui.COLOR_TEXT, *text_color[:3], 1.0)
-    #
-    # clicked = imgui.button(input_value + f"##{unique}", width, height)
-    # if color is not None:
-    #     imgui.pop_style_color(4)
-    #     imgui.pop_style_var(1)
 
     if left_mouse_down:
         request_render()
@@ -1693,37 +1687,6 @@ def render_profiler_time(input_value=None, brief=False, style_manager=None,
     return False, input_value
 
 
-def draw_any(input_value:any, view_func=None, mode:any=None, **kwargs):
-    # # meta handlin
-    if view_func is None:
-        meta = kwargs.get("meta", None)
-        if meta is None:
-            if hasattr(Meta, 'get_child_meta'):
-                meta = Meta.get_child_meta(None, field_name=kwargs.get("name", ''), value=input_value)
-        if meta.view_function is None or 'draw_any' in meta.view_function.__name__:
-            meta.view_function = draw_collection
-        view_func = meta.view_function
-
-    if mode is None:
-        mode = Melty.mode_stack[-1] if len(Melty.mode_stack) > 0 else None
-
-    if isinstance(mode, tuple) and len(mode) > 0:
-        main_mode = mode[0]
-    else:
-        main_mode = mode
-
-    if main_mode is not None:
-        # Loop over super types
-        mode_config = main_mode.get_config_for(input_value)
-        if mode_config is not None and mode_config.func is not None:
-            view_func = mode_config.func
-
-    kwargs['use_cache'] = True
-    kwargs['mode'] = mode
-    kwargs['view_func'] = view_func
-    return_val = view_func(input_value, **kwargs)
-
-    return return_val
 
 
 @render_func(header_same_line=True, is_default_for=(NoneType), shadow=False, is_tree=False, with_header=draw_header)
@@ -2142,13 +2105,20 @@ class ModeOverrides:
 #
 #     return False, None
 @render_func(show_header=False)
-def default_context_menu(input_value, draw_state, func, **kwargs):
+def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, **kwargs):
     imgui.new_line()
     imgui.text(type(input_value._input_value).__name__)
 
-    def draw_overlay_rect(rect, color=(1, 0, 0, 0.5)):
+    def draw_overlay_rect(rect, color=(1, 0, 0, 0.5), name=None):
+
         draw_list: _DrawList = imgui.get_overlay_draw_list()
-        draw_list.add_rect(rect[0], rect[1], rect[2], rect[3], imgui.get_color_u32_rgba(*color), thickness=1.0)
+        if name is not None:
+            name_size = imgui.calc_text_size(name)
+            draw_list.add_text(rect[2] - name_size[0] - 4,
+                               rect[1] + 2,
+                               imgui.get_color_u32_rgba(*color), name)
+
+        draw_list.add_rect(rect[0], rect[1], rect[2], rect[3], imgui.get_color_u32_rgba(*color), thickness=1.0, rounding=4)
 
     imgui.text(f"Mode {str(input_value._kwargs.get('mode', None))}")
     imgui.text(f"Content height {str(input_value.content_height)}")
@@ -2159,14 +2129,31 @@ def default_context_menu(input_value, draw_state, func, **kwargs):
     imgui.text(f"Disable Scroll {input_value._kwargs.get('disable_scroll', False)}")
     imgui.text("Scroll_offset " + str(input_value.scroll_offset))
     imgui.text(f"Clip Rect {str(input_value.clip_rect)}")
-    if imgui.is_item_hovered():
-        draw_overlay_rect(input_value.clip_rect, color=(0, 1, 0, 0.5))
+
     draw_collection(draw_state._all_pending)
 
+    imgui.new_line()
+    imgui.separator()
 
+    clicked, input_value._print_last_invalid = imgui.checkbox("Print Invalidate", input_value._print_last_invalid)
+
+    # if input_value._last_invalidate is not None:
+    #     if input_value._print_last_invalid:
+    #         print_stack_trace(frames=input_value._last_invalidate)
+    # else:
+    #     imgui.text_colored("No invalidate info", 1, 0, 0, 1)
 
     if input_value.explain_convert is not None:
         imgui.text(str(input_value.explain_convert))
+
+    if imgui.is_mouse_hovering_rect(draw_state.left, draw_state.top,
+                                    draw_state.left + draw_state.width,
+                                    draw_state.top + draw_state.height):
+        draw_list = imgui.get_overlay_draw_list()
+        rect = (input_value.abs_left, input_value.abs_top, input_value.abs_left + input_value.width,
+                input_value.abs_top + input_value.height)
+        draw_overlay_rect(rect, color=(1, 1, 0, 0.5))
+        draw_overlay_rect(input_value.clip_rect, color=(0, 1, 0, 0.5), name="clip")
 
     imgui.text(func.__name__)
     return False, None
@@ -2193,9 +2180,63 @@ def pending_window(input_value, button_name, pending=None, draw_state=None):
         return True, None
     return False, None
 
+@render_func(use_cache=True, show_header=True, with_header=draw_header)
+def draw_single(input_value:any, view_func=None, mode:any=None, **kwargs):
+    changed, return_val = view_func(input_value, mode=mode)
+    return changed, return_val
+
+
+def draw_any(input_value:any, view_func=None, mode:any=None, **kwargs):
+    # # meta selection
+    kwargs_view_func = view_func
+    if view_func is None:
+        meta = kwargs.get("meta", None)
+        if meta is None:
+            if hasattr(Meta, 'get_child_meta'):
+                meta = Meta.get_child_meta(None, field_name=kwargs.get("name", ''), value=input_value)
+        if meta.view_function is None or 'draw_any' in meta.view_function.__name__:
+            meta.view_function = draw_collection
+        view_func = meta.view_function
+        kwargs_view_func = meta.view_function
+
+    if mode is None:
+        mode = Melty.mode_stack[-1] if len(Melty.mode_stack) > 0 else None
+
+    if isinstance(mode, tuple) and len(mode) > 0:
+        main_mode = mode[0]
+    else:
+        main_mode = mode
+
+    if main_mode is not None:
+        # Loop over super types
+        mode_config = main_mode.get_config_for(input_value)
+        if mode_config is not None and mode_config.func is None and mode_config.kwargs.get("convert", None) is not None:
+            convert_to_type = mode_config.kwargs["convert"][-1]
+            mode_config = main_mode.get_config_for(the_type=convert_to_type)
+            if mode_config is not None and mode_config.func is not None:
+                view_func = draw_single
+                kwargs_view_func = mode_config.func
+
+        elif mode_config is not None and mode_config.func is not None:
+            view_func = mode_config.func
+            kwargs_view_func = view_func
+
+    kwargs['use_cache'] = True
+    kwargs['mode'] = mode
+    kwargs['view_func'] = kwargs_view_func
+    return_val = view_func(input_value, **kwargs)
+
+    return return_val
+
 class Mode(Enum):
 
-    def get_config_for(self, input_value):
+    def get_config_for(self, input_value=None, the_type=None):
+        if input_value is not None:
+            the_type = type(input_value)
+        config = self.value.get(the_type, None)
+        if config is not None:
+            return config
+
         for super_type in type(input_value).__mro__:
             config = self.value.get(super_type, None)
             if config is not None:
@@ -2207,7 +2248,8 @@ class Mode(Enum):
     WINDOW = {
         Any: ModeOverrides(
             kwargs={"show_bg":True, "selectable":False, "use_cache":True, "melty_window":True, "closable":True,
-                    "auto_resize":False, "draggable":True, "show_tint":True, "show_header":True,
+                    "with_header_end":draw_header_end,
+                    "auto_resize":False, "draggable":True, "show_tint":True, "show_header":True, "with_footer":draw_footer,
                     "disable_scroll":False},
             recursive=False
         )
@@ -2216,54 +2258,44 @@ class Mode(Enum):
     WINDOW_CLEAN = {
         Any: ModeOverrides(
             kwargs={"show_bg":True, "selectable":False, "use_cache":True, "melty_window":True, "closable":True,
-                    "auto_resize":True, 'min_width':100, "draggable":True, "is_tree":False, "show_tint":False, "show_header":False,
+                    "auto_resize":True, 'min_width':300, "draggable":True, "is_tree":False, "show_tint":False, "show_header":False,
                     "disable_scroll":False},
             recursive=False
         )
     }
 
     CODE_DICT_STR = {
-        GeneralParse: ModeOverrides(
-            kwargs={"convert": [dict, str], "horizontal":True},
+        cst.Module: ModeOverrides(
+            kwargs={"convert": [cst.Module, dict, str]},
             recursive=True,
             func=draw_text
-        ),
-
-        cst.Module: ModeOverrides(
-            kwargs={"convert": [cst.Module, dict], "horizontal":True},
-            recursive=True
         ),
 
         types.FunctionType: ModeOverrides(
-            kwargs={"convert": [types.FunctionType, cst.Module, dict, str]},
+            kwargs={"convert": [types.FunctionType, cst.Module]},
             recursive=True,
-            func=draw_text
         ),
 
         types.ModuleType: ModeOverrides(
-            kwargs={"convert": [types.ModuleType, cst.Module, dict]},
+            kwargs={"convert": [types.ModuleType, cst.Module]},
             recursive=True
         ),
-
-
     }
 
     CODE_UI = {
         cst.Module: ModeOverrides(
-            kwargs={"convert": [cst.Module, dict], "horizontal":True},
+            kwargs={"convert": [cst.Module, dict]},
             func=draw_collection,
             recursive=True
         ),
 
         types.FunctionType: ModeOverrides(
-            kwargs={"convert": [types.FunctionType, cst.Module, dict], "auto_apply": [load_text, recompile]},
-            func=draw_collection,
+            kwargs={"convert": [types.FunctionType, cst.Module], "auto_apply": [load_text, recompile]},
             recursive=True
         ),
 
         types.ModuleType: ModeOverrides(
-            kwargs={"convert": [types.ModuleType, cst.Module, dict], "auto_apply": [load_text, recompile_module]},
-            func=draw_collection,
+            kwargs={"convert": [types.ModuleType, cst.Module], "auto_apply": [load_text, recompile_module]},
             recursive=True
         ),
 
@@ -2286,19 +2318,23 @@ class Mode(Enum):
     }
 
     CODE_PLAIN_TEXT = {
-        types.FunctionType: ModeOverrides(
-            kwargs={"convert": [types.FunctionType, cst.Module, str],
-                    "auto_apply": [load_text],
-                    "indent_size": 30, "with_header": draw_header},
+        cst.Module: ModeOverrides(
+            kwargs={"convert": [cst.Module, str], "horizontal":True},
             func=draw_text,
             recursive=True
         ),
 
-        types.ModuleType: ModeOverrides(
-            kwargs={"convert": [types.ModuleType, cst.Module, str],
+        types.FunctionType: ModeOverrides(
+            kwargs={"convert": [types.FunctionType, cst.Module],
                     "auto_apply": [load_text],
                     "indent_size": 30, "with_header": draw_header},
-            func=draw_text,
+            recursive=True
+        ),
+
+        types.ModuleType: ModeOverrides(
+            kwargs={"convert": [types.ModuleType, cst.Module],
+                    "auto_apply": [load_text],
+                    "indent_size": 30, "with_header": draw_header},
             recursive=True
         ),
 
@@ -2306,12 +2342,6 @@ class Mode(Enum):
             kwargs={"convert": None, "mode": None, "indent_size": 30, "with_header": draw_header},
             func=draw_text,
             recursive=True,
-        ),
-
-        Path: ModeOverrides(
-            kwargs={"convert": [Path, bytes, str, cst.Module, dict]},
-            func=draw_collection,
-            recursive=False,
         ),
     }
 

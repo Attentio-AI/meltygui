@@ -786,21 +786,6 @@ def render_func(*args, **o_kwargs):
                 else:
                     draw_state._initial_window_size = None
 
-            if draw_state.expanded:
-                draw_state.min_width = kwargs.get("min_width", draw_state.min_width)
-                draw_state.min_height = kwargs.get("min_height", draw_state.min_height)
-
-                if draw_state.width is not None and draw_state.min_width is not None:
-                    draw_state.width = max(draw_state.width, draw_state.min_width)
-
-                if draw_state.height is not None and draw_state.min_height is not None:
-                    if draw_state.height < draw_state.min_height:
-                        draw_state._height_source = "initial window size"
-
-                    draw_state.height = max(draw_state.height, draw_state.min_height)
-
-
-
             if draw_state.window_pos is not None and closable:
                 on_held = draw_state.on_action("left_mouse_held", "window_move", priority_delta=-2)
                 on_drag = draw_state.on_action("left_mouse_drag", "window_move")
@@ -910,6 +895,20 @@ def render_func(*args, **o_kwargs):
                 draw_state.height = snap_int(parent_wrap_height) - content_margin
                 draw_state._height_source = "fill height"
 
+            if draw_state.expanded:
+                draw_state.min_width = kwargs.get("min_width", draw_state.min_width)
+                draw_state.min_height = kwargs.get("min_height", draw_state.min_height)
+
+                if draw_state.width is not None and draw_state.min_width is not None:
+                    draw_state.width = max(draw_state.width, draw_state.min_width)
+                    draw_state.content_width = max(draw_state.content_width, draw_state.min_width)
+
+                if draw_state.height is not None and draw_state.min_height is not None:
+                    if draw_state.height < draw_state.min_height:
+                        draw_state._height_source = "initial window size"
+
+                    draw_state.height = max(draw_state.height, draw_state.min_height)
+
 
             ################# Columns
             if column is not None and column_parent is not None:
@@ -973,7 +972,7 @@ def render_func(*args, **o_kwargs):
                 if (not Melty.on_drag or draw_state.nested_window
                         and not imgui.is_mouse_down(2) and not imgui.is_mouse_down(1)):
                     if not draw_state.just_shadow:
-                        Melty.cache.invalidate(tile_id, force=True)
+                        Melty.cache.invalidate(tile_id, do_store=False, force=True)
 
             if draw_state.width > 0 and draw_state.height > 0:
                 inside_clip = Melty.fully_inside_clip(rect=(draw_state.left, draw_state.top,
@@ -1034,6 +1033,7 @@ def render_func(*args, **o_kwargs):
                 Melty.cache.invalidate_up(draw_state._parent._tile_id, force=True)
                 request_render()
 
+
             # if draw_state._apply_save is not None:
             #     Melty.cache.invalidate(draw_state._parent._tile_id, force=True)
             #     Melty.cache.invalidate(draw_state._tile_id, force=True)
@@ -1069,7 +1069,7 @@ def render_func(*args, **o_kwargs):
                 if draw_state._show_save and not draw_state._save_pending_obj.originated in auto_apply:
                     from src.lsd.gl_gui.view.core_views.new_core_view import Mode
                     if pending_window(
-                            input_value=f"save", return_extras=True,
+                            input_value=f"save", return_extras=True, min_width=300,
                             closed=False, tint=draw_state.tint, window_pos=(0,0), auto_resize=True, wrap=True,
                             button_name="Save", name=f"Save", anchor=Anchor.BOTTOM_LEFT, pending=draw_state._save_pending_obj,
                             mode=Mode.WINDOW_CLEAN)[0]:
@@ -1085,7 +1085,7 @@ def render_func(*args, **o_kwargs):
 
                     if pending_window(input_value=f"load",
                                    closed=False, window_pos=(0,0), auto_resize=True,
-                                   pending=draw_state._internal_pending,
+                                   pending=draw_state._internal_pending, min_width=300,
                                    button_name="Load", name=f"Load", anchor=Anchor.BOTTOM_LEFT, tint=draw_state.tint,
                                    mode=Mode.WINDOW_CLEAN)[0]:
                         draw_state._apply_load = draw_state._internal_pending.originated
@@ -1173,14 +1173,11 @@ def render_func(*args, **o_kwargs):
                             if input_changed:
                                 no_cache = True
 
-                            if no_cache:
-                                print(f"Running converter without cache for {draw_state.name} because it is stateful or input changed. Converter: {convert_path[-1].__name__ if isinstance(convert_path[-1], type) else convert_path[-1]}")
-
                             internal_value = Background.run(convert, value=draw_state._raw_input_value,
                                                             user_id=str(draw_state.unique) + f" | input convert {str(convert_path[-1].__name__)}",
                                                             invalidate_id=draw_state._parent._tile_id, draw_state=draw_state,
                                                             on_frame=start_frame, no_cache=no_cache,
-                                                            apply=draw_state._apply_load,
+                                                            apply=draw_state._apply_load, stateful=converter_kwargs.get("stateful", False),
                                                             path=convert_path, cache_id=str(draw_state.unique), registry=Melty, )
 
                             if isinstance(internal_value, tuple):
@@ -1217,7 +1214,7 @@ def render_func(*args, **o_kwargs):
                     # internal_hash = Background.simple_hash(internal_value)
                     # cached_internal_hash = Background.simple_hash(draw_state._input_value_cache["internal_state"][0])
                     if internal_value != draw_state._input_value_cache["internal_state"][0]:
-                        if isinstance(internal_value, Pending) and internal_value.state != PendingState.BACKGROUND:
+                        if isinstance(internal_value, Pending) and internal_value.state != PendingState.BACKGROUND and not draw_state._show_load:
                             internal_changed = True
                             request_render()
 
@@ -1244,7 +1241,7 @@ def render_func(*args, **o_kwargs):
 
                         if isinstance(internal_value, Pending):
                             draw_state._load_pending = True
-                            draw_state._load_pending_for += 1
+                            draw_state._load_pending += 1
                             # Debounce loading spinner icon
                             if draw_state._load_pending_for > 2:
                                 draw_pending_status(draw_state, internal_value)
@@ -1876,12 +1873,12 @@ def render_func(*args, **o_kwargs):
                                     no_cache = True
 
                                 if draw_state._apply_save is not None:
+                                    # new_value_child = draw_state._save_pending_obj.wrapped
                                     no_cache=True
 
-                                print(f"output convert {draw_state.name}")
                                 external_value = Background.run(convert, user_id=str(unique) + f" | output convert {str(convert_path[-1].__name__)}",
                                                                 invalidate_id=draw_state._parent._tile_id,
-                                                                cache_id=str(draw_state.unique),
+                                                                cache_id=str(draw_state.unique), stateful=converter_kwargs.get("stateful", False),
                                                                 on_frame=Melty.frame_count, no_cache=no_cache,
                                                                 value=new_value_child, apply=draw_state._apply_save,
                                                                 path=convert_path, registry=Melty, )
@@ -1897,10 +1894,11 @@ def render_func(*args, **o_kwargs):
                                     draw_state._save_pending_obj = None
                                     draw_state._show_save = False
 
-                                if not isinstance(external_value, Pending):
                                     if draw_state._show_save or draw_state._apply_save is not None:
                                         draw_state._apply_save = None
+                                        draw_state._save_pending_obj = None
                                         Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=4, force=True)
+                                        draw_state._input_value_cache["external_state"] = (external_value, Melty.frame_count, Background.simple_hash(external_value))
 
                                     _cur_sp = draw_state._all_pending.get("save_pending")
                                     if _cur_sp is not None and not (isinstance(_cur_sp, Pending) and _cur_sp.state == PendingState.ERROR):
@@ -1912,7 +1910,9 @@ def render_func(*args, **o_kwargs):
                                         draw_state._apply_save = None
                                         draw_state._save_pending_obj = None
                                         draw_state._show_save = False
-                                        draw_state._read_only = True
+
+                                        if "Read only" in external_value.status:
+                                            draw_state._read_only = True
 
                                     if external_value.state != PendingState.BACKGROUND:
                                         # Don't let a successful error overwrite an ERROR in _all_pending
@@ -1932,7 +1932,6 @@ def render_func(*args, **o_kwargs):
                                 # Clear save dialog, the error is tracked via _all_pending only.
                                 draw_state._save_pending_obj = None
                                 draw_state._show_save = False
-                                draw_state._read_only = True
                             elif external_value.state == PendingState.CONFIRM:
                                 draw_state._save_pending_obj = external_value
                                 if not draw_state._show_save:
@@ -1960,11 +1959,6 @@ def render_func(*args, **o_kwargs):
                                     Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=4, force=True)
                                     # Melty.cache.invalidate_up(draw_state._tile_id, max_depth=10, force=True)
                                     request_render()
-
-                        if draw_state._apply_save is not None:
-                            Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=4, force=True)
-                            # Melty.cache.invalidate_up(draw_state._tile_id, max_depth=10, force=True)
-                            request_render()
                         # if input_conversion_background:
                         #     draw_state._pending_convert = True
                         #     Melty.cache.invalidate_up_by_obj(draw_state._collection)
@@ -2096,6 +2090,21 @@ def render_func(*args, **o_kwargs):
             if draw_state.height > 30000:
                 draw_state.height = 30000
                 draw_state._height_source = "30000 max height"
+
+            if draw_state.expanded:
+                draw_state.min_width = kwargs.get("min_width", draw_state.min_width)
+                draw_state.min_height = kwargs.get("min_height", draw_state.min_height)
+
+                if draw_state.width is not None and draw_state.min_width is not None:
+                    draw_state.width = max(draw_state.width, draw_state.min_width)
+                    draw_state.content_width = max(draw_state.content_width, draw_state.min_width - content_margin)
+
+                if draw_state.height is not None and draw_state.min_height is not None:
+                    if draw_state.height < draw_state.min_height:
+                        draw_state._height_source = "initial window size"
+
+                    draw_state.height = max(draw_state.height, draw_state.min_height)
+
 
 
             column = kwargs.get("column", None)

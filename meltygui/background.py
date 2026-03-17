@@ -87,16 +87,38 @@ class Background:
         print("Background thread pool shut down successfully.")
 
     @classmethod
-    def run(cls, func, user_id, no_cache=False, invalidate_id=None, on_frame=None, frames=None, debounce=0,
+    def run(cls, func, user_id, stateful=False, no_cache=False, invalidate_id=None, on_frame=None, frames=None, debounce=0,
             draw_state=None, *args, **kwargs):
         h = cls._timed_hash(kwargs.get("value", None), user_id)
+
+        # No apply flag → run immediately on main thread (same cache/hash
+        # logic, just no debounce or thread pool).
+        if not kwargs.get("apply", False) and stateful and len(kwargs.get("path", [])) <= 2:
+            cache = cls._user_cache.get(user_id)
+            if cache and h in cache:
+                cache.move_to_end(h)
+                return_val = cache[h]
+                if no_cache:
+                    cls._user_cache.pop(user_id, None)
+                return return_val
+
+            try:
+                result = func(*args, **kwargs)
+            except Exception:
+                result = Pending(originated=cls, status="Read Only", state=PendingState.ERROR)
+
+            if user_id not in cls._user_cache:
+                cls._user_cache[user_id] = OrderedDict()
+            cls._user_cache[user_id][h] = result
+            cls._user_cache[user_id].move_to_end(h)
+            while len(cls._user_cache[user_id]) > cls._cache_size:
+                cls._user_cache[user_id].popitem(last=False)
+
+            return result
 
         from src.lsd.gl_gui.melty import Melty
         if Melty.frame_count < 10:
             debounce = None
-
-        # if kwargs.get("apply", False):
-        #     debounce = None
 
         # --- debounce path ---
         if debounce is not None:

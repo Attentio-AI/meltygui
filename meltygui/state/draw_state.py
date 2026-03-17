@@ -344,6 +344,9 @@ class DrawState(DictConversion):
 
         self.explain_convert = None
 
+        self._print_last_invalid = False
+        self._last_invalidate = None
+
     def tile_params(self):
         self._tile_params['clip_rect'] = copy(self.clip_rect)
 
@@ -399,7 +402,7 @@ class DrawState(DictConversion):
 
     def _abs_left(self):
         parent_left = 0
-        if self.parent_window is not None:
+        if self.parent_window is not None and self.parent_window is not self:
             parent_left = self.parent_window._abs_left()
         elif not self.closable:
             parent_left = imgui.get_cursor_screen_pos()[0]
@@ -413,7 +416,7 @@ class DrawState(DictConversion):
 
     def _abs_top(self):
         parent_top = 0
-        if self.parent_window is not None:
+        if self.parent_window is not None and self.parent_window is not self:
             parent_top = self.parent_window._abs_top()
         elif not self.closable:
             parent_top = imgui.get_cursor_screen_pos()[1]
@@ -656,7 +659,7 @@ class DrawState(DictConversion):
         else:
             if self.top is None or self.left is None or self.width is None or self.height is None:
                 return False
-            rect = (self.left, self.top - 3, self.width, self.height + 10)
+            rect = (self.abs_left, self.abs_top - 3, self.width, self.height + 10)
 
         if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
             if imgui.is_window_hovered() or Melty.imgui_popup_open:

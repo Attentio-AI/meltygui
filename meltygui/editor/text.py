@@ -4,7 +4,7 @@ import glfw
 import imgui
 
 from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.headers import draw_header
+from src.lsd.gl_gui.view.core_views.headers import draw_header, draw_footer
 
 _cursor_pos = 0
 _selection_start = 0
@@ -337,7 +337,8 @@ def _key_just_pressed(io, key):
     return io.keys_down[key] and key not in _prev_keys_down
 
 
-@render_func(show_bg=True, wrap=False, use_cache=True, with_header=draw_header, selectable=False, indent_size=30)
+@render_func(show_bg=True, wrap=False, use_cache=True, with_header=draw_header,
+             with_footer=draw_footer, selectable=False, indent_size=30)
 def draw_text(input_value: str, cursor_hover=False, left_mouse_drag=False, draw_state=None):
     global _cursor_pos, _selection_start, _selection_end, _is_focused
     global _cursor_blink_time, _double_click_time, _last_click_pos
@@ -360,8 +361,6 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_drag=False, draw_
 
     # --- Invisible button for mouse interaction ---
     is_hovered = cursor_hover
-
-
 
     # --- Read current keyboard state ---
     current_keys = set()

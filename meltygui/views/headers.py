@@ -30,9 +30,20 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     depth_offset      = -1.647
     name_value_factor = 0.769
 
+
+    spinner_icon_0 = ""
+    spinner_icon_1 = ""
+
+    draw_list = imgui.get_window_draw_list()
+    spinner_icon_idx = Melty.frame_count % 2
+    spinner_icon = [spinner_icon_0, spinner_icon_1][spinner_icon_idx]
+    icon_width = imgui.calc_text_size(spinner_icon)[0]/2
+
+
+
     # Name text (value is the base offset, updated to depth below)
     name_style = {
-        'value': -0.126, 'saturation': 0.401,
+        'value': 0.099, 'saturation': 0.401,
         'alpha': 0.848, 'max_value': 3.205,
         'depth_factor': 0.405
     }
@@ -188,6 +199,12 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
                 draw_state._name_edit = False
 
         same_line(spacing=3)
+
+    spinner_color = imgui.get_color_u32_rgba(1, 1, 1, 0.1)
+    draw_list.add_text(imgui.get_cursor_screen_pos()[0] - icon_width + 10,
+                       imgui.get_cursor_screen_pos()[1], spinner_color, spinner_icon)
+    imgui.dummy(15, 15)
+    imgui.same_line()
 
     # ── Profiler ───────────────────────────────────────────────
     is_profiling = global_toggles.profiler == ProfileMode.ON
