@@ -201,11 +201,12 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
         same_line(spacing=3)
 
-    spinner_color = imgui.get_color_u32_rgba(1, 1, 1, 0.1)
-    draw_list.add_text(imgui.get_cursor_screen_pos()[0] - icon_width + 10,
-                       imgui.get_cursor_screen_pos()[1], spinner_color, spinner_icon)
-    imgui.dummy(15, 15)
-    imgui.same_line()
+    if draw_state.closable:
+        spinner_color = imgui.get_color_u32_rgba(1, 1, 1, 0.1)
+        draw_list.add_text(imgui.get_cursor_screen_pos()[0] - icon_width + 10,
+                           imgui.get_cursor_screen_pos()[1], spinner_color, spinner_icon)
+        imgui.dummy(15, 15)
+        imgui.same_line()
 
     # ── Profiler ───────────────────────────────────────────────
     is_profiling = Toggles.profile_mode == ProfileMode.ON

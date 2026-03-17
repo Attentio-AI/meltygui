@@ -33,6 +33,7 @@ from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
 from src.lsd.gl_gui.view.core_views.core_meta import Meta
 
+
 melty_state_registry = {}
 static_melty = MeltyState()
 
@@ -292,6 +293,8 @@ def render_func(*args, **o_kwargs):
 
         index = key if isinstance(key, int) else 0
         suffix = Melty.unique_stack[-1] if len(Melty.unique_stack) > 0 else (name or "")
+
+
         column = str(kwargs.get("column", ""))
 
         # Keep original behavior of always appending name (even if empty)
@@ -313,6 +316,7 @@ def render_func(*args, **o_kwargs):
                                                                   name + root_window_name +
                                                                   str(key) + func.__name__, idx=index)
 
+
         draw_state: DrawState = kwargs.get("draw_state", get_draw_state(unique))
         closable = kwargs.get("closable", False)
         # apply_mode = kwargs.get("apply_mode", ApplyMode.INSTANT)
@@ -325,8 +329,6 @@ def render_func(*args, **o_kwargs):
             draw_state.left_offset, draw_state.top_offset = (
                 imgui.get_cursor_screen_pos()[0] - draw_state.parent_window.left,
                 imgui.get_cursor_screen_pos()[1] - draw_state.parent_window.top)
-
-        draw_state.closed = kwargs.get("closed", draw_state.closed)
 
         if closable:
             # Only perform this check on floating windows
@@ -858,9 +860,17 @@ def render_func(*args, **o_kwargs):
                     parent_wrap_height = imgui.get_io().display_size[1]
 
             column_parent = draw_state._parent
-            column = kwargs.get("column", None)
 
             draw_state.final_max_column = draw_state._current_max_column
+
+            if draw_state.final_max_column > 1 and column is None and column_parent is not None:
+                column = kwargs.get("column", 0)
+                kwargs['column'] = column
+            else:
+                column = kwargs.get("column", None)
+
+
+
             # draw_state._current_max_column = 0
 
 
@@ -911,9 +921,8 @@ def render_func(*args, **o_kwargs):
 
 
             ################# Columns
-            if column is not None and column_parent is not None:
+            if column is not None and column_parent is not None and draw_state.parent_window is not None:
                 column_cursor_y = column_parent._column_cursor[column][1]
-
                 imgui.set_cursor_screen_pos((parent_wrap_left + indent_x,
                                              -column_parent.scroll_offset[1] + parent_wrap_top + column_cursor_y + column_parent.header_height))
 
@@ -1065,9 +1074,9 @@ def render_func(*args, **o_kwargs):
                 #         if pending.state == PendingState.ERROR:
                 #             draw_window(pending, name=f"{key}", tint=(1,0,0))
 
+                from src.lsd.gl_gui.view.mode import Mode
 
                 if draw_state._show_save and not draw_state._save_pending_obj.originated in auto_apply:
-                    from src.lsd.gl_gui.view.core_views.new_core_view import Mode
                     if pending_window(
                             input_value=f"save", return_extras=True, min_width=300,
                             closed=False, tint=draw_state.tint, window_pos=(0,0), auto_resize=True, wrap=True,
@@ -1081,7 +1090,6 @@ def render_func(*args, **o_kwargs):
                         request_render()
 
                 if draw_state._show_load and not draw_state._internal_pending.originated in auto_apply:
-                    from src.lsd.gl_gui.view.core_views.new_core_view import Mode
 
                     if pending_window(input_value=f"load",
                                    closed=False, window_pos=(0,0), auto_resize=True,
@@ -1458,12 +1466,12 @@ def render_func(*args, **o_kwargs):
                                                                    alpha=1.0)
                         from src.lsd.gl_gui.view.core_views.new_core_view import draw_window
 
-                        returned_val = draw_window(input_value=draw_state, view_func=draw_context_menu, func=func,
+                        returned_val = draw_context_menu(input_value=draw_state, mode=Mode.WINDOW, func=func,
                                                    tint=mixed_color, show_tint=False, show_add_delete=False,
-                                                   width=400, max_height=800, bg_offset=bg_offset,
+                                                    min_width=650, min_height=300, bg_offset=bg_offset,
                                                    persistent=False, anchor=Anchor.BOTTOM_LEFT,
                                                    with_footer=None, use_cache=True,
-                                                   name=f"{name}##context_menu_{unique}", auto_resize=True,
+                                                   name=f"{name}##context_menu_{unique}", auto_resize=False,
                                                    return_extras=True)
 
                         ctx_ds = returned_val[2]
@@ -2016,7 +2024,7 @@ def render_func(*args, **o_kwargs):
             if fixed_size:
                 Melty.fixed_size_stack.pop()
 
-            if kwargs.get("column", None) is not None:
+            if column is not None and column_parent is not None and draw_state.parent_window is not None:
                 Melty.fixed_size_stack.pop()
                 # Melty.pop_clip()
             if draw_state._has_popup:
@@ -2097,7 +2105,7 @@ def render_func(*args, **o_kwargs):
 
                 if draw_state.width is not None and draw_state.min_width is not None:
                     draw_state.width = max(draw_state.width, draw_state.min_width)
-                    draw_state.content_width = max(draw_state.content_width, draw_state.min_width - content_margin)
+                    draw_state.content_width = max(draw_state.content_width, draw_state.min_width)
 
                 if draw_state.height is not None and draw_state.min_height is not None:
                     if draw_state.height < draw_state.min_height:

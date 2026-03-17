@@ -10,7 +10,7 @@ from inspect import Parameter
 from math import sqrt
 from pathlib import Path
 from types import NoneType
-from typing import Optional, Any
+from typing import Optional
 
 import OpenGL.GL as gl
 import glfw
@@ -19,14 +19,12 @@ from imgui.core import _DrawList
 
 from src.lsd.gl_gui import toggles
 from src.lsd.gl_gui.melty import Melty, CollectionAction, ManagedWindow
-from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
 from src.lsd.gl_gui.model.core_model.draw_state import ZoomState, TileMode
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_style_var, \
     push_style_color, pop_style_color, pop_style_var, end, begin
-from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
-from src.lsd.gl_gui.view.core_conversion.file_converters import path_to_dict, bytes_to_str, load_text, recompile, recompile_module
-from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment, Conditional, GeneralParse
+from src.lsd.gl_gui.utils.glfw_utils import request_render
+from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
@@ -533,10 +531,11 @@ def draw_main(input_value, vis):
     # if changed:
     #     test_code = value
     # #
+    from src.lsd.gl_gui.view.mode import Mode
+
     changed, value = draw_any(draw_header, name="draw_header", show_bg=True, mode=(Mode.CODE_UI, Mode.WINDOW))
     if changed:
         test_code = value
-
 
     changed, value = draw_with_modes(input_value=draw_bg, name="draw_bg",
                                      show_bg=True, mode=(Mode.WINDOW), modes=[Mode.CODE_PLAIN_TEXT, Mode.CODE_UI, Mode.CODE_DICT_STR])
@@ -1707,7 +1706,8 @@ def draw_bool(input_value: bool):
 
 
 
-@render_func(is_default_for=(str), shadow=False, wrap=False, use_cache=True, disable_scroll=True, with_header=draw_header)
+@render_func(is_default_for=(str), shadow=False, show_bg=False, wrap=False, is_tree=False,
+             show_add_delete=False, use_cache=False, disable_scroll=True, with_header=draw_header)
 def draw_str(input_value: str, draw_state, editable=True, alpha=1.0):
     if not editable:
         imgui.push_style_var(imgui.STYLE_ALPHA, alpha)
@@ -2091,11 +2091,6 @@ def draw_enum(input_value: Enum, global_style=None, style_manager=None, enum_tin
 
     return changed, selected_enum
 
-@dataclass
-class ModeOverrides:
-    kwargs: Optional[dict] = None
-    func: Optional[callable] = None
-    recursive:Optional[bool] = True
 
 # @render_func(is_default_for=(FileWatch))
 # def draw_file_watch(input_value: FileWatch):
@@ -2104,10 +2099,9 @@ class ModeOverrides:
 #     imgui.text(f"Last Modified: {input_value.modified_time}")
 #
 #     return False, None
-@render_func(show_header=False)
+@render_func(with_header=draw_header, is_tree=False)
 def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, **kwargs):
-    imgui.new_line()
-    imgui.text(type(input_value._input_value).__name__)
+    # imgui.text(type(input_value._input_value).__name__)
 
     def draw_overlay_rect(rect, color=(1, 0, 0, 0.5), name=None):
 
@@ -2120,22 +2114,24 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, *
 
         draw_list.add_rect(rect[0], rect[1], rect[2], rect[3], imgui.get_color_u32_rgba(*color), thickness=1.0, rounding=4)
 
-    imgui.text(f"Mode {str(input_value._kwargs.get('mode', None))}")
-    imgui.text(f"Content height {str(input_value.content_height)}")
-    imgui.text(f"Height {str(input_value.height)}")
-    imgui.text(f"Height source {str(input_value._height_source)}")
+    draw_str(f"{str(input_value._kwargs.get('mode', None))}", name="mode", editable=False, column=0)
+    draw_str(f"{str(input_value.content_height)}", name="content_height", editable=False,column=0)
+    draw_str(f"{str(input_value.height)}", name="height", editable=False,column=0)
+    draw_str(f"{str(input_value._height_source)}", name="Height source", editable=False,column=0)
 
-    imgui.text(f"Scroll Enabled {input_value.scroll_visible}")
-    imgui.text(f"Disable Scroll {input_value._kwargs.get('disable_scroll', False)}")
-    imgui.text("Scroll_offset " + str(input_value.scroll_offset))
-    imgui.text(f"Clip Rect {str(input_value.clip_rect)}")
+    draw_str(f"Scroll Enabled {input_value.scroll_visible}", column=0)
+    draw_str(f"Disable Scroll {input_value._kwargs.get('disable_scroll', False)}", column=0)
+    draw_str("Scroll_offset " + str(input_value.scroll_offset), column=0)
+    draw_str(f"Clip Rect {str(input_value.clip_rect)}", column=0)
 
-    draw_collection(draw_state._all_pending)
+    draw_collection(draw_state._all_pending, name="All Pending", column=1, fill_height=True)
 
-    imgui.new_line()
-    imgui.separator()
+    # imgui.new_line()
+    # imgui.separator()
 
-    clicked, input_value._print_last_invalid = imgui.checkbox("Print Invalidate", input_value._print_last_invalid)
+    changed, value = draw_bool(input_value._print_last_invalid, name="Print Invalid", column=0)
+    if changed:
+        input_value._print_last_invalid = value
 
     # if input_value._last_invalidate is not None:
     #     if input_value._print_last_invalid:
@@ -2143,19 +2139,19 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, *
     # else:
     #     imgui.text_colored("No invalidate info", 1, 0, 0, 1)
 
-    if input_value.explain_convert is not None:
-        imgui.text(str(input_value.explain_convert))
+    # if input_value.explain_convert is not None:
+    #     imgui.text(str(input_value.explain_convert))
 
-    if imgui.is_mouse_hovering_rect(draw_state.left, draw_state.top,
-                                    draw_state.left + draw_state.width,
-                                    draw_state.top + draw_state.height):
-        draw_list = imgui.get_overlay_draw_list()
-        rect = (input_value.abs_left, input_value.abs_top, input_value.abs_left + input_value.width,
-                input_value.abs_top + input_value.height)
-        draw_overlay_rect(rect, color=(1, 1, 0, 0.5))
-        draw_overlay_rect(input_value.clip_rect, color=(0, 1, 0, 0.5), name="clip")
+    # if imgui.is_mouse_hovering_rect(draw_state.left, draw_state.top,
+    #                                 draw_state.left + draw_state.width,
+    #                                 draw_state.top + draw_state.height):
+    #     draw_list = imgui.get_overlay_draw_list()
+    #     rect = (input_value.abs_left, input_value.abs_top, input_value.abs_left + input_value.width,
+    #             input_value.abs_top + input_value.height)
+    #     draw_overlay_rect(rect, color=(1, 1, 0, 0.5))
+    #     draw_overlay_rect(input_value.clip_rect, color=(0, 1, 0, 0.5), name="clip")
 
-    imgui.text(func.__name__)
+    draw_str(func.__name__, column=0)
     return False, None
 
 
@@ -2227,152 +2223,4 @@ def draw_any(input_value:any, view_func=None, mode:any=None, **kwargs):
     return_val = view_func(input_value, **kwargs)
 
     return return_val
-
-class Mode(Enum):
-
-    def get_config_for(self, input_value=None, the_type=None):
-        if input_value is not None:
-            the_type = type(input_value)
-        config = self.value.get(the_type, None)
-        if config is not None:
-            return config
-
-        for super_type in type(input_value).__mro__:
-            config = self.value.get(super_type, None)
-            if config is not None:
-                return config
-            elif Any in self.value:
-                return self.value[Any]
-        return None
-
-    WINDOW = {
-        Any: ModeOverrides(
-            kwargs={"show_bg":True, "selectable":False, "use_cache":True, "melty_window":True, "closable":True,
-                    "with_header_end":draw_header_end,
-                    "auto_resize":False, "draggable":True, "show_tint":True, "show_header":True, "with_footer":draw_footer,
-                    "disable_scroll":False},
-            recursive=False
-        )
-    }
-
-    WINDOW_CLEAN = {
-        Any: ModeOverrides(
-            kwargs={"show_bg":True, "selectable":False, "use_cache":True, "melty_window":True, "closable":True,
-                    "auto_resize":True, 'min_width':300, "draggable":True, "is_tree":False, "show_tint":False, "show_header":False,
-                    "disable_scroll":False},
-            recursive=False
-        )
-    }
-
-    CODE_DICT_STR = {
-        cst.Module: ModeOverrides(
-            kwargs={"convert": [cst.Module, dict, str]},
-            recursive=True,
-            func=draw_text
-        ),
-
-        types.FunctionType: ModeOverrides(
-            kwargs={"convert": [types.FunctionType, cst.Module]},
-            recursive=True,
-        ),
-
-        types.ModuleType: ModeOverrides(
-            kwargs={"convert": [types.ModuleType, cst.Module]},
-            recursive=True
-        ),
-    }
-
-    CODE_UI = {
-        cst.Module: ModeOverrides(
-            kwargs={"convert": [cst.Module, dict]},
-            func=draw_collection,
-            recursive=True
-        ),
-
-        types.FunctionType: ModeOverrides(
-            kwargs={"convert": [types.FunctionType, cst.Module], "auto_apply": [load_text, recompile]},
-            recursive=True
-        ),
-
-        types.ModuleType: ModeOverrides(
-            kwargs={"convert": [types.ModuleType, cst.Module], "auto_apply": [load_text, recompile_module]},
-            recursive=True
-        ),
-
-        Conditional: ModeOverrides(
-            kwargs={"tint": (0.2, 0.2, 0.1), 'show_add_delete': False, 'is_tree':False},
-            recursive=True,
-        ),
-
-        Comment: ModeOverrides(
-            kwargs={"tint": (0.2, 0.2, 0.1), 'show_add_delete': False, 'is_tree':False},
-            func=draw_comment,
-            recursive=True,
-        ),
-
-        GeneralParse: ModeOverrides(
-            kwargs={'show_add_delete': False, "disable_scroll": False},
-            recursive=True,
-        ),
-
-    }
-
-    CODE_PLAIN_TEXT = {
-        cst.Module: ModeOverrides(
-            kwargs={"convert": [cst.Module, str], "horizontal":True},
-            func=draw_text,
-            recursive=True
-        ),
-
-        types.FunctionType: ModeOverrides(
-            kwargs={"convert": [types.FunctionType, cst.Module],
-                    "auto_apply": [load_text],
-                    "indent_size": 30, "with_header": draw_header},
-            recursive=True
-        ),
-
-        types.ModuleType: ModeOverrides(
-            kwargs={"convert": [types.ModuleType, cst.Module],
-                    "auto_apply": [load_text],
-                    "indent_size": 30, "with_header": draw_header},
-            recursive=True
-        ),
-
-        str: ModeOverrides(
-            kwargs={"convert": None, "mode": None, "indent_size": 30, "with_header": draw_header},
-            func=draw_text,
-            recursive=True,
-        ),
-    }
-
-    # ── File metadata ────────────────────────────────────────
-    #
-    # Path on disk → metadata dict (name, size, modified, raw bytes).
-    # Good for: file browsers, asset inspectors, drag-and-drop targets.
-
-    FILE_META = {
-        Path: ModeOverrides(
-            kwargs={"convert": [path_to_dict]},
-            func=draw_collection,
-            recursive=True,
-        ),
-        bytes: ModeOverrides(
-            kwargs={"convert": [bytes_to_str]},
-            func=draw_text,
-            recursive=True,
-        ),
-    }
-
-    # ── File as plain text ───────────────────────────────────
-    #
-    # Path on disk → byte string, drawn in a text editor.
-    # Good for: README, .txt, .md, .json - anything you want as raw text.
-
-    # FILE_TEXT = {
-    #     Path: ModeOverrides(
-    #         kwargs={"convert": [Path, bytes, str]},
-    #         func=draw_str,
-    #         recursive=True,
-    #     ),
-    # }
 
