@@ -44,11 +44,11 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
     # Name text (value is the base offset, updated to depth below)
     name_style = {
-        'value': 0.099, 'saturation': 0.401,
+        'value': 0.086, 'saturation': 0.401,
         'alpha': 0.848, 'max_value': 3.205,
         'depth_factor': 0.342
     }
-    name_rounding       = 2.0
+    name_rounding       = 2.117
     max_name_chars      = 40
     min_name_text_width = 62
 

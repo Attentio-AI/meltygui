@@ -54,7 +54,7 @@ class Melty:
 
     # list, full with 32 Nones
     max_depth = 32
-    nested_layer_boost = 5
+    nested_layer_boost = 1
     top_layer_boost = 4
     max_layer = 64
     drag_layer = 31
@@ -323,7 +323,7 @@ class Melty:
     @classmethod
     def draw(cls, draw_state):
         parent_ctx = draw_state._parent_ctx
-        Melty.depth = draw_state._start_z_pos
+        # Melty.depth = 0
         Melty.bg_depth = draw_state._bg_depth
 
         original_bg_stack = copy(Melty.bg_stack)
@@ -341,8 +341,18 @@ class Melty:
         if Toggles.debug_context_menu:
 
             draw_list = imgui.get_overlay_draw_list()
-            draw_list.add_text(draw_state.abs_left, draw_state.abs_top - 20, imgui.get_color_u32_rgba(1, 0, 0, 1),
-                               f"Layer {draw_state.layer} Depth {draw_state.depth} ZPOS {draw_state.z_pos}")
+            draw_list.add_text(draw_state.abs_left, draw_state.abs_top - 40, imgui.get_color_u32_rgba(1, 0, 0, 1),
+                               f"Layer {draw_state.layer} "
+                               f"Depth {draw_state.depth} "
+                               f"zpos {draw_state.z_pos} "
+                               f"depth_and_layer {draw_state.depth_and_layer} "
+                               f"Melty.active_layer {cls.active_layer} "
+                               f"Melty.z_pos {cls.z_pos} "
+                               f"Melty.depth {cls.depth}")
+
+            draw_list.add_text(draw_state.abs_left, draw_state.abs_top - 20, imgui.get_color_u32_rgba(1, 1, 0, 1),
+                               f"kwargs['active_layer'] {kwargs['active_layer']} "
+                               )
 
         kwargs['input_value'] = input_value
         return_val = view_func(**kwargs)
@@ -388,7 +398,7 @@ class Melty:
                     to_discard.add(ds)
                     ds.closed = True
                 else:
-                    cls.root_draw_states_by_layer[ds.layer + dynamic_offset].append(ds)
+                    cls.root_draw_states_by_layer[ds.abs_layer].append(ds)
 
             for discard_ds in to_discard:
                 if discard_ds in ds_list:
@@ -417,19 +427,25 @@ class Melty:
             # Sort by y position (draw_state.top)
 
             # sort by draw_state.z_pos
-            sorted_root_ds = sorted(cls.root_draw_states_by_layer[idx], key=lambda ds: ds.z_pos)
+            # sorted_root_ds = sorted(cls.root_draw_states_by_layer[idx], key=lambda ds: ds.z_pos)
 
-            for d_idx, draw_state in enumerate(sorted_root_ds):
+            for d_idx, draw_state in enumerate(cls.root_draw_states_by_layer[idx]):
                 # Melty.cache.mask_mark_view(draw_state.z_pos, draw_state.left,
                 #                            draw_state.top, draw_state.width, draw_state.height,
                 #                            f"view_mask_{draw_state.id}", 4)
+                Melty.active_layer = idx + (d_idx * 2)
+                Melty.z_pos = (Melty.active_layer * Melty.max_depth) + Melty.depth
+
+                draw_state.layer = Melty.active_layer
+                draw_state.z_pos = Melty.z_pos
+                draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer)
+                draw_state._kwargs['active_layer'] = Melty.active_layer
 
                 if not Melty.channels_split:
                     imgui.get_window_draw_list().channels_split(Melty.max_depth)
-                    imgui.get_window_draw_list().channels_set_current(d_idx)
+                    imgui.get_window_draw_list().channels_set_current(min(Melty.active_layer, Melty.max_depth - 1))
                     Melty.channels_split = True
 
-                Melty.depth = d_idx
                 if draw_state.unique not in cls.seen_unique:
                     cls.draw(draw_state)
 
@@ -600,8 +616,8 @@ class Melty:
             window_z_pos = len(Melty.registered_windows) + Melty.top_layer_boost
             cls.pending_move_to_front[1].layer = window_z_pos
             draw_state = cls.pending_move_to_front[1]
-            if cls.pending_move_to_front[1]._is_nested:
-                draw_state.layer += Melty.nested_layer_boost + 3
+            # if cls.pending_move_to_front[1]._is_nested:
+            #     draw_state.layer += Melty.nested_layer_boost + 3
                 # draw_state.z_pos = (draw_state.layer * Melty.max_depth) + draw_state.depth
             if window_key in Melty.registered_windows:
                 # Remove and re-insert to move to end (top)

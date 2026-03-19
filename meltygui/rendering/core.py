@@ -493,8 +493,11 @@ def render_func(*args, **o_kwargs):
 
                     parent_ds = draw_state._parent
                     Melty.root_draw_states[parent_ds.id].append(draw_state)
+                    draw_state.parent_window = Melty.melty_window_stack[-1]
 
-                    layer = layer + Melty.nested_layer_boost + len(Melty.root_draw_states[parent_ds.id])
+                    layer = layer + Melty.nested_layer_boost
+                else:
+                    Melty.layers[layer].append(draw_state)
 
                 kwargs["active_layer"] = layer
 
@@ -502,7 +505,7 @@ def render_func(*args, **o_kwargs):
                     layer = len(Melty.layers) - 1
 
                 # draw_state.layer = layer
-                Melty.layers[layer].append(draw_state)
+
                 return_value = (False, None)
                 if draw_state._tile_id in Melty.returned_values:
                     return_value = Melty.returned_values.pop(draw_state._tile_id)

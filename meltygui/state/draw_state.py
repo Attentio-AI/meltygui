@@ -379,12 +379,19 @@ class DrawState(DictConversion):
     #         self._args[name[3:]] = value
     #     else:
     #         super().__setattr__(name, value)
+    @property
+    def abs_layer(self):
 
+        if self.parent_window is not None:
+            return self.parent_window.abs_layer + 1
+        else:
+            return self.layer
 
     @property
     def abs_closed(self):
         if self.closed and self.closable:
             return True
+
         elif self.parent_window is not None:
             return self.parent_window.abs_closed
         else:
