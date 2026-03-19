@@ -85,6 +85,11 @@ class Mode(Enum):
             recursive=True
         ),
 
+        type: ModeOverrides(
+            kwargs={"convert": [type, cst.Module], "auto_apply": [load_text, recompile]},
+            recursive=True
+        ),
+
         types.ModuleType: ModeOverrides(
             kwargs={"convert": [types.ModuleType, cst.Module], "auto_apply": [load_text, recompile_module]},
             recursive=True
@@ -118,14 +123,14 @@ class Mode(Enum):
         types.FunctionType: ModeOverrides(
             kwargs={"convert": [types.FunctionType, cst.Module],
                     "auto_apply": [load_text],
-                    "indent_size": 30, "with_header": draw_header},
+                    "indent_size": 5, "with_header": draw_header},
             recursive=True
         ),
 
-        types.ModuleType: ModeOverrides(
-            kwargs={"convert": [types.ModuleType, cst.Module],
+        type: ModeOverrides(
+            kwargs={"convert": [type, cst.Module],
                     "auto_apply": [load_text],
-                    "indent_size": 30, "with_header": draw_header},
+                    "indent_size": 5, "with_header": draw_header},
             recursive=True
         ),
 

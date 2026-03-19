@@ -54,7 +54,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
     # Tree arrow
     arrow_style = {
-        'value': 0.828, 'saturation': 1.639,
+        'value': 0.993, 'saturation': 1.639,
         'alpha': 0.122, 'max_value': 1.601,
         'depth_factor': 0.332
     }

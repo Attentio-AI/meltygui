@@ -838,6 +838,15 @@ class _ClassPatcher(cst.CSTTransformer):
         super().__init__()
         self.edits = {k: v for k, v in edits.items() if not isinstance(k, Comment)}
         self._in_init = False
+        self._depth = 0  # class body = 1, __init__ body = 2, nested = 3+
+
+    def visit_IndentedBlock(self, node):
+        self._depth += 1
+        return True
+
+    def leave_IndentedBlock(self, original_node, updated_node):
+        self._depth -= 1
+        return updated_node
 
     def visit_FunctionDef(self, node):
         if node.name.value == "__init__":
@@ -850,16 +859,16 @@ class _ClassPatcher(cst.CSTTransformer):
         return updated_node
 
     def leave_AnnAssign(self, original_node, updated_node):
-        # Body-level: debug: bool = False
-        if not self._in_init and isinstance(updated_node.target, cst.Name):
+        # Body-level: debug: bool = False (depth 1 = class body)
+        if not self._in_init and self._depth == 1 and isinstance(updated_node.target, cst.Name):
             name = updated_node.target.value
             if name in self.edits and updated_node.value is not None:
                 new_cst = _python_to_cst_expr(self.edits[name], updated_node.value)
                 if new_cst is not None:
                     return updated_node.with_changes(value=new_cst)
 
-        # __init__: self.x: int = 0
-        if self._in_init and isinstance(updated_node.target, cst.Attribute):
+        # __init__: self.x: int = 0 (depth 2 = __init__ direct body)
+        if self._in_init and self._depth == 2 and isinstance(updated_node.target, cst.Attribute):
             target = updated_node.target
             if (isinstance(target.value, cst.Name) and target.value.value == "self"
                     and updated_node.value is not None):
@@ -877,8 +886,8 @@ class _ClassPatcher(cst.CSTTransformer):
 
         target = updated_node.targets[0].target
 
-        # Body-level: x = False
-        if not self._in_init and isinstance(target, cst.Name):
+        # Body-level: x = val (depth 1 = class body)
+        if not self._in_init and self._depth == 1 and isinstance(target, cst.Name):
             name = target.value
             if name in self.edits:
                 new_cst = _python_to_cst_expr(self.edits[name], updated_node.value)
@@ -886,7 +895,9 @@ class _ClassPatcher(cst.CSTTransformer):
                     return updated_node.with_changes(value=new_cst)
             return updated_node
 
-        # __init__: self.x = val
+        # __init__: self.x = val (depth 2 = __init__ direct body)
+        if self._depth != 2:
+            return updated_node
         if not (isinstance(target, cst.Attribute)
                 and isinstance(target.value, cst.Name)
                 and target.value.value == "self"):

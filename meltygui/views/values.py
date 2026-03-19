@@ -546,7 +546,9 @@ def draw_main(input_value, vis):
     changed, value = draw_with_modes(input_value=toggles, name="Toggles",
                                      show_bg=True, mode=(Mode.WINDOW), modes=[Mode.CODE_PLAIN_TEXT, Mode.CODE_UI])
 
-
+    from src.lsd.gl_gui.model.app_model import Lora
+    changed, value = draw_with_modes(input_value=Lora, name="lora class",
+                                     show_bg=True, mode=(Mode.WINDOW), modes=[Mode.CODE_PLAIN_TEXT, Mode.CODE_UI, Mode.CODE_DICT_STR])
 
 
     some_path = Path("/home/lukas/test_folder/test_list.txt")
@@ -1875,7 +1877,7 @@ def draw_float_ctx(input_value):
 
 
 @render_func(is_default_for=float, use_cache=False, shadow=False, window_pos=(0,0), show_bg=False, wrap=False, is_tree=False,
-             context_menu=draw_float_ctx, with_header=draw_header, with_header_end=draw_header_end)
+             with_header=draw_header, with_header_end=draw_header_end)
 def draw_float(input_value: float, draw_state, min_value=-100.0, max_value=100.0, speed=0.001):
     imgui.set_next_item_width(min(600, max(30, draw_state.content_width)))
     changed, value = imgui.drag_float("", input_value,
@@ -2121,12 +2123,12 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, *
     draw_str(f"{str(input_value.height)}", name="height", editable=False,column=0)
     draw_str(f"{str(input_value._height_source)}", name="Height source", editable=False,column=0)
 
-    draw_str(f"Scroll Enabled {input_value.scroll_visible}", column=0)
-    draw_str(f"Disable Scroll {input_value._kwargs.get('disable_scroll', False)}", column=0)
-    draw_str("Scroll_offset " + str(input_value.scroll_offset), column=0)
-    draw_str(f"Clip Rect {str(input_value.clip_rect)}", column=0)
+    draw_str(f"{input_value.scroll_visible}", name="scroll_visible", column=0)
+    draw_str(f"{input_value._kwargs.get('disable_scroll', False)}", name="disable_scroll", column=0)
+    draw_str(str(input_value.scroll_offset), name="scroll_offset", column=0)
+    draw_str(f"Clip Rect {str(input_value.clip_rect)}", name="clip_rect", column=0)
 
-    draw_collection(draw_state._all_pending, name="All Pending", column=1, fill_height=True)
+    # draw_collection(draw_state._all_pending, name="All Pending", column=1, fill_height=True)
 
     # imgui.new_line()
     # imgui.separator()
@@ -2138,11 +2140,9 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, *
     if input_value._last_invalidate is not None:
         if input_value._print_last_invalid:
             print_stack_trace(frames=input_value._last_invalidate)
-    else:
-        imgui.text_colored("No invalidate info", 1, 0, 0, 1)
 
     if input_value.explain_convert is not None:
-        imgui.text(str(input_value.explain_convert))
+        draw_str(str(input_value.explain_convert), name="explain_convert", column=0)
 
     if Toggles.debug_context_menu:
         if imgui.is_mouse_hovering_rect(draw_state.left, draw_state.top,
@@ -2154,7 +2154,13 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, *
             draw_overlay_rect(rect, color=(1, 1, 0, 0.5))
             draw_overlay_rect(input_value.clip_rect, color=(0, 1, 0, 0.5), name="clip")
 
-    draw_str(func.__name__, column=0)
+    draw_str(input_value._kwargs["func"].__name__, name="view_func", column=0)
+    from src.lsd.gl_gui.view.mode import Mode
+    draw_any(input_value._kwargs["func"], column=1, mode=Mode.CODE_PLAIN_TEXT, name="Render Function")
+
+    draw_str(str(type(input_value._raw_input_value)), name="Input Type", column=0)
+    draw_any(type(input_value._raw_input_value), column=2, mode=Mode.CODE_PLAIN_TEXT, name="Input Type")
+
     return False, None
 
 
@@ -2170,11 +2176,12 @@ def draw_pending(input_value, draw_state=None):
 
 @render_func(use_cache=True, show_header=False)
 def pending_window(input_value, button_name, pending=None, draw_state=None):
-    imgui.push_text_wrap_pos(imgui.get_cursor_screen_pos()[0] + draw_state.content_width)
-    imgui.text_wrapped(str(pending.status))
-    imgui.pop_text_wrap_pos()
+    # imgui.push_text_wrap_pos(imgui.get_cursor_screen_pos()[0] + draw_state.content_width)
+    draw_text(str(pending.status), name="Status", wrap=True, header_same_line=False)
+    # imgui.text_wrapped(str(pending.status))
+    # imgui.pop_text_wrap_pos()
 
-    imgui.text(pending.originated.__name__)
+    # imgui.text(pending.originated.__name__)
     if button(str(button_name), width=100, height=20)[0]:
         return True, None
     return False, None

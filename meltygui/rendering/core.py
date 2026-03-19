@@ -798,7 +798,7 @@ def render_func(*args, **o_kwargs):
                                                      draw_state.window_pos[1])
                         elif anchor_pos == Anchor.BOTTOM_LEFT:
                             draw_state.window_pos = (draw_state.window_pos[0],
-                                                     draw_state._initial_window_pos_resize[1] + max(0, handle_drag.total_dy))
+                                                     draw_state._initial_window_pos_resize[1] + handle_drag.total_dy)
                         elif anchor_pos == Anchor.BOTTOM_RIGHT:
                             draw_state.window_pos = (draw_state._initial_window_pos_resize[0] + max(0, handle_drag.total_dx),
                                                      draw_state._initial_window_pos_resize[1] + max(0, handle_drag.total_dy))
@@ -912,7 +912,7 @@ def render_func(*args, **o_kwargs):
             single_line_avail = available_width - header_width - 5
             header_same_line = kwargs.get("header_same_line", False)
             if ((single_line_avail < 100 or (draw_state.height is not None and draw_state.height - draw_state.footer_height > 50))
-                    and not header_same_line and not Melty.is_wrapped()):
+                    and not header_same_line):
                 draw_state.multi_line = True
                 draw_state.content_width = available_width
             else:
@@ -1032,7 +1032,7 @@ def render_func(*args, **o_kwargs):
 
             push_id(unique)
 
-            if melty_window:
+            if closable or column is not None:
                 Melty.push_clip((draw_state.abs_left, draw_state.abs_top,
                                  draw_state.abs_left + draw_state.width,
                                  draw_state.abs_top + draw_state.height))
@@ -1241,7 +1241,7 @@ def render_func(*args, **o_kwargs):
                     # internal_hash = Background.simple_hash(internal_value)
                     # cached_internal_hash = Background.simple_hash(draw_state._input_value_cache["internal_state"][0])
                     if internal_value != draw_state._input_value_cache["internal_state"][0]:
-                        if isinstance(internal_value, Pending) and internal_value.state != PendingState.BACKGROUND and not draw_state._show_load:
+                        if isinstance(internal_value, Pending) and internal_value.state != PendingState.BACKGROUND and not draw_state._show_load and not draw_state._show_save:
                             internal_changed = True
                             request_render()
 
@@ -2036,7 +2036,7 @@ def render_func(*args, **o_kwargs):
             #     request_render()
 
 
-            if melty_window:
+            if closable or column is not None:
                 Melty.pop_clip()
             if fixed_size:
                 Melty.fixed_size_stack.pop()
