@@ -183,7 +183,7 @@ class InputHandler:
     __slots__ = (
         '_states', '_hovered', '_prev_hovered', '_pending', '_cursor_x', '_cursor_y',
         '_modifiers', '_last_dx', '_last_dy', '_drag_capture', '_drag_activated',
-        '_down_origins'
+        '_down_origins', '_blocker_views'
     )
 
     def __init__(self):
@@ -199,6 +199,7 @@ class InputHandler:
         self._drag_capture: dict[str, Any] = {}  # input_id -> view_id that captured it on down
         self._drag_activated: dict[str, bool] = {}  # input_id -> whether drag threshold exceeded
         self._down_origins: dict[str, set] = {}  # input_id -> set of view_ids hovered at down time
+        self._blocker_views: set = set()
 
     def _state(self, input_id: str) -> _InputState:
         s = self._states.get(input_id)
@@ -215,8 +216,9 @@ class InputHandler:
         self._pending.clear()
         self._last_dx = 0.0
         self._last_dy = 0.0
+        self._blocker_views.clear()
 
-    def register_hovered(self, view_id: Any, subscribed: list[str], priority: int = 0, tile_id=None, selected=False):
+    def register_hovered(self, view_id: Any, subscribed: list[str], priority: int = 0, tile_id=None, selected=False, blocker=False):
         """Register hovered view. Priority 0 = topmost.
 
         Multiple calls with the same view_id will merge subscriptions,
@@ -225,7 +227,15 @@ class InputHandler:
         Including "inverted" in a subscription name (e.g. "inverted_left_mouse_clicked")
         causes that event to fire to the highest-priority-number (parent/root) view first,
         reversing the normal child-first dispatch order.
+
+        blocker=True makes this view consume all events at its priority level.
+        Views with a higher priority number (lower priority) than the topmost
+        blocker will not receive any events. Inverted events are scoped to
+        within the blocker boundary.
         """
+        if blocker:
+            self._blocker_views.add(view_id)
+
         # Parse new subscriptions
         new_subs = set()
         for s in subscribed:
@@ -377,6 +387,22 @@ class InputHandler:
     def process_frame(self):
         """Returns {view_id: {event_name: event}} for all matched subscriptions."""
         self._hovered.sort(key=lambda x: x[1])
+
+        # --- Blocker: drop views below the topmost blocker ---
+        if self._blocker_views:
+            blocker_priority = None
+            blocker_tile = None
+            for view_id, priority, subs in self._hovered:
+                if view_id in self._blocker_views:
+                    blocker_priority = priority
+                    blocker_tile = _view_id_to_tile_id.get(view_id)
+                    break  # list is sorted asc, first match is topmost
+            if blocker_priority is not None:
+                self._hovered = [
+                    (v, p, s) for v, p, s in self._hovered
+                    if p <= blocker_priority
+                    or _view_id_to_tile_id.get(v) == blocker_tile
+                ]
 
         # --- Precompute key → [(view_id, priority)] index (sorted by priority asc) ---
         key_index: dict[tuple[str, str], list[tuple[Any, int]]] = {}

@@ -383,7 +383,7 @@ class DrawState(DictConversion):
     def abs_layer(self):
 
         if self.parent_window is not None:
-            return self.parent_window.abs_layer + 1
+            return self.parent_window.abs_layer + 4
         else:
             return self.layer
 

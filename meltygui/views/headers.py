@@ -41,7 +41,6 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     icon_width = imgui.calc_text_size(spinner_icon)[0]/2
 
 
-
     # Name text (value is the base offset, updated to depth below)
     name_style = {
         'value': 0.086, 'saturation': 0.401,
@@ -68,6 +67,21 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         name = display_name
 
     imgui.dummy(0, 0)
+
+    # Handles search events
+    if draw_state.search_active:
+        search_icon = ""
+        imgui.text(f"{search_icon} {draw_state.search_text}")
+        imgui.same_line()
+        from src.lsd.gl_gui.view.core_views.new_core_view import button
+        if button("x", show_bg=True, use_cache=True, shadow=True, z_offset=60,
+                  tile_mode=TileMode.MAX, color=(9, 1, 1, 0))[0]:
+            draw_state.search_active = False
+            draw_state.search_text = ""
+
+        imgui.same_line()
+
+
 
     on_change = False
     return_val = on_action

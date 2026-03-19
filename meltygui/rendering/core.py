@@ -1079,6 +1079,26 @@ def render_func(*args, **o_kwargs):
             #     Melty.cache.invalidate(draw_state._tile_id, force=True)
             #     request_render()
 
+
+            if "search_text" in wanted_params and kwargs.get("with_header", None) is not None and kwargs.get("show_header", True):
+                search_requested = draw_state.on_action("inverted_f_key_down")
+                if search_requested:
+                    if search_requested.ctrl:
+                        if Melty.focused_ds is not None:
+                            Melty.focused_ds.search_active = False
+                            Melty.cache.invalidate(Melty.focused_ds._tile_id, force=True)
+                            request_render()
+                        draw_state.search_active = True
+                        Melty.focused_ds = draw_state
+
+                if draw_state.search_active:
+                    esc_key = draw_state.on_action("escape_key_down_inverted")
+                    if esc_key:
+                        Melty.focused_ds = None
+                        draw_state.search_active = False
+                        request_render()
+
+
             content_rect = (0,0)
             unset_input = draw_state._input_value == UNSET_VALUE
             if Melty.cache.mark_start_offscreen(draw_state=draw_state):
@@ -1389,6 +1409,7 @@ def render_func(*args, **o_kwargs):
                     draw_list.channels_set_current(
                         max(0, min(offscreen_depth + passed_z_offset + ds_z_offset, Melty.max_depth - 1)))
 
+
                 if kwargs.get("selectable", True):
                     left_mouse_down_press = draw_state.on_action("left_mouse_held", "press", priority_delta=-1)
                     draw_state.pressed = True if left_mouse_down_press else False
@@ -1670,7 +1691,8 @@ def render_func(*args, **o_kwargs):
                     priority = max_layer_depth - draw_state.z_pos
                     event_names = copy(wanted_params)
                     Melty.event_handler.register_hovered(tile_id, event_names, priority, tile_id,
-                                                         selected=draw_state.selected)
+                                                         selected=draw_state.selected,
+                                                         blocker=closable)
 
                 ###########################################################
                 kwargs['next_kwargs'] = kwargs

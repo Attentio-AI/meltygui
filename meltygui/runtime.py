@@ -22,12 +22,11 @@ from src.lsd.gl_gui.utils.glfw_utils import request_render
 
 import OpenGL.GL as gl
 
-import threading
-from dataclasses import dataclass
-
-
 
 class Melty:
+
+
+    focused_ds = None
     selected = set()
     last_selected = None
     large_font = None
@@ -465,10 +464,6 @@ class Melty:
                 #         draw_state._bounding_hovered != draw_state._imgui_popover_open):
                 #     Melty.cache.invalidate(draw_state._tile_id)
                 #     # draw_state.draw_rect()
-
-
-
-
         cls.layers = []
 
         is_popup_open = imgui.is_popup_open("", flags=imgui.POPUP_ANY_POPUP)

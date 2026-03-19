@@ -53,7 +53,7 @@ def empty(input_val):
              show_bg=True, melty_window=True, draggable=True, show_tint=True, tile_mode=TileMode.MAX,
              with_header=draw_header, with_header_end=draw_header_end, indent_size=5,
              with_footer=draw_footer)
-def draw_window(input_value:any, view_func=None, draw_state=None, delete_down=False, glfw_close_down=False, **kwargs):
+def draw_window(input_value:any, view_func=None, draw_state=None, delete_down=False, search_text="", glfw_close_down=False, **kwargs):
     if delete_down and imgui.get_io().key_ctrl:
         draw_state.closed = True
 
@@ -72,6 +72,7 @@ def draw_window(input_value:any, view_func=None, draw_state=None, delete_down=Fa
     kwargs['auto_resize'] = True
     kwargs.pop('max_height', None)
     kwargs['shadow'] = False
+    kwargs['search_text'] = search_text
 
     return_val = draw_any(input_value, view_func=view_func, **kwargs)
     if len(return_val) == 3:
@@ -86,9 +87,9 @@ def draw_module(input_value: types.ModuleType, draw_state, **kwargs):
 
 @render_func(is_default_for=(dict, MutableMapping, defaultdict, types.MappingProxyType), use_cache=True,
              show_bg=True, show_instance_vars=False, manual_content_height=True, disable_scroll=True,
-             shadow=True, wrap=False, with_header=draw_header, indent_size=5)
+             shadow=True, wrap=False, with_header=draw_header, indent_size=5, search_text="")
 def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=None, keys=None, get_attr=None, set_attr=None, show_excluded=False,
-                    child_kwargs=None, nested_func=None, show_bg=True, show_search=True, on_collapse=False,
+                    child_kwargs=None, nested_func=None, show_bg=True, show_search=True, on_collapse=False, search_text="",
                     on_expand=False, global_toggles=None, show_add_delete=True, item_spacing_y=1,
                     horizontal=False, show_indices=False, **kwargs):
     """
