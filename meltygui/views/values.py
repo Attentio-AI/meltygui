@@ -1489,11 +1489,11 @@ def draw_bg(left=24, top=3, width=0, height=33, depth=0, rounding=4.203,
 
     # -- Constants ---------------------------------
     depth_wrap        = 30.823
-    depth_scale       = 1.900
-    corner_radius     = 4.14
+    depth_scale       = 1.266
+    corner_radius     = 5.903
     border_inset      = 1.548
-    border_inset_half = 0.388
-    stroke_width      = 1.00
+    border_inset_half = 0.641
+    stroke_width      = 2.0
 
 
     # How depth relates to color intensity

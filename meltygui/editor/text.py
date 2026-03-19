@@ -11,7 +11,6 @@ _selection_start = 0
 _selection_end = 0
 _is_focused = False
 _cursor_blink_time = 0.0
-_is_dragging = False
 _double_click_time = 0.0
 _last_click_pos = -1
 _prev_keys_down = set()
