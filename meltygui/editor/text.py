@@ -323,8 +323,9 @@ def _delete_selection(text, ds):
 
 
 @render_func(show_bg=True, wrap=False, use_cache=True, with_header=draw_header,
-             with_footer=draw_footer, selectable=False, indent_size=30)
-def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, left_mouse_up=False, left_mouse_down=False, left_mouse_drag=False, draw_state=None):
+             with_footer=draw_footer, selectable=False)
+def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, left_mouse_up=False,
+              left_mouse_down=False, left_mouse_drag=False, draw_state=None):
     ds = draw_state
 
     changed = False
@@ -660,9 +661,10 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, le
     else:
         text_height = imgui.calc_text_size(str(input_value) + " ")[1] + 2
 
-    imgui.dummy(draw_state.content_width, text_height)
+    imgui.dummy(draw_state.width, text_height)
 
     if changed:
+        print("Text changed to:")
         rebuilt_text = text + '\n'.join(original_input.split('\n')[max_lines:])
         return True, rebuilt_text
     return False, original_input

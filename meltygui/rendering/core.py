@@ -1084,6 +1084,7 @@ def render_func(*args, **o_kwargs):
                 search_requested = draw_state.on_action("inverted_f_key_down")
                 if search_requested:
                     if search_requested.ctrl:
+                        print("Search requested")
                         if Melty.focused_ds is not None:
                             Melty.focused_ds.search_active = False
                             Melty.cache.invalidate(Melty.focused_ds._tile_id, force=True)
@@ -1743,6 +1744,7 @@ def render_func(*args, **o_kwargs):
 
                 #### MAIN CALL #######################
                 Melty.push_clip((left, top,
+
                                  left + width,
                                  top + height - draw_state.footer_height))
 

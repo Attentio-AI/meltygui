@@ -72,7 +72,8 @@ def draw_window(input_value:any, view_func=None, draw_state=None, delete_down=Fa
     kwargs['auto_resize'] = True
     kwargs.pop('max_height', None)
     kwargs['shadow'] = False
-    kwargs['search_text'] = search_text
+    if search_text != "":
+        kwargs['search_text'] = search_text
 
     return_val = draw_any(input_value, view_func=view_func, **kwargs)
     if len(return_val) == 3:
@@ -87,7 +88,7 @@ def draw_module(input_value: types.ModuleType, draw_state, **kwargs):
 
 @render_func(is_default_for=(dict, MutableMapping, defaultdict, types.MappingProxyType), use_cache=True,
              show_bg=True, show_instance_vars=False, manual_content_height=True, disable_scroll=True,
-             shadow=True, wrap=False, with_header=draw_header, indent_size=5, search_text="")
+             shadow=True, wrap=False, with_header=draw_header, indent_size=5)
 def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=None, keys=None, get_attr=None, set_attr=None, show_excluded=False,
                     child_kwargs=None, nested_func=None, show_bg=True, show_search=True, on_collapse=False, search_text="",
                     on_expand=False, global_toggles=None, show_add_delete=True, item_spacing_y=1,
@@ -247,7 +248,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=No
             continue
 
         # ----- SEARCH CHECK (keys + item.name if present) -----
-        if search_token:
+        if search_token != "":
             name_field = getattr(item, "name", None) or getattr(item, "__name__", "")
             if ((search_token not in norm_string(key_str)) and
                     (search_token not in norm_string(name_field))):
@@ -2044,11 +2045,8 @@ def draw_debug_label(input_value: str):
     imgui.text(input_value)
 
 
-@render_func(is_default_for=Enum, show_add_delete=False, 
-is_tree=False, shadow=False, header_same_line=True,
- with_header=draw_header)
-def draw_enum(input_value: Enum, global_style=None,
-                         style_manager=None, enum_tint=(0.3, 0.3, 0.3)):
+@render_func(is_default_for=Enum, show_add_delete=False, is_tree=False, shadow=False, header_same_line=True, parent_show_add_delete=False, with_header=draw_header)
+def draw_enum(input_value: Enum, global_style=None,  style_manager=None, enum_tint=(0.3, 0.3, 0.3)):
     unique = "enum"
     # imgui.set_next_item_width(imgui.get_content_region_available().x)
     selected_idx = next(enumerate(input_value.__class__))[1]

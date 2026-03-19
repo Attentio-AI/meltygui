@@ -107,7 +107,7 @@ class TileMode(Enum):
 
 @no_save("mouse_btn_state", "mouse_up", "mouse_down", "unique", "search_active",
          "shadow", "size_change", "drag_released", "clicked", "dragged",
-         "dragged", "expanded_height", "clipped", "fully_clipped",
+         "dragged", "expanded_height", "clipped", "fully_clipped",  "header_height",
          "overhead_time", "scroll_visible", "depth_and_layer", "imgui_is_toggled_open",
          "hotkey_receiver", "use_child", "cst", "search_text", "bg_color", "depth", "z_pos",
          "is_active", "clip_rect", "wrapped_top", "current_tint", "wrapped_left", "multi_line",
@@ -117,14 +117,14 @@ class TileMode(Enum):
          "imgui_is_item_activated", "frame_count")
 @exclude("current_tint", "overhead_time", "premature_break",
          "clip_rect", "_input_value", "flow_spacing", "expanded_rect", 'max_column',
-         'width', "height", "size_change", 'left', 'top', 'content_height',
+         'width', "height", "size_change", 'left', 'top', 'content_height', "search_text",
          "hovered", "wrapped_top", "params", "scroll_visible", "depth_and_layer",
          "premature_break", "wrapped_left", "_did_use_cache", "hover_rects",
          "content_region", "value_hash", "drag_window", "content_region", "did_render",
          "bounding_hovered", "dlt_count", "clip_rect",
-         "header_height", "scrolled", "is_hovered_last", "frame_count")
+ "scrolled", "is_hovered_last", "frame_count")
 @no_save_exclude('render_time',  "total_z_offset", 'closable', 'invalid_content_height',
-                 "header_height", "parent_window", "pressed",
+                  "parent_window", "pressed",
                  'hover_rects', 'nested_window', 'use_cache', 'layer', "header_top", "header_left", "left_offset",
                  "top_offset", 'kwargs', "just_shadow",
                  "header_left_delta", "header_top_delta", "last_seen", "persistent", "shadow_margin", "bg_depth",

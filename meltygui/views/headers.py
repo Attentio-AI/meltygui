@@ -28,7 +28,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     # ── Constants ──────────────────────────────────────────────
     # Depth-driven name brightness
     depth_scale       = 0.347
-    depth_offset      = -1.647
+    depth_offset      = -1.373
     name_value_factor = 0.769
 
 
@@ -43,17 +43,17 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
     # Name text (value is the base offset, updated to depth below)
     name_style = {
-        'value': 0.086, 'saturation': 0.401,
-        'alpha': 0.848, 'max_value': 3.205,
+        'value': -0.009, 'saturation': 0.401,
+        'alpha': 0.848, 'max_value': 3.363,
         'depth_factor': 0.342
     }
-    name_rounding       = 2.117
+    name_rounding       = 2.206
     max_name_chars      = 40
     min_name_text_width = 62
 
     # Tree arrow
     arrow_style = {
-        'value': 0.993, 'saturation': 1.639,
+        'value': 1.437, 'saturation': 1.639,
         'alpha': 0.122, 'max_value': 1.601,
         'depth_factor': 0.332
     }
@@ -71,17 +71,31 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     # Handles search events
     if draw_state.search_active:
         search_icon = ""
-        imgui.text(f"{search_icon} {draw_state.search_text}")
-        imgui.same_line()
+        imgui.push_id(f"search_{unique}")
+
+        imgui.begin_group()
+        from src.lsd.gl_gui.view.core_views.text_editor import draw_text
+        search_change, new_search = draw_text(draw_state.search_text,
+                                              name=search_icon, with_header=None,
+                                              width=100, height=21, with_header_end=None,
+                                              with_footer=None, header_same_line=True,
+                                              show_name=False, show_header=False)
+        if search_change:
+            draw_state.search_text = new_search
+
+        imgui.end_group()
+        imgui.pop_id()
+
+        imgui.same_line(spacing=0)
+
         from src.lsd.gl_gui.view.core_views.new_core_view import button
-        if button("x", show_bg=True, use_cache=True, shadow=True, z_offset=60,
+        if button("x", show_bg=True, use_cache=True, shadow=True, z_offset=10,
                   tile_mode=TileMode.MAX, color=(9, 1, 1, 0))[0]:
             draw_state.search_active = False
+            print("clear search")
             draw_state.search_text = ""
 
         imgui.same_line()
-
-
 
     on_change = False
     return_val = on_action
@@ -257,19 +271,6 @@ def draw_footer(input_value=None, name="", key=None, melty=None, parent_show_add
 def draw_header_end(input_value=None, name="", key=None, melty=None, parent_show_add_delete=False,
                     collection=None, draw_state=None, closable=False, style_manager=None,
                     global_style=None, global_toggles=None, **kwargs):
-    bg_style = {
-        "value": 0.01,
-        "saturation": 1.0,
-        "alpha": 1.0,
-        'max_value': 1.0
-    }
-    bg_style = global_style.get_global_constant("bg_style", default=bg_style, folder="bg_styles")
-    search_color = (style_manager.
-                    make_color_style_value(input=bg_style, saturation=0.7,
-                                           value=1.0))
-
-    # push_style_var(imgui.STYLE_FRAME_PADDING, (4, 0))
-    # push_style_var(imgui.STYLE_ITEM_SPACING, (4, 0))
 
     if parent_show_add_delete:
         bg_style = {
@@ -297,34 +298,3 @@ def draw_header_end(input_value=None, name="", key=None, melty=None, parent_show
             draw_state.closed = not draw_state.closed
             Melty.cache.invalidate_up_by_obj(Melty.registered_windows)
 
-
-    # if show_search or draw_state.search_active:
-    #     imgui.same_line()
-    #     imgui.set_cursor_pos_y(imgui.get_cursor_pos()[1] + 2)
-    #
-    #     icon = "\uf002"
-    #     imgui.text_colored(icon, *search_color)
-    #     imgui.same_line()
-    #     search_width = 150.0
-    #     imgui.set_next_item_width(search_width)
-    #     search_changed, new_search = imgui.input_text(f"##search{unique}", draw_state.search_text)
-    #
-    #     if search_changed:
-    #         draw_state.search_text = new_search
-    #         imgui.set_keyboard_focus_here(-1)
-    #         request_render()
-    #
-    #     if not draw_state.search_active:
-    #         draw_state.search_text = ""
-    #
-    #     if on_search:
-    #         draw_state.search_active = True
-    #         imgui.set_keyboard_focus_here(-1)
-    #         request_render()
-    #
-    #     draw_state.search_active = imgui.is_item_focused()
-    # pop_style_var(2)
-
-    # push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
-
-    # pop_style_var(2)

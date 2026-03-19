@@ -1,9 +1,8 @@
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
 
-
-
 class Counters:
     nested_window_count = 0
+    
 
 class Toggles:
     # ---------- Invalidation Settings -----
@@ -17,16 +16,16 @@ class Toggles:
     
     #---------- Visual Settings ---------
     brightness = 0.113
-    contrast = 1.146
-    saturation = 0.066
+    contrast = 1.63
+    saturation = 0.368
     debug_context_menu = False
     
     filters = True
     show_excluded = True
     
 def my_func():
-    for i in range(58):
+    for i in range(25):
         print("someting")
-        my_var = [82,2,9]
-        somethin = True
+        my_var = [50,9,15]
+        somethin = False
     
