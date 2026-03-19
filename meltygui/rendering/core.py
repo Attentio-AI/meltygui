@@ -774,19 +774,37 @@ def render_func(*args, **o_kwargs):
                 if handle_drag and not auto_resize:
                     if draw_state._initial_window_size is None:
                         draw_state._initial_window_size = (draw_state.width, draw_state.height)
+                    if draw_state._initial_window_pos_resize is None:
+                        draw_state._initial_window_pos_resize = (draw_state.window_pos[0], draw_state.window_pos[1])
+
 
                     draw_state.expanded = True
                     size_w = draw_state._initial_window_size[0] + handle_drag.total_dx
                     size_h = draw_state._initial_window_size[1] + handle_drag.total_dy
                     if passed_height is None:
-                        draw_state.height = snap_int(max(size_h, 25))
+                        draw_state.height = snap_int(max(size_h, draw_state.min_height))
                         draw_state._height_source = "initial window size"
 
-
                     if passed_width is None:
-                        draw_state.width = snap_int(max(size_w, 25))
+                        draw_state.width = snap_int(max(size_w, draw_state.min_width))
+
+
+                    if draw_state.anchor_pos is not None:
+                        anchor_pos = draw_state.anchor_pos
+                        if anchor_pos == Anchor.TOP_LEFT:
+                            pass
+                        elif anchor_pos == Anchor.TOP_RIGHT:
+                            draw_state.window_pos = (draw_state._initial_window_pos_resize[0] + max(0, handle_drag.total_dx),
+                                                     draw_state.window_pos[1])
+                        elif anchor_pos == Anchor.BOTTOM_LEFT:
+                            draw_state.window_pos = (draw_state.window_pos[0],
+                                                     draw_state._initial_window_pos_resize[1] + max(0, handle_drag.total_dy))
+                        elif anchor_pos == Anchor.BOTTOM_RIGHT:
+                            draw_state.window_pos = (draw_state._initial_window_pos_resize[0] + max(0, handle_drag.total_dx),
+                                                     draw_state._initial_window_pos_resize[1] + max(0, handle_drag.total_dy))
                 else:
                     draw_state._initial_window_size = None
+                    draw_state._initial_window_pos_resize = None
 
             if draw_state.window_pos is not None and closable:
                 on_held = draw_state.on_action("left_mouse_held", "window_move", priority_delta=-2)
@@ -921,6 +939,7 @@ def render_func(*args, **o_kwargs):
 
 
             ################# Columns
+            column_cursor_y = imgui.get_cursor_screen_pos()[1]
             if column is not None and column_parent is not None and draw_state.parent_window is not None:
                 column_cursor_y = column_parent._column_cursor[column][1]
                 imgui.set_cursor_screen_pos((parent_wrap_left + indent_x,
@@ -1983,8 +2002,6 @@ def render_func(*args, **o_kwargs):
                 # if isinstance(report_value, Pending):
                 #     raise Exception("Pending needs to be handled before saving to cache")
                 return_value = (report_changed, report_value, *return_value[2:])
-
-
 
 
             if use_cache:

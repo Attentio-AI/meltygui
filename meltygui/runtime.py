@@ -11,6 +11,7 @@ import libcst as cst
 from src.lsd.gl_gui.background import Background
 from src.lsd.gl_gui.collection_action import CollectionAction
 from src.lsd.gl_gui.collision import Collisions
+from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.view.core_views.monitor import Monitor
 from src.shader_library.shader_manager.texture_manager import TextureManager
 from src.shader_library.shader_manager.filter import Filter
@@ -335,6 +336,12 @@ class Melty:
         kwargs = draw_state._kwargs
         kwargs['layer_unique'] = draw_state.unique
         imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
+
+        if Toggles.debug_context_menu:
+
+            draw_list = imgui.get_overlay_draw_list()
+            draw_list.add_text(draw_state.abs_left, draw_state.abs_top - 20, imgui.get_color_u32_rgba(1, 0, 0, 1),
+                               f"Layer {draw_state.layer} Depth {draw_state.depth} ZPOS {draw_state.z_pos}")
 
         kwargs['input_value'] = input_value
         return_val = view_func(**kwargs)

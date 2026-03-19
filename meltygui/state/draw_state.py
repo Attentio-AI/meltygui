@@ -215,7 +215,9 @@ class DrawState(DictConversion):
         self.window_pos = None
         self.window_size = None
         self._initial_window_pos = None
+        self._initial_window_pos_resize = None
         self._initial_window_size = (300, 300)
+
         self.drag_mode = DragMode.NONE
         self.use_child = False
         self.z_pos = 0

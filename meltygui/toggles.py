@@ -15,6 +15,8 @@ class Toggles:
     contrast = 1.146
     saturation = 0.066
     
+    debug_context_menu = False
+    
     
     filters = True
     show_excluded = True

@@ -21,9 +21,10 @@ from src.lsd.gl_gui import toggles
 from src.lsd.gl_gui.melty import Melty, CollectionAction, ManagedWindow
 from src.lsd.gl_gui.model.core_model.draw_state import ZoomState, TileMode
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
+from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_style_var, \
     push_style_color, pop_style_color, pop_style_var, end, begin
-from src.lsd.gl_gui.utils.glfw_utils import request_render
+from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
@@ -1485,7 +1486,7 @@ def draw_bg(left=24, top=3, width=0, height=33, depth=0, rounding=4.203,
             hovered=False, pressed=False, nested_bg=False, **kwargs):
 
     # -- Constants ---------------------------------
-    depth_wrap        = 30.7866
+    depth_wrap        = 30.823
     depth_scale       = 1.900
     corner_radius     = 4.14
     border_inset      = 1.548
@@ -2099,7 +2100,7 @@ def draw_enum(input_value: Enum, global_style=None, style_manager=None, enum_tin
 #     imgui.text(f"Last Modified: {input_value.modified_time}")
 #
 #     return False, None
-@render_func(with_header=draw_header, is_tree=False)
+@render_func(with_header=draw_header, use_cache=True, is_tree=False)
 def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, **kwargs):
     # imgui.text(type(input_value._input_value).__name__)
 
@@ -2113,6 +2114,7 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, *
                                imgui.get_color_u32_rgba(*color), name)
 
         draw_list.add_rect(rect[0], rect[1], rect[2], rect[3], imgui.get_color_u32_rgba(*color), thickness=1.0, rounding=4)
+
 
     draw_str(f"{str(input_value._kwargs.get('mode', None))}", name="mode", editable=False, column=0)
     draw_str(f"{str(input_value.content_height)}", name="content_height", editable=False,column=0)
@@ -2133,23 +2135,24 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, *
     if changed:
         input_value._print_last_invalid = value
 
-    # if input_value._last_invalidate is not None:
-    #     if input_value._print_last_invalid:
-    #         print_stack_trace(frames=input_value._last_invalidate)
-    # else:
-    #     imgui.text_colored("No invalidate info", 1, 0, 0, 1)
+    if input_value._last_invalidate is not None:
+        if input_value._print_last_invalid:
+            print_stack_trace(frames=input_value._last_invalidate)
+    else:
+        imgui.text_colored("No invalidate info", 1, 0, 0, 1)
 
-    # if input_value.explain_convert is not None:
-    #     imgui.text(str(input_value.explain_convert))
+    if input_value.explain_convert is not None:
+        imgui.text(str(input_value.explain_convert))
 
-    # if imgui.is_mouse_hovering_rect(draw_state.left, draw_state.top,
-    #                                 draw_state.left + draw_state.width,
-    #                                 draw_state.top + draw_state.height):
-    #     draw_list = imgui.get_overlay_draw_list()
-    #     rect = (input_value.abs_left, input_value.abs_top, input_value.abs_left + input_value.width,
-    #             input_value.abs_top + input_value.height)
-    #     draw_overlay_rect(rect, color=(1, 1, 0, 0.5))
-    #     draw_overlay_rect(input_value.clip_rect, color=(0, 1, 0, 0.5), name="clip")
+    if Toggles.debug_context_menu:
+        if imgui.is_mouse_hovering_rect(draw_state.left, draw_state.top,
+                                        draw_state.left + draw_state.width,
+                                        draw_state.top + draw_state.height):
+            draw_list = imgui.get_overlay_draw_list()
+            rect = (input_value.abs_left, input_value.abs_top, input_value.abs_left + input_value.width,
+                    input_value.abs_top + input_value.height)
+            draw_overlay_rect(rect, color=(1, 1, 0, 0.5))
+            draw_overlay_rect(input_value.clip_rect, color=(0, 1, 0, 0.5), name="clip")
 
     draw_str(func.__name__, column=0)
     return False, None
