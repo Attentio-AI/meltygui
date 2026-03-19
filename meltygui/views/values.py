@@ -80,7 +80,7 @@ def draw_window(input_value:any, view_func=None, draw_state=None, delete_down=Fa
 
     return return_val
 
-@render_func(is_default_for=(types.ModuleType), use_cache=True, show_bg=True, with_header=draw_header, with_footer=draw_footer)
+@render_func(is_default_for=types.ModuleType, use_cache=True, show_bg=True, with_header=draw_header, with_footer=draw_footer)
 def draw_module(input_value: types.ModuleType, draw_state, **kwargs):
     imgui.text(f"Module: {input_value.__name__}")
 
@@ -439,20 +439,8 @@ def draw_property(input_value:property, draw_state, **kwargs):
 
 @render_func(is_default_for=(type), show_bg=False, tint=(0.01406166236847639, 0.2259240746498108, 0.30232560634613037), with_header=draw_header, with_footer=draw_footer)
 def draw_type(input_value:type, draw_state, **kwargs):
-    tint = (0.5921933054924011, 0.39459171891212463, 0.7069767713546753)
-    bg_color = (7.460000038146973, 29.09000015258789, 12.1899995803833, 17.3799991607666)
-    show_bg = True
-    bg_style = {
-        "value": 17.871000289916992,
-        "saturation": 10.5,
-        "alpha": 10.180000305175781,
-        'max_value': 3.9000000953674316
-    }
 
-
-
-    imgui.text_colored(f"Type: {input_value.__name__}", 1.0, 0.5, 0.0, 1.0)
-    # draw_collection(vars(input_value), name="vars", show_excluded=True)
+    draw_collection(vars(input_value), name="vars", show_excluded=True)
     # draw_collection(dir(input_value), name="dir", show_excluded=True)
     # draw_collection(input_value.__dict__, name="__dict__", show_excluded=True)
     # draw_collection(inspect.getmembers(input_value), name="inspect")
@@ -1488,8 +1476,8 @@ def draw_bg(left=24, top=3, width=0, height=33, depth=0, rounding=4.203,
             hovered=False, pressed=False, nested_bg=False, **kwargs):
 
     # -- Constants ---------------------------------
-    depth_wrap        = 30.823
-    depth_scale       = 1.266
+    depth_wrap        = 30.699
+    depth_scale       = 1.264
     corner_radius     = 5.903
     border_inset      = 1.548
     border_inset_half = 0.641
@@ -1704,8 +1692,20 @@ def draw_bool(input_value: bool):
     changed, is_checked = imgui.checkbox("##bool", input_value)
     if changed:
         return True, is_checked
-
+        
     return False, None
+
+
+
+@render_func(is_default_for=(str), shadow=False, show_bg=False, wrap=False, is_tree=False,
+             show_add_delete=False, use_cache=False, disable_scroll=True, with_header=draw_header)
+def draw_label(input_value: str, draw_state):
+    text_size = imgui.calc_text_size(str(input_value), wrap_width=draw_state.content_width)
+    imgui.push_text_wrap_pos(draw_state.left + draw_state.width)
+    imgui.text_wrapped(str(input_value))
+    imgui.pop_text_wrap_pos()
+
+    return False, input_value
 
 
 
@@ -2043,8 +2043,11 @@ def draw_debug_label(input_value: str):
     imgui.text(input_value)
 
 
-@render_func(is_default_for=Enum, show_add_delete=False, shadow=False, header_same_line=True, with_header=draw_header)
-def draw_enum(input_value: Enum, global_style=None, style_manager=None, enum_tint=(0.3, 0.3, 0.3)):
+@render_func(is_default_for=Enum, show_add_delete=False, 
+is_tree=False, shadow=False, header_same_line=True,
+ with_header=draw_header)
+def draw_enum(input_value: Enum, global_style=None,
+                         style_manager=None, enum_tint=(0.3, 0.3, 0.3)):
     unique = "enum"
     # imgui.set_next_item_width(imgui.get_content_region_available().x)
     selected_idx = next(enumerate(input_value.__class__))[1]
@@ -2186,7 +2189,7 @@ def pending_window(input_value, button_name, pending=None, draw_state=None):
         return True, None
     return False, None
 
-@render_func(use_cache=True, show_header=True, with_header=draw_header)
+@render_func(use_cache=True, show_header=True, selectable=False, with_header=draw_header)
 def draw_single(input_value:any, view_func=None, mode:any=None, **kwargs):
     changed, return_val = view_func(input_value, mode=mode)
     return changed, return_val

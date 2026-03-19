@@ -9,7 +9,7 @@ from src.lsd.gl_gui.view.core_conversion.file_converters import path_to_dict, by
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import GeneralParse, Conditional, Comment
 from src.lsd.gl_gui.view.core_views.headers import draw_footer, draw_header_end, draw_header
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
-from src.lsd.gl_gui.view.core_views.new_core_view import draw_collection, draw_comment
+from src.lsd.gl_gui.view.core_views.new_core_view import draw_collection, draw_comment, draw_label
 from src.lsd.gl_gui.view.core_views.text_editor import draw_text
 
 
@@ -113,6 +113,13 @@ class Mode(Enum):
 
     }
 
+    DEFAULT = {
+        Any: ModeOverrides(
+            kwargs={},
+            recursive=True,
+        )
+    }
+
     CODE_PLAIN_TEXT = {
         cst.Module: ModeOverrides(
             kwargs={"convert": [cst.Module, str], "horizontal":True},
@@ -122,6 +129,13 @@ class Mode(Enum):
 
         types.FunctionType: ModeOverrides(
             kwargs={"convert": [types.FunctionType, cst.Module],
+                    "auto_apply": [load_text],
+                    "indent_size": 5, "with_header": draw_header},
+            recursive=True
+        ),
+
+        types.ModuleType: ModeOverrides(
+            kwargs={"convert": [types.ModuleType, cst.Module],
                     "auto_apply": [load_text],
                     "indent_size": 5, "with_header": draw_header},
             recursive=True

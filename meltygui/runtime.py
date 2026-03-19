@@ -11,7 +11,7 @@ import libcst as cst
 from src.lsd.gl_gui.background import Background
 from src.lsd.gl_gui.collection_action import CollectionAction
 from src.lsd.gl_gui.collision import Collisions
-from src.lsd.gl_gui.toggles import Toggles
+from src.lsd.gl_gui.toggles import Toggles, Counters
 from src.lsd.gl_gui.view.core_views.monitor import Monitor
 from src.shader_library.shader_manager.texture_manager import TextureManager
 from src.shader_library.shader_manager.filter import Filter
@@ -199,6 +199,7 @@ class Melty:
         cls.returned_values.update(cls.pending_return_values)
         cls.pending_returned_values = {}
 
+        Counters.nested_window_count = 0
 
         if cls.glfw_close_requested:
             cls.event_handler.feed_down(input_id="glfw_close", x=0, y=0, t=time.perf_counter())
@@ -363,6 +364,11 @@ class Melty:
 
         Melty.mode_stack = []
 
+        from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
+        from src.lsd.gl_gui.view.mode import Mode
+        from src.lsd.gl_gui.view.core_views.new_core_view import draw_with_modes
+        draw_with_modes(Counters, name="counters", modes=(Mode.CODE_UI, Mode.CODE_PLAIN_TEXT, Mode.DEFAULT), mode=Mode.WINDOW)
+
         # cls.draw_blockers_to()
         # Manually mask windows
         # for window in Melty.registered_windows.values():
@@ -402,14 +408,36 @@ class Melty:
                 if draw_state is not None:
                     cls.draw(draw_state)
 
+            Melty.depth = 0
+            if Melty.channels_split:
+                # Flatten layers into single channel
+                imgui.get_window_draw_list().channels_set_current(0)
+                imgui.get_window_draw_list().channels_merge()
+                Melty.channels_split = False
             # Sort by y position (draw_state.top)
-            for d_idx, draw_state in enumerate(cls.root_draw_states_by_layer[idx]):
+
+            # sort by draw_state.z_pos
+            sorted_root_ds = sorted(cls.root_draw_states_by_layer[idx], key=lambda ds: ds.z_pos)
+
+            for d_idx, draw_state in enumerate(sorted_root_ds):
                 # Melty.cache.mask_mark_view(draw_state.z_pos, draw_state.left,
                 #                            draw_state.top, draw_state.width, draw_state.height,
                 #                            f"view_mask_{draw_state.id}", 4)
 
+                if not Melty.channels_split:
+                    imgui.get_window_draw_list().channels_split(Melty.max_depth)
+                    imgui.get_window_draw_list().channels_set_current(d_idx)
+                    Melty.channels_split = True
+
+                Melty.depth = d_idx
                 if draw_state.unique not in cls.seen_unique:
                     cls.draw(draw_state)
+
+                if Melty.channels_split:
+                    # Flatten layers into single channel
+                    imgui.get_window_draw_list().channels_set_current(0)
+                    imgui.get_window_draw_list().channels_merge()
+                    Melty.channels_split = False
 
                 # Melty.depth = draw_state.depth + d_idx
                 # Melty.cache.draw_tile(draw_state)
@@ -423,12 +451,7 @@ class Melty:
                 #     # draw_state.draw_rect()
 
 
-            Melty.depth = 0
-            if Melty.channels_split:
-                # Flatten layers into single channel
-                imgui.get_window_draw_list().channels_set_current(0)
-                imgui.get_window_draw_list().channels_merge()
-                Melty.channels_split = False
+
 
         cls.layers = []
 

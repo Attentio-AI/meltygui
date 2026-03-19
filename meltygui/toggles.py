@@ -1,5 +1,10 @@
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
 
+
+
+class Counters:
+    nested_window_count = 0
+
 class Toggles:
     # ---------- Invalidation Settings -----
     invalidate_stack_trace = False
@@ -11,12 +16,10 @@ class Toggles:
     profile_mode = ProfileMode.LIGHT
     
     #---------- Visual Settings ---------
-    brightness = 0.08
+    brightness = 0.113
     contrast = 1.146
     saturation = 0.066
-    
     debug_context_menu = False
-    
     
     filters = True
     show_excluded = True

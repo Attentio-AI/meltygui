@@ -19,6 +19,7 @@ from imgui.core import _IO
 
 from src.lsd.gl_gui.background import Background, Pending
 from src.lsd.gl_gui.collision import Collisions
+from src.lsd.gl_gui.toggles import Counters
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment
 from src.lsd.gl_gui.view.core_conversion.path_finder import convert, explain_chain, NO_VALUE, PendingState, invert_path
 from src.lsd.gl_gui.view.core_views.core_render_helpers import draw_vertical_scrollbar, floating_text
@@ -519,6 +520,10 @@ def render_func(*args, **o_kwargs):
             Melty.active_layer = active_layer
 
         kwargs['return_extras'] = False
+
+        if draw_state._is_nested:
+            Counters.nested_window_count += 1
+
         start_shadow_depth = Melty.shadow_depth
         if unique in Melty.seen_unique:
             if 'draw_state' in wanted_params:
@@ -566,7 +571,6 @@ def render_func(*args, **o_kwargs):
                 # Save rect
                 draw_state.left, draw_state.right, draw_state.width, draw_state.height = draw_state._collapsed_rect
                 draw_state._height_source = "collapsed_rect"
-
 
 
         if draw_state.expanded:
@@ -1153,15 +1157,25 @@ def render_func(*args, **o_kwargs):
 
                 thead_launch_frame = 0
                 if needs_convert:
+                    if isinstance(convert_path[0], type):
+                        if len(convert_path) > 1:
+                            converter_kwargs = Melty.converter_flags_by_type.get(
+                                (convert_path[0], convert_path[1]), {})
+                        else:
+                            converter_kwargs = Melty.converter_flags_by_type.get((convert_path[0], None), {})
+                    else:
+                        converter_kwargs = Melty.converter_flags.get(convert_path[0], {})
+
                     input_hash = Background.simple_hash(draw_state._raw_input_value)
                     cached_hash = Background.simple_hash(draw_state._input_value_cache["external_state"][0])
                     if input_hash == cached_hash:
                         input_changed = False
                     else:
                         input_changed = True
-                        Melty.cache.invalidate_up(draw_state._tile_id)
-                        Melty.cache.invalidate_up(draw_state._parent._tile_id)
-                        request_render()
+                        if converter_kwargs.get("stateful", False):
+                            Melty.cache.invalidate_up(draw_state._tile_id)
+                            Melty.cache.invalidate_up(draw_state._parent._tile_id)
+                            request_render()
 
                     if draw_state._apply_load is not None or draw_state._pending_convert:
                         input_changed = True
@@ -1183,16 +1197,6 @@ def render_func(*args, **o_kwargs):
                         else:
                             start_frame = Melty.frame_count
 
-
-                        if isinstance(convert_path[0], type):
-                            if len(convert_path) > 1:
-                                converter_kwargs = Melty.converter_flags_by_type.get(
-                                    (convert_path[0], convert_path[1]), {})
-                            else:
-                                converter_kwargs = Melty.converter_flags_by_type.get((convert_path[0], None), {})
-                        else:
-                            converter_kwargs = Melty.converter_flags.get(convert_path[0], {})
-
                         if ((not Melty.on_drag and not imgui.is_mouse_down(2) and not imgui.is_mouse_down(1)) or
                                 draw_state._input_value_cache["internal_state"][0] == UNSET_VALUE and draw_state._save_pending is None):
 
@@ -1212,6 +1216,8 @@ def render_func(*args, **o_kwargs):
                             if not isinstance(internal_value, Pending):
                                 if draw_state._apply_load is not None:
                                     Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=5, force=True)
+
+                                if converter_kwargs.get("stateful", False) and input_changed:
                                     request_render()
                                 draw_state._apply_load = None
                                 draw_state._pending_convert = False
@@ -1232,7 +1238,8 @@ def render_func(*args, **o_kwargs):
                                 # Melty.cache.invalidate_up_by_obj(draw_state._raw_input_value)
                                 Melty.cache.invalidate_up(draw_state._parent._tile_id, force=True)
                                 # Melty.cache.invalidate(draw_state._tile_id, force=True)
-                                request_render()
+                                if converter_kwargs.get("stateful", False):
+                                    request_render()
                     if isinstance(internal_value, tuple):
                         internal_value, thead_launch_frame = internal_value
                     internal_changed = False
@@ -1243,7 +1250,8 @@ def render_func(*args, **o_kwargs):
                     if internal_value != draw_state._input_value_cache["internal_state"][0]:
                         if isinstance(internal_value, Pending) and internal_value.state != PendingState.BACKGROUND and not draw_state._show_load and not draw_state._show_save:
                             internal_changed = True
-                            request_render()
+                            if converter_kwargs.get("stateful", False) and input_changed:
+                                request_render()
 
                             # draw_state._input_value_cache["internal_state"] = internal_value, thead_launch_frame
                         # Melty.cache.invalidate(draw_state._parent._tile_id, force=True)

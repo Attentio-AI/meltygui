@@ -6,14 +6,6 @@ import imgui
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.headers import draw_header, draw_footer
 
-_cursor_pos = 0
-_selection_start = 0
-_selection_end = 0
-_is_focused = False
-_cursor_blink_time = 0.0
-_double_click_time = 0.0
-_last_click_pos = -1
-_prev_keys_down = set()
 
 def _hex(h):
     """Convert '#rrggbb' to imgui packed u32 color (ABGR format)."""
@@ -317,31 +309,23 @@ def _get_indent(text, index):
     return indent
 
 
-def _has_selection():
-    return _selection_start != _selection_end
+def _has_selection(ds):
+    return ds.text_selection_start != ds.text_selection_end
 
 
-def _sel_range():
-    return min(_selection_start, _selection_end), max(_selection_start, _selection_end)
+def _sel_range(ds):
+    return min(ds.text_selection_start, ds.text_selection_end), max(ds.text_selection_start, ds.text_selection_end)
 
 
-def _delete_selection(text):
-    lo, hi = _sel_range()
+def _delete_selection(text, ds):
+    lo, hi = _sel_range(ds)
     return text[:lo] + text[hi:], lo
-
-
-def _key_just_pressed(io, key):
-    """Detect a key press this frame using io.keys_down and prev state tracking."""
-    global _prev_keys_down
-    return io.keys_down[key] and key not in _prev_keys_down
 
 
 @render_func(show_bg=True, wrap=False, use_cache=True, with_header=draw_header,
              with_footer=draw_footer, selectable=False, indent_size=30)
-def draw_text(input_value: str, cursor_hover=False, left_mouse_drag=False, draw_state=None):
-    global _cursor_pos, _selection_start, _selection_end, _is_focused
-    global _cursor_blink_time, _double_click_time, _last_click_pos
-    global _prev_keys_down
+def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, left_mouse_up=False, left_mouse_down=False, left_mouse_drag=False, draw_state=None):
+    ds = draw_state
 
     changed = False
     original_input = input_value
@@ -361,259 +345,262 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_drag=False, draw_
     # --- Invisible button for mouse interaction ---
     is_hovered = cursor_hover
 
+    if left_mouse_clicked:
+        print("Left mouse clicked on text editor")
+
     # --- Read current keyboard state ---
     current_keys = set()
     for key in _ALL_TRACKED_KEYS:
         if io.keys_down[key]:
             current_keys.add(key)
-    just_pressed = current_keys - _prev_keys_down
+    just_pressed = current_keys - ds.text_prev_keys_down
 
     # --- Mouse handling ---
-    if is_hovered and imgui.is_mouse_clicked(0):
-        _is_focused = True
-        _cursor_blink_time = time.time()
+    if left_mouse_down:
+        ds.text_is_focused = True
+        ds.text_cursor_blink_time = time.time()
         click_pos = _xy_to_char_index(text, io.mouse_pos.x, io.mouse_pos.y,
                                        origin_x, origin_y, line_height)
 
         now = time.time()
-        if (now - _double_click_time < 0.3
-                and abs(click_pos - _last_click_pos) <= 1):
-            _selection_start = _word_boundary_left(text, click_pos)
-            _selection_end = _word_boundary_right(text, click_pos)
-            _cursor_pos = _selection_end
-            _double_click_time = 0
+        if (now - ds.text_double_click_time < 0.3
+                and abs(click_pos - ds.text_last_click_pos) <= 1):
+            ds.text_selection_start = _word_boundary_left(text, click_pos)
+            ds.text_selection_end = _word_boundary_right(text, click_pos)
+            ds.text_cursor_pos = ds.text_selection_end
+            ds.text_double_click_time = 0
         else:
-            _double_click_time = now
-            _last_click_pos = click_pos
-            _cursor_pos = click_pos
+            ds.text_double_click_time = now
+            ds.text_last_click_pos = click_pos
+            ds.text_cursor_pos = click_pos
             if io.key_shift:
-                _selection_end = click_pos
+                ds.text_selection_end = click_pos
             else:
-                _selection_start = click_pos
-                _selection_end = click_pos
+                ds.text_selection_start = click_pos
+                ds.text_selection_end = click_pos
 
     elif not is_hovered and imgui.is_mouse_clicked(0):
-        _is_focused = False
+        ds.text_is_focused = False
 
-    if left_mouse_drag and imgui.is_mouse_down(0):
+    if left_mouse_drag:
         drag_pos = _xy_to_char_index(text, left_mouse_drag.x, left_mouse_drag.y,
                                       origin_x, origin_y, line_height)
-        _selection_end = drag_pos
-        _cursor_pos = drag_pos
-        _cursor_blink_time = time.time()
+        ds.text_selection_end = drag_pos
+        ds.text_cursor_pos = drag_pos
+        ds.text_cursor_blink_time = time.time()
 
     # --- Keyboard handling ---
-    if _is_focused:
+    if ds.text_is_focused:
         shift = io.key_shift
         ctrl = io.key_ctrl
 
         # --- Typed characters ---
         for key in just_pressed:
             if key in _KEY_CHAR_MAP and not ctrl:
-                _cursor_blink_time = time.time()
+                ds.text_cursor_blink_time = time.time()
                 unshifted, shifted = _KEY_CHAR_MAP[key]
                 ch = shifted if shift else unshifted
 
-                if _has_selection():
-                    text, _cursor_pos = _delete_selection(text)
-                text = text[:_cursor_pos] + ch + text[_cursor_pos:]
-                _cursor_pos += len(ch)
-                _selection_start = _cursor_pos
-                _selection_end = _cursor_pos
+                if _has_selection(ds):
+                    text, ds.text_cursor_pos = _delete_selection(text, ds)
+                text = text[:ds.text_cursor_pos] + ch + text[ds.text_cursor_pos:]
+                ds.text_cursor_pos += len(ch)
+                ds.text_selection_start = ds.text_cursor_pos
+                ds.text_selection_end = ds.text_cursor_pos
                 changed = True
 
         # --- Tab ---
         if glfw.KEY_TAB in just_pressed and not ctrl:
-            _cursor_blink_time = time.time()
+            ds.text_cursor_blink_time = time.time()
             insert = '    '
-            if _has_selection():
-                text, _cursor_pos = _delete_selection(text)
-            text = text[:_cursor_pos] + insert + text[_cursor_pos:]
-            _cursor_pos += len(insert)
-            _selection_start = _cursor_pos
-            _selection_end = _cursor_pos
+            if _has_selection(ds):
+                text, ds.text_cursor_pos = _delete_selection(text, ds)
+            text = text[:ds.text_cursor_pos] + insert + text[ds.text_cursor_pos:]
+            ds.text_cursor_pos += len(insert)
+            ds.text_selection_start = ds.text_cursor_pos
+            ds.text_selection_end = ds.text_cursor_pos
             changed = True
 
         # --- Enter ---
         if glfw.KEY_ENTER in just_pressed or glfw.KEY_KP_ENTER in just_pressed:
-            _cursor_blink_time = time.time()
-            indent = _get_indent(text, _cursor_pos)
-            if _has_selection():
-                text, _cursor_pos = _delete_selection(text)
+            ds.text_cursor_blink_time = time.time()
+            indent = _get_indent(text, ds.text_cursor_pos)
+            if _has_selection(ds):
+                text, ds.text_cursor_pos = _delete_selection(text, ds)
             insert = '\n' + ' ' * indent
-            text = text[:_cursor_pos] + insert + text[_cursor_pos:]
-            _cursor_pos += len(insert)
-            _selection_start = _cursor_pos
-            _selection_end = _cursor_pos
+            text = text[:ds.text_cursor_pos] + insert + text[ds.text_cursor_pos:]
+            ds.text_cursor_pos += len(insert)
+            ds.text_selection_start = ds.text_cursor_pos
+            ds.text_selection_end = ds.text_cursor_pos
             changed = True
 
         # --- Backspace ---
         if glfw.KEY_BACKSPACE in just_pressed:
-            _cursor_blink_time = time.time()
-            if _has_selection():
-                text, _cursor_pos = _delete_selection(text)
-                _selection_start = _cursor_pos
-                _selection_end = _cursor_pos
+            ds.text_cursor_blink_time = time.time()
+            if _has_selection(ds):
+                text, ds.text_cursor_pos = _delete_selection(text, ds)
+                ds.text_selection_start = ds.text_cursor_pos
+                ds.text_selection_end = ds.text_cursor_pos
                 changed = True
-            elif _cursor_pos > 0:
+            elif ds.text_cursor_pos > 0:
                 if ctrl:
-                    new_pos = _word_boundary_left(text, _cursor_pos)
-                    text = text[:new_pos] + text[_cursor_pos:]
-                    _cursor_pos = new_pos
-                elif (_cursor_pos >= 4
-                      and text[_cursor_pos - 4:_cursor_pos] == '    '):
-                    text = text[:_cursor_pos - 4] + text[_cursor_pos:]
-                    _cursor_pos -= 4
+                    new_pos = _word_boundary_left(text, ds.text_cursor_pos)
+                    text = text[:new_pos] + text[ds.text_cursor_pos:]
+                    ds.text_cursor_pos = new_pos
+                elif (ds.text_cursor_pos >= 4
+                      and text[ds.text_cursor_pos - 4:ds.text_cursor_pos] == '    '):
+                    text = text[:ds.text_cursor_pos - 4] + text[ds.text_cursor_pos:]
+                    ds.text_cursor_pos -= 4
                 else:
-                    text = text[:_cursor_pos - 1] + text[_cursor_pos:]
-                    _cursor_pos -= 1
-                _selection_start = _cursor_pos
-                _selection_end = _cursor_pos
+                    text = text[:ds.text_cursor_pos - 1] + text[ds.text_cursor_pos:]
+                    ds.text_cursor_pos -= 1
+                ds.text_selection_start = ds.text_cursor_pos
+                ds.text_selection_end = ds.text_cursor_pos
                 changed = True
 
         # --- Delete ---
         if glfw.KEY_DELETE in just_pressed:
-            _cursor_blink_time = time.time()
-            if _has_selection():
-                text, _cursor_pos = _delete_selection(text)
-                _selection_start = _cursor_pos
-                _selection_end = _cursor_pos
+            ds.text_cursor_blink_time = time.time()
+            if _has_selection(ds):
+                text, ds.text_cursor_pos = _delete_selection(text, ds)
+                ds.text_selection_start = ds.text_cursor_pos
+                ds.text_selection_end = ds.text_cursor_pos
                 changed = True
-            elif _cursor_pos < len(text):
+            elif ds.text_cursor_pos < len(text):
                 if ctrl:
-                    new_pos = _word_boundary_right(text, _cursor_pos)
-                    text = text[:_cursor_pos] + text[new_pos:]
+                    new_pos = _word_boundary_right(text, ds.text_cursor_pos)
+                    text = text[:ds.text_cursor_pos] + text[new_pos:]
                 else:
-                    text = text[:_cursor_pos] + text[_cursor_pos + 1:]
+                    text = text[:ds.text_cursor_pos] + text[ds.text_cursor_pos + 1:]
                 changed = True
 
         # --- Left ---
         if glfw.KEY_LEFT in just_pressed:
-            _cursor_blink_time = time.time()
+            ds.text_cursor_blink_time = time.time()
             if ctrl:
-                _cursor_pos = _word_boundary_left(text, _cursor_pos)
-            elif _has_selection() and not shift:
-                _cursor_pos = min(_selection_start, _selection_end)
-            elif _cursor_pos > 0:
-                _cursor_pos -= 1
+                ds.text_cursor_pos = _word_boundary_left(text, ds.text_cursor_pos)
+            elif _has_selection(ds) and not shift:
+                ds.text_cursor_pos = min(ds.text_selection_start, ds.text_selection_end)
+            elif ds.text_cursor_pos > 0:
+                ds.text_cursor_pos -= 1
             if shift:
-                _selection_end = _cursor_pos
+                ds.text_selection_end = ds.text_cursor_pos
             else:
-                _selection_start = _cursor_pos
-                _selection_end = _cursor_pos
+                ds.text_selection_start = ds.text_cursor_pos
+                ds.text_selection_end = ds.text_cursor_pos
 
         # --- Right ---
         if glfw.KEY_RIGHT in just_pressed:
-            _cursor_blink_time = time.time()
+            ds.text_cursor_blink_time = time.time()
             if ctrl:
-                _cursor_pos = _word_boundary_right(text, _cursor_pos)
-            elif _has_selection() and not shift:
-                _cursor_pos = max(_selection_start, _selection_end)
-            elif _cursor_pos < len(text):
-                _cursor_pos += 1
+                ds.text_cursor_pos = _word_boundary_right(text, ds.text_cursor_pos)
+            elif _has_selection(ds) and not shift:
+                ds.text_cursor_pos = max(ds.text_selection_start, ds.text_selection_end)
+            elif ds.text_cursor_pos < len(text):
+                ds.text_cursor_pos += 1
             if shift:
-                _selection_end = _cursor_pos
+                ds.text_selection_end = ds.text_cursor_pos
             else:
-                _selection_start = _cursor_pos
-                _selection_end = _cursor_pos
+                ds.text_selection_start = ds.text_cursor_pos
+                ds.text_selection_end = ds.text_cursor_pos
 
         # --- Up ---
         if glfw.KEY_UP in just_pressed:
-            _cursor_blink_time = time.time()
-            line, col = _index_to_line_col(text, _cursor_pos)
+            ds.text_cursor_blink_time = time.time()
+            line, col = _index_to_line_col(text, ds.text_cursor_pos)
             if line > 0:
-                _cursor_pos = _line_col_to_index(text, line - 1, col)
+                ds.text_cursor_pos = _line_col_to_index(text, line - 1, col)
             else:
-                _cursor_pos = 0
+                ds.text_cursor_pos = 0
             if shift:
-                _selection_end = _cursor_pos
+                ds.text_selection_end = ds.text_cursor_pos
             else:
-                _selection_start = _cursor_pos
-                _selection_end = _cursor_pos
+                ds.text_selection_start = ds.text_cursor_pos
+                ds.text_selection_end = ds.text_cursor_pos
 
         # --- Down ---
         if glfw.KEY_DOWN in just_pressed:
-            _cursor_blink_time = time.time()
-            line, col = _index_to_line_col(text, _cursor_pos)
+            ds.text_cursor_blink_time = time.time()
+            line, col = _index_to_line_col(text, ds.text_cursor_pos)
             total_lines = text.count('\n')
             if line < total_lines:
-                _cursor_pos = _line_col_to_index(text, line + 1, col)
+                ds.text_cursor_pos = _line_col_to_index(text, line + 1, col)
             else:
-                _cursor_pos = len(text)
+                ds.text_cursor_pos = len(text)
             if shift:
-                _selection_end = _cursor_pos
+                ds.text_selection_end = ds.text_cursor_pos
             else:
-                _selection_start = _cursor_pos
-                _selection_end = _cursor_pos
+                ds.text_selection_start = ds.text_cursor_pos
+                ds.text_selection_end = ds.text_cursor_pos
 
         # --- Home ---
         if glfw.KEY_HOME in just_pressed:
-            _cursor_blink_time = time.time()
+            ds.text_cursor_blink_time = time.time()
             if ctrl:
-                _cursor_pos = 0
+                ds.text_cursor_pos = 0
             else:
-                _cursor_pos = _get_line_start(text, _cursor_pos)
+                ds.text_cursor_pos = _get_line_start(text, ds.text_cursor_pos)
             if shift:
-                _selection_end = _cursor_pos
+                ds.text_selection_end = ds.text_cursor_pos
             else:
-                _selection_start = _cursor_pos
-                _selection_end = _cursor_pos
+                ds.text_selection_start = ds.text_cursor_pos
+                ds.text_selection_end = ds.text_cursor_pos
 
         # --- End ---
         if glfw.KEY_END in just_pressed:
-            _cursor_blink_time = time.time()
+            ds.text_cursor_blink_time = time.time()
             if ctrl:
-                _cursor_pos = len(text)
+                ds.text_cursor_pos = len(text)
             else:
-                _cursor_pos = _get_line_end(text, _cursor_pos)
+                ds.text_cursor_pos = _get_line_end(text, ds.text_cursor_pos)
             if shift:
-                _selection_end = _cursor_pos
+                ds.text_selection_end = ds.text_cursor_pos
             else:
-                _selection_start = _cursor_pos
-                _selection_end = _cursor_pos
+                ds.text_selection_start = ds.text_cursor_pos
+                ds.text_selection_end = ds.text_cursor_pos
 
         # --- Ctrl+A ---
         if ctrl and glfw.KEY_A in just_pressed:
-            _selection_start = 0
-            _selection_end = len(text)
-            _cursor_pos = len(text)
+            ds.text_selection_start = 0
+            ds.text_selection_end = len(text)
+            ds.text_cursor_pos = len(text)
 
         # --- Ctrl+C ---
         if ctrl and glfw.KEY_C in just_pressed:
-            if _has_selection():
-                lo, hi = _sel_range()
+            if _has_selection(ds):
+                lo, hi = _sel_range(ds)
                 imgui.set_clipboard_text(text[lo:hi])
 
         # --- Ctrl+X ---
         if ctrl and glfw.KEY_X in just_pressed:
-            if _has_selection():
-                lo, hi = _sel_range()
+            if _has_selection(ds):
+                lo, hi = _sel_range(ds)
                 imgui.set_clipboard_text(text[lo:hi])
-                text, _cursor_pos = _delete_selection(text)
-                _selection_start = _cursor_pos
-                _selection_end = _cursor_pos
+                text, ds.text_cursor_pos = _delete_selection(text, ds)
+                ds.text_selection_start = ds.text_cursor_pos
+                ds.text_selection_end = ds.text_cursor_pos
                 changed = True
 
         # --- Ctrl+V ---
         if ctrl and glfw.KEY_V in just_pressed:
-            _cursor_blink_time = time.time()
+            ds.text_cursor_blink_time = time.time()
             clipboard = imgui.get_clipboard_text()
             if clipboard:
-                if _has_selection():
-                    text, _cursor_pos = _delete_selection(text)
-                text = text[:_cursor_pos] + clipboard + text[_cursor_pos:]
-                _cursor_pos += len(clipboard)
-                _selection_start = _cursor_pos
-                _selection_end = _cursor_pos
+                if _has_selection(ds):
+                    text, ds.text_cursor_pos = _delete_selection(text, ds)
+                text = text[:ds.text_cursor_pos] + clipboard + text[ds.text_cursor_pos:]
+                ds.text_cursor_pos += len(clipboard)
+                ds.text_selection_start = ds.text_cursor_pos
+                ds.text_selection_end = ds.text_cursor_pos
                 changed = True
 
     # Update previous key state
-    _prev_keys_down = current_keys
+    ds.text_prev_keys_down = current_keys
 
     # Clamp
-    _cursor_pos = max(0, min(_cursor_pos, len(text)))
-    _selection_start = max(0, min(_selection_start, len(text)))
-    _selection_end = max(0, min(_selection_end, len(text)))
+    ds.text_cursor_pos = max(0, min(ds.text_cursor_pos, len(text)))
+    ds.text_selection_start = max(0, min(ds.text_selection_start, len(text)))
+    ds.text_selection_end = max(0, min(ds.text_selection_end, len(text)))
 
     # --- Drawing ---
     draw_list = imgui.get_window_draw_list()
@@ -625,9 +612,9 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_drag=False, draw_
     draw_list.push_clip_rect(rect_min_x, rect_min_y, rect_max_x, rect_max_y, True)
 
     # Selection
-    if _has_selection():
+    if _has_selection(ds):
         sel_color = (102 << 24) | (204 << 16) | (102 << 8) | 51  # rgba(51, 102, 204, 0.4)
-        lo, hi = _sel_range()
+        lo, hi = _sel_range(ds)
         lines = text.split('\n')
         line_abs_start = 0
         for line_idx, line_text in enumerate(lines):
@@ -646,7 +633,7 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_drag=False, draw_
     # Syntax highlighted text
     x = origin_x
     y = origin_y
-    t_idx= 0
+    t_idx = 0
     for token, color_key in tokenize(text):
         color = COLORS[color_key]
         for ch in token:
@@ -659,11 +646,10 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_drag=False, draw_
             x += imgui.calc_text_size(ch).x
         t_idx += 1
 
-
     # Cursor
-    if _is_focused and not _has_selection():
-        if (time.time() - _cursor_blink_time) % 1.0 < 0.5:
-            cx, cy = _char_pos_to_xy(text, _cursor_pos, origin_x, origin_y, line_height)
+    if ds.text_is_focused and not _has_selection(ds):
+        if (time.time() - ds.text_cursor_blink_time) % 1.0 < 0.5:
+            cx, cy = _char_pos_to_xy(text, ds.text_cursor_pos, origin_x, origin_y, line_height)
             cursor_color = 0xFFFFFFFF  # white
             draw_list.add_line(cx, cy, cx, cy + line_height, cursor_color, 1.0)
 
@@ -675,7 +661,6 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_drag=False, draw_
         text_height = imgui.calc_text_size(str(input_value) + " ")[1] + 2
 
     imgui.dummy(draw_state.content_width, text_height)
-
 
     if changed:
         rebuilt_text = text + '\n'.join(original_input.split('\n')[max_lines:])

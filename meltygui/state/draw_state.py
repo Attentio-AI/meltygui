@@ -143,7 +143,7 @@ class DrawState(DictConversion):
         self._bg_depth = 0
         self._current_tint = None
         self._bg_stack = None
-        self._parent = None
+        self._parent = self
         self._is_header = False
         self._view_func = None
         self._cursor_pos = (0, 0)
@@ -345,6 +345,16 @@ class DrawState(DictConversion):
         self._save_pending = False
 
         self.explain_convert = None
+
+        # Text input state
+        self.text_cursor_pos = 0
+        self.text_selection_start = 0
+        self.text_selection_end = 0
+        self.text_is_focused = False
+        self.text_cursor_blink_time = 0.0
+        self.text_double_click_time = 0.0
+        self.text_last_click_pos = -1
+        self.text_prev_keys_down = set()
 
         self._print_last_invalid = False
         self._last_invalidate = None
