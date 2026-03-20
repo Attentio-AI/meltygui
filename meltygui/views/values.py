@@ -389,8 +389,8 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=No
 
     #
     # over_layer_draw_list: _DrawList = imgui.get_overlay_draw_list()
-    # color = imgui.color_to_u32_rgba(1, 0, 0, 1)
-    # over_layer_draw_list.add_text(draw_state.left, draw_state.top, color,f"{Melty.nested_collections} - {break_index} {len(keys)} ")
+    # color = imgui.get_color_u32_rgba(1, 0, 0, 1)
+    # over_layer_draw_list.add_text(draw_state.left, draw_state.abs_top, color,f"{Melty.nested_collections}  {break_index} {len(keys)} ")
     # if nested_collection:
     #     Melty.nested_collections -= 1
 
@@ -495,7 +495,9 @@ def draw_with_modes(input_value, modes):
 
     return changed, value
 
-
+@render_func
+def draw_draw_state(input_value, **kwargs):
+    pass
 
 
 @render_func(use_cache=False, show_bg=True, selectable=False, show_tint=True, bg_offset=-1, with_header=draw_header)
@@ -507,17 +509,6 @@ def draw_main(input_value, vis):
                               z_absolute=-1)
     global cst_dict
     global test_code
-
-    # draw_window({"code_to_dict": code_to_dict,
-    #              "dict_to_code": dict_to_code}, namFe="CST Test", show_bg=True, child_kwargs={'show_excluded': True})
-    # changed, value = draw_window(test_code, name="test_code", show_bg=True, child_kwargs={'show_excluded': True})
-    # if changed:
-    #     test_code = value
-
-    # changed, value = draw_window(draw_type, name="function_params", convert=dict, show_bg=True, child_kwargs={'show_excluded': True})
-    # if changed:
-    #     test_code = value
-    # #
     from src.lsd.gl_gui.view.mode import Mode
 
     changed, value = draw_any(draw_header, name="draw_header", show_bg=True, mode=(Mode.CODE_UI, Mode.WINDOW))
@@ -544,7 +535,6 @@ def draw_main(input_value, vis):
 
     from src.lsd.gl_gui.model.app_model import TensorView
     draw_window(TensorView, name="Tensorview")
-
 
     global_toggles = vis.root.global_toggles
     draw_any(global_toggles, name="Toggles", auto_resize=True, wrap=True, use_cache=True, show_bg=True, mode=Mode.WINDOW)
@@ -625,6 +615,23 @@ def draw_main(input_value, vis):
     draw_window("input_val", name="Outer no live", view_func=test_widget, live=False)
 
     # draw_window(Melty.last_request_render, show_bg=True, name="Last Invalid")
+
+    mouse_pos = imgui.get_mouse_pos()
+    ds_under_mouse = Melty.bvh_query(mouse_pos[0], mouse_pos[1])
+    ds_names = [ds.name for ds in ds_under_mouse]
+    draw_any(ds_names, name="Draw State under mouse", show_bg=True, wrap=True, use_cache=True, mode=Mode.WINDOW, live=True)
+    #
+    last_ds_under_mouse = list(Melty.selected)[-1] if len(Melty.selected) > 0 else None
+    # if last_ds_under_mouse is not None:
+    #     Melty.active_layer = last_ds_under_mouse.layer
+    #     last_ds_under_mouse.layer = Melty.active_layer
+    #     last_ds_under_mouse.z_pos = Melty.z_pos
+    #     last_ds_under_mouse.depth_and_layer = (Melty.shadow_depth, Melty.active_layer)
+    #     last_ds_under_mouse._kwargs['active_layer'] = Melty.active_layer
+    #
+    #     if Melty.channels_split:
+    #         imgui.get_window_draw_list().channels_set_current(min(Melty.active_layer, Melty.max_depth - 1))
+    #     Melty.draw(last_ds_under_mouse, detached=True)
 
 
 @render_func
@@ -775,7 +782,7 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
 
     # # 4. Handle Input and Interaction
     # Melty.cache.mask_mark_rect(draw_state, Melty.max_z - 1, draw_state.shadow_index,
-    #                            draw_state.left, draw_state.top, view_width, view_height,
+    #                            draw_state.left, draw_state.abs_top, view_width, view_height,
     #                            key=f"texture_{original_id}")
 
     mixed_color = (1, 1, 1, 1)
@@ -857,8 +864,8 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
     #     radius=zoom_state.contrast
     # )
 
-    p_min = (draw_state.left + 2, draw_state.top + 2)
-    p_max = (draw_state.left + draw_state.width, draw_state.top + draw_state.height - 2)
+    p_min = (draw_state.abs_left + 2, draw_state.abs_top + 2)
+    p_max = (draw_state.abs_left + draw_state.width, draw_state.abs_top + draw_state.height - 2)
     p_min_x, p_min_y = p_min[0], p_min[1]
 
     scroll_delta = 0
@@ -1117,10 +1124,10 @@ def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, 
     target_icon = ""  # Target icon (FontAwesome Unicode)
     if button(f"{target_icon}", width=22, height=22, color=window_tint, z_offset=-1, value=0.4, factor=0.9,
               saturation=0.2)[0]:
-        this_window_right = draw_state.left + draw_state.width
-        from_zero_x = window_draw_state.left - window_draw_state.window_pos[0]
-        from_zero_y = window_draw_state.top - window_draw_state.window_pos[1]
-        window_draw_state.window_pos = (this_window_right + 10 - from_zero_x, draw_state.top - from_zero_y)
+        this_window_right = draw_state.abs_left + draw_state.width
+        from_zero_x = window_draw_state.abs_left - window_draw_state.window_pos[0]
+        from_zero_y = window_draw_state.abs_top - window_draw_state.window_pos[1]
+        window_draw_state.window_pos = (this_window_right + 10 - from_zero_x, draw_state.abs_top - from_zero_y)
         Melty.move_window_to_front(window_draw_state)
         Melty.cache.invalidate_up_by_obj(input_value)
 
@@ -1284,9 +1291,9 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
             color = color if active_drop else inactive_color
 
             top = cursor_top - 1
-            bottom = max(draw_state.top, cursor_bottom - 1)
-            left = draw_state.left + offset
-            right = draw_state.left + draw_state.width - indent_size
+            bottom = max(draw_state.abs_top, cursor_bottom - 1)
+            left = draw_state.abs_left + offset
+            right = draw_state.abs_left + draw_state.width - indent_size
             width = draw_state.width
             height = draw_state.height
 
@@ -1298,9 +1305,9 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
                                            height,
                                            key=f"{left}x{top}_flow")
             #
-            # draw_list.add_line(draw_state.left, draw_state.top - 2 - offset,
+            # draw_list.add_line(draw_state.left, draw_state.abs_top - 2 - offset,
             #                    draw_state.left + draw_state.width,
-            #                    draw_state.top - 2 - offset,
+            #                    draw_state.abs_top - 2 - offset,
             #                    col=imgui.get_color_u32_rgba(*color), thickness=3)
 
     return False, flow_spacing
@@ -1465,16 +1472,17 @@ def draw_bg(left=24, top=3, width=0, height=33, depth=0, rounding=4.203,
             hovered=False, pressed=False, nested_bg=False, **kwargs):
 
     # -- Constants ---------------------------------
-    depth_wrap        = 30.597
-    depth_scale       = 1.264
+    depth_wrap        = 30.36
+    depth_scale       = 1.371
     corner_radius     = 5.903
     border_inset      = 1.548
     border_inset_half = 0.641
-    stroke_width      = 2
-    
-    # Depth maps to color intensity
-    intensity_factor  = 0.065
-    intensity_offset  = -0.333\
+    stroke_width      = 2.0
+
+
+    # How depth maps to color intensity
+    intensity_factor  = 0.599
+    intensity_offset  = -4.777\
 
     # Outline color tuning
     outline_base      = 2.14
@@ -1483,7 +1491,7 @@ def draw_bg(left=24, top=3, width=0, height=33, depth=0, rounding=4.203,
 
     # Beed color
     bleed_mix         = {'nested': 0.407, 'default': 0.454}
-    bleed_style       = {'value': -0.1, 'alpha': 0.768, 'saturation': 5.459}
+    bleed_style       = {'value': -0.1, 'alpha': 0.994, 'saturation': 5.459}
     outline_bleed_mix = 0.232
 
     # Hover offset per interaction state
@@ -1618,14 +1626,14 @@ def button(input_value="", corner_radius=4, draw_state=None, left_mouse_held=Fal
     height = max(min_size[1], height or 0)
     imgui.dummy(width, height)
     draw_list: _DrawList = imgui.get_window_draw_list()
-    draw_list.add_rect_filled(draw_state.left, draw_state.top, draw_state.left + width,
-                              draw_state.top + height, imgui.get_color_u32_rgba(*mixed_color[:3], 1.0),
+    draw_list.add_rect_filled(draw_state.abs_left, draw_state.abs_top, draw_state.abs_left + width,
+                              draw_state.abs_top + height, imgui.get_color_u32_rgba(*mixed_color[:3], 1.0),
                               rounding=corner_radius)
 
     text_size = imgui.calc_text_size(input_value)
 
-    draw_list.add_text(draw_state.left + (width - text_size[0]) / 2.0 + 2,
-                       draw_state.top + (height - text_size[1]) / 2.0 - 1,
+    draw_list.add_text(draw_state.abs_left + (width - text_size[0]) / 2.0 + 2,
+                       draw_state.abs_top + (height - text_size[1]) / 2.0 - 1,
                        imgui.get_color_u32_rgba(*text_color[:3], 1.0), input_value)
 
     if left_mouse_down:
@@ -1690,7 +1698,7 @@ def draw_bool(input_value: bool):
              show_add_delete=False, use_cache=False, disable_scroll=True, with_header=draw_header)
 def draw_label(input_value: str, draw_state):
     text_size = imgui.calc_text_size(str(input_value), wrap_width=draw_state.content_width)
-    imgui.push_text_wrap_pos(draw_state.left + draw_state.width)
+    imgui.push_text_wrap_pos(draw_state.abs_left + draw_state.width)
     imgui.text_wrapped(str(input_value))
     imgui.pop_text_wrap_pos()
 
@@ -1705,7 +1713,7 @@ def draw_str(input_value: str, draw_state, editable=True, alpha=1.0):
         imgui.push_style_var(imgui.STYLE_ALPHA, alpha)
 
         text_size = imgui.calc_text_size(str(input_value), wrap_width=draw_state.content_width)
-        imgui.push_text_wrap_pos(draw_state.left + draw_state.width)
+        imgui.push_text_wrap_pos(draw_state.abs_left + draw_state.width)
         imgui.text_wrapped(str(input_value))
         imgui.pop_text_wrap_pos()
 
@@ -1721,10 +1729,9 @@ def draw_str(input_value: str, draw_state, editable=True, alpha=1.0):
         height = imgui.get_text_line_height() + padding
 
     else:
-        max_bottom = draw_state.parent_window.top + draw_state.parent_window.height - draw_state.footer_height - line_height * 2
-        text_bottom = draw_state.top + text_height
-        clamped_bottom = min(max_bottom, text_bottom)
-        height = clamped_bottom - draw_state.top
+        text_bottom = draw_state.abs_top + text_height
+        clamped_bottom = text_bottom
+        height = clamped_bottom - draw_state.abs_top
 
     show_controls = True
 
@@ -1736,7 +1743,7 @@ def draw_str(input_value: str, draw_state, editable=True, alpha=1.0):
         changed, value = imgui.input_text("##str", str(input_value),
                                           flags=imgui.INPUT_TEXT_ENTER_RETURNS_TRUE)
     else:
-        imgui.set_cursor_screen_pos((draw_state.left, draw_state.top))
+        imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
         # disable scrolling
         changed, value = draw_text(str(input_value), editable=True, with_header=draw_header, show_name=False, is_tree=False)
         imgui.dummy(draw_state.content_width, text_height - height + 10)
@@ -1760,8 +1767,8 @@ def draw_comment(input_value: Comment, draw_state, cursor_hover=False):
     character_width = imgui.calc_text_size(help_icon)[0]
     # Draw circle background for comment
     radius = 18 / 2
-    center_x = draw_state.left + radius
-    center_y = draw_state.top + radius
+    center_x = draw_state.abs_left + radius
+    center_y = draw_state.abs_top + radius
     color = imgui.get_color_u32_rgba(*help_yellow, 0.3)
     imgui.dummy(min(max(30, 30), 300), radius * 2)
     cursor_hover = imgui.is_item_hovered()
@@ -1774,7 +1781,7 @@ def draw_comment(input_value: Comment, draw_state, cursor_hover=False):
         text_size = imgui.calc_text_size(str(input_value), wrap_width=popup_max_width)
         popup_width = popup_max_width
 
-        imgui.set_cursor_screen_pos((draw_state.left + radius * 2 + 5, draw_state.top))
+        imgui.set_cursor_screen_pos((draw_state.abs_left + radius * 2 + 5, draw_state.abs_top))
         draw_window(str(input_value), editable=False, window_pos=(0,0), width=popup_width, height=text_size[1] + 5,
                     with_header_end=None, with_header=None, with_footer=None)
     imgui.same_line(spacing=0)
@@ -2134,9 +2141,9 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, *
         draw_str(str(input_value.explain_convert), name="explain_convert", column=0)
 
     if Toggles.debug_context_menu:
-        if imgui.is_mouse_hovering_rect(draw_state.left, draw_state.top,
-                                        draw_state.left + draw_state.width,
-                                        draw_state.top + draw_state.height):
+        if imgui.is_mouse_hovering_rect(draw_state.abs_left, draw_state.abs_top,
+                                        draw_state.abs_left + draw_state.width,
+                                        draw_state.abs_top + draw_state.height):
             draw_list = imgui.get_overlay_draw_list()
             rect = (input_value.abs_left, input_value.abs_top, input_value.abs_left + input_value.width,
                     input_value.abs_top + input_value.height)

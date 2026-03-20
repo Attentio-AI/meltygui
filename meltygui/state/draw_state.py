@@ -124,7 +124,7 @@ class TileMode(Enum):
          "bounding_hovered", "dlt_count", "clip_rect",
  "scrolled", "is_hovered_last", "frame_count")
 @no_save_exclude('render_time',  "total_z_offset", 'closable', 'invalid_content_height',
-                  "parent_window", "pressed",
+                  "parent_window", "pressed", "bbox",
                  'hover_rects', 'nested_window', 'use_cache', 'layer', "header_top", "header_left", "left_offset",
                  "top_offset", 'kwargs', "just_shadow",
                  "header_left_delta", "header_top_delta", "last_seen", "persistent", "shadow_margin", "bg_depth",
@@ -358,6 +358,43 @@ class DrawState(DictConversion):
 
         self._print_last_invalid = False
         self._last_invalidate = None
+        self._hover_eligible = 0
+
+        # BVH spatial index
+        self._bvh_id = None
+        self._bvh_bbox = None  # cached bbox for delete operations
+
+    @property
+    def clip_size(self):
+        if self.clip_rect is None:
+            return (self.width or self.min_width, self.height or self.min_height)
+        left, top, right, bottom = self.clip_rect
+        return (right - left, bottom - top)
+
+    @property
+    def bbox(self):
+        l, t, w, h = self.left, self.top, self.width, self.height
+        if l is None or t is None or not w or not h:
+            return None
+        return (l, t, l + w, t + h)
+
+    def pos_changed(self):
+        """Update BVH index after position/size changes. Call from render_func."""
+        new_bbox = self.bbox
+        if new_bbox == self._bvh_bbox:
+            return
+        old_bbox = self._bvh_bbox
+        self._bvh_bbox = new_bbox
+
+        if self._bvh_id is None:
+            if new_bbox is not None and self.clipped:
+                Melty.bvh_register(self)
+                self._bvh_bbox = new_bbox
+        elif not self.clipped:
+            Melty.bvh_unregister(self)
+            self._bvh_bbox = None
+        else:
+            Melty.bvh_update(self, old_bbox)
 
     def tile_params(self):
         self._tile_params['clip_rect'] = copy(self.clip_rect)
@@ -565,8 +602,8 @@ class DrawState(DictConversion):
         clip_left, clip_top, clip_right, clip_bottom = clip_rect
 
         if child_draw_state is not None:
-            left = child_draw_state.left
-            top = child_draw_state.top
+            left = child_draw_state.abs_left
+            top = child_draw_state.abs_top
             width = child_draw_state.width
             height = child_draw_state.height
 
@@ -586,12 +623,14 @@ class DrawState(DictConversion):
     def hover_eligible(self, rect=None, ignore_reports=True):
         if self.just_shadow:
             return False
+
         if rect is None:
             left = self.left if self.left is not None else 0
             top = self.top if self.top is not None else 0
             width = self.width if self.width is not None else 0
             height = self.height if self.height is not None else 0
             rect = (left, top - 3, left + width, top + height + 3)
+
         if self.closed or not Melty.imgui_main_window_hovered:
             return False
 
@@ -604,7 +643,6 @@ class DrawState(DictConversion):
             top = rect[1]
             right = rect[2]
             bottom = rect[3]
-
             rect = (max(left, clip_rect[0]), max(top, clip_rect[1]),
                     min(right, clip_rect[2]), min(bottom, clip_rect[3]))
 
@@ -671,18 +709,6 @@ class DrawState(DictConversion):
     def is_bounding_hovered(self):
         if (self._imgui_is_active or self._imgui_is_edited or self._imgui_is_item_hovered or self._imgui_popover_open):
             return True
-
-        mouse_x, mouse_y = imgui.get_mouse_pos()
-        if not Melty.inside_clip(rect=(mouse_x, mouse_y, 1, 1)):
-            return False
-        else:
-            if self.top is None or self.left is None or self.width is None or self.height is None:
-                return False
-            rect = (self.abs_left, self.abs_top - 3, self.width, self.height + 10)
-
-        if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
-            if imgui.is_window_hovered() or Melty.imgui_popup_open:
-                return True
         return False
 
 

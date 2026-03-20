@@ -9,7 +9,7 @@ from src.lsd.gl_gui.view.core_conversion.file_converters import path_to_dict, by
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import GeneralParse, Conditional, Comment
 from src.lsd.gl_gui.view.core_views.headers import draw_footer, draw_header_end, draw_header
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
-from src.lsd.gl_gui.view.core_views.new_core_view import draw_collection, draw_comment, draw_label
+from src.lsd.gl_gui.view.core_views.new_core_view import draw_collection, draw_comment
 from src.lsd.gl_gui.view.core_views.text_editor import draw_text
 
 
@@ -39,7 +39,7 @@ class Mode(Enum):
     WINDOW = {
         Any: ModeOverrides(
             kwargs={"show_bg":True, "selectable":False, "use_cache":True, "melty_window":True, "closable":True,
-                    "with_header_end":draw_header_end,
+                    "with_header_end":draw_header_end, "min_width":150, "min_height":40,
                     "auto_resize":False, "draggable":True, "show_tint":True, "show_header":True, "with_footer":draw_footer,
                     "disable_scroll":False},
             recursive=False
@@ -72,7 +72,6 @@ class Mode(Enum):
             recursive=True
         ),
     }
-
     CODE_UI = {
         cst.Module: ModeOverrides(
             kwargs={"convert": [cst.Module, dict]},
@@ -159,6 +158,8 @@ class Mode(Enum):
     #
     # Path on disk → metadata dict (name, size, modified, raw bytes).
     # Good for: file browsers, file inspectors, drag-and-drop targets.
+
+
 
     FILE_META = {
         Path: ModeOverrides(

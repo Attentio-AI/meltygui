@@ -8,6 +8,8 @@ import glfw
 import imgui
 import libcst as cst
 
+from rtree import index as rtree_index
+
 from src.lsd.gl_gui.background import Background
 from src.lsd.gl_gui.collection_action import CollectionAction
 from src.lsd.gl_gui.collision import Collisions
@@ -38,6 +40,7 @@ class Melty:
     root_draw_states_by_layer = defaultdict(lambda: list())
 
     filter = Filter()
+    detached = False
 
     seen_values = []
 
@@ -187,6 +190,59 @@ class Melty:
     any_window_hovered = False
     glfw_close_requested = False
 
+    # BVH spatial index for draw states
+    _bvh = rtree_index.Index()
+    _bvh_next_id = 0
+    _bvh_id_to_ds = {}
+
+    @classmethod
+    def bvh_register(cls, draw_state):
+        rid = cls._bvh_next_id
+        cls._bvh_next_id += 1
+        draw_state._bvh_id = rid
+        cls._bvh_id_to_ds[rid] = draw_state
+        bbox = draw_state.bbox
+        if bbox is not None:
+            cls._bvh.insert(rid, bbox)
+        return rid
+
+    @classmethod
+    def bvh_unregister(cls, draw_state):
+        rid = draw_state._bvh_id
+        if rid is None:
+            return
+        bbox = draw_state.bbox
+        if bbox is not None:
+            try:
+                cls._bvh.delete(rid, bbox)
+            except Exception:
+                pass
+        cls._bvh_id_to_ds.pop(rid, None)
+        draw_state._bvh_id = None
+
+    @classmethod
+    def bvh_update(cls, draw_state, old_bbox):
+        rid = draw_state._bvh_id
+        if rid is None:
+            return
+        if old_bbox is not None:
+            try:
+                cls._bvh.delete(rid, old_bbox)
+            except Exception:
+                pass
+        new_bbox = draw_state.bbox
+        if new_bbox is not None:
+            cls._bvh.insert(rid, new_bbox)
+
+    @classmethod
+    def bvh_query(cls, x, y):
+        """Hit test — returns all DrawStates under the point."""
+        return [
+            cls._bvh_id_to_ds[rid]
+            for rid in cls._bvh.intersection((x, y, x, y))
+            if rid in cls._bvh_id_to_ds
+        ]
+
     @classmethod
     def begin_frame(cls):
         cls.unique_stack = []
@@ -231,6 +287,14 @@ class Melty:
         is_popup_open = imgui.is_popup_open("", flags=imgui.POPUP_ANY_POPUP)
         Melty.imgui_popup_open = is_popup_open
 
+        mouse_pos = imgui.get_mouse_pos()
+        ds_under_mouse = Melty.bvh_query(mouse_pos[0], mouse_pos[1])
+        for ds in ds_under_mouse:
+            ds._hover_eligible = Melty.frame_count
+
+        # last_ds_under_mouse = ds_under_mouse[-1] if len(ds_under_mouse) > 0 else None
+        # if last_ds_under_mouse is not None:
+        #     Melty.cache.invalidate(last_ds_under_mouse._tile_id, do_store=False, force=True)
 
         cls.backend.pump()
 
@@ -337,8 +401,9 @@ class Melty:
         pass
 
     @classmethod
-    def draw(cls, draw_state):
-        parent_ctx = draw_state._parent_ctx
+    def draw(cls, draw_state, cursor_pos=None, detached=False):
+        if draw_state is None:
+            return
         # Melty.depth = 0
         Melty.bg_depth = draw_state._bg_depth
 
@@ -346,7 +411,6 @@ class Melty:
         if draw_state._bg_stack is not None:
             Melty.bg_stack = draw_state._bg_stack
 
-        # cls.cache.insert_parent(parent_ctx)
 
         view_func = draw_state._wrapper
         input_value = draw_state._raw_input_value
@@ -355,7 +419,6 @@ class Melty:
         imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
 
         if Toggles.debug_context_menu:
-
             draw_list = imgui.get_overlay_draw_list()
             draw_list.add_text(draw_state.abs_left, draw_state.abs_top - 40, imgui.get_color_u32_rgba(1, 0, 0, 1),
                                f"Layer {draw_state.layer} "
@@ -371,6 +434,7 @@ class Melty:
                                )
 
         kwargs['input_value'] = input_value
+        kwargs['detached'] = detached
         return_val = view_func(**kwargs)
         if return_val is not None:
             cls.pending_return_values[draw_state._tile_id] = return_val
@@ -382,7 +446,8 @@ class Melty:
                 request_render()
 
         Melty.bg_stack = original_bg_stack
-        # cls.cache.remove_parent()
+
+    # cls.cache.remove_parent()
 
     @classmethod
     def end_frame(cls):
@@ -395,6 +460,8 @@ class Melty:
         from src.lsd.gl_gui.view.core_views.new_core_view import draw_with_modes
         draw_with_modes(Counters, name="counters", modes=(Mode.CODE_UI, Mode.CODE_PLAIN_TEXT, Mode.DEFAULT), mode=Mode.WINDOW)
 
+
+
         # cls.draw_blockers_to()
         # Manually mask windows
         # for window in Melty.registered_windows.values():
@@ -402,7 +469,7 @@ class Melty:
         #     if not draw_state.closed:
         #         unique = f"{draw_state.id}"
         #         Melty.cache.mask_mark_view(draw_state.z_pos - 2, draw_state.left,
-        #                                    draw_state.top, draw_state.width, draw_state.height,
+        #                                    draw_state.abs_top, draw_state.width, draw_state.height,
         #                                    f"window_mask_{unique}", 4)
 
         cls.root_draw_states_by_layer = defaultdict(list)
@@ -440,7 +507,7 @@ class Melty:
                 imgui.get_window_draw_list().channels_set_current(0)
                 imgui.get_window_draw_list().channels_merge()
                 Melty.channels_split = False
-            # Sort by y position (draw_state.top)
+            # Sort by y position (draw_state.abs_top)
 
             # sort by draw_state.z_pos
             # sorted_root_ds = sorted(cls.root_draw_states_by_layer[idx], key=lambda ds: ds.z_pos)
@@ -720,15 +787,15 @@ class Melty:
 
     @classmethod
     def apply_clip_ds(self, draw_state):
-        x = draw_state.left
-        y = draw_state.top
+        x = draw_state.abs_left
+        y = draw_state.abs_top
         left, top = self.apply_clip((x, y))
         width, height = draw_state.width, draw_state.height
-        right, bottom = draw_state.left + width, draw_state.top + height
+        right, bottom = draw_state.abs_left + width, draw_state.abs_top + height
         right, bottom = self.apply_clip((right, bottom))
         width, height = right - x, bottom - y
 
-        return (draw_state.left, draw_state.top, width, draw_state.height)
+        return (draw_state.abs_left, draw_state.abs_top, width, draw_state.height)
 
     @classmethod
     def apply_clip(cls, point, fixed_size_ds=None):
@@ -767,9 +834,9 @@ class Melty:
         fix_sized_ds = cls.fixed_size_stack[-1] if len(cls.fixed_size_stack) > 0 else None
         if fix_sized_ds is not None and fix_sized_ds.width is not None:
 
-            x = draw_state.left + draw_state.width
+            x = draw_state.abs_left + draw_state.width
             x, y = cls.apply_clip((x, 0))
-            width = x - draw_state.left
+            width = x - draw_state.abs_left
         return width
 
 
@@ -816,8 +883,8 @@ class Melty:
         clip_left, clip_top, clip_right, clip_bottom = clip_rect
 
         if draw_state is not None:
-            left = draw_state.left
-            top = draw_state.top
+            left = draw_state.abs_left
+            top = draw_state.abs_top
             width = draw_state.width
             height = draw_state.height
         else:
@@ -841,8 +908,8 @@ class Melty:
         clip_left, clip_top, clip_right, clip_bottom = clip_rect
 
         if draw_state is not None:
-            left = draw_state.left
-            top = draw_state.top
+            left = draw_state.abs_left
+            top = draw_state.abs_top
             width = draw_state.width
             height = draw_state.height
         else:

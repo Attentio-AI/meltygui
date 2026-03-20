@@ -34,7 +34,6 @@ This ensures:
 INV_65535 = 1.0 / 65535.0
 
 
-
 # ==============================
 # Small structs
 # ==============================
@@ -147,7 +146,7 @@ def _create_fbo_with_tex(tex: int, depth_stencil: bool, w, h) -> Tuple[int, Opti
 
 
 def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, draw_state=None, tile_id=None) -> \
-Optional[Tile]:
+        Optional[Tile]:
     if existing and existing.size == (w, h):
         return existing
 
@@ -714,7 +713,6 @@ class TileCacheMasked:
                 if child != k:
                     pt = self._tiles.get(child)
                     if pt is not None:
-
                         pt.last_invalidated_frame = max(pt.last_invalidated_frame, self._frame_id + 1) + frame_delta
                         pt.dirty = self._is_dirty(pt)
                         pt.force_invalidate = True
@@ -740,7 +738,6 @@ class TileCacheMasked:
             gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
         else:
             gl.glDisable(gl.GL_BLEND)
-
 
     def get_hash(self, draw_state):
         from src.lsd.gl_gui.model.dict_conversion import DictConversion
@@ -952,7 +949,6 @@ class TileCacheMasked:
         key = f"shadow_{self._rect_seq}"
         parent_ctx = self._stack[-1] if self._stack else None
 
-
         self._mask_rects.append(
             _Rect(draw_state, layer, depth_and_layer, x, y, w, h, key, self._rect_seq, corner_radius, blend_max=False))
         parent_key = parent_ctx.key if parent_ctx else None
@@ -1086,7 +1082,7 @@ class TileCacheMasked:
         has_area = size is not None and size[0] != 0 and size[1] != 0
         use_image = t and has_area and (t.size == (size[0], size[1])) and (not self._is_dirty(t))
 
-        # x, y = draw_state.left, draw_state.top
+        # x, y = draw_state.left, draw_state.abs_top
         # w, h = draw_state.width, draw_state.height
         # clip = draw_state.clip_rect
         #
@@ -1101,8 +1097,8 @@ class TileCacheMasked:
                 draw_state,
                 layer,
                 draw_state.shadow_depth,
-                draw_state.left,
-                draw_state.top,
+                draw_state.abs_left,
+                draw_state.abs_top,
                 draw_state.width,
                 draw_state.height,
                 draw_state._tile_id,
@@ -1110,7 +1106,7 @@ class TileCacheMasked:
             )
 
         if use_image:
-            imgui.set_cursor_screen_pos((snap_int(draw_state.left), snap_int(draw_state.top)))
+            imgui.set_cursor_screen_pos((snap_int(draw_state.abs_left), snap_int(draw_state.abs_top)))
             imgui.image(
                 t.tex,
                 snap_int(size[0]),
@@ -1157,7 +1153,7 @@ class TileCacheMasked:
         if parent_key is not None:
             if parent_key not in self.parent_key_to_child_keys:
                 self.parent_key_to_child_keys[parent_key] = {}
-            top = draw_state.top if draw_state.top is not None else 0
+            top = draw_state.abs_top if draw_state.abs_top is not None else 0
             self.parent_key_to_child_keys[parent_key][rkey] = (top, rkey, draw_state)
 
         if name is not None:
@@ -1171,7 +1167,6 @@ class TileCacheMasked:
             self.py_id_to_keys[f"{id(draw_state)}"] = set()
 
         self.py_id_to_keys[f"{id(draw_state)}"].add(rkey)
-
 
         imgui.push_id(f"{rkey}{layer}_offscreen")
         imgui.begin_group()
@@ -1212,7 +1207,7 @@ class TileCacheMasked:
             use_image = t and has_area and (t.size == (size[0], size[1])) and (not self._is_dirty(t))
 
             if use_image:
-                imgui.set_cursor_screen_pos((draw_state.left, draw_state.top))
+                imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
                 imgui.image(
                     t.tex,
                     snap_int(size[0]),
@@ -1222,7 +1217,8 @@ class TileCacheMasked:
                     # tint_color=(self.frame_tint[0], self.frame_tint[1], self.frame_tint[2], self.frame_tint[3] * 0.5)
                 )
                 imgui.set_item_allow_overlap()
-                imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0], draw_state.top + draw_state.content_height))
+                imgui.set_cursor_screen_pos(
+                    (imgui.get_cursor_screen_pos()[0], draw_state.abs_top + draw_state.content_height))
                 self._stack.append(
                     _Ctx(
                         draw_state=draw_state,
@@ -1265,7 +1261,7 @@ class TileCacheMasked:
         imgui.end_group()
         Melty.tile_id_stack.pop()
 
-        minx, miny = ctx.draw_state.left, ctx.draw_state.top
+        minx, miny = ctx.draw_state.abs_left, ctx.draw_state.abs_top
 
         ctx.pos = (float(minx), float(miny))
         ctx.size = (ctx.draw_state.width, ctx.draw_state.height)
@@ -1570,7 +1566,6 @@ class TileCacheMasked:
             gl.glClearColor(0, 0, 0, 0.0)
             gl.glClear(gl.GL_COLOR_BUFFER_BIT)
 
-
             for r in local_mask_rects_rev:
                 self.apply_blend_mode(r)
                 self._draw_mask_rect(r, dp_x, dp_y, s_x, s_y, fb_h, use_cached=False)
@@ -1615,7 +1610,6 @@ class TileCacheMasked:
                 gl.glColorMask(gl.GL_TRUE, gl.GL_FALSE, gl.GL_FALSE, gl.GL_FALSE)
                 gl.glClearColor(0, 0, 0, 0.0)
                 gl.glClear(gl.GL_COLOR_BUFFER_BIT)
-
 
                 for r in subtree_rects_by_root.get(p.key, ()):
                     self.apply_blend_mode(r)
@@ -1672,7 +1666,6 @@ class TileCacheMasked:
                 sc_x1, sc_y1 = int(ceil(x1)), int(ceil(y1))
                 sc_w, sc_h = max(0, sc_x1 - sc_x0), max(0, sc_y1 - sc_y0)
 
-
                 # clip = p.draw_state.clip_rect
                 # clipped = self._clip_rect(x, y, w, h, clip)
                 # if clipped:
@@ -1712,7 +1705,6 @@ class TileCacheMasked:
                     clip_iw, clip_ih = max(0, clip_ix1 - clip_ix0), max(0, clip_iy1 - clip_iy0)
 
                     gl.glDisable(gl.GL_SCISSOR_TEST)
-
 
                     # For cached tiles, use actual tile size from context to avoid stretching
                     if use_child_cache:
@@ -1832,7 +1824,6 @@ class TileCacheMasked:
                 for r in subtree_rects_by_root.get(key, ()):
                     draw_state = self.key_to_draw_state.get(r.key)
 
-
                     t = self._tiles.get(r.key)
                     size_change = draw_state.size_change if draw_state else False
 
@@ -1844,7 +1835,6 @@ class TileCacheMasked:
                     clip_ix0, clip_iy0 = int(floor(clip_x0)), int(floor(clip_y0))
                     clip_ix1, clip_iy1 = int(ceil(clip_x1)), int(ceil(clip_y1))
                     clip_iw, clip_ih = max(0, clip_ix1 - clip_ix0), max(0, clip_iy1 - clip_iy0)
-
 
                     tile_ctx = self._key_to_ctx.get(r.key)
 

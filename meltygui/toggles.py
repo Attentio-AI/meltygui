@@ -16,8 +16,9 @@ class Toggles:
     offscreen_debug = False
     
     #---------- Visual Settings ---------
-    brightness = 0.113
+    brightness = 0.12
     contrast = 1.63
+    
     saturation = 0.368
     debug_context_menu = False
     
