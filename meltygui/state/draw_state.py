@@ -276,7 +276,7 @@ class DrawState(DictConversion):
         self._input_value = UNSET_VALUE
         self._raw_input_value = UNSET_VALUE
 
-        self._input_value_cache = {"external_state": (UNSET_VALUE, 0, -1),  # value, frame, hash
+        self._input_cache = {"external_state": (UNSET_VALUE, 0, -1),  # value, frame, hash
                                    "internal_state":(UNSET_VALUE, 0)}  # value, frame
 
         self._collection = None

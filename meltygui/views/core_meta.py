@@ -2,10 +2,6 @@ from enum import Enum
 from typing import Any
 
 from src.lsd.gl_gui.melty import Melty
-import libcst as cst
-
-from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment
-
 
 class Meta:
     default = None
@@ -16,10 +12,11 @@ class Meta:
     def get_child_meta(cls, field_name, value=None):
 
         child_meta = getattr(cls, f"{field_name}_meta", None)
+        value_type = type(value)
         if cls is not None:
             if child_meta is None:
                 if hasattr(cls, 'default_meta_for'):
-                    child_meta = cls.default_meta_for.get(type(value), None)
+                    child_meta = cls.default_meta_for.get(value_type, None)
         if child_meta is None:
             if hasattr(type(value), 'meta'):
                 child_meta = type(value).meta
@@ -31,17 +28,16 @@ class Meta:
                     type_default = Melty.type_defaults.get(field_name, None)
                 else:
                     type_default = next(
-                        (Melty.type_defaults[cls] for cls in type(value).__mro__ if cls in Melty.type_defaults),
+                        (Melty.type_defaults[cls] for cls in value_type.__mro__ if cls in Melty.type_defaults),
                         None
                     )
                     if type_default is None:
                         # Try string name instead
                         type_default = next(
                             (Melty.type_defaults[name] for name in
-                             (cls.__name__ for cls in type(value).__mro__)
+                             (cls.__name__ for cls in value_type.__mro__)
                              if name in Melty.type_defaults),
-                            None
-                        )
+                            None)
             child_meta = Meta.get_new_defaults(value=value)
             child_meta.name = field_name
             if type_default is not None:
@@ -53,11 +49,9 @@ class Meta:
         super().__init__()
         self.visible_in_ui = True
         self.view_function = None
-        self.default_value = None
-        self.datatype = Any
         self.is_meta = True
 
-        self.__dict__.update(kwargs)
+        # self.__dict__.update(kwargs)
 
     @classmethod
     def get_default(cls, default_value=None):
@@ -71,5 +65,4 @@ class Meta:
         """Return the global default Meta object."""
         default = Meta(*args, **kwargs)
         default.value = value
-        default.datatype = type(value) if value is not None else Any
         return default

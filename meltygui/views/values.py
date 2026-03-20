@@ -91,7 +91,7 @@ def draw_module(input_value: types.ModuleType, draw_state, **kwargs):
              shadow=True, wrap=False, with_header=draw_header, indent_size=5)
 def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=None, keys=None, get_attr=None, set_attr=None, show_excluded=False,
                     child_kwargs=None, nested_func=None, show_bg=True, show_search=True, on_collapse=False, search_text="",
-                    on_expand=False, global_toggles=None, show_add_delete=True, item_spacing_y=1,
+                    on_expand=False, show_add_delete=True, item_spacing_y=1,
                     horizontal=False, show_indices=False, **kwargs):
     """
     Universal collection renderer
@@ -220,17 +220,13 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=No
             except Exception as e:
                 imgui.text(f"Error getting key {key}")
 
-        # Snap cursor to nearest pixel
-        cursor_pos = imgui.get_cursor_screen_pos()
-        # imgui.set_cursor_screen_pos((snap_int(cursor_pos[0]), snap_int(cursor_pos[1])))
-
         # visual separator (object extras)
         if key is None and item is None:
             seperator(Melty.spacing[1])
             continue
 
         if not show_excluded and hasattr(type(input_value), "__excluded_attrs__"):
-            if not global_toggles.force_show_excluded:
+            if not Toggles.show_excluded:
                 if str(key) in type(input_value).__excluded_attrs__:
                     continue
         display_name = None
@@ -1469,17 +1465,16 @@ def draw_bg(left=24, top=3, width=0, height=33, depth=0, rounding=4.203,
             hovered=False, pressed=False, nested_bg=False, **kwargs):
 
     # -- Constants ---------------------------------
-    depth_wrap        = 30.699
+    depth_wrap        = 30.597
     depth_scale       = 1.264
     corner_radius     = 5.903
     border_inset      = 1.548
     border_inset_half = 0.641
-    stroke_width      = 2.0
-
-
-    # How depth relates to color intensity
-    intensity_factor  = 0.599
-    intensity_offset  = -4.777\
+    stroke_width      = 2
+    
+    # Depth maps to color intensity
+    intensity_factor  = 0.065
+    intensity_offset  = -0.333\
 
     # Outline color tuning
     outline_base      = 2.14
@@ -1514,7 +1509,6 @@ def draw_bg(left=24, top=3, width=0, height=33, depth=0, rounding=4.203,
             color_a[1] * (1 - factor) + color_b[1] * factor,
             color_a[2] * (1 - factor) + color_b[2] * factor,
         )
-
     # -- Depth calculation -------------------
     wrapped_depth = max(0.0, Melty.bg_depth) % depth_wrap
     scaled_depth = wrapped_depth * depth_scale
@@ -1573,6 +1567,8 @@ def draw_bg(left=24, top=3, width=0, height=33, depth=0, rounding=4.203,
         imgui.get_window_draw_list().add_rect(
             *outline_rect, col=packed_outline, rounding=corner_radius, thickness=stroke_width,
         )
+
+
 
     # ── Fill rendering ─────────────────────────────────────────
     if bg_color is None:

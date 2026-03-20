@@ -50,7 +50,8 @@ from src.lsd.gl_gui.view.core_conversion.converter_register import converter
 
 import libcst as cst
 
-from src.lsd.gl_gui.view.core_conversion.fileref import FileRef, get_original_value, ValueDict, ORIGINAL
+from src.lsd.gl_gui.view.core_conversion.fileref import FileRef, get_original_value, ValueDict, ORIGINAL, \
+    invalidate_fileref_cache
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -724,7 +725,7 @@ def _recompile_class(cls: type, source: str, filename: str) -> None:
     mod = sys.modules.get(cls.__module__)
     namespace = dict(vars(mod)) if mod is not None else {}
 
-    code = compile(dedented, filename, "exec")
+    code = compile(dedented, filename, "exec", optimize=2)
     exec(code, namespace)
 
     new_cls = namespace.get(cls.__name__)
@@ -741,7 +742,7 @@ def _recompile_module(module: types.ModuleType, source: str,
     # Snapshot everything before exec so we can hotswap in place
     old_attrs = dict(module.__dict__)
 
-    code = compile(source, filename, "exec")
+    code = compile(source, filename, "exec", optimize=2)
     exec(code, module.__dict__)
 
     for name, old_obj in old_attrs.items():
@@ -765,6 +766,7 @@ def _recompile_module(module: types.ModuleType, source: str,
 
 
 def _hotswap_class(old_cls: type, new_cls: type) -> None:
+    invalidate_fileref_cache(old_cls)
     """Patch an existing class in place with new methods and attributes."""
     # Remove attributes that were deleted in the new version
     for name in list(vars(old_cls)):
@@ -916,11 +918,11 @@ def _recompile(func: types.FunctionType, source: str,
         wrapper_source += textwrap.indent(dedented, "    ")
         wrapper_source += f"\n    return {unwrapped.__name__}\n"
 
-        code = compile(wrapper_source, filename, "exec")
+        code = compile(wrapper_source, filename, "exec", optimize=2)
         exec(code, namespace)
         new_func = namespace["_closure_wrapper"](**closure_vals)
     else:
-        code = compile(dedented, filename, "exec")
+        code = compile(dedented, filename, "exec", optimize=2)
         exec(code, namespace)
         new_func = namespace.get(unwrapped.__name__)
 
@@ -952,3 +954,5 @@ def _recompile(func: types.FunctionType, source: str,
     unwrapped.__code__ = unwrapped.__code__.replace(
         co_firstlineno=original_firstlineno
     )
+    invalidate_fileref_cache(func)
+    invalidate_fileref_cache(unwrapped)

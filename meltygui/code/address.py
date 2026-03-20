@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import difflib
 import functools
+import types
 from pathlib import Path
 from typing import Any, Callable
 
@@ -72,34 +73,78 @@ class ValueDict:
         self.others = others or {}
         self.cached_value = cached_value
 
+
+import types
+import weakref
+
+_cache: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def invalidate_fileref_cache(obj):
+    """Call after hotswapping an object in place."""
+    _cache.pop(obj, None)
+
+
+def _unwrap(func):
+    while hasattr(func, '__wrapped__'):
+        func = func.__wrapped__
+    return func
+
+
 def to_fileref(value: Any) -> FileRef:
     """Convert common types to a FileRef.  Unwraps decorated functions."""
     if isinstance(value, FileRef):
         return value
     if isinstance(value, ValueDict):
         return to_fileref(value.cached_value)
-
     if isinstance(value, Path):
-
         return FileRef(value)
-    import inspect, types
+
+    try:
+        cached = _cache[value]
+        return cached
+    except (KeyError, TypeError):
+        # TypeError: value isn't weakly referenceable (shouldn't happen
+        # for functions/modules/types, but better safe)
+        pass
+
+    result = _resolve(value)
+
+    try:
+        _cache[value] = result
+    except TypeError:
+        pass
+
+    return result
+
+
+def _resolve(value: Any) -> FileRef | None:
     if isinstance(value, types.FunctionType):
-        unwrapped = inspect.unwrap(value)
-        source_file = inspect.getfile(unwrapped)
-        source_lines, start_lineno = inspect.getsourcelines(unwrapped)
-        return FileRef(Path(source_file), start_lineno - 1,
-                       start_lineno - 1 + len(source_lines))
+        unwrapped = _unwrap(value)
+        code = unwrapped.__code__
+        start = code.co_firstlineno
+        end = max(
+            (ln for _, _, ln in code.co_lines() if ln is not None),
+            default=start
+        )
+        return FileRef(Path(code.co_filename), start - 1, end)
+
     if isinstance(value, types.ModuleType):
-        source_file = inspect.getfile(value)
-        return FileRef(Path(source_file))
+        return FileRef(Path(value.__file__))
+
     if isinstance(value, type):
-        source_file = inspect.getfile(value)
-        source_lines, start_lineno = inspect.getsourcelines(value)
-        return FileRef(Path(source_file), start_lineno - 1,
-                       start_lineno - 1 + len(source_lines))
-    raise TypeError(f"Cannot convert {type(value).__name__} to FileRef")
+        if value.__module__ in ('builtins', '_collections_abc'):
+            return None
+        try:
+            import inspect
+            source_file = inspect.getfile(value)
+            source_lines, start_lineno = inspect.getsourcelines(value)
+            return FileRef(Path(source_file), start_lineno - 1,
+                           start_lineno - 1 + len(source_lines))
+        except (TypeError, OSError):
+            return None
 
-
+    return None
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  Per-cache_id watch state (fully isolated per view)                          ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝

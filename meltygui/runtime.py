@@ -25,6 +25,8 @@ import OpenGL.GL as gl
 
 class Melty:
 
+    draw_state_registry = None
+    style_manager = None
 
     focused_ds = None
     selected = set()
@@ -187,6 +189,21 @@ class Melty:
 
     @classmethod
     def begin_frame(cls):
+        cls.unique_stack = []
+        cls.draw_state_stack = []
+        cls.flow_spacing = 0.0
+        cls.indent_count = 0
+        cls.unindent_count = 0
+
+        if cls.draw_state_registry is None:
+            cls.draw_state_registry = cls.vis.root.draw_state_registry
+
+        style = imgui.get_style()
+        style.frame_rounding = 5.0
+        style.item_spacing = (5, 0)
+        style.window_padding = (3, 0)
+        style.frame_padding = (4, 1)
+
         cls.any_window_hovered = cls.any_window_hovered_pending
         cls.any_window_hovered_pending = False
         style = imgui.get_style()
@@ -997,7 +1014,13 @@ class Melty:
     def init(cls, **kwargs):
         for key, value in kwargs.items():
             setattr(cls, key, value)
-            cls.global_attrs[key] = value
+            # cls.global_attrs[key] = value
+
+
+        cls.global_attrs["style_manager"] = getattr(cls, "style_manager", None)
+        cls.global_attrs["global_style"] = getattr(cls, "global_style", None)
+        cls.global_attrs["global_toggle"] = getattr(cls, "global_toggle", None)
+
         cls.annotation_mode = False
 
     @classmethod

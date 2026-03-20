@@ -13,6 +13,7 @@ class Toggles:
     ds_invalidate_stack = True
 
     profile_mode = ProfileMode.LIGHT
+    offscreen_debug = False
     
     #---------- Visual Settings ---------
     brightness = 0.113
