@@ -1,12 +1,9 @@
 import inspect
-import math
-import sys
 import time
 import types
 import zlib
 from collections import defaultdict
 from copy import copy
-from dataclasses import dataclass
 from enum import Enum
 from functools import wraps
 from typing import Any
@@ -15,25 +12,19 @@ import glfw
 import imgui
 from imgui.core import _DrawList
 
-from imgui.core import _IO
-
 from src.lsd.gl_gui.background import Background, Pending
 from src.lsd.gl_gui.collision import Collisions
 from src.lsd.gl_gui.toggles import Counters
-from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment
-from src.lsd.gl_gui.view.core_conversion.path_finder import convert, explain_chain, NO_VALUE, PendingState, invert_path
-from src.lsd.gl_gui.view.core_views.core_render_helpers import draw_vertical_scrollbar, floating_text
+from src.lsd.gl_gui.view.core_conversion.path_finder import convert, PendingState, invert_path
+from src.lsd.gl_gui.view.core_views.core_render_helpers import floating_text
 from src.lsd.gl_gui.model.core_model.draw_state import DrawState, Hotkey, DragMode, Anchor, TileMode, AttrDict, \
-    UNSET_VALUE, ApplyMode
-from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, \
-    push_style_var, pop_style_var
+    UNSET_VALUE
+from src.lsd.gl_gui.utils.custom_views import push_style_var, pop_style_var
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace, trace_group, get_live_frames
-from src.lsd.gl_gui.melty import Melty, apply_collection_action, MeltyState, DepthState, \
-    delete_from_collection, ManagedWindow
+from src.lsd.gl_gui.melty import Melty, apply_collection_action, MeltyState
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
 from src.lsd.gl_gui.view.core_views.core_meta import Meta
-
 
 melty_state_registry = {}
 static_melty = MeltyState()
@@ -52,110 +43,26 @@ def path_to_string(path_list):
     return " -> ".join(str_list)
 
 
-def render_wrapper(*o_args, **o_kwargs):
-    first_arg = o_args[0] if o_args else None
-    if not callable(first_arg):
-        def class_wrapper(the_func):
-            return render_wrapper(the_func, *o_args, **o_kwargs)
-
-        return class_wrapper
-
-    r_func = o_args[0] if o_args else None
-
-    @wraps(r_func)
-    def wrapper(*args, **kwargs):
-
-        first_arg = args[0] if args else None
-        if not callable(first_arg):
-            def class_wrapper(the_func):
-                return wrapper(the_func, *args, **kwargs)
-
-            return class_wrapper
-
-        if 'inner_func' in kwargs:
-            render_func = kwargs.get('inner_func', None)
-        else:
-            render_func = r_func
-
-        func = first_arg if callable(first_arg) else None
-        # Use the specified wrapper if r_func
-        wrap_sig = inspect.signature(render_func)
-        sig = inspect.signature(func)
-        params = sig.parameters
-        wrap_params = wrap_sig.parameters
-
-        param_types = [params[p].annotation for p in params]
-        wrap_param_types = [wrap_params[p].annotation for p in wrap_params]
-        name_to_param_type = {}
-        for idx, param_name in enumerate(params):
-            name_to_param_type[param_name] = param_types[idx]
-
-        wrap_name_to_param_type = {}
-        for idx, param_name in enumerate(wrap_params):
-            wrap_name_to_param_type[param_name] = wrap_param_types[idx]
-
-        param_defaults = {p: params[p].default for p in params if params[p].default is not inspect.Parameter.empty}
-        wrap_defaults = {p: wrap_params[p].default for p in wrap_params if
-                         wrap_params[p].default is not inspect.Parameter.empty}
-
-        params = params | wrap_params
-        param_types = param_types + wrap_param_types
-        name_to_param_type = name_to_param_type | wrap_name_to_param_type
-        param_defaults = param_defaults | wrap_defaults
-
-        wanted_params = list(params.keys())
-        wanted_params.remove("args") if "args" in wanted_params else None
-        wanted_params.remove("o_kwargs") if "o_kwargs" in wanted_params else None
-
-        def add_default(register_type):
-            kwargs.pop('is_default_for', None)
-            new_meta = Meta()
-            new_meta.view_function = wrapper(*args, **kwargs)
-            Melty.type_defaults[register_type] = new_meta
-
-            if not isinstance((register_type), str):
-                Melty.type_to_default_view_func[register_type].add(func)
-
-        is_default_for = kwargs.get('is_default_for', None)
-        if isinstance(is_default_for, (tuple, list)):
-            for a_type in is_default_for:
-                add_default(a_type)
-        elif isinstance(is_default_for, type):
-            add_default(is_default_for)
-        elif isinstance(is_default_for, str):
-            add_default(is_default_for)
-        try:
-            wrap_func = None
-            if 'wraps' in o_kwargs:
-                wrap_func = o_kwargs.get('wraps', None)
-                func = wrap_func(func, header_defaults=kwargs, param_defaults=param_defaults, **kwargs)
-
-            out_func = r_func(func, am_a_header=kwargs.get('am_a_header', False),
-                              param_types=param_types, wanted_params=wanted_params,
-                              wanted_params_inner=wrap_defaults, header_defaults=kwargs,
-                              param_defaults=param_defaults, name_to_param_type=name_to_param_type,
-                              **o_kwargs)
-
-            if wrap_func is not None:
-                o_kwargs.update(kwargs)
-                out_func = wrap_func(out_func, am_a_header=True, inner_func=r_func, **kwargs)
-            return out_func
-        except Exception as e:
-            print_colored_traceback(*sys.exc_info())
-            return False, None
-
-    return wrapper
-
-
-
-@render_wrapper
 def render_func(*args, **o_kwargs):
     func = args[0] if args else None
-    param_types = o_kwargs.get("param_types", None)
-    wanted_params = o_kwargs.get("wanted_params", None)
-    header_defaults = o_kwargs.get("header_defaults", None)
-    param_defaults = o_kwargs.get("param_defaults", None)
-    name_to_param_type = o_kwargs.get("name_to_param_type", None)
+    if not callable(func):
+        def class_wrapper(the_func):
+            return render_func(the_func, *args, **o_kwargs)
+        return class_wrapper
+
+    sig = inspect.signature(func)
+    params = sig.parameters
+    param_types = [params[p].annotation for p in params]
+    name_to_param_type = {}
+    for idx, param_name in enumerate(params):
+        name_to_param_type[param_name] = param_types[idx]
+
+    wanted_params = list(params.keys())
+    wanted_params.remove("args") if "args" in wanted_params else None
+    wanted_params.remove("o_kwargs") if "o_kwargs" in wanted_params else None
+    header_defaults = o_kwargs
+    param_defaults = {p: params[p].default for p in params if params[p].default is not inspect.Parameter.empty}
+
 
     """
     Decorator for render functions.
@@ -2283,7 +2190,6 @@ def render_func(*args, **o_kwargs):
         annotation_empty = expected_type == inspect.Parameter.empty
         input_value = clean_args.get('input_value', input_value)
 
-
         if not annotation_empty:
             if expected_type is not Any and isinstance(expected_type, type):
                 if not isinstance(input_value, expected_type):
@@ -2344,10 +2250,6 @@ def render_func(*args, **o_kwargs):
                     draw_state.scroll_offset = (current_x,
                                                 max(min_scroll_y, min(new_offset_y, max_scroll_y)))
 
-            current_tint = Melty.global_attrs['style_manager'].get_tint()
-            if hasattr(input_value, 'tint'):
-                current_tint = input_value.tint
-
             # if not draw_state.closed:
             #     draw_vertical_scrollbar(draw_state.content_height, view_height=draw_state._parent.height,
             #                             view_width=draw_state._parent.width,
@@ -2357,7 +2259,6 @@ def render_func(*args, **o_kwargs):
             #                             tint=current_tint),
 
         do_scroll = needs_scroll
-
         scroll_offset = draw_state.scroll_offset if do_scroll else (0, 0)
 
         if draw_state.content_height > draw_state.height + draw_state.header_height:
@@ -2406,6 +2307,82 @@ def render_func(*args, **o_kwargs):
                                          start_cursor[1] + scroll_offset[1]))
 
         return return_value
+
+    def add_default(register_type):
+        o_kwargs.pop('is_default_for', None)
+        new_meta = Meta()
+        new_meta.view_function = wrapper
+        Melty.type_defaults[register_type] = new_meta
+
+        if not isinstance((register_type), str):
+            Melty.type_to_default_view_func[register_type].add(func)
+
+    is_default_for = o_kwargs.get('is_default_for', None)
+    if isinstance(is_default_for, (tuple, list)):
+        for a_type in is_default_for:
+            add_default(a_type)
+    elif isinstance(is_default_for, type):
+        add_default(is_default_for)
+    elif isinstance(is_default_for, str):
+        add_default(is_default_for)
+
+    ##++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    ## Converter render_func frankenstein to handle both normal render functions and annotation-based render functions
+    ##____________________________________________________________________________________________________________
+    load_data = o_kwargs.get("load_data", None)
+    save_data = o_kwargs.get("save_data", None)
+    registry = o_kwargs.get("registry", None)
+    from_type = o_kwargs.get("from_type", None)
+    to_type = o_kwargs.get("to_type", None)
+
+    if registry is not None:
+        if not hasattr(registry, '_converters') or not isinstance(registry._converters, dict):
+            setattr(registry, '_converters', {})
+
+        func_signature = inspect.signature(func)
+        fn_params = func_signature.parameters
+
+        inferred_to = func_signature.return_annotation
+        if inferred_to is inspect.Signature.empty:
+            inferred_to = None
+        if inferred_to is not None and hasattr(inferred_to, "__args__"):
+            inferred_to = inferred_to.__args__[0]
+
+        inferred_from = None
+        for param_name in ("value", "data"):
+            param = fn_params.get(param_name)
+            if param is not None and param.annotation is not inspect.Parameter.empty:
+                inferred_from = param.annotation
+                break
+
+        actual_from = from_type or inferred_from
+        actual_to = to_type or inferred_to
+        if actual_from is not None and actual_to is not None:
+            registry._converters[(actual_from, actual_to)] = wrapper
+
+        if hasattr(registry, "_converter_to_type") and isinstance(registry._converter_to_type, dict):
+            registry._converter_to_type[wrapper] = (actual_from, actual_to)
+
+        # ── Store flags ─────────────────────────────────────────────────
+
+        if hasattr(registry, 'converter_flags_by_type') and isinstance(registry.converter_flags_by_type, dict):
+            if o_kwargs:
+                registry.converter_flags_by_type[(actual_from, actual_to)] = o_kwargs
+
+        if hasattr(registry, 'converter_flags') and isinstance(registry.converter_flags, dict):
+            if o_kwargs:
+                registry.converter_flags[wrapper] = o_kwargs
+                if "inverse_of" in o_kwargs:
+                    inverse_fn = o_kwargs["inverse_of"]
+                    if inverse_fn not in registry.converter_flags:
+                        registry.converter_flags[inverse_fn] = {}
+                    registry.converter_flags[inverse_fn]["inverse_of"] = wrapper
+
+        if load_data is not None:
+            if hasattr(registry, 'converter_flags') and isinstance(registry.converter_flags, dict):
+                if wrapper not in registry.converter_flags:
+                    registry.converter_flags[wrapper] = {}
+                registry.converter_flags[wrapper]["stateful"] = True
 
     return wrapper
 

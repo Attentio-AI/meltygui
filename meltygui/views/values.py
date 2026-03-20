@@ -31,7 +31,7 @@ from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
 from src.lsd.gl_gui.view.core_views.codec_register import registry as FILE_CODECS
 from src.lsd.gl_gui.view.core_views.core_meta import Meta
-from src.lsd.gl_gui.view.core_views.core_render import render_func, render_wrapper
+from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import hotkey
 from src.lsd.gl_gui.view.core_views.decoration.invalidation_decoration import live
@@ -1154,15 +1154,6 @@ def export_code(test_param_2: int = 5):
     # print(f"hello {test_param_2}")
     global code_export_str
     code_export_str = proxy.node.code
-
-
-@render_wrapper(wraps=render_func)
-def render_with_foo(func, **kwargs):
-    def wrapper(window_stack=None, **kwargs):
-        imgui.text("Some wrapper")
-        return func(skfs=False, **kwargs)
-
-    return wrapper
 
 
 @render_func(use_cache=False)
