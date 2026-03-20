@@ -658,7 +658,7 @@ from src.lsd.gl_gui.view.core_views.core_render import render_func
 
 
 @render_func(load_data=load_text)
-def fn_to_cst(input_value, data=None):
+def fn_to_cst(input_value, data=None) -> cst.Module:
     """Forward: parse loaded source into a cst.Module.
 
     render_func handles load_data (resolves FileRef, calls load_text,
@@ -706,7 +706,7 @@ def cst_to_fn(input_value):
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║  types.ModuleType ↔ cst.Module                                              ║
+# ║  types.ModuleType ↔ cst.Module (old @converter - kept for backward compat)  ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
 @converter(registry=Melty, from_type=types.ModuleType, load_data=load_text, stateful=True)
@@ -736,7 +736,7 @@ def cst_module_to_module(value: cst.Module) -> str:
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║  type ↔ cst.Module                                                     ║
+# ║  type ↔ cst.Module (old @converter - kept for backward compat)               ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
 @converter(registry=Melty, from_type=type, load_data=load_text, stateful=True)
@@ -770,6 +770,108 @@ def recompile_class(value, ref: FileRef, data: str, watch) -> FileRef:
            inverse_of=type_to_cst, stateful=True)
 def cst_module_to_type(value: cst.Module) -> str:
     return value.code
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  New @render_func converters for convert_in / convert_out                    ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+# --- ModuleType ---
+
+@render_func(load_data=load_text)
+def mod_to_cst(input_value, data=None) -> cst.Module:
+    """Forward: module → cst.Module."""
+    return None, cst.parse_module(data)
+
+
+@render_func()
+def recompile_mod_fn(input_value, ref=None, module_ref=None):
+    """Save handler: hotswap module + write source to disk."""
+    from src.lsd.gl_gui.view.core_conversion.path_finder import Pending, PendingState
+    if module_ref is not None:
+        try:
+            _recompile_module(module_ref, input_value, str(ref.path))
+        except Exception as e:
+            return Pending(originated=recompile_mod_fn, status=str(e),
+                           state=PendingState.ERROR), None
+    # Module FileRefs cover the whole file so write directly
+    ref.path.write_text(input_value, encoding="utf-8")
+    return None, ref
+
+
+@render_func(save_data=recompile_mod_fn)
+def cst_to_mod(input_value):
+    """Reverse: cst.Module → source string."""
+    return None, input_value.code
+
+
+# --- type (class) ---
+
+@render_func(load_data=load_text)
+def cls_to_cst(input_value, data=None) -> cst.Module:
+    """Forward: class → cst.Module."""
+    return None, cst.parse_module(data)
+
+
+@render_func()
+def recompile_cls_fn(input_value, ref=None, class_ref=None):
+    """Save handler: hotswap class + write source to disk."""
+    from src.lsd.gl_gui.view.core_conversion.path_finder import Pending, PendingState
+    if class_ref is not None:
+        try:
+            _recompile_class(class_ref, input_value, str(ref.path))
+        except Exception as e:
+            return Pending(originated=recompile_cls_fn, status=str(e),
+                           state=PendingState.ERROR), None
+    full_data = ref.path.read_bytes()
+    newline = _detect_newline(full_data)
+    try:
+        text = full_data.decode("utf-8")
+    except UnicodeDecodeError:
+        text = full_data.decode("latin-1")
+    lines = text.split(newline)
+    new_lines = input_value.split(newline)
+    lines[ref.start:ref.end] = new_lines
+    ref.path.write_text(newline.join(lines), encoding="utf-8")
+    if class_ref is not None:
+        invalidate_fileref_cache(class_ref)
+    return None, FileRef(ref.path, ref.start, ref.start + len(new_lines))
+
+
+@render_func(save_data=recompile_cls_fn)
+def cst_to_cls(input_value):
+    """Reverse: cst.Module → source string."""
+    return None, input_value.code
+
+
+# --- FileRef → cst.Module ---
+
+@render_func(load_data=load_text)
+def ref_to_cst(input_value, data=None) -> cst.Module:
+    """Forward: FileRef → cst.Module."""
+    return None, cst.parse_module(data)
+
+
+@render_func()
+def save_span_fn(input_value, ref=None):
+    """Save handler: write source string back to file span."""
+    full_data = ref.path.read_bytes()
+    newline = _detect_newline(full_data)
+    try:
+        text = full_data.decode("utf-8")
+    except UnicodeDecodeError:
+        text = full_data.decode("latin-1")
+    lines = text.split(newline)
+    new_lines = input_value.split(newline)
+    lines[ref.start:ref.end] = new_lines
+    ref.path.write_text(newline.join(lines), encoding="utf-8")
+    return None, FileRef(ref.path, ref.start, ref.start + len(new_lines))
+
+
+@render_func(save_data=save_span_fn)
+def cst_to_ref(input_value):
+    """Reverse: cst.Module → source string."""
+    return None, input_value.code
 
 
 def _recompile_class(cls: type, source: str, filename: str) -> None:

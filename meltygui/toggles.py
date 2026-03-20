@@ -10,13 +10,13 @@ class Toggles:
     debug_threads = False
     slow_down_threads = False
     render_depth = False
-    ds_invalidate_stack = True
+    ds_invalidate_stack = False
 
     profile_mode = ProfileMode.LIGHT
     offscreen_debug = False
     
     #---------- Visual Settings ---------
-    brightness = 0.222
+    brightness = 0.124
     contrast = 1.63
     
     saturation = 0.368
@@ -28,6 +28,6 @@ class Toggles:
 def my_func():
     for i in range(25):
         print("someting")
-        my_var = [50,9,15]
+        my_var = [74,14,13]
         somethin = False
     

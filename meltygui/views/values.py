@@ -1466,20 +1466,20 @@ def seperator(height):
     imgui.separator()
     imgui.dummy(0, snap_int(height / 2))
 
-def draw_bg(left=73, top=3, width=0, height=33, depth=0, rounding=4.016,
+def draw_bg(left=91, top=3, width=0, height=55, depth=0, rounding=4.016,
             global_style=None, outline=True, bg_color=None, opacity=-1.57,
             style_manager=None, tint=None, outline_tint=None, selected=False,
             hovered=False, pressed=False, nested_bg=False, **kwargs):
 
     # -- Constants ---------------------------------
-    depth_wrap        = 36
-    depth_scale       = 1.484
+    depth_wrap        = 80
+    depth_scale       = 1.814
     corner_radius     = 5.903
     border_inset      = 1.548
     border_inset_half = 0.641
     stroke_width      = 2.0
     # How depth maps to color intensity
-    intensity_factor  = 0.599
+    intensity_factor  = 0.674
     intensity_offset  = -4.777\
     # Outline color tuning
     outline_base      = 2.14
@@ -1493,7 +1493,7 @@ def draw_bg(left=73, top=3, width=0, height=33, depth=0, rounding=4.016,
 
     # Hover offset per interaction state
     hover_offset_by_state = {
-        'default':    -2.063,
+        'default':    -1.727,
         'selected':    -2.203,
         'pressed_hi': -2.288,   # pressed + opacity > 0.5
         'pressed_lo':  -0.371,
@@ -2167,10 +2167,10 @@ def draw_pending(input_value, draw_state=None):
     return False, None
 
 
-@render_func(use_cache=True, show_header=False)
+@render_func(use_cache=True, show_header=False, shadow=True)
 def pending_window(input_value, button_name, pending=None, draw_state=None):
     # imgui.push_text_wrap_pos(imgui.get_cursor_screen_pos()[0] + draw_state.content_width)
-    draw_text(str(pending.status), name="Status", wrap=True, header_same_line=False)
+    draw_text(str(pending.status), width=draw_state.content_width, name="Status", header_same_line=False)
     # imgui.text_wrapped(str(pending.status))
     # imgui.pop_text_wrap_pos()
 

@@ -5,7 +5,9 @@ from pathlib import Path
 from typing import Optional, Any
 
 from src.lsd.gl_gui.view.core_conversion.file_converters import path_to_dict, bytes_to_str, load_text, recompile_module, \
-    recompile, fn_to_cst, cst_to_fn, recompile_fn
+    recompile, fn_to_cst, cst_to_fn, recompile_fn, \
+    mod_to_cst, cst_to_mod, recompile_mod_fn, \
+    cls_to_cst, cst_to_cls, recompile_cls_fn
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import GeneralParse, Conditional, Comment, \
     cst_to_dict, dict_to_cst
 from src.lsd.gl_gui.view.core_views.headers import draw_footer, draw_header_end, draw_header
@@ -64,12 +66,14 @@ class Mode(Enum):
         ),
 
         types.FunctionType: ModeOverrides(
-            kwargs={"convert": [types.FunctionType, cst.Module]},
+            kwargs={"convert_in": [fn_to_cst],
+                    "convert_out": [cst_to_fn]},
             recursive=True,
         ),
 
         types.ModuleType: ModeOverrides(
-            kwargs={"convert": [types.ModuleType, cst.Module]},
+            kwargs={"convert_in": [mod_to_cst],
+                    "convert_out": [cst_to_mod]},
             recursive=True
         ),
     }
@@ -82,20 +86,25 @@ class Mode(Enum):
 
         types.FunctionType: ModeOverrides(
             kwargs={"convert_in": [fn_to_cst, cst_to_dict],
-                    "convert_out": [dict_to_cst, cst_to_fn]},
+                    "convert_out": [dict_to_cst, cst_to_fn],
+                    "auto_apply": [load_text, recompile_fn]},
 
             recursive=True,
             func = draw_collection
         ),
 
         type: ModeOverrides(
-            kwargs={"convert": [type, cst.Module], "auto_apply": [load_text, recompile]},
-            recursive=True
+            kwargs={"convert_in": [cls_to_cst, cst_to_dict],
+                    "convert_out": [dict_to_cst, cst_to_cls]},
+            recursive=True,
+            func=draw_collection
         ),
 
         types.ModuleType: ModeOverrides(
-            kwargs={"convert": [types.ModuleType, cst.Module], "auto_apply": [load_text, recompile_module]},
-            recursive=True
+            kwargs={"convert_in": [mod_to_cst, cst_to_dict],
+                    "convert_out": [dict_to_cst, cst_to_mod]},
+            recursive=True,
+            func=draw_collection
         ),
 
         Conditional: ModeOverrides(
@@ -132,22 +141,22 @@ class Mode(Enum):
         ),
 
         types.FunctionType: ModeOverrides(
-            kwargs={"convert": [types.FunctionType, cst.Module],
-                    "auto_apply": [load_text],
+            kwargs={"convert_in": [fn_to_cst],
+                    "convert_out": [cst_to_fn],
                     "indent_size": 5, "with_header": draw_header},
             recursive=True
         ),
 
         types.ModuleType: ModeOverrides(
-            kwargs={"convert": [types.ModuleType, cst.Module],
-                    "auto_apply": [load_text],
+            kwargs={"convert_in": [mod_to_cst],
+                    "convert_out": [cst_to_mod],
                     "indent_size": 5, "with_header": draw_header},
             recursive=True
         ),
 
         type: ModeOverrides(
-            kwargs={"convert": [type, cst.Module],
-                    "auto_apply": [load_text],
+            kwargs={"convert_in": [cls_to_cst],
+                    "convert_out": [cst_to_cls],
                     "indent_size": 5, "with_header": draw_header},
             recursive=True
         ),

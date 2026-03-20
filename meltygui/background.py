@@ -94,13 +94,12 @@ class Background:
         # No apply flag → run immediately on main thread (same cache/hash
         # logic, just no debounce or thread pool).
         if not kwargs.get("apply", False) and stateful and len(kwargs.get("path", [])) <= 2:
-            cache = cls._user_cache.get(user_id)
-            if cache and h in cache:
-                cache.move_to_end(h)
-                return_val = cache[h]
-                if no_cache:
-                    cls._user_cache.pop(user_id, None)
-                return return_val
+            if not no_cache:
+                cache = cls._user_cache.get(user_id)
+                if cache and h in cache:
+                    cache.move_to_end(h)
+                    return_val = cache[h]
+                    return return_val
 
             try:
                 result = func(*args, **kwargs)

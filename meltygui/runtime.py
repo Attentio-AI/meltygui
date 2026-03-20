@@ -287,15 +287,15 @@ class Melty:
         is_popup_open = imgui.is_popup_open("", flags=imgui.POPUP_ANY_POPUP)
         Melty.imgui_popup_open = is_popup_open
 
-        mouse_pos = imgui.get_mouse_pos()
-        ds_under_mouse = Melty.bvh_query(mouse_pos[0], mouse_pos[1])
-        for ds in ds_under_mouse:
-            ds._hover_eligible = Melty.frame_count
-
-        for ds in ds_under_mouse[-3:-1]:
-            if ds is not None and not cls.on_drag:
-                if (not cls.on_drag and not imgui.is_mouse_down(1)):
-                    Melty.cache.invalidate(ds._tile_id, do_store=False, force=True)
+        # mouse_pos = imgui.get_mouse_pos()
+        # ds_under_mouse = Melty.bvh_query(mouse_pos[0], mouse_pos[1])
+        # for ds in ds_under_mouse:
+        #     ds._hover_eligible = Melty.frame_count
+        #
+        # for ds in ds_under_mouse[-3:-1]:
+        #     if ds is not None and not cls.on_drag:
+        #         if (not cls.on_drag and not imgui.is_mouse_down(1)):
+        #             Melty.cache.invalidate(ds._tile_id, do_store=False, force=True)
 
         cls.backend.pump()
 

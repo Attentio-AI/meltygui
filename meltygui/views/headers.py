@@ -27,7 +27,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
     # ── Constants ──────────────────────────────────────────────
     # Depth-driven name brightness
-    depth_scale       = 0.203
+    depth_scale       = 0.164
     depth_offset      = -0.157
     name_value_factor = 0.769
 
@@ -47,7 +47,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         'alpha': 0.848, 'max_value': 3.363,
         'depth_factor': 0.342
     }
-    name_rounding       = 2.206
+    name_rounding       = 2.595
     max_name_chars      = 40
     min_name_text_width = 62
 

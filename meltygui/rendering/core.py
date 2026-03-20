@@ -60,7 +60,7 @@ def _run_convert_chain(value=None, chain=None, **extra_kwargs):
 
     Returns the final converted value (or Pending).
     """
-    if chain is None:
+    if chain is None or value is None or value is UNSET_VALUE:
         return value
 
     for conv_fn in chain:
@@ -682,6 +682,9 @@ def render_func(*args, **o_kwargs):
                         kwargs['ref'] = _ref
                         draw_state._fileref = _ref
                         draw_state._original_input_ref = input_value
+                    else:
+                        # Can't resolve source (e.g. builtin type) so skip conversion
+                        return input_value
 
                 # Call inner function with wanted params
                 clean_args = {p: kwargs[p] for p in wanted_params
@@ -944,7 +947,8 @@ def render_func(*args, **o_kwargs):
             draw_state._bounding_hovered = new_bounding_hovered
             if (draw_state.width is None or draw_state.height is None or hover_changed or
                     draw_state._bounding_hovered or draw_state._imgui_popover_open):
-                if (not Melty.on_drag and not imgui.is_mouse_down(2) and not imgui.is_mouse_down(1)):
+                if (not Melty.on_drag or draw_state.nested_window
+                        and not imgui.is_mouse_down(2) and not imgui.is_mouse_down(1)):
                     if not draw_state.just_shadow:
                         Melty.cache.invalidate(tile_id, do_store=False, force=True)
 
@@ -1101,6 +1105,7 @@ def render_func(*args, **o_kwargs):
                             break
 
                 thead_launch_frame = 0
+                _file_stale = False
 
                 if _convert_in is not None:
                     input_hash = Background.simple_hash(draw_state._raw_input_value)
@@ -1115,15 +1120,25 @@ def render_func(*args, **o_kwargs):
                     if draw_state._apply_load is not None or draw_state._pending_convert:
                         input_changed = True
 
-                    # Check file staleness on main thread (file stat calls)
-                    if _chain_load_data is not None and not input_changed:
-                        if draw_state._fileref is None:
-                            ref = to_fileref(input_value)
-                            if ref is not None:
-                                draw_state._fileref = ref
-                                draw_state._original_input_ref = input_value
-                        if draw_state.is_file_stale():
-                            input_changed = True
+                    # Check file staleness on main thread (cheap stat call).
+                    # When the file changes on disk, return Pending (like the
+                    # old load wrapper) so the UI shows a load-pending dialog.
+                    # Skip on first load (_original_load_data is None) - first
+                    # load should always result into a Pending.
+                    # Cache FileRef on first encounter
+                    if _chain_load_data is not None and draw_state._fileref is None:
+                        ref = to_fileref(input_value)
+                        if ref is not None:
+                            draw_state._fileref = ref
+                            draw_state._original_input_ref = input_value
+
+                    # Check file staleness (skip on first load - no baseline yet).
+                    # When stale, return Pending like the old load wrapper.
+                    _file_stale = False
+                    if (_chain_load_data is not None and not input_changed
+                            and draw_state._original_load_data is not None
+                            and draw_state.is_file_stale()):
+                        _file_stale = True
 
                     if (draw_state._raw_input_value == UNSET_VALUE or
                             (draw_state._raw_input_value is None) or not draw_state.expanded):
@@ -1136,21 +1151,43 @@ def render_func(*args, **o_kwargs):
 
                             no_cache = True if input_changed else False
 
-                            internal_value = Background.run(
-                                _run_convert_chain,
-                                value=draw_state._raw_input_value,
-                                chain=_convert_in,
-                                user_id=str(draw_state.unique) + " | convert_in",
-                                invalidate_id=draw_state._parent._tile_id,
-                                draw_state=draw_state,
-                                on_frame=start_frame, no_cache=no_cache,
-                                stateful=True)
+                            # Gate loading behind apply (like the old load wrapper).
+                            # Return Pending on: first load, file stale,
+                            # unless apply_load matches the load function.
+                            _needs_apply = (_file_stale or draw_state._original_load_data is None)
+                            if _needs_apply and draw_state._apply_load != _chain_load_data:
+                                internal_value = Pending(
+                                    originated=_chain_load_data,
+                                    wrapped=draw_state._input_cache["internal_state"][0],
+                                    state=PendingState.CONFIRM,
+                                    status="file changed on disk" if _file_stale else "load")
+                                draw_state._internal_pending = internal_value
+                                if not draw_state._show_load:
+                                    if Melty.cache is not None:
+                                        Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=5, force=True)
+                                    request_render()
+                                draw_state._show_load = True
+                            else:
+                                if _file_stale:
+                                    no_cache = True
+
+                                internal_value = Background.run(
+                                    _run_convert_chain,
+                                    value=draw_state._raw_input_value,
+                                    chain=_convert_in,
+                                    user_id=str(draw_state.unique) + " | convert_in",
+                                    invalidate_id=draw_state._parent._tile_id,
+                                    draw_state=draw_state,
+                                    on_frame=start_frame, no_cache=no_cache,
+                                    stateful=True)
 
                             if isinstance(internal_value, tuple):
                                 internal_value, thead_launch_frame = internal_value
 
                             if not isinstance(internal_value, Pending):
-                                if draw_state._apply_load is not None:
+                                thead_launch_frame = Melty.frame_count
+                                was_apply_load = draw_state._apply_load is not None
+                                if was_apply_load:
                                     Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=5, force=True)
                                 if input_changed:
                                     request_render()
@@ -1162,10 +1199,12 @@ def render_func(*args, **o_kwargs):
                                 # Update file stale state + cache original data on main thread
                                 if _chain_load_data is not None:
                                     draw_state.mark_file_current()
-                                    if draw_state._original_load_data is None or input_changed:
+                                    if draw_state._original_load_data is None or input_changed or _file_stale:
                                         ref = draw_state._fileref
                                         if ref is not None:
-                                            draw_state._original_load_data = _chain_load_data(ref)
+                                            new_data = _chain_load_data(ref)
+                                            pass  # debug removed
+                                            draw_state._original_load_data = new_data
                             else:
                                 if internal_value.state != PendingState.BACKGROUND:
                                     draw_state._all_pending['load_pending'] = internal_value
@@ -1934,9 +1973,10 @@ def render_func(*args, **o_kwargs):
                     else:
                         new_value_child = draw_state._input_cache["internal_state"][0]
 
-                    if _convert_in_done and _convert_out is not None:
+                    if _convert_in_done and _convert_out is not None and not _file_stale:
                         ####################################### CONVERT_OUT SAVE HANDLER
-                        no_cache = True if child_changed else False
+                        # Stateful converters always re-run (matching old path behavior)
+                        no_cache = True
                         if draw_state._apply_save is not None:
                             no_cache = True
 
@@ -1956,15 +1996,20 @@ def render_func(*args, **o_kwargs):
                             # Dirty detection against original load data
                             if _chain_save_data is not None and draw_state._original_load_data is not None:
                                 is_dirty = (external_value != draw_state._original_load_data)
+                                if is_dirty:
+                                    pass  # debug removed
 
                                 if is_dirty and draw_state._apply_save is not None:
                                     ref = draw_state._fileref
                                     try:
+                                        _orig_ref = draw_state._original_input_ref
                                         save_result = _chain_save_data(
                                             external_value,
                                             _converter_mode=True,
                                             ref=ref,
-                                            function_ref=draw_state._original_input_ref)
+                                            function_ref=_orig_ref,
+                                            module_ref=_orig_ref,
+                                            class_ref=_orig_ref)
                                         # save_data render_func returns (pending, value)
                                         if isinstance(save_result, tuple) and len(save_result) == 2:
                                             save_pending, updated_ref = save_result
@@ -2036,7 +2081,7 @@ def render_func(*args, **o_kwargs):
 
                         return_value = (report_changed, report_value, *return_value[2:])
 
-                    elif isinstance(convert_path, list):
+                    elif isinstance(convert_path, list) and len(convert_path) > 0:
                         ####################################### SAVE HANDLER
                         # Reverse the path to convert back up to the original type
                         convert_path = invert_path(convert_path, registry=Melty)
