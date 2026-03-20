@@ -1466,13 +1466,13 @@ def seperator(height):
     imgui.separator()
     imgui.dummy(0, snap_int(height / 2))
 
-def draw_bg(left=70, top=3, width=0, height=33, depth=0, rounding=4.025,
+def draw_bg(left=73, top=3, width=0, height=33, depth=0, rounding=4.016,
             global_style=None, outline=True, bg_color=None, opacity=-1.57,
             style_manager=None, tint=None, outline_tint=None, selected=False,
             hovered=False, pressed=False, nested_bg=False, **kwargs):
 
     # -- Constants ---------------------------------
-    depth_wrap        = 30
+    depth_wrap        = 36
     depth_scale       = 1.484
     corner_radius     = 5.903
     border_inset      = 1.548

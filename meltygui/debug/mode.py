@@ -82,8 +82,8 @@ class Mode(Enum):
 
         types.FunctionType: ModeOverrides(
             kwargs={"convert_in": [fn_to_cst, cst_to_dict],
-                    "convert_out": [dict_to_cst, cst_to_fn],
-                    "auto_apply": [load_text, recompile_fn]},
+                    "convert_out": [dict_to_cst, cst_to_fn]},
+
             recursive=True,
             func = draw_collection
         ),

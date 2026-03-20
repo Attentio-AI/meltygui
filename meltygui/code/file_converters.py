@@ -668,33 +668,22 @@ def fn_to_cst(input_value, data=None):
 
 
 @render_func()
-def cst_to_fn(input_value):
-    """Reverse: extract source string from a cst.Module.
+def recompile_fn(input_value, ref=None, function_ref=None):
+    """Save handler: hotswap function + write source to disk.
 
-    _save_data is set after recompile_fn is defined below.
-    """
-    return None, input_value.code
+    As a @render_func, gets its own draw_state and cache.
+    Called from the convert_out save path with the source string
+    as input_value, and ref/function_ref injected as kwargs.
 
-# _save_data set after recompile_fn is defined (below)
-
-
-def recompile_fn(input_value, ref, data, draw_state):
-    """save_data callback for the convert_out path.
-
-    Hotswaps the function in place, then writes the source back to
-    disk with line splicing. Uses draw_state._original_input_ref
-    (the original function reference) for the hotswap target.
-
-    Signature: save_data(input_value, ref, out_value, draw_state)
+    Returns (pending_or_none, updated_FileRef).
     """
     from src.lsd.gl_gui.view.core_conversion.path_finder import Pending, PendingState
-    function = draw_state._original_input_ref
-    if function is not None:
+    if function_ref is not None:
         try:
-            _recompile(function, data, str(ref.path))
+            _recompile(function_ref, input_value, str(ref.path))
         except Exception as e:
             return Pending(originated=recompile_fn, status=str(e),
-                           state=PendingState.ERROR)
+                           state=PendingState.ERROR), None
 
     full_data = ref.path.read_bytes()
     newline = _detect_newline(full_data)
@@ -703,13 +692,17 @@ def recompile_fn(input_value, ref, data, draw_state):
     except UnicodeDecodeError:
         text = full_data.decode("latin-1")
     lines = text.split(newline)
-    new_lines = data.split(newline)
+    new_lines = input_value.split(newline)
     lines[ref.start:ref.end] = new_lines
     ref.path.write_text(newline.join(lines), encoding="utf-8")
-    invalidate_fileref_cache(function)
-    return FileRef(ref.path, ref.start, ref.start + len(new_lines))
+    invalidate_fileref_cache(function_ref)
+    return None, FileRef(ref.path, ref.start, ref.start + len(new_lines))
 
-cst_to_fn._save_data = recompile_fn
+
+@render_func(save_data=recompile_fn)
+def cst_to_fn(input_value):
+    """Reverse: extract source string from a cst.Module."""
+    return None, input_value.code
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
