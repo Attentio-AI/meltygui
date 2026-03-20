@@ -1466,24 +1466,21 @@ def seperator(height):
     imgui.separator()
     imgui.dummy(0, snap_int(height / 2))
 
-def draw_bg(left=24, top=3, width=0, height=33, depth=0, rounding=4.203,
+def draw_bg(left=70, top=3, width=0, height=33, depth=0, rounding=4.025,
             global_style=None, outline=True, bg_color=None, opacity=-1.57,
             style_manager=None, tint=None, outline_tint=None, selected=False,
             hovered=False, pressed=False, nested_bg=False, **kwargs):
 
     # -- Constants ---------------------------------
-    depth_wrap        = 30.36
-    depth_scale       = 1.371
+    depth_wrap        = 30
+    depth_scale       = 1.484
     corner_radius     = 5.903
     border_inset      = 1.548
     border_inset_half = 0.641
     stroke_width      = 2.0
-
-
     # How depth maps to color intensity
     intensity_factor  = 0.599
     intensity_offset  = -4.777\
-
     # Outline color tuning
     outline_base      = 2.14
     outline_depth_mul = 0.929
@@ -2212,9 +2209,19 @@ def draw_any(input_value:any, view_func=None, mode:any=None, **kwargs):
     if main_mode is not None:
         # Loop over super types
         mode_config = main_mode.get_config_for(input_value)
-        if mode_config is not None and mode_config.func is None and mode_config.kwargs.get("convert", None) is not None:
-            convert_to_type = mode_config.kwargs["convert"][-1]
-            mode_config = main_mode.get_config_for(the_type=convert_to_type)
+        if mode_config is not None and mode_config.func is None and (
+                mode_config.kwargs.get("convert", None) is not None
+                or mode_config.kwargs.get("convert_in", None) is not None):
+            convert_in = mode_config.kwargs.get("convert_in", None)
+            if convert_in is not None:
+                # Infer target type from the return annotation of the last converter
+                import inspect
+                last_fn = convert_in[-1]
+                ret = inspect.signature(last_fn).return_annotation
+                convert_to_type = ret if ret is not inspect.Parameter.empty else None
+            else:
+                convert_to_type = mode_config.kwargs["convert"][-1]
+            mode_config = main_mode.get_config_for(the_type=convert_to_type) if convert_to_type is not None else None
             if mode_config is not None and mode_config.func is not None:
                 view_func = draw_single
                 kwargs_view_func = mode_config.func

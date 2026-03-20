@@ -462,6 +462,31 @@ def dict_to_cst_module(value: dict) -> cst.Module:
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  Standalone wrappers for convert_in / convert_out chains                    ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+def cst_to_dict(value) -> GeneralParse:
+    """Forward: cst.Module → GeneralParse dict.
+
+    Thin wrapper around cst_module_to_dict for convert_in chains.
+    Returns (pending, value).
+    """
+    return None, cst_module_to_dict.__wrapped__(value)
+
+
+def dict_to_cst(value) -> cst.Module:
+    """Reverse: GeneralParse dict → cst.Module.
+
+    Thin wrapper around dict_to_cst_module for convert_out chains.
+    Returns (pending, value).  Propagates Pending on parse errors.
+    """
+    result = dict_to_cst_module.__wrapped__(value)
+    if isinstance(result, Pending):
+        return result, value
+    return None, result
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  Leaf CST nodes ↔ Python primitives                                        ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 

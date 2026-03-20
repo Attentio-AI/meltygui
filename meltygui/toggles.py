@@ -16,7 +16,7 @@ class Toggles:
     offscreen_debug = False
     
     #---------- Visual Settings ---------
-    brightness = 0.12
+    brightness = 0.222
     contrast = 1.63
     
     saturation = 0.368

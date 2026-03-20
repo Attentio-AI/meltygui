@@ -5,8 +5,9 @@ from pathlib import Path
 from typing import Optional, Any
 
 from src.lsd.gl_gui.view.core_conversion.file_converters import path_to_dict, bytes_to_str, load_text, recompile_module, \
-    recompile
-from src.lsd.gl_gui.view.core_conversion.libcst_conversion import GeneralParse, Conditional, Comment
+    recompile, fn_to_cst, cst_to_fn, recompile_fn
+from src.lsd.gl_gui.view.core_conversion.libcst_conversion import GeneralParse, Conditional, Comment, \
+    cst_to_dict, dict_to_cst
 from src.lsd.gl_gui.view.core_views.headers import draw_footer, draw_header_end, draw_header
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
 from src.lsd.gl_gui.view.core_views.new_core_view import draw_collection, draw_comment
@@ -80,8 +81,11 @@ class Mode(Enum):
         ),
 
         types.FunctionType: ModeOverrides(
-            kwargs={"convert": [types.FunctionType, cst.Module], "auto_apply": [load_text, recompile]},
-            recursive=True
+            kwargs={"convert_in": [fn_to_cst, cst_to_dict],
+                    "convert_out": [dict_to_cst, cst_to_fn],
+                    "auto_apply": [load_text, recompile_fn]},
+            recursive=True,
+            func = draw_collection
         ),
 
         type: ModeOverrides(
@@ -108,6 +112,7 @@ class Mode(Enum):
         GeneralParse: ModeOverrides(
             kwargs={'show_add_delete': False, "disable_scroll": False},
             recursive=True,
+            func=draw_collection
         ),
 
     }

@@ -1,3 +1,4 @@
+import difflib
 import inspect
 import time
 import types
@@ -15,7 +16,7 @@ from imgui.core import _DrawList
 from src.lsd.gl_gui.background import Background, Pending
 from src.lsd.gl_gui.collision import Collisions
 from src.lsd.gl_gui.toggles import Counters, Toggles
-from src.lsd.gl_gui.view.core_conversion.fileref import to_fileref
+from src.lsd.gl_gui.view.core_conversion.fileref import to_fileref, FileRef
 from src.lsd.gl_gui.view.core_conversion.path_finder import convert, PendingState, invert_path
 from src.lsd.gl_gui.view.core_views.core_render_helpers import floating_text
 from src.lsd.gl_gui.model.core_model.draw_state import DrawState, Hotkey, DragMode, Anchor, TileMode, AttrDict, \
@@ -42,6 +43,58 @@ def path_to_string(path_list):
     for item in path_list:
         str_list.append(str(item.__name__ if hasattr(item, "__name__") else str(item)))
     return " -> ".join(str_list)
+
+
+def _run_convert_chain(value=None, chain=None, **extra_kwargs):
+    """Run a list of converter functions in sequence.
+
+    Each function is called with _converter_mode=True, which triggers
+    render_func's lightweight path (no imgui, automatic load_data
+    handling and parameter injection).
+
+    Plain functions (not @render_func) are called with manual kwarg
+    matching as a fallback.
+
+    Designed to run on a background thread.
+    Callable by Background.run (accepts value/chain as kwargs).
+
+    Returns the final converted value (or Pending).
+    """
+    if chain is None:
+        return value
+
+    for conv_fn in chain:
+        # If it's a render_func, use converter mode - render_func
+        # handles load_data and parameter injection internally
+        if hasattr(conv_fn, '__wrapped__'):
+            result = conv_fn(value, _converter_mode=True, **extra_kwargs)
+        else:
+            # Plain function fallback - manual kwarg matching
+            fn_load_data = getattr(conv_fn, '_load_data', None)
+            injectable = dict(extra_kwargs)
+            if fn_load_data is not None:
+                ref = to_fileref(value)
+                if ref is not None:
+                    injectable['data'] = fn_load_data(ref)
+                    injectable['ref'] = ref
+
+            sig = inspect.signature(conv_fn)
+            call_kwargs = {}
+            for p in sig.parameters:
+                if p in ('input_value', 'value'):
+                    continue
+                if p in injectable:
+                    call_kwargs[p] = injectable[p]
+            result = conv_fn(value, **call_kwargs)
+
+        if isinstance(result, tuple) and len(result) == 2:
+            pending_or_flag, value = result
+            if isinstance(pending_or_flag, Pending):
+                return pending_or_flag
+        else:
+            value = result
+
+    return value
 
 
 def render_func(*args, **o_kwargs):
@@ -73,8 +126,33 @@ def render_func(*args, **o_kwargs):
     - Pushes/pops ImGui ID scope automatically.
     """
 
+    # Auto-expose load_data / save_data as attributes for auto discovery
+    _rf_load_data = o_kwargs.get('load_data', None)
+    _rf_save_data = o_kwargs.get('save_data', None)
+
     @wraps(func)
     def wrapper(input_value=None, **kwargs):
+
+        # ── Lightweight converter mode ──────────────────────────────
+        # Called from _run_converters on a background thread.
+        # No imgui, no draw_state management - just load data, call
+        # the inner function with matched params, and return.
+        if kwargs.pop('_converter_mode', False):
+            matched = {}
+            for p in wanted_params:
+                if p == 'input_value':
+                    continue
+                if p in kwargs:
+                    matched[p] = kwargs[p]
+            # Handle load_data: resolve FileRef, load, inject
+            if _rf_load_data is not None and 'data' not in matched:
+                _ref = to_fileref(input_value)
+                if _ref is not None:
+                    matched['data'] = _rf_load_data(_ref)
+                    if 'ref' in wanted_params:
+                        matched['ref'] = _ref
+            return func(input_value, **matched)
+
         if Melty.annotation_mode:
             args = [list(kwargs)[0]]
             annotation = annotation_track(*args, wrapper=wrapper, **o_kwargs)
@@ -859,8 +937,7 @@ def render_func(*args, **o_kwargs):
             draw_state._bounding_hovered = new_bounding_hovered
             if (draw_state.width is None or draw_state.height is None or hover_changed or
                     draw_state._bounding_hovered or draw_state._imgui_popover_open):
-                if (not Melty.on_drag or draw_state.nested_window
-                        and not imgui.is_mouse_down(2) and not imgui.is_mouse_down(1)):
+                if (not Melty.on_drag and not imgui.is_mouse_down(2) and not imgui.is_mouse_down(1)):
                     if not draw_state.just_shadow:
                         Melty.cache.invalidate(tile_id, do_store=False, force=True)
 
@@ -994,8 +1071,159 @@ def render_func(*args, **o_kwargs):
                 draw_state.left = snap_int(draw_state.left)
                 draw_state.top = snap_int(draw_state.top)
                 # expected_type = param_types[0] if len(param_types) > 0 else None
+                # --- convert_in / convert_out (explicit function chains) ---
+                # Check runtime kwargs first (for Mode overrides), then decorator kwargs
+                _convert_in = kwargs.get("convert_in", o_kwargs.get("convert_in", None))
+                _convert_out = kwargs.get("convert_out", o_kwargs.get("convert_out", None))
+                _convert_in_done = False
+
+                # Discover load_data / save_data from converter function chains
+                _chain_load_data = None
+                _chain_save_data = None
+                if _convert_in is not None:
+                    for _ci_fn in _convert_in:
+                        _ld = getattr(_ci_fn, '_load_data', None)
+                        if _ld is not None:
+                            _chain_load_data = _ld
+                            break
+                if _convert_out is not None:
+                    for _co_fn in _convert_out:
+                        _sd = getattr(_co_fn, '_save_data', None)
+                        if _sd is not None:
+                            _chain_save_data = _sd
+                            break
+
+                thead_launch_frame = 0
+
+                if _convert_in is not None:
+                    input_hash = Background.simple_hash(draw_state._raw_input_value)
+                    cached_hash = Background.simple_hash(draw_state._input_cache["external_state"][0])
+                    input_changed = input_hash != cached_hash
+
+                    if input_changed:
+                        Melty.cache.invalidate_up(draw_state._tile_id)
+                        Melty.cache.invalidate_up(draw_state._parent._tile_id)
+                        request_render()
+
+                    if draw_state._apply_load is not None or draw_state._pending_convert:
+                        input_changed = True
+
+                    # Check file staleness on main thread (file stat calls)
+                    if _chain_load_data is not None and not input_changed:
+                        if draw_state._fileref is None:
+                            ref = to_fileref(input_value)
+                            if ref is not None:
+                                draw_state._fileref = ref
+                                draw_state._original_input_ref = input_value
+                        if draw_state.is_file_stale():
+                            input_changed = True
+
+                    if (draw_state._raw_input_value == UNSET_VALUE or
+                            (draw_state._raw_input_value is None) or not draw_state.expanded):
+                        internal_value, thead_launch_frame = draw_state._input_cache["internal_state"]
+                    else:
+                        start_frame = Melty.frame_count
+                        if ((not Melty.on_drag and not imgui.is_mouse_down(2) and not imgui.is_mouse_down(1)) or
+                                draw_state._input_cache["internal_state"][0] == UNSET_VALUE
+                                and draw_state._save_pending is None):
+
+                            no_cache = True if input_changed else False
+
+                            internal_value = Background.run(
+                                _run_convert_chain,
+                                value=draw_state._raw_input_value,
+                                chain=_convert_in,
+                                user_id=str(draw_state.unique) + " | convert_in",
+                                invalidate_id=draw_state._parent._tile_id,
+                                draw_state=draw_state,
+                                on_frame=start_frame, no_cache=no_cache,
+                                stateful=True)
+
+                            if isinstance(internal_value, tuple):
+                                internal_value, thead_launch_frame = internal_value
+
+                            if not isinstance(internal_value, Pending):
+                                if draw_state._apply_load is not None:
+                                    Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=5, force=True)
+                                if input_changed:
+                                    request_render()
+                                draw_state._apply_load = None
+                                draw_state._pending_convert = False
+                                draw_state._internal_pending = None
+                                draw_state._show_load = False
+                                draw_state._all_pending['load_pending'] = None
+                                # Update file stale state + cache original data on main thread
+                                if _chain_load_data is not None:
+                                    draw_state.mark_file_current()
+                                    if draw_state._original_load_data is None or input_changed:
+                                        ref = draw_state._fileref
+                                        if ref is not None:
+                                            draw_state._original_load_data = _chain_load_data(ref)
+                            else:
+                                if internal_value.state != PendingState.BACKGROUND:
+                                    draw_state._all_pending['load_pending'] = internal_value
+                        else:
+                            internal_value = draw_state._input_cache["internal_state"][0]
+
+                        if isinstance(internal_value, tuple):
+                            internal_value, thead_launch_frame = internal_value
+
+                        if not isinstance(internal_value, Pending):
+                            if draw_state._apply_load is not None:
+                                thead_launch_frame = Melty.frame_count
+                                Melty.cache.invalidate_up(draw_state._parent._tile_id, force=True)
+                                request_render()
+
+                    if isinstance(internal_value, tuple):
+                        internal_value, thead_launch_frame = internal_value
+
+                    if input_changed or draw_state._input_cache["internal_state"][0] == UNSET_VALUE:
+                        if isinstance(internal_value, Pending):
+                            if internal_value.state == PendingState.CONFIRM:
+                                draw_state._internal_pending = internal_value
+                                if not draw_state._show_load:
+                                    Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=5, force=True)
+                                    request_render()
+                                draw_state._show_load = True
+                                if type(internal_value.wrapped) != type(draw_state._input_cache["internal_state"][0]):
+                                    internal_value = draw_state._input_cache["internal_state"][0]
+                                else:
+                                    internal_value = internal_value.wrapped
+
+                        if isinstance(internal_value, Pending):
+                            draw_state._load_pending = True
+                            draw_state._load_pending_for += 1
+                            if draw_state._load_pending_for > 2:
+                                draw_pending_status(draw_state, internal_value)
+                        else:
+                            draw_state._load_pending = False
+                            draw_state._load_pending_for = 0
+                            prev_internal_hash = Background.simple_hash(
+                                draw_state._input_cache["internal_state"][0])
+
+                            if thead_launch_frame >= draw_state._input_cache["internal_state"][1]:
+                                if draw_state._apply_load is not None or draw_state._apply_save is None:
+                                    draw_state._input_cache["internal_state"] = internal_value, thead_launch_frame
+                                    draw_state._input_value = internal_value
+                                new_internal_hash = Background.simple_hash(
+                                    draw_state._input_cache["internal_state"][0])
+
+                                if prev_internal_hash != new_internal_hash:
+                                    Melty.cache.invalidate(draw_state._parent._tile_id, force=True)
+                                    Melty.cache.invalidate(draw_state._tile_id, force=True)
+                                    request_render()
+
+                    converted_input = True
+                    draw_state._input_value = draw_state._input_cache["internal_state"][0]
+                    kwargs["input_value"] = draw_state._input_cache["internal_state"][0]
+                    draw_state._raw_input_value = draw_state._input_cache["external_state"][0]
+                    _convert_in_done = True
+
                 convert_path = kwargs.get('convert', [])
-                if isinstance(convert_path, list) and len(convert_path) > 0:
+                if _convert_in_done:
+                    needs_convert = False
+                    to_type = None
+                elif isinstance(convert_path, list) and len(convert_path) > 0:
                     if not isinstance(convert_path[-1], type):
                         to_type = Melty._converter_to_type.get(convert_path[-1], None)[1]
                     else:
@@ -1163,7 +1391,7 @@ def render_func(*args, **o_kwargs):
                     # if isinstance(draw_state._input_value_cache["external_state"][0], Pending):
                     #     raise Exception("Pending needs to be handled before saving to cache")
                     draw_state._raw_input_value = draw_state._input_cache["external_state"][0]
-                else:
+                elif not _convert_in_done:
                     draw_state._input_value = input_value
                     kwargs["input_value"] = draw_state._input_value
 
@@ -1699,7 +1927,100 @@ def render_func(*args, **o_kwargs):
                     else:
                         new_value_child = draw_state._input_cache["internal_state"][0]
 
-                    if isinstance(convert_path, list):
+                    if _convert_in_done and _convert_out is not None:
+                        ####################################### CONVERT_OUT SAVE HANDLER
+                        no_cache = True if child_changed else False
+                        if draw_state._apply_save is not None:
+                            no_cache = True
+
+                        external_value = Background.run(
+                            _run_convert_chain,
+                            value=new_value_child,
+                            chain=_convert_out,
+                            user_id=str(unique) + " | convert_out",
+                            invalidate_id=draw_state._parent._tile_id,
+                            on_frame=Melty.frame_count, no_cache=no_cache,
+                            stateful=True)
+
+                        if isinstance(external_value, tuple):
+                            external_value, thead_launch_frame = external_value
+
+                        if not isinstance(external_value, Pending):
+                            # Dirty detection against original load data
+                            if _chain_save_data is not None and draw_state._original_load_data is not None:
+                                is_dirty = (external_value != draw_state._original_load_data)
+
+                                if is_dirty and draw_state._apply_save is not None:
+                                    ref = draw_state._fileref
+                                    try:
+                                        updated_ref = _chain_save_data(
+                                            input_value, ref, external_value, draw_state)
+                                        if isinstance(updated_ref, Pending):
+                                            draw_state._all_pending['save_pending'] = updated_ref
+                                            draw_state._show_save = True
+                                            report_changed = False
+                                        else:
+                                            if isinstance(updated_ref, FileRef):
+                                                draw_state._fileref = updated_ref
+                                            draw_state._original_load_data = external_value
+                                            draw_state.mark_file_current()
+                                            draw_state._show_save = False
+                                            draw_state._apply_save = None
+                                            draw_state._save_pending_obj = None
+                                            draw_state._all_pending['save_pending'] = None
+                                            report_changed = True
+                                            report_value = draw_state._original_input_ref or input_value
+                                            Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=4, force=True)
+                                            request_render()
+                                    except Exception as e:
+                                        draw_state._all_pending['save_pending'] = Pending(
+                                            originated=_chain_save_data, status=str(e),
+                                            state=PendingState.ERROR)
+                                        report_changed = False
+                                elif is_dirty:
+                                    try:
+                                        lines1 = str(draw_state._original_load_data).splitlines(keepends=True)
+                                        lines2 = str(external_value).splitlines(keepends=True)
+                                        diff = "".join(difflib.unified_diff(
+                                            lines1, lines2,
+                                            fromfile="original.py", tofile="modified.py"))
+                                    except Exception:
+                                        diff = "dirty"
+                                    save_pending = Pending(
+                                        originated=_chain_save_data, wrapped=external_value,
+                                        status=diff)
+                                    draw_state._all_pending['save_pending'] = save_pending
+                                    draw_state._save_pending_obj = save_pending
+                                    if not draw_state._show_save:
+                                        Melty.cache.invalidate_up(draw_state._parent._tile_id, force=True)
+                                        request_render()
+                                    draw_state._show_save = True
+                                    report_changed = False
+                                else:
+                                    draw_state._show_save = False
+                                    draw_state._all_pending['save_pending'] = None
+                                    report_changed = False
+                            else:
+                                report_changed = child_changed
+                                report_value = external_value
+
+                            if draw_state._show_save or draw_state._apply_save is not None:
+                                draw_state._apply_save = None
+                        else:
+                            if external_value.state == PendingState.ERROR:
+                                draw_state._apply_save = None
+                                draw_state._save_pending_obj = None
+                                draw_state._show_save = False
+                            if external_value.state != PendingState.BACKGROUND:
+                                _cur_sp = draw_state._all_pending.get("save_pending")
+                                if not (isinstance(_cur_sp, Pending) and _cur_sp.state == PendingState.ERROR
+                                        and external_value.state != PendingState.ERROR):
+                                    draw_state._all_pending["save_pending"] = external_value
+                            report_changed = False
+
+                        return_value = (report_changed, report_value, *return_value[2:])
+
+                    elif isinstance(convert_path, list):
                         ####################################### SAVE HANDLER
                         # Reverse the path to convert back up to the original type
                         convert_path = invert_path(convert_path, registry=Melty)
@@ -2285,6 +2606,12 @@ def render_func(*args, **o_kwargs):
                 if wrapper not in registry.converter_flags:
                     registry.converter_flags[wrapper] = {}
                 registry.converter_flags[wrapper]["stateful"] = True
+
+    # Expose load_data/save_data for chain discovery
+    if _rf_load_data is not None:
+        wrapper._load_data = _rf_load_data
+    if _rf_save_data is not None:
+        wrapper._save_data = _rf_save_data
 
     return wrapper
 

@@ -364,6 +364,14 @@ class DrawState(DictConversion):
         self._bvh_id = None
         self._bvh_bbox = None  # cached bbox for delete operations
 
+
+        # File watch state (replaces _WatchState for convert_in/convert_out)
+        self._fileref = None
+        self._file_mtime = 0.0
+        self._file_size = 0
+        self._original_load_data = None
+        self._original_input_ref = None
+
     @property
     def clip_size(self):
         if self.clip_rect is None:
@@ -377,6 +385,25 @@ class DrawState(DictConversion):
         if l is None or t is None or not w or not h:
             return None
         return (l, t, l + w, t + h)
+
+    def is_file_stale(self):
+        if self._fileref is None:
+            return False
+        try:
+            s = self._fileref.path.stat()
+            return s.st_mtime != self._file_mtime or s.st_size != self._file_size
+        except OSError:
+            return True
+
+    def mark_file_current(self):
+        if self._fileref is None:
+            return
+        try:
+            s = self._fileref.path.stat()
+            self._file_mtime = s.st_mtime
+            self._file_size = s.st_size
+        except OSError:
+            pass
 
     def pos_changed(self):
         """Update BVH index after position/size changes. Call from render_func."""
@@ -646,20 +673,25 @@ class DrawState(DictConversion):
             rect = (max(left, clip_rect[0]), max(top, clip_rect[1]),
                     min(right, clip_rect[2]), min(bottom, clip_rect[3]))
 
+        if rect is None:
+            if self._hover_eligible >= Melty.frame_count:
+                return True
+            else:
+                return False
+        else:
+            cached = self._hover_eligible_cache.get(rect, None)
+            if cached is None or cached[1] < Melty.frame_count:
+                this_frame = Melty.frame_count
+                if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[2], rect[3]):
+                    if self.hover_reported is None or self.hover_reported or ignore_reports:
+                        self._hover_eligible_cache[rect] = (True, this_frame)
+                        return True
+                    else:
+                        self._hover_eligible_cache[rect] = (False, this_frame)
+                        return False
 
-        cached = self._hover_eligible_cache.get(rect, None)
-        if cached is None or cached[1] < Melty.frame_count:
-            this_frame = Melty.frame_count
-            if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[2], rect[3]):
-                if self.hover_reported is None or self.hover_reported or ignore_reports:
-                    self._hover_eligible_cache[rect] = (True, this_frame)
-                    return True
-                else:
-                    self._hover_eligible_cache[rect] = (False, this_frame)
-                    return False
-
-            self._hover_eligible_cache[rect] = (False, this_frame)
-            return False
+                self._hover_eligible_cache[rect] = (False, this_frame)
+                return False
 
         return cached[0]
 

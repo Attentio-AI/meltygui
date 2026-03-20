@@ -292,9 +292,10 @@ class Melty:
         for ds in ds_under_mouse:
             ds._hover_eligible = Melty.frame_count
 
-        # last_ds_under_mouse = ds_under_mouse[-1] if len(ds_under_mouse) > 0 else None
-        # if last_ds_under_mouse is not None:
-        #     Melty.cache.invalidate(last_ds_under_mouse._tile_id, do_store=False, force=True)
+        for ds in ds_under_mouse[-3:-1]:
+            if ds is not None and not cls.on_drag:
+                if (not cls.on_drag and not imgui.is_mouse_down(1)):
+                    Melty.cache.invalidate(ds._tile_id, do_store=False, force=True)
 
         cls.backend.pump()
 
@@ -371,7 +372,7 @@ class Melty:
 
         for view_id, evts in cls.events.items():
             first_event = list(evts.values())[0]
-            if first_event.tile_id is not None and not cls.on_drag:
+            if first_event.tile_id is not None and not cls.window_drag:
                 Melty.cache.invalidate(first_event.tile_id)
 
         Melty.all_uniques = set()

@@ -651,6 +651,68 @@ def cst_module_to_function(value: cst.Module) -> str:
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  Standalone converters for convert_in / convert_out paths                    ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+from src.lsd.gl_gui.view.core_views.core_render import render_func
+
+
+@render_func(load_data=load_text)
+def fn_to_cst(input_value, data=None):
+    """Forward: parse loaded source into a cst.Module.
+
+    render_func handles load_data (resolves FileRef, calls load_text,
+    injects `data`) in converter mode on the background thread.
+    """
+    return None, cst.parse_module(data)
+
+
+@render_func()
+def cst_to_fn(input_value):
+    """Reverse: extract source string from a cst.Module.
+
+    _save_data is set after recompile_fn is defined below.
+    """
+    return None, input_value.code
+
+# _save_data set after recompile_fn is defined (below)
+
+
+def recompile_fn(input_value, ref, data, draw_state):
+    """save_data callback for the convert_out path.
+
+    Hotswaps the function in place, then writes the source back to
+    disk with line splicing. Uses draw_state._original_input_ref
+    (the original function reference) for the hotswap target.
+
+    Signature: save_data(input_value, ref, out_value, draw_state)
+    """
+    from src.lsd.gl_gui.view.core_conversion.path_finder import Pending, PendingState
+    function = draw_state._original_input_ref
+    if function is not None:
+        try:
+            _recompile(function, data, str(ref.path))
+        except Exception as e:
+            return Pending(originated=recompile_fn, status=str(e),
+                           state=PendingState.ERROR)
+
+    full_data = ref.path.read_bytes()
+    newline = _detect_newline(full_data)
+    try:
+        text = full_data.decode("utf-8")
+    except UnicodeDecodeError:
+        text = full_data.decode("latin-1")
+    lines = text.split(newline)
+    new_lines = data.split(newline)
+    lines[ref.start:ref.end] = new_lines
+    ref.path.write_text(newline.join(lines), encoding="utf-8")
+    invalidate_fileref_cache(function)
+    return FileRef(ref.path, ref.start, ref.start + len(new_lines))
+
+cst_to_fn._save_data = recompile_fn
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  types.ModuleType ↔ cst.Module                                              ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
