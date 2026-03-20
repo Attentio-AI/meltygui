@@ -1149,8 +1149,6 @@ def render_func(*args, **o_kwargs):
                                 draw_state._input_cache["internal_state"][0] == UNSET_VALUE
                                 and draw_state._save_pending is None):
 
-                            no_cache = True if input_changed else False
-
                             # Gate loading behind apply (like the old load wrapper).
                             # Return Pending on: first load, file stale,
                             # unless apply_load matches the load function.
@@ -1168,8 +1166,10 @@ def render_func(*args, **o_kwargs):
                                     request_render()
                                 draw_state._show_load = True
                             else:
-                                if _file_stale:
-                                    no_cache = True
+                                # Bypass cache when input changed (file stale,
+                                # apply_load set, or input hash changed).
+                                # Normal steady-state frames hit the cache.
+                                no_cache = input_changed
 
                                 internal_value = Background.run(
                                     _run_convert_chain,
@@ -1975,10 +1975,8 @@ def render_func(*args, **o_kwargs):
 
                     if _convert_in_done and _convert_out is not None and not _file_stale:
                         ####################################### CONVERT_OUT SAVE HANDLER
-                        # Stateful converters always re-run (matching old path behavior)
-                        no_cache = True
-                        if draw_state._apply_save is not None:
-                            no_cache = True
+                        # Bypass cache when data changes (user edit, reload, or save apply)
+                        no_cache = child_changed or input_changed or draw_state._apply_save is not None
 
                         external_value = Background.run(
                             _run_convert_chain,

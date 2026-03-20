@@ -1472,7 +1472,7 @@ def draw_bg(left=91, top=3, width=0, height=55, depth=0, rounding=4.016,
             hovered=False, pressed=False, nested_bg=False, **kwargs):
 
     # -- Constants ---------------------------------
-    depth_wrap        = 80
+    depth_wrap        = 69
     depth_scale       = 1.814
     corner_radius     = 5.903
     border_inset      = 1.548
