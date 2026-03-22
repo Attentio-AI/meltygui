@@ -198,7 +198,9 @@ def convert(value: Any, target: type[T] = None, *, registry, path: list | None =
     if steps is not None:
         return _run_chain_steps(value, steps,cache_id=cache_id, apply=apply)
     # Direct call (single hop)
-    return chain_fn(value, cache_id=cache_id, apply=apply)
+    if getattr(chain_fn, '_accepts_cache_id', False):
+        return chain_fn(value, cache_id=cache_id, apply=apply)
+    return chain_fn(value)
 
 
 def _run_explicit_path(value: Any, target: type, *, path: list, registry, apply: any, cache_id=None) -> Any:
@@ -258,7 +260,10 @@ def _run_explicit_path(value: Any, target: type, *, path: list, registry, apply:
             # else:
             #     do_apply = False
             last_fn = fn
-            result = fn(result, cache_id=cache_id, apply=apply)
+            if getattr(fn, '_accepts_cache_id', False):
+                result = fn(result, cache_id=cache_id, apply=apply)
+            else:
+                result = fn(result)
         else:
             # Callable edge - skip if already the target type
             type_info = getattr(registry, "_converter_to_type", {}).get(item)
@@ -269,7 +274,10 @@ def _run_explicit_path(value: Any, target: type, *, path: list, registry, apply:
                     continue
 
 
-            result = item(result, cache_id=cache_id, apply=apply)
+            if getattr(item, '_accepts_cache_id', False):
+                result = item(result, cache_id=cache_id, apply=apply)
+            else:
+                result = item(result)
 
         if isinstance(result, Pending):
             return result
@@ -284,11 +292,11 @@ def _run_chain_steps(value: Any, steps: list[Callable], *, apply: bool, cache_id
     """
     result = value
 
-    if apply:
-        pass
-
     for fn in steps:
-        result = fn(result, cache_id=cache_id, apply=apply)
+        if getattr(fn, '_accepts_cache_id', False):
+            result = fn(result, cache_id=cache_id, apply=apply)
+        else:
+            result = fn(result)
         if isinstance(result, Pending):
             return result
 

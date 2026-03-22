@@ -529,7 +529,7 @@ def draw_main(input_value, vis):
 
 
     some_path = Path("/home/lukas/test_folder/test_list.txt")
-    changed, value = draw_window(some_path, name="test_path_render", mode=Mode.FILE_META)
+    changed, value = draw_any(some_path, name="test_path_render", mode=(Mode.FILE_META, Mode.WINDOW))
     if changed:
         path = value
 
@@ -1472,28 +1472,28 @@ def draw_bg(left=91, top=3, width=0, height=55, depth=0, rounding=4.016,
             hovered=False, pressed=False, nested_bg=False, **kwargs):
 
     # -- Constants ---------------------------------
-    depth_wrap        = 69
-    depth_scale       = 1.814
-    corner_radius     = 5.903
+    depth_wrap        = 26
+    depth_scale       = 1.053
+    corner_radius     = 6.217
     border_inset      = 1.548
     border_inset_half = 0.641
     stroke_width      = 2.0
     # How depth maps to color intensity
-    intensity_factor  = 0.674
-    intensity_offset  = -4.777\
+    intensity_factor  = 0.04
+    intensity_offset  = 1.424\
     # Outline color tuning
-    outline_base      = 2.14
-    outline_depth_mul = 0.929
-    outline_sat       = {'default': 2.04, 'nested': 3.211}
+    outline_base      = 1.914
+    outline_depth_mul = 0.85
+    outline_sat       = {'default': 1.752, 'nested': 3.211}
 
     # Beed color
-    bleed_mix         = {'nested': 0.407, 'default': 0.454}
-    bleed_style       = {'value': -0.1, 'alpha': 0.994, 'saturation': 5.459}
-    outline_bleed_mix = 0.232
+    bleed_mix         = {'nested': 0.201, 'default': 0.454}
+    bleed_style       = {'value': -0.111, 'alpha': 0.994, 'saturation': 5.459}
+    outline_bleed_mix = 0.308
 
     # Hover offset per interaction state
     hover_offset_by_state = {
-        'default':    -1.727,
+        'default':    -1.813,
         'selected':    -2.203,
         'pressed_hi': -2.288,   # pressed + opacity > 0.5
         'pressed_lo':  -0.371,

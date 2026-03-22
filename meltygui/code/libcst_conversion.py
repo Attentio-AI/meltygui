@@ -18,9 +18,24 @@ import libcst as cst
 from libcst._nodes.internal import CodegenState as _CodegenState
 
 from src.lsd.gl_gui.melty import Melty
-from src.lsd.gl_gui.view.core_conversion.converter_register import converter
 from src.lsd.gl_gui.view.core_conversion.path_finder import convert, PendingState
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
+
+
+def register(fn):
+    """Lightweight converter registration — no wrapping, just registry lookup.
+
+    Infers from_type from the first parameter annotation and to_type
+    from the return annotation, then registers fn in Melty._converters.
+    The function stays unwrapped (no apply/cache_id overhead).
+    """
+    sig = inspect.signature(fn)
+    params = list(sig.parameters.values())
+    from_type = params[0].annotation if params and params[0].annotation is not inspect.Parameter.empty else None
+    to_type = sig.return_annotation if sig.return_annotation is not inspect.Signature.empty else None
+    if from_type is not None and to_type is not None:
+        Melty._converters[(from_type, to_type)] = fn
+    return fn
 
 # Sentinel for arguments with no default value.
 # Shows up in the dict so the UI can display the parameter name,
@@ -316,13 +331,13 @@ def _float_to_str(value, old_str=None):
 import types
 
 
-@converter(registry=Melty)
+@register
 def function_to_str(value: types.FunctionType) -> str:
     """Get the source code of a function as a string."""
     return inspect.getsource(value)
 
 
-@converter(registry=Melty)
+@register
 def type_to_str(value: type) -> str:
     """Get the source code of a class as a string."""
     return inspect.getsource(value)
@@ -332,7 +347,7 @@ def type_to_str(value: type) -> str:
 # ║  str ↔ cst.Module                                                          ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
-@converter(registry=Melty)
+@register
 def str_to_cst_module(value: str) -> cst.Module:
     try:
         return cst.parse_module(value)
@@ -345,7 +360,7 @@ def str_to_cst_module(value: str) -> cst.Module:
         ), originated=str_to_cst_module, state=PendingState.ERROR, status=e.message)
 
 
-@converter(registry=Melty)
+@register
 def cst_module_to_str(value: cst.Module) -> str:
     return value.code
 
@@ -354,7 +369,7 @@ def cst_module_to_str(value: cst.Module) -> str:
 # ║  cst.Module ↔ dict                                                         ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
-@converter(registry=Melty)
+@register
 def cst_module_to_dict(value: cst.Module) -> dict:
     """Top-level statements become readable dict keys.
 
@@ -418,7 +433,7 @@ def cst_module_to_dict(value: cst.Module) -> dict:
     return readable
 
 
-@converter(registry=Melty)
+@register
 def dict_to_cst_module(value: dict) -> cst.Module:
     """Rebuild from __cst__, patching in any edited values.
 
@@ -471,7 +486,7 @@ def cst_to_dict(value) -> GeneralParse:
     Thin wrapper around cst_module_to_dict for convert_in chains.
     Returns (pending, value).
     """
-    return None, cst_module_to_dict.__wrapped__(value)
+    return None, cst_module_to_dict(value)
 
 
 def dict_to_cst(value) -> cst.Module:
@@ -480,7 +495,7 @@ def dict_to_cst(value) -> cst.Module:
     Thin wrapper around dict_to_cst_module for convert_out chains.
     Returns (pending, value).  Propagates Pending on parse errors.
     """
-    result = dict_to_cst_module.__wrapped__(value)
+    result = dict_to_cst_module(value)
     if isinstance(result, Pending):
         return result, value
     return None, result
@@ -490,29 +505,29 @@ def dict_to_cst(value) -> cst.Module:
 # ║  Leaf CST nodes ↔ Python primitives                                        ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
-@converter(registry=Melty)
+@register
 def cst_integer_to_int(value: cst.Integer) -> int:
     return int(value.value)
 
 
-@converter(registry=Melty)
+@register
 def int_to_cst_integer(value: int) -> cst.Integer:
     return cst.Integer(str(value))
 
 
-@converter(registry=Melty)
+@register
 def cst_float_to_float(value: cst.Float) -> float:
     return float(_clean_float(float(value.value)))
 
 
-@converter(registry=Melty)
+@register
 def float_to_cst_float(value: float) -> cst.Float:
     if not math.isfinite(value):
         raise ValueError(f"Cannot represent {value!r} as cst.Float")
     return cst.Float(_clean_float(value))
 
 
-@converter(registry=Melty)
+@register
 def cst_simplestring_to_str(value: cst.SimpleString) -> str:
     try:
         return eval(value.value)  # noqa: S307 - safe, it's a string literal
@@ -520,7 +535,7 @@ def cst_simplestring_to_str(value: cst.SimpleString) -> str:
         return value.value
 
 
-@converter(registry=Melty)
+@register
 def str_to_cst_simplestring(value: str) -> cst.SimpleString:
     return cst.SimpleString(repr(value))
 
@@ -529,7 +544,7 @@ def str_to_cst_simplestring(value: str) -> cst.SimpleString:
 # ║  cst.Dict ↔ dict (recursive, with __cst__ preservation)                    ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
-@converter(registry=Melty)
+@register
 def cst_dict_to_dict(value: cst.Dict) -> dict:
     """Recursively convert a CST Dict node to a Python dict.
 
@@ -550,7 +565,7 @@ def cst_dict_to_dict(value: cst.Dict) -> dict:
     return result
 
 
-@converter(registry=Melty)
+@register
 def dict_to_cst_dict(value: dict) -> cst.Dict:
     """Reconstruct a cst.Dict from a Python dict.
 
@@ -685,7 +700,7 @@ def dict_to_cst_dict(value: dict) -> cst.Dict:
 # ║  cst.List ↔ list (recursive)                                               ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
-@converter(registry=Melty)
+@register
 def cst_list_to_list(value: cst.List) -> list:
     result = []
     for el in value.elements:
@@ -696,7 +711,7 @@ def cst_list_to_list(value: cst.List) -> list:
     return result
 
 
-@converter(registry=Melty)
+@register
 def list_to_cst_list(value: list) -> cst.List:
     elements = []
     for item in value:
@@ -710,7 +725,7 @@ def list_to_cst_list(value: list) -> cst.List:
 # ║  cst.Tuple ↔ tuple (recursive)                                             ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
-@converter(registry=Melty)
+@register
 def cst_tuple_to_tuple(value: cst.Tuple) -> tuple:
     result = []
     for el in value.elements:
@@ -721,7 +736,7 @@ def cst_tuple_to_tuple(value: cst.Tuple) -> tuple:
     return tuple(result)
 
 
-@converter(registry=Melty)
+@register
 def tuple_to_cst_tuple(value: tuple) -> cst.Tuple:
     elements = []
     for item in value:
@@ -735,7 +750,7 @@ def tuple_to_cst_tuple(value: tuple) -> cst.Tuple:
 # ║  cst.ClassDef ↔ dict (self.X assignments from __init__)                    ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
-@converter(registry=Melty)
+@register
 def cst_classdef_to_dict(value: cst.ClassDef) -> dict:
     """Extract readable fields from a class definition.
 
@@ -806,7 +821,7 @@ def cst_classdef_to_dict(value: cst.ClassDef) -> dict:
     return readable
 
 
-@converter(registry=Melty)
+@register
 def dict_to_cst_classdef(value: dict) -> cst.ClassDef:
     """Patch class decorators, fields, and comments from edited dict values.
 
@@ -946,7 +961,7 @@ class _ClassPatcher(cst.CSTTransformer):
 _SKIP_PARAMS = {"self", "cls"}
 
 
-@converter(registry=Melty)
+@register
 def cst_funcdef_to_dict(value: cst.FunctionDef) -> dict:
     """Extract parameters, decorators, and body assignments from a function.
 
@@ -1291,7 +1306,7 @@ def _extract_decorators(decorators):
     return result
 
 
-@converter(registry=Melty)
+@register
 def dict_to_cst_funcdef(value: dict) -> cst.FunctionDef:
     """Patch decorators, parameter defaults, and body assignments.
 
@@ -1685,7 +1700,7 @@ def _patch_params(params, edits):
 # ║  cst.Call ↔ dict (keyword arguments)                                        ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
-@converter(registry=Melty)
+@register
 def cst_call_to_dict(value: cst.Call) -> dict:
     """Extract keyword arguments from a Call as readable keys.
 
@@ -1706,7 +1721,7 @@ def cst_call_to_dict(value: cst.Call) -> dict:
     return readable
 
 
-@converter(registry=Melty)
+@register
 def dict_to_cst_call(value: dict) -> cst.Call:
     """Reconstruct a Call from a dict, patching kwargs and handling
     insert/pop with sibling-cloned formatting.

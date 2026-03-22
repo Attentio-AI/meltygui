@@ -7,9 +7,10 @@ from typing import Optional, Any
 from src.lsd.gl_gui.view.core_conversion.file_converters import path_to_dict, bytes_to_str, load_text, recompile_module, \
     recompile, fn_to_cst, cst_to_fn, recompile_fn, \
     mod_to_cst, cst_to_mod, recompile_mod_fn, \
-    cls_to_cst, cst_to_cls, recompile_cls_fn
+    cls_to_cst, cst_to_cls, recompile_cls_fn, \
+    rf_dict_to_path, rf_str_to_bytes, rf_dict_to_str, load_file_bytes
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import GeneralParse, Conditional, Comment, \
-    cst_to_dict, dict_to_cst
+    cst_to_dict, dict_to_cst, cst_module_to_str, str_to_cst_module
 from src.lsd.gl_gui.view.core_views.headers import draw_footer, draw_header_end, draw_header
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
 from src.lsd.gl_gui.view.core_views.new_core_view import draw_collection, draw_comment
@@ -60,7 +61,8 @@ class Mode(Enum):
 
     CODE_DICT_STR = {
         cst.Module: ModeOverrides(
-            kwargs={"convert": [cst.Module, dict, str]},
+            kwargs={"convert_in": [cst_to_dict, rf_dict_to_str],
+                    "convert_out": [str_to_cst_module]},
             recursive=True,
             func=draw_text
         ),
@@ -79,7 +81,8 @@ class Mode(Enum):
     }
     CODE_UI = {
         cst.Module: ModeOverrides(
-            kwargs={"convert": [cst.Module, dict]},
+            kwargs={"convert_in": [cst_to_dict],
+                    "convert_out": [dict_to_cst]},
             func=draw_collection,
             recursive=True
         ),
@@ -135,7 +138,9 @@ class Mode(Enum):
 
     CODE_PLAIN_TEXT = {
         cst.Module: ModeOverrides(
-            kwargs={"convert": [cst.Module, str], "horizontal":True},
+            kwargs={"convert_in": [cst_module_to_str],
+                    "convert_out": [str_to_cst_module],
+                    "horizontal": True},
             func=draw_text,
             recursive=True
         ),
@@ -162,7 +167,7 @@ class Mode(Enum):
         ),
 
         str: ModeOverrides(
-            kwargs={"convert": None, "mode": None, "indent_size": 30, "with_header": draw_header},
+            kwargs={"mode": None, "indent_size": 30, "with_header": draw_header},
             func=draw_text,
             recursive=True,
         ),
@@ -177,12 +182,15 @@ class Mode(Enum):
 
     FILE_META = {
         Path: ModeOverrides(
-            kwargs={"convert": [path_to_dict]},
+            kwargs={"convert_in": [path_to_dict],
+                    "convert_out": [rf_dict_to_path],
+                    },
             func=draw_collection,
             recursive=True,
         ),
         bytes: ModeOverrides(
-            kwargs={"convert": [bytes_to_str]},
+            kwargs={"convert_in": [bytes_to_str],
+                    "convert_out": [rf_str_to_bytes]},
             func=draw_text,
             recursive=True,
         ),

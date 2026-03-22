@@ -13,7 +13,7 @@ from enum import Enum
 from typing import Any
 
 from src.lsd.gl_gui.melty import Melty
-from src.lsd.gl_gui.view.core_conversion.converter_register import converter
+from src.lsd.gl_gui.view.core_conversion.libcst_conversion import register
 from src.lsd.gl_gui.view.core_conversion.path_finder import convert, explain_chain, all_paths, all_reachable_from, T
 
 
@@ -21,159 +21,159 @@ from src.lsd.gl_gui.view.core_conversion.path_finder import convert, explain_cha
 # ║  Define a subset of converters (enough to show interesting chains)        ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
-@converter(registry=Melty)
+@register
 def int_to_str(value: int) -> str:
     return str(value)
 
 
-@converter(registry=Melty)
+@register
 def str_to_int(value: str) -> int:
     return int(value.strip())
 
 
-@converter(registry=Melty)
+@register
 def float_to_str(value: float) -> str:
     return str(value)
 
 
-@converter(registry=Melty)
+@register
 def str_to_float(value: str) -> float:
     return float(value.strip().replace(",", ""))
 
 
-@converter(registry=Melty)
+@register
 def int_to_float(value: int) -> float:
     return float(value)
 
 
-@converter(registry=Melty)
+@register
 def float_to_int(value: float) -> int:
     return int(value)
 
 
-@converter(registry=Melty)
+@register
 def float_to_decimal(value: float) -> Decimal:
     return Decimal(str(value))
 
 
-@converter(registry=Melty)
+@register
 def decimal_to_float(value: Decimal) -> float:
     return float(value)
 
 
-@converter(registry=Melty)
+@register
 def str_to_decimal(value: str) -> Decimal:
     return Decimal(value.strip())
 
 
-@converter(registry=Melty)
+@register
 def decimal_to_str(value: Decimal) -> str:
     return str(value)
 
 
-@converter(registry=Melty)
+@register
 def float_to_fraction(value: float) -> Fraction:
     return Fraction(value).limit_denominator()
 
 
-@converter(registry=Melty)
+@register
 def fraction_to_float(value: Fraction) -> float:
     return float(value)
 
 
-@converter(registry=Melty)
+@register
 def str_to_bytes(value: str) -> bytes:
     return value.encode("utf-8")
 
 
-@converter(registry=Melty)
+@register
 def bytes_to_str(value: bytes) -> str:
     return value.decode("utf-8")
 
 
-@converter(registry=Melty)
+@register
 def int_to_datetime(value: int) -> datetime:
     return datetime.fromtimestamp(value)
 
 
-@converter(registry=Melty)
+@register
 def datetime_to_int(value: datetime) -> int:
     return int(value.timestamp())
 
 
-@converter(registry=Melty)
+@register
 def datetime_to_str(value: datetime) -> str:
     return value.isoformat()
 
 
-@converter(registry=Melty)
+@register
 def str_to_datetime(value: str) -> datetime:
     return datetime.fromisoformat(value.strip())
 
 
-@converter(registry=Melty)
+@register
 def int_to_timedelta(value: int) -> timedelta:
     return timedelta(seconds=value)
 
 
-@converter(registry=Melty)
+@register
 def timedelta_to_int(value: timedelta) -> int:
     return int(value.total_seconds())
 
 
-@converter(registry=Melty)
+@register
 def dict_to_str(value: dict) -> str:
     import json
     return json.dumps(value, indent=2, default=str)
 
 
-@converter(registry=Melty)
+@register
 def str_to_dict(value: str) -> dict:
     import json
     return json.loads(value)
 
 
-@converter(registry=Melty)
+@register
 def list_to_dict(value: list) -> dict:
     return dict(value)
 
 
-@converter(registry=Melty)
+@register
 def dict_to_list(value: dict) -> list:
     return [list(pair) for pair in value.items()]
 
 
-@converter(registry=Melty)
+@register
 def dict_to_namespace(value: dict) -> SimpleNamespace:
     return SimpleNamespace(**value)
 
 
-@converter(registry=Melty)
+@register
 def namespace_to_dict(value: SimpleNamespace) -> dict:
     return vars(value).copy()
 
 
-@converter(registry=Melty)
+@register
 def list_to_tuple(value: list) -> tuple:
     return tuple(value)
 
 
-@converter(registry=Melty)
+@register
 def tuple_to_list(value: tuple) -> list:
     return list(value)
 
 
-@converter(registry=Melty)
+@register
 def list_to_set(value: list) -> set:
     return set(value)
 
 
-@converter(registry=Melty)
+@register
 def set_to_list(value: set) -> list:
     return sorted(value, key=repr)
 
 
-@converter(registry=Melty)
+@register
 def exception_to_dict(value: Exception) -> dict:
     return {
         "__type__": type(value).__name__,
@@ -240,7 +240,7 @@ def _deserialize_value(v):
     return v
 
 
-@converter(registry=Melty)
+@register
 def object_to_dict(value: object) -> dict:
     """Generic object → dict with attributes as top-level keys.
 
@@ -293,7 +293,7 @@ def object_to_dict(value: object) -> dict:
     return result
 
 
-@converter(registry=Melty)
+@register
 def dict_to_object(value: dict) -> object:
     """Reconstruct an object from an object_to_dict snapshot.
 
@@ -350,13 +350,13 @@ def _resolve_class(module_name: str, qualname: str):
     return obj if isinstance(obj, type) else None
 
 #
-# @converter(registry=Melty)
+# @register
 # def float_to_dict(value: float) -> dict:
 #     return {
 #         "value": value,
 #     }
 #
-# @converter(registry=Melty)
+# @register
 # def dict_to_float(value: dict) -> float:
 #     return float(value["value"])
 

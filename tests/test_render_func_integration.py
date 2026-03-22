@@ -14,66 +14,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock
 
-_root = os.path.join(os.path.dirname(__file__), '..')
-sys.path.insert(0, os.path.join(_root, 'src'))
-sys.path.insert(0, _root)
-sys.path.insert(0, os.path.join(_root, 'server'))  # for model.render_utils.py
+# conftest.py handles sys.path, imgui context, and GL setup
 
-import glfw
 import imgui
-from imgui.integrations.glfw import GlfwRenderer
-import OpenGL.GL as gl
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  GLFW / imgui test harness
-# ═══════════════════════════════════════════════════════════════════════════
-
-_window = None
-_impl = None
-
-
-def _setup_gl():
-    """Create a hidden GLFW window + imgui context. Idempotent."""
-    global _window, _impl
-    if _window is not None:
-        return
-
-    if not glfw.init():
-        raise RuntimeError("Failed to init GLFW")
-
-    glfw.window_hint(glfw.VISIBLE, False)
-    glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)
-    glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 3)
-    _window = glfw.create_window(800, 600, "test", None, None)
-    glfw.make_context_current(_window)
-
-    imgui.create_context()
-    _impl = GlfwRenderer(_window)
-
-
-def _begin_frame():
-    """Start an imgui frame."""
-    glfw.poll_events()
-    _impl.process_inputs()
-    try:
-        imgui.new_frame()
-    except Exception:
-        # If last frame wasn't ended, end it and retry
-        try:
-            imgui.end_frame()
-        except Exception:
-            pass
-        _impl.process_inputs()
-        imgui.new_frame()
-
-
-def _end_frame():
-    """End frame + render (discards output)."""
-    try:
-        imgui.end_frame()
-    except Exception:
-        pass
+from conftest import _ensure_gl_context, begin_frame, end_frame
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -191,7 +135,7 @@ class TestRenderFuncConvertInOut(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        _setup_gl()
+        _ensure_gl_context()
 
     def setUp(self):
         self.melty = _init_melty()
@@ -223,14 +167,21 @@ class TestRenderFuncConvertInOut(unittest.TestCase):
 
     def _run_frame(self, func, input_value, **kwargs):
         """Run one frame: begin imgui, call func, end imgui, tick."""
-        _begin_frame()
+        from src.lsd.gl_gui.melty import Melty
+        Melty.channels_split = False
+        begin_frame()
         imgui.begin("Test Window")
+        result = (False, None)
         try:
             result = func(input_value, **kwargs)
-        finally:
+        except Exception:
+            pass
+        try:
             imgui.end()
-            _end_frame()
-            _tick_frame(self.melty)
+        except Exception:
+            pass
+        end_frame()
+        _tick_frame(self.melty)
         return result
 
     def test_render_func_with_convert_in(self):
@@ -248,6 +199,7 @@ class TestRenderFuncConvertInOut(unittest.TestCase):
                 my_view, Path(self.tmp_path),
                 convert_in=[self.fn_to_cst, self.cst_to_dict],
                 convert_out=[self.dict_to_cst, self.cst_to_fn],
+                auto_apply=[self.load_text],
                 name="test_conv")
 
         # After a few frames, the render func should have received
@@ -271,6 +223,7 @@ class TestRenderFuncConvertInOut(unittest.TestCase):
                 my_view, Path(self.tmp_path),
                 convert_in=[self.fn_to_cst, self.cst_to_dict],
                 convert_out=[self.dict_to_cst, self.cst_to_fn],
+                auto_apply=[self.load_text],
                 name="test_dict_vals")
 
         self.assertIsNotNone(last_value[0], "GeneralParse was never received")
@@ -292,6 +245,7 @@ class TestRenderFuncConvertInOut(unittest.TestCase):
                 my_view, Path(self.tmp_path),
                 convert_in=[self.fn_to_cst, self.cst_to_dict],
                 convert_out=[self.dict_to_cst, self.cst_to_fn],
+                auto_apply=[self.load_text],
                 name="test_filewatch")
 
         ds = captured_ds[0]
@@ -313,6 +267,7 @@ class TestRenderFuncConvertInOut(unittest.TestCase):
                 my_view, Path(self.tmp_path),
                 convert_in=[self.fn_to_cst, self.cst_to_dict],
                 convert_out=[self.dict_to_cst, self.cst_to_fn],
+                auto_apply=[self.load_text],
                 name="test_no_overwrite")
 
         # After initial frames, we should never see PosixPath -
@@ -341,6 +296,7 @@ class TestRenderFuncConvertInOut(unittest.TestCase):
                 my_view, Path(self.tmp_path),
                 convert_in=[self.fn_to_cst, self.cst_to_dict],
                 convert_out=[self.dict_to_cst, self.cst_to_fn],
+                auto_apply=[self.load_text],
                 name="test_stable")
 
         # Find the first frame where we have a GeneralParse
@@ -364,7 +320,7 @@ class TestConvertOutFlow(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        _setup_gl()
+        _ensure_gl_context()
 
     def setUp(self):
         self.melty = _init_melty()
@@ -394,14 +350,21 @@ class TestConvertOutFlow(unittest.TestCase):
             os.unlink(self.tmp_path)
 
     def _run_frame(self, func, input_value, **kwargs):
-        _begin_frame()
+        from src.lsd.gl_gui.melty import Melty
+        Melty.channels_split = False
+        begin_frame()
         imgui.begin("Test Window")
+        result = (False, None)
         try:
             result = func(input_value, **kwargs)
-        finally:
+        except Exception:
+            pass
+        try:
             imgui.end()
-            _end_frame()
-            _tick_frame(self.melty)
+        except Exception:
+            pass
+        end_frame()
+        _tick_frame(self.melty)
         return result
 
     def test_child_changed_triggers_convert_out(self):
@@ -427,6 +390,7 @@ class TestConvertOutFlow(unittest.TestCase):
                 editing_view, Path(self.tmp_path),
                 convert_in=[self.fn_to_cst, self.cst_to_dict],
                 convert_out=[self.dict_to_cst, self.cst_to_fn],
+                auto_apply=[self.load_text],
                 name="test_out_trigger")
 
         # After editing, save_pending should be set (dirty detection fired)
@@ -457,6 +421,7 @@ class TestConvertOutFlow(unittest.TestCase):
                 editing_view, Path(self.tmp_path),
                 convert_in=[self.fn_to_cst, self.cst_to_dict],
                 convert_out=[self.dict_to_cst, self.cst_to_fn],
+                auto_apply=[self.load_text],
                 name="test_out_diff")
 
         # Find frames with save_pending that has a diff
@@ -484,6 +449,7 @@ class TestConvertOutFlow(unittest.TestCase):
                 readonly_view, Path(self.tmp_path),
                 convert_in=[self.fn_to_cst, self.cst_to_dict],
                 convert_out=[self.dict_to_cst, self.cst_to_fn],
+                auto_apply=[self.load_text],
                 name="test_no_dirty")
 
         # After conversion stabilizes, save should never be dirty
@@ -572,6 +538,7 @@ class TestConvertOutFlow(unittest.TestCase):
                 diagnostic_view, Path(self.tmp_path),
                 convert_in=[self.fn_to_cst, self.cst_to_dict],
                 convert_out=[self.dict_to_cst, self.cst_to_fn],
+                auto_apply=[self.load_text],
                 name="test_diagnostic")
 
         # Print diagnostics for debugging
