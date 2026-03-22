@@ -100,6 +100,11 @@ class Background:
 
         h = cls._timed_hash(func_kwargs.get("value", None), user_id)
 
+        # if "search_text" in func_kwargs:
+        #     h_s = cls._timed_hash(func_kwargs.get('search_text', None), user_id)
+        #     h = str(h) + "_" + str(h_s)
+        #     print(f"{func_kwargs.get('search_text')}")
+
         # Inline path for stateful converters (no apply, short chains)
         if stateful:
             if not no_cache:

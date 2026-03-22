@@ -1189,8 +1189,19 @@ def render_func(*args, **o_kwargs):
                 _file_stale = False
 
                 if _convert_in is not None:
-                    input_hash = Background.simple_hash(draw_state._raw_input_value)
-                    cached_hash = Background.simple_hash(draw_state._input_cache["external_state"][0])
+                    # Build hash from all converter fn parameters, not just value.
+                    # This ensures changes to injected params (like search_text)
+                    # are detected as input changes.
+                    _hash_parts = [Background.simple_hash(draw_state._raw_input_value)]
+                    for _ci_fn in _convert_in:
+                        _unwrapped = getattr(_ci_fn, '__wrapped__', _ci_fn)
+                        for _p in inspect.signature(_unwrapped).parameters:
+                            if _p in ('input_value', 'value', 'data', 'ref', 'draw_state'):
+                                continue
+                            if _p in kwargs:
+                                _hash_parts.append(Background.simple_hash(kwargs[_p]))
+                    input_hash = "|".join(_hash_parts)
+                    cached_hash = draw_state._input_cache["external_state"][2] if len(draw_state._input_cache["external_state"]) > 2 else None
                     input_changed = input_hash != cached_hash
 
                     if input_changed:
@@ -1346,11 +1357,10 @@ def render_func(*args, **o_kwargs):
                     converted_input = True
                     draw_state._input_value = draw_state._input_cache["internal_state"][0]
                     kwargs["input_value"] = draw_state._input_cache["internal_state"][0]
-                    # Sync external cache to current frame so input_changed
-                    # doesn't fire next frame (CST objects hash by identity)
+                    # Sync external cache with composite hash so input_changed
+                    # doesn't fire every frame
                     draw_state._input_cache["external_state"] = (
-                        input_value, Melty.frame_count,
-                        Background.simple_hash(input_value))
+                        input_value, Melty.frame_count, input_hash)
                     draw_state._raw_input_value = input_value
                     _convert_in_done = True
 
