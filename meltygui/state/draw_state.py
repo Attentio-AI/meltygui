@@ -117,7 +117,7 @@ class TileMode(Enum):
          "imgui_is_item_activated", "frame_count")
 @exclude("current_tint", "overhead_time", "premature_break",
          "clip_rect", "_input_value", "flow_spacing", "expanded_rect", 'max_column',
-         'width', "height", "size_change", 'left', 'top', 'content_height', "search_text",
+         'width', "height", "size_change", 'left', 'top', 'content_height',
          "hovered", "wrapped_top", "params", "scroll_visible", "depth_and_layer",
          "premature_break", "wrapped_left", "_did_use_cache", "hover_rects",
          "content_region", "value_hash", "drag_window", "content_region", "did_render",
@@ -131,7 +131,7 @@ class TileMode(Enum):
                  "anchor_pos", "just_shadow", 'hover_reported', 'explain_convert',
                  'channel', 'next', 'previous', 'index_in_parent', 'relative_pos', 'context_menu_open',
                  'context_menu_ds', '_hover_eligible', 'just_shadow')
-@deep_refresh('scroll_offset', 'closed')
+@deep_refresh('scroll_offset', 'closed', '"search_text')
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
 
@@ -252,6 +252,7 @@ class DrawState(DictConversion):
         self._draggable = False
         self.search_text = ""
         self.search_active = False
+        self._search_was_active = False
         self._flow_spacing = 0.0
         self.enabled = True
         self._end_header_size = (0, 0)

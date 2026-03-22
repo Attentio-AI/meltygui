@@ -5,6 +5,7 @@ import imgui
 
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.headers import draw_header, draw_footer
+from src.lsd.gl_gui.melty import Melty
 
 
 def _hex(h):
@@ -325,7 +326,7 @@ def _delete_selection(text, ds):
 @render_func(show_bg=True, wrap=False, use_cache=True, with_header=draw_header,
              with_footer=draw_footer, selectable=False, searchable=True)
 def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, left_mouse_up=False,
-              left_mouse_down=False, left_mouse_drag=False, draw_state=None):
+              left_mouse_down=False, left_mouse_drag=False, draw_state=None, request_focus=False):
     ds = draw_state
 
     changed = False
@@ -357,8 +358,13 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, le
     just_pressed = current_keys - ds.text_prev_keys_down
 
     # --- Mouse handling ---
+    is_focused = Melty.text_focused_ds is ds
+    if request_focus and not is_focused:
+        Melty.text_focused_ds = ds
+        is_focused = True
     if left_mouse_down:
-        ds.text_is_focused = True
+        Melty.text_focused_ds = ds
+        is_focused = True
         ds.text_cursor_blink_time = time.time()
         click_pos = _xy_to_char_index(text, io.mouse_pos.x, io.mouse_pos.y,
                                        origin_x, origin_y, line_height)
@@ -380,9 +386,6 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, le
                 ds.text_selection_start = click_pos
                 ds.text_selection_end = click_pos
 
-    elif not is_hovered and imgui.is_mouse_clicked(0):
-        ds.text_is_focused = False
-
     if left_mouse_drag:
         drag_pos = _xy_to_char_index(text, left_mouse_drag.x, left_mouse_drag.y,
                                       origin_x, origin_y, line_height)
@@ -391,7 +394,7 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, le
         ds.text_cursor_blink_time = time.time()
 
     # --- Keyboard handling ---
-    if ds.text_is_focused:
+    if is_focused:
         shift = io.key_shift
         ctrl = io.key_ctrl
 
@@ -648,7 +651,7 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, le
         t_idx += 1
 
     # Cursor
-    if ds.text_is_focused and not _has_selection(ds):
+    if is_focused and not _has_selection(ds):
         if (time.time() - ds.text_cursor_blink_time) % 1.0 < 0.5:
             cx, cy = _char_pos_to_xy(text, ds.text_cursor_pos, origin_x, origin_y, line_height)
             cursor_color = 0xFFFFFFFF  # white

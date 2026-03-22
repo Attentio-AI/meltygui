@@ -27,7 +27,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
     # ── Constants ──────────────────────────────────────────────
     # Depth-driven name brightness
-    depth_scale       = 0.109
+    depth_scale       = 0.274
     depth_offset      = 0.029
     name_value_factor = 0.769
 
@@ -75,11 +75,14 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
         imgui.begin_group()
         from src.lsd.gl_gui.view.core_views.text_editor import draw_text
+        focus_search = not draw_state._search_was_active
+        draw_state._search_was_active = True
         search_change, new_search = draw_text(draw_state.search_text,
                                               name=search_icon, with_header=None,
                                               width=100, height=21, with_header_end=None,
                                               with_footer=None, header_same_line=True,
-                                              show_name=False, show_header=False)
+                                              show_name=False, show_header=False,
+                                              request_focus=focus_search)
         if search_change:
             draw_state.search_text = new_search
 
@@ -92,7 +95,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         if button("x", show_bg=True, use_cache=True, shadow=True, z_offset=10,
                   tile_mode=TileMode.MAX, color=(9, 1, 1, 0))[0]:
             draw_state.search_active = False
-            print("clear search")
+            draw_state._search_was_active = False
             draw_state.search_text = ""
 
         imgui.same_line()

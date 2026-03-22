@@ -25,6 +25,9 @@ from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
 
 import OpenGL.GL as gl
 
+_MOUSE_INPUTS = frozenset({'left_mouse', 'right_mouse', 'middle_mouse',
+                           'cursor', 'scroll_y', 'scroll_x'})
+
 
 class Melty:
 
@@ -32,6 +35,7 @@ class Melty:
     style_manager = None
 
     focused_ds = None
+    text_focused_ds = None
     selected = set()
     last_selected = None
     large_font = None
@@ -599,6 +603,20 @@ class Melty:
         # cls._root_by_module[module_id] = root
         # cls._gen_by_module.setdefault(module_id, 0)
         # cls._path_stack.clear()
+
+        # Invalidate the text-focused view on any key press
+        if cls.text_focused_ds is not None and cls.glfw_window is not None:
+            for k in range(32, 349):  # GLFW_KEY_SPACE through GLFW_KEY_LAST
+                if glfw.get_key(cls.glfw_window, k) == glfw.PRESS:
+                    if cls.text_focused_ds.parent_window is not None:
+                        Melty.cache.invalidate_up(cls.text_focused_ds.parent_window._tile_id)
+
+                    Melty.cache.invalidate(cls.text_focused_ds._tile_id)
+                    request_render()
+                    break
+
+
+
         Collisions.handle_collisions()
 
     @classmethod

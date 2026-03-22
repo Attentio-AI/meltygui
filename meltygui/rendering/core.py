@@ -1450,8 +1450,12 @@ def render_func(*args, **o_kwargs):
                         Melty.selected = set()
                         Melty.selected.add(draw_state)
                         Melty.last_selected = draw_state
+                        if Melty.text_focused_ds is not None and Melty.text_focused_ds is not draw_state:
+                            Melty.text_focused_ds = None
 
                     elif click and not Melty.imgui_active:
+                        if Melty.text_focused_ds is not None and Melty.text_focused_ds is not draw_state:
+                            Melty.text_focused_ds = None
                         Melty.previous_select = copy(Melty.selected)
                         if not click.modifiers:
                             if len(Melty.selected) == 1 and draw_state in Melty.selected:
