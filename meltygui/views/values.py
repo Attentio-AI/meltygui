@@ -88,7 +88,7 @@ def draw_module(input_value: types.ModuleType, draw_state, **kwargs):
 
 @render_func(is_default_for=(dict, MutableMapping, defaultdict, types.MappingProxyType), use_cache=True,
              show_bg=True, show_instance_vars=False, manual_content_height=True, disable_scroll=True,
-             shadow=True, wrap=False, with_header=draw_header, indent_size=5)
+             shadow=True, wrap=False, with_header=draw_header, indent_size=5, searchable=True)
 def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=None, keys=None, get_attr=None, set_attr=None, show_excluded=False,
                     child_kwargs=None, nested_func=None, show_bg=True, show_search=True, on_collapse=False, search_text="",
                     on_expand=False, show_add_delete=True, item_spacing_y=1,
@@ -125,7 +125,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=No
     else:
         imgui.dummy(1,1)
 
-    search_token = norm_string(draw_state.search_text) if show_search else ""
+    search_token = ""
 
     # --- Setup per collection type ---
     collection = input_value
@@ -1466,14 +1466,14 @@ def seperator(height):
     imgui.separator()
     imgui.dummy(0, snap_int(height / 2))
 
-def draw_bg(left=91, top=3, width=0, height=55, depth=0, rounding=4.016,
+def draw_bg(left=80, top=3, width=0, height=55, depth=0, rounding=4.016,
             global_style=None, outline=True, bg_color=None, opacity=-1.57,
             style_manager=None, tint=None, outline_tint=None, selected=False,
             hovered=False, pressed=False, nested_bg=False, **kwargs):
 
     # -- Constants ---------------------------------
     depth_wrap        = 26
-    depth_scale       = 1.053
+    depth_scale       = 1.08
     corner_radius     = 6.217
     border_inset      = 1.548
     border_inset_half = 0.641
@@ -1503,6 +1503,7 @@ def draw_bg(left=91, top=3, width=0, height=55, depth=0, rounding=4.016,
         'value': 0.127, 'saturation': 2.808,
         'alpha': -2.072, 'max_value': 0.81,
     }
+    
 
     # ── Helpers ────────────────────────────────────────────────
     def current_indent_px():
@@ -2167,16 +2168,39 @@ def draw_pending(input_value, draw_state=None):
     return False, None
 
 
-@render_func(use_cache=True, show_header=False, shadow=True)
-def pending_window(input_value, button_name, pending=None, draw_state=None):
-    # imgui.push_text_wrap_pos(imgui.get_cursor_screen_pos()[0] + draw_state.content_width)
-    draw_text(str(pending.status), width=draw_state.content_width, name="Status", header_same_line=False)
-    # imgui.text_wrapped(str(pending.status))
-    # imgui.pop_text_wrap_pos()
+from src.lsd.gl_gui.model.core_model.core_enums import PendingAction
+from src.lsd.gl_gui.view.core_conversion.search_conversion import SearchResults
 
-    # imgui.text(pending.originated.__name__)
+
+@render_func(is_default_for=SearchResults, use_cache=True, show_bg=True,
+             with_header=draw_header, indent_size=5)
+def draw_search_results(input_value: SearchResults, draw_state=None):
+    """Render search results — shows top_results via draw_collection."""
+    top_results = input_value.get("top_results", {})
+    imgui.text("Found {} results".format(len(top_results)))
+    changed, new_top = draw_collection(top_results, name="results",
+                                        show_add_delete=False)
+    if changed:
+        input_value["top_results"] = new_top
+        return True, input_value
+    return False, input_value
+
+
+@render_func(use_cache=True, show_header=False, shadow=True)
+def pending_window(input_value, button_name, pending=None, draw_state=None,
+                   show_revert=False, show_load=False):
+    draw_text(str(pending.status), width=draw_state.content_width, name="Status", header_same_line=False)
+
     if button(str(button_name), width=100, height=20)[0]:
-        return True, None
+        return True, PendingAction.APPLY
+    if show_revert:
+        same_line()
+        if button("Revert", width=100, height=20, color=(0.8, 0.3, 0.3))[0]:
+            return True, PendingAction.REVERT
+    if show_load:
+        same_line()
+        if button("Load", width=100, height=20, color=(0.3, 0.5, 0.8))[0]:
+            return True, PendingAction.LOAD
     return False, None
 
 @render_func(use_cache=True, show_header=True, selectable=False, with_header=draw_header)
@@ -2206,6 +2230,42 @@ def draw_any(input_value:any, view_func=None, mode:any=None, **kwargs):
     else:
         main_mode = mode
 
+    # --- Search: inject search converters BEFORE the routing ---
+    # This way the routing sees SearchResults as the output type and
+    # routes to draw_search_results instead of draw_collection.
+    from src.lsd.gl_gui.view.core_conversion.search_conversion import SearchResults
+    _consumed_search = None
+    if (len(Melty.search_stack) > 0
+            and getattr(kwargs_view_func, '_searchable', False)
+            and not isinstance(input_value, SearchResults)):
+        from src.lsd.gl_gui.view.core_conversion.search_conversion import (
+            dict_to_search, search_to_dict, str_to_search, search_to_str,
+        )
+        import inspect as _inspect
+
+        # Determine what the convert_in chain produces (or the raw input type)
+        existing_in = kwargs.get("convert_in", None)
+        if existing_in is not None:
+            _last = existing_in[-1]
+            _out_type = _inspect.signature(_last).return_annotation
+        else:
+            _out_type = type(input_value)
+
+        if _out_type is not None and isinstance(_out_type, type) and issubclass(_out_type, dict):
+            kwargs["convert_in"] = list(existing_in or []) + [dict_to_search]
+            kwargs["convert_out"] = [search_to_dict] + list(kwargs.get("convert_out", None) or [])
+            kwargs["search_text"] = Melty.search_stack[-1]
+            from src.lsd.gl_gui.view.mode import Mode
+            main_mode = Mode.SEARCH
+            _consumed_search = Melty.search_stack.pop()
+        elif _out_type == str:
+            from src.lsd.gl_gui.view.mode import Mode
+            main_mode = Mode.SEARCH
+            kwargs["convert_in"] = list(existing_in or []) + [str_to_search]
+            kwargs["convert_out"] = [search_to_str] + list(kwargs.get("convert_out", None) or [])
+            kwargs["search_text"] = Melty.search_stack[-1]
+            _consumed_search = Melty.search_stack.pop()
+
     if main_mode is not None:
         # Loop over super types
         mode_config = main_mode.get_config_for(input_value)
@@ -2230,10 +2290,16 @@ def draw_any(input_value:any, view_func=None, mode:any=None, **kwargs):
             view_func = mode_config.func
             kwargs_view_func = view_func
 
+
     kwargs['use_cache'] = True
     kwargs['mode'] = mode
     kwargs['view_func'] = kwargs_view_func
+
     return_val = view_func(input_value, **kwargs)
+
+    # Restore search stack so siblings at the same level can also search
+    if _consumed_search is not None:
+        Melty.search_stack.append(_consumed_search)
 
     return return_val
 

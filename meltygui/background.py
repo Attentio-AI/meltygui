@@ -87,22 +87,29 @@ class Background:
         print("Background thread pool shut down successfully.")
 
     @classmethod
-    def run(cls, func, user_id, stateful=False, no_cache=False, invalidate_id=None, on_frame=None, frames=None, debounce=0,
-            draw_state=None, *args, **kwargs):
-        h = cls._timed_hash(kwargs.get("value", None), user_id)
+    def run(cls, func, user_id, func_kwargs=None, *,
+            stateful=False, no_cache=False, invalidate_id=None,
+            on_frame=None, frames=None, debounce=0):
+        """Run func with func_kwargs, with caching, debouncing, and background dispatch.
 
-        # No apply flag → run immediately on main thread (same cache/hash
-        # logic, just no debounce or thread pool).
-        if not kwargs.get("apply", False) and stateful and len(kwargs.get("path", [])) <= 2:
+        Background.run's own parameters (user_id, stateful, no_cache, etc.) are
+        cleanly separated from the function's kwargs via the func_kwargs dict.
+        """
+        if func_kwargs is None:
+            func_kwargs = {}
+
+        h = cls._timed_hash(func_kwargs.get("value", None), user_id)
+
+        # Inline path for stateful converters (no apply, short chains)
+        if stateful:
             if not no_cache:
                 cache = cls._user_cache.get(user_id)
                 if cache and h in cache:
                     cache.move_to_end(h)
-                    return_val = cache[h]
-                    return return_val
+                    return cache[h]
 
             try:
-                result = func(*args, **kwargs)
+                result = func(**func_kwargs)
             except Exception:
                 result = Pending(originated=cls, status="Read Only", state=PendingState.ERROR)
 
@@ -123,7 +130,6 @@ class Background:
         if debounce is not None:
             debounce_key = user_id
 
-            # Cache hit - return immediately, no wait
             cache = cls._user_cache.get(user_id)
             if cache and h in cache:
                 cache.move_to_end(h)
@@ -132,16 +138,13 @@ class Background:
                     cls._user_cache.pop(user_id, None)
                 return return_val
 
-            # Task is already running - just wait for it
             if h in cls._active:
                 return Pending(originated=cls, status="background thread active", state=PendingState.BACKGROUND)
 
-            # Same hash already pending - don't restart the timer, just keep waiting
             latest = cls._debounce_latest.get(debounce_key)
             if latest is not None and latest.get("hash") == h:
                 return Pending(originated=cls, status="debounce waiting", state=PendingState.BACKGROUND)
 
-            # New content - cancel existing timer and reschedule
             prev = cls._debounce_timers.pop(debounce_key, None)
             if prev is not None:
                 prev.cancel()
@@ -150,33 +153,26 @@ class Background:
                 hash=h,
                 func=func, user_id=user_id, no_cache=no_cache,
                 invalidate_id=invalidate_id, on_frame=on_frame,
-                args=args, kwargs=kwargs,
+                func_kwargs=func_kwargs,
             )
 
             if Toggles.debug_threads:
                 frames = get_live_frames()
 
             def _fire():
-                # with cls._lock:
                 cls._debounce_timers.pop(debounce_key, None)
                 latest = cls._debounce_latest.pop(debounce_key, None)
                 if latest is not None:
                     cls.run(
                         latest["func"], latest["user_id"],
+                        func_kwargs=latest["func_kwargs"],
                         no_cache=latest["no_cache"],
                         invalidate_id=latest["invalidate_id"],
                         on_frame=latest["on_frame"],
                         debounce=None, frames=frames,
-                        *latest["args"], **latest["kwargs"],
                     )
                     if Toggles.invalidate_stack_trace:
-                        print_stack_trace(frames=frames, )
-
-                    # if latest["invalidate_id"] is not None:
-                    #     from src.lsd.gl_gui.melty import Melty
-                    #     from src.lsd.gl_gui.utils.glfw_utils import request_render
-                    #     Melty.cache.invalidate_up(latest["invalidate_id"])
-                        # request_render()
+                        print_stack_trace(frames=frames)
 
             timer = threading.Timer(debounce / 1000.0, _fire)
             cls._debounce_timers[debounce_key] = timer
@@ -184,7 +180,7 @@ class Background:
 
             return Pending(originated=cls, status="debounce waiting", state=PendingState.BACKGROUND)
 
-        # --- normal path ---
+        # --- normal (background thread) path ---
 
         cache = cls._user_cache.get(user_id)
         if cache and h in cache:
@@ -206,23 +202,12 @@ class Background:
         def _task():
             import time
             func_name = getattr(func, "__qualname__", None) or getattr(func, "__name__", repr(func))
-            task_path = kwargs.get("path", None)
-            if task_path:
-                def _type_name(t):
-                    if isinstance(t, type):
-                        return t.__qualname__
-                    fn = getattr(t, "__qualname__", None) or getattr(t, "__name__", None)
-                    return fn if fn else type(t).__qualname__
-                sig = f"{func_name}({' → '.join(_type_name(t) for t in task_path)})"
-            else:
-                sig = func_name
+            sig = func_name
             _t0 = time.perf_counter()
 
             try:
-                result = func(*args, **kwargs)
+                result = func(**func_kwargs)
             except Exception as e:
-                # with cls._lock:
-                #     cls._active.discard(h)
                 with trace_group(f"JOB {user_id}", hash=h) as g:
                     print_stack_trace(frames=frames, section="UI Thread",
                                       group=g, watch=["draw_state.name", "input_value", "convert_path", "fn", "clean_args.input_value"])
@@ -240,7 +225,6 @@ class Background:
                 entry[1] += 1
             if on_frame is not None:
                 result = (result, on_frame)
-            # with cls._lock:
             cls._active.discard(h)
             for uid, task_h in cls._user_tasks.items():
                 if task_h == h:
@@ -255,10 +239,8 @@ class Background:
                 from src.lsd.gl_gui.melty import Melty
                 from src.lsd.gl_gui.utils.glfw_utils import request_render
                 if on_frame is None or abs(Melty.frame_count - on_frame) >= 2:
-                    print("Invalidate from background")
                     Melty.cache.invalidate_up(invalidate_id)
                     request_render()
-
 
         cls._pool.submit(_task)
         return Pending(originated=cls, status="background thread", state=PendingState.BACKGROUND)

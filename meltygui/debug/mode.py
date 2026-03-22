@@ -13,7 +13,7 @@ from src.lsd.gl_gui.view.core_conversion.libcst_conversion import GeneralParse, 
     cst_to_dict, dict_to_cst, cst_module_to_str, str_to_cst_module
 from src.lsd.gl_gui.view.core_views.headers import draw_footer, draw_header_end, draw_header
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
-from src.lsd.gl_gui.view.core_views.new_core_view import draw_collection, draw_comment
+from src.lsd.gl_gui.view.core_views.new_core_view import draw_collection, draw_comment, draw_search_results
 from src.lsd.gl_gui.view.core_views.text_editor import draw_text
 
 
@@ -39,6 +39,20 @@ class Mode(Enum):
             elif Any in self.value:
                 return self.value[Any]
         return None
+
+    SEARCH = {
+        dict: ModeOverrides(
+            kwargs={"show_bg":True, "selectable":False, "use_cache":True},
+            recursive=False,
+            func=draw_search_results
+        ),
+
+        str: ModeOverrides(
+            kwargs={"show_bg": True, "selectable": False, "use_cache": True},
+            recursive=False,
+            func=draw_search_results
+        )
+    }
 
     WINDOW = {
         Any: ModeOverrides(
@@ -140,6 +154,7 @@ class Mode(Enum):
         cst.Module: ModeOverrides(
             kwargs={"convert_in": [cst_module_to_str],
                     "convert_out": [str_to_cst_module],
+                    "auto_apply": [load_text],
                     "horizontal": True},
             func=draw_text,
             recursive=True
@@ -148,6 +163,7 @@ class Mode(Enum):
         types.FunctionType: ModeOverrides(
             kwargs={"convert_in": [fn_to_cst],
                     "convert_out": [cst_to_fn],
+                    "auto_apply": [load_text],
                     "indent_size": 5, "with_header": draw_header},
             recursive=True
         ),
@@ -155,6 +171,7 @@ class Mode(Enum):
         types.ModuleType: ModeOverrides(
             kwargs={"convert_in": [mod_to_cst],
                     "convert_out": [cst_to_mod],
+                    "auto_apply": [load_text],
                     "indent_size": 5, "with_header": draw_header},
             recursive=True
         ),

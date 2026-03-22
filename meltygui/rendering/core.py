@@ -21,6 +21,7 @@ from src.lsd.gl_gui.view.core_conversion.path_finder import PendingState
 from src.lsd.gl_gui.view.core_views.core_render_helpers import floating_text
 from src.lsd.gl_gui.model.core_model.draw_state import DrawState, Hotkey, DragMode, Anchor, TileMode, AttrDict, \
     UNSET_VALUE
+from src.lsd.gl_gui.model.core_model.core_enums import PendingAction
 from src.lsd.gl_gui.utils.custom_views import push_style_var, pop_style_var
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace, trace_group, get_live_frames
 from src.lsd.gl_gui.melty import Melty, apply_collection_action, MeltyState
@@ -528,6 +529,7 @@ def render_func(*args, **o_kwargs):
         draw_state.melty_window = melty_window_header
         previous_tint = None
 
+        _pushed_search = False
         if _has_imgui and closable and draw_state._is_nested and draw_state.current_tint is not None:
             style_manager.set_imgui_tint(*draw_state.current_tint)
         try:
@@ -999,16 +1001,17 @@ def render_func(*args, **o_kwargs):
                     request_render()
 
             if draw_state._internal_pending is not None and draw_state._internal_pending.originated in _active_auto_apply:
-                draw_state._apply_load = draw_state._internal_pending.originated
-                Melty.cache.invalidate_up(draw_state._parent._tile_id, force=True)
-                request_render()
+                # Don't auto-load if there's a pending save, let the user decide
+                if not draw_state._show_save:
+                    draw_state._apply_load = draw_state._internal_pending.originated
+                    Melty.cache.invalidate_up(draw_state._parent._tile_id, force=True)
+                    request_render()
 
             if "search_text" in wanted_params and kwargs.get("with_header", None) is not None and kwargs.get(
                     "show_header", True):
                 search_requested = draw_state.on_action("inverted_f_key_down")
                 if search_requested:
                     if search_requested.ctrl:
-                        print("Search requested")
                         if Melty.focused_ds is not None:
                             Melty.focused_ds.search_active = False
                             Melty.cache.invalidate(Melty.focused_ds._tile_id, force=True)
@@ -1023,6 +1026,12 @@ def render_func(*args, **o_kwargs):
                         draw_state.search_active = False
                         request_render()
 
+            # Push search term to stack so child views can apply search converters
+            _pushed_search = False
+            if draw_state.search_active and draw_state.search_text:
+                Melty.search_stack.append(draw_state.search_text)
+                _pushed_search = True
+
             content_rect = (0, 0)
             if Melty.cache.mark_start_offscreen(draw_state=draw_state):
                 Melty.root_draw_states[draw_state.id] = []
@@ -1031,22 +1040,91 @@ def render_func(*args, **o_kwargs):
 
                 from src.lsd.gl_gui.view.mode import Mode
 
-                if draw_state._show_save and not draw_state._save_pending_obj.originated in auto_apply:
-                    if pending_window(
+                # Pre-discover load_data for revert actions
+                _chain_load_data_early = None
+                _convert_in_early = o_kwargs.get("convert_in", None) or kwargs.get("convert_in", None)
+                if _convert_in_early is not None:
+                    for _ci_fn in _convert_in_early:
+                        _ld = getattr(_ci_fn, '_load_data', None)
+                        if _ld is not None:
+                            _chain_load_data_early = _ld
+                            break
+
+                _has_save_pending = (draw_state._show_save
+                                     and draw_state._save_pending_obj is not None
+                                     and draw_state._save_pending_obj.originated not in auto_apply)
+                _has_load_pending = (draw_state._show_load
+                                     and draw_state._internal_pending is not None
+                                     and draw_state._internal_pending.originated not in auto_apply)
+
+                if _has_save_pending:
+                    # Show save dialog with contextual buttons:
+                    # - Save: write changes to disk
+                    # - Revert: restore to the originally loaded value (what the diff shows)
+                    # - Load (when file also changed): reload from disk, discard edits
+                    save_result = pending_window(
                             input_value=f"save", return_extras=True, min_width=300,
                             closed=False, tint=draw_state.tint, window_pos=(0, 0), auto_resize=True, wrap=True,
                             button_name="Save", name=f"Save", anchor=Anchor.BOTTOM_LEFT,
                             pending=draw_state._save_pending_obj,
-                            mode=Mode.WINDOW_CLEAN)[0]:
-                        print(f"Applying save for {draw_state._save_pending_obj.originated}")
-                        draw_state._apply_save = draw_state._save_pending_obj.originated
-                        draw_state._pending_convert = True
-                        Melty.cache.invalidate_up(draw_state._parent._tile_id, force=True)
-                        Melty.cache.invalidate_up(draw_state._tile_id, force=True)
-                        request_render()
+                            show_revert=True, show_load=_has_load_pending,
+                            mode=Mode.WINDOW_CLEAN)
+                    if save_result[0]:
+                        action = save_result[1]
+                        if action == PendingAction.REVERT:
+                            # Revert: re-parse from _original_load_data (not disk).
+                            # Run the convert_in chain with the cached original data
+                            # injected directly, bypassing load_data.
+                            if _convert_in_early is not None and draw_state._original_load_data is not None:
+                                reverted = _run_convert_chain(
+                                    value=draw_state._raw_input_value,
+                                    chain=_convert_in_early,
+                                    data=draw_state._original_load_data,
+                                    ref=draw_state._fileref)
+                                if not isinstance(reverted, Pending):
+                                    draw_state._input_cache["internal_state"] = reverted, Melty.frame_count
+                                    draw_state._input_value = reverted
+                            draw_state._show_save = False
+                            draw_state._save_pending_obj = None
+                            draw_state._all_pending['save_pending'] = None
+                            # Clear Background.run cache for convert_out so it
+                            # re-runs with the reverted value instead of using
+                            # the cached dirty result
+                            _out_uid = str(unique) + " | convert_out"
+                            Background._user_cache.pop(_out_uid, None)
+                            Melty.cache.invalidate_up(draw_state._parent._tile_id, force=True)
+                            Melty.cache.invalidate_up(draw_state._tile_id, force=True)
+                            request_render()
+                        elif action == PendingAction.LOAD:
+                            # Load: reload from disk, discard edits AND pick up external changes
+                            if _chain_load_data_early is not None and draw_state._fileref is not None:
+                                fresh_data = _chain_load_data_early(draw_state._fileref)
+                                draw_state._original_load_data = fresh_data
+                                draw_state.mark_file_current()
+                            draw_state._apply_load = _chain_load_data_early
+                            draw_state._show_save = False
+                            draw_state._show_load = False
+                            draw_state._save_pending_obj = None
+                            draw_state._internal_pending = None
+                            draw_state._all_pending['save_pending'] = None
+                            draw_state._all_pending['load_pending'] = None
+                            Melty.cache.invalidate_up(draw_state._parent._tile_id, force=True)
+                            Melty.cache.invalidate_up(draw_state._tile_id, force=True)
+                            request_render()
+                        else:
+                            # Save: apply the pending changes
+                            draw_state._apply_save = draw_state._save_pending_obj.originated
+                            draw_state._pending_convert = True
+                            # Clear load pending - save takes precedence
+                            draw_state._show_load = False
+                            draw_state._internal_pending = None
+                            draw_state._all_pending['load_pending'] = None
+                            Melty.cache.invalidate_up(draw_state._parent._tile_id, force=True)
+                            Melty.cache.invalidate_up(draw_state._tile_id, force=True)
+                            request_render()
 
-                if draw_state._show_load and not draw_state._internal_pending.originated in auto_apply:
-
+                elif _has_load_pending:
+                    # Show load dialog only when there's no competing save pending
                     if pending_window(input_value=f"load",
                                       closed=False, window_pos=(0, 0), auto_resize=True,
                                       pending=draw_state._internal_pending, min_width=300,
@@ -1055,7 +1133,6 @@ def render_func(*args, **o_kwargs):
                         draw_state._apply_load = draw_state._internal_pending.originated
                         Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=5, force=True)
                         Melty.cache.invalidate_up(draw_state._tile_id, max_depth=5, force=True)
-
                         draw_state._pending_convert = True
                         request_render()
 
@@ -1089,6 +1166,7 @@ def render_func(*args, **o_kwargs):
                             _convert_in = None
                 if _convert_out is None:
                     _convert_out = kwargs.get("convert_out", None)
+
                 _convert_in_done = False
 
                 # Discover load_data / save_data from converter function chains
@@ -1174,13 +1252,16 @@ def render_func(*args, **o_kwargs):
                                 # Normal steady-state frames hit the cache.
                                 no_cache = input_changed
 
+                                _fk = {k: v for k, v in kwargs.items()
+                                       if k not in ('convert_in', 'convert_out', 'auto_apply',
+                                                    'value', 'chain', 'input_value')}
+                                _fk["value"] = draw_state._raw_input_value
+                                _fk["chain"] = _convert_in
                                 internal_value = Background.run(
                                     _run_convert_chain,
-                                    value=draw_state._raw_input_value,
-                                    chain=_convert_in,
                                     user_id=str(draw_state.unique) + " | convert_in",
+                                    func_kwargs=_fk,
                                     invalidate_id=draw_state._parent._tile_id,
-                                    draw_state=draw_state,
                                     on_frame=start_frame, no_cache=no_cache,
                                     stateful=True)
 
@@ -1809,16 +1890,20 @@ def render_func(*args, **o_kwargs):
                     else:
                         new_value_child = draw_state._input_cache["internal_state"][0]
 
-                    if _convert_in_done and _convert_out is not None and not _file_stale:
+                    if _convert_in_done and _convert_out is not None and (not _file_stale or child_changed):
                         ####################################### CONVERT_OUT SAVE HANDLER
                         # Bypass cache when data changes (user edit, reload, or save apply)
                         no_cache = child_changed or input_changed or draw_state._apply_save is not None
 
+                        _fk_out = {k: v for k, v in kwargs.items()
+                                   if k not in ('convert_in', 'convert_out', 'auto_apply',
+                                                'value', 'chain', 'input_value')}
+                        _fk_out["value"] = new_value_child
+                        _fk_out["chain"] = _convert_out
                         external_value = Background.run(
                             _run_convert_chain,
-                            value=new_value_child,
-                            chain=_convert_out,
                             user_id=str(unique) + " | convert_out",
+                            func_kwargs=_fk_out,
                             invalidate_id=draw_state._parent._tile_id,
                             on_frame=Melty.frame_count, no_cache=no_cache,
                             stateful=True)
@@ -2105,6 +2190,8 @@ def render_func(*args, **o_kwargs):
 
             if mode_stacked:
                 Melty.mode_stack.pop()
+            if _pushed_search and len(Melty.search_stack) > 0:
+                Melty.search_stack.pop()
 
             draw_state.frame_count += 1
             if Melty.imgui_crashed:
@@ -2379,6 +2466,10 @@ def render_func(*args, **o_kwargs):
         wrapper._load_data = _rf_load_data
     if _rf_save_data is not None:
         wrapper._save_data = _rf_save_data
+
+    # Expose searchable flag for draw_any
+    if o_kwargs.get("searchable", False):
+        wrapper._searchable = True
 
     return wrapper
 

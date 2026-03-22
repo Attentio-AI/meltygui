@@ -1,4 +1,5 @@
 import time
+import types
 from collections import defaultdict, deque
 from copy import copy
 from enum import Enum
@@ -20,7 +21,7 @@ from src.shader_library.shader_manager.filter import Filter
 from src.lsd.gl_gui.view.events.input_handler import InputHandler, InputEvent
 from src.lsd.gl_gui.view.events.pynput_backend import ImGuiBackend
 from src.lsd.gl_gui.model.core_model.core_enums import generate_id
-from src.lsd.gl_gui.utils.glfw_utils import request_render
+from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
 
 import OpenGL.GL as gl
 
@@ -50,6 +51,7 @@ class Melty:
     on_scroll_buffer = deque(maxlen=5)
 
     mode_stack = []
+    search_stack = []
 
     _converters = {}
     _converter_to_type = {}
@@ -1156,44 +1158,48 @@ def add_to_collection(collection, item, preferred_key=None):
     Returns:
       - None on success, or an error message (str) on failure.
     """
-    if hasattr(collection, "append_to"):
-        collection.append_to(item)
-        return collection
-    elif isinstance(collection, list):
-        collection.append(item)
-        return None
-    elif isinstance(collection, (dict, MutableMapping)):
-        if hasattr(item, 'id'):
-            preferred_key = item.id
-        key = preferred_key
-        if key is not None and key in collection:
-            key = None
-        if key is None:
-            key = generate_id()
-        collection[key] = item
+    try:
+        if hasattr(collection, "append_to"):
+            collection.append_to(item)
+            return collection
+        elif isinstance(collection, list):
+            collection.append(item)
+            return None
+        elif isinstance(collection, (dict, MutableMapping)):
+            if hasattr(item, 'id'):
+                preferred_key = item.id
+            key = preferred_key
+            if key is not None and key in collection:
+                key = None
+            if key is None:
+                key = generate_id()
+            collection[key] = item
 
-    elif hasattr(collection, '__dict__'):
-        collection = collection.__dict__
-        if hasattr(item, 'id'):
-            preferred_key = str(item.id)
+        elif hasattr(collection, '__dict__') and not isinstance(collection, (types.MappingProxyType)):
+            collection = collection.__dict__
+            if hasattr(item, 'id'):
+                preferred_key = str(item.id)
 
-        key = preferred_key
-        if key is not None and key in collection:
-            key = None
-        if key is None:
-            key = generate_id()
-        collection[key] = item
+            key = preferred_key
+            if key is not None and key in collection:
+                key = None
+            if key is None:
+                key = generate_id()
+            collection[key] = item
 
-    if hasattr(item, 'tint'):
-        if item.tint is None or item.tint == (0, 0, 0):
-            lighten = 0.2
-            item.tint = Melty.bg_stack[-1]
-            item.tint = (min(1.0, item.tint[0] + lighten),
-                         min(1.0, item.tint[1] + lighten),
-                         min(1.0, item.tint[2] + lighten))
+        if hasattr(item, 'tint'):
+            if item.tint is None or item.tint == (0, 0, 0):
+                lighten = 0.2
+                item.tint = Melty.bg_stack[-1]
+                item.tint = (min(1.0, item.tint[0] + lighten),
+                             min(1.0, item.tint[1] + lighten),
+                             min(1.0, item.tint[2] + lighten))
 
-    Melty.cache.invalidate_by_obj(collection)
-    request_render()
+        Melty.cache.invalidate_by_obj(collection)
+        request_render()
+    except Exception as e:
+        print_stack_trace(exception=e)
+
     return collection
 
 

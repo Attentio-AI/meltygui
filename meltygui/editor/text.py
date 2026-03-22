@@ -323,7 +323,7 @@ def _delete_selection(text, ds):
 
 
 @render_func(show_bg=True, wrap=False, use_cache=True, with_header=draw_header,
-             with_footer=draw_footer, selectable=False)
+             with_footer=draw_footer, selectable=False, searchable=True)
 def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, left_mouse_up=False,
               left_mouse_down=False, left_mouse_drag=False, draw_state=None):
     ds = draw_state

@@ -2,7 +2,6 @@ from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
 
 class Counters:
     nested_window_count = 0
-    
 
 class Toggles:
     # ---------- Invalidation Settings -----

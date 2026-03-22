@@ -31,6 +31,12 @@ class ProfileMode(RelaxedEnum):
     OVERHEAD = "Overhead"
 
 
+class PendingAction(RelaxedEnum):
+    APPLY = "apply"
+    REVERT = "revert"
+    LOAD = "load"
+
+
 def generate_id():
     """
     Generates a unique identifier for use in ImGui elements.
