@@ -918,16 +918,16 @@ def render_func(*args, **o_kwargs):
                 draw_list: _DrawList = imgui.get_window_draw_list()
                 for c in range(1, draw_state.final_max_column + 1):
                     # Draw divider lines, we are the parent now
-                    draw_list.add_line(draw_state.abs_left + snap_int(column_width * c), draw_state.abs_top,
-                                       draw_state.abs_left + snap_int(column_width * c),
-                                       draw_state.abs_top + snap_int(draw_state.height),
+                    draw_list.add_line(draw_state.left + snap_int(column_width * c), draw_state.top,
+                                       draw_state.left + snap_int(column_width * c),
+                                       draw_state.top + snap_int(draw_state.height),
                                        imgui.get_color_u32_rgba(0.0, 0.0, 0.0, 0.3), 1)
             ##########################
             if kwargs.get("live", False):
                 draw_state.live = True
                 fa_live_icon = "\uf0e7  Live"
                 draw_list: _DrawList = imgui.get_window_draw_list()
-                draw_list.add_text(draw_state.left + 5, draw_state.abs_top - 20,
+                draw_list.add_text(draw_state.left + 5, draw_state.top - 20,
                                    imgui.get_color_u32_rgba(1.0, 0.0,
                                                             0.0, 1.0), fa_live_icon)
                 Melty.cache.invalidate_up(tile_id, max_depth=1)
@@ -949,21 +949,20 @@ def render_func(*args, **o_kwargs):
                         Melty.cache.invalidate(tile_id, do_store=False, force=True)
 
             if draw_state.width > 0 and draw_state.height > 0:
-                inside_clip = Melty.fully_inside_clip(rect=(draw_state.abs_left, draw_state.abs_top,
+                inside_clip = Melty.fully_inside_clip(rect=(draw_state.left, draw_state.top,
                                                             draw_state.width, draw_state.height))
                 needs_invalidate = False
                 if inside_clip != draw_state.fully_clipped and inside_clip:
                     needs_invalidate = True
                 draw_state.fully_clipped = inside_clip
 
-                inside_clip = Melty.inside_clip(rect=(draw_state.abs_left, draw_state.abs_top,
+                inside_clip = Melty.inside_clip(rect=(draw_state.left, draw_state.top,
                                                       draw_state.width, draw_state.height))
                 if inside_clip != draw_state.clipped and inside_clip:
                     needs_invalidate = True
                 draw_state.clipped = inside_clip
 
-                if needs_invalidate and not Melty.window_drag and not imgui.is_mouse_down(
-                        1) and not imgui.is_mouse_down(2):
+                if needs_invalidate and not Melty.window_drag and not imgui.is_mouse_down(1) and not imgui.is_mouse_down(2):
                     Melty.cache.invalidate(tile_id, force=True)
 
             if kwargs.get("shadow", False):
@@ -1138,7 +1137,7 @@ def render_func(*args, **o_kwargs):
                         draw_state._pending_convert = True
                         request_render()
 
-                if (draw_state.abs_left is not None and draw_state.abs_top is not None and
+                if (draw_state.left is not None and draw_state.top is not None and
                     draw_state.width is not None and draw_state.height is not None) and closable:
                     if (draw_state.width > 0 and draw_state.height > 0):
                         reset_to = imgui.get_cursor_screen_pos()
@@ -1404,7 +1403,7 @@ def render_func(*args, **o_kwargs):
                     # reformat icon wrench
                     converted_icon_text = f"\uf0ad"
                     overlay_list: _DrawList = imgui.get_window_draw_list()
-                    overlay_list.add_text(*(draw_state.abs_left + draw_state.header_width + 5, draw_state.abs_top + 5),
+                    overlay_list.add_text(*(draw_state.left + draw_state.header_width + 5, draw_state.top + 5),
                                           imgui.get_color_u32_rgba(0.5, 0.0, 0.0, 1.0),
                                           f"{converted_icon_text}")
 
@@ -1424,13 +1423,13 @@ def render_func(*args, **o_kwargs):
                     bg_color = (0, 0, 0, 0)
                     if draw_state.width > 5 and draw_state.height > 5:
                         nested_bg = not closable and kwargs.get("bg_offset", 0) >= 0
-                        bg_return = draw_bg(bypass=True, left=draw_state.abs_left, top=draw_state.abs_top,
-                                            width=draw_state.width, height=draw_state.height,
-                                            rounding=draw_state.corner_radius,
-                                            depth=Melty.shadow_depth, selected=draw_state.selected,
-                                            global_style=global_style, opacity=1.0 if show_bg else 0.0,
-                                            pressed=draw_state.pressed,
-                                            style_manager=style_manager, nested_bg=nested_bg)
+                        bg_return = draw_bg(bypass=True, left=draw_state.left, top=draw_state.top,
+                                              width=draw_state.width, height=draw_state.height,
+                                              rounding=draw_state.corner_radius,
+                                              depth=Melty.shadow_depth, selected=draw_state.selected,
+                                              global_style=global_style, opacity=1.0 if show_bg else 0.0,
+                                              pressed=draw_state.pressed,
+                                              style_manager=style_manager, nested_bg=nested_bg)
                         if bg_return is not None:
                             bg_color = bg_return[1]
 
@@ -1631,7 +1630,7 @@ def render_func(*args, **o_kwargs):
 
                 else:
                     draw_state.header_left = draw_state.left
-                    draw_state.header_top = draw_state.abs_top
+                    draw_state.header_top = draw_state.top
                     draw_state.header_width = 0
                     draw_state.header_height = 0
                     imgui.begin_group()
@@ -1658,11 +1657,11 @@ def render_func(*args, **o_kwargs):
                         margin = 10
 
                     if clip_size is not None:
-                        end_x = max(draw_state.abs_left,
-                                    draw_state.abs_left + clip_size[0] - draw_state.header_end_width - margin)
-                        end_x = max(end_x, draw_state.abs_left + draw_state.header_width + 10)
+                        end_x = max(draw_state.left,
+                                    draw_state.left + clip_size[0] - draw_state.header_end_width - margin)
+                        end_x = max(end_x, draw_state.left + draw_state.header_width + 10)
                         if not draw_state.expanded:
-                            end_x = draw_state.abs_left + draw_state.header_width + 10
+                            end_x = draw_state.left + draw_state.header_width + 10
                         imgui.set_cursor_screen_pos((end_x,
                                                      imgui.get_cursor_screen_pos()[1] + outline_margin))
 
@@ -1700,9 +1699,9 @@ def render_func(*args, **o_kwargs):
                 ####################################################################################
                 #### with callback header
 
-                if draw_state.header_left is not None and draw_state.abs_left is not None:
-                    draw_state.header_left_delta = draw_state.abs_left - draw_state.header_left
-                    draw_state.header_top_delta = draw_state.abs_top - draw_state.header_top
+                if draw_state.header_left is not None and draw_state.left is not None:
+                    draw_state.header_left_delta = draw_state.left - draw_state.header_left
+                    draw_state.header_top_delta = draw_state.top - draw_state.header_top
 
                 if indent_x > 0:
                     sc = imgui.get_cursor_screen_pos()
@@ -1763,8 +1762,8 @@ def render_func(*args, **o_kwargs):
                         print(f"Error checking pending upload: {e}")
 
                 ############# HANDLE SELECTION
-                top = draw_state.abs_top
-                left = draw_state.abs_left
+                top = draw_state.top
+                left = draw_state.left
                 width = draw_state.width
                 height = draw_state.height
 
@@ -1828,7 +1827,7 @@ def render_func(*args, **o_kwargs):
                     current_cursor = imgui.get_cursor_screen_pos()
                     if not auto_resize:
                         imgui.set_cursor_screen_pos((current_cursor[0] + outline_margin,
-                                                     draw_state.abs_top + draw_state.height - draw_state.footer_height - outline_margin))
+                                                     draw_state.top + draw_state.height - draw_state.footer_height - outline_margin))
 
                     push_id(str(unique) + "footer")
                     imgui.begin_group()
@@ -2268,13 +2267,13 @@ def render_func(*args, **o_kwargs):
         draw_list: _DrawList = imgui.get_window_draw_list()
         if pending_obj.state == PendingState.ERROR:
             draw_list.add_text(
-                *(draw_state.abs_left + 2,
-                  draw_state.abs_top + draw_state.height - draw_state.footer_height - 20),
+                *(draw_state.left + 2,
+                  draw_state.top + draw_state.height - draw_state.footer_height - 20),
                 imgui.get_color_u32_rgba(1, 0, 0, 1.0),
                 f"{load_icon} {pending_obj.status}")
         else:
             draw_list.add_text(
-                *(draw_state.left + 2, draw_state.abs_top + draw_state.height - draw_state.footer_height - 20),
+                *(draw_state.left + 2, draw_state.top + draw_state.height - draw_state.footer_height - 20),
                 imgui.get_color_u32_rgba(1, 1, 1, 0.5),
                 f"{load_icon} {pending_obj.status}")
 

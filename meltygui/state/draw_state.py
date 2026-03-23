@@ -630,8 +630,8 @@ class DrawState(DictConversion):
         clip_left, clip_top, clip_right, clip_bottom = clip_rect
 
         if child_draw_state is not None:
-            left = child_draw_state.abs_left
-            top = child_draw_state.abs_top
+            left = child_draw_state.left
+            top = child_draw_state.top
             width = child_draw_state.width
             height = child_draw_state.height
 

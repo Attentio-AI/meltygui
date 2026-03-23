@@ -1466,30 +1466,30 @@ def seperator(height):
     imgui.separator()
     imgui.dummy(0, snap_int(height / 2))
 
-def draw_bg(left=80, top=3, width=0, height=55, depth=0, rounding=4.016,
-            global_style=None, outline=True, bg_color=None, opacity=-1.135,
+def draw_bg(left=78, top=3, width=0, height=55, depth=0, rounding=4.196,
+            global_style=None, outline=True, bg_color=None, opacity=-1.066,
             style_manager=None, tint=None, outline_tint=None, selected=False,
             hovered=False, pressed=False, nested_bg=False, **kwargs):
 
     # -- Constants ---------------------------------
     depth_wrap        = 34
-    depth_scale       = 1.058
-    corner_radius     = 4.0
+    depth_scale       = 0.834
+    corner_radius     = 4.028
     border_inset      = 1.548
-    border_inset_half = 0.462
+    border_inset_half = 0.245
     stroke_width      = 2.738
     # How depth maps to color intensity
-    intensity_factor  = 0.04
-    intensity_offset  = 1.424\
+    intensity_factor  = 0.058
+    intensity_offset  = -0.271\
     # Outline color tuning
     outline_base      = 1.914
     outline_depth_mul = 0.85
     outline_sat       = {'default': 1.752, 'nested': 3.211}
 
     # Beed color
-    bleed_mix         = {'nested': 0.201, 'default': 0.454}
+    bleed_mix         = {'nested': -0.026, 'default': 0.454}
     bleed_style       = {'value': -0.111, 'alpha': 0.994, 'saturation': 5.459}
-    outline_bleed_mix = 0.308
+    outline_bleed_mix = 0.272
 
     # Hover offset per interaction state
     hover_offset_by_state = {
@@ -1500,7 +1500,7 @@ def draw_bg(left=80, top=3, width=0, height=55, depth=0, rounding=4.016,
     }
 
     bg_style = {
-        'value': 0.127, 'saturation': 2.808,
+        'value': 0.048, 'saturation': 3.406,
         'alpha': -2.072, 'max_value': 0.81,
     }
     

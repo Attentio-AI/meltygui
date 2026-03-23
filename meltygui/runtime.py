@@ -378,7 +378,7 @@ class Melty:
 
         for view_id, evts in cls.events.items():
             first_event = list(evts.values())[0]
-            if first_event.tile_id is not None and not cls.window_drag:
+            if first_event.tile_id is not None and not cls.on_drag:
                 Melty.cache.invalidate(first_event.tile_id)
 
         Melty.all_uniques = set()
@@ -807,15 +807,15 @@ class Melty:
 
     @classmethod
     def apply_clip_ds(self, draw_state):
-        x = draw_state.abs_left
-        y = draw_state.abs_top
+        x = draw_state.left
+        y = draw_state.top
         left, top = self.apply_clip((x, y))
         width, height = draw_state.width, draw_state.height
-        right, bottom = draw_state.abs_left + width, draw_state.abs_top + height
+        right, bottom = draw_state.left + width, draw_state.top + height
         right, bottom = self.apply_clip((right, bottom))
         width, height = right - x, bottom - y
 
-        return (draw_state.abs_left, draw_state.abs_top, width, draw_state.height)
+        return (draw_state.left, draw_state.top, width, draw_state.height)
 
     @classmethod
     def apply_clip(cls, point, fixed_size_ds=None):
@@ -854,9 +854,9 @@ class Melty:
         fix_sized_ds = cls.fixed_size_stack[-1] if len(cls.fixed_size_stack) > 0 else None
         if fix_sized_ds is not None and fix_sized_ds.width is not None:
 
-            x = draw_state.abs_left + draw_state.width
+            x = draw_state.left + draw_state.width
             x, y = cls.apply_clip((x, 0))
-            width = x - draw_state.abs_left
+            width = x - draw_state.left
         return width
 
 
@@ -903,8 +903,8 @@ class Melty:
         clip_left, clip_top, clip_right, clip_bottom = clip_rect
 
         if draw_state is not None:
-            left = draw_state.abs_left
-            top = draw_state.abs_top
+            left = draw_state.left
+            top = draw_state.top
             width = draw_state.width
             height = draw_state.height
         else:
@@ -928,8 +928,8 @@ class Melty:
         clip_left, clip_top, clip_right, clip_bottom = clip_rect
 
         if draw_state is not None:
-            left = draw_state.abs_left
-            top = draw_state.abs_top
+            left = draw_state.left
+            top = draw_state.top
             width = draw_state.width
             height = draw_state.height
         else:

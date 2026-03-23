@@ -1097,8 +1097,8 @@ class TileCacheMasked:
                 draw_state,
                 layer,
                 draw_state.shadow_depth,
-                draw_state.abs_left,
-                draw_state.abs_top,
+                draw_state.left,
+                draw_state.top,
                 draw_state.width,
                 draw_state.height,
                 draw_state._tile_id,
@@ -1106,7 +1106,7 @@ class TileCacheMasked:
             )
 
         if use_image:
-            imgui.set_cursor_screen_pos((snap_int(draw_state.abs_left), snap_int(draw_state.abs_top)))
+            imgui.set_cursor_screen_pos((draw_state.left, snap_int(draw_state.top)))
             imgui.image(
                 t.tex,
                 snap_int(size[0]),
@@ -1153,7 +1153,7 @@ class TileCacheMasked:
         if parent_key is not None:
             if parent_key not in self.parent_key_to_child_keys:
                 self.parent_key_to_child_keys[parent_key] = {}
-            top = draw_state.abs_top if draw_state.abs_top is not None else 0
+            top = draw_state.top if draw_state.top is not None else 0
             self.parent_key_to_child_keys[parent_key][rkey] = (top, rkey, draw_state)
 
         if name is not None:
@@ -1207,7 +1207,7 @@ class TileCacheMasked:
             use_image = t and has_area and (t.size == (size[0], size[1])) and (not self._is_dirty(t))
 
             if use_image:
-                imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
+                imgui.set_cursor_screen_pos((draw_state.left, draw_state.top))
                 imgui.image(
                     t.tex,
                     snap_int(size[0]),
@@ -1217,8 +1217,7 @@ class TileCacheMasked:
                     # tint_color=(self.frame_tint[0], self.frame_tint[1], self.frame_tint[2], self.frame_tint[3] * 0.5)
                 )
                 imgui.set_item_allow_overlap()
-                imgui.set_cursor_screen_pos(
-                    (imgui.get_cursor_screen_pos()[0], draw_state.abs_top + draw_state.content_height))
+                imgui.set_cursor_screen_pos((draw_state.left, draw_state.top + draw_state.content_height))
                 self._stack.append(
                     _Ctx(
                         draw_state=draw_state,
@@ -1261,7 +1260,7 @@ class TileCacheMasked:
         imgui.end_group()
         Melty.tile_id_stack.pop()
 
-        minx, miny = ctx.draw_state.abs_left, ctx.draw_state.abs_top
+        minx, miny = ctx.draw_state.left, ctx.draw_state.top
 
         ctx.pos = (float(minx), float(miny))
         ctx.size = (ctx.draw_state.width, ctx.draw_state.height)
