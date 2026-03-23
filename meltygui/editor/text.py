@@ -359,9 +359,10 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, le
 
     # --- Mouse handling ---
     is_focused = Melty.text_focused_ds is ds
-    if request_focus and not is_focused:
+    if request_focus:
         Melty.text_focused_ds = ds
         is_focused = True
+
     if left_mouse_down:
         Melty.text_focused_ds = ds
         is_focused = True

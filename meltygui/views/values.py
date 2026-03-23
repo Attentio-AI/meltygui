@@ -1467,17 +1467,17 @@ def seperator(height):
     imgui.dummy(0, snap_int(height / 2))
 
 def draw_bg(left=80, top=3, width=0, height=55, depth=0, rounding=4.016,
-            global_style=None, outline=True, bg_color=None, opacity=-1.57,
+            global_style=None, outline=True, bg_color=None, opacity=-1.135,
             style_manager=None, tint=None, outline_tint=None, selected=False,
             hovered=False, pressed=False, nested_bg=False, **kwargs):
 
     # -- Constants ---------------------------------
-    depth_wrap        = 26
-    depth_scale       = 1.08
-    corner_radius     = 6.217
+    depth_wrap        = 34
+    depth_scale       = 1.058
+    corner_radius     = 4.0
     border_inset      = 1.548
-    border_inset_half = 0.641
-    stroke_width      = 2.0
+    border_inset_half = 0.462
+    stroke_width      = 2.738
     # How depth maps to color intensity
     intensity_factor  = 0.04
     intensity_offset  = 1.424\
@@ -1596,7 +1596,7 @@ def draw_bg(left=80, top=3, width=0, height=55, depth=0, rounding=4.016,
 @render_func(use_cache=True, shadow=True, selectable=False, show_bg=False, min_width=10,
              min_height=10, wrap=True)
 def button(input_value="", corner_radius=4, draw_state=None, left_mouse_held=False, left_mouse_down=False,
-           color=(1, 1, 1), hovered=False, width=None, height=None, style_manager=None,
+           color=(0.5, 0.5, 0.5), hovered=False, width=None, height=None, style_manager=None,
            factor=1.0, value=0.4, text_value=1.0, saturation=0.8, unique=0):
     if color is not None:
         if left_mouse_held:
@@ -2089,6 +2089,12 @@ def draw_enum(input_value: Enum, global_style=None,  style_manager=None, enum_ti
     return changed, selected_enum
 
 
+def draw_debug(x,y, label, color=(1, 0, 0), size=16):
+    draw_list: _DrawList = imgui.get_overlay_draw_list()
+    draw_list.add_circle_filled(x, y, size, imgui.get_color_u32_rgba(*color, 1.0))
+    draw_list.add_text(x + size + 2, y - size / 2, imgui.get_color_u32_rgba(*color, 1.0), label)
+
+
 # @render_func(is_default_for=(FileWatch))
 # def draw_file_watch(input_value: FileWatch):
 #     imgui.text(f"Watching: {input_value._path}")
@@ -2115,7 +2121,7 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, *
     draw_str(f"{str(input_value._kwargs.get('mode', None))}", name="mode", editable=False, column=0)
     draw_str(f"{str(input_value.content_height)}", name="content_height", editable=False,column=0)
     draw_str(f"{str(input_value.height)}", name="height", editable=False,column=0)
-    draw_str(f"{str(input_value._height_source)}", name="Height source", editable=False,column=0)
+    draw_any(input_value._source, name="Height source", editable=False, column=0)
 
     draw_str(f"{input_value.scroll_visible}", name="scroll_visible", column=0)
     draw_str(f"{input_value._kwargs.get('disable_scroll', False)}", name="disable_scroll", column=0)
@@ -2147,6 +2153,8 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, *
                     input_value.abs_top + input_value.height)
             draw_overlay_rect(rect, color=(1, 1, 0, 0.5))
             draw_overlay_rect(input_value.clip_rect, color=(0, 1, 0, 0.5), name="clip")
+
+            draw_debug(input_value.abs_left, input_value.abs_top, "Abs Left/Top", color=(1, 0, 0), size=8)
 
     draw_str(input_value._kwargs["func"].__name__, name="view_func", column=0)
     from src.lsd.gl_gui.view.mode import Mode
@@ -2189,18 +2197,20 @@ def draw_search_results(input_value: SearchResults, draw_state=None):
 @render_func(use_cache=True, show_header=False, shadow=True)
 def pending_window(input_value, button_name, pending=None, draw_state=None,
                    show_revert=False, show_load=False):
-    draw_text(str(pending.status), width=draw_state.content_width, name="Status", header_same_line=False)
+    draw_text(str(pending.status), width=draw_state.width, name="Status", show_bg=True, shadow=False, with_footer=None)
+    imgui.dummy(0, 5)
 
-    if button(str(button_name), width=100, height=20)[0]:
+    if button(str(button_name), width=100, height=25)[0]:
         return True, PendingAction.APPLY
     if show_revert:
         same_line()
-        if button("Revert", width=100, height=20, color=(0.8, 0.3, 0.3))[0]:
+        if button("Revert", width=100, height=25, color=(0.8, 0.3, 0.3), factor=0.3, value=0.0, text_value=2.0, saturation=0.4)[0]:
             return True, PendingAction.REVERT
     if show_load:
         same_line()
-        if button("Load", width=100, height=20, color=(0.3, 0.5, 0.8))[0]:
+        if button("Load", width=100, height=25, color=(0.3, 0.5, 0.8), factor=0.8)[0]:
             return True, PendingAction.LOAD
+            
     return False, None
 
 @render_func(use_cache=True, show_header=True, selectable=False, with_header=draw_header)

@@ -425,7 +425,7 @@ class Melty:
         kwargs['layer_unique'] = draw_state.unique
         imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
 
-        if Toggles.debug_context_menu:
+        if Toggles.debug_z_depth:
             draw_list = imgui.get_overlay_draw_list()
             draw_list.add_text(draw_state.abs_left, draw_state.abs_top - 40, imgui.get_color_u32_rgba(1, 0, 0, 1),
                                f"Layer {draw_state.layer} "
@@ -614,7 +614,6 @@ class Melty:
                     Melty.cache.invalidate(cls.text_focused_ds._tile_id)
                     request_render()
                     break
-
 
 
         Collisions.handle_collisions()

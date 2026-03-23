@@ -498,13 +498,13 @@ def render_func(*args, **o_kwargs):
             if draw_state.expanded:
                 # Restore rect
                 draw_state.left, draw_state.right, draw_state.width, draw_state.height = draw_state.expanded_rect
-                draw_state._height_source = "expanded_rect"
+                draw_state._source["height"] = "expanded_rect"
 
                 draw_state.expanded_rect = (0, 0, 0, 0)
             else:
                 # Save rect
                 draw_state.left, draw_state.right, draw_state.width, draw_state.height = draw_state._collapsed_rect
-                draw_state._height_source = "collapsed_rect"
+                draw_state._source["height"] = "collapsed_rect"
 
         if draw_state.expanded:
             draw_state.expanded_rect = (0, 0, 0, 0)
@@ -518,7 +518,7 @@ def render_func(*args, **o_kwargs):
             draw_state.width = snap_int(passed_width)
         if passed_height is not None:
             draw_state.height = snap_int(passed_height)
-            draw_state._height_source = "passed height"
+            draw_state._source["height"] = "passed height"
 
         Melty.input_value_stack.append(input_value)
         inc_depth = False
@@ -723,7 +723,7 @@ def render_func(*args, **o_kwargs):
                     size_h = draw_state._initial_window_size[1] + handle_drag.total_dy
                     if passed_height is None:
                         draw_state.height = snap_int(max(size_h, draw_state.min_height))
-                        draw_state._height_source = "initial window size"
+                        draw_state._source["height"] = "initial window size"
 
                     if passed_width is None:
                         draw_state.width = snap_int(max(size_w, draw_state.min_width))
@@ -863,18 +863,20 @@ def render_func(*args, **o_kwargs):
 
             single_line_avail = available_width - header_width - 5
             header_same_line = kwargs.get("header_same_line", False)
-            if ((single_line_avail < 100 or (
+            if ((single_line_avail < 150 or (
                     draw_state.height is not None and draw_state.height - draw_state.footer_height > 50))
                     and not header_same_line):
                 draw_state.multi_line = True
                 draw_state.content_width = available_width
+                draw_state._source["content_width"] = "available_width"
             else:
                 draw_state.multi_line = False
                 draw_state.content_width = single_line_avail
+                draw_state._source["content_width"] = "single_line_avail"
 
             if kwargs.get("fill_height", False) and passed_height is None and auto_resize:
                 draw_state.height = snap_int(parent_wrap_height) - content_margin
-                draw_state._height_source = "fill height"
+                draw_state._source["height"] = "fill height"
 
             if draw_state.expanded:
                 draw_state.min_width = kwargs.get("min_width", draw_state.min_width)
@@ -886,7 +888,7 @@ def render_func(*args, **o_kwargs):
 
                 if draw_state.height is not None and draw_state.min_height is not None:
                     if draw_state.height < draw_state.min_height:
-                        draw_state._height_source = "initial window size"
+                        draw_state._source["height"] = "initial window size"
 
                     draw_state.height = max(draw_state.height, draw_state.min_height)
 
@@ -2092,7 +2094,7 @@ def render_func(*args, **o_kwargs):
                 draw_state.width = 30
             if melty_window and draw_state.height < 30:
                 draw_state.height = 30
-                draw_state._height_source = "min 30"
+                draw_state._source["height"] = "min 30"
 
             if auto_resize and kwargs.get("fill_height", None) is None:
                 if kwargs.get("wrap", False):
@@ -2107,7 +2109,7 @@ def render_func(*args, **o_kwargs):
 
                     if not closable:
                         draw_state.height = snap_int(min(item_rect[1], max_height))
-                        draw_state._height_source = "not closable, item_rect[1]"
+                        draw_state._source["height"] = "not closable, item_rect[1]"
                     else:
                         display_height = imgui.get_io().display_size[1]
                         if draw_state.expanded:
@@ -2116,7 +2118,7 @@ def render_func(*args, **o_kwargs):
                             min_height = 0
                         draw_state.height = snap_int(
                             max(min_height, min(item_rect[1], min(display_height, max_height))))
-                        draw_state._height_source = "closable, item_rect[1]"
+                        draw_state._source["height"] = "closable, item_rect[1]"
 
             if (draw_state.width != original_width_b or
                     draw_state.height != original_height_b):
@@ -2137,7 +2139,7 @@ def render_func(*args, **o_kwargs):
 
             if draw_state.height > 30000:
                 draw_state.height = 30000
-                draw_state._height_source = "30000 max height"
+                draw_state._source["height"] = "30000 max height"
 
             if draw_state.expanded:
                 draw_state.min_width = kwargs.get("min_width", draw_state.min_width)
@@ -2149,7 +2151,7 @@ def render_func(*args, **o_kwargs):
 
                 if draw_state.height is not None and draw_state.min_height is not None:
                     if draw_state.height < draw_state.min_height:
-                        draw_state._height_source = "initial window size"
+                        draw_state._source["height"] = "initial window size"
 
                     draw_state.height = max(draw_state.height, draw_state.min_height)
 
@@ -2352,7 +2354,7 @@ def render_func(*args, **o_kwargs):
         do_scroll = needs_scroll
         scroll_offset = draw_state.scroll_offset if do_scroll else (0, 0)
 
-        if draw_state.content_height > draw_state.height + draw_state.header_height:
+        if draw_state.content_height > draw_state.height + draw_state.header_height or draw_state.closable:
             current_cursor = imgui.get_cursor_screen_pos()
             imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
             from src.lsd.gl_gui.view.core_views.new_core_view import empty
@@ -2361,6 +2363,8 @@ def render_func(*args, **o_kwargs):
                   tile_mode=TileMode.MAX, width=draw_state.width,
                   height=draw_state.header_height)
             imgui.set_cursor_screen_pos(current_cursor)
+
+
 
         if do_scroll:
             header_height = draw_state.header_height

@@ -27,8 +27,8 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
     # ── Constants ──────────────────────────────────────────────
     # Depth-driven name brightness
-    depth_scale       = 0.274
-    depth_offset      = 0.029
+    depth_scale       = 0.1
+    depth_offset      = -0.075
     name_value_factor = 0.769
 
 
@@ -97,8 +97,12 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
             draw_state.search_active = False
             draw_state._search_was_active = False
             draw_state.search_text = ""
+            Melty.text_focused_ds = None
 
         imgui.same_line()
+    else:
+        draw_state.search_text = ""
+        draw_state._search_was_active = False
 
     on_change = False
     return_val = on_action

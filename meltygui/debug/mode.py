@@ -57,17 +57,19 @@ class Mode(Enum):
     WINDOW = {
         Any: ModeOverrides(
             kwargs={"show_bg":True, "selectable":False, "use_cache":True, "melty_window":True, "closable":True,
-                    "with_header_end":draw_header_end, "min_width":150, "min_height":40,
-                    "auto_resize":False, "draggable":True, "show_tint":True, "show_header":True, "with_footer":draw_footer,
+                    "with_header_end":draw_header_end, "auto_resize":False, "draggable":True,
+                    "show_tint":True, "show_header":True, "with_footer":draw_footer,
                     "disable_scroll":False},
             recursive=False
         )
     }
 
+
     WINDOW_CLEAN = {
         Any: ModeOverrides(
-            kwargs={"show_bg":True, "selectable":False, "use_cache":True, "melty_window":True, "closable":True,
-                    "auto_resize":True, 'min_width':300, "draggable":True, "is_tree":False, "show_tint":False, "show_header":False,
+            kwargs={"show_bg":True, "selectable":False, "use_cache":True, "shadow":True,
+                    "melty_window":True, "closable":True,
+                    "auto_resize":True, "is_tree":False, "show_tint":False, "show_header":True,
                     "disable_scroll":False},
             recursive=False
         )
@@ -76,27 +78,35 @@ class Mode(Enum):
     CODE_DICT_STR = {
         cst.Module: ModeOverrides(
             kwargs={"convert_in": [cst_to_dict, rf_dict_to_str],
-                    "convert_out": [str_to_cst_module]},
+                    "convert_out": [str_to_cst_module],
+                    },
             recursive=True,
             func=draw_text
         ),
 
         types.FunctionType: ModeOverrides(
             kwargs={"convert_in": [fn_to_cst],
-                    "convert_out": [cst_to_fn]},
+                    "convert_out": [cst_to_fn],
+                    "auto_apply": [load_text],
+                    },
             recursive=True,
         ),
 
         types.ModuleType: ModeOverrides(
             kwargs={"convert_in": [mod_to_cst],
-                    "convert_out": [cst_to_mod]},
+                    "convert_out": [cst_to_mod],
+                    "auto_apply": [load_text],
+                    },
+
             recursive=True
         ),
     }
     CODE_UI = {
         cst.Module: ModeOverrides(
             kwargs={"convert_in": [cst_to_dict],
-                    "convert_out": [dict_to_cst]},
+                    "convert_out": [dict_to_cst],
+                    "auto_apply": [load_text],
+                    },
             func=draw_collection,
             recursive=True
         ),
@@ -112,14 +122,17 @@ class Mode(Enum):
 
         type: ModeOverrides(
             kwargs={"convert_in": [cls_to_cst, cst_to_dict],
-                    "convert_out": [dict_to_cst, cst_to_cls]},
+                    "convert_out": [dict_to_cst, cst_to_cls],
+                    "auto_apply": [load_text],
+                    },
             recursive=True,
             func=draw_collection
         ),
 
         types.ModuleType: ModeOverrides(
             kwargs={"convert_in": [mod_to_cst, cst_to_dict],
-                    "convert_out": [dict_to_cst, cst_to_mod]},
+                    "convert_out": [dict_to_cst, cst_to_mod],
+                    "auto_apply": [load_text]},
             recursive=True,
             func=draw_collection
         ),
@@ -179,6 +192,7 @@ class Mode(Enum):
         type: ModeOverrides(
             kwargs={"convert_in": [cls_to_cst],
                     "convert_out": [cst_to_cls],
+                    "auto_apply": [load_text],
                     "indent_size": 5, "with_header": draw_header},
             recursive=True
         ),

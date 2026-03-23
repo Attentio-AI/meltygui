@@ -147,7 +147,7 @@ class DrawState(DictConversion):
         self._is_header = False
         self._view_func = None
         self._cursor_pos = (0, 0)
-        self._height_source = "Not set"
+        self._source = defaultdict(dict)
         self.next = None
         self.previous = None
         self.index_in_parent = 0
