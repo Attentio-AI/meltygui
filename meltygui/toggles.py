@@ -2,12 +2,11 @@ from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
 
 class Counters:
     # Nested window
-    nested_window_count = 11
+    nested_window_count = -30
     
 def some_func():
 
     print("hello world")
-
 class Toggles:
     # ---------- Invalidation Settings -----
     invalidate_stack_trace = False

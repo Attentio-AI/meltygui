@@ -176,7 +176,6 @@ class Mode(Enum):
         types.FunctionType: ModeOverrides(
             kwargs={"convert_in": [fn_to_cst],
                     "convert_out": [cst_to_fn],
-                    "auto_apply": [load_text],
                     "indent_size": 5, "with_header": draw_header},
             recursive=True
         ),
@@ -184,7 +183,6 @@ class Mode(Enum):
         types.ModuleType: ModeOverrides(
             kwargs={"convert_in": [mod_to_cst],
                     "convert_out": [cst_to_mod],
-                    "auto_apply": [load_text],
                     "indent_size": 5, "with_header": draw_header},
             recursive=True
         ),
@@ -192,7 +190,6 @@ class Mode(Enum):
         type: ModeOverrides(
             kwargs={"convert_in": [cls_to_cst],
                     "convert_out": [cst_to_cls],
-                    "auto_apply": [load_text],
                     "hotswap_instances": True,
                     "indent_size": 5, "with_header": draw_header},
             recursive=True

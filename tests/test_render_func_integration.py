@@ -562,5 +562,240 @@ class TestConvertOutFlow(unittest.TestCase):
                            f"Never received GeneralParse. Snapshots: {ds_snapshots}")
 
 
+class TestAsyncLoadSaveHandoff(unittest.TestCase):
+    """Test the Background v2 async load/save lifecycle.
+
+    Exercises the exact flow that breaks:
+    1. View loads file (convert_in) → Pending → result lands
+    2. User edits → dirty → save dialog
+    3. User clicks Save → convert_out + save_data writes file
+    4. Save changes file on disk → file_stale on OTHER views
+    5. Other views should auto-reload cleanly, NOT show save dialog
+
+    The core invariant: after a save updates _original_load_data,
+    the reloaded value should match and NOT trigger dirty detection.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        _ensure_gl_context()
+
+    def setUp(self):
+        self.melty = _init_melty()
+        from src.lsd.gl_gui.view.core_views.core_render import render_func
+        from src.lsd.gl_gui.view.core_conversion.file_converters import (
+            fn_to_cst, cst_to_fn, load_text, recompile_fn)
+        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
+            cst_to_dict, dict_to_cst, GeneralParse)
+        from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
+        from src.lsd.gl_gui.background import Background
+
+        self.render_func = render_func
+        self.fn_to_cst = fn_to_cst
+        self.cst_to_fn = cst_to_fn
+        self.cst_to_dict = cst_to_dict
+        self.dict_to_cst = dict_to_cst
+        self.load_text = load_text
+        self.recompile_fn = recompile_fn
+        self.GeneralParse = GeneralParse
+        self.Pending = Pending
+        self.Background = Background
+
+        f = tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False)
+        f.write("x = 1\ny = 2\n")
+        f.close()
+        self.tmp_path = f.name
+
+    def tearDown(self):
+        if os.path.exists(self.tmp_path):
+            os.unlink(self.tmp_path)
+
+    def _run_frame(self, func, input_value, **kwargs):
+        from src.lsd.gl_gui.melty import Melty
+        Melty.channels_split = False
+        begin_frame()
+        imgui.begin("Test Window")
+        result = (False, None)
+        try:
+            result = func(input_value, **kwargs)
+        except Exception:
+            pass
+        try:
+            imgui.end()
+        except Exception:
+            pass
+        end_frame()
+        _tick_frame(self.melty)
+        return result
+
+    def test_load_settles_without_save_pending(self):
+        """After initial load settles, there should be no save pending."""
+        snapshots = []
+
+        @self.render_func(use_cache=False)
+        def view(input_value, draw_state=None):
+            snapshots.append({
+                'frame': self.melty.frame_count,
+                'input_type': type(input_value).__name__,
+                'show_load': draw_state._show_load,
+                'show_save': draw_state._show_save,
+                'has_original': draw_state._original_load_data is not None,
+                'original_load': repr(draw_state._original_load_data)[:40],
+                'load_pending': draw_state._all_pending.get('load_pending'),
+                'save_pending': draw_state._all_pending.get('save_pending'),
+                'save_pending_status': getattr(draw_state._all_pending.get('save_pending'), 'status', None),
+            })
+            return False, input_value
+
+        # Run frames until load settles
+        for _ in range(10):
+            self._run_frame(
+                view, Path(self.tmp_path),
+                convert_in=[self.fn_to_cst, self.cst_to_dict],
+                convert_out=[self.dict_to_cst, self.cst_to_fn],
+                auto_apply=[self.load_text],
+                name="test_load_settle")
+
+        print("\n=== Load Settle ===")
+        for s in snapshots:
+            sp = s['save_pending']
+            sp_str = f"Pending({sp.originated.__name__})" if isinstance(sp, self.Pending) else str(sp)
+            print(f"  Frame {s['frame']:2d}: type={s['input_type']:15s} "
+                  f"show_L={s['show_load']} show_S={s['show_save']} "
+                  f"orig={s['has_original']} save_p={sp_str}")
+
+        # After settling, no save pending should exist
+        settled = [s for s in snapshots if s['has_original']]
+        save_frames = [s for s in settled
+                       if isinstance(s['save_pending'], self.Pending)]
+        self.assertEqual(len(save_frames), 0,
+                         f"Save pending appeared during/after load! "
+                         f"Frames: {save_frames}")
+
+    def test_save_does_not_trigger_save_pending_on_reload(self):
+        """After a save writes the file, the next reload should NOT
+        show a save pending (the reloaded value matches what was saved)."""
+        snapshots = []
+
+        @self.render_func(use_cache=False)
+        def view(input_value, draw_state=None):
+            snapshots.append({
+                'frame': self.melty.frame_count,
+                'input_type': type(input_value).__name__,
+                'show_load': draw_state._show_load,
+                'show_save': draw_state._show_save,
+                'apply_save': draw_state._apply_save is not None,
+                'original_load': repr(draw_state._original_load_data)[:30] if draw_state._original_load_data else None,
+                'save_pending': draw_state._all_pending.get('save_pending'),
+                'load_pending': draw_state._all_pending.get('load_pending'),
+                'internal_hash': self.Background.simple_hash(
+                    draw_state._input_cache["internal_state"][0])[:20],
+            })
+            # Simulate an edit: change x value on a settled frame
+            if isinstance(input_value, dict) and 'x' in input_value:
+                if self.melty.frame_count == 8:
+                    input_value['x'] = 999
+                    return True, input_value
+            return False, input_value
+
+        # Phase 1: initial load (10 frames)
+        for _ in range(10):
+            self._run_frame(
+                view, Path(self.tmp_path),
+                convert_in=[self.fn_to_cst, self.cst_to_dict],
+                convert_out=[self.dict_to_cst, self.cst_to_fn],
+                auto_apply=[self.load_text, self.recompile_fn],
+                name="test_save_reload")
+
+        # Phase 2: run more frames - the edit at frame 8 should trigger
+        # change detection → save pending → auto_apply save → reload
+        for _ in range(10):
+            self._run_frame(
+                view, Path(self.tmp_path),
+                convert_in=[self.fn_to_cst, self.cst_to_dict],
+                convert_out=[self.dict_to_cst, self.cst_to_fn],
+                auto_apply=[self.load_text, self.recompile_fn],
+                name="test_save_reload")
+
+        print("\n=== Save + Reload ===")
+        for s in snapshots:
+            sp = s['save_pending']
+            lp = s['load_pending']
+            sp_str = f"Pend({sp.originated.__name__})" if isinstance(sp, self.Pending) else str(sp)
+            lp_str = f"Pend({lp.originated.__name__})" if isinstance(lp, self.Pending) else str(lp)
+            print(f"  Frame {s['frame']:2d}: type={s['input_type']:15s} "
+                  f"show_L={s['show_load']} show_S={s['show_save']} "
+                  f"apply_S={s['apply_save']} "
+                  f"save_p={sp_str:20s} load_p={lp_str:20s} "
+                  f"orig={s['original_load']}")
+
+        # Key assertion: after the save settles, there should be frames
+        # where the value loaded cleanly with no save pending
+        post_edit = snapshots[9:]  # frames after the edit
+        clean_frames = [s for s in post_edit
+                        if not s['show_save']
+                        and not isinstance(s['save_pending'], self.Pending)]
+        self.assertGreater(len(clean_frames), 0,
+                           f"No clean frames after save. All post-edit: "
+                           f"{[(s['frame'], s['show_save'], type(s['save_pending']).__name__) for s in post_edit]}")
+
+    def test_external_file_change_reloads_without_save_pending(self):
+        """When the file changes externally (simulating another view's save),
+        the reload should produce load_pending, NOT save_pending."""
+        snapshots = []
+
+        @self.render_func(use_cache=False)
+        def view(input_value, draw_state=None):
+            snapshots.append({
+                'frame': self.melty.frame_count,
+                'input_type': type(input_value).__name__,
+                'show_load': draw_state._show_load,
+                'show_save': draw_state._show_save,
+                'save_pending': draw_state._all_pending.get('save_pending'),
+                'load_pending': draw_state._all_pending.get('load_pending'),
+            })
+            return False, input_value
+
+        # Phase 1: load and settle
+        for _ in range(8):
+            self._run_frame(
+                view, Path(self.tmp_path),
+                convert_in=[self.fn_to_cst, self.cst_to_dict],
+                convert_out=[self.dict_to_cst, self.cst_to_fn],
+                auto_apply=[self.load_text, self.recompile_fn],
+                name="test_ext_change")
+
+        # Phase 2: external file change (another view saved)
+        time.sleep(0.05)
+        Path(self.tmp_path).write_text("x = 999\ny = 2\n")
+
+        # Phase 3: run more frames - should auto-reload
+        for _ in range(12):
+            self._run_frame(
+                view, Path(self.tmp_path),
+                convert_in=[self.fn_to_cst, self.cst_to_dict],
+                convert_out=[self.dict_to_cst, self.cst_to_fn],
+                auto_apply=[self.load_text, self.recompile_fn],
+                name="test_ext_change")
+
+        print("\n=== External File Change ===")
+        for s in snapshots:
+            sp = s['save_pending']
+            lp = s['load_pending']
+            sp_str = f"Pend({sp.originated.__name__})" if isinstance(sp, self.Pending) else str(sp)
+            lp_str = f"Pend({lp.originated.__name__})" if isinstance(lp, self.Pending) else str(lp)
+            print(f"  Frame {s['frame']:2d}: type={s['input_type']:15s} "
+                  f"show_L={s['show_load']} show_S={s['show_save']} "
+                  f"save_p={sp_str:20s} load_p={lp_str:20s}")
+
+        # After external change + auto-reload, save pending should NOT appear
+        post_change = snapshots[8:]
+        save_frames = [s for s in post_change
+                       if isinstance(s['save_pending'], self.Pending)]
+        self.assertEqual(len(save_frames), 0,
+                         f"Save pending after external file change! "
+                         f"Frames: {[(s['frame'], type(s['save_pending']).__name__) for s in save_frames]}")
+
+
 if __name__ == '__main__':
     unittest.main()

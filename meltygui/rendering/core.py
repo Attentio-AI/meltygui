@@ -13,7 +13,7 @@ import glfw
 import imgui
 from imgui.core import _DrawList
 
-from src.lsd.gl_gui.background import Background, Pending
+from src.lsd.gl_gui.background_v2 import Background, Pending
 from src.lsd.gl_gui.collision import Collisions
 from src.lsd.gl_gui.toggles import Counters, Toggles
 from src.lsd.gl_gui.view.core_conversion.fileref import to_fileref, FileRef
@@ -490,10 +490,10 @@ def render_func(*args, **o_kwargs):
         if draw_state._last_expanded is not None and draw_state._last_expanded != draw_state.expanded:
             if draw_state._last_expanded:
                 draw_state.expanded_rect = (
-                draw_state.abs_left, draw_state.abs_top, draw_state.width, draw_state.height)
+                    draw_state.abs_left, draw_state.abs_top, draw_state.width, draw_state.height)
             else:
                 draw_state._collapsed_rect = (
-                draw_state.abs_left, draw_state.abs_top, draw_state.width, draw_state.height)
+                    draw_state.abs_left, draw_state.abs_top, draw_state.width, draw_state.height)
 
             if draw_state.expanded:
                 # Restore rect
@@ -737,15 +737,15 @@ def render_func(*args, **o_kwargs):
                             pass
                         elif anchor_pos == Anchor.TOP_RIGHT:
                             draw_state.window_pos = (
-                            draw_state._initial_window_pos_resize[0] + max(0, handle_drag.total_dx),
-                            draw_state.window_pos[1])
+                                draw_state._initial_window_pos_resize[0] + max(0, handle_drag.total_dx),
+                                draw_state.window_pos[1])
                         elif anchor_pos == Anchor.BOTTOM_LEFT:
                             draw_state.window_pos = (draw_state.window_pos[0],
                                                      draw_state._initial_window_pos_resize[1] + handle_drag.total_dy)
                         elif anchor_pos == Anchor.BOTTOM_RIGHT:
                             draw_state.window_pos = (
-                            draw_state._initial_window_pos_resize[0] + max(0, handle_drag.total_dx),
-                            draw_state._initial_window_pos_resize[1] + max(0, handle_drag.total_dy))
+                                draw_state._initial_window_pos_resize[0] + max(0, handle_drag.total_dx),
+                                draw_state._initial_window_pos_resize[1] + max(0, handle_drag.total_dy))
                 else:
                     draw_state._initial_window_size = None
                     draw_state._initial_window_pos_resize = None
@@ -965,7 +965,8 @@ def render_func(*args, **o_kwargs):
                     needs_invalidate = True
                 draw_state.clipped = inside_clip
 
-                if needs_invalidate and not Melty.window_drag and not imgui.is_mouse_down(1) and not imgui.is_mouse_down(2):
+                if needs_invalidate and not Melty.window_drag and not imgui.is_mouse_down(
+                        1) and not imgui.is_mouse_down(2):
                     Melty.cache.invalidate(tile_id, force=True)
 
             if kwargs.get("shadow", False):
@@ -1067,12 +1068,12 @@ def render_func(*args, **o_kwargs):
                     # - Revert: restore to the originally loaded value (what the diff shows)
                     # - Load (when file also changed): reload from disk, discard edits
                     save_result = pending_window(
-                            input_value=f"save", return_extras=True, min_width=300,
-                            closed=False, tint=draw_state.tint, window_pos=(0, 0), auto_resize=True, wrap=True,
-                            button_name="Save", name=f"Save", anchor=Anchor.BOTTOM_LEFT,
-                            pending=draw_state._save_pending_obj,
-                            show_revert=True, show_load=_has_load_pending,
-                            mode=Mode.WINDOW_CLEAN)
+                        input_value=f"save", return_extras=True, min_width=300,
+                        closed=False, tint=draw_state.tint, window_pos=(0, 0), auto_resize=True, wrap=True,
+                        button_name="Save", name=f"Save", anchor=Anchor.BOTTOM_LEFT,
+                        pending=draw_state._save_pending_obj,
+                        show_revert=True, show_load=_has_load_pending,
+                        mode=Mode.WINDOW_CLEAN)
                     if save_result[0]:
                         action = save_result[1]
                         if action == PendingAction.REVERT:
@@ -1205,7 +1206,8 @@ def render_func(*args, **o_kwargs):
                             if _p in kwargs:
                                 _hash_parts.append(Background.simple_hash(kwargs[_p]))
                     input_hash = "|".join(_hash_parts)
-                    cached_hash = draw_state._input_cache["external_state"][2] if len(draw_state._input_cache["external_state"]) > 2 else None
+                    cached_hash = draw_state._input_cache["external_state"][2] if len(
+                        draw_state._input_cache["external_state"]) > 2 else None
                     input_changed = input_hash != cached_hash
 
                     if input_changed:
@@ -1447,12 +1449,12 @@ def render_func(*args, **o_kwargs):
                     if draw_state.width > 5 and draw_state.height > 5:
                         nested_bg = not closable and kwargs.get("bg_offset", 0) >= 0
                         bg_return = draw_bg(bypass=True, left=draw_state.left, top=draw_state.top,
-                                              width=draw_state.width, height=draw_state.height,
-                                              rounding=draw_state.corner_radius,
-                                              depth=Melty.shadow_depth, selected=draw_state.selected,
-                                              global_style=global_style, opacity=1.0 if show_bg else 0.0,
-                                              pressed=draw_state.pressed,
-                                              style_manager=style_manager, nested_bg=nested_bg)
+                                            width=draw_state.width, height=draw_state.height,
+                                            rounding=draw_state.corner_radius,
+                                            depth=Melty.shadow_depth, selected=draw_state.selected,
+                                            global_style=global_style, opacity=1.0 if show_bg else 0.0,
+                                            pressed=draw_state.pressed,
+                                            style_manager=style_manager, nested_bg=nested_bg)
                         if bg_return is not None:
                             bg_color = bg_return[1]
 
@@ -1967,8 +1969,8 @@ def render_func(*args, **o_kwargs):
                                         _save_inner = getattr(_chain_save_data, '__wrapped__', _chain_save_data)
                                         for _sp in inspect.signature(_save_inner).parameters:
                                             if _sp in kwargs and _sp not in (
-                                                'input_value', 'ref', 'function_ref',
-                                                'module_ref', 'class_ref'):
+                                                    'input_value', 'ref', 'function_ref',
+                                                    'module_ref', 'class_ref'):
                                                 _save_extra[_sp] = kwargs[_sp]
                                         save_result = _chain_save_data(
                                             external_value,
@@ -2004,7 +2006,8 @@ def render_func(*args, **o_kwargs):
                                                 report_value, Melty.frame_count,
                                                 Background.simple_hash(report_value))
                                             if Melty.cache is not None:
-                                                Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=4, force=True)
+                                                Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=4,
+                                                                          force=True)
                                             request_render()
                                     except Exception as e:
                                         draw_state._all_pending['save_pending'] = Pending(
@@ -2397,8 +2400,6 @@ def render_func(*args, **o_kwargs):
                   tile_mode=TileMode.MAX, width=draw_state.width,
                   height=draw_state.header_height)
             imgui.set_cursor_screen_pos(current_cursor)
-
-
 
         if do_scroll:
             header_height = draw_state.header_height
