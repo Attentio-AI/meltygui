@@ -27,7 +27,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
     # ── Constants ──────────────────────────────────────────────
     # Depth-driven name brightness
-    depth_scale       = 0.129
+    depth_scale       = 0.087
     depth_offset      = 0.083
     name_value_factor = 0.777
     # Depth drives text saturation falloff
@@ -46,7 +46,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
     # Name text (value is the base offset, updated to depth below)
     name_style = {
-        'value': -0.369, 'saturation': 1.095,
+        'value': -0.436, 'saturation': 1.095,
         'alpha': 0.783, 'max_value': 3.921,
         'depth_factor': 0.741
     }
@@ -62,7 +62,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     }
 
     # Type / unique label colors
-    type_label_color   = (2.865, 1.944, 2.861, 1.0)
+    type_label_color   = (3.672, 1.944, 2.861, 1.0)
     unique_label_color = (-1.535, 0.0, 0.9, 1.0)
 
     # ── Setup ──────────────────────────────────────────────────

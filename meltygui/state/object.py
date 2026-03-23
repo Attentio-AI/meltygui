@@ -31,10 +31,16 @@ _BRACKET_RE = re.compile(r'\[([^\]]*)\]')  # extracts inner text of each [...] i
 @live
 class DictConversion(metaclass=FieldMeta):
 
+    _instances: weakref.WeakSet = weakref.WeakSet()
+
+    def __init_subclass__(cls, **kw):
+        super().__init_subclass__(**kw)
+        cls._instances = weakref.WeakSet()
 
     def __init__(self):
         # Using weak references to avoid circular references
         self.__post_init__()
+        self.__class__._instances.add(self)
 
         if not hasattr(self.__class__, 'default_instance'):
             self.__class__.default_instance = None

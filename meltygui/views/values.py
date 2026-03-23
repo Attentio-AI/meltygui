@@ -25,7 +25,7 @@ from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_style_var, \
     push_style_color, pop_style_color, pop_style_var, end, begin
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
-from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment
+from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment, GeneralParse
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
@@ -86,6 +86,7 @@ def draw_module(input_value: types.ModuleType, draw_state, **kwargs):
     imgui.text(f"Module: {input_value.__name__}")
 
 @render_func(is_default_for=(dict, MutableMapping, defaultdict, types.MappingProxyType), use_cache=True,
+             header_same_line=False,
              show_bg=True, show_instance_vars=False, manual_content_height=True, disable_scroll=True,
              shadow=True, wrap=False, with_header=draw_header, indent_size=5, searchable=True)
 def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=None, keys=None, get_attr=None, set_attr=None, show_excluded=False,
@@ -1465,7 +1466,7 @@ def seperator(height):
     imgui.separator()
     imgui.dummy(0, snap_int(height / 2))
 
-def draw_bg(left=78, top=3, width=0, height=55, depth=0, rounding=4.196,
+def draw_bg(left=4, top=3, width=0, height=55, depth=0, rounding=3.384,
             global_style=None, outline=True, bg_color=None, opacity=-1.066,
             style_manager=None, tint=None, outline_tint=None, selected=False,
             hovered=False, pressed=False, nested_bg=False, **kwargs):
@@ -1751,6 +1752,18 @@ def draw_str(input_value: str, draw_state, editable=True, alpha=1.0):
         return True, value
     return changed, value
 
+@render_func(is_default_for=GeneralParse, shadow=True, z_offset=2, show_bg=True, with_header=draw_header,
+             is_tree=True, tint=(0.2, 0.01, 0.3))
+def draw_general_parse(input_value: GeneralParse):
+    imgui.text("General parse render func")
+    changed, value = draw_collection(input_value=input_value)
+
+    imgui.text(f"Usages: {len(input_value.usages)}")
+    _, _ = draw_collection(input_value=input_value.usages, show_bg=True, z_offset=2, shadow=True, tint=(0, 0.5, 0.1), name="Usage")
+
+    return changed, value
+
+
 
 @render_func(is_default_for=(Comment), shadow=False, with_header=None, is_tree=False, tint=(0.2, 0.2, 0.1))
 def draw_comment(input_value: Comment, draw_state, cursor_hover=False):
@@ -1964,29 +1977,34 @@ def draw_function(input_value, name, draw_state, unique):
     if not callable(input_value):
         imgui.text("Not a callable function")
         return False, input_value
-    signature = inspect.signature(input_value)
-    params = signature.parameters
-    if len(draw_state.params) != len(params):
-        param_dict = {}
-        for name, param in params.items():
-            if name == 'kwargs':
-                continue
-            if param.default is not inspect.Parameter.empty:
-                param_dict[name] = param.default
-            else:
-                param_type = param.annotation
-                default_value = param.default
-                if default_value is not inspect.Parameter.empty:
-                    param_dict[name] = default_value
-                else:
-                    if name in Melty.global_attrs:
-                        param_dict[name] = Melty.global_attrs[name]
 
-        draw_state.params = param_dict
-    if len(draw_state.params) > 0:
-        changed, new_val = draw_collection(draw_state.params, name="Parameters", show_add_delete=False, horizontal=True, child_kwargs={"wrap":True, "show_bg":True})
-        if changed:
-            draw_state.params = new_val
+    try:
+        signature = inspect.signature(input_value)
+        params = signature.parameters
+        if len(draw_state.params) != len(params):
+            param_dict = {}
+            for name, param in params.items():
+                if name == 'kwargs':
+                    continue
+                if param.default is not inspect.Parameter.empty:
+                    param_dict[name] = param.default
+                else:
+                    param_type = param.annotation
+                    default_value = param.default
+                    if default_value is not inspect.Parameter.empty:
+                        param_dict[name] = default_value
+                    else:
+                        if name in Melty.global_attrs:
+                            param_dict[name] = Melty.global_attrs[name]
+
+            draw_state.params = param_dict
+        if len(draw_state.params) > 0:
+            changed, new_val = draw_collection(draw_state.params, name="Parameters", show_add_delete=False, horizontal=True, child_kwargs={"wrap":True, "show_bg":True})
+            if changed:
+                draw_state.params = new_val
+    except Exception as e:
+        imgui.text(f"Error inspecting function parameters: {e}")
+        draw_state.params = {}
 
     # push_style_var(imgui.STYLE_ITEM_SPACING, (4, 0))
     # push_style_var(imgui.STYLE_FRAME_PADDING, (6, 6))
@@ -2061,19 +2079,16 @@ def draw_enum(input_value: Enum, global_style=None,  style_manager=None, enum_ti
         pop_style_color(1)
         pop_style_color(1)
         if clicked:
-            print(f"Selected enum option: {option}")
             selected_idx = option
             changed = True
         same_line()
     new_line()
-
     enum_class = input_value.__class__
     if changed:
         selected_enum = enum_class(selected_idx)
     else:
         selected_enum = input_value
     pop_style_var(1)
-
     return changed, selected_enum
 
 
@@ -2146,13 +2161,16 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, *
 
     draw_str(input_value._kwargs["func"].__name__, name="view_func", column=0)
     from src.lsd.gl_gui.view.mode import Mode
-    change, new_view_func = draw_any(input_value._kwargs['view_function'], column=1, mode=Mode.CODE_PLAIN_TEXT, name=input_value._kwargs['view_function'].__name__)
-    if change:
-        print(f"Changing view function from {input_value._kwargs['view_function'].__name__} to {new_view_func.__name__}")
-        input_value._kwargs['view_function'] = new_view_func
 
-    # draw_str(str(type(input_value._raw_input_value)), name="Input Type", column=0)
-    # draw_any(type(input_value._raw_input_value), column=2, mode=Mode.CODE_PLAIN_TEXT, name="Input Type")
+    if input_value._kwargs['view_function'] is not None:
+        view_func_name = input_value._kwargs['view_function'].__name__ if hasattr(input_value._kwargs['view_function'], '__name__') else str(input_value._kwargs['view_function'])
+        change, new_view_func = draw_any(input_value._kwargs['view_function'], column=1, mode=Mode.CODE_PLAIN_TEXT, name=view_func_name)
+        if change:
+            print(f"Changing view function from {input_value._kwargs['view_function'].__name__} to {new_view_func.__name__}")
+            input_value._kwargs['view_function'] = new_view_func
+
+    draw_str(str(type(input_value._raw_input_value)), name="Input Type", column=2)
+    cls_change, new_cls = draw_any(type(input_value._raw_input_value), column=2, mode=Mode.CODE_PLAIN_TEXT, name=type(input_value._raw_input_value).__name__)
 
     return False, None
 

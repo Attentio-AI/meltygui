@@ -141,9 +141,12 @@ class Loop(dict):
 
 
 class GeneralParse(dict):
-    def __init__(self, *args, source="", **kwargs):
+    def __init__(self, *args, source="", file_path=None, line_offset=0, **kwargs):
         super().__init__(*args, **kwargs)
         self.source = source
+        self.file_path: _Path | None = file_path
+        self.line_offset: int = line_offset
+        self.usages: dict[str, list['UsageRef']] = {}
         self._bg_hash_cache: str | None = None
 
     def __bg_hash__(self) -> str:
@@ -187,6 +190,349 @@ class ParseError(dict):
         self["__error__"] = error
         self["__line__"] = line
         self["__column__"] = column
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  Usage graph - intra-module (libcst) + cross-module (jedi)                     ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+from pathlib import Path as _Path
+
+
+class UsageRef:
+    """A single reference to a name from another scope or file.
+
+    Designed as a routable type for draw_any — the UI can render it
+    as a clickable link to the call site.
+    """
+    __slots__ = ("path", "line", "column", "scope", "module_name")
+
+    def __init__(self, path: _Path | None, line: int, column: int = 0,
+                 scope: str = "", module_name: str = ""):
+        self.path = path
+        self.line = line
+        self.column = column
+        self.scope = scope
+        self.module_name = module_name
+
+    def __repr__(self) -> str:
+        loc = f"{self.path.name}:{self.line}" if self.path else f":{self.line}"
+        return f"UsageRef({loc}, {self.scope!r})"
+
+    def __eq__(self, other):
+        if not isinstance(other, UsageRef):
+            return NotImplemented
+        return (self.path == other.path and self.line == other.line
+                and self.column == other.column)
+
+    def __hash__(self):
+        return hash((self.path, self.line, self.column))
+
+
+# ── Intra-module collector (libcst, fast) ─────────────────────
+
+class _UsageCollector(cst.CSTVisitor):
+    """Single-pass visitor that maps defined names → where they're referenced.
+
+    Walks a Module or ClassDef body and tracks:
+      - *definitions*: names on the LHS of assignments at the target scope
+      - *references*: Name / self.attr nodes that appear in function bodies,
+        decorator arguments, default values, etc.
+
+    The result is ``usages``: ``{defined_name: {scope, scope, …}}``
+    where each scope is the enclosing function/class name (or ``"<module>"``
+    / ``"<class>"`` for top-level / class-body expressions).
+    """
+
+    def __init__(self, top_scope: str = "<module>"):
+        self._top_scope = top_scope
+        self._is_class = top_scope == "<class>"
+        self._scope_stack: list[str] = [top_scope]
+        self._definitions: dict[str, int] = {}  # name → line number
+        self.usages: dict[str, set[str]] = {}
+
+    # ── scope tracking ────────────────────────────────────────
+
+    def visit_FunctionDef(self, node: cst.FunctionDef) -> bool:
+        if self._in_top_scope():
+            self._definitions[node.name.value] = 0
+        self._scope_stack.append(node.name.value)
+        return True
+
+    def leave_FunctionDef(self, node: cst.FunctionDef) -> None:
+        self._scope_stack.pop()
+
+    def visit_ClassDef(self, node: cst.ClassDef) -> bool:
+        if self._in_top_scope():
+            self._definitions[node.name.value] = 0
+        self._scope_stack.append(node.name.value)
+        return True
+
+    def leave_ClassDef(self, node: cst.ClassDef) -> None:
+        self._scope_stack.pop()
+
+    # ── definition harvesting (top scope only) ────────────────
+
+    def _in_top_scope(self) -> bool:
+        if self._is_class:
+            return len(self._scope_stack) == 2
+        return len(self._scope_stack) == 1
+
+    def _add_def(self, name: str, node) -> None:
+        pos = node.value if hasattr(node, 'value') else node
+        # Try to get the CST position for jedi lookups later
+        self._definitions[name] = 0  # line placeholder
+
+    def visit_Assign(self, node: cst.Assign) -> None:
+        if self._in_top_scope():
+            for target in node.targets:
+                if isinstance(target.target, cst.Name):
+                    self._definitions[target.target.value] = 0
+
+    def visit_AnnAssign(self, node: cst.AnnAssign) -> None:
+        if self._in_top_scope():
+            if isinstance(node.target, cst.Name):
+                self._definitions[node.target.value] = 0
+
+    # ── reference recording ───────────────────────────────────
+
+    def _record(self, name: str) -> None:
+        scope = self._scope_stack[-1]
+        if self._in_top_scope():
+            return
+        if name in self._definitions:
+            self.usages.setdefault(name, set()).add(scope)
+
+    def visit_Name(self, node: cst.Name) -> None:
+        self._record(node.value)
+
+    def visit_Attribute(self, node: cst.Attribute) -> None:
+        if (isinstance(node.value, cst.Name)
+                and node.value.value == "self"):
+            self._record(node.attr.value)
+
+
+def _collect_intra_usages(tree, top_scope="<module>"):
+    """Fast libcst pass — returns (usages_dict, defined_names_set)."""
+    collector = _UsageCollector(top_scope)
+    tree.visit(collector)
+    return collector.usages, set(collector._definitions.keys())
+
+
+# ── Cross-file reference cache (jedi) ─────────────────────────
+
+# Cache: resolved_path → (mtime, {name: [UsageRef, ...]})
+_xref_cache: dict[_Path, tuple[float, dict[str, list[UsageRef]]]] = {}
+
+DISABLE_JEDI = False
+
+
+# ── Jedi subprocess pool ──────────────────────────────────────
+# Runs jedi in a child process so CPU-intensive parso parsing
+# doesn't hold the main process GIL.
+
+from concurrent.futures import ProcessPoolExecutor as _PPE
+_jedi_pool: _PPE | None = None
+
+
+def _get_jedi_pool() -> _PPE:
+    global _jedi_pool
+    if _jedi_pool is None:
+        _jedi_pool = _PPE(max_workers=1)
+    return _jedi_pool
+
+
+def _jedi_worker(file_path_str: str, names: set[str]) -> dict[str, list[tuple]]:
+    """Top-level function executed in a child process.
+
+    Returns {name: [(path_str|None, line, col, scope, module), ...]}.
+    Tuples instead of UsageRef because it must be picklable.
+    """
+    import jedi
+    project = jedi.Project(path=".", added_sys_path=["src", "."])
+    script = jedi.Script(path=file_path_str, project=project)
+    resolved = _Path(file_path_str).resolve()
+
+    # Find name positions in the file
+    full_lines = resolved.read_text().splitlines()
+    name_positions: dict[str, tuple[int, int]] = {}
+    for i, line_text in enumerate(full_lines):
+        for name in names:
+            if name in name_positions:
+                continue
+            stripped = line_text.lstrip()
+            if (stripped.startswith(name)
+                    and len(stripped) > len(name)
+                    and stripped[len(name)] in (' ', ':', '=')):
+                name_positions[name] = (i + 1, line_text.index(name))
+            elif stripped.startswith(f"class {name}"):
+                name_positions[name] = (i + 1, line_text.index(name))
+            elif stripped.startswith(f"def {name}"):
+                name_positions[name] = (i + 1, line_text.index(name))
+
+    result: dict[str, list[tuple]] = {}
+    for name, (line, col) in name_positions.items():
+        try:
+            refs = script.get_references(line, col)
+            usage_list = []
+            for ref in refs:
+                ref_path = str(ref.module_path) if ref.module_path else None
+                if (ref_path and _Path(ref_path).resolve() == resolved
+                        and ref.line == line):
+                    continue
+                usage_list.append((
+                    ref_path, ref.line, ref.column,
+                    ref.full_name or "", ref.module_name or "",
+                ))
+            if usage_list:
+                result[name] = usage_list
+        except Exception:
+            continue
+    return result
+
+
+def _jedi_subprocess(file_path_str: str,
+                     names: set[str]) -> dict[str, list[UsageRef]]:
+    """Submit jedi work to the child process and convert results to UsageRef."""
+    pool = _get_jedi_pool()
+    future = pool.submit(_jedi_worker, file_path_str, names)
+    raw = future.result()  # blocks this thread, but NOT the main process GIL
+    result: dict[str, list[UsageRef]] = {}
+    for name, tuples in raw.items():
+        result[name] = [
+            UsageRef(
+                path=_Path(t[0]) if t[0] else None,
+                line=t[1], column=t[2],
+                scope=t[3], module_name=t[4],
+            )
+            for t in tuples
+        ]
+    return result
+
+
+def invalidate_usage_cache(path: _Path | str | None = None) -> None:
+    """Drop cached cross-file references for a path, or all if None."""
+    if path is None:
+        _xref_cache.clear()
+    else:
+        _xref_cache.pop(_Path(path).resolve(), None)
+
+
+def _get_cross_file_usages(
+    file_path: _Path,
+    defined_names: set[str],
+    source: str,
+    line_offset: int = 0,
+) -> dict[str, list[UsageRef]]:
+    if DISABLE_JEDI:
+        return {}
+    """Look up cross-file references for defined_names using jedi.
+
+    Results are cached per-file by mtime.  Only names in defined_names
+    are queried — this keeps the jedi call count bounded.
+    """
+    resolved = file_path.resolve()
+
+    # Check cache validity - only query jedi for names not yet cached
+    try:
+        cached_mtime, cached_result = _xref_cache.get(resolved, (0.0, None))
+        actual_mtime = resolved.stat().st_mtime
+        if cached_result is not None and cached_mtime == actual_mtime:
+            missing = defined_names - cached_result.keys()
+            if not missing:
+                return {n: cached_result[n] for n in defined_names
+                        if n in cached_result}
+            # Only look up names not already in cache
+            defined_names = missing
+    except OSError:
+        cached_result = None
+
+    # Run jedi in a child process so its CPU-bound nature
+    # doesn't hold the GIL and stall the UI thread.
+    try:
+        result = _jedi_subprocess(str(resolved), defined_names)
+    except Exception:
+        return {}
+
+    # Merge new results into cache (don't overwrite prior lookups)
+    try:
+        if cached_result is not None:
+            cached_result.update(result)
+            result = cached_result
+        _xref_cache[resolved] = (resolved.stat().st_mtime, result)
+    except OSError:
+        pass
+
+    return {n: result[n] for n in defined_names if n in result}
+
+
+# ── Combined collection ───────────────────────────────────────
+
+def _collect_usages(
+    tree: cst.Module | cst.ClassDef,
+    top_scope: str = "<module>",
+) -> dict[str, list[UsageRef]]:
+    """Collect intra-module usages only (fast libcst pass).
+
+    Cross-file references are populated separately via
+    populate_cross_file_usages(), which should be called outside the
+    stateful converter chain (e.g. via a non-stateful Background.run).
+    """
+    intra, _ = _collect_intra_usages(tree, top_scope)
+    usages: dict[str, list[UsageRef]] = {}
+    for name, scopes in intra.items():
+        usages[name] = [
+            UsageRef(path=None, line=0, scope=s, module_name="")
+            for s in sorted(scopes)
+        ]
+    return usages
+
+
+def populate_usages(gp: GeneralParse) -> None:
+    """Populate cross-file UsageRefs on a GeneralParse and its children.
+
+    Intra-module usages are already populated during construction
+    (cst_module_to_dict / cst_classdef_to_dict).  This adds cross-file
+    references via jedi (cached per-file by mtime).
+
+    Safe to call from a background thread — does not touch imgui
+    or Melty state.  Call this OUTSIDE the stateful converter chain:
+
+        Background.run(populate_usages,
+                       func_kwargs={"gp": result},
+                       stateful=False)
+    """
+    file_path = gp.file_path
+    if file_path is not None:
+        _populate_xrefs(gp, file_path)
+
+
+# Keep old name as alias
+populate_cross_file_usages = populate_usages
+
+
+def _populate_xrefs(gp, file_path: _Path) -> None:
+    """Recursively populate cross-file usages on a GeneralParse tree."""
+    defined = {k for k in gp
+               if not _is_dunder(k)
+               and not isinstance(k, Comment)
+               and isinstance(k, str)
+               and k not in ("decorators", "parameters", "locals")}
+    if defined:
+        xrefs = _get_cross_file_usages(file_path, defined, source="",
+                                        line_offset=0)
+        for name, refs in xrefs.items():
+            gp.usages.setdefault(name, []).extend(refs)
+
+    for key, child in gp.items():
+        if _is_dunder(key):
+            continue
+        if isinstance(child, GeneralParse) and "__cst__" in child:
+            # Propagate parent's usages for this key down to the child,
+            # so viewing the function/class shows where IT is referenced.
+            if key in gp.usages:
+                child.usages.setdefault(key, []).extend(gp.usages[key])
+            _populate_xrefs(child, file_path)
 
 
 def _cst_node_to_code(node):
@@ -430,6 +776,7 @@ def cst_module_to_dict(value: cst.Module) -> dict:
                     pass
 
     readable["__cst__"] = value
+    readable.usages = _collect_usages(value, top_scope="<module>")
     return readable
 
 
@@ -480,13 +827,21 @@ def dict_to_cst_module(value: dict) -> cst.Module:
 # ║  Standalone wrappers for convert_in / convert_out chains                    ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
-def cst_to_dict(value) -> GeneralParse:
+def cst_to_dict(value, ref=None) -> GeneralParse:
     """Forward: cst.Module → GeneralParse dict.
 
     Thin wrapper around cst_module_to_dict for convert_in chains.
-    Returns (pending, value).
+    Sets file_path from ref and kicks off async cross-file usage
+    collection via Background.run.
     """
-    return None, cst_module_to_dict(value)
+    result = cst_module_to_dict(value)
+    if ref is not None:
+        result.file_path = ref.path
+        result.line_offset = ref.start or 0
+        # Deferred: cross-file usages run on a background thread
+        # after the stateful convert_in completes.
+        result._deferred = lambda gp=result: populate_usages(gp)
+    return None, result
 
 
 def dict_to_cst(value) -> cst.Module:
@@ -762,7 +1117,7 @@ def cst_classdef_to_dict(value: cst.ClassDef) -> dict:
     Comments are extracted via Comment keys.
     Decorators go in a "decorators" sub-dict.
     """
-    readable = {}
+    readable = GeneralParse(source=_cst_node_to_code(value))
 
     decorators = _extract_decorators(value.decorators)
     if decorators:
@@ -818,6 +1173,7 @@ def cst_classdef_to_dict(value: cst.ClassDef) -> dict:
                         readable[attr_name] = _cst_to_python_or_raw(val_node)
 
     readable["__cst__"] = value
+    readable.usages = _collect_usages(value, top_scope="<class>")
     return readable
 
 

@@ -13,7 +13,8 @@ from src.lsd.gl_gui.view.core_conversion.libcst_conversion import GeneralParse, 
     cst_to_dict, dict_to_cst, cst_module_to_str, str_to_cst_module
 from src.lsd.gl_gui.view.core_views.headers import draw_footer, draw_header_end, draw_header
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
-from src.lsd.gl_gui.view.core_views.new_core_view import draw_collection, draw_comment, draw_search_results
+from src.lsd.gl_gui.view.core_views.new_core_view import draw_collection, draw_comment, draw_search_results, \
+    draw_general_parse
 from src.lsd.gl_gui.view.core_views.text_editor import draw_text
 
 
@@ -87,7 +88,7 @@ class Mode(Enum):
         types.FunctionType: ModeOverrides(
             kwargs={"convert_in": [fn_to_cst],
                     "convert_out": [cst_to_fn],
-                    "auto_apply": [load_text],
+
                     },
             recursive=True,
         ),
@@ -95,7 +96,6 @@ class Mode(Enum):
         types.ModuleType: ModeOverrides(
             kwargs={"convert_in": [mod_to_cst],
                     "convert_out": [cst_to_mod],
-                    "auto_apply": [load_text],
                     },
 
             recursive=True
@@ -105,7 +105,6 @@ class Mode(Enum):
         cst.Module: ModeOverrides(
             kwargs={"convert_in": [cst_to_dict],
                     "convert_out": [dict_to_cst],
-                    "auto_apply": [load_text],
                     },
             func=draw_collection,
             recursive=True
@@ -124,6 +123,7 @@ class Mode(Enum):
             kwargs={"convert_in": [cls_to_cst, cst_to_dict],
                     "convert_out": [dict_to_cst, cst_to_cls],
                     "auto_apply": [load_text],
+                    "hotswap_instances": True,
                     },
             recursive=True,
             func=draw_collection
@@ -151,7 +151,7 @@ class Mode(Enum):
         GeneralParse: ModeOverrides(
             kwargs={'show_add_delete': False, "disable_scroll": False},
             recursive=True,
-            func=draw_collection
+            func=draw_general_parse
         ),
 
     }
@@ -193,6 +193,7 @@ class Mode(Enum):
             kwargs={"convert_in": [cls_to_cst],
                     "convert_out": [cst_to_cls],
                     "auto_apply": [load_text],
+                    "hotswap_instances": True,
                     "indent_size": 5, "with_header": draw_header},
             recursive=True
         ),

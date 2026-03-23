@@ -512,7 +512,8 @@ def render_func(*args, **o_kwargs):
         draw_state._last_expanded = draw_state.expanded
         # End restore expanded ================
 
-        Melty.draw_state_stack.append(draw_state)
+        if _has_imgui:
+            Melty.draw_state_stack.append(draw_state)
         draw_state._has_popup = kwargs.get("has_popup", False)
         if passed_width is not None:
             draw_state.width = snap_int(passed_width)
@@ -1234,6 +1235,12 @@ def render_func(*args, **o_kwargs):
                             and draw_state._original_load_data is not None
                             and draw_state.is_file_stale()):
                         _file_stale = True
+                        # Refresh fileref from cache - another view could have
+                        # saved with a different line count, so our local
+                        # draw_state._fileref could have a stale range.
+                        _fresh_ref = to_fileref(input_value)
+                        if _fresh_ref is not None:
+                            draw_state._fileref = _fresh_ref
 
                     if (draw_state._raw_input_value == UNSET_VALUE or
                             (draw_state._raw_input_value is None) or not draw_state.expanded):
@@ -1298,6 +1305,16 @@ def render_func(*args, **o_kwargs):
                                 draw_state._internal_pending = None
                                 draw_state._show_load = False
                                 draw_state._all_pending['load_pending'] = None
+                                # Run deferred work (e.g. cross-file usage
+                                # lookups) on a background thread.
+                                _deferred_fn = getattr(internal_value, '_deferred', None)
+                                if callable(_deferred_fn):
+                                    Background.run(
+                                        _deferred_fn,
+                                        user_id=str(unique) + " | deferred",
+                                        invalidate_id=draw_state._parent._tile_id,
+                                        on_frame=Melty.frame_count)
+                                    internal_value._deferred = None
                                 # Update file stale state + cache original data on main thread
                                 if _chain_load_data is not None:
                                     draw_state.mark_file_current()
@@ -1943,13 +1960,24 @@ def render_func(*args, **o_kwargs):
                                     ref = draw_state._fileref
                                     try:
                                         _orig_ref = draw_state._original_input_ref
+                                        # Forward any extra kwargs the save_data
+                                        # function accepts (e.g. hotswap_instances
+                                        # injected by Mode).
+                                        _save_extra = {}
+                                        _save_inner = getattr(_chain_save_data, '__wrapped__', _chain_save_data)
+                                        for _sp in inspect.signature(_save_inner).parameters:
+                                            if _sp in kwargs and _sp not in (
+                                                'input_value', 'ref', 'function_ref',
+                                                'module_ref', 'class_ref'):
+                                                _save_extra[_sp] = kwargs[_sp]
                                         save_result = _chain_save_data(
                                             external_value,
                                             _converter_mode=True,
                                             ref=ref,
                                             function_ref=_orig_ref,
                                             module_ref=_orig_ref,
-                                            class_ref=_orig_ref)
+                                            class_ref=_orig_ref,
+                                            **_save_extra)
                                         # save_data render_func returns (pending, value)
                                         if isinstance(save_result, tuple) and len(save_result) == 2:
                                             save_pending, updated_ref = save_result
@@ -2220,7 +2248,8 @@ def render_func(*args, **o_kwargs):
                     return False, None, draw_state
                 return False, None
             if inc_depth:
-                Melty.draw_state_stack.pop()
+                if _has_imgui:
+                    Melty.draw_state_stack.pop()
 
                 Melty.depth = Melty.depth - 1
                 Melty.unique_stack.pop()

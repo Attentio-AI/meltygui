@@ -24,6 +24,7 @@ from src.lsd.gl_gui.melty import Melty
 import libcst as cst
 
 from src.lsd.gl_gui.view.core_conversion.fileref import FileRef, invalidate_fileref_cache, update_fileref_cache
+from src.lsd.gl_gui.view.core_conversion.libcst_conversion import invalidate_usage_cache
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -139,6 +140,7 @@ def save_file_fn(input_value, ref=None):
         ref.path.write_text(input_value, encoding="utf-8")
     else:
         ref.path.write_bytes(input_value)
+    invalidate_usage_cache(ref.path)
     return None, ref
 
 
@@ -198,6 +200,7 @@ def recompile_fn(input_value, ref=None, function_ref=None):
     new_lines = input_value.split(newline)
     lines[ref.start:ref.end] = new_lines
     ref.path.write_text(newline.join(lines), encoding="utf-8")
+    invalidate_usage_cache(ref.path)
     new_ref = FileRef(ref.path, ref.start, ref.start + len(new_lines))
     if function_ref is not None:
         update_fileref_cache(function_ref, new_ref)
@@ -232,6 +235,7 @@ def recompile_mod_fn(input_value, ref=None, module_ref=None):
                            state=PendingState.ERROR), None
     # Module FileRefs cover the whole file so write directly
     ref.path.write_text(input_value, encoding="utf-8")
+    invalidate_usage_cache(ref.path)
     return None, ref
 
 
@@ -253,7 +257,8 @@ def cls_to_cst(input_value, data=None) -> cst.Module:
 
 
 @render_func()
-def recompile_cls_fn(input_value, ref=None, class_ref=None):
+def recompile_cls_fn(input_value, ref=None, class_ref=None,
+                     hotswap_instances=False):
     """Save handler: hotswap class + write source to disk."""
     from src.lsd.gl_gui.view.core_conversion.path_finder import Pending, PendingState
     if class_ref is not None:
@@ -262,6 +267,10 @@ def recompile_cls_fn(input_value, ref=None, class_ref=None):
         except Exception as e:
             return Pending(originated=recompile_cls_fn, status=str(e),
                            state=PendingState.ERROR), None
+
+        if hotswap_instances:
+            _patch_instances(class_ref)
+
     full_data = ref.path.read_bytes()
     newline = _detect_newline(full_data)
     try:
@@ -272,6 +281,7 @@ def recompile_cls_fn(input_value, ref=None, class_ref=None):
     new_lines = input_value.split(newline)
     lines[ref.start:ref.end] = new_lines
     ref.path.write_text(newline.join(lines), encoding="utf-8")
+    invalidate_usage_cache(ref.path)
     new_ref = FileRef(ref.path, ref.start, ref.start + len(new_lines))
     if class_ref is not None:
         update_fileref_cache(class_ref, new_ref)
@@ -305,6 +315,7 @@ def save_span_fn(input_value, ref=None):
     new_lines = input_value.split(newline)
     lines[ref.start:ref.end] = new_lines
     ref.path.write_text(newline.join(lines), encoding="utf-8")
+    invalidate_usage_cache(ref.path)
     return None, FileRef(ref.path, ref.start, ref.start + len(new_lines))
 
 
@@ -312,6 +323,42 @@ def save_span_fn(input_value, ref=None):
 def cst_to_ref(input_value):
     """Reverse: cst.Module → source string."""
     return None, input_value.code
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  Instance patching (DictConversion)                                          ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+def _patch_instances(cls: type) -> None:
+    """Add new field defaults to live instances after a class hotswap.
+
+    Only touches DictConversion subclasses that track instances via
+    _instances WeakSet.  Adds attributes introduced by the edit and
+    removes attributes deleted from the class — existing values that
+    the user set are never overwritten.
+    """
+    instances = getattr(cls, '_instances', None)
+    if instances is None:
+        return
+
+    new_defaults = getattr(cls, '__field_defaults__', {})
+    for inst in list(instances):
+        # Add new fields the instance doesn't have yet
+        for key, default in new_defaults.items():
+            if key not in inst.__dict__:
+                setattr(inst, key, default)
+
+        # Remove instance attrs that are no longer class fields
+        for key in list(inst.__dict__):
+            if key.startswith('_'):
+                continue
+            if (key not in new_defaults
+                    and key not in ('id', 'hash', 'name', 'tint')
+                    and not hasattr(cls, key)):
+                try:
+                    delattr(inst, key)
+                except AttributeError:
+                    pass
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -465,12 +512,17 @@ def _recompile_module(module: types.ModuleType, source: str,
 
         elif isinstance(old_obj, type) and isinstance(new_obj, type):
             _hotswap_class(old_obj, new_obj)
+            invalidate_fileref_cache(old_obj)
             module.__dict__[name] = old_obj
 
 
 def _hotswap_class(old_cls: type, new_cls: type) -> None:
     """Patch an existing class in place with new methods and attributes."""
-    invalidate_fileref_cache(old_cls)
+    # NOTE: do NOT invalidate the fileref cache here.  The caller
+    # (recompile_cls_fn) handles cache updates via update_fileref_cache.
+    # Invalidating here creates a race window where a concurrent
+    # type convert-in chain calls to_fileref, misses the cache,
+    # and re-caches the OLD range from inspect.getsourcelines.
 
     for name in list(vars(old_cls)):
         if name.startswith("__") and name.endswith("__"):
@@ -482,7 +534,7 @@ def _hotswap_class(old_cls: type, new_cls: type) -> None:
                 pass
 
     for name, new_val in vars(new_cls).items():
-        if name in ("__dict__", "__weakref__"):
+        if name in ("__dict__", "__weakref__", "_instances"):
             continue
 
         old_val = vars(old_cls).get(name)
