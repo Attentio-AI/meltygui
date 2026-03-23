@@ -16,13 +16,14 @@ import json
 import textwrap
 import time
 import types
+from importlib import reload
 
 from pathlib import Path
 from src.lsd.gl_gui.melty import Melty
 
 import libcst as cst
 
-from src.lsd.gl_gui.view.core_conversion.fileref import FileRef, invalidate_fileref_cache
+from src.lsd.gl_gui.view.core_conversion.fileref import FileRef, invalidate_fileref_cache, update_fileref_cache
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -197,8 +198,12 @@ def recompile_fn(input_value, ref=None, function_ref=None):
     new_lines = input_value.split(newline)
     lines[ref.start:ref.end] = new_lines
     ref.path.write_text(newline.join(lines), encoding="utf-8")
-    invalidate_fileref_cache(function_ref)
-    return None, FileRef(ref.path, ref.start, ref.start + len(new_lines))
+    new_ref = FileRef(ref.path, ref.start, ref.start + len(new_lines))
+    if function_ref is not None:
+        update_fileref_cache(function_ref, new_ref)
+    else:
+        invalidate_fileref_cache(function_ref)
+    return None, new_ref
 
 
 @render_func(save_data=recompile_fn)
@@ -267,9 +272,10 @@ def recompile_cls_fn(input_value, ref=None, class_ref=None):
     new_lines = input_value.split(newline)
     lines[ref.start:ref.end] = new_lines
     ref.path.write_text(newline.join(lines), encoding="utf-8")
+    new_ref = FileRef(ref.path, ref.start, ref.start + len(new_lines))
     if class_ref is not None:
-        invalidate_fileref_cache(class_ref)
-    return None, FileRef(ref.path, ref.start, ref.start + len(new_lines))
+        update_fileref_cache(class_ref, new_ref)
+    return None, new_ref
 
 
 @render_func(save_data=recompile_cls_fn)

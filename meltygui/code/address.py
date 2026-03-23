@@ -19,6 +19,7 @@ import functools
 import types
 from pathlib import Path
 from typing import Any, Callable
+import inspect
 
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
 
@@ -85,6 +86,19 @@ def invalidate_fileref_cache(obj):
     _cache.pop(obj, None)
 
 
+def update_fileref_cache(obj, ref: FileRef):
+    """Store a known-correct FileRef after a recompile.
+
+    Avoids re-resolving via inspect.getsourcelines, which can return
+    wrong line numbers when linecache holds stale file content after
+    a hotswap + file rewrite.
+    """
+    try:
+        _cache[obj] = ref
+    except TypeError:
+        pass
+
+
 def _unwrap(func):
     while hasattr(func, '__wrapped__'):
         func = func.__wrapped__
@@ -118,16 +132,27 @@ def to_fileref(value: Any) -> FileRef:
     return result
 
 
+def _evict_linecache(filename: str) -> None:
+    """Force-evict a file from linecache.
+
+    linecache.checkcache skips entries with mtime=None (loader-managed),
+    so after a hotswap + file rewrite, stale content can persist and
+    cause inspect.getsourcelines to return wrong line numbers.
+    """
+    import linecache
+    linecache.cache.pop(filename, None)
+
+
 def _resolve(value: Any) -> FileRef | None:
+    import inspect, types
     if isinstance(value, types.FunctionType):
-        unwrapped = _unwrap(value)
-        code = unwrapped.__code__
-        start = code.co_firstlineno
-        end = max(
-            (ln for _, _, ln in code.co_lines() if ln is not None),
-            default=start
-        )
-        return FileRef(Path(code.co_filename), start - 1, end)
+        unwrapped = inspect.unwrap(value)
+        source_file = inspect.getfile(unwrapped)
+        _evict_linecache(source_file)
+        source_lines, start_lineno = inspect.getsourcelines(unwrapped)
+        return FileRef(Path(source_file), start_lineno - 1,
+                       start_lineno - 1 + len(source_lines))
+
 
     if isinstance(value, types.ModuleType):
         return FileRef(Path(value.__file__))
@@ -138,6 +163,7 @@ def _resolve(value: Any) -> FileRef | None:
         try:
             import inspect
             source_file = inspect.getfile(value)
+            _evict_linecache(source_file)
             source_lines, start_lineno = inspect.getsourcelines(value)
             return FileRef(Path(source_file), start_lineno - 1,
                            start_lineno - 1 + len(source_lines))

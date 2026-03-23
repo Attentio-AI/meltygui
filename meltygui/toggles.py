@@ -2,7 +2,7 @@ from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
 
 class Counters:
     # Nested window
-    nested_window_count = 10
+    nested_window_count = 12
 
 class Toggles:
     # ---------- Invalidation Settings -----
@@ -14,7 +14,6 @@ class Toggles:
 
     profile_mode = ProfileMode.LIGHT
     offscreen_debug = False
-    
     #---------- Visual Settings ---------
     brightness = 0.286
     contrast = 1.63

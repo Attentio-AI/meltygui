@@ -43,8 +43,7 @@ from src.lsd.gl_gui.view.core_views.text_editor import draw_text
 from src.shader_library.shader_manager.texture_manager import PendingTexture
 
 
-@render_func(use_cache=True, show_bg=False, width=20, height=22, tile_mode=TileMode.MAX,
-             auto_resize=False, just_shadow=True, selectable=False, no_cursor=True, temp=True)
+@render_func(use_cache=True, show_bg=False, width=20, height=22, tile_mode=TileMode.MAX, auto_resize=False, just_shadow=True, selectable=False, no_cursor=True, temp=True)
 def empty(input_val):
     pass
 
@@ -1472,17 +1471,17 @@ def draw_bg(left=78, top=3, width=0, height=55, depth=0, rounding=4.196,
             hovered=False, pressed=False, nested_bg=False, **kwargs):
 
     # -- Constants ---------------------------------
-    depth_wrap        = 34
+    depth_wrap        = 42
     depth_scale       = 0.834
     corner_radius     = 4.028
     border_inset      = 1.548
     border_inset_half = 0.245
     stroke_width      = 2.738
     # How depth maps to color intensity
-    intensity_factor  = 0.058
-    intensity_offset  = -0.271\
+    intensity_factor  = 0.069
+    intensity_offset  = -0.271
     # Outline color tuning
-    outline_base      = 1.914
+    outline_base      = 1.874
     outline_depth_mul = 0.85
     outline_sat       = {'default': 1.752, 'nested': 3.211}
 
@@ -1494,7 +1493,7 @@ def draw_bg(left=78, top=3, width=0, height=55, depth=0, rounding=4.196,
     # Hover offset per interaction state
     hover_offset_by_state = {
         'default':    -1.813,
-        'selected':    -2.203,
+        'selected':    -2.071,
         'pressed_hi': -2.288,   # pressed + opacity > 0.5
         'pressed_lo':  -0.371,
     }
@@ -1681,8 +1680,7 @@ def draw_none(input_value: NoneType):
     return False, input_value
 
 
-@render_func(is_default_for=(bool), header_same_line=True, use_cache=False, is_tree=False,
-             shadow=False, with_header=draw_header)
+@render_func(is_default_for=(bool), header_same_line=True, use_cache=False, is_tree=False, shadow=False, with_header=draw_header)
 def draw_bool(input_value: bool):
     changed, is_checked = imgui.checkbox("##bool", input_value)
     if changed:
@@ -1704,8 +1702,7 @@ def draw_label(input_value: str, draw_state):
 
 
 
-@render_func(is_default_for=(str), shadow=False, show_bg=False, wrap=False, is_tree=False,
-             show_add_delete=False, use_cache=False, disable_scroll=True, with_header=draw_header)
+@render_func(is_default_for=(str), shadow=False, show_bg=False, wrap=False, is_tree=False, show_add_delete=False, use_cache=False, disable_scroll=True, with_header=draw_header)
 def draw_str(input_value: str, draw_state, editable=True, alpha=1.0):
     if not editable:
         imgui.push_style_var(imgui.STYLE_ALPHA, alpha)
@@ -1879,7 +1876,6 @@ def draw_float(input_value: float, draw_state, min_value=-100.0, max_value=100.0
                                       change_speed=speed,
                                       min_value=min_value,
                                       max_value=max_value)
-
     if changed:
         return True, value
 
@@ -2037,18 +2033,15 @@ def draw_debug_label(input_value: str):
     imgui.text(input_value)
 
 
-@render_func(is_default_for=Enum, show_add_delete=False, is_tree=False, shadow=False, header_same_line=True, parent_show_add_delete=False, with_header=draw_header)
+@render_func(is_default_for=Enum, is_tree=False, shadow=False, header_same_line=True, parent_show_add_delete=False, with_header=draw_header)
 def draw_enum(input_value: Enum, global_style=None,  style_manager=None, enum_tint=(0.3, 0.3, 0.3)):
     unique = "enum"
     # imgui.set_next_item_width(imgui.get_content_region_available().x)
     selected_idx = next(enumerate(input_value.__class__))[1]
     changed = False
-
     push_style_var(imgui.STYLE_ITEM_SPACING, (2, 4))
-
     for i, option in enumerate(input_value.__class__):
         a_pretty_name = option.name.replace("_", " ").capitalize()
-
         label = f"{a_pretty_name}##{unique}{i}"
         active = (input_value == option)
         radio_style = global_style.radio_button
@@ -2060,22 +2053,17 @@ def draw_enum(input_value: Enum, global_style=None,  style_manager=None, enum_ti
             color = style_manager.make_color_style_rgb(*enum_tint, radio_style["inactive_base"])
             hover = style_manager.make_color_style_rgb(*enum_tint, radio_style["inactive_hover"])
             pressed = style_manager.make_color_style_rgb(*enum_tint, radio_style["inactive_pressed"])
-
         push_style_color(imgui.COLOR_BUTTON, *color)
         push_style_color(imgui.COLOR_BUTTON_HOVERED, *hover)
         push_style_color(imgui.COLOR_BUTTON_ACTIVE, *pressed)
-
         clicked = imgui.button(label)
-
         pop_style_color(1)
         pop_style_color(1)
         pop_style_color(1)
-
         if clicked:
             print(f"Selected enum option: {option}")
             selected_idx = option
             changed = True
-
         same_line()
     new_line()
 
@@ -2158,10 +2146,13 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, *
 
     draw_str(input_value._kwargs["func"].__name__, name="view_func", column=0)
     from src.lsd.gl_gui.view.mode import Mode
-    draw_any(input_value._kwargs["func"], column=1, mode=Mode.CODE_PLAIN_TEXT, name="Render Function")
+    change, new_view_func = draw_any(input_value._kwargs['view_function'], column=1, mode=Mode.CODE_PLAIN_TEXT, name=input_value._kwargs['view_function'].__name__)
+    if change:
+        print(f"Changing view function from {input_value._kwargs['view_function'].__name__} to {new_view_func.__name__}")
+        input_value._kwargs['view_function'] = new_view_func
 
-    draw_str(str(type(input_value._raw_input_value)), name="Input Type", column=0)
-    draw_any(type(input_value._raw_input_value), column=2, mode=Mode.CODE_PLAIN_TEXT, name="Input Type")
+    # draw_str(str(type(input_value._raw_input_value)), name="Input Type", column=0)
+    # draw_any(type(input_value._raw_input_value), column=2, mode=Mode.CODE_PLAIN_TEXT, name="Input Type")
 
     return False, None
 

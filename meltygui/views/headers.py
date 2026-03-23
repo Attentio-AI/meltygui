@@ -27,9 +27,12 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
     # ── Constants ──────────────────────────────────────────────
     # Depth-driven name brightness
-    depth_scale       = 0.018
-    depth_offset      = -0.075
-    name_value_factor = 0.769
+    depth_scale       = 0.129
+    depth_offset      = 0.083
+    name_value_factor = 0.777
+    # Depth drives text saturation falloff
+    sat_depth_factor  = -0.174
+    sat_depth_offset  = -1.529
 
 
     spinner_icon_0 = ""
@@ -43,8 +46,8 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
     # Name text (value is the base offset, updated to depth below)
     name_style = {
-        'value': -0.102, 'saturation': 1.805,
-        'alpha': 0.848, 'max_value': 3.363,
+        'value': -0.369, 'saturation': 1.095,
+        'alpha': 0.783, 'max_value': 3.921,
         'depth_factor': 0.741
     }
     name_rounding       = 2.696
@@ -53,7 +56,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
     # Tree arrow
     arrow_style = {
-        'value': 1.889, 'saturation': 1.639,
+        'value': 2.728, 'saturation': 1.639,
         'alpha': 0.071, 'max_value': 1.601,
         'depth_factor': 0.332
     }
@@ -114,6 +117,10 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     depth_intensity = float(depth + depth_offset) * depth_scale
     name_style['value'] = depth_intensity * name_style['depth_factor'] + name_style['value']
     arrow_style['value'] = depth_intensity * arrow_style['depth_factor'] + arrow_style['value']
+
+    sat_shift = float(depth + sat_depth_offset) * sat_depth_factor
+    name_style['saturation'] = name_style['saturation'] + sat_shift
+    arrow_style['saturation'] = arrow_style['saturation'] + sat_shift
 
     name_color = style_manager.make_color_style_value(input=name_style)
     arrow_color = style_manager.make_color_style_value(input=arrow_style)

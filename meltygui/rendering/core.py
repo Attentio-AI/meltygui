@@ -670,7 +670,9 @@ def render_func(*args, **o_kwargs):
             if not _has_imgui:
                 # Handle load_data: resolve FileRef, load, inject
                 if _rf_load_data is not None and kwargs.get('data') is None:
-                    _ref = to_fileref(input_value)
+                    # Prefer a ref passed from the parent (avoids stale
+                    # inspect.getsourcelines after hotswap + file rewrite)
+                    _ref = kwargs.pop('ref', None) or to_fileref(input_value)
                     if _ref is not None:
                         kwargs['data'] = _rf_load_data(_ref)
                         kwargs['ref'] = _ref
@@ -1269,6 +1271,10 @@ def render_func(*args, **o_kwargs):
                                                     'value', 'chain', 'input_value')}
                                 _fk["value"] = draw_state._raw_input_value
                                 _fk["chain"] = _convert_in
+                                # inject known-good fileref so converters don't
+                                # re-resolve via inspect.getsourcelines
+                                if draw_state._fileref is not None:
+                                    _fk["ref"] = draw_state._fileref
                                 internal_value = Background.run(
                                     _run_convert_chain,
                                     user_id=str(draw_state.unique) + " | convert_in",
