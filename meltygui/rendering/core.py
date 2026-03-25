@@ -214,6 +214,8 @@ def render_func(*args, **o_kwargs):
             draw_list.channels_split(Melty.max_depth)
             Melty.channels_split = True
 
+        old_convert_path = kwargs.get("convert_out", None) is not None or kwargs.get("convert_in", None) is not None
+
         if name == "" and is_root:
             kwargs["name"] = str(len(melty_state_registry)) + "root"
             name = kwargs["name"]
@@ -784,8 +786,12 @@ def render_func(*args, **o_kwargs):
             ######################## ERROR HANDLING FOR TYPES ########################
             cursor_pos = imgui.get_cursor_pos()
             imgui.set_cursor_pos((snap_int(cursor_pos[0]), snap_int(cursor_pos[1])))
+            draw_state._external_change |= kwargs.get("changed", False)
+            if draw_state._output_value_cache is UNSET_VALUE and not old_convert_path:
+                draw_state._external_change = True
+            kwargs['changed'] = draw_state._external_change
 
-            use_cache = kwargs.get("use_cache", False) and Melty.cache.enabled
+            use_cache = kwargs.get("use_cache", False) and Melty.cache.enabled and not draw_state._external_change
             draw_state.use_cache = use_cache
             # if (draw_state.parent_window is not None and draw_state.window_pos is not None and
             #         draw_state.parent_window.window_pos is not None and closable):
@@ -1038,6 +1044,8 @@ def render_func(*args, **o_kwargs):
                 _pushed_search = True
 
             content_rect = (0, 0)
+            draw_state._input_value_cache = input_value
+
             if Melty.cache.mark_start_offscreen(draw_state=draw_state):
                 Melty.root_draw_states[draw_state.id] = []
                 from src.lsd.gl_gui.view.core_views.new_core_view import draw_window
@@ -2240,6 +2248,9 @@ def render_func(*args, **o_kwargs):
             Melty.active_layer = original_active_layer
             Melty.shadow_depth = start_shadow_depth
 
+            if draw_state._external_change:
+                draw_state._external_change = False
+
             if mode_stacked:
                 Melty.mode_stack.pop()
             if _pushed_search and len(Melty.search_stack) > 0:
@@ -2296,9 +2307,18 @@ def render_func(*args, **o_kwargs):
                         Melty.channels_split = False
                         draw_list.channels_merge()
 
+            # Normal return path
+            if kwargs.get("convert_out", None) is not None or kwargs.get("convert_in", None) is not None:
+                if return_extras:
+                    return child_changed, new_value, return_draw_state
+                return child_changed, new_value
+
+            if child_changed or draw_state._output_value_cache is UNSET_VALUE:
+                draw_state._output_value_cache = new_value
+
             if return_extras:
-                return child_changed, new_value, return_draw_state
-            return child_changed, new_value
+                return child_changed, draw_state._output_value_cache, return_draw_state
+            return child_changed, draw_state._output_value_cache
 
     def draw_pending_status(draw_state, pending_obj):
         load_icon = f"\uf110"
@@ -2455,6 +2475,10 @@ def render_func(*args, **o_kwargs):
         add_default(is_default_for)
     elif isinstance(is_default_for, str):
         add_default(is_default_for)
+
+    interrupt_type = o_kwargs.pop('interrupt_source_for', None)
+    if interrupt_type is not None:
+        Melty.type_interrupts[interrupt_type] = wrapper
 
     ##++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     ## Converter render_func frankenstein to handle both normal render functions and annotation-based render functions

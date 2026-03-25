@@ -342,6 +342,20 @@ def _get_jedi_pool() -> _PPE:
     return _jedi_pool
 
 
+def shutdown_jedi_pool():
+    global _jedi_pool
+    if _jedi_pool is not None:
+        # Kill worker processes first because shutdown(cancel_futures=True) only
+        # cancels pending futures, not ones already running in a subprocess.
+        for pid, proc in list(getattr(_jedi_pool, '_processes', {}).items()):
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        _jedi_pool.shutdown(wait=False, cancel_futures=True)
+        _jedi_pool = None
+
+
 def _jedi_worker(file_path_str: str, names: set[str]) -> dict[str, list[tuple]]:
     """Top-level function executed in a child process.
 

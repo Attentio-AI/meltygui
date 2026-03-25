@@ -3,15 +3,17 @@ import types
 from collections import defaultdict, deque
 from copy import copy
 from enum import Enum
+from pathlib import Path
 from typing import MutableMapping, Optional
 
 import glfw
 import imgui
 import libcst as cst
+from invoke import executor
 
 from rtree import index as rtree_index
 
-from src.lsd.gl_gui.background import Background
+from src.lsd.gl_gui.background_v2 import Background
 from src.lsd.gl_gui.collection_action import CollectionAction
 from src.lsd.gl_gui.collision import Collisions
 from src.lsd.gl_gui.toggles import Toggles, Counters
@@ -27,6 +29,116 @@ import OpenGL.GL as gl
 
 _MOUSE_INPUTS = frozenset({'left_mouse', 'right_mouse', 'middle_mouse',
                            'cursor', 'scroll_y', 'scroll_x'})
+
+
+import hashlib
+import os
+from pathlib import Path
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+
+import hashlib
+import difflib
+import os
+from pathlib import Path
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+
+import hashlib
+import difflib
+import os
+from pathlib import Path
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+
+
+class FileWatch:
+    observer = Observer()
+    handler = FileSystemEventHandler()
+    _watched_dirs = set()
+    path_to_draw_state = {}
+    draw_state_to_path = {}
+    _file_hashes = {}
+    _file_contents = {}
+    output_debug_diff = True
+
+    @classmethod
+    def start(cls):
+        cls.handler.on_modified = cls._on_event
+        cls.handler.on_created = cls._on_event
+        cls.observer.start()
+
+    @classmethod
+    def _get_hash(cls, path):
+        try:
+            with open(path, 'rb') as f:
+                return hashlib.md5(f.read()).hexdigest()
+        except OSError:
+            return None
+
+    @classmethod
+    def _read_text(cls, path):
+        try:
+            with open(path, 'r') as f:
+                return f.readlines()
+        except (OSError, UnicodeDecodeError):
+            return []
+
+    @classmethod
+    def _on_event(cls, event):
+        draw_state = cls.path_to_draw_state.get(event.src_path)
+        if draw_state:
+            new_hash = cls._get_hash(event.src_path)
+            if new_hash and new_hash != cls._file_hashes.get(event.src_path):
+                if cls.output_debug_diff:
+                    old_lines = cls._file_contents.get(event.src_path, [])
+                    new_lines = cls._read_text(event.src_path)
+                    diff = difflib.unified_diff(
+                        old_lines, new_lines,
+                        fromfile=f"{event.src_path} (old)",
+                        tofile=f"{event.src_path} (new)",
+                    )
+                    print(''.join(diff) or f"[FileWatch] Binary or empty diff for {event.src_path}")
+                    cls._file_contents[event.src_path] = new_lines
+
+                cls._file_hashes[event.src_path] = new_hash
+                cls.dispatch_event_for(draw_state)
+
+    @classmethod
+    def register_draw_state(cls, draw_state, path: Path):
+        resolved = str(path.resolve())
+
+        old_path = cls.draw_state_to_path.pop(draw_state, None)
+        if old_path:
+            cls.path_to_draw_state.pop(old_path, None)
+            cls._file_hashes.pop(old_path, None)
+            cls._file_contents.pop(old_path, None)
+
+        cls.path_to_draw_state[resolved] = draw_state
+        cls.draw_state_to_path[draw_state] = resolved
+        cls._file_hashes[resolved] = cls._get_hash(resolved)
+
+        if cls.output_debug_diff:
+            cls._file_contents[resolved] = cls._read_text(resolved)
+
+        parent = str(path.resolve().parent)
+        if parent not in cls._watched_dirs:
+            cls.observer.schedule(cls.handler, parent, recursive=False)
+            cls._watched_dirs.add(parent)
+
+    @classmethod
+    def dispatch_event_for(cls, draw_state):
+        Melty.cache.invalidate_up(draw_state._tile_id, force=True)
+        draw_state._external_change = True
+        request_render()
+
+    @classmethod
+    def shutdown(cls):
+        if cls.observer.is_alive():
+            cls.observer.stop()
+            cls.observer.join()
+        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import shutdown_jedi_pool
+        shutdown_jedi_pool()
 
 
 class Melty:
@@ -144,6 +256,7 @@ class Melty:
     vis = None
     imgui_crashed = False
     type_defaults = {}
+    type_interrupts = {}
     type_to_default_view_func = defaultdict(lambda: set())
 
     silence_invalidate = False
@@ -651,6 +764,7 @@ class Melty:
         cls.texture_manager.clear()
         Background.shutdown()
         Monitor.shutdown()
+        FileWatch.shutdown()
 
     @classmethod
     def get_channel(cls, depth=None):
@@ -1103,6 +1217,7 @@ class Melty:
             setattr(cls, key, value)
             # cls.global_attrs[key] = value
 
+        FileWatch.start()
 
         cls.global_attrs["style_manager"] = getattr(cls, "style_manager", None)
         cls.global_attrs["global_style"] = getattr(cls, "global_style", None)

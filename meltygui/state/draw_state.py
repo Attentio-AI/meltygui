@@ -137,6 +137,11 @@ class DrawState(DictConversion):
 
     def __init__(self):
         super().__init__()
+        self._external_change = False
+        self._input_value_cache = UNSET_VALUE
+        self._output_value_cache = UNSET_VALUE
+
+
         self._children = {}
         self._wrapper = None
         self._parent_ctx = None

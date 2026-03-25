@@ -25,6 +25,8 @@ from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_style_var, \
     push_style_color, pop_style_color, pop_style_var, end, begin
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
+from src.lsd.gl_gui.view.core_conversion.chain_converters import chain_cls_load, chain_cst_to_dict, chain_dict_to_cst, \
+    chain_cst_to_str, chain_cls_save, class_to_file_ref, file_ref_to_cst
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment, GeneralParse
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
@@ -52,6 +54,7 @@ def empty(input_val):
              show_bg=True, melty_window=True, draggable=True, show_tint=True, tile_mode=TileMode.MAX,
              with_header=draw_header, with_header_end=draw_header_end, indent_size=5,
              with_footer=draw_footer)
+# Deprecated: use draw_any(input_value, mode=Mode.WINDOW, ...) instead.
 def draw_window(input_value:any, view_func=None, draw_state=None, delete_down=False, search_text="", glfw_close_down=False, **kwargs):
     if delete_down and imgui.get_io().key_ctrl:
         draw_state.closed = True
@@ -500,6 +503,39 @@ def draw_draw_state(input_value, **kwargs):
     pass
 
 
+@render_func(use_cache=True, show_bg=True, with_header=draw_header)
+def run_chain_debug(input_value, chain=None, draw_state=None, **kwargs):
+    """Debug render function: executes a chain step by step with imgui output.
+
+    Shows function name, changed flag, output type, and a value preview
+    at each stage.  Color coded: green=changed, gray=cached, yellow=pending.
+    """
+    if chain is None:
+        imgui.text("No chain provided")
+        return False, input_value
+
+    value = input_value
+    changed = False
+
+    imgui.text(f"Chain: {len(chain)} nodes")
+    imgui.text(f"Input: {type(input_value).__name__}")
+    imgui.separator()
+
+    for i, func in enumerate(chain):
+        if not changed:
+            name = getattr(func, '__name__', repr(func))
+            # imgui.push_style_color(imgui.COLOR_TEXT, 0.5, 0.5, 0.5, 1.0)
+            imgui.text(f"  [{i}] {name} — (no change)")
+            # imgui.pop_style_color()
+            # continue
+
+        kwargs['func'] = func
+        changed, value = func(input_value=value, changed=changed, name=f"{func.__name__} {kwargs.get('name', '')}")
+
+    imgui.separator()
+    return False, None
+
+
 @render_func(use_cache=False, show_bg=True, selectable=False, show_tint=True, bg_offset=-1, with_header=draw_header)
 def draw_main(input_value, vis):
     global test_obj
@@ -522,6 +558,18 @@ def draw_main(input_value, vis):
 
     changed, value = draw_with_modes(input_value=toggles, name="Toggles",
                                      show_bg=True, mode=(Mode.WINDOW), modes=[Mode.CODE_PLAIN_TEXT, Mode.CODE_UI])
+
+
+    chain = [
+        class_to_file_ref,
+        file_ref_to_cst,
+        chain_cst_to_dict,
+        draw_collection,
+        chain_dict_to_cst,
+        chain_cst_to_str,
+        chain_cls_save,
+    ]
+    run_chain_debug(Toggles, name="Chain Debug", chain=chain, mode=Mode.WINDOW)
 
     from src.lsd.gl_gui.model.app_model import Lora
     changed, value = draw_with_modes(input_value=Lora, name="lora class",
@@ -2228,7 +2276,12 @@ def draw_single(input_value:any, view_func=None, mode:any=None, **kwargs):
     return changed, return_val
 
 
-def draw_any(input_value:any, view_func=None, mode:any=None, **kwargs):
+def draw_any(input_value:any, view_func=None, mode:any=None, chain=None, **kwargs):
+    # ── New chain system (opt-in) ─────────────────────────────
+    # if chain is not None:
+    #     from src.lsd.gl_gui.view.core_conversion.chain import run_chain
+    #     return run_chain(chain, input_value, **kwargs)
+
     # # meta selection
     kwargs_view_func = view_func
     if view_func is None:

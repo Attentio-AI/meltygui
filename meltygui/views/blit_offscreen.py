@@ -1120,10 +1120,12 @@ class TileCacheMasked:
         draw_state.last_seen = Melty.frame_count
 
     def mark_start_offscreen(self, draw_state) -> bool:
+        draw_state._input_value_cache = draw_state._input_value
+
         if not self.enabled:
             return True
 
-        if not draw_state.use_cache:
+        if not draw_state.use_cache or draw_state._external_change:
             return True
 
         input_value = draw_state._input_value
@@ -1251,7 +1253,10 @@ class TileCacheMasked:
         if not self.enabled:
             return
 
-        if draw_state is not None and not draw_state.use_cache:
+        if draw_state is not None and (not draw_state.use_cache):
+            return
+
+        if draw_state is not None and (draw_state._external_change):
             return
 
         ctx = self._stack.pop()
