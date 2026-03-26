@@ -9,23 +9,23 @@ class Toggles:
     # ---------- Invalidation Settings -----
     invalidate_stack_trace = False
     debug_threads = False
-    slow_down_threads = False
+    slow_down_threads = True
     render_depth = False
     ds_invalidate_stack = False
-    profile_mode = ProfileMode.OFF
+    profile_mode = ProfileMode.LIGHT
     offscreen_debug = False
     #---------- Visual Settings ---------
-    brightness = -1.513
-    contrast = -0.007
-    saturation = 1.998
-    debug_context_menu = True
+    brightness = 0.318
+    contrast = 1.399
+    saturation = 0.816
+    debug_context_menu = False
     debug_z_depth = False
 
-    filters = True
-    show_excluded = False
-    filters = True
-    show_excluded = False
 
+    filters = True
+    show_excluded = False
+    filters = True
+    show_excluded = False
 
 def my_func():
     for i in range(25):

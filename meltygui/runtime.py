@@ -130,7 +130,16 @@ class FileWatch:
 
         draw_state = cls.path_to_draw_state.get(resolved)
         if draw_state:
+            print("clear external change from update hash")
             draw_state._external_change = False
+
+    @classmethod
+    def set_hash_from_content(cls, path: Path, content: str):
+        """Pre-set hash from known content. Call before write."""
+        resolved = str(path.resolve())
+        cls._file_hashes[resolved] = hashlib.md5(content.encode()).hexdigest()
+        if cls.output_debug_diff:
+            cls._file_contents[resolved] = content.splitlines(keepends=True)
 
     @classmethod
     def shutdown(cls):

@@ -182,6 +182,7 @@ def file_ref_to_general_parse(input_value: FileRef, changed=False, draw_state=No
             general_parse.file_ref = input_value
             return True, general_parse
 
+
     # ── Steady state ──────────────────────────────────────────
     return False, None
 
@@ -197,9 +198,22 @@ def general_parse_to_file_ref(input_value: GeneralParse, draw_state=None, change
     back_to_cst = dict_to_cst_module(input_value)
     code_str = back_to_cst.code
     if changed:
+        if imgui.button("Recompile"):
+            class_ref = file_ref.source
+                # Hotswap class
+            if class_ref is not None and isinstance(class_ref, type):
+                try:
+                    _recompile_class(class_ref, code_str, str(file_ref.path))
+                except Exception as e:
+                    imgui.text(f"Error: {e}")
+                    return False, None
+            else:
+                print(f"No class ref found for this file ref, skipping hotswap {file_ref.path}")
+
+        imgui.same_line()
+
         if imgui.button("Save"):
             class_ref = file_ref.source
-
             # Hotswap class
             if class_ref is not None and isinstance(class_ref, type):
                 try:
@@ -220,14 +234,19 @@ def general_parse_to_file_ref(input_value: GeneralParse, draw_state=None, change
             lines = text.split(newline)
             new_lines = code_str.split(newline)
             lines[file_ref.start:file_ref.end] = new_lines
+            final_text = newline.join(lines)
+            FileWatch.set_hash_from_content(file_ref.path, final_text)
             file_ref.path.write_text(newline.join(lines), encoding="utf-8")
             new_ref = FileRef(file_ref.path, file_ref.start,
                               file_ref.start + len(new_lines), source=class_ref)
 
-            FileWatch.update_hash(file_ref.path)
             draw_state._file_meta = new_ref.get_meta()
+            # FileWatch.set_hash(file_ref.path)
 
             return True, file_ref
+    #
+    # code_str = back_to_cst.code
+    # FileWatch.set_hash_from_content(file_ref.path, code_str)
 
     return False, None
 

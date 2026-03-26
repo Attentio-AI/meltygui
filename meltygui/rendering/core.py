@@ -789,7 +789,7 @@ def render_func(*args, **o_kwargs):
 
             if "changed" in wanted_params:
                 draw_state._external_change |= kwargs.get("changed", False)
-                kwargs['changed'] = draw_state._external_change
+                kwargs['changed'] |= draw_state._external_change
                 # kwargs['external_change'] = draw_state._external_change
                 # if draw_state._external_change:
                 #     draw_state._input_value_cache = input_value
