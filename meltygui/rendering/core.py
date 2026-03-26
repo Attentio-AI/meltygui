@@ -16,11 +16,11 @@ from imgui.core import _DrawList
 from src.lsd.gl_gui.background_v2 import Background, Pending
 from src.lsd.gl_gui.collision import Collisions
 from src.lsd.gl_gui.toggles import Counters, Toggles
+from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
 from src.lsd.gl_gui.view.core_conversion.fileref import to_fileref, FileRef
 from src.lsd.gl_gui.view.core_conversion.path_finder import PendingState
 from src.lsd.gl_gui.view.core_views.core_render_helpers import floating_text
-from src.lsd.gl_gui.model.core_model.draw_state import DrawState, Hotkey, DragMode, Anchor, TileMode, AttrDict, \
-    UNSET_VALUE
+from src.lsd.gl_gui.model.core_model.draw_state import DrawState, Hotkey, DragMode, Anchor, TileMode, AttrDict
 from src.lsd.gl_gui.model.core_model.core_enums import PendingAction
 from src.lsd.gl_gui.utils.custom_views import push_style_var, pop_style_var
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace, trace_group, get_live_frames
@@ -786,10 +786,22 @@ def render_func(*args, **o_kwargs):
             ######################## ERROR HANDLING FOR TYPES ########################
             cursor_pos = imgui.get_cursor_pos()
             imgui.set_cursor_pos((snap_int(cursor_pos[0]), snap_int(cursor_pos[1])))
-            draw_state._external_change |= kwargs.get("changed", False)
-            if draw_state._output_value_cache is UNSET_VALUE and not old_convert_path:
-                draw_state._external_change = True
-            kwargs['changed'] = draw_state._external_change
+
+            if "changed" in wanted_params:
+                draw_state._external_change |= kwargs.get("changed", False)
+                kwargs['changed'] = draw_state._external_change
+                # kwargs['external_change'] = draw_state._external_change
+                # if draw_state._external_change:
+                #     draw_state._input_value_cache = input_value
+                # elif draw_state._input_value_cache is not UNSET_VALUE:
+                    # input_value = draw_state._input_value_cache
+                    # draw_state._input_value = input_value
+                    # draw_state._raw_input_value = input_value
+            # else:
+                # draw_state._input_value_cache = input_value
+
+            # if draw_state._output_value_cache is UNSET_VALUE and not old_convert_path:
+            #     draw_state._external_change = True
 
             use_cache = kwargs.get("use_cache", False) and Melty.cache.enabled and not draw_state._external_change
             draw_state.use_cache = use_cache
@@ -1044,7 +1056,6 @@ def render_func(*args, **o_kwargs):
                 _pushed_search = True
 
             content_rect = (0, 0)
-            draw_state._input_value_cache = input_value
 
             if Melty.cache.mark_start_offscreen(draw_state=draw_state):
                 Melty.root_draw_states[draw_state.id] = []
@@ -2248,8 +2259,7 @@ def render_func(*args, **o_kwargs):
             Melty.active_layer = original_active_layer
             Melty.shadow_depth = start_shadow_depth
 
-            if draw_state._external_change:
-                draw_state._external_change = False
+
 
             if mode_stacked:
                 Melty.mode_stack.pop()
@@ -2307,18 +2317,21 @@ def render_func(*args, **o_kwargs):
                         Melty.channels_split = False
                         draw_list.channels_merge()
 
+            if child_changed:
+                draw_state._external_change = False
             # Normal return path
             if kwargs.get("convert_out", None) is not None or kwargs.get("convert_in", None) is not None:
                 if return_extras:
                     return child_changed, new_value, return_draw_state
                 return child_changed, new_value
 
-            if child_changed or draw_state._output_value_cache is UNSET_VALUE:
-                draw_state._output_value_cache = new_value
+            # if child_changed or draw_state._output_value_cache is UNSET_VALUE:
+            #     draw_state._output_value_cache = new_value
+
 
             if return_extras:
-                return child_changed, draw_state._output_value_cache, return_draw_state
-            return child_changed, draw_state._output_value_cache
+                return child_changed, new_value, return_draw_state
+            return child_changed, new_value
 
     def draw_pending_status(draw_state, pending_obj):
         load_icon = f"\uf110"

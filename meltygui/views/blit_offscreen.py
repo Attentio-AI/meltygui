@@ -12,9 +12,10 @@ import imgui
 
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.model.core_model.core_enums import OffscreenDebugMode
-from src.lsd.gl_gui.model.core_model.draw_state import TileMode, UNSET_VALUE
+from src.lsd.gl_gui.model.core_model.draw_state import TileMode
 from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace, get_live_frames
+from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
 
 """
 Per-view tile caching with a post-frame mask.

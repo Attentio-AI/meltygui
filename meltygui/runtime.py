@@ -30,23 +30,8 @@ import OpenGL.GL as gl
 _MOUSE_INPUTS = frozenset({'left_mouse', 'right_mouse', 'middle_mouse',
                            'cursor', 'scroll_y', 'scroll_x'})
 
-
-import hashlib
-import os
-from pathlib import Path
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
-
 import hashlib
 import difflib
-import os
-from pathlib import Path
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
-
-import hashlib
-import difflib
-import os
 from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -108,6 +93,9 @@ class FileWatch:
     def register_draw_state(cls, draw_state, path: Path):
         resolved = str(path.resolve())
 
+        if draw_state in cls.draw_state_to_path:
+            return
+
         old_path = cls.draw_state_to_path.pop(draw_state, None)
         if old_path:
             cls.path_to_draw_state.pop(old_path, None)
@@ -131,6 +119,18 @@ class FileWatch:
         Melty.cache.invalidate_up(draw_state._tile_id, force=True)
         draw_state._external_change = True
         request_render()
+
+    @classmethod
+    def update_hash(cls, path: Path):
+        """Call after writing a file to suppress the next change event."""
+        resolved = str(path.resolve())
+        cls._file_hashes[resolved] = cls._get_hash(resolved)
+        if cls.output_debug_diff:
+            cls._file_contents[resolved] = cls._read_text(resolved)
+
+        draw_state = cls.path_to_draw_state.get(resolved)
+        if draw_state:
+            draw_state._external_change = False
 
     @classmethod
     def shutdown(cls):

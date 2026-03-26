@@ -9,6 +9,7 @@ import libcst as cst
 
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
+from src.lsd.gl_gui.view.core_conversion.cache_tree import CacheTree, UNSET_VALUE
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import no_save, exclude, deep_refresh, no_save_exclude, \
     invalidate_all
 
@@ -97,7 +98,34 @@ class AttrDict:
     def rebind(self, data):
         object.__setattr__(self, '_data', data)
 
-UNSET_VALUE = object()
+class CursorStack:
+    def __init__(self):
+        self._items = []
+        self._cursor = 0
+
+    def push(self, item):
+        # remove anything after cursor if you've popped, then append
+        self._items = self._items[:self._cursor]
+        self._items.append(item)
+        self._cursor += 1
+
+    def pop(self):
+        if self._cursor == 0:
+            raise IndexError("pop from empty stack")
+        self._cursor -= 1
+        return self._items[self._cursor]
+
+    def peek(self):
+        if self._cursor == 0:
+            raise IndexError("peek at empty stack")
+        return self._items[self._cursor - 1]
+
+    @property
+    def history(self):
+        return list(self._items)
+
+    def __repr__(self):
+        return f"{self._items} cursor={self._cursor}"
 
 class TileMode(Enum):
     MAX = 'max'
@@ -140,6 +168,10 @@ class DrawState(DictConversion):
         self._external_change = False
         self._input_value_cache = UNSET_VALUE
         self._output_value_cache = UNSET_VALUE
+        self._file_meta = UNSET_VALUE
+
+        # Chain cache, split based on type, UNSET_VALUE as a default
+        self._chain_stack = CacheTree()
 
 
         self._children = {}

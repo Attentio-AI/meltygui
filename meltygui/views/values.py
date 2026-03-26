@@ -4,13 +4,11 @@ import threading
 import types
 from collections import deque, defaultdict
 from collections.abc import MutableMapping
-from dataclasses import dataclass
 from enum import Enum
 from inspect import Parameter
 from math import sqrt
 from pathlib import Path
 from types import NoneType
-from typing import Optional
 
 import OpenGL.GL as gl
 import glfw
@@ -25,8 +23,8 @@ from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_style_var, \
     push_style_color, pop_style_color, pop_style_var, end, begin
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
-from src.lsd.gl_gui.view.core_conversion.chain_converters import chain_cls_load, chain_cst_to_dict, chain_dict_to_cst, \
-    chain_cst_to_str, chain_cls_save, class_to_file_ref, file_ref_to_cst
+from src.lsd.gl_gui.view.core_conversion.chain_converters import class_to_file_ref, file_ref_to_general_parse, \
+    file_ref_to_class, general_parse_to_file_ref
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment, GeneralParse
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
@@ -521,23 +519,29 @@ def run_chain_debug(input_value, chain=None, draw_state=None, **kwargs):
     imgui.text(f"Input: {type(input_value).__name__}")
     imgui.separator()
 
+    cache_tree = draw_state._chain_stack
+    cache_tree.begin()
+    value = cache_tree.step(changed, value)
+
     for i, func in enumerate(chain):
         if not changed:
             name = getattr(func, '__name__', repr(func))
-            # imgui.push_style_color(imgui.COLOR_TEXT, 0.5, 0.5, 0.5, 1.0)
             imgui.text(f"  [{i}] {name} — (no change)")
-            # imgui.pop_style_color()
-            # continue
 
         kwargs['func'] = func
         changed, value = func(input_value=value, changed=changed, name=f"{func.__name__} {kwargs.get('name', '')}")
+        value = cache_tree.step(changed, value)
+
+    cache_tree.end()
+
+    draw_text(cache_tree.get_mapping_as_str(), name="Cache Tree Mapping", show_bg=True, width=draw_state.width)
 
     imgui.separator()
     return False, None
 
 
 @render_func(use_cache=False, show_bg=True, selectable=False, show_tint=True, bg_offset=-1, with_header=draw_header)
-def draw_main(input_value, vis):
+def draw_main(input_value, vis, draw_state=None):
     global test_obj
     return_val = draw_window(Melty.profiles_results, show_bg=True, name="Profile Results")
     return_val2 = draw_window(Melty.registered_windows, is_tree=True, show_add_delete=False, return_extras=True,
@@ -562,12 +566,10 @@ def draw_main(input_value, vis):
 
     chain = [
         class_to_file_ref,
-        file_ref_to_cst,
-        chain_cst_to_dict,
+        file_ref_to_general_parse,
         draw_collection,
-        chain_dict_to_cst,
-        chain_cst_to_str,
-        chain_cls_save,
+        general_parse_to_file_ref,
+        file_ref_to_class,
     ]
     run_chain_debug(Toggles, name="Chain Debug", chain=chain, mode=Mode.WINDOW)
 

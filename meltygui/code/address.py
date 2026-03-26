@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import difflib
 import functools
+import hashlib
 import types
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 import inspect
@@ -30,30 +32,49 @@ from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
 ORIGINAL = object()  # sentinel for "no original value found"
 APPLY_ALL = object()  # sentinel for "apply to all views, not just the one that originated this Pending"
 
-class FileRef:
-    __slots__ = ("path", "start", "end")
+@dataclass
+class FileMeta:
 
-    def __init__(self, path: Path, start: int | None = None,
-                 end: int | None = None):
+    mtime: float
+    size: int
+
+    def __eq__(self, other):
+        if not isinstance(other, FileMeta):
+            return NotImplemented
+
+        print(f"Comparing FileMeta: self.mtime={self.mtime}, self.size={self.size}, other.mtime={other.mtime}, other.size={other.size}")
+        return self.mtime == other.mtime and self.size == other.size
+
+class FileRef:
+    __slots__ = ("path", "start", "end", "source", "_hash")
+
+    def __init__(self, path, start=None, end=None, source=None):
         self.path = Path(path).resolve()
         self.start = start
         self.end = end
+        self.source = source
+        self._hash = self._compute_hash()
 
-    def __repr__(self) -> str:
+    def _compute_hash(self):
+        content = self.path.read_bytes()
         if self.start is not None:
-            end = self.end if self.end is not None else "..."
-            return f"FileRef({self.path.name!r}, {self.start}:{end})"
-        return f"FileRef({self.path.name!r})"
+            lines = content.split(b'\n')
+            end = self.end if self.end is not None else len(lines)
+            content = b'\n'.join(lines[self.start:end])
+        return hashlib.md5(content).hexdigest()
 
-    def __eq__(self, other) -> bool:
+    def get_meta(self) -> FileMeta:
+        s = self.path.stat()
+        return FileMeta(mtime=s.st_mtime, size=s.st_size)
+
+    def __eq__(self, other):
         if not isinstance(other, FileRef):
             return NotImplemented
         return (self.path == other.path
-                and self.start == other.start
-                and self.end == other.end)
+                and self._hash == other._hash)
 
-    def __hash__(self) -> int:
-        return hash((self.path, self.start, self.end))
+    def __hash__(self):
+        return hash((self.path, self.start, self.end, self._hash))
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
