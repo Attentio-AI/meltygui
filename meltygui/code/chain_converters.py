@@ -45,9 +45,6 @@ def _load_span(ref: FileRef) -> str:
     lines = text.split(newline)
     return newline.join(lines[ref.start:ref.end])
 
-
-
-
 @render_func(use_cache=True)
 def chain_cls_load(input_value, draw_state=None):
     """Load node: class → cst.Module.
@@ -159,7 +156,7 @@ def class_to_file_ref(input_value: type, draw_state, changed=False):
         return changed, None
 
 @render_func(use_cache=True)
-def file_ref_to_general_parse(input_value: FileRef, changed=False, draw_state=None):
+def file_ref_to_general_parse(input_value: FileRef, changed=False, draw_state=None, load=False):
     """Load node: class → cst.Module.
 
     - Resolves FileRef from the class on first call
@@ -168,13 +165,11 @@ def file_ref_to_general_parse(input_value: FileRef, changed=False, draw_state=No
     - Returns (True, cst.Module) when loaded, (False, cached) otherwise
     """
 
-    # External change or file meta unset vs loaded
-    # from src.lsd.gl_gui.view.type_conversion.cache_base import UNSET_VALUE
+    # External change or file meta changed vs baseline
     changed |= draw_state._file_meta == UNSET_VALUE
 
     if changed:
-        print(f"FILE REF TO CST --- CHANGED")
-        if imgui.button("Load##file_ref_to_cst"):
+        if load or imgui.button("Load##file_ref_to_cst"):
             text = _load_span(input_value)
             draw_state._file_meta = input_value.get_meta()
             converted_cst = cst.parse_module(text)
@@ -192,13 +187,13 @@ def file_ref_to_general_parse(input_value: FileRef, changed=False, draw_state=No
 
 
 @render_func(use_cache=True)
-def general_parse_to_file_ref(input_value: GeneralParse, draw_state=None, changed=False):
+def general_parse_to_file_ref(input_value: GeneralParse, draw_state=None, changed=False, recompile=False, save=False):
     """GeneralParse dict → cst.Module. Pure converter, no UI."""
     file_ref = input_value.file_ref
     back_to_cst = dict_to_cst_module(input_value)
     code_str = back_to_cst.code
     if changed:
-        if imgui.button("Recompile"):
+        if recompile or imgui.button("Recompile"):
             class_ref = file_ref.source
                 # Hotswap class
             if class_ref is not None and isinstance(class_ref, type):
@@ -212,7 +207,7 @@ def general_parse_to_file_ref(input_value: GeneralParse, draw_state=None, change
 
         imgui.same_line()
 
-        if imgui.button("Save"):
+        if save or imgui.button("Save"):
             class_ref = file_ref.source
             # Hotswap class
             if class_ref is not None and isinstance(class_ref, type):
@@ -237,16 +232,7 @@ def general_parse_to_file_ref(input_value: GeneralParse, draw_state=None, change
             final_text = newline.join(lines)
             FileWatch.set_hash_from_content(file_ref.path, final_text)
             file_ref.path.write_text(newline.join(lines), encoding="utf-8")
-            new_ref = FileRef(file_ref.path, file_ref.start,
-                              file_ref.start + len(new_lines), source=class_ref)
-
-            draw_state._file_meta = new_ref.get_meta()
-            # FileWatch.set_hash(file_ref.path)
-
             return True, file_ref
-    #
-    # code_str = back_to_cst.code
-    # FileWatch.set_hash_from_content(file_ref.path, code_str)
 
     return False, None
 

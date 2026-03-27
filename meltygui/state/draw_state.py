@@ -154,7 +154,7 @@ class TileMode(Enum):
 @no_save_exclude('render_time',  "total_z_offset", 'closable', 'invalid_content_height',
                   "parent_window", "pressed", "bbox",
                  'hover_rects', 'nested_window', 'use_cache', 'layer', "header_top", "header_left", "left_offset",
-                 "top_offset", 'kwargs', "just_shadow",
+                 "top_offset", 'kwargs', "just_shadow", "header_width", "header_end_width",
                  "header_left_delta", "header_top_delta", "last_seen", "persistent", "shadow_margin", "bg_depth",
                  "anchor_pos", "just_shadow", 'hover_reported', 'explain_convert',
                  'channel', 'next', 'previous', 'index_in_parent', 'relative_pos', 'context_menu_open',
@@ -249,7 +249,7 @@ class DrawState(DictConversion):
         self._shadow_depth = 0
         self.shadow = True
         self.cst = None
-        self.window_pos = None
+        self.window_pos = (0,0)
         self.window_size = None
         self._initial_window_pos = None
         self._initial_window_pos_resize = None

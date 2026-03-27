@@ -524,12 +524,18 @@ def run_chain_debug(input_value, chain=None, draw_state=None, **kwargs):
     value = cache_tree.step(changed, value)
 
     for i, func in enumerate(chain):
+        if isinstance(func, tuple):
+            func, func_kwargs = func
+        else:
+            func_kwargs = {}
+
         if not changed:
             name = getattr(func, '__name__', repr(func))
             imgui.text(f"  [{i}] {name} — (no change)")
 
-        kwargs['func'] = func
-        changed, value = func(input_value=value, changed=changed, name=f"{func.__name__} {kwargs.get('name', '')}")
+        func_kwargs['name'] = f"{func.__name__} {kwargs.get('name', '')}"
+        func_kwargs['changed'] = changed
+        changed, value = func(input_value=value, **func_kwargs)
         value = cache_tree.step(changed, value)
 
     cache_tree.end()
@@ -566,9 +572,9 @@ def draw_main(input_value, vis, draw_state=None):
 
     chain = [
         class_to_file_ref,
-        file_ref_to_general_parse,
+        (file_ref_to_general_parse, {'load':True}),
         draw_collection,
-        general_parse_to_file_ref,
+        (general_parse_to_file_ref, {'save':True, 'recompile':True}),
         file_ref_to_class,
     ]
     run_chain_debug(Toggles, name="Chain Debug", chain=chain, mode=Mode.WINDOW)
@@ -1803,7 +1809,7 @@ def draw_str(input_value: str, draw_state, editable=True, alpha=1.0):
     return changed, value
 
 @render_func(is_default_for=GeneralParse, shadow=True, z_offset=2, show_bg=True, with_header=draw_header,
-             is_tree=True, tint=(0.2, 0.01, 0.3))
+             is_tree=True, tint=(0.11, 0.1, 0.16))
 def draw_general_parse(input_value: GeneralParse):
     imgui.text("General parse render func")
     changed, value = draw_collection(input_value=input_value)
@@ -1932,13 +1938,14 @@ def draw_float_ctx(input_value):
 
 @render_func(is_default_for=float, use_cache=False, shadow=False, window_pos=(0,0), show_bg=False, wrap=False, is_tree=False,
              with_header=draw_header, with_header_end=draw_header_end)
-def draw_float(input_value: float, draw_state, min_value=-100.0, max_value=100.0, speed=0.001):
+def draw_float(input_value: float, draw_state, min_value=-100.0, max_value=100.0, speed=0.0001):
     imgui.set_next_item_width(min(600, max(30, draw_state.content_width)))
     changed, value = imgui.drag_float("", input_value,
                                       format='%.3f',
                                       change_speed=speed,
                                       min_value=min_value,
                                       max_value=max_value)
+                                      
     if changed:
         return True, value
 

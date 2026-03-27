@@ -15,9 +15,9 @@ class Toggles:
     profile_mode = ProfileMode.LIGHT
     offscreen_debug = False
     #---------- Visual Settings ---------
-    brightness = 0.318
-    contrast = 1.399
-    saturation = 0.816
+    brightness = 0.441
+    contrast = 1.293
+    saturation = 0.808
     debug_context_menu = False
     debug_z_depth = False
 
