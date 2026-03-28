@@ -48,6 +48,7 @@ def _load_span(ref: Address) -> str:
     lines = text.split(newline)
     return newline.join(lines[ref.start:ref.end])
 
+
 @render_func(use_cache=True)
 def chain_cls_load(input_value, draw_state=None):
     """Load node: class → cst.Module.
@@ -113,6 +114,7 @@ def path_to_address(input_value: Path):
     address = Address(input_value)
     return False, address
 
+
 @render_func()
 def function_to_address(input_value: types.FunctionType, draw_state, changed=False):
     """Extract Address from a function object."""
@@ -127,7 +129,8 @@ def function_to_address(input_value: types.FunctionType, draw_state, changed=Fal
 
     source_lines, start_lineno = inspect.getsourcelines(unwrapped)
     return changed, Address(Path(source_file), start_lineno - 1,
-                   start_lineno - 1 + len(source_lines), source=input_value)
+                            start_lineno - 1 + len(source_lines), source=input_value)
+
 
 @render_func()
 def module_to_address(input_value: types.ModuleType, draw_state, changed=False):
@@ -157,11 +160,12 @@ def class_to_address(input_value: type, draw_state, changed=False):
             _evict_linecache(source_file)
             source_lines, start_lineno = inspect.getsourcelines(input_value)
             return changed, Address(Path(source_file), start_lineno - 1,
-                           start_lineno - 1 + len(source_lines), source=input_value)
+                                    start_lineno - 1 + len(source_lines), source=input_value)
         except (TypeError, OSError):
             return changed, None
     else:
         return changed, None
+
 
 @render_func(background=True)
 def load_cst_module(input_value: Address):
@@ -174,9 +178,10 @@ def load_cst_module(input_value: Address):
         for i in range(5):
             import time
             time.sleep(0.1)
-            print(f"Simulating slow load... {i+1}/5")
+            print(f"Simulating slow load... {i + 1}/5")
 
     return True, general_parse
+
 
 ########################
 # draw_collection
@@ -220,7 +225,8 @@ def _do_save(input_value, code_str):
 
     return True, input_value
 
-@render_func(background=True)
+
+@render_func(background=False)
 def save_cst_module(input_value):
     back_to_cst = dict_to_cst_module(input_value)
     if Toggles.slow_down_threads:
@@ -262,6 +268,7 @@ def run_button(input_value: any, with_kwargs=None, draw_state=None, clicked=Fals
 
     return False, None
 
+
 @render_func()
 def address_to_general_parse(input_value: Address, pending=False, changed=False, draw_state=None, load=False):
     """Load node: class → cst.Module.
@@ -273,8 +280,8 @@ def address_to_general_parse(input_value: Address, pending=False, changed=False,
     """
 
     if pending:
-        clicked, result = run_button(load_cst_module, with_kwargs={"input_value":input_value},
-                            clicked=load)
+        clicked, result = run_button(load_cst_module, with_kwargs={"input_value": input_value},
+                                     clicked=load)
         if clicked:
             draw_state._file_meta = input_value.get_meta()
             return result
@@ -283,21 +290,16 @@ def address_to_general_parse(input_value: Address, pending=False, changed=False,
     return False, None
 
 
-
-
-
 @render_func(use_cache=True)
 def general_parse_to_address(input_value: GeneralParse, draw_state=None, pending=False,
                              changed=False, recompile=False, save=False):
     """GeneralParse dict → Address. Handles recompile and save for any source type."""
     address = input_value.address
 
-
     if pending or changed:
         changed, back_to_cst = save_cst_module(input_value, changed=changed)
         if isinstance(back_to_cst, Pending):
             return False, back_to_cst
-
 
         code_str = back_to_cst.code
         source = address.source
@@ -305,12 +307,12 @@ def general_parse_to_address(input_value: GeneralParse, draw_state=None, pending
             clicked, result = run_button(do_recompile, with_kwargs={"input_value": address.source,
                                                                     "code_str": code_str,
                                                                     "file_path": address.path},
-                                                          clicked=recompile)
+                                         clicked=recompile)
 
             #
             clicked, result = run_button(_do_save, name="do_save", with_kwargs={"input_value": address,
-                                                                "code_str": code_str},
-                                                                clicked=save)
+                                                                                "code_str": code_str},
+                                         clicked=save)
             #
             if clicked:
                 return True, address
@@ -362,21 +364,26 @@ def general_parse_to_address(input_value: GeneralParse, draw_state=None, pending
     #
     # return False, None
 
+
 @render_func(use_cache=True)
 def address_to_class(input_value, changed=False, draw_state=None):
     pass
+
 
 @render_func(use_cache=True)
 def address_to_function(input_value, changed=False, draw_state=None):
     pass
 
+
 @render_func(use_cache=True)
 def address_to_module(input_value, changed=False, draw_state=None):
     pass
 
+
 @render_func(use_cache=True)
 def cst_to_address(input_value, changed=False, draw_state=None):
     pass
+
 
 @render_func(use_cache=True)
 def chain_cst_to_str(input_value, draw_state=None):

@@ -24,8 +24,8 @@ from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_styl
     push_style_color, pop_style_color, pop_style_var, end, begin
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
 from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE, CacheTree
-from src.lsd.gl_gui.view.core_conversion.chain_converters import class_to_address, address_to_general_parse, \
-    address_to_class, general_parse_to_address, module_to_address, address_to_module
+from src.lsd.gl_gui.view.core_conversion.chain_converters import class_to_address, \
+    address_to_class, general_parse_to_address, module_to_address, address_to_module, address_to_general_parse
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment, GeneralParse
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
