@@ -250,8 +250,8 @@ class TestRenderFuncConvertInOut(unittest.TestCase):
 
         ds = captured_ds[0]
         self.assertIsNotNone(ds, "draw_state was never captured")
-        # FileRef should be set (from the initial staleness check on main thread)
-        self.assertIsNotNone(ds._fileref)
+        # Address should be set (from the file staleness check in another thread)
+        self.assertIsNotNone(ds._address)
 
     def test_convert_in_not_overwritten_by_else_branch(self):
         """The converted input should NOT be overwritten by the raw input."""
@@ -520,7 +520,7 @@ class TestConvertOutFlow(unittest.TestCase):
                 'raw_input_type': type(draw_state._raw_input_value).__name__,
                 'internal_cache_type': type(draw_state._input_cache["internal_state"][0]).__name__,
                 'external_cache_type': type(draw_state._input_cache["external_state"][0]).__name__,
-                'fileref': draw_state._fileref,
+                'address': draw_state._address,
                 'original_load_data': draw_state._original_load_data is not None,
                 'original_input_ref': draw_state._original_input_ref,
                 'show_load': draw_state._show_load,
@@ -549,7 +549,7 @@ class TestConvertOutFlow(unittest.TestCase):
                   f"raw={snap['raw_input_type']}, "
                   f"internal_cache={snap['internal_cache_type']}, "
                   f"external_cache={snap['external_cache_type']}, "
-                  f"fileref={'set' if snap['fileref'] else 'None'}, "
+                  f"address={'set' if snap['address'] else 'None'}, "
                   f"orig_data={'set' if snap['original_load_data'] else 'None'}, "
                   f"show_load={snap['show_load']}, "
                   f"show_save={snap['show_save']}, "

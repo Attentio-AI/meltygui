@@ -146,11 +146,11 @@ class GeneralParse(dict):
         super().__init__(*args, **kwargs)
         self.source = source
         self.file_path: _Path | None = file_path
-        self.file_ref = Any | None
+        self.address = Any | None
         self.line_offset: int = line_offset
         self.usages: dict[str, list['UsageRef']] = {}
         self._bg_hash_cache: str | None = None
-        # This would be the file object used to load, if available
+        # this would be the address used to load, if available
         self.source_ref = Any | None
 
     def __bg_hash__(self) -> str:

@@ -70,14 +70,14 @@ def converter(converter_fn=None, registry: Any = None, *,
         if actual_from is None:
             raise TypeError(
                 f"Converter {converter_fn.__name__} with load_data requires from_type=")
-        from src.lsd.gl_gui.view.core_conversion.fileref import make_load_wrapper
+        from src.lsd.gl_gui.view.core_conversion.address import make_load_wrapper
         wrapped_fn = make_load_wrapper(converter_fn, load_data, actual_from)
 
     if save_data is not None:
         if actual_to is None:
             raise TypeError(
                 f"Converter {converter_fn.__name__} with save_data requires to_type=")
-        from src.lsd.gl_gui.view.core_conversion.fileref import make_save_wrapper
+        from src.lsd.gl_gui.view.core_conversion.address import make_save_wrapper
         load_cache = None
         inverse_fn = kwargs.get("inverse_of")
         if inverse_fn is not None and hasattr(inverse_fn, "_local_cache"):

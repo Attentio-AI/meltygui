@@ -23,8 +23,9 @@ from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_style_var, \
     push_style_color, pop_style_color, pop_style_var, end, begin
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
-from src.lsd.gl_gui.view.core_conversion.chain_converters import class_to_file_ref, file_ref_to_general_parse, \
-    file_ref_to_class, general_parse_to_file_ref
+from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE, CacheTree
+from src.lsd.gl_gui.view.core_conversion.chain_converters import class_to_address, address_to_general_parse, \
+    address_to_class, general_parse_to_address, module_to_address, address_to_module
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment, GeneralParse
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
@@ -502,7 +503,7 @@ def draw_draw_state(input_value, **kwargs):
 
 
 @render_func(use_cache=True, show_bg=True, with_header=draw_header)
-def run_chain_debug(input_value, chain=None, draw_state=None, **kwargs):
+def run_chain(input_value, chain=None, draw_state=None, debug=False, **kwargs):
     """Debug render function: executes a chain step by step with imgui output.
 
     Shows function name, changed flag, output type, and a value preview
@@ -515,9 +516,10 @@ def run_chain_debug(input_value, chain=None, draw_state=None, **kwargs):
     value = input_value
     changed = False
 
-    imgui.text(f"Chain: {len(chain)} nodes")
-    imgui.text(f"Input: {type(input_value).__name__}")
-    imgui.separator()
+    if debug:
+        imgui.text(f"Chain: {len(chain)} nodes")
+        imgui.text(f"Input: {type(input_value).__name__}")
+        imgui.separator()
 
     cache_tree = draw_state._chain_stack
     cache_tree.begin()
@@ -529,18 +531,25 @@ def run_chain_debug(input_value, chain=None, draw_state=None, **kwargs):
         else:
             func_kwargs = {}
 
-        if not changed:
-            name = getattr(func, '__name__', repr(func))
-            imgui.text(f"  [{i}] {name} — (no change)")
+        if debug:
+            if not changed:
+                name = getattr(func, '__name__', repr(func))
+                imgui.text(f"  [{i}] {name} — (no change)")
 
         func_kwargs['name'] = f"{func.__name__} {kwargs.get('name', '')}"
         func_kwargs['changed'] = changed
+        imgui.begin_group()
         changed, value = func(input_value=value, **func_kwargs)
+        imgui.end_group()
+        if isinstance(value, Pending):
+            changed=False
+            value=None
         value = cache_tree.step(changed, value)
 
     cache_tree.end()
 
-    draw_text(cache_tree.get_mapping_as_str(), name="Cache Tree Mapping", show_bg=True, width=draw_state.width)
+    if debug:
+        draw_text(cache_tree.get_mapping_as_str(), name="Cache Tree Mapping", show_bg=True, width=draw_state.width)
 
     imgui.separator()
     return False, None
@@ -571,13 +580,13 @@ def draw_main(input_value, vis, draw_state=None):
 
 
     chain = [
-        class_to_file_ref,
-        (file_ref_to_general_parse, {'load':True}),
+        module_to_address,
+        (address_to_general_parse, {'load':False}),
         draw_collection,
-        (general_parse_to_file_ref, {'save':True, 'recompile':True}),
-        file_ref_to_class,
+        (general_parse_to_address, {'save':False, 'recompile':True}),
+        address_to_module,
     ]
-    run_chain_debug(Toggles, name="Chain Debug", chain=chain, mode=Mode.WINDOW)
+    run_chain(toggles, name="Chain Debug", chain=chain, mode=Mode.WINDOW)
 
     from src.lsd.gl_gui.model.app_model import Lora
     changed, value = draw_with_modes(input_value=Lora, name="lora class",
@@ -2189,7 +2198,6 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, *
     draw_str(f"Clip Rect {str(input_value.clip_rect)}", name="clip_rect", column=0)
 
     # draw_collection(draw_state._all_pending, name="All Pending", column=1, fill_height=True)
-
     # imgui.new_line()
     # imgui.separator()
 
@@ -2219,6 +2227,7 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, *
     draw_str(input_value._kwargs["func"].__name__, name="view_func", column=0)
     from src.lsd.gl_gui.view.mode import Mode
 
+    # Draw view function
     if input_value._kwargs['view_function'] is not None:
         view_func_name = input_value._kwargs['view_function'].__name__ if hasattr(input_value._kwargs['view_function'], '__name__') else str(input_value._kwargs['view_function'])
         change, new_view_func = draw_any(input_value._kwargs['view_function'], column=1, mode=Mode.CODE_PLAIN_TEXT, name=view_func_name)
@@ -2226,8 +2235,13 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, *
             print(f"Changing view function from {input_value._kwargs['view_function'].__name__} to {new_view_func.__name__}")
             input_value._kwargs['view_function'] = new_view_func
 
-    draw_str(str(type(input_value._raw_input_value)), name="Input Type", column=2)
-    cls_change, new_cls = draw_any(type(input_value._raw_input_value), column=2, mode=Mode.CODE_PLAIN_TEXT, name=type(input_value._raw_input_value).__name__)
+    # Draw class
+    # Check if primitive type
+    if not isinstance(input_value._raw_input_value, (int, float, str, bool)):
+        draw_str(str(type(input_value._raw_input_value)), name="Input Type", column=2)
+        cls_change, new_cls = draw_any(type(input_value._raw_input_value), column=2,
+                                       mode=Mode.CODE_PLAIN_TEXT,
+                                       name=type(input_value._raw_input_value).__name__)
 
     return False, None
 
@@ -2368,9 +2382,12 @@ def draw_any(input_value:any, view_func=None, mode:any=None, chain=None, **kwarg
                 kwargs_view_func = mode_config.func
 
         elif mode_config is not None and mode_config.func is not None:
-            view_func = mode_config.func
-            kwargs_view_func = view_func
-
+            if isinstance(mode_config.func, tuple):
+                kwargs['chain'] = mode_config.func
+                view_func = run_chain
+            else:
+                view_func = mode_config.func
+                kwargs_view_func = view_func
 
     kwargs['use_cache'] = True
     kwargs['mode'] = mode

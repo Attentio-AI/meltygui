@@ -1,5 +1,5 @@
 """
-FileRef + file-watched converter wrappers.
+Address + file-watched converter wrappers.
 
 Each cache_id gets fully isolated state: its own mtime/size tracking,
 its own cached results, its own original_data for dirty detection.
@@ -27,7 +27,7 @@ from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║  FileRef                                                                     ║
+# ║  Address                                                                     ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 ORIGINAL = object()  # sentinel for "no original value found"
 APPLY_ALL = object()  # sentinel for "apply to all views, not just the one that originated this Pending"
@@ -42,10 +42,9 @@ class FileMeta:
         if not isinstance(other, FileMeta):
             return NotImplemented
 
-        print(f"Comparing FileMeta: self.mtime={self.mtime}, self.size={self.size}, other.mtime={other.mtime}, other.size={other.size}")
         return self.mtime == other.mtime and self.size == other.size
 
-class FileRef:
+class Address:
     __slots__ = ("path", "start", "end", "source", "_hash")
 
     def __init__(self, path, start=None, end=None, source=None):
@@ -68,7 +67,7 @@ class FileRef:
         return FileMeta(mtime=s.st_mtime, size=s.st_size)
 
     def __eq__(self, other):
-        if not isinstance(other, FileRef):
+        if not isinstance(other, Address):
             return NotImplemented
         return (self.path == other.path
                 and self._hash == other._hash)
@@ -78,7 +77,7 @@ class FileRef:
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║  FileRef resolution                                                          ║
+# ║  Address resolution                                                          ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 class ValueDict:
     """An if/elif/else block's contents, as a dict subclass.
@@ -102,13 +101,13 @@ import weakref
 _cache: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
-def invalidate_fileref_cache(obj):
+def invalidate_address_cache(obj):
     """Call after hotswapping an object in place."""
     _cache.pop(obj, None)
 
 
-def update_fileref_cache(obj, ref: FileRef):
-    """Store a known-correct FileRef after a recompile.
+def update_address_cache(obj, ref: Address):
+    """Store a known-correct Address after a recompile.
 
     Avoids re-resolving via inspect.getsourcelines, which can return
     wrong line numbers when linecache holds stale file content after
@@ -126,14 +125,14 @@ def _unwrap(func):
     return func
 
 
-def to_fileref(value: Any) -> FileRef:
-    """Convert common types to a FileRef.  Unwraps decorated functions."""
-    if isinstance(value, FileRef):
+def to_address(value: Any) -> Address:
+    """Convert common types to an Address.  Unwraps decorated functions."""
+    if isinstance(value, Address):
         return value
     if isinstance(value, ValueDict):
-        return to_fileref(value.cached_value)
+        return to_address(value.cached_value)
     if isinstance(value, Path):
-        return FileRef(value)
+        return Address(value)
 
     try:
         cached = _cache[value]
@@ -164,19 +163,19 @@ def _evict_linecache(filename: str) -> None:
     linecache.cache.pop(filename, None)
 
 
-def _resolve(value: Any) -> FileRef | None:
+def _resolve(value: Any) -> Address | None:
     import inspect, types
     if isinstance(value, types.FunctionType):
         unwrapped = inspect.unwrap(value)
         source_file = inspect.getfile(unwrapped)
         _evict_linecache(source_file)
         source_lines, start_lineno = inspect.getsourcelines(unwrapped)
-        return FileRef(Path(source_file), start_lineno - 1,
+        return Address(Path(source_file), start_lineno - 1,
                        start_lineno - 1 + len(source_lines))
 
 
     if isinstance(value, types.ModuleType):
-        return FileRef(Path(value.__file__))
+        return Address(Path(value.__file__))
 
     if isinstance(value, type):
         if value.__module__ in ('builtins', '_collections_abc'):
@@ -186,7 +185,7 @@ def _resolve(value: Any) -> FileRef | None:
             source_file = inspect.getfile(value)
             _evict_linecache(source_file)
             source_lines, start_lineno = inspect.getsourcelines(value)
-            return FileRef(Path(source_file), start_lineno - 1,
+            return Address(Path(source_file), start_lineno - 1,
                            start_lineno - 1 + len(source_lines))
         except (TypeError, OSError):
             return None
@@ -202,7 +201,7 @@ class _WatchState:
                  "original_output_load", "original_input_load",
                  "original_output_save", "original_input_save")
 
-    def __init__(self, ref: FileRef):
+    def __init__(self, ref: Address):
         self.ref = ref
         self.mtime: float = 0.0
         self.size: int = 0
@@ -240,11 +239,11 @@ def clear_watch_cache():
 
 
 def get_original_value(cache_id: str | None = None,
-                       ref: FileRef | None = None,
+                       ref: Address | None = None,
                        of_type: type | None = None) -> Any:
     """Find original_value across all caches.
 
-    Search by cache_id (exact key) or by ref (scan for matching FileRef).
+    Search by cache_id (exact key) or by ref (scan for matching Address).
     of_type filters the result.
     """
     for cache in _all_caches:
@@ -279,7 +278,7 @@ def _call_fn(fn, args, apply, *, fn_takes_apply):
     return fn(*args)
 
 
-def _update_ref_for_id(cache_id: str, ref: FileRef) -> None:
+def _update_address_for_id(cache_id: str, ref: Address) -> None:
     """Update ref on all watches for a cache_id across all caches.
 
     Called after a save that may have changed the line range so every
@@ -323,7 +322,7 @@ def make_load_wrapper(fn: Callable, load_data: Callable,
         #         print(f"Applying converter {fn.__name__} with apply={apply}")
 
         if cache_id is None:
-            ref = to_fileref(value)
+            ref = to_address(value)
             if not apply_load:
                 return Pending(originated=load_data, wrapped=None)
             data = load_data(ref)
@@ -333,7 +332,7 @@ def make_load_wrapper(fn: Callable, load_data: Callable,
 
         watch = local_cache.get(cache_id)
         if watch is None:
-            ref = to_fileref(value)
+            ref = to_address(value)
             watch = _WatchState(ref)
             local_cache[cache_id] = watch
 
@@ -440,13 +439,13 @@ def make_save_wrapper(fn: Callable, save_data: Callable,
         updated_ref = save_data(converter_input, ref, converter_output, watch)
         if isinstance(updated_ref, Pending):
             return updated_ref
-        if isinstance(updated_ref, FileRef):
+        if isinstance(updated_ref, Address):
             ref = updated_ref
 
         watch.original_output_load = converter_output
         watch.ref = ref
         watch.mark_current()
-        _update_ref_for_id(cache_id, ref)
+        _update_address_for_id(cache_id, ref)
 
         return watch.original_input_load
 

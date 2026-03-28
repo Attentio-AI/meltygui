@@ -22,21 +22,7 @@ from src.lsd.gl_gui.model.core_model.core_enums import generate_id
 from src.lsd.gl_gui.model.model_enums import RelaxedEnum
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import exclude, deep_refresh
 from src.lsd.gl_gui.view.core_views.decoration.invalidation_decoration import live
-class RoundingEncoder(json.JSONEncoder):
-    def default(self, obj):
-        return super().default(obj)
 
-    def iterencode(self, o, _one_shot=False):
-        return super().iterencode(self._round(o), _one_shot)
-
-    def _round(self, o):
-        if isinstance(o, float):
-            return round(o, 5)
-        if isinstance(o, dict):
-            return {k: self._round(v) for k, v in o.items()}
-        if isinstance(o, (list, tuple)):
-            return [self._round(v) for v in o]
-        return o
 _SEGMENT_RE = re.compile(
     r'(?:[^.\[]+|\[[^\]]*\])+')  # matches a segment like: attr, attr[0], attr["a.b"][1], [0], ...
 _BRACKET_RE = re.compile(r'\[([^\]]*)\]')  # extracts inner text of each [...] in a segment
@@ -297,7 +283,10 @@ class DictConversion(metaclass=FieldMeta):
                 objects[object_id] = shallow_parse
 
 
-        default_instance = self.__class__.default_instance
+        if hasattr(self.__class__, 'default_instance') and self.__class__.default_instance is not None:
+            default_instance = self.__class__.default_instance
+        else:
+            default_instance = self.__class__()
         # Get all attributes that don't start with '_'
         for key in default_instance.__dict__.keys():
             value = getattr(self, key, None)
@@ -362,17 +351,16 @@ class DictConversion(metaclass=FieldMeta):
         path_dir = os.path.dirname(save_file)
         os.makedirs(path_dir, exist_ok=True)
         with open(save_file, "w") as f:
-            json.dump(view_dict["objects"], f, cls=RoundingEncoder)
-
+            f.write(str(view_dict["objects"]))
 
     def __eq__(self, other):
-            class_name = self.__class__.__name__
-            other_class_name = other.__class__.__name__
-            if class_name == other_class_name:
-                return True
-            return super().__eq__(other)
+        class_name = self.__class__.__name__
+        other_class_name = other.__class__.__name__
+        if class_name == other_class_name:
+            return True
+        return super().__eq__(other)
 
-        # Make hashable
+    # Make hashable
     def __hash__(self):
         return hash(self.id)
 

@@ -1,5 +1,6 @@
 import difflib
 import inspect
+import threading
 import time
 import types
 import zlib
@@ -13,11 +14,11 @@ import glfw
 import imgui
 from imgui.core import _DrawList
 
-from src.lsd.gl_gui.background_v2 import Background, Pending
+from src.lsd.gl_gui.background import Background, Pending
 from src.lsd.gl_gui.collision import Collisions
 from src.lsd.gl_gui.toggles import Counters, Toggles
 from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
-from src.lsd.gl_gui.view.core_conversion.fileref import to_fileref, FileRef
+from src.lsd.gl_gui.view.core_conversion.address import to_address, Address
 from src.lsd.gl_gui.view.core_conversion.path_finder import PendingState
 from src.lsd.gl_gui.view.core_views.core_render_helpers import floating_text
 from src.lsd.gl_gui.model.core_model.draw_state import DrawState, Hotkey, DragMode, Anchor, TileMode, AttrDict
@@ -67,7 +68,7 @@ def _run_convert_chain(value=None, chain=None, **extra_kwargs):
             fn_load_data = getattr(conv_fn, '_load_data', None)
             injectable = dict(extra_kwargs)
             if fn_load_data is not None:
-                ref = to_fileref(value)
+                ref = to_address(value)
                 if ref is not None:
                     injectable['data'] = fn_load_data(ref)
                     injectable['ref'] = ref
@@ -155,7 +156,7 @@ def render_func(*args, **o_kwargs):
             for mode in modes:
                 if mode is not None:
                     mode_config = mode.get_config_for(input_value)
-                    if mode_config is not None:
+                    if mode_config is not None and mode_config.kwargs is not None:
                         override_kwargs = mode_config.kwargs.copy()
                         kwargs = kwargs | override_kwargs
                         if not mode_config.recursive:
@@ -281,7 +282,7 @@ def render_func(*args, **o_kwargs):
         # Todo: default to false
         # file_watch = kwargs.get("file_watch", True)
         # if file_watch:
-        #     file_path = to_fileref(input_value)
+        #     file_path = to_address(input_value)
         #     if file_path is not None:
         #         draw_list = imgui.get_overlay_draw_list()
         #         draw_list.add_text(*imgui.get_cursor_screen_pos(),
@@ -408,7 +409,7 @@ def render_func(*args, **o_kwargs):
         if Melty.cache is not None:
             draw_state._parent_ctx = Melty.cache.get_current_parent()
 
-        if active_layer is None:
+        if active_layer is None and _has_imgui:
             if closable:
                 if draw_state is not None and draw_state.parent_window is not None:
                     # Nested window - layer above parent
@@ -452,7 +453,7 @@ def render_func(*args, **o_kwargs):
                         return *return_value, draw_state
                 return return_value
         else:
-            Melty.active_layer = active_layer
+            Melty.active_layer = active_layer if active_layer is not None else 4
 
         kwargs['return_extras'] = False
 
@@ -671,15 +672,15 @@ def render_func(*args, **o_kwargs):
 
             # ── Converter path (no imgui) ───────────────────────────
             if not _has_imgui:
-                # Handle load_data: resolve FileRef, load, inject
+                # Handle load_data: resolve Address, load, inject
                 if _rf_load_data is not None and kwargs.get('data') is None:
                     # Prefer a ref passed from the parent (avoids stale
                     # inspect.getsourcelines after hotswap + file rewrite)
-                    _ref = kwargs.pop('ref', None) or to_fileref(input_value)
+                    _ref = kwargs.pop('ref', None) or to_address(input_value)
                     if _ref is not None:
                         kwargs['data'] = _rf_load_data(_ref)
                         kwargs['ref'] = _ref
-                        draw_state._fileref = _ref
+                        draw_state._address = _ref
                         draw_state._original_input_ref = input_value
                     else:
                         # Can't resolve source (e.g. builtin type) so skip conversion
@@ -790,6 +791,11 @@ def render_func(*args, **o_kwargs):
             if "changed" in wanted_params:
                 draw_state._external_change |= kwargs.get("changed", False)
                 kwargs['changed'] |= draw_state._external_change
+                if draw_state.frame_count < 1:
+                    kwargs['changed'] = True
+
+                draw_state._pending |= draw_state._external_change
+                kwargs['pending'] = draw_state._pending | kwargs.get("changed", False)
                 # kwargs['external_change'] = draw_state._external_change
                 # if draw_state._external_change:
                 #     draw_state._input_value_cache = input_value
@@ -1104,7 +1110,7 @@ def render_func(*args, **o_kwargs):
                                     value=draw_state._raw_input_value,
                                     chain=_convert_in_early,
                                     data=draw_state._original_load_data,
-                                    ref=draw_state._fileref)
+                                    ref=draw_state._address)
                                 if not isinstance(reverted, Pending):
                                     draw_state._input_cache["internal_state"] = reverted, Melty.frame_count
                                     draw_state._input_value = reverted
@@ -1115,14 +1121,14 @@ def render_func(*args, **o_kwargs):
                             # re-runs with the reverted value instead of using
                             # the cached dirty result
                             _out_uid = str(unique) + " | convert_out"
-                            Background._user_cache.pop(_out_uid, None)
+                            # Background._user_cache.pop(_out_uid, None)
                             Melty.cache.invalidate_up(draw_state._parent._tile_id, force=True)
                             Melty.cache.invalidate_up(draw_state._tile_id, force=True)
                             request_render()
                         elif action == PendingAction.LOAD:
                             # Load: reload from disk, discard edits AND pick up external changes
-                            if _chain_load_data_early is not None and draw_state._fileref is not None:
-                                fresh_data = _chain_load_data_early(draw_state._fileref)
+                            if _chain_load_data_early is not None and draw_state._address is not None:
+                                fresh_data = _chain_load_data_early(draw_state._address)
                                 draw_state._original_load_data = fresh_data
                                 draw_state.mark_file_current()
                             draw_state._apply_load = _chain_load_data_early
@@ -1240,13 +1246,13 @@ def render_func(*args, **o_kwargs):
                     # Check file staleness on main thread (cheap stat call).
                     # When the file changes on disk, return Pending (like the
                     # old load wrapper) so the UI shows a load-pending dialog.
-                    # Skip on first load (_original_load_data is None) - first
-                    # load should always result into a Pending.
-                    # Cache FileRef on first encounter
-                    if _chain_load_data is not None and draw_state._fileref is None:
-                        ref = to_fileref(input_value)
+                    # Skip on first load (_original_load_data is None) — first
+                    # load should always succeed without a Pending.
+                    # Resolve Address on first encounter
+                    if _chain_load_data is not None and draw_state._address is None:
+                        ref = to_address(input_value)
                         if ref is not None:
-                            draw_state._fileref = ref
+                            draw_state._address = ref
                             draw_state._original_input_ref = input_value
 
                     # Check file staleness (skip on first load - no baseline yet).
@@ -1256,12 +1262,12 @@ def render_func(*args, **o_kwargs):
                             and draw_state._original_load_data is not None
                             and draw_state.is_file_stale()):
                         _file_stale = True
-                        # Refresh fileref from cache - another view could have
+                        # Refresh address from cache - another view may have
                         # saved with a different line count, so our local
-                        # draw_state._fileref could have a stale range.
-                        _fresh_ref = to_fileref(input_value)
+                        # draw_state._address could have a stale count.
+                        _fresh_ref = to_address(input_value)
                         if _fresh_ref is not None:
-                            draw_state._fileref = _fresh_ref
+                            draw_state._address = _fresh_ref
 
                     if (draw_state._raw_input_value == UNSET_VALUE or
                             (draw_state._raw_input_value is None) or not draw_state.expanded):
@@ -1299,10 +1305,10 @@ def render_func(*args, **o_kwargs):
                                                     'value', 'chain', 'input_value')}
                                 _fk["value"] = draw_state._raw_input_value
                                 _fk["chain"] = _convert_in
-                                # inject known-good fileref so converters don't
+                                # pass known-good address so converters don't
                                 # re-resolve via inspect.getsourcelines
-                                if draw_state._fileref is not None:
-                                    _fk["ref"] = draw_state._fileref
+                                if draw_state._address is not None:
+                                    _fk["ref"] = draw_state._address
                                 internal_value = Background.run(
                                     _run_convert_chain,
                                     user_id=str(draw_state.unique) + " | convert_in",
@@ -1340,7 +1346,7 @@ def render_func(*args, **o_kwargs):
                                 if _chain_load_data is not None:
                                     draw_state.mark_file_current()
                                     if draw_state._original_load_data is None or input_changed or _file_stale:
-                                        ref = draw_state._fileref
+                                        ref = draw_state._address
                                         if ref is not None:
                                             new_data = _chain_load_data(ref)
                                             pass  # debug removed
@@ -1978,7 +1984,7 @@ def render_func(*args, **o_kwargs):
                                     pass  # debug removed
 
                                 if is_dirty and draw_state._apply_save is not None:
-                                    ref = draw_state._fileref
+                                    ref = draw_state._address
                                     try:
                                         _orig_ref = draw_state._original_input_ref
                                         # Forward any extra kwargs the save_data
@@ -2009,8 +2015,8 @@ def render_func(*args, **o_kwargs):
                                             draw_state._show_save = True
                                             report_changed = False
                                         else:
-                                            if isinstance(updated_ref, FileRef):
-                                                draw_state._fileref = updated_ref
+                                            if isinstance(updated_ref, Address):
+                                                draw_state._address = updated_ref
                                             draw_state._original_load_data = external_value
                                             draw_state.mark_file_current()
                                             draw_state._show_save = False
@@ -2276,7 +2282,8 @@ def render_func(*args, **o_kwargs):
                     Melty.draw_state_stack.pop()
 
                 Melty.depth = Melty.depth - 1
-                Melty.unique_stack.pop()
+                if len( Melty.unique_stack) > 0:
+                    Melty.unique_stack.pop()
 
             use_cache = kwargs.get("use_cache", False) and Melty.cache is not None and Melty.cache.enabled
             if not use_cache and Melty.cache is not None:
@@ -2317,8 +2324,10 @@ def render_func(*args, **o_kwargs):
                         Melty.channels_split = False
                         draw_list.channels_merge()
 
+            draw_state._external_change = False
             if child_changed:
-                draw_state._external_change = False
+                draw_state._pending = False
+
             # Normal return path
             if kwargs.get("convert_out", None) is not None or kwargs.get("convert_in", None) is not None:
                 if return_extras:
@@ -2328,6 +2337,10 @@ def render_func(*args, **o_kwargs):
             # if child_changed or draw_state._output_value_cache is UNSET_VALUE:
             #     draw_state._output_value_cache = new_value
 
+            if isinstance(new_value, Pending):
+                draw_state._loading = new_value
+            else:
+                draw_state._loading = False
 
             if return_extras:
                 return child_changed, new_value, return_draw_state
@@ -2457,7 +2470,32 @@ def render_func(*args, **o_kwargs):
                 if not is_primitive:
                     Melty.seen_values.append(id(input_value))
                 #################################################################################################
-                return_value = func(**clean_args)
+
+                if kwargs.get("background", False):
+                    # Run the full wrapper with _converter_mode=True in the
+                    # background call. This gives the func all the render_func
+                    # machinery (draw_state, caching, parameter injection) but
+                    # skips the imgui call via the _has_imgui guards.
+                    # Dear ImGui's current context is a global (not thread-local),
+                    # so we can't create a headless context on worker threads.
+                    return_value = Background.run(func, func_kwargs=clean_args, invalidate_id=draw_state._tile_id,
+                                                  user_id=str(unique) + "async", no_cache=kwargs.get("changed", False),
+                                                  on_frame=Melty.frame_count)
+                    if isinstance(return_value, tuple) and len(return_value) == 2 and isinstance(return_value[1], int):
+                        return_value = return_value[0]
+
+                    if isinstance(return_value, Pending):
+                        draw_list = imgui.get_window_draw_list()
+                        draw_list.add_text(
+                            *(draw_state.left + 2,
+                              draw_state.top + draw_state.height - draw_state.footer_height - 20),
+                            imgui.get_color_u32_rgba(1, 1, 1, 0.5),
+                            f"\uf110 {return_value.status}")
+                        return_value.originated = wrapper
+                        return_value = False, return_value
+                else:
+                    return_value = func(**clean_args)
+
                 ################################################################################################
                 imgui.set_item_allow_overlap()
                 if not is_primitive:
@@ -2560,6 +2598,9 @@ def render_func(*args, **o_kwargs):
     # Expose searchable flag for draw_any
     if o_kwargs.get("searchable", False):
         wrapper._searchable = True
+
+    wrapper.__render_func__ = True
+    wrapper.__header_defaults__ = header_defaults
 
     return wrapper
 

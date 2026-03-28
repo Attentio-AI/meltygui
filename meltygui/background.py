@@ -16,7 +16,7 @@ class Background:
     _active = set()
     _user_tasks = {}
     _lock = threading.Lock()
-    _pool = ThreadPoolExecutor(max_workers=32)
+    _pool = ThreadPoolExecutor(max_workers=16)
     _debounce_timers = {}   # debounce_key -> Timer
     _debounce_latest = {}   # debounce_key -> dict of latest call params
     _hash_times = {}        # type_name -> [total_time_sec, count]
@@ -89,7 +89,7 @@ class Background:
     @classmethod
     def run(cls, func, user_id, func_kwargs=None, *,
             stateful=False, no_cache=False, invalidate_id=None,
-            on_frame=None, frames=None, debounce=0):
+            on_frame=None, frames=None, debounce=1):
         """Run func with func_kwargs, with caching, debouncing, and background dispatch.
 
         Background.run's own parameters (user_id, stateful, no_cache, etc.) are
@@ -98,7 +98,10 @@ class Background:
         if func_kwargs is None:
             func_kwargs = {}
 
-        h = cls._timed_hash(func_kwargs.get("value", None), user_id)
+        if "value" in func_kwargs:
+            h = cls._timed_hash(func_kwargs.get("value", None), user_id)
+        else:
+            h = cls._timed_hash(func_kwargs.get("input_value"), user_id)
 
         # if "search_text" in func_kwargs:
         #     h_s = cls._timed_hash(func_kwargs.get('search_text', None), user_id)
@@ -244,7 +247,7 @@ class Background:
                 from src.lsd.gl_gui.melty import Melty
                 from src.lsd.gl_gui.utils.glfw_utils import request_render
                 if on_frame is None or abs(Melty.frame_count - on_frame) >= 2:
-                    Melty.cache.invalidate_up(invalidate_id)
+                    Melty.cache.invalidate_up(invalidate_id, max_depth=5)
                     request_render()
 
         cls._pool.submit(_task)

@@ -4,6 +4,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional, Any
 
+from src.lsd.gl_gui.view.core_conversion.chain_converters import module_to_address, address_to_general_parse, \
+    general_parse_to_address, address_to_module, class_to_address, address_to_class, function_to_address, \
+    address_to_function
 from src.lsd.gl_gui.view.core_conversion.file_converters import path_to_dict, bytes_to_str, load_text, recompile_module, \
     recompile, fn_to_cst, cst_to_fn, recompile_fn, \
     mod_to_cst, cst_to_mod, recompile_mod_fn, \
@@ -59,7 +62,7 @@ class Mode(Enum):
         Any: ModeOverrides(
             kwargs={"show_bg":True, "selectable":False, "use_cache":True, "melty_window":True, "closable":True,
                     "with_header_end":draw_header_end, "auto_resize":False, "draggable":True,
-                    "show_tint":True, "show_header":True, "with_footer":draw_footer, "min_width":30, "min_height":20,
+                    "show_tint":True, "show_header":True, "with_footer":draw_footer, "min_width":60, "min_height":50,
                     "disable_scroll":False},
             recursive=False
         )
@@ -102,39 +105,34 @@ class Mode(Enum):
         ),
     }
     CODE_UI = {
-        cst.Module: ModeOverrides(
-            kwargs={"convert_in": [cst_to_dict],
-                    "convert_out": [dict_to_cst],
-                    },
-            func=draw_collection,
-            recursive=True
-        ),
-
         types.FunctionType: ModeOverrides(
-            kwargs={"convert_in": [fn_to_cst, cst_to_dict],
-                    "convert_out": [dict_to_cst, cst_to_fn],
-                    "auto_apply": [load_text, recompile_fn]},
-
             recursive=True,
-            func = draw_collection
+            func=(function_to_address,
+                  (address_to_general_parse, {'load': True}),
+                  draw_collection,
+                  (general_parse_to_address, {'save': False,
+                                              'recompile': True}),
+                  address_to_function),
         ),
 
         type: ModeOverrides(
-            kwargs={"convert_in": [cls_to_cst, cst_to_dict],
-                    "convert_out": [dict_to_cst, cst_to_cls],
-                    "auto_apply": [load_text],
-                    "hotswap_instances": True,
-                    },
-            recursive=True,
-            func=draw_collection
+            func=(class_to_address,
+                  (address_to_general_parse, {'load': True}),
+                  draw_collection,
+                  (general_parse_to_address, {'save': False,
+                                              'recompile': True}),
+                  address_to_class),
+            recursive=True
         ),
 
         types.ModuleType: ModeOverrides(
-            kwargs={"convert_in": [mod_to_cst, cst_to_dict],
-                    "convert_out": [dict_to_cst, cst_to_mod],
-                    "auto_apply": [load_text]},
             recursive=True,
-            func=draw_collection
+            func=(module_to_address,
+                  (address_to_general_parse, {'load': False}),
+                  draw_collection,
+                  (general_parse_to_address, {'save': False,
+                                              'recompile': True}),
+                  address_to_module),
         ),
 
         Conditional: ModeOverrides(

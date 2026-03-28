@@ -23,7 +23,7 @@ from src.lsd.gl_gui.melty import Melty
 
 import libcst as cst
 
-from src.lsd.gl_gui.view.core_conversion.fileref import FileRef, invalidate_fileref_cache, update_fileref_cache
+from src.lsd.gl_gui.view.core_conversion.address import Address, invalidate_address_cache, update_address_cache
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import invalidate_usage_cache
 
 
@@ -35,11 +35,11 @@ def _detect_newline(data: bytes) -> str:
     return "\r\n" if b"\r\n" in data else "\n"
 
 
-def load_file_bytes(ref: FileRef) -> bytes:
+def load_file_bytes(ref: Address) -> bytes:
     return ref.path.read_bytes()
 
 
-def load_text(ref: FileRef) -> str:
+def load_text(ref: Address) -> str:
     data = ref.path.read_bytes()
     newline = _detect_newline(data)
     try:
@@ -50,7 +50,7 @@ def load_text(ref: FileRef) -> str:
     return newline.join(lines[ref.start:ref.end])
 
 
-def load_span_text(ref: FileRef) -> str:
+def load_span_text(ref: Address) -> str:
     data = ref.path.read_bytes()
     newline = _detect_newline(data)
     try:
@@ -154,8 +154,8 @@ def rf_dict_to_path(input_value) -> bytes:
 
 
 @render_func(load_data=load_span_text)
-def rf_fileref_to_dict(input_value, data=None) -> dict:
-    """FileRef → text dict."""
+def rf_address_to_dict(input_value, data=None) -> dict:
+    """Address → text dict."""
     return None, {
         "value": data,
         "__original_value__": data,
@@ -163,7 +163,7 @@ def rf_fileref_to_dict(input_value, data=None) -> dict:
 
 
 @render_func()
-def rf_dict_to_fileref(input_value) -> str:
+def rf_dict_to_address(input_value) -> str:
     """Text dict → str for save."""
     data = input_value.get("value")
     if data is None:
@@ -201,11 +201,11 @@ def recompile_fn(input_value, ref=None, function_ref=None):
     lines[ref.start:ref.end] = new_lines
     ref.path.write_text(newline.join(lines), encoding="utf-8")
     invalidate_usage_cache(ref.path)
-    new_ref = FileRef(ref.path, ref.start, ref.start + len(new_lines))
+    new_ref = Address(ref.path, ref.start, ref.start + len(new_lines))
     if function_ref is not None:
-        update_fileref_cache(function_ref, new_ref)
+        update_address_cache(function_ref, new_ref)
     else:
-        invalidate_fileref_cache(function_ref)
+        invalidate_address_cache(function_ref)
     return None, new_ref
 
 
@@ -233,7 +233,7 @@ def recompile_mod_fn(input_value, ref=None, module_ref=None):
         except Exception as e:
             return Pending(originated=recompile_mod_fn, status=str(e),
                            state=PendingState.ERROR), None
-    # Module FileRefs cover the whole file so write directly
+    # Module Addresses cover the whole file; write directly
     ref.path.write_text(input_value, encoding="utf-8")
     invalidate_usage_cache(ref.path)
     return None, ref
@@ -282,9 +282,9 @@ def recompile_cls_fn(input_value, ref=None, class_ref=None,
     lines[ref.start:ref.end] = new_lines
     ref.path.write_text(newline.join(lines), encoding="utf-8")
     invalidate_usage_cache(ref.path)
-    new_ref = FileRef(ref.path, ref.start, ref.start + len(new_lines))
+    new_ref = Address(ref.path, ref.start, ref.start + len(new_lines))
     if class_ref is not None:
-        update_fileref_cache(class_ref, new_ref)
+        update_address_cache(class_ref, new_ref)
     return None, new_ref
 
 
@@ -294,11 +294,11 @@ def cst_to_cls(input_value):
     return None, input_value.code
 
 
-# --- FileRef ↔ cst.Module ---
+# --- Address ↔ cst.Module ---
 
 @render_func(load_data=load_text)
 def ref_to_cst(input_value, data=None) -> cst.Module:
-    """Forward: FileRef → cst.Module."""
+    """Forward: Address → cst.Module."""
     return None, cst.parse_module(data)
 
 
@@ -316,7 +316,7 @@ def save_span_fn(input_value, ref=None):
     lines[ref.start:ref.end] = new_lines
     ref.path.write_text(newline.join(lines), encoding="utf-8")
     invalidate_usage_cache(ref.path)
-    return None, FileRef(ref.path, ref.start, ref.start + len(new_lines))
+    return None, Address(ref.path, ref.start, ref.start + len(new_lines))
 
 
 @render_func(save_data=save_span_fn)
@@ -512,16 +512,16 @@ def _recompile_module(module: types.ModuleType, source: str,
 
         elif isinstance(old_obj, type) and isinstance(new_obj, type):
             _hotswap_class(old_obj, new_obj)
-            invalidate_fileref_cache(old_obj)
+            invalidate_address_cache(old_obj)
             module.__dict__[name] = old_obj
 
 
 def _hotswap_class(old_cls: type, new_cls: type) -> None:
     """Patch an existing class in place with new methods and attributes."""
-    # NOTE: do NOT invalidate the fileref cache here.  The caller
-    # (recompile_cls_fn) handles cache updates via update_fileref_cache.
+    # NOTE: do NOT invalidate the address cache here.  The caller
+    # (recompile_cls_fn) handles cache updates via update_address_cache.
     # Invalidating here creates a race window where a concurrent
-    # type convert-in chain calls to_fileref, misses the cache,
+    # background convert-in chain calls to_address, misses the cache,
     # and re-caches the OLD range from inspect.getsourcelines.
 
     for name in list(vars(old_cls)):

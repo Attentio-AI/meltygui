@@ -1,4 +1,4 @@
-from src.lsd.gl_gui.view.core_conversion.fileref import FileRef
+from src.lsd.gl_gui.view.core_conversion.address import Address
 
 
 class _Unset:
@@ -9,7 +9,7 @@ class _Unset:
 UNSET_VALUE = _Unset()
 
 # Types safe for early cutoff equality comparison
-_CUTOFF_TYPES = {FileRef, str, int, float, bool, tuple, bytes, frozenset}
+_CUTOFF_TYPES = {Address, str, int, float, bool, tuple, bytes, frozenset}
 
 def register_cutoff_type(*types):
     """Register types as safe for early cutoff equality comparison."""

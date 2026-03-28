@@ -169,6 +169,9 @@ class DrawState(DictConversion):
         self._input_value_cache = UNSET_VALUE
         self._output_value_cache = UNSET_VALUE
         self._file_meta = UNSET_VALUE
+        self._loading = False
+        self._pending = False
+        self._running = False
 
         # Chain cache, split based on type, UNSET_VALUE as a default
         self._chain_stack = CacheTree()
@@ -404,7 +407,7 @@ class DrawState(DictConversion):
 
 
         # File watch state (replaces _WatchState for convert_in/convert_out)
-        self._fileref = None
+        self._address = None
         self._file_mtime = 0.0
         self._file_size = 0
         self._original_load_data = None
@@ -425,19 +428,19 @@ class DrawState(DictConversion):
         return (l, t, l + w, t + h)
 
     def is_file_stale(self):
-        if self._fileref is None:
+        if self._address is None:
             return False
         try:
-            s = self._fileref.path.stat()
+            s = self._address.path.stat()
             return s.st_mtime != self._file_mtime or s.st_size != self._file_size
         except OSError:
             return True
 
     def mark_file_current(self):
-        if self._fileref is None:
+        if self._address is None:
             return
         try:
-            s = self._fileref.path.stat()
+            s = self._address.path.stat()
             self._file_mtime = s.st_mtime
             self._file_size = s.st_size
         except OSError:
