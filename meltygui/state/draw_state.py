@@ -9,6 +9,7 @@ import libcst as cst
 
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
+from src.lsd.gl_gui.toggles import shadow_depth_at
 from src.lsd.gl_gui.view.core_conversion.cache_tree import CacheTree, UNSET_VALUE
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import no_save, exclude, deep_refresh, no_save_exclude, \
     invalidate_all
@@ -562,7 +563,7 @@ class DrawState(DictConversion):
         self.max_column = max(self.max_column, column)
 
     def shadow_depth_at(self, depth, active_layer):
-        divisor = max(1.0, depth - 13.0)
+        divisor = max(0.5, depth - 20.0)
         depth_and_layer = active_layer * Melty.max_depth + (depth * (20.0 / (divisor)))
         depth_and_layer *= Melty.layer_inc
         return depth_and_layer
@@ -570,7 +571,7 @@ class DrawState(DictConversion):
     @property
     def shadow_depth(self):
         depth, active_layer = self.depth_and_layer
-        return self.shadow_depth_at(depth, active_layer)
+        return shadow_depth_at(depth, active_layer)
 
     @property
     def seen(self):

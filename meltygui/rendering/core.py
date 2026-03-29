@@ -180,7 +180,6 @@ def render_func(*args, **o_kwargs):
             kwargs['draggable'] = True
             kwargs['show_tint'] = True
             kwargs['show_header'] = True
-            kwargs['z_offset'] = -3
             kwargs['disable_scroll'] = False
 
             from src.lsd.gl_gui.view.core_views.headers import draw_header_end
@@ -623,29 +622,29 @@ def render_func(*args, **o_kwargs):
 
             passed_z_offset = kwargs.get("z_offset", 0)
             ds_z_offset = draw_state.z_offset
-            if draw_state.pressed:
-                if kwargs.get("shadow", False):
-                    if draw_state.selected:
-                        internal_z_offset = -3.0
-                    else:
-                        internal_z_offset = 1
-                else:
-                    if draw_state.selected:
-                        internal_z_offset = -1
-                    else:
-                        internal_z_offset = 0
+            # if draw_state.pressed:
+            #     if kwargs.get("shadow", False):
+            #         if draw_state.selected:
+            #             internal_z_offset = -3.0
+            #         else:
+            #             internal_z_offset = 1
+            #     else:
+            #         if draw_state.selected:
+            #             internal_z_offset = -1
+            #         else:
+            #             internal_z_offset = 0
 
-            elif draw_state.selected:
-                if kwargs.get("shadow", False):
-                    internal_z_offset = -2.0
-                else:
-                    internal_z_offset = -0.5
-
+            # if draw_state.selected:
+            #     if kwargs.get("shadow", False):
+            #         internal_z_offset = -2.0
+            #     else:
+            #         internal_z_offset = 0
+            #
+            # else:
+            if kwargs.get("shadow", False):
+                internal_z_offset = 1
             else:
-                if kwargs.get("shadow", False):
-                    internal_z_offset = 1
-                else:
-                    internal_z_offset = 0
+                internal_z_offset = 0
 
             total_z_offset = ds_z_offset + passed_z_offset + internal_z_offset
 

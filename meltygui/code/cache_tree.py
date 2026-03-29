@@ -93,6 +93,14 @@ class CacheTree:
             self._cursor += 1
             return UNSET_VALUE
 
+    def peek(self):
+        """Return the cached value at the current cursor without advancing."""
+        if self._cursor < len(self._mapping):
+            node = self._mapping[self._cursor]
+            if node is not None:
+                return node.value
+        return UNSET_VALUE
+
     def end(self):
         """End of walk. Stack is rebuilt each begin(), nothing to finalize."""
         self._stack = None

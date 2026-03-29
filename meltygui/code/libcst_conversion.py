@@ -209,7 +209,7 @@ class UsageRef:
     Designed as a routable type for draw_any — the UI can render it
     as a clickable link to the call site.
     """
-    __slots__ = ("path", "line", "column", "scope", "module_name")
+    __slots__ = ("path", "line", "column", "scope", "module_name", "raw")
 
     def __init__(self, path: _Path | None, line: int, column: int = 0,
                  scope: str = "", module_name: str = ""):
@@ -218,6 +218,7 @@ class UsageRef:
         self.column = column
         self.scope = scope
         self.module_name = module_name
+        self.raw = None
 
     def __repr__(self) -> str:
         loc = f"{self.path.name}:{self.line}" if self.path else f":{self.line}"
@@ -421,7 +422,7 @@ def _jedi_subprocess(file_path_str: str,
             UsageRef(
                 path=_Path(t[0]) if t[0] else None,
                 line=t[1], column=t[2],
-                scope=t[3], module_name=t[4],
+                scope=t[3], module_name=t[4], raw=t,
             )
             for t in tuples
         ]
@@ -430,6 +431,7 @@ def _jedi_subprocess(file_path_str: str,
 
 def invalidate_usage_cache(path: _Path | str | None = None) -> None:
     """Drop cached cross-file references for a path, or all if None."""
+    print("Invalidating usage cache for", path if path else "ALL PATHS")
     if path is None:
         _xref_cache.clear()
     else:
@@ -493,7 +495,7 @@ def _collect_usages(
     """Collect intra-module usages only (fast libcst pass).
 
     Cross-file references are populated separately via
-    populate_cross_file_usages(), which should be called outside the
+    populate_usages(), which should be called outside the
     stateful converter chain (e.g. via a non-stateful Background.run).
     """
     intra, _ = _collect_intra_usages(tree, top_scope)
@@ -520,13 +522,11 @@ def populate_usages(gp: GeneralParse) -> None:
                        func_kwargs={"gp": result},
                        stateful=False)
     """
+    print("Populating cross-file usages for", gp.file_path)
     file_path = gp.file_path
     if file_path is not None:
         _populate_xrefs(gp, file_path)
 
-
-# Keep old name as alias
-populate_cross_file_usages = populate_usages
 
 
 def _populate_xrefs(gp, file_path: _Path) -> None:
@@ -543,6 +543,7 @@ def _populate_xrefs(gp, file_path: _Path) -> None:
             gp.usages.setdefault(name, []).extend(refs)
 
     for key, child in gp.items():
+
         if _is_dunder(key):
             continue
         if isinstance(child, GeneralParse) and "__cst__" in child:

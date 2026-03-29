@@ -176,6 +176,7 @@ def load_cst_module(input_value: Address):
     converted_cst = cst.parse_module(text)
     general_parse = cst_module_to_dict(converted_cst)
     general_parse.address = input_value
+    general_parse.file_path = input_value.path
 
     if Toggles.slow_down_threads:
         for i in range(5):
@@ -192,6 +193,7 @@ def load_cst_module(input_value: Address):
 
 @render_func(background=False)
 def do_recompile(input_value, code_str, file_path):
+    print(f"do_recompile: Recompiling {input_value} from {file_path} with code:\n{code_str[:100]}...")
     """Dispatch recompile to the right handler based on source type."""
     if isinstance(input_value, type):
         _recompile_class(input_value, code_str, str(file_path))
@@ -230,7 +232,7 @@ def _do_save(input_value, code_str):
 
 
 @render_func(background=True)
-def save_cst_module(input_value, changed=False):
+def dict_to_cst(input_value, changed=False):
     back_to_cst = dict_to_cst_module(input_value)
     if Toggles.slow_down_threads:
         for i in range(5):
@@ -299,10 +301,13 @@ def general_parse_to_address(input_value: GeneralParse, pending=False, draw_stat
                              changed=False, recompile=False, save=False):
     """GeneralParse dict → Address. Handles recompile and save for any source type."""
     address = input_value.address
+    if not isinstance(address, Address):
+        imgui.text_colored("Saving unavailable...\ninput_value.address is not set",
+                           1.0, 0.0, 0.0)
+        return False, None
     source = address.source
 
-
-    convert_finished, back_to_cst = save_cst_module(input_value=input_value, changed=changed)
+    convert_finished, back_to_cst = dict_to_cst(input_value=input_value, changed=changed)
     if isinstance(back_to_cst, Pending):
         return False, back_to_cst
     code_str = back_to_cst.code
@@ -311,11 +316,10 @@ def general_parse_to_address(input_value: GeneralParse, pending=False, draw_stat
         request_render()
 
     if source is not None:
-        run_button(do_recompile, clicked=recompile, name="do_recompile",
+        run_button(do_recompile, clicked=recompile and pending, name="do_recompile",
                     with_kwargs={"input_value": address.source,
                              "code_str": code_str,
                              "file_path": address.path})
-
     if pending or changed:
         if source is not None:
             clicked, result = run_button(_do_save, with_kwargs={"input_value": address,
@@ -324,7 +328,6 @@ def general_parse_to_address(input_value: GeneralParse, pending=False, draw_stat
             if clicked:
                 Melty.cache.invalidate_up(draw_state.parent_window._tile_id, max_depth=10)
                 return True, address
-
     return changed, address
 
 
@@ -349,11 +352,40 @@ def cst_to_address(input_value, changed=False, draw_state=None):
 
 
 @render_func(use_cache=True)
-def chain_cst_to_str(input_value, draw_state=None):
+def general_parse_to_str(input_value, draw_state=None):
     """Convert cst.Module → source string. Pure converter, no UI."""
-    if isinstance(input_value, cst.Module):
-        return True, input_value.code
-    return False, input_value
+    if isinstance(input_value, GeneralParse):
+        return True, input_value.source
+    else:
+        return False, None
+
+
+@render_func(use_cache=True)
+def str_to_general_parse(input_value, reference=None, draw_state=None):
+    input_str = str(input_value)
+    if isinstance(reference, GeneralParse):
+        if reference.source != input_str:
+            try:
+                cst_module = cst.parse_module(input_str)
+                general_parse = cst_module_to_dict(cst_module)
+                general_parse.address = reference.address
+                reference.source = input_str
+
+                return True, general_parse
+            except Exception as e:
+                reference.source = input_str
+                imgui.text_colored(f"Error parsing code: {e}", 1.0, 0.0, 0.0)
+                return True, reference
+        else:
+            return False, reference
+    else:
+
+        cst_module = cst.parse_module(input_str)
+        general_parse = cst_module_to_dict(cst_module)
+        return True, general_parse
+
+
+
 
 
 

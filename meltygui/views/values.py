@@ -17,7 +17,7 @@ from imgui.core import _DrawList
 
 from src.lsd.gl_gui import toggles
 from src.lsd.gl_gui.melty import Melty, CollectionAction, ManagedWindow
-from src.lsd.gl_gui.model.core_model.draw_state import ZoomState, TileMode
+from src.lsd.gl_gui.model.core_model.draw_state import ZoomState, TileMode, DrawState
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_style_var, \
@@ -26,7 +26,7 @@ from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
 from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE, CacheTree
 from src.lsd.gl_gui.view.core_conversion.chain_converters import class_to_address, \
     address_to_class, general_parse_to_address, module_to_address, address_to_module, address_to_general_parse
-from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment, GeneralParse
+from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment, GeneralParse, UsageRef
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
@@ -519,7 +519,9 @@ def run_chain(input_value, chain=None, draw_state=None, debug=False, **kwargs):
         func_kwargs['name'] = f"{func.__name__} {kwargs.get('name', '')}"
         func_kwargs['changed'] = changed
         imgui.begin_group()
-        changed, value = func(input_value=value, **func_kwargs)
+
+        next_cached = cache_tree.peek()
+        changed, value = func(input_value=value, reference=next_cached, **func_kwargs)
         imgui.end_group()
         if isinstance(value, Pending):
             changed=False
@@ -554,6 +556,7 @@ def draw_main(input_value, vis, draw_state=None):
                                      show_bg=True, mode=(Mode.WINDOW), modes=[Mode.CODE_PLAIN_TEXT, Mode.CODE_UI, Mode.CODE_DICT_STR])
     if changed:
         test_code = value
+
 
     changed, value = draw_with_modes(input_value=toggles, name="Toggles",
                                      show_bg=True, mode=(Mode.WINDOW), modes=[Mode.CODE_PLAIN_TEXT, Mode.CODE_UI])
@@ -1518,11 +1521,11 @@ def draw_bg(left=4, top=3, width=0, height=55, depth=0, rounding=3.384,
 
     # -- Constants ---------------------------------
     depth_wrap        = 42
-    depth_scale       = 0.834
-    corner_radius     = 4.028
-    border_inset      = 1.548
-    border_inset_half = 0.245
-    stroke_width      = 2.738
+    depth_scale       = 1.164
+    corner_radius     = 7.668
+    border_inset      = 1.758
+    border_inset_half = 0.545
+    stroke_width      = 1.868
     # How depth maps to color intensity
     intensity_factor  = 0.069
     intensity_offset  = -0.271
@@ -1532,21 +1535,21 @@ def draw_bg(left=4, top=3, width=0, height=55, depth=0, rounding=3.384,
     outline_sat       = {'default': 1.752, 'nested': 3.211}
 
     # Beed color
-    bleed_mix         = {'nested': -0.026, 'default': 0.454}
+    bleed_mix         = {'nested': 0.514, 'default': 0.454}
     bleed_style       = {'value': -0.111, 'alpha': 0.994, 'saturation': 5.459}
     outline_bleed_mix = 0.272
 
     # Hover offset per interaction state
     hover_offset_by_state = {
-        'default':    -1.813,
-        'selected':    -2.071,
-        'pressed_hi': -2.288,   # pressed + opacity > 0.5
-        'pressed_lo':  -0.371,
+        'default':    -2.093,
+        'selected':    6.759,
+        'pressed_hi': -1.813,   # pressed + opacity > 0.5
+        'pressed_lo':  -0.441,
     }
 
     bg_style = {
-        'value': 0.048, 'saturation': 3.406,
-        'alpha': -2.072, 'max_value': 0.81,
+        'value': 0.078, 'saturation': 3.176,
+        'alpha': 0.208, 'max_value': 2.1,
     }
     
 
@@ -1798,7 +1801,7 @@ def draw_str(input_value: str, draw_state, editable=True, alpha=1.0):
     return changed, value
 
 @render_func(is_default_for=GeneralParse, shadow=True, z_offset=2, show_bg=True, with_header=draw_header,
-             is_tree=True, tint=(0.11, 0.1, 0.16))
+             is_tree=True)
 def draw_general_parse(input_value: GeneralParse):
     imgui.text("General parse render func")
     changed, value = draw_collection(input_value=input_value)
@@ -1809,6 +1812,12 @@ def draw_general_parse(input_value: GeneralParse):
     return changed, value
 
 
+@render_func(is_default_for=UsageRef, shadow=True, z_offset=2, show_bg=True, with_header=draw_header,
+             is_tree=True, tint=(0.11, 0.1, 0.16))
+def draw_usage(input_value: UsageRef):
+    imgui.text(f"{input_value.path} {input_value.line}:{input_value.column} {input_value.scope} {input_value.module_name}")
+
+    return False, None
 
 @render_func(is_default_for=(Comment), shadow=False, with_header=None, is_tree=False, tint=(0.2, 0.2, 0.1))
 def draw_comment(input_value: Comment, draw_state, cursor_hover=False):
@@ -1925,9 +1934,8 @@ def draw_float_ctx(input_value):
 
 
 
-@render_func(is_default_for=float, use_cache=False, shadow=False, window_pos=(0,0), show_bg=False, wrap=False, is_tree=False,
-             with_header=draw_header, with_header_end=draw_header_end)
-def draw_float(input_value: float, draw_state, min_value=-100.0, max_value=100.0, speed=0.0001):
+@render_func(is_default_for=float, use_cache=False, shadow=False, window_pos=(0,0), show_bg=False, wrap=False, is_tree=False, with_header=draw_header, with_header_end=draw_header_end)
+def draw_float(input_value: float, draw_state, min_value=-100.0, max_value=100.0, speed=0.01):
     imgui.set_next_item_width(min(600, max(30, draw_state.content_width)))
     changed, value = imgui.drag_float("", input_value,
                                       format='%.3f',
@@ -1937,7 +1945,6 @@ def draw_float(input_value: float, draw_state, min_value=-100.0, max_value=100.0
                                       
     if changed:
         return True, value
-
 
 @render_func(is_default_for=(Parameter), wraps=render_func, with_header=draw_header)
 def draw_parameter(input_value):

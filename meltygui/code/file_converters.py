@@ -495,25 +495,30 @@ def _recompile_module(module: types.ModuleType, source: str,
     old_attrs = dict(module.__dict__)
 
     code = compile(source, filename, "exec")
-    exec(code, module.__dict__)
+    try:
+        exec(code, module.__dict__)
 
-    for name, old_obj in old_attrs.items():
-        new_obj = module.__dict__.get(name)
-        if new_obj is old_obj or new_obj is None:
-            continue
+        for name, old_obj in old_attrs.items():
+            new_obj = module.__dict__.get(name)
+            if new_obj is old_obj or new_obj is None:
+                continue
 
-        if isinstance(old_obj, types.FunctionType) and isinstance(new_obj, types.FunctionType):
-            old_obj.__code__ = new_obj.__code__
-            old_obj.__defaults__ = new_obj.__defaults__
-            old_obj.__kwdefaults__ = new_obj.__kwdefaults__
-            old_obj.__annotations__ = new_obj.__annotations__
-            old_obj.__doc__ = new_obj.__doc__
-            module.__dict__[name] = old_obj
+            if isinstance(old_obj, types.FunctionType) and isinstance(new_obj, types.FunctionType):
+                old_obj.__code__ = new_obj.__code__
+                old_obj.__defaults__ = new_obj.__defaults__
+                old_obj.__kwdefaults__ = new_obj.__kwdefaults__
+                old_obj.__annotations__ = new_obj.__annotations__
+                old_obj.__doc__ = new_obj.__doc__
+                module.__dict__[name] = old_obj
 
-        elif isinstance(old_obj, type) and isinstance(new_obj, type):
-            _hotswap_class(old_obj, new_obj)
-            invalidate_address_cache(old_obj)
-            module.__dict__[name] = old_obj
+            elif isinstance(old_obj, type) and isinstance(new_obj, type):
+                _hotswap_class(old_obj, new_obj)
+                invalidate_address_cache(old_obj)
+                module.__dict__[name] = old_obj
+    except Exception as e:
+        # Roll back to old attributes on error
+        module.__dict__.update(old_attrs)
+        print(f"Error recompiling module '{module.__name__}': {e}")
 
 
 def _hotswap_class(old_cls: type, new_cls: type) -> None:

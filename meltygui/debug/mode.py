@@ -6,7 +6,7 @@ from typing import Optional, Any
 
 from src.lsd.gl_gui.view.core_conversion.chain_converters import module_to_address, address_to_general_parse, \
     general_parse_to_address, address_to_module, class_to_address, address_to_class, function_to_address, \
-    address_to_function
+    address_to_function, general_parse_to_str, str_to_general_parse
 from src.lsd.gl_gui.view.core_conversion.file_converters import path_to_dict, bytes_to_str, load_text, recompile_module, \
     recompile, fn_to_cst, cst_to_fn, recompile_fn, \
     mod_to_cst, cst_to_mod, recompile_mod_fn, \
@@ -114,7 +114,15 @@ class Mode(Enum):
                                               'recompile': True}),
                   address_to_function),
         ),
-
+        types.ModuleType: ModeOverrides(
+            recursive=True,
+            func=(module_to_address,
+                  (address_to_general_parse, {'load': True}),
+                  draw_collection,
+                  (general_parse_to_address, {'save': True,
+                                              'recompile': True}),
+                  address_to_module),
+        ),
         type: ModeOverrides(
             func=(class_to_address,
                   (address_to_general_parse, {'load': True}),
@@ -125,15 +133,7 @@ class Mode(Enum):
             recursive=True
         ),
 
-        types.ModuleType: ModeOverrides(
-            recursive=True,
-            func=(module_to_address,
-                  (address_to_general_parse, {'load': True}),
-                  draw_collection,
-                  (general_parse_to_address, {'save': True,
-                                              'recompile': True}),
-                  address_to_module),
-        ),
+
 
         Conditional: ModeOverrides(
             kwargs={"tint": (0.2, 0.2, 0.1), 'show_add_delete': False, 'is_tree':False},
@@ -162,42 +162,46 @@ class Mode(Enum):
     }
 
     CODE_PLAIN_TEXT = {
-        cst.Module: ModeOverrides(
-            kwargs={"convert_in": [cst_module_to_str],
-                    "convert_out": [str_to_cst_module],
-                    "auto_apply": [load_text],
-                    "horizontal": True},
-            func=draw_text,
-            recursive=True
-        ),
 
         types.FunctionType: ModeOverrides(
-            kwargs={"convert_in": [fn_to_cst],
-                    "convert_out": [cst_to_fn],
-                    "indent_size": 5, "with_header": draw_header},
-            recursive=True
-        ),
-
-        types.ModuleType: ModeOverrides(
-            kwargs={"convert_in": [mod_to_cst],
-                    "convert_out": [cst_to_mod],
-                    "indent_size": 5, "with_header": draw_header},
-            recursive=True
-        ),
-
-        type: ModeOverrides(
-            kwargs={"convert_in": [cls_to_cst],
-                    "convert_out": [cst_to_cls],
-                    "hotswap_instances": True,
-                    "indent_size": 5, "with_header": draw_header},
-            recursive=True
-        ),
-
-        str: ModeOverrides(
-            kwargs={"mode": None, "indent_size": 30, "with_header": draw_header},
-            func=draw_text,
             recursive=True,
+            func=(function_to_address,
+                  (address_to_general_parse, {'load': True}),
+                  general_parse_to_str,
+                  draw_text,
+                  str_to_general_parse,
+                  (general_parse_to_address, {'save': False,
+                                              'recompile': False}),
+                  address_to_function),
         ),
+        types.ModuleType: ModeOverrides(
+            recursive=True,
+            func=(module_to_address,
+                  (address_to_general_parse, {'load': True}),
+                  general_parse_to_str,
+                  draw_text,
+                  str_to_general_parse,
+                  (general_parse_to_address, {'save': False,
+                                              'recompile': False}),
+                  address_to_module),
+        ),
+        type: ModeOverrides(
+            func=(class_to_address,
+                  (address_to_general_parse, {'load': True}),
+                  general_parse_to_str,
+                  draw_text,
+                  str_to_general_parse,
+                  (general_parse_to_address, {'save': False,
+                                              'recompile': False}),
+                  address_to_class),
+            recursive=True
+        ),
+
+        # str: ModeOverrides(
+        #     kwargs={"mode": None, "indent_size": 30, "with_header": draw_header},
+        #     func=draw_text,
+        #     recursive=True,
+        # ),
     }
 
     # ── File metadata ────────────────────────────────────────
