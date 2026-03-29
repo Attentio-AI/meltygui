@@ -1541,14 +1541,14 @@ def draw_bg(left=4, top=3, width=0, height=55, depth=0, rounding=3.384,
 
     # Hover offset per interaction state
     hover_offset_by_state = {
-        'default':    -2.093,
+        'default':    -1.863,
         'selected':    6.759,
         'pressed_hi': -1.813,   # pressed + opacity > 0.5
         'pressed_lo':  -0.441,
     }
 
     bg_style = {
-        'value': 0.078, 'saturation': 3.176,
+        'value': 0.008, 'saturation': 1.086,
         'alpha': 0.208, 'max_value': 2.1,
     }
     
