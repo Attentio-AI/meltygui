@@ -40,13 +40,13 @@ class Background:
         type_name = type(value).__name__
         t0 = time.perf_counter()
         h = cls.simple_hash(value=value) + user_id
-        elapsed = time.perf_counter() - t0
+        # elapsed = time.perf_counter() - t0
 
         # with cls._lock:
-        if type_name not in cls._hash_times:
-            cls._hash_times[type_name] = [0.0, 0]
-        cls._hash_times[type_name][0] += elapsed
-        cls._hash_times[type_name][1] += 1
+        # if type_name not in cls._hash_times:
+        #     cls._hash_times[type_name] = [0.0, 0]
+        # cls._hash_times[type_name][0] += elapsed
+        # cls._hash_times[type_name][1] += 1
 
         return h
 
@@ -89,7 +89,7 @@ class Background:
     @classmethod
     def run(cls, func, user_id, func_kwargs=None, *,
             stateful=False, no_cache=False, invalidate_id=None,
-            on_frame=None, frames=None, debounce=1):
+            on_frame=None, frames=None, debounce=20):
         """Run func with func_kwargs, with caching, debouncing, and background dispatch.
 
         Background.run's own parameters (user_id, stateful, no_cache, etc.) are
@@ -100,8 +100,10 @@ class Background:
 
         if "value" in func_kwargs:
             h = cls._timed_hash(func_kwargs.get("value", None), user_id)
+        elif "input_value" in func_kwargs:
+            h = cls._timed_hash(func_kwargs.get("input_value", None), user_id)
         else:
-            h = cls._timed_hash(func_kwargs.get("input_value"), user_id)
+            print(f"Warning no 'value' or 'input_value' in func_kwargs for {func.__name__} with user_id {user_id}, using 0 as hash")
 
         # if "search_text" in func_kwargs:
         #     h_s = cls._timed_hash(func_kwargs.get('search_text', None), user_id)
@@ -139,19 +141,20 @@ class Background:
             debounce_key = user_id
 
             cache = cls._user_cache.get(user_id)
+            stale_value = None
             if cache and h in cache:
-                cache.move_to_end(h)
-                return_val = cache[h]
                 if no_cache:
-                    cls._user_cache.pop(user_id, None)
-                return return_val
+                    stale_value = cache[h]
+                else:
+                    cache.move_to_end(h)
+                    return cache[h]
 
             if h in cls._active:
-                return Pending(originated=cls, status="background thread active", state=PendingState.BACKGROUND)
+                return stale_value if stale_value is not None else Pending(originated=cls, status="background thread active", state=PendingState.BACKGROUND)
 
             latest = cls._debounce_latest.get(debounce_key)
             if latest is not None and latest.get("hash") == h:
-                return Pending(originated=cls, status="debounce waiting", state=PendingState.BACKGROUND)
+                return stale_value if stale_value is not None else Pending(originated=cls, status="debounce waiting", state=PendingState.BACKGROUND)
 
             prev = cls._debounce_timers.pop(debounce_key, None)
             if prev is not None:
@@ -186,22 +189,23 @@ class Background:
             cls._debounce_timers[debounce_key] = timer
             timer.start()
 
-            return Pending(originated=cls, status="debounce waiting", state=PendingState.BACKGROUND)
+            return stale_value if stale_value is not None else Pending(originated=cls, status="debounce waiting", state=PendingState.BACKGROUND)
 
         # --- normal (background thread) path ---
 
         cache = cls._user_cache.get(user_id)
+        stale_value = None
         if cache and h in cache:
-            cache.move_to_end(h)
-            return_val = cache[h]
             if no_cache:
-                cls._user_cache.pop(user_id, None)
-            return return_val
+                stale_value = cache[h]
+            else:
+                cache.move_to_end(h)
+                return cache[h]
 
         cls._user_tasks[user_id] = h
 
         if h in cls._active:
-            return Pending(originated=cls, status="background thread active", state=PendingState.BACKGROUND)
+            return stale_value if stale_value is not None else Pending(originated=cls, status="background thread active", state=PendingState.BACKGROUND)
 
         if Toggles.debug_threads and frames is None:
             frames = get_live_frames()
@@ -233,9 +237,10 @@ class Background:
                 entry[1] += 1
             if on_frame is not None:
                 result = (result, on_frame)
-            cls._active.discard(h)
             for uid, task_h in cls._user_tasks.items():
                 if task_h == h:
+                    if no_cache:
+                        cls._user_cache.pop(uid, None)
                     if uid not in cls._user_cache:
                         cls._user_cache[uid] = OrderedDict()
                     cls._user_cache[uid][h] = result
@@ -243,6 +248,7 @@ class Background:
 
                     while len(cls._user_cache[uid]) > cls._cache_size:
                         cls._user_cache[uid].popitem(last=False)
+            cls._active.discard(h)
             if invalidate_id is not None:
                 from src.lsd.gl_gui.melty import Melty
                 from src.lsd.gl_gui.utils.glfw_utils import request_render
@@ -251,7 +257,7 @@ class Background:
                     request_render()
 
         cls._pool.submit(_task)
-        return Pending(originated=cls, status="background thread", state=PendingState.BACKGROUND)
+        return stale_value if stale_value is not None else Pending(originated=cls, status="background thread", state=PendingState.BACKGROUND)
 
     @staticmethod
     def compute_hash(cls, exclude=None, memo=None, depth=0, do_print=False, include_hidden=False):

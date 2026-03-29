@@ -41,9 +41,9 @@ class FileWatch:
     observer = Observer()
     handler = FileSystemEventHandler()
     _watched_dirs = set()
-    path_to_draw_state = {}
+    path_to_draw_states = {}   # path → set of draw_states
     draw_state_to_path = {}
-    _file_hashes = {}
+    _ds_hashes = {}            # draw_state → hash (per-view, not per-path)
     _file_contents = {}
     output_debug_diff = True
 
@@ -71,23 +71,29 @@ class FileWatch:
 
     @classmethod
     def _on_event(cls, event):
-        draw_state = cls.path_to_draw_state.get(event.src_path)
-        if draw_state:
+        draw_states = cls.path_to_draw_states.get(event.src_path)
+        if draw_states:
             new_hash = cls._get_hash(event.src_path)
-            if new_hash and new_hash != cls._file_hashes.get(event.src_path):
-                if cls.output_debug_diff:
-                    old_lines = cls._file_contents.get(event.src_path, [])
-                    new_lines = cls._read_text(event.src_path)
-                    diff = difflib.unified_diff(
-                        old_lines, new_lines,
-                        fromfile=f"{event.src_path} (old)",
-                        tofile=f"{event.src_path} (new)",
-                    )
-                    print(''.join(diff) or f"[FileWatch] Binary or empty diff for {event.src_path}")
-                    cls._file_contents[event.src_path] = new_lines
+            if new_hash:
+                debug_printed = False
+                for ds in list(draw_states):
+                    if new_hash != cls._ds_hashes.get(id(ds)):
+                        if cls.output_debug_diff and not debug_printed:
+                            old_lines = cls._file_contents.get(event.src_path, [])
+                            new_lines = cls._read_text(event.src_path)
+                            diff = difflib.unified_diff(
+                                old_lines, new_lines,
+                                fromfile=f"{event.src_path} (old)",
+                                tofile=f"{event.src_path} (new)",
+                            )
+                            print(''.join(diff) or f"[FileWatch] Binary or empty diff for {event.src_path}")
+                            debug_printed = True
 
-                cls._file_hashes[event.src_path] = new_hash
-                cls.dispatch_event_for(draw_state)
+                        cls._ds_hashes[id(ds)] = new_hash
+                        cls.dispatch_event_for(ds)
+
+                if cls.output_debug_diff:
+                    cls._file_contents[event.src_path] = cls._read_text(event.src_path)
 
     @classmethod
     def register_draw_state(cls, draw_state, path: Path):
@@ -98,13 +104,20 @@ class FileWatch:
 
         old_path = cls.draw_state_to_path.pop(draw_state, None)
         if old_path:
-            cls.path_to_draw_state.pop(old_path, None)
-            cls._file_hashes.pop(old_path, None)
-            cls._file_contents.pop(old_path, None)
+            ds_set = cls.path_to_draw_states.get(old_path)
+            if ds_set:
+                ds_set.discard(draw_state)
+                if not ds_set:
+                    cls.path_to_draw_states.pop(old_path, None)
+            cls._ds_hashes.pop(id(draw_state), None)
+            if not cls.path_to_draw_states.get(old_path):
+                cls._file_contents.pop(old_path, None)
 
-        cls.path_to_draw_state[resolved] = draw_state
+        if resolved not in cls.path_to_draw_states:
+            cls.path_to_draw_states[resolved] = set()
+        cls.path_to_draw_states[resolved].add(draw_state)
         cls.draw_state_to_path[draw_state] = resolved
-        cls._file_hashes[resolved] = cls._get_hash(resolved)
+        cls._ds_hashes[id(draw_state)] = cls._get_hash(resolved)
 
         if cls.output_debug_diff:
             cls._file_contents[resolved] = cls._read_text(resolved)
@@ -116,28 +129,31 @@ class FileWatch:
 
     @classmethod
     def dispatch_event_for(cls, draw_state):
-        Melty.cache.invalidate_up(draw_state._tile_id, force=True)
+        Melty.cache.invalidate_up(draw_state._tile_id, max_depth=10, force=True)
+        if draw_state.parent_window is not None:
+            Melty.cache.invalidate_up(draw_state.parent_window._tile_id, max_depth=10, force=True)
+
         draw_state._external_change = True
         request_render()
 
-    @classmethod
-    def update_hash(cls, path: Path):
-        """Call after writing a file to suppress the next change event."""
-        resolved = str(path.resolve())
-        cls._file_hashes[resolved] = cls._get_hash(resolved)
-        if cls.output_debug_diff:
-            cls._file_contents[resolved] = cls._read_text(resolved)
-
-        draw_state = cls.path_to_draw_state.get(resolved)
-        if draw_state:
-            print("clear external change from update hash")
-            draw_state._external_change = False
 
     @classmethod
-    def set_hash_from_content(cls, path: Path, content: str):
-        """Pre-set hash from known content. Call before write."""
+    def set_hash_from_content(cls, path: Path, content: str, draw_state=None):
+        """Pre-set hash from known content. Call before write.
+
+        If draw_state is given, only update that view's hash — other
+        views watching the same path will see the write as an external change.
+        Otherwise update all draw_states for the path (old behaviour).
+        """
         resolved = str(path.resolve())
-        cls._file_hashes[resolved] = hashlib.md5(content.encode()).hexdigest()
+        new_hash = hashlib.md5(content.encode()).hexdigest()
+
+        if draw_state is not None:
+            cls._ds_hashes[id(draw_state)] = new_hash
+        else:
+            for ds in list(cls.path_to_draw_states.get(resolved, ())):
+                cls._ds_hashes[id(ds)] = new_hash
+
         if cls.output_debug_diff:
             cls._file_contents[resolved] = content.splitlines(keepends=True)
 

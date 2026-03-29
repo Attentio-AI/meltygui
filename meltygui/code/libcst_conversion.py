@@ -153,11 +153,11 @@ class GeneralParse(dict):
         # this would be the address used to load, if available
         self.source_ref = Any | None
 
-    def __bg_hash__(self) -> str:
-        if self._bg_hash_cache is None:
-            # hash() on a str uses a fast SipHash - O(n) once, then O(1)
-            self._bg_hash_cache = str(hash(self.source))
-        return self._bg_hash_cache
+    # def __bg_hash__(self) -> str:
+    #     if self._bg_hash_cache is None:
+    #         # hash() on a str uses a fast SipHash - O(n) once, then O(1)
+    #         self._bg_hash_cache = str(hash(self.source))
+    #     return self._bg_hash_cache
 
 class ParseError(dict):
     """A dict representing code that failed to parse.

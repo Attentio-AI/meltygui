@@ -452,26 +452,6 @@ def draw_type(input_value:type, draw_state, **kwargs):
 some_float = [0.0]
 cst_dict = {}
 test_code = None
-#
-# def code_to_dict():
-#     global cst_dict
-#     global test_code
-#     cst_tree = convert(test_code, cst.Module, registry=Melty)
-#     cst_dict = convert(cst_tree, dict, registry=Melty)
-#     return cst_dict
-#
-# def dict_to_code():
-#     global cst_dict
-#     global test_code
-#     cst_tree = convert(cst_dict, cst.Module, registry=Melty)
-#     test_code = cst_tree.code
-#     return test_code
-#
-# def path_to_text():
-#     path = Path("/home/lukas/test_folder/test_list.txt")
-#     text = convert(path, path=[Path, bytes, str], registry=Melty)
-#     return text
-#
 
 
 @render_func(show_bg=True, with_header=draw_header)
@@ -581,7 +561,7 @@ def draw_main(input_value, vis, draw_state=None):
 
     chain = [
         module_to_address,
-        (address_to_general_parse, {'load':False}),
+        (address_to_general_parse, {'load':True}),
         draw_collection,
         (general_parse_to_address, {'save':False, 'recompile':True}),
         address_to_module,

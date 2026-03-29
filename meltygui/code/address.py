@@ -45,13 +45,14 @@ class FileMeta:
         return self.mtime == other.mtime and self.size == other.size
 
 class Address:
-    __slots__ = ("path", "start", "end", "source", "_hash")
+    __slots__ = ("path", "start", "end", "source", "_hash", "_watcher_ds")
 
-    def __init__(self, path, start=None, end=None, source=None):
+    def __init__(self, path, start=None, end=None, source=None, watcher_ds=None):
         self.path = Path(path).resolve()
         self.start = start
         self.end = end
         self.source = source
+        self._watcher_ds = watcher_ds
         self._hash = self._compute_hash()
 
     def _compute_hash(self):

@@ -19,6 +19,7 @@ import libcst as cst
 
 from src.lsd.gl_gui.melty import FileWatch, Melty
 from src.lsd.gl_gui.toggles import Toggles
+from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
 from src.lsd.gl_gui.view.core_views.core_render import render_func
@@ -129,7 +130,8 @@ def function_to_address(input_value: types.FunctionType, draw_state, changed=Fal
 
     source_lines, start_lineno = inspect.getsourcelines(unwrapped)
     return changed, Address(Path(source_file), start_lineno - 1,
-                            start_lineno - 1 + len(source_lines), source=input_value)
+                            start_lineno - 1 + len(source_lines), source=input_value,
+                            watcher_ds=draw_state)
 
 
 @render_func()
@@ -138,9 +140,9 @@ def module_to_address(input_value: types.ModuleType, draw_state, changed=False):
         source_file = Path(input_value.__file__)
         FileWatch.register_draw_state(draw_state, source_file)
         if changed:
-            print(f"module_to_address: input changed for module {input_value.__name__}, checking file {source_file}")
+            pass
 
-        return changed, Address(source_file, source=input_value)
+        return changed, Address(source_file, source=input_value, watcher_ds=draw_state)
     else:
         return changed, None
 
@@ -160,7 +162,8 @@ def class_to_address(input_value: type, draw_state, changed=False):
             _evict_linecache(source_file)
             source_lines, start_lineno = inspect.getsourcelines(input_value)
             return changed, Address(Path(source_file), start_lineno - 1,
-                                    start_lineno - 1 + len(source_lines), source=input_value)
+                                    start_lineno - 1 + len(source_lines), source=input_value,
+                                    watcher_ds=draw_state)
         except (TypeError, OSError):
             return changed, None
     else:
@@ -214,7 +217,7 @@ def _do_save(input_value, code_str):
     new_lines = code_str.split(newline)
     lines[input_value.start:input_value.end] = new_lines
     final_text = newline.join(lines)
-    FileWatch.set_hash_from_content(input_value.path, final_text)
+    FileWatch.set_hash_from_content(input_value.path, final_text, draw_state=input_value._watcher_ds)
     input_value.path.write_text(final_text, encoding="utf-8")
 
     if Toggles.slow_down_threads:
@@ -226,8 +229,8 @@ def _do_save(input_value, code_str):
     return True, input_value
 
 
-@render_func(background=False)
-def save_cst_module(input_value):
+@render_func(background=True)
+def save_cst_module(input_value, changed=False):
     back_to_cst = dict_to_cst_module(input_value)
     if Toggles.slow_down_threads:
         for i in range(5):
@@ -238,7 +241,7 @@ def save_cst_module(input_value):
     return False, back_to_cst
 
 
-@render_func(use_cache=False)
+@render_func(use_cache=True)
 def run_button(input_value: any, with_kwargs=None, draw_state=None, clicked=False):
     is_render_func = hasattr(input_value, "__render_func__")
     if not is_render_func:
@@ -253,14 +256,14 @@ def run_button(input_value: any, with_kwargs=None, draw_state=None, clicked=Fals
     else:
         run_in_background = True
 
-    running = draw_state._running if run_in_background else False
+    running = draw_state._running is input_value if run_in_background else False
 
     fa_run_arrow = "\uf04b"
     if clicked or running or imgui.button(f"{fa_run_arrow} {input_value.__name__}##{draw_state.unique}"):
         with_kwargs['changed'] = True
         changed, value = input_value(**with_kwargs)
         if isinstance(value, Pending):
-            draw_state._running = True
+            draw_state._running = input_value
             return False, None
 
         draw_state._running = False
@@ -269,7 +272,7 @@ def run_button(input_value: any, with_kwargs=None, draw_state=None, clicked=Fals
     return False, None
 
 
-@render_func()
+@render_func(use_cache=True)
 def address_to_general_parse(input_value: Address, pending=False, changed=False, draw_state=None, load=False):
     """Load node: class → cst.Module.
 
@@ -278,12 +281,13 @@ def address_to_general_parse(input_value: Address, pending=False, changed=False,
     - Shows Load / Revert buttons when file changes on disk
     - Returns (True, cst.Module) when loaded, (False, cached) otherwise
     """
-
-    if pending:
+    if pending or changed:
         clicked, result = run_button(load_cst_module, with_kwargs={"input_value": input_value},
                                      clicked=load)
         if clicked:
-            draw_state._file_meta = input_value.get_meta()
+            Melty.cache.invalidate_up(draw_state.parent_window._tile_id, max_depth=10)
+            request_render()
+            print(f"address_to_general_parse: load button clicked for {input_value}, starting load...")
             return result
 
     # ── Steady state ──────────────────────────────────────────
@@ -291,78 +295,37 @@ def address_to_general_parse(input_value: Address, pending=False, changed=False,
 
 
 @render_func(use_cache=True)
-def general_parse_to_address(input_value: GeneralParse, draw_state=None, pending=False,
+def general_parse_to_address(input_value: GeneralParse, pending=False, draw_state=None,
                              changed=False, recompile=False, save=False):
     """GeneralParse dict → Address. Handles recompile and save for any source type."""
     address = input_value.address
+    source = address.source
+
+
+    convert_finished, back_to_cst = save_cst_module(input_value=input_value, changed=changed)
+    if isinstance(back_to_cst, Pending):
+        return False, back_to_cst
+    code_str = back_to_cst.code
+    if convert_finished:
+        Melty.cache.invalidate_up(draw_state._tile_id, max_depth=10)
+        request_render()
+
+    if source is not None:
+        run_button(do_recompile, clicked=recompile, name="do_recompile",
+                    with_kwargs={"input_value": address.source,
+                             "code_str": code_str,
+                             "file_path": address.path})
 
     if pending or changed:
-        changed, back_to_cst = save_cst_module(input_value, changed=changed)
-        if isinstance(back_to_cst, Pending):
-            return False, back_to_cst
-
-        code_str = back_to_cst.code
-        source = address.source
         if source is not None:
-            clicked, result = run_button(do_recompile, with_kwargs={"input_value": address.source,
-                                                                    "code_str": code_str,
-                                                                    "file_path": address.path},
-                                         clicked=recompile)
-
-            #
-            clicked, result = run_button(_do_save, name="do_save", with_kwargs={"input_value": address,
-                                                                                "code_str": code_str},
+            clicked, result = run_button(_do_save, with_kwargs={"input_value": address,
+                                         "code_str": code_str},
                                          clicked=save)
-            #
             if clicked:
+                Melty.cache.invalidate_up(draw_state.parent_window._tile_id, max_depth=10)
                 return True, address
 
     return changed, address
-
-    # if pending or draw_state._loading:
-    #     changed, back_to_cst = save_cst_module(input_value, changed=changed)
-    #     if isinstance(back_to_cst, Pending):
-    #         return False, back_to_cst
-    #
-    #     code_str = back_to_cst.code
-    #     recompile_loading = draw_state._loading and draw_state._loading.originated == do_recompile
-    #     if recompile_loading or recompile or imgui.button(f"Recompile##{draw_state.unique}"):
-    #         source = address.source
-    #         if source is not None:
-    #             try:
-    #                 re_changed, re_result = do_recompile(source, code_str=code_str,
-    #                                                      file_path=address.path, changed=changed)
-    #                 if isinstance(re_result, Pending):
-    #                     return False, re_result
-    #             except Exception as e:
-    #                 imgui.text(f"Error: {e}")
-    #                 return False, None
-    #         else:
-    #             print(f"No source ref for {address.path}, skipping recompile")
-    #
-    #
-    #     save_loading = draw_state._loading and draw_state._loading.originated == _do_save
-    #     if save_loading or save or imgui.button(f"Save##{draw_state.unique}"):
-    #         if draw_state._loading:
-    #             print(str(draw_state._loading.originated.__name__))
-    #         source = address.source
-    #         if source is not None:
-    #             try:
-    #                 do_recompile(source, code_str=code_str, save=False,
-    #                              file_path=address.path, changed=changed)
-    #             except Exception as e:
-    #                 imgui.text(f"Error: {e}")
-    #                 return False, None
-    #         else:
-    #             print(f"No source ref for {address.path}, skipping recompile")
-    #
-    #         save_changed, save_result = _do_save(address, code_str=code_str, changed=changed)
-    #         if isinstance(save_result, Pending):
-    #             return False, save_result
-    #
-    #         return True, address
-    #
-    # return False, None
 
 
 @render_func(use_cache=True)
