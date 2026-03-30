@@ -71,6 +71,8 @@ class FileWatch:
 
     @classmethod
     def _on_event(cls, event):
+        if Melty.frame_count < 3:
+            return
         draw_states = cls.path_to_draw_states.get(event.src_path)
         if draw_states:
             new_hash = cls._get_hash(event.src_path)

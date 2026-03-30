@@ -528,6 +528,9 @@ def populate_usages(gp: GeneralParse) -> None:
         _populate_xrefs(gp, file_path)
 
 
+# Keep old name as alias
+populate_cross_file_usages = populate_usages
+
 
 def _populate_xrefs(gp, file_path: _Path) -> None:
     """Recursively populate cross-file usages on a GeneralParse tree."""

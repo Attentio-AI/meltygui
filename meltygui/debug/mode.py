@@ -17,7 +17,7 @@ from src.lsd.gl_gui.view.core_conversion.libcst_conversion import GeneralParse, 
 from src.lsd.gl_gui.view.core_views.headers import draw_footer, draw_header_end, draw_header
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
 from src.lsd.gl_gui.view.core_views.new_core_view import draw_collection, draw_comment, draw_search_results, \
-    draw_general_parse
+    draw_general_parse, draw_any
 from src.lsd.gl_gui.view.core_views.text_editor import draw_text
 
 
@@ -80,72 +80,75 @@ class Mode(Enum):
     }
 
     CODE_DICT_STR = {
-        cst.Module: ModeOverrides(
-            kwargs={"convert_in": [cst_to_dict, rf_dict_to_str],
-                    "convert_out": [str_to_cst_module],
-                    },
-            recursive=True,
-            func=draw_text
-        ),
+        # cst.Module: ModeOverrides(
+        #     kwargs={"convert_in": [cst_to_dict, rf_dict_to_str],
+        #             "convert_out": [str_to_cst_module],
+        #             },
+        #     recursive=True,
+        #     func=draw_text
+        # ),
+        #
+        # types.FunctionType: ModeOverrides(
+        #     kwargs={"convert_in": [fn_to_cst],
+        #             "convert_out": [cst_to_fn],
+        #
+        #             },
+        #     recursive=True,
+        # ),
 
-        types.FunctionType: ModeOverrides(
-            kwargs={"convert_in": [fn_to_cst],
-                    "convert_out": [cst_to_fn],
-
-                    },
-            recursive=True,
-        ),
-
-        types.ModuleType: ModeOverrides(
-            kwargs={"convert_in": [mod_to_cst],
-                    "convert_out": [cst_to_mod],
-                    },
-
-            recursive=True
-        ),
+        # types.ModuleType: ModeOverrides(
+        #     kwargs={"convert_in": [mod_to_cst],
+        #             "convert_out": [cst_to_mod],
+        #             },
+        #
+        #     recursive=True
+        # ),
     }
+
+    auto_load = True
+    auto_save = False
+    auto_recompile = False
+
+
     CODE_UI = {
         types.FunctionType: ModeOverrides(
             recursive=True,
             func=(function_to_address,
-                  (address_to_general_parse, {'load': True}),
-                  draw_collection,
-                  (general_parse_to_address, {'save': True,
-                                              'recompile': True}),
+                  (address_to_general_parse, {'load': auto_load}),
+                  draw_any,
+                  (general_parse_to_address, {'save': auto_save,
+                                              'recompile': auto_recompile}),
                   address_to_function),
         ),
         types.ModuleType: ModeOverrides(
             recursive=True,
             func=(module_to_address,
-                  (address_to_general_parse, {'load': True}),
-                  draw_collection,
-                  (general_parse_to_address, {'save': True,
-                                              'recompile': True}),
+                  (address_to_general_parse, {'load': auto_load}),
+                  draw_any,
+                  (general_parse_to_address, {'save': auto_save,
+                                              'recompile': auto_recompile}),
                   address_to_module),
         ),
         type: ModeOverrides(
             func=(class_to_address,
-                  (address_to_general_parse, {'load': True}),
-                  draw_collection,
-                  (general_parse_to_address, {'save': True,
-                                              'recompile': True}),
+                  (address_to_general_parse, {'load': auto_load}),
+                  draw_any,
+                  (general_parse_to_address, {'save': auto_save,
+                                              'recompile': auto_recompile}),
                   address_to_class),
             recursive=True
         ),
-
 
 
         Conditional: ModeOverrides(
             kwargs={"tint": (0.2, 0.2, 0.1), 'show_add_delete': False, 'is_tree':False},
             recursive=True,
         ),
-
         Comment: ModeOverrides(
             kwargs={"tint": (0.2, 0.2, 0.1), 'show_add_delete': False, 'is_tree':False},
             func=draw_comment,
             recursive=True,
         ),
-
         GeneralParse: ModeOverrides(
             kwargs={'show_add_delete': False, "disable_scroll": False},
             recursive=True,
@@ -162,6 +165,21 @@ class Mode(Enum):
     }
 
     CODE_PLAIN_TEXT = {
+        # cst.Module: ModeOverrides(
+        #     kwargs={"convert_in": [cst_module_to_str],
+        #             "convert_out": [str_to_cst_module],
+        #             "auto_apply": [load_text],
+        #             "horizontal": True},
+        #     func=draw_text,
+        #     recursive=True
+        # ),
+
+        # cst.Module: ModeOverrides(
+        #     func=(cst_module_to_str,
+        #           draw_text,
+        #           str_to_cst_module),
+        #     recursive=True
+        # ),
 
         types.FunctionType: ModeOverrides(
             recursive=True,

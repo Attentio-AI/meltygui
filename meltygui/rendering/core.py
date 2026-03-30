@@ -795,6 +795,8 @@ def render_func(*args, **o_kwargs):
 
                 draw_state._pending |= draw_state._external_change
                 kwargs['pending'] = draw_state._pending | kwargs.get("changed", False)
+                if kwargs['pending']:
+                    pass
                 # kwargs['external_change'] = draw_state._external_change
                 # if draw_state._external_change:
                 #     draw_state._input_value_cache = input_value
@@ -1950,7 +1952,7 @@ def render_func(*args, **o_kwargs):
                         draw_state._input_cache["internal_state"] = new_value_child, Melty.frame_count + 1
                         # Melty.cache.invalidate(draw_state._parent._tile_id, force=True)
                         # Melty.cache.invalidate(draw_state._tile_id, force=True)
-                        # request_render()
+                        # request_reload()j
                     else:
                         new_value_child = draw_state._input_cache["internal_state"][0]
 

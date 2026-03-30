@@ -287,14 +287,10 @@ def address_to_general_parse(input_value: Address, pending=False, changed=False,
         clicked, result = run_button(load_cst_module, with_kwargs={"input_value": input_value},
                                      clicked=load)
         if clicked:
-            Melty.cache.invalidate_up(draw_state.parent_window._tile_id, max_depth=10)
-            request_render()
-            print(f"address_to_general_parse: load button clicked for {input_value}, starting load...")
             return result
 
     # ── Steady state ──────────────────────────────────────────
     return False, None
-
 
 @render_func(use_cache=True)
 def general_parse_to_address(input_value: GeneralParse, pending=False, draw_state=None,
@@ -311,9 +307,6 @@ def general_parse_to_address(input_value: GeneralParse, pending=False, draw_stat
     if isinstance(back_to_cst, Pending):
         return False, back_to_cst
     code_str = back_to_cst.code
-    if convert_finished:
-        Melty.cache.invalidate_up(draw_state._tile_id, max_depth=10)
-        request_render()
 
     if source is not None:
         run_button(do_recompile, clicked=recompile and pending, name="do_recompile",
@@ -328,7 +321,7 @@ def general_parse_to_address(input_value: GeneralParse, pending=False, draw_stat
             if clicked:
                 Melty.cache.invalidate_up(draw_state.parent_window._tile_id, max_depth=10)
                 return True, address
-    return changed, address
+    return False, address
 
 
 @render_func(use_cache=True)
@@ -352,37 +345,35 @@ def cst_to_address(input_value, changed=False, draw_state=None):
 
 
 @render_func(use_cache=True)
-def general_parse_to_str(input_value, draw_state=None):
+def general_parse_to_str(input_value, changed=False, draw_state=None):
     """Convert cst.Module → source string. Pure converter, no UI."""
     if isinstance(input_value, GeneralParse):
-        return True, input_value.source
+        return changed, input_value.source
     else:
         return False, None
 
 
 @render_func(use_cache=True)
-def str_to_general_parse(input_value, reference=None, draw_state=None):
+def str_to_general_parse(input_value, reference=None, changed=False, draw_state=None):
     input_str = str(input_value)
     if isinstance(reference, GeneralParse):
-        if reference.source != input_str:
+        if changed:
             try:
                 cst_module = cst.parse_module(input_str)
                 general_parse = cst_module_to_dict(cst_module)
                 general_parse.address = reference.address
-                reference.source = input_str
-
                 return True, general_parse
             except Exception as e:
                 reference.source = input_str
                 imgui.text_colored(f"Error parsing code: {e}", 1.0, 0.0, 0.0)
                 return True, reference
         else:
-            return False, reference
+            imgui.text_colored(f"No Change", 1.0, 0.0, 0.0)
+            return False, None
     else:
-
         cst_module = cst.parse_module(input_str)
         general_parse = cst_module_to_dict(cst_module)
-        return True, general_parse
+        return False, general_parse
 
 
 

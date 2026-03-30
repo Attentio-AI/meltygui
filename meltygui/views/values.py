@@ -553,27 +553,25 @@ def draw_main(input_value, vis, draw_state=None):
         test_code = value
 
     changed, value = draw_with_modes(input_value=draw_bg, name="draw_bg",
-                                     show_bg=True, mode=(Mode.WINDOW), modes=[Mode.CODE_PLAIN_TEXT, Mode.CODE_UI, Mode.CODE_DICT_STR])
+                                     show_bg=True, mode=(Mode.WINDOW), modes=[Mode.CODE_PLAIN_TEXT, Mode.CODE_UI])
     if changed:
         test_code = value
 
 
     changed, value = draw_with_modes(input_value=toggles, name="Toggles",
                                      show_bg=True, mode=(Mode.WINDOW), modes=[Mode.CODE_PLAIN_TEXT, Mode.CODE_UI])
-
-
-    chain = [
-        module_to_address,
-        (address_to_general_parse, {'load':True}),
-        draw_collection,
-        (general_parse_to_address, {'save':False, 'recompile':True}),
-        address_to_module,
-    ]
-    run_chain(toggles, name="Chain Debug", chain=chain, mode=Mode.WINDOW)
+    # chain = [
+    #     module_to_address,
+    #     (address_to_general_parse, {'load':True}),
+    #     draw_collection,
+    #     (general_parse_to_address, {'save':False, 'recompile':False}),
+    #     address_to_module,
+    # ]
+    # run_chain(toggles, name="Chain Debug", chain=chain, mode=Mode.WINDOW)
 
     from src.lsd.gl_gui.model.app_model import Lora
     changed, value = draw_with_modes(input_value=Lora, name="lora class",
-                                     show_bg=True, mode=(Mode.WINDOW), modes=[Mode.CODE_PLAIN_TEXT, Mode.CODE_UI, Mode.CODE_DICT_STR])
+                                     show_bg=True, mode=(Mode.WINDOW), modes=[Mode.CODE_PLAIN_TEXT, Mode.CODE_UI])
 
 
     some_path = Path("/home/lukas/test_folder/test_list.txt")
@@ -1521,7 +1519,7 @@ def draw_bg(left=4, top=3, width=0, height=55, depth=0, rounding=3.384,
 
     # -- Constants ---------------------------------
     depth_wrap        = 42
-    depth_scale       = 1.164
+    depth_scale       = 1.114
     corner_radius     = 7.668
     border_inset      = 1.758
     border_inset_half = 0.545
