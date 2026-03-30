@@ -378,7 +378,7 @@ in vec2 vUV;
 out vec4 oColor;
 void main() {
     float val = texture(uTex, vUV).r;
-    if (val > -10.0) {
+    if (val > 0.0) {
         oColor = vec4(val + uOffset, 0.0, 0.0, 1.0);
     } else {
         discard;
@@ -414,7 +414,7 @@ void main() {
     }
 
     float val = texture(uTex, vUV).r;
-    if (val > -10.0) {
+    if (val > 0.0) {
         oColor = vec4(val + uOffset, 0.0, 0.0, 1.0);
     } else {
         discard;
@@ -1725,7 +1725,6 @@ class TileCacheMasked:
                             sx0, sy0, sx1, sy1 = self._screen_rect_to_fb_xyxy(r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y,
                                                                               fb_h)
                     else:
-
                         child_ctx = self._key_to_ctx.get(r.key)
                         if child_ctx and child_ctx.size:
                             cx, cy = child_ctx.pos

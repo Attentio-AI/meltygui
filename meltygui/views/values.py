@@ -437,7 +437,8 @@ def draw_property(input_value:property, draw_state, **kwargs):
     # value = input_value.fget(input_value)
     # draw_any(value, name="value", show_bg=True, draw_state=draw_state)
 
-@render_func(is_default_for=(type), show_bg=False, tint=(0.01406166236847639, 0.2259240746498108, 0.30232560634613037), with_header=draw_header, with_footer=draw_footer)
+@render_func(is_default_for=(type), show_bg=False, use_cache=True, tint=(0.01406166236847639, 0.2259240746498108, 0.30232560634613037),
+             with_header=draw_header, with_footer=draw_footer)
 def draw_type(input_value:type, draw_state, **kwargs):
 
     draw_collection(vars(input_value), name="vars", show_excluded=True)
@@ -521,7 +522,11 @@ def run_chain(input_value, chain=None, draw_state=None, debug=False, **kwargs):
         imgui.begin_group()
 
         next_cached = cache_tree.peek()
+        start_time = glfw.get_time()
         changed, value = func(input_value=value, reference=next_cached, **func_kwargs)
+        end_time = glfw.get_time()
+        duration_ms = (end_time - start_time) * 1000
+        imgui.text(f"  [{i}] {func.__name__} — {type(value).__name__} — {duration_ms:.2f} ms")
         imgui.end_group()
         if isinstance(value, Pending):
             changed=False
@@ -1749,7 +1754,8 @@ def draw_label(input_value: str, draw_state):
 
 
 
-@render_func(is_default_for=(str), shadow=False, show_bg=False, wrap=False, is_tree=False, show_add_delete=False, use_cache=False, disable_scroll=True, with_header=draw_header)
+@render_func(is_default_for=(str), shadow=False, show_bg=False, wrap=False, is_tree=False, show_add_delete=False,
+             use_cache=True, disable_scroll=True, with_header=draw_header)
 def draw_str(input_value: str, draw_state, editable=True, alpha=1.0):
     if not editable:
         imgui.push_style_var(imgui.STYLE_ALPHA, alpha)
@@ -1798,7 +1804,7 @@ def draw_str(input_value: str, draw_state, editable=True, alpha=1.0):
         return True, value
     return changed, value
 
-@render_func(is_default_for=GeneralParse, shadow=True, z_offset=2, show_bg=True, with_header=draw_header,
+@render_func(is_default_for=GeneralParse, use_cache=True, shadow=True, z_offset=2, show_bg=True, with_header=draw_header,
              is_tree=True)
 def draw_general_parse(input_value: GeneralParse):
     imgui.text("General parse render func")
@@ -1810,14 +1816,15 @@ def draw_general_parse(input_value: GeneralParse):
     return changed, value
 
 
-@render_func(is_default_for=UsageRef, shadow=True, z_offset=2, show_bg=True, with_header=draw_header,
+@render_func(is_default_for=UsageRef, use_cache=True, shadow=True, z_offset=2, show_bg=True, with_header=draw_header,
              is_tree=True, tint=(0.11, 0.1, 0.16))
 def draw_usage(input_value: UsageRef):
     imgui.text(f"{input_value.path} {input_value.line}:{input_value.column} {input_value.scope} {input_value.module_name}")
 
     return False, None
 
-@render_func(is_default_for=(Comment), shadow=False, with_header=None, is_tree=False, tint=(0.2, 0.2, 0.1))
+@render_func(is_default_for=(Comment), shadow=False,
+             use_cache=True, with_header=None, is_tree=False, tint=(0.2, 0.2, 0.1))
 def draw_comment(input_value: Comment, draw_state, cursor_hover=False):
     line_height = imgui.get_text_line_height()
     changed, value = False, input_value
@@ -1845,7 +1852,8 @@ def draw_comment(input_value: Comment, draw_state, cursor_hover=False):
         draw_window(str(input_value), editable=False, window_pos=(0,0), width=popup_width, height=text_size[1] + 5,
                     with_header_end=None, with_header=None, with_footer=None)
     imgui.same_line(spacing=0)
-    draw_str(str(input_value[1:]), alpha=0.2, selectable=False, editable=False, is_tree=False, with_header=None, show_name=False)
+    draw_str(str(input_value[1:]), alpha=0.2, selectable=False, editable=False,
+             is_tree=False, with_header=None, show_name=False)
 
 
     if changed:
@@ -2077,7 +2085,7 @@ def draw_function(input_value, name, draw_state, unique):
     return False, input_value
 
 
-@render_func(is_default_for=(int), shadow=False,
+@render_func(is_default_for=(int), shadow=False, use_cache=True,
              is_tree=False, wrap=True, header_same_line=True,
              with_header=draw_header)
 def draw_int(input_value: int, min_value=-100.0, max_value=100.0, speed=0.05, unique=0):

@@ -999,7 +999,6 @@ def render_func(*args, **o_kwargs):
             else:
                 Melty.shadow_depth = Melty.shadow_depth + total_z_offset
 
-            draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer)
             if draw_state.tile_mode == TileMode.MIN:
                 draw_state.shadow_margin = 0
             else:
@@ -1063,8 +1062,10 @@ def render_func(*args, **o_kwargs):
                 _pushed_search = True
 
             content_rect = (0, 0)
+            draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer)
 
             if Melty.cache.mark_start_offscreen(draw_state=draw_state):
+
                 Melty.root_draw_states[draw_state.id] = []
                 from src.lsd.gl_gui.view.core_views.new_core_view import draw_window
                 from src.lsd.gl_gui.view.core_views.new_core_view import pending_window

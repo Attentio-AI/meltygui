@@ -40,13 +40,13 @@ class Background:
         type_name = type(value).__name__
         t0 = time.perf_counter()
         h = cls.simple_hash(value=value) + user_id
-        # elapsed = time.perf_counter() - t0
+        elapsed = time.perf_counter() - t0
 
-        # with cls._lock:
-        # if type_name not in cls._hash_times:
-        #     cls._hash_times[type_name] = [0.0, 0]
-        # cls._hash_times[type_name][0] += elapsed
-        # cls._hash_times[type_name][1] += 1
+        with cls._lock:
+            if type_name not in cls._hash_times:
+                cls._hash_times[type_name] = [0.0, 0]
+            cls._hash_times[type_name][0] += elapsed
+            cls._hash_times[type_name][1] += 1
 
         return h
 
