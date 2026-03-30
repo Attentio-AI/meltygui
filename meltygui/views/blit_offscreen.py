@@ -611,6 +611,7 @@ class TileCacheMasked:
         self._frame_id: int = 0
 
         self.pending_invalid = []
+        self._prev_occluders: Dict[str, frozenset] = {}  # tile_key -> frozenset of (key, x, y, w, h)
 
     @property
     def full_mask_tex(self) -> Optional[int]:
@@ -799,6 +800,71 @@ class TileCacheMasked:
                 t.force_invalidate = True
                 self.pending_invalid.append(t)
         request_render()
+
+    def _detect_occluder_changes(self, mask_rects):
+        """Invalidate root windows whose occluder set changed (reveals stale cached pixels).
+
+        Only checks tiles with closable=True (root windows). When an occluding
+        root window is removed or moves, invalidate_up cascades to children.
+        """
+        if not mask_rects:
+            self._prev_occluders = {}
+            return
+
+        if Melty.on_drag:
+            return
+
+        # Collect only closable root window rects (both as targets and occluders)
+        root_rects = {}
+        for r in mask_rects:
+            if r.key in self._shadow_mask_keys:
+                continue
+            ds = self.key_to_draw_state.get(r.key)
+            if ds is not None and ds.closable:
+                root_rects[r.key] = r
+
+        new_occluders = {}
+        needs_invalidate = []
+
+        for key, my_rect in root_rects.items():
+            mx0, my0 = my_rect.x, my_rect.y
+            mx1, my1 = mx0 + my_rect.w, my0 + my_rect.h
+            my_depth = my_rect.depth_and_layer
+
+            occluders = []
+            for r in root_rects.values():
+                if r.key == key:
+                    continue
+                if r.depth_and_layer <= my_depth:
+                    continue
+                # AABB overlap test
+                rx0, ry0 = r.x, r.y
+                rx1, ry1 = rx0 + r.w, ry0 + r.h
+                if rx0 < mx1 and mx0 < rx1 and ry0 < my1 and my0 < ry1:
+                    occluders.append((r.key, snap_int(r.x), snap_int(r.y),
+                                      snap_int(r.w), snap_int(r.h)))
+
+            occ_frozen = frozenset(occluders)
+            new_occluders[key] = occ_frozen
+
+            prev = self._prev_occluders.get(key)
+            if prev is not None and occ_frozen != prev:
+                # Check if any occluder was removed or changed position
+                prev_map = {o[0]: o for o in prev}
+                curr_map = {o[0]: o for o in occ_frozen}
+
+                for pk in prev_map:
+                    if pk not in curr_map or prev_map[pk] != curr_map[pk]:
+                        needs_invalidate.append(key)
+                        break
+
+        for key in needs_invalidate:
+            self.invalidate_up(key, force=True)
+
+        if needs_invalidate:
+            request_render()
+
+        self._prev_occluders = new_occluders
 
     def get_texture_id(self, key: str) -> Optional[int]:
         rk = self._resolve_key(key)
@@ -1895,6 +1961,7 @@ class TileCacheMasked:
 
         finally:
             st.restore()
+            self._detect_occluder_changes(self._mask_rects)
             self._pending.clear()
             self._mask_rects.clear()
             self._shadow_rects.clear()
