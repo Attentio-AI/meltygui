@@ -1487,7 +1487,7 @@ def render_func(*args, **o_kwargs):
                     if draw_state.width > 5 and draw_state.height > 5:
                         nested_bg = not closable and kwargs.get("bg_offset", 0) >= 0
                         bg_return = draw_bg(bypass=True, left=draw_state.left, top=draw_state.top,
-                                            width=draw_state.width, height=draw_state.height,
+                                            width=draw_state.width + 1, height=draw_state.height + 1,
                                             rounding=draw_state.corner_radius,
                                             depth=Melty.shadow_depth, selected=draw_state.selected,
                                             global_style=global_style, opacity=1.0 if show_bg else 0.0,

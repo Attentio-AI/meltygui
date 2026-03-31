@@ -1525,7 +1525,7 @@ def draw_bg(left=4, top=3, width=0, height=55, depth=0, rounding=3.384,
     # -- Constants ---------------------------------
     depth_wrap        = 42
     depth_scale       = 1.114
-    corner_radius     = 7.668
+    corner_radius     = rounding
     border_inset      = 1.758
     border_inset_half = 0.545
     stroke_width      = 1.868

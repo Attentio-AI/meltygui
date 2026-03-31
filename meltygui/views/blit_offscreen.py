@@ -87,7 +87,7 @@ class _Rect:
     h: float
     key: str
     order: int
-    corner_radius: float = 6.0  # Corner radius for rounded rectangles
+    corner_radius: float = 5.0  # Corner radius for rounded rectangles
     blend_max: bool = False
 
 
@@ -1016,7 +1016,7 @@ class TileCacheMasked:
 
     def mask_mark_rect(
             self, draw_state: any, layer: int, depth_and_layer: any, x: float, y: float, w: float, h: float,
-            key: str, corner_radius: float = 6.0
+            key: str, corner_radius: float = 5.0
     ) -> None:
         # if key in self._enq_mask_keys:
         #     return
@@ -1032,7 +1032,7 @@ class TileCacheMasked:
 
     def mark_shadow(
             self, layer: int, depth_and_layer: any, x: float, y: float, w: float, h: float,
-            corner_radius: float = 6.0, draw_state=None, parent_key=None,
+            corner_radius: float = 5.0, draw_state=None, parent_key=None,
     ) -> None:
         self._rect_seq = (self._rect_seq + 1) & 0xFF
         key = f"shadow_{self._rect_seq}"
@@ -1046,7 +1046,7 @@ class TileCacheMasked:
 
     def mask_mark_view(
             self, draw_state: any, layer: int, depth_and_layer: any, x: float, y: float, w: float,
-            h: float, key: str, corner_radius: float = 6.0
+            h: float, key: str, corner_radius: float = 5.0
     ) -> None:
         self.mask_mark_rect(draw_state, layer, copy(depth_and_layer), x, y, w, h, key, corner_radius)
 
@@ -1181,7 +1181,7 @@ class TileCacheMasked:
         # cx0, cy0, cw, ch = clipped if clipped else (0,0,0,0)
 
         if has_area and not draw_state.closed and use_image:
-            corner_radius = getattr(draw_state, "corner_radius", 6.0) or 6.0
+            corner_radius = getattr(draw_state, "corner_radius", 5.0) or 5.0
             self.mask_mark_view(
                 draw_state,
                 layer,
@@ -1371,7 +1371,7 @@ class TileCacheMasked:
         clipped = self._clip_rect(x, y, w, h, clip)
         self._key_to_ctx[ctx.key] = ctx
 
-        corner_radius = getattr(ctx.draw_state, "corner_radius", 6.0) or 6.0
+        corner_radius = getattr(ctx.draw_state, "corner_radius", 5.0) or 5.0
 
         if ctx.size:
             if clipped:
@@ -1560,8 +1560,8 @@ class TileCacheMasked:
     def _draw_mask_rect(self, r: _Rect, dp_x, dp_y, s_x, s_y, fb_h, use_cached: bool, shadow_margin=0.0):
         """Helper to draw a single mask rect, optionally using cached subtree mask."""
         x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y, fb_h)
-        ix0, iy0 = int(snap_int(x0)), int(snap_int(y0))
-        ix1, iy1 = int(snap_int(x1)), int(snap_int(y1))
+        ix0, iy0 = int(floor(x0)), int(floor(y0))
+        ix1, iy1 = int(ceil(x1)), int(ceil(y1))
         iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
 
         if iw <= 0 or ih <= 0:
