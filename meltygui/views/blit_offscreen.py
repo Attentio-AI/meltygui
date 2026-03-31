@@ -878,7 +878,7 @@ class TileCacheMasked:
                         break
 
         for key in needs_invalidate:
-            self.invalidate_up(key, force=True)
+            self.invalidate_up(key, force=True, max_depth=20)
 
         if needs_invalidate:
             request_render()

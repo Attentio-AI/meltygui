@@ -201,9 +201,9 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         if isinstance(input_value, (dict, MutableMapping)):
             push_style_color(imgui.COLOR_BUTTON, 0.0, 0.0, 0.0, 0.0)
             push_style_color(imgui.COLOR_TEXT, *name_color)
-            if imgui.button("##open_folder"):
-                if hasattr(input_value, "file_path"):
-                    open_file(input_value.file_path)
+            # if imgui.button("##open_folder"):
+            #     if hasattr(input_value, "file_path"):
+            #         open_file(input_value.file_path)
             pop_style_color(2)
             same_line()
 
