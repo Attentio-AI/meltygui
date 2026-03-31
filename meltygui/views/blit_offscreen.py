@@ -94,7 +94,7 @@ class _Rect:
 # ==============================
 # GL helpers
 # ==============================
-def _create_color_tex(w: int, h: int, internal_format=gl.GL_RGBA8) -> int:
+def _create_color_tex(w: int, h: int, internal_format=gl.GL_RGBA8, clamp_to_border=False) -> int:
     Melty.cache.tex_init_count += 1
 
     tex = gl.glGenTextures(1)
@@ -102,20 +102,30 @@ def _create_color_tex(w: int, h: int, internal_format=gl.GL_RGBA8) -> int:
     gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, internal_format, w, h, 0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, None)
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
-    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE)
-    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)
+    if clamp_to_border:
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_BORDER)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_BORDER)
+        gl.glTexParameterfv(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_BORDER_COLOR, [0.0, 0.0, 0.0, 0.0])
+    else:
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)
     gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
     return tex
 
 
-def _create_mask_tex(w: int, h: int) -> int:
+def _create_mask_tex(w: int, h: int, clamp_to_border=False) -> int:
     tex = gl.glGenTextures(1)
     gl.glBindTexture(gl.GL_TEXTURE_2D, tex)
     gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_R16, w, h, 0, gl.GL_RED, gl.GL_UNSIGNED_SHORT, None)
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST)
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST)
-    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE)
-    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)
+    if clamp_to_border:
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_BORDER)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_BORDER)
+        gl.glTexParameterfv(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_BORDER_COLOR, [0.0, 0.0, 0.0, 0.0])
+    else:
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)
     gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
     return tex
 
@@ -491,6 +501,13 @@ void main() {
 }
 """
 
+_SOLID_FS = """
+#version 330 core
+uniform vec4 uColor;
+out vec4 oColor;
+void main() { oColor = uColor; }
+"""
+
 
 # ==============================
 # Main class
@@ -570,6 +587,8 @@ class TileCacheMasked:
         self._prog_mask_textured_offset_rounded: Optional[int] = None
         self._prog_copy: Optional[int] = None
         self._prog_blit: Optional[int] = None
+        self._prog_solid: Optional[int] = None
+        self._loc_solid_uColor = None
 
         # Cached uniform locations
         self._loc_mask_uRankNorm = None
@@ -811,7 +830,7 @@ class TileCacheMasked:
             self._prev_occluders = {}
             return
 
-        if Melty.on_drag:
+        if Melty.on_drag or imgui.is_mouse_down(2) or imgui.is_mouse_down(1):
             return
 
         # Collect only closable root window rects (both as targets and occluders)
@@ -937,6 +956,9 @@ class TileCacheMasked:
         if self._prog_blit:
             gl.glDeleteProgram(self._prog_blit)
             self._prog_blit = None
+        if self._prog_solid:
+            gl.glDeleteProgram(self._prog_solid)
+            self._prog_solid = None
 
     def mask_begin_frame(self, framebuffer_size: Tuple[int, int]) -> None:
         fb_w, fb_h = map(int, framebuffer_size)
@@ -972,19 +994,19 @@ class TileCacheMasked:
             safe_del_fbo(self._snapshot_fbo)
             safe_del_fbo(self._scratch_fbo)
 
-            self._mask_tex = _create_mask_tex(fb_w, fb_h)
+            self._mask_tex = _create_mask_tex(fb_w, fb_h, clamp_to_border=True)
             self._mask_fbo, _ = _create_fbo_with_tex(self._mask_tex, False, fb_w, fb_h)
 
-            self._full_mask_tex = _create_mask_tex(fb_w, fb_h)
+            self._full_mask_tex = _create_mask_tex(fb_w, fb_h, clamp_to_border=True)
             self._full_mask_fbo, _ = _create_fbo_with_tex(self._full_mask_tex, False, fb_w, fb_h)
 
-            self._sub_mask_tex = _create_mask_tex(fb_w, fb_h)
+            self._sub_mask_tex = _create_mask_tex(fb_w, fb_h, clamp_to_border=True)
             self._sub_mask_fbo, _ = _create_fbo_with_tex(self._sub_mask_tex, False, fb_w, fb_h)
 
-            self._full_sub_mask_tex = _create_mask_tex(fb_w, fb_h)
+            self._full_sub_mask_tex = _create_mask_tex(fb_w, fb_h, clamp_to_border=True)
             self._full_sub_mask_fbo, _ = _create_fbo_with_tex(self._full_sub_mask_tex, False, fb_w, fb_h)
 
-            self.snapshot_tex = _create_color_tex(fb_w, fb_h)
+            self.snapshot_tex = _create_color_tex(fb_w, fb_h, clamp_to_border=True)
             self._snapshot_fbo, _ = _create_fbo_with_tex(self.snapshot_tex, False, fb_w, fb_h)
 
             self._scratch_fbo = gl.glGenFramebuffers(1)
@@ -1283,7 +1305,6 @@ class TileCacheMasked:
                     snap_int(size[1]),
                     uv0=(0.0, 1.0),
                     uv1=(1.0, 0.0),
-                    # tint_color=(self.frame_tint[0], self.frame_tint[1], self.frame_tint[2], self.frame_tint[3] * 0.5)
                 )
                 imgui.set_item_allow_overlap()
                 imgui.set_cursor_screen_pos((draw_state.left, draw_state.top + draw_state.content_height))
@@ -1473,6 +1494,12 @@ class TileCacheMasked:
             vs = _compile(gl.GL_VERTEX_SHADER, _FULLSCREEN_VS)
             fs = _compile(gl.GL_FRAGMENT_SHADER, _BLIT_FS)
             self._prog_blit = _link(vs, fs)
+
+        if self._prog_solid is None:
+            vs = _compile(gl.GL_VERTEX_SHADER, _FULLSCREEN_VS)
+            fs = _compile(gl.GL_FRAGMENT_SHADER, _SOLID_FS)
+            self._prog_solid = _link(vs, fs)
+            self._loc_solid_uColor = gl.glGetUniformLocation(self._prog_solid, "uColor")
 
     def _copy_debug_mode_to_int(self) -> int:
         table = {
@@ -1704,6 +1731,21 @@ class TileCacheMasked:
                     try:
                         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, p.tile.fbo)
                         gl.glViewport(0, 0, snap_int(p.tile.size[0]), snap_int(p.tile.size[1]))
+
+                        # Pre-tint: multiplicative blending drifts stale pixels toward blue
+                        if Toggles.debug_stale_tint:
+                            gl.glEnable(gl.GL_BLEND)
+                            gl.glBlendEquation(gl.GL_FUNC_ADD)
+                            gl.glBlendFunc(gl.GL_ZERO, gl.GL_SRC_COLOR)
+                            gl.glUseProgram(self._prog_solid)
+                            gl.glUniform4f(self._loc_solid_uColor, 0.8, 0.8, 1.0, 1.0)
+                            gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
+                            gl.glDisable(gl.GL_BLEND)
+
+                        gl.glUseProgram(self._prog_copy)
+                        gl.glActiveTexture(gl.GL_TEXTURE2)
+                        gl.glBindTexture(gl.GL_TEXTURE_2D, self._sub_mask_tex)
+                        gl.glUniform1i(self._loc_uSubMask, 2)
 
                         if global_toggles is not None and getattr(global_toggles, "offscreen_debug", False):
                             gl.glUniform4f(self._loc_copy_uTint, *self.frame_tint)

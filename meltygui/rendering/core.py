@@ -967,6 +967,17 @@ def render_func(*args, **o_kwargs):
 
             last_bounding_hovered = draw_state._bounding_hovered
             new_bounding_hovered = draw_state.is_bounding_hovered()
+
+            # Suppress hover if a closable window with higher z-order covers this view
+            if new_bounding_hovered:
+                mouse_x, mouse_y = imgui.get_mouse_pos()
+                hits = Melty.bvh_query(mouse_x, mouse_y)
+                my_depth = draw_state.shadow_depth
+                for ds in hits:
+                    if ds.closable and ds is not draw_state and ds.shadow_depth > my_depth:
+                        new_bounding_hovered = False
+                        break
+
             hover_changed = last_bounding_hovered != new_bounding_hovered
             draw_state._bounding_hovered = new_bounding_hovered
             if (draw_state.width is None or draw_state.height is None or hover_changed or
