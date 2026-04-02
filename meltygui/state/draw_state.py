@@ -67,6 +67,15 @@ class ApplyMode(Enum):
     ON_RELEASE = 'on_release'
     CONFIRM = 'confirm'
 
+
+@no_save_exclude('selected_tabs')
+class TabState(DictConversion):
+    def __init__(self):
+        super().__init__()
+        self.selected_tabs = []
+
+
+
 class ZoomState(DictConversion):
     def __init__(self):
         super().__init__()
@@ -153,7 +162,7 @@ class TileMode(Enum):
          "bounding_hovered", "dlt_count", "clip_rect",
  "scrolled", "is_hovered_last", "frame_count")
 @no_save_exclude('render_time',  "total_z_offset", 'closable', 'invalid_content_height',
-                  "parent_window", "pressed", "bbox",
+                  "parent_window", "pressed", "bbox", "selected_tabs", "final_max_column",
                  'hover_rects', 'nested_window', 'use_cache', 'layer', "header_top", "header_left", "left_offset",
                  "top_offset", 'kwargs', "just_shadow", "header_width", "header_end_width",
                  "header_left_delta", "header_top_delta", "last_seen", "persistent", "shadow_margin", "bg_depth",
@@ -174,8 +183,11 @@ class DrawState(DictConversion):
         self._pending = False
         self._running = False
 
+        self.selected_tabs = []
+
         # Chain cache, split based on type, UNSET_VALUE as a default
         self._chain_stack = CacheTree()
+
 
 
         self._children = {}

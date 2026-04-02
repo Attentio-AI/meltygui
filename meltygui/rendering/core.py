@@ -876,6 +876,7 @@ def render_func(*args, **o_kwargs):
             x_offset = draw_state.abs_left - parent_wrap_left
             indent_x = kwargs.get("indent_size", 0)
 
+
             if column is not None and column_parent is not None:
                 column_parent._current_max_column = max(column_parent._current_max_column, column)
                 parent_wrap_width = column_parent.content_width / (column_parent.final_max_column + 1)
@@ -2233,6 +2234,9 @@ def render_func(*args, **o_kwargs):
             if column is not None and column_parent is not None:
                 column_parent._column_cursor[column][
                     1] += draw_state.height  # This will lag behind a frame, but keeping code tidy instead
+            # if column_parent is not None:
+            #     for i in range(column_parent.final_max_column):
+            #         column_parent._column_cursor[i][1] += draw_state.height
 
             draw_state.pos_changed()
 

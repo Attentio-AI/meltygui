@@ -17,7 +17,7 @@ from imgui.core import _DrawList
 
 from src.lsd.gl_gui import toggles
 from src.lsd.gl_gui.melty import Melty, CollectionAction, ManagedWindow
-from src.lsd.gl_gui.model.core_model.draw_state import ZoomState, TileMode, DrawState
+from src.lsd.gl_gui.model.core_model.draw_state import ZoomState, TileMode, DrawState, TabState
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_style_var, \
@@ -453,6 +453,7 @@ def draw_type(input_value:type, draw_state, **kwargs):
 some_float = [0.0]
 cst_dict = {}
 test_code = None
+selected_tabs = ["Alpha"]
 
 
 @render_func(show_bg=True, with_header=draw_header)
@@ -468,10 +469,21 @@ def test_columns():
 
 
 @render_func(use_cache=True, show_bg=False, shadow=False, disable_scroll=True, selectable=False, with_header=draw_header)
-def draw_with_modes(input_value, modes):
+def draw_with_modes(input_value, modes, tab_state: TabState = None, draw_state=None):
+    if not tab_state.selected_tabs:
+        tab_state.selected_tabs = [modes[0]]
+
+    tab_changed, new_tabs = draw_tab_bar(tab_state.selected_tabs, collection=modes)
+    if tab_changed:
+        tab_state.selected_tabs = new_tabs
+
+
     changed = False
     value = input_value
-    for idx, mode in enumerate(modes):
+    for idx, mode in enumerate(tab_state.selected_tabs):
+        empty(width=1, height=30, column=idx)
+        if len(tab_state.selected_tabs) == 1:
+            idx = None
         mode_changed, value = draw_any(input_value, name=f"Mode: {mode}", mode=mode, z_offset=3, selectable=False, auto_resize=True, disable_scroll=False,
                                        show_bg=True, shadow=True, column=idx)
         changed |= mode_changed
@@ -526,7 +538,7 @@ def run_chain(input_value, chain=None, draw_state=None, debug=False, **kwargs):
         changed, value = func(input_value=value, reference=next_cached, **func_kwargs)
         end_time = glfw.get_time()
         duration_ms = (end_time - start_time) * 1000
-        imgui.text(f"  [{i}] {func.__name__} — {type(value).__name__} — {duration_ms:.2f} ms")
+        # imgui.text(f"  [{i}] {func.__name__} - {type(value).__name__} - {duration_ms:.2f} ms")
         imgui.end_group()
         if isinstance(value, Pending):
             changed=False
@@ -617,6 +629,14 @@ def draw_main(input_value, vis, draw_state=None):
     if changed:
         print("New float value:", new_float)
         some_float[0] = new_float
+
+    global selected_tabs
+    changed, new_tabs = draw_tab_bar(selected_tabs, collection=["Alpha", "Beta", "Gamma", "Delta"], name="Tab Bar Demo", mode=Mode.WINDOW)
+    if changed:
+        selected_tabs = new_tabs
+
+
+    draw_enum_tabs(ProfileMode, name="Enum Tab Bar Demo", mode=Mode.WINDOW)
 
     draw_window(Monitor, name="Monitor")
 
@@ -1517,7 +1537,7 @@ def seperator(height):
     imgui.separator()
     imgui.dummy(0, snap_int(height / 2))
 
-def draw_bg(left=4, top=3, width=0, height=55, depth=0, rounding=3.384,
+def draw_bg(left=0, top=3, width=0, height=55, depth=0, rounding=6.0,
             global_style=None, outline=True, bg_color=None, opacity=-1.066,
             style_manager=None, tint=None, outline_tint=None, selected=False,
             hovered=False, pressed=False, nested_bg=False, **kwargs):
@@ -2151,6 +2171,71 @@ def draw_enum(input_value: Enum, global_style=None,  style_manager=None, enum_ti
     return changed, selected_enum
 
 
+
+@render_func(is_tree=False, shadow=False, header_same_line=True, parent_show_add_delete=False, with_header=draw_header)
+def draw_tab_bar(input_value: list, collection=None, global_style=None, style_manager=None, tab_tint=(0.3, 0.3, 0.3)):
+    """Tab bar with multi-select via shift-click. input_value is the list of selected items, collection is all available tabs."""
+    if collection is None:
+        return False, input_value
+
+    io = imgui.get_io()
+    changed = False
+    selected = list(input_value)
+
+    push_style_var(imgui.STYLE_ITEM_SPACING, (2, 4))
+    for i, tab in enumerate(collection):
+        label_text = str(tab).replace("_", " ").capitalize()
+        label = f"{label_text}##tab{i}"
+        active = tab in selected
+
+        radio_style = global_style.radio_button
+        if active:
+            color = style_manager.make_color_style_rgb(*tab_tint, radio_style["active_base"])
+            hover = style_manager.make_color_style_rgb(*tab_tint, radio_style["active_hover"])
+            pressed = style_manager.make_color_style_rgb(*tab_tint, radio_style["active_pressed"])
+        else:
+            color = style_manager.make_color_style_rgb(*tab_tint, radio_style["inactive_base"])
+            hover = style_manager.make_color_style_rgb(*tab_tint, radio_style["inactive_hover"])
+            pressed = style_manager.make_color_style_rgb(*tab_tint, radio_style["inactive_pressed"])
+
+        push_style_color(imgui.COLOR_BUTTON, *color)
+        push_style_color(imgui.COLOR_BUTTON_HOVERED, *hover)
+        push_style_color(imgui.COLOR_BUTTON_ACTIVE, *pressed)
+        clicked = imgui.button(label)
+        pop_style_color(1)
+        pop_style_color(1)
+        pop_style_color(1)
+
+        if clicked:
+            changed = True
+            if io.key_shift:
+                if active:
+                    selected.remove(tab)
+                else:
+                    selected.append(tab)
+            else:
+                selected = [tab]
+
+        same_line()
+    new_line()
+    pop_style_var(1)
+
+    return changed, selected
+
+
+@render_func(with_header=draw_header, is_tree=False, shadow=False)
+def draw_enum_tabs(input_value: type, tab_state: TabState):
+    enum_states = list(input_value)
+    selected = tab_state.selected_tabs
+
+    changed, new_selected = draw_tab_bar(selected, collection=enum_states)
+    if changed:
+        tab_state.selected_tabs = new_selected
+
+    return False, None
+
+
+
 def draw_debug(x,y, label, color=(1, 0, 0), size=16):
     draw_list: _DrawList = imgui.get_overlay_draw_list()
     draw_list.add_circle_filled(x, y, size, imgui.get_color_u32_rgba(*color, 1.0))
@@ -2249,7 +2334,7 @@ def draw_pending(input_value, draw_state=None):
     return False, None
 
 
-from src.lsd.gl_gui.model.core_model.core_enums import PendingAction
+from src.lsd.gl_gui.model.core_model.core_enums import PendingAction, ProfileMode
 from src.lsd.gl_gui.view.core_conversion.search_conversion import SearchResults
 
 
