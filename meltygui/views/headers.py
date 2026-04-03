@@ -27,12 +27,12 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
     # ── Constants ──────────────────────────────────────────────
     # Depth-driven name brightness
-    depth_scale       = 0.076
-    depth_offset      = 1.658
+    depth_scale       = 0.061
+    depth_offset      = -30.0
     name_value_factor = 0.777
     # Depth drives text saturation falloff
-    sat_depth_factor  = 0.016
-    sat_depth_offset  = -1.529
+    sat_depth_factor  = -0.004
+    sat_depth_offset  = -1.773
 
 
     spinner_icon_0 = ""
@@ -46,7 +46,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
     # Name text (value is the base offset, updated to depth below)
     name_style = {
-        'value': 0.754, 'saturation': 1.095,
+        'value': 1.034, 'saturation': 0.715,
         'alpha': 0.174, 'max_value': 3.921,
         'depth_factor': 0.741
     }
@@ -56,7 +56,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
     # Tree arrow
     arrow_style = {
-        'value': 0.108, 'saturation': 1.639,
+        'value': 7.788, 'saturation': 1.559,
         'alpha': 0.071, 'max_value': 1.601,
         'depth_factor': 0.332
     }

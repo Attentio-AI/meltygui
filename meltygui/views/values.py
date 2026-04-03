@@ -13,6 +13,7 @@ from types import NoneType
 import OpenGL.GL as gl
 import glfw
 import numpy
+import torch
 from imgui.core import _DrawList
 
 from src.lsd.gl_gui import toggles
@@ -40,6 +41,7 @@ from src.lsd.gl_gui.view.core_views.folders_proxy import FolderProxy
 from src.lsd.gl_gui.view.core_views.headers import draw_header, draw_footer, draw_header_end
 from src.lsd.gl_gui.view.core_views.inspect_utils import set_fn_defaults
 from src.lsd.gl_gui.view.core_views.monitor import Monitor
+from src.lsd.gl_gui.view.core_views.tensor_views import draw_tensor
 from src.lsd.gl_gui.view.core_views.text_editor import draw_text
 from src.shader_library.shader_manager.texture_manager import PendingTexture
 
@@ -562,6 +564,8 @@ def run_chain(input_value, chain=None, draw_state=None, debug=False, **kwargs):
     return False, None
 
 
+some_test_tensor = torch.randn(3, 3)
+
 @render_func(use_cache=False, show_bg=True, selectable=False, show_tint=True, bg_offset=-1, with_header=draw_header)
 def draw_main(input_value, vis, draw_state=None):
     global test_obj
@@ -582,6 +586,9 @@ def draw_main(input_value, vis, draw_state=None):
                                      show_bg=True, mode=(Mode.WINDOW), modes=[Mode.CODE_PLAIN_TEXT, Mode.CODE_UI])
     if changed:
         test_code = value
+
+
+    draw_tensor(some_test_tensor, name="Tensor", mode=Mode.WINDOW)
 
 
     changed, value = draw_with_modes(input_value=toggles, name="Toggles",
@@ -1547,13 +1554,13 @@ def seperator(height):
     imgui.dummy(0, snap_int(height / 2))
 
 def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=6.0,
-            global_style=None, outline=True, bg_color=None, opacity=-1.066,
+            global_style=None, outline=True, bg_color=None, opacity=0.484,
             style_manager=None, tint=None, outline_tint=None, selected=False,
             hovered=False, pressed=False, nested_bg=False, **kwargs):
 
     # -- Constants ---------------------------------
     depth_wrap        = 42
-    depth_scale       = 1.114
+    depth_scale       = 2.094
     corner_radius     = rounding
     border_inset      = 2.998
     border_inset_half = 0.545
@@ -1561,6 +1568,7 @@ def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=6.0,
     # How depth maps to color intensity
     intensity_factor  = 0.038
     intensity_offset  = -0.271
+    
     # Outline color tuning
     outline_base      = 1.874
     outline_depth_mul = 0.85
@@ -1668,6 +1676,7 @@ def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=6.0,
     if opacity > 0.0:
         imgui.get_window_draw_list().add_rect_filled(*fill_rect, col=packed_fill, rounding=corner_radius)
 
+    return False, bg_color
     return False, bg_color
 
 
@@ -1970,7 +1979,7 @@ def draw_float_ctx(input_value):
 
 
 @render_func(is_default_for=float, use_cache=False, shadow=False, window_pos=(0,0), show_bg=False, wrap=False, is_tree=False, with_header=draw_header, with_header_end=draw_header_end)
-def draw_float(input_value: float, draw_state, min_value=-100.0, max_value=100.0, speed=0.01):
+def draw_float(input_value: float, draw_state, min_value=-100.0, max_value=100.0, speed=0.001):
     imgui.set_next_item_width(min(600, max(30, draw_state.content_width)))
     changed, value = imgui.drag_float("", input_value,
                                       format='%.3f',

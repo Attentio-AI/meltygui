@@ -836,8 +836,8 @@ def render_func(*args, **o_kwargs):
                     parent_wrap_left = fixed_size_draw_state.abs_left
                     parent_wrap_top = fixed_size_draw_state.abs_top
                 elif draw_state.clip_rect is not None:
-                    clip_size = draw_state.clip_rect
-                    clip_rect = draw_state.clip_size
+                    clip_size = draw_state.clip_size
+                    clip_rect = draw_state.clip_rect
                     if clip_size is not None:
                         parent_wrap_width = clip_size[0]
                         parent_wrap_left = clip_rect[0]
@@ -1077,6 +1077,7 @@ def render_func(*args, **o_kwargs):
             draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer)
 
             if Melty.cache.mark_start_offscreen(draw_state=draw_state):
+                draw_state._current_max_column = 0
 
                 Melty.root_draw_states[draw_state.id] = []
                 from src.lsd.gl_gui.view.core_views.new_core_view import draw_window

@@ -307,12 +307,13 @@ def general_parse_to_address(input_value: GeneralParse, pending=False, draw_stat
     if isinstance(back_to_cst, Pending):
         return False, back_to_cst
     code_str = back_to_cst.code
+    if pending or changed:
 
-    if source is not None:
-        run_button(do_recompile, clicked=recompile, changed=pending, name="do_recompile",
-                    with_kwargs={"input_value": address.source,
-                             "code_str": code_str,
-                             "file_path": address.path})
+        if source is not None:
+            run_button(do_recompile, clicked=recompile and pending, name="do_recompile",
+                        with_kwargs={"input_value": address.source,
+                                 "code_str": code_str,
+                                 "file_path": address.path})
     if pending or changed:
         if source is not None:
             clicked, result = run_button(_do_save, with_kwargs={"input_value": address,
