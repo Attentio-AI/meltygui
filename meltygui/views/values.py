@@ -44,7 +44,7 @@ from src.lsd.gl_gui.view.core_views.text_editor import draw_text
 from src.shader_library.shader_manager.texture_manager import PendingTexture
 
 
-@render_func(use_cache=True, show_bg=False, width=20, height=22, tile_mode=TileMode.MAX, auto_resize=False, just_shadow=True, selectable=False, no_cursor=True, temp=True)
+@render_func(use_cache=True, show_bg=True, width=20, height=22, tile_mode=TileMode.MAX, auto_resize=False, just_shadow=True, selectable=False, no_cursor=True, temp=True)
 def empty(input_val):
     pass
 
@@ -94,12 +94,15 @@ def draw_module(input_value: types.ModuleType, draw_state, **kwargs):
 def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=None, keys=None, get_attr=None, set_attr=None, show_excluded=False,
                     child_kwargs=None, nested_func=None, show_bg=True, show_search=True, on_collapse=False, search_text="",
                     on_expand=False, show_add_delete=True, item_spacing_y=1,
-                    horizontal=False, show_indices=False, **kwargs):
+                    horizontal=False, show_indices=False, excluded=None, **kwargs):
     """
     Universal collection renderer
     """
     if draw_state.name == "cst_dict":
         pass
+
+    if excluded is None:
+        excluded = set()
 
     if child_kwargs is None:
         child_kwargs = {}
@@ -232,6 +235,9 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=No
                 if str(key) in type(input_value).__excluded_attrs__:
                     continue
         display_name = None
+
+        if key in excluded:
+            continue
 
         # apply global skip to all types
         if isinstance(key, (float, Enum, NoneType)):
@@ -468,7 +474,7 @@ def test_columns():
         draw_float(0.4, name=f"float_{i}", column=2)
 
 
-@render_func(use_cache=True, show_bg=False, shadow=False, disable_scroll=True, selectable=False, with_header=draw_header)
+@render_func(use_cache=True, show_bg=False, shadow=False, disable_scroll=False, selectable=False, with_header=draw_header)
 def draw_with_modes(input_value, modes, tab_state: TabState = None, draw_state=None):
     if not tab_state.selected_tabs:
         tab_state.selected_tabs = [modes[0]]
@@ -481,9 +487,11 @@ def draw_with_modes(input_value, modes, tab_state: TabState = None, draw_state=N
     changed = False
     value = input_value
     for idx, mode in enumerate(tab_state.selected_tabs):
-        empty(width=1, height=30, column=idx)
+
         if len(tab_state.selected_tabs) == 1:
             idx = None
+        else:
+            empty(width=0, height=30, column=idx, shadow=False, use_cache=False)
         mode_changed, value = draw_any(input_value, name=f"Mode: {mode}", mode=mode, z_offset=3, selectable=False, auto_resize=True, disable_scroll=False,
                                        show_bg=True, shadow=True, column=idx)
         changed |= mode_changed
@@ -565,7 +573,8 @@ def draw_main(input_value, vis, draw_state=None):
     global test_code
     from src.lsd.gl_gui.view.mode import Mode
 
-    changed, value = draw_any(draw_header, name="draw_header", show_bg=True, mode=(Mode.CODE_UI, Mode.WINDOW))
+    changed, value = draw_with_modes(draw_header, name="draw_header", show_bg=True, mode=(Mode.WINDOW), modes=(Mode.CODE_UI,
+                                                                                                               Mode.CODE_PLAIN_TEXT))
     if changed:
         test_code = value
 
@@ -1537,7 +1546,7 @@ def seperator(height):
     imgui.separator()
     imgui.dummy(0, snap_int(height / 2))
 
-def draw_bg(left=0, top=3, width=0, height=55, depth=0, rounding=6.0,
+def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=6.0,
             global_style=None, outline=True, bg_color=None, opacity=-1.066,
             style_manager=None, tint=None, outline_tint=None, selected=False,
             hovered=False, pressed=False, nested_bg=False, **kwargs):
@@ -1546,11 +1555,11 @@ def draw_bg(left=0, top=3, width=0, height=55, depth=0, rounding=6.0,
     depth_wrap        = 42
     depth_scale       = 1.114
     corner_radius     = rounding
-    border_inset      = 1.758
+    border_inset      = 2.998
     border_inset_half = 0.545
-    stroke_width      = 1.868
+    stroke_width      = 3.178
     # How depth maps to color intensity
-    intensity_factor  = 0.069
+    intensity_factor  = 0.038
     intensity_offset  = -0.271
     # Outline color tuning
     outline_base      = 1.874
@@ -1824,14 +1833,14 @@ def draw_str(input_value: str, draw_state, editable=True, alpha=1.0):
         return True, value
     return changed, value
 
-@render_func(is_default_for=GeneralParse, use_cache=True, shadow=True, z_offset=2, show_bg=True, with_header=draw_header,
-             is_tree=True)
+@render_func(is_default_for=GeneralParse, show_add_delete=False, show_name=False, shadow=False,
+             is_tree=False, use_cache=True, show_bg=False, with_header=draw_header, indent_size=0)
 def draw_general_parse(input_value: GeneralParse):
-    imgui.text("General parse render func")
-    changed, value = draw_collection(input_value=input_value)
+    changed, value = draw_collection(input_value=input_value, show_header=False, show_bg=False, indent_size=0, shadow=False,
+                                     is_tree=False, show_add_delete=False, excluded=["decorators"])
 
-    imgui.text(f"Usages: {len(input_value.usages)}")
-    _, _ = draw_collection(input_value=input_value.usages, show_bg=True, z_offset=2, shadow=True, tint=(0, 0.5, 0.1), name="Usage")
+    # imgui.text(f"Usages: {len(input_value.usages)}")
+    # _, _ = draw_collection(input_value=input_value.usages, show_bg=True, z_offset=2, shadow=True, tint=(0, 0.5, 0.1), name="Usage")
 
     return changed, value
 
@@ -2172,7 +2181,7 @@ def draw_enum(input_value: Enum, global_style=None,  style_manager=None, enum_ti
 
 
 
-@render_func(is_tree=False, shadow=False, header_same_line=True, parent_show_add_delete=False, with_header=draw_header)
+@render_func(is_tree=False, shadow=False, header_same_line=True, show_add_delete=False, show_name=False, parent_show_add_delete=False, with_header=draw_header)
 def draw_tab_bar(input_value: list, collection=None, global_style=None, style_manager=None, tab_tint=(0.3, 0.3, 0.3)):
     """Tab bar with multi-select via shift-click. input_value is the list of selected items, collection is all available tabs."""
     if collection is None:
@@ -2184,7 +2193,8 @@ def draw_tab_bar(input_value: list, collection=None, global_style=None, style_ma
 
     push_style_var(imgui.STYLE_ITEM_SPACING, (2, 4))
     for i, tab in enumerate(collection):
-        label_text = str(tab).replace("_", " ").capitalize()
+        raw = tab.name if hasattr(tab, 'name') else str(tab)
+        label_text = raw.replace("_", " ").title()
         label = f"{label_text}##tab{i}"
         active = tab in selected
 
@@ -2249,7 +2259,7 @@ def draw_debug(x,y, label, color=(1, 0, 0), size=16):
 #     imgui.text(f"Last Modified: {input_value.modified_time}")
 #
 #     return False, None
-@render_func(with_header=draw_header, use_cache=True, is_tree=False)
+@render_func(with_header=draw_header, use_cache=True, disable_scroll=True, is_tree=False)
 def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, **kwargs):
     # imgui.text(type(input_value._input_value).__name__)
 
@@ -2264,36 +2274,31 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, *
 
         draw_list.add_rect(rect[0], rect[1], rect[2], rect[3], imgui.get_color_u32_rgba(*color), thickness=1.0, rounding=4)
 
-
-    draw_str(f"{str(input_value._kwargs.get('mode', None))}", name="mode", editable=False, column=0)
-    draw_str(f"{str(input_value.content_height)}", name="content_height", editable=False,column=0)
-    draw_str(f"{str(input_value.height)}", name="height", editable=False,column=0)
-    draw_any(input_value._source, name="Height source", editable=False, column=0)
-
-    draw_str(f"{input_value.scroll_visible}", name="scroll_visible", column=0)
-    draw_str(f"{input_value._kwargs.get('disable_scroll', False)}", name="disable_scroll", column=0)
-    draw_str(str(input_value.scroll_offset), name="scroll_offset", column=0)
-    draw_str(f"Clip Rect {str(input_value.clip_rect)}", name="clip_rect", column=0)
-
-    # draw_collection(draw_state._all_pending, name="All Pending", column=1, fill_height=True)
-    # imgui.new_line()
-    # imgui.separator()
-
-    changed, value = draw_bool(input_value._print_last_invalid, name="Print Invalid", column=0)
-    if changed:
-        input_value._print_last_invalid = value
-
-    if input_value._last_invalidate is not None:
-        if input_value._print_last_invalid:
-            print_stack_trace(frames=input_value._last_invalidate)
-
-    if input_value.explain_convert is not None:
-        draw_str(str(input_value.explain_convert), name="explain_convert", column=0)
-
     if Toggles.debug_context_menu:
+        changed, value = draw_bool(input_value._print_last_invalid, name="Print Invalid", column=0)
+        if changed:
+            input_value._print_last_invalid = value
+
+        if input_value._last_invalidate is not None:
+            if input_value._print_last_invalid:
+                print_stack_trace(frames=input_value._last_invalidate)
+
+        if input_value.explain_convert is not None:
+            draw_str(str(input_value.explain_convert), name="explain_convert", column=0)
+
+        draw_str(f"{str(input_value._kwargs.get('mode', None))}", name="mode", editable=False, column=0)
+        draw_str(f"{str(input_value.content_height)}", name="content_height", editable=False, column=0)
+        draw_str(f"{str(input_value.height)}", name="height", editable=False, column=0)
+        draw_any(input_value._source, name="Height source", editable=False, column=0)
+
+        draw_str(f"{input_value.scroll_visible}", name="scroll_visible", column=0)
+        draw_str(f"{input_value._kwargs.get('disable_scroll', False)}", name="disable_scroll", column=0)
+        draw_str(str(input_value.scroll_offset), name="scroll_offset", column=0)
+        draw_str(f"Clip Rect {str(input_value.clip_rect)}", name="clip_rect", column=0)
+
         if imgui.is_mouse_hovering_rect(draw_state.abs_left, draw_state.abs_top,
-                                        draw_state.abs_left + draw_state.width,
-                                        draw_state.abs_top + draw_state.height):
+                                            draw_state.abs_left + draw_state.width,
+                                            draw_state.abs_top + draw_state.height):
             draw_list = imgui.get_overlay_draw_list()
             rect = (input_value.abs_left, input_value.abs_top, input_value.abs_left + input_value.width,
                     input_value.abs_top + input_value.height)
@@ -2308,7 +2313,7 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, *
     # Draw view function
     if input_value._kwargs['view_function'] is not None:
         view_func_name = input_value._kwargs['view_function'].__name__ if hasattr(input_value._kwargs['view_function'], '__name__') else str(input_value._kwargs['view_function'])
-        change, new_view_func = draw_any(input_value._kwargs['view_function'], column=1, mode=Mode.CODE_PLAIN_TEXT, name=view_func_name)
+        change, new_view_func = draw_with_modes(input_value._kwargs['view_function'], column=0, modes=(Mode.CODE_PLAIN_TEXT, Mode.CODE_UI), name=view_func_name)
         if change:
             print(f"Changing view function from {input_value._kwargs['view_function'].__name__} to {new_view_func.__name__}")
             input_value._kwargs['view_function'] = new_view_func
@@ -2316,9 +2321,9 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, *
     # Draw class
     # Check if primitive type
     if not isinstance(input_value._raw_input_value, (int, float, str, bool)):
-        draw_str(str(type(input_value._raw_input_value)), name="Input Type", column=2)
-        cls_change, new_cls = draw_any(type(input_value._raw_input_value), column=2,
-                                       mode=Mode.CODE_PLAIN_TEXT,
+        draw_str(str(type(input_value._raw_input_value)), name="Input Type", column=1)
+        cls_change, new_cls = draw_with_modes(type(input_value._raw_input_value), column=1,
+                                              modes=(Mode.CODE_PLAIN_TEXT, Mode.CODE_UI),
                                        name=type(input_value._raw_input_value).__name__)
 
     return False, None

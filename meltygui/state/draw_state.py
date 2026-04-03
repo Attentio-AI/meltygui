@@ -363,8 +363,8 @@ class DrawState(DictConversion):
         self.overhead_time = 0.0
 
         ### Columns
-        self.final_max_column = 1
-        self._current_max_column = 1
+        self.final_max_column = 0
+        self._current_max_column = 0
         self._column_cursor = defaultdict(lambda: [0, 0])  # column -> (x, y)
         self._max_column_height = 0
         ### End Columns

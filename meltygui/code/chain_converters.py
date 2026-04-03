@@ -192,8 +192,8 @@ def load_cst_module(input_value: Address):
 ########################
 
 @render_func(background=False)
-def do_recompile(input_value, code_str, file_path):
-    print(f"do_recompile: Recompiling {input_value} from {file_path} with code:\n{code_str[:100]}...")
+def do_recompile(input_value, code_str, file_path, changed=False):
+    print(f"do_recompile: {changed}")
     """Dispatch recompile to the right handler based on source type."""
     if isinstance(input_value, type):
         _recompile_class(input_value, code_str, str(file_path))
@@ -309,7 +309,7 @@ def general_parse_to_address(input_value: GeneralParse, pending=False, draw_stat
     code_str = back_to_cst.code
 
     if source is not None:
-        run_button(do_recompile, clicked=recompile and pending, name="do_recompile",
+        run_button(do_recompile, clicked=recompile, changed=pending, name="do_recompile",
                     with_kwargs={"input_value": address.source,
                              "code_str": code_str,
                              "file_path": address.path})

@@ -866,7 +866,7 @@ def render_func(*args, **o_kwargs):
 
             draw_state.final_max_column = draw_state._current_max_column
 
-            if draw_state.final_max_column > 1 and column is None and column_parent is not None:
+            if draw_state.final_max_column > 0 and column is None and column_parent is not None:
                 column = kwargs.get("column", 0)
                 kwargs['column'] = column
             else:
@@ -942,7 +942,7 @@ def render_func(*args, **o_kwargs):
                 # Melty.push_clip((parent_wrap_left, parent_wrap_top + column_cursor_y + column_parent.header_height,
                 #                  parent_wrap_left + parent_wrap_width, parent_wrap_top + column_cursor_y + column_parent.header_height + parent_wrap_height))
 
-            if draw_state.final_max_column > 1:
+            if draw_state.final_max_column > 0:
                 column_width = draw_state.content_width / (draw_state.final_max_column + 1)
                 draw_list: _DrawList = imgui.get_window_draw_list()
                 for c in range(1, draw_state.final_max_column + 1):
@@ -1868,9 +1868,9 @@ def render_func(*args, **o_kwargs):
 
                 content_rect = imgui.get_item_rect_size()
 
-                if draw_state.final_max_column > 1:
+                if draw_state.final_max_column > 0:
                     max_height = 0
-                    for i in range(draw_state.final_max_column):
+                    for i in range(draw_state.final_max_column + 1):
                         column_height = draw_state._column_cursor[i][1]
                         if column_height > max_height:
                             max_height = column_height
@@ -2179,8 +2179,8 @@ def render_func(*args, **o_kwargs):
 
                 if passed_height is None:
                     max_height = kwargs.get("max_height", 1e9)
-                    if column is not None:
-                        max_height = parent_wrap_height - draw_state._column_cursor[column][1]
+                    if column is not None and column_parent is not None:
+                        max_height = parent_wrap_height - column_parent._column_cursor[column][1]
 
                     if not closable:
                         draw_state.height = snap_int(min(item_rect[1], max_height))
