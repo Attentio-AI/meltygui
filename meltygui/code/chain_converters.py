@@ -127,8 +127,12 @@ def function_to_address(input_value: types.FunctionType, draw_state, changed=Fal
 
     if changed:
         print(f"function_to_address: input changed for {input_value.__name__}, checking file {source_file}")
+    try:
+        source_lines, start_lineno = inspect.getsourcelines(unwrapped)
+    except (OSError, TypeError) as e:
+        print(f"Could not get source lines for {input_value.__name__} in {source_file}: {e}")
+        return changed, None
 
-    source_lines, start_lineno = inspect.getsourcelines(unwrapped)
     return changed, Address(Path(source_file), start_lineno - 1,
                             start_lineno - 1 + len(source_lines), source=input_value,
                             watcher_ds=draw_state)
@@ -307,14 +311,13 @@ def general_parse_to_address(input_value: GeneralParse, pending=False, draw_stat
     if isinstance(back_to_cst, Pending):
         return False, back_to_cst
     code_str = back_to_cst.code
-    if pending or changed:
-
+    if not recompile or (pending or changed):
         if source is not None:
             run_button(do_recompile, clicked=recompile and pending, name="do_recompile",
                         with_kwargs={"input_value": address.source,
                                  "code_str": code_str,
                                  "file_path": address.path})
-    if pending or changed:
+    if not save or (pending or changed):
         if source is not None:
             clicked, result = run_button(_do_save, with_kwargs={"input_value": address,
                                          "code_str": code_str},

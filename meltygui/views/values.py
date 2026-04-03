@@ -490,11 +490,8 @@ def draw_with_modes(input_value, modes, tab_state: TabState = None, draw_state=N
     value = input_value
     for idx, mode in enumerate(tab_state.selected_tabs):
 
-        if len(tab_state.selected_tabs) == 1:
-            idx = None
-        else:
-            empty(width=0, height=30, column=idx, shadow=False, use_cache=False)
-        mode_changed, value = draw_any(input_value, name=f"Mode: {mode}", mode=mode, z_offset=3, selectable=False, auto_resize=True, disable_scroll=False,
+        empty(width=0, height=30, column=idx, shadow=False, use_cache=False)
+        mode_changed, value = draw_any(input_value, name=f"Mode: {mode}", mode=mode, selectable=False, auto_resize=True, disable_scroll=False,
                                        show_bg=True, shadow=True, column=idx)
         changed |= mode_changed
 
@@ -1553,36 +1550,38 @@ def seperator(height):
     imgui.separator()
     imgui.dummy(0, snap_int(height / 2))
 
-def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=6.0,
+def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=6.0, bg_offset=0,
             global_style=None, outline=True, bg_color=None, opacity=0.484,
             style_manager=None, tint=None, outline_tint=None, selected=False,
             hovered=False, pressed=False, nested_bg=False, **kwargs):
 
+    # imgui.get_overlay_draw_list().add_text(left, top - 15, imgui.get_color_u32_rgba(1, 0, 0, 1), f"bg_ffset {bg_offset}")
+
     # -- Constants ---------------------------------
-    depth_wrap        = 42
-    depth_scale       = 2.094
+    depth_wrap        = 100
+    depth_scale       = 1.76
     corner_radius     = rounding
     border_inset      = 2.998
-    border_inset_half = 0.545
+    border_inset_half = 0.619
     stroke_width      = 3.178
     # How depth maps to color intensity
-    intensity_factor  = 0.038
-    intensity_offset  = -0.271
+    intensity_factor  = 0.042
+    intensity_offset  = 0.136
     
     # Outline color tuning
     outline_base      = 1.874
     outline_depth_mul = 0.85
-    outline_sat       = {'default': 1.752, 'nested': 3.211}
+    outline_sat       = {'default': 1.1, 'nested': 1.473}
 
     # Beed color
-    bleed_mix         = {'nested': 0.514, 'default': 0.454}
-    bleed_style       = {'value': -0.111, 'alpha': 0.994, 'saturation': 5.459}
+    bleed_mix         = {'nested': 0.44, 'default': 0.454}
+    bleed_style       = {'value': -0.111, 'alpha': 1.199, 'saturation': 6.905}
     outline_bleed_mix = 0.272
 
     # Hover offset per interaction state
     hover_offset_by_state = {
-        'default':    -1.863,
-        'selected':    6.759,
+        'default':    -1.807,
+        'selected':    -1.453,
         'pressed_hi': -1.813,   # pressed + opacity > 0.5
         'pressed_lo':  -0.441,
     }
@@ -1592,7 +1591,6 @@ def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=6.0,
         'alpha': 0.208, 'max_value': 2.1,
     }
     
-
     # ── Helpers ────────────────────────────────────────────────
     def current_indent_px():
         return Melty.current_indent
@@ -1604,17 +1602,17 @@ def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=6.0,
             color_a[2] * (1 - factor) + color_b[2] * factor,
         )
     # -- Depth calculation -------------------
-    wrapped_depth = max(0.0, Melty.bg_depth) % depth_wrap
+    wrapped_depth = (Melty.bg_depth % depth_wrap) + bg_offset
     scaled_depth = wrapped_depth * depth_scale
-    depth_intensity = max(0, (scaled_depth + intensity_offset) * intensity_factor)
+    depth_intensity = (scaled_depth + intensity_offset) * intensity_factor
 
     # ── Geometry ───────────────────────────────────────────────
     right = left + width
     bottom = top + height
 
     fill_rect = (
-        snap_int(left) + border_inset,     snap_int(top) + border_inset,
-        snap_int(right) - border_inset,    snap_int(bottom) - border_inset,
+        snap_int(left) + border_inset, snap_int(top) + border_inset,
+        snap_int(right) - border_inset, snap_int(bottom) - border_inset,
     )
     outline_rect = (
 
@@ -1662,8 +1660,6 @@ def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=6.0,
             *outline_rect, col=packed_outline, rounding=corner_radius, thickness=stroke_width,
         )
 
-
-
     # ── Fill rendering ─────────────────────────────────────────
     if bg_color is None:
         bg_color = style_manager.make_color_style_value(input=bg_style, value=max(0, depth_intensity))
@@ -1678,9 +1674,6 @@ def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=6.0,
 
     return False, bg_color
     return False, bg_color
-
-
-
 
 @render_func(use_cache=True, shadow=True, selectable=False, show_bg=False, min_width=10,
              min_height=10, wrap=True)
@@ -2190,7 +2183,9 @@ def draw_enum(input_value: Enum, global_style=None,  style_manager=None, enum_ti
 
 
 
-@render_func(is_tree=False, shadow=False, header_same_line=True, show_add_delete=False, show_name=False, parent_show_add_delete=False, with_header=draw_header)
+@render_func(is_tree=False, show_bg=False, shadow=True, use_cache=True, z_offset=6,
+             header_same_line=True, show_add_delete=False, show_name=False, selectable=False,
+             parent_show_add_delete=False, with_header=draw_header)
 def draw_tab_bar(input_value: list, collection=None, global_style=None, style_manager=None, tab_tint=(0.3, 0.3, 0.3)):
     """Tab bar with multi-select via shift-click. input_value is the list of selected items, collection is all available tabs."""
     if collection is None:
@@ -2271,7 +2266,6 @@ def draw_debug(x,y, label, color=(1, 0, 0), size=16):
 @render_func(with_header=draw_header, use_cache=True, disable_scroll=True, is_tree=False)
 def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, **kwargs):
     # imgui.text(type(input_value._input_value).__name__)
-
     def draw_overlay_rect(rect, color=(1, 0, 0, 0.5), name=None):
 
         draw_list: _DrawList = imgui.get_overlay_draw_list()

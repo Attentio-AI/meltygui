@@ -13,7 +13,7 @@ class Toggles:
     slow_down_threads = False
     render_depth = False
     ds_invalidate_stack = False
-    profile_mode = ProfileMode.LIGHT
+    profile_mode = ProfileMode.ON
     offscreen_debug = False
     debug_stale_tint = False
     

@@ -1488,9 +1488,12 @@ def render_func(*args, **o_kwargs):
                     bg_color = (0, 0, 0, 0)
                     if draw_state.width > 5 and draw_state.height > 5:
                         nested_bg = not closable and kwargs.get("bg_offset", 0) >= 0
+
+                        if func.__name__ == "draw_text":
+                            pass
                         bg_return = draw_bg(bypass=True, left=draw_state.left, top=draw_state.top,
                                             width=draw_state.width + 1, height=draw_state.height + 1,
-                                            rounding=draw_state.corner_radius,
+                                            rounding=draw_state.corner_radius, bg_offset=kwargs.get("bg_offset", 0),
                                             depth=Melty.shadow_depth, selected=draw_state.selected,
                                             global_style=global_style, opacity=1.0 if show_bg else 0.0,
                                             pressed=draw_state.pressed,
@@ -1605,9 +1608,8 @@ def render_func(*args, **o_kwargs):
                         if draw_state.context_menu_ds is not None:
                             draw_state.context_menu_ds.closed = not draw_state.context_menu_open
                     if draw_state.context_menu_open:
-                        bg_offset = 0
-                        if draw_state._is_nested:
-                            bg_offset = 0
+                        # if draw_state._is_nested:
+                        #     bg_offset = 0
                         # Melty.bg_depth += bg_offset
                         tint = style_manager.get_tint()
 
@@ -1619,7 +1621,7 @@ def render_func(*args, **o_kwargs):
 
                         returned_val = draw_context_menu(input_value=draw_state, mode=Mode.WINDOW, func=func,
                                                          tint=mixed_color, show_tint=False, show_add_delete=False,
-                                                         min_width=650, min_height=300, bg_offset=bg_offset,
+                                                         min_width=650, min_height=300,
                                                          persistent=False, anchor=Anchor.BOTTOM_LEFT,
                                                          with_footer=None, use_cache=True,
                                                          name=f"{name}##context_menu_{unique}", auto_resize=False,
@@ -1844,8 +1846,10 @@ def render_func(*args, **o_kwargs):
                                  top + height - draw_state.footer_height))
 
                 if show_bg:
-                    Melty.bg_depth += 1 + kwargs.get("bg_offset", 0)
+                    Melty.bg_depth += 1
                     Melty.bg_stack.append(style_manager.get_tint())
+
+                Melty.bg_depth += kwargs.get("bg_offset", 0)
 
                 if not closable and show_bg:
                     imgui.dummy(outline_margin / 2, outline_margin / 2)
@@ -1854,9 +1858,11 @@ def render_func(*args, **o_kwargs):
                                                input_value, unique, kwargs)
 
                 if show_bg and show_bg:
-                    Melty.bg_depth -= 1 + kwargs.get("bg_offset", 0)
+                    Melty.bg_depth -= 1
                     Melty.bg_stack.pop()
                     Melty.bg_color_stack.pop()
+
+                Melty.bg_depth -= kwargs.get("bg_offset", 0)
 
                 draw_state._imgui_is_hovered = draw_state._imgui_is_item_hovered and is_hovered
 
