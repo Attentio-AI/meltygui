@@ -10,6 +10,7 @@ import libcst as cst
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.toggles import shadow_depth_at
+from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace
 from src.lsd.gl_gui.view.core_conversion.cache_tree import CacheTree, UNSET_VALUE
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import no_save, exclude, deep_refresh, no_save_exclude, \
     invalidate_all
@@ -68,7 +69,7 @@ class ApplyMode(Enum):
     CONFIRM = 'confirm'
 
 
-@no_save_exclude('selected_tabs')
+@no_save_exclude()
 class TabState(DictConversion):
     def __init__(self):
         super().__init__()
@@ -162,7 +163,7 @@ class TileMode(Enum):
          "bounding_hovered", "dlt_count", "clip_rect",
  "scrolled", "is_hovered_last", "frame_count")
 @no_save_exclude('render_time',  "total_z_offset", 'closable', 'invalid_content_height',
-                  "parent_window", "pressed", "bbox", "selected_tabs", "final_max_column",
+                  "parent_window", "pressed", "bbox", "final_max_column",
                  'hover_rects', 'nested_window', 'use_cache', 'layer', "header_top", "header_left", "left_offset",
                  "top_offset", 'kwargs', "just_shadow", "header_width", "header_end_width",
                  "header_left_delta", "header_top_delta", "last_seen", "persistent", "shadow_margin", "bg_depth",
@@ -183,12 +184,8 @@ class DrawState(DictConversion):
         self._pending = False
         self._running = False
 
-        self.selected_tabs = []
-
         # Chain cache, split based on type, UNSET_VALUE as a default
         self._chain_stack = CacheTree()
-
-
 
         self._children = {}
         self._wrapper = None
@@ -329,6 +326,7 @@ class DrawState(DictConversion):
         self.drag_delta = (0, 0)
         self._input_value = UNSET_VALUE
         self._raw_input_value = UNSET_VALUE
+        self._bypass_cache = False
 
         self._input_cache = {"external_state": (UNSET_VALUE, 0, -1),  # value, frame, hash
                                    "internal_state":(UNSET_VALUE, 0)}  # value, frame
@@ -537,12 +535,15 @@ class DrawState(DictConversion):
             offset = (-self.width, -self.height + -anchor_margin)
         return offset
 
-    def _abs_left(self):
+    def _abs_left(self, depth=0):
         parent_left = 0
-        if self.parent_window is not None and self.parent_window is not self:
-            parent_left = self.parent_window._abs_left()
-        elif not self.closable:
-            parent_left = imgui.get_cursor_screen_pos()[0]
+        if depth > 10:
+            print_stack_trace()
+        else:
+            if self.parent_window is not None and self.parent_window is not self:
+                parent_left = self.parent_window._abs_left(depth=depth + 1)
+            elif not self.closable:
+                parent_left = imgui.get_cursor_screen_pos()[0]
 
         window_pos_x = self.window_pos[0] if self.window_pos is not None else 0
         # this_left_offset = self.left_offset if not self.melty_window else window_pos_x
@@ -551,12 +552,15 @@ class DrawState(DictConversion):
         this_left = window_pos_x + parent_left + self.left_offset + anchor[0]
         return this_left
 
-    def _abs_top(self):
+    def _abs_top(self, depth=0):
         parent_top = 0
-        if self.parent_window is not None and self.parent_window is not self:
-            parent_top = self.parent_window._abs_top()
-        elif not self.closable:
-            parent_top = imgui.get_cursor_screen_pos()[1]
+        if depth > 10:
+            print_stack_trace()
+        else:
+            if self.parent_window is not None and self.parent_window is not self:
+                parent_top = self.parent_window._abs_top(depth=depth + 1)
+            elif not self.closable:
+                parent_top = imgui.get_cursor_screen_pos()[1]
 
         anchor = self.anchor_offset
         window_pos_y = self.window_pos[1] if self.window_pos is not None else 0

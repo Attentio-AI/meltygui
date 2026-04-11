@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Tuple, MutableMapping
 
 from OpenGL import GL as gl
 import imgui
+from imgui.core import _DrawList
 
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.model.core_model.core_enums import OffscreenDebugMode
@@ -328,12 +329,7 @@ void main() {
     float d = sdRoundedBox(pixelPos, halfSize, r);
 
     if (d > 0.0) {
-        if (uMargin == 0.0) {
-            oColor = vec4(0.0, 0.0, 0.0, 0.0);
-
-        } else { 
-            discard;
-        }
+        discard;
     }
 
     oColor = vec4(uRankNorm, 0.0, 0.0, 1.0);
@@ -1263,7 +1259,7 @@ class TileCacheMasked:
         imgui.begin_group()
         has_area = size is not None and size[0] != 0 and size[1] != 0
 
-        if draw_state._input_value == UNSET_VALUE:
+        if draw_state._input_value == UNSET_VALUE or draw_state._bypass_cache:
             self._stack.append(
                 _Ctx(
                     draw_state=draw_state,
@@ -1711,8 +1707,7 @@ class TileCacheMasked:
 
                 for r in subtree_rects_by_root.get(p.key, ()):
                     self.apply_blend_mode(r)
-                    self._draw_mask_rect_fresh(r, dp_x, dp_y, s_x, s_y, fb_h, float(r.layer) * INV_65535,
-                                               shadow_margin=0.0)
+                    self._draw_mask_rect_fresh(r, dp_x, dp_y, s_x, s_y, fb_h, float(r.layer) * INV_65535 )
 
                 # Copy pixels to tile
                 gl.glUseProgram(self._prog_copy)
@@ -1801,6 +1796,7 @@ class TileCacheMasked:
                     t_child = self._tiles.get(r.key)
                     is_self = (r.key == p.key)
 
+
                     use_child_cache = (
                             (not is_self)
                             and (t_child is not None)
@@ -1817,10 +1813,12 @@ class TileCacheMasked:
                     clip_ix1, clip_iy1 = int(ceil(clip_x1)), int(ceil(clip_y1))
                     clip_iw, clip_ih = max(0, clip_ix1 - clip_ix0), max(0, clip_iy1 - clip_iy0)
 
-                    gl.glDisable(gl.GL_SCISSOR_TEST)
+
 
                     # For cached tiles, use actual tile size from context to avoid stretching
                     if use_child_cache:
+                        gl.glEnable(gl.GL_SCISSOR_TEST)
+                        gl.glScissor(clip_ix0, clip_iy0, clip_iw, clip_ih)
                         gl.glDisable(gl.GL_BLEND)
 
                         child_ctx = self._key_to_ctx.get(r.key)
@@ -1833,6 +1831,7 @@ class TileCacheMasked:
                             sx0, sy0, sx1, sy1 = self._screen_rect_to_fb_xyxy(r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y,
                                                                               fb_h)
                     else:
+
                         child_ctx = self._key_to_ctx.get(r.key)
                         if child_ctx and child_ctx.size:
                             cx, cy = child_ctx.pos
@@ -1935,12 +1934,9 @@ class TileCacheMasked:
             for key in reversed(list((subtree_rects_by_root.keys()))):
                 for r in subtree_rects_by_root.get(key, ()):
                     draw_state = self.key_to_draw_state.get(r.key)
-
                     t = self._tiles.get(r.key)
                     size_change = draw_state.size_change if draw_state else False
-
                     can_use_cached = (t is not None) and (t.mask_tex is not None) and (not size_change)
-
                     clip_x0, clip_y0, clip_x1, clip_y1 = self._screen_rect_to_fb_xyxy(
                         r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y, fb_h
                     )

@@ -490,7 +490,7 @@ def draw_with_modes(input_value, modes, tab_state: TabState = None, draw_state=N
     value = input_value
     for idx, mode in enumerate(tab_state.selected_tabs):
 
-        empty(width=0, height=30, column=idx, shadow=False, use_cache=False)
+        empty(width=0, height=30, column=idx)
         mode_changed, value = draw_any(input_value, name=f"Mode: {mode}", mode=mode, selectable=False, auto_resize=True, disable_scroll=False,
                                        show_bg=True, shadow=True, column=idx)
         changed |= mode_changed
@@ -1558,7 +1558,7 @@ def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=6.0, bg_offset=
     # imgui.get_overlay_draw_list().add_text(left, top - 15, imgui.get_color_u32_rgba(1, 0, 0, 1), f"bg_ffset {bg_offset}")
 
     # -- Constants ---------------------------------
-    depth_wrap        = 100
+    depth_wrap        = 30
     depth_scale       = 1.76
     corner_radius     = rounding
     border_inset      = 2.998
@@ -1700,8 +1700,11 @@ def button(input_value="", corner_radius=4, draw_state=None, left_mouse_held=Fal
         text_color = (1.0, 1.0, 1.0)
         mixed_color = (0, 0, 0)
 
+    button_txt = str(input_value).split("##")[0]
+
     draw_state.corner_radius = corner_radius
-    min_size = imgui.calc_text_size(input_value)
+    min_size = imgui.calc_text_size(button_txt)
+
     width = max(min_size[0] + 15, width or 0)
     height = max(min_size[1], height or 0)
     imgui.dummy(width, height)
@@ -1710,11 +1713,10 @@ def button(input_value="", corner_radius=4, draw_state=None, left_mouse_held=Fal
                               draw_state.abs_top + height, imgui.get_color_u32_rgba(*mixed_color[:3], 1.0),
                               rounding=corner_radius)
 
-    text_size = imgui.calc_text_size(input_value)
 
-    draw_list.add_text(draw_state.abs_left + (width - text_size[0]) / 2.0 + 2,
-                       draw_state.abs_top + (height - text_size[1]) / 2.0 - 1,
-                       imgui.get_color_u32_rgba(*text_color[:3], 1.0), input_value)
+    draw_list.add_text(draw_state.abs_left + (width - min_size[0]) / 2.0 + 2,
+                       draw_state.abs_top + (height - min_size[1]) / 2.0 - 1,
+                       imgui.get_color_u32_rgba(*text_color[:3], 1.0), button_txt)
 
     if left_mouse_down:
         request_render()
@@ -2183,7 +2185,7 @@ def draw_enum(input_value: Enum, global_style=None,  style_manager=None, enum_ti
 
 
 
-@render_func(is_tree=False, show_bg=False, shadow=True, use_cache=True, z_offset=6,
+@render_func(is_tree=False, show_bg=False, shadow=False, use_cache=True, z_offset=0,
              header_same_line=True, show_add_delete=False, show_name=False, selectable=False,
              parent_show_add_delete=False, with_header=draw_header)
 def draw_tab_bar(input_value: list, collection=None, global_style=None, style_manager=None, tab_tint=(0.3, 0.3, 0.3)):
@@ -2198,27 +2200,14 @@ def draw_tab_bar(input_value: list, collection=None, global_style=None, style_ma
     push_style_var(imgui.STYLE_ITEM_SPACING, (2, 4))
     for i, tab in enumerate(collection):
         raw = tab.name if hasattr(tab, 'name') else str(tab)
-        label_text = raw.replace("_", " ").title()
+        label_text = raw.replace("_", " ")
         label = f"{label_text}##tab{i}"
         active = tab in selected
 
-        radio_style = global_style.radio_button
         if active:
-            color = style_manager.make_color_style_rgb(*tab_tint, radio_style["active_base"])
-            hover = style_manager.make_color_style_rgb(*tab_tint, radio_style["active_hover"])
-            pressed = style_manager.make_color_style_rgb(*tab_tint, radio_style["active_pressed"])
+            clicked = button(label, height=23, draw=True)[0]
         else:
-            color = style_manager.make_color_style_rgb(*tab_tint, radio_style["inactive_base"])
-            hover = style_manager.make_color_style_rgb(*tab_tint, radio_style["inactive_hover"])
-            pressed = style_manager.make_color_style_rgb(*tab_tint, radio_style["inactive_pressed"])
-
-        push_style_color(imgui.COLOR_BUTTON, *color)
-        push_style_color(imgui.COLOR_BUTTON_HOVERED, *hover)
-        push_style_color(imgui.COLOR_BUTTON_ACTIVE, *pressed)
-        clicked = imgui.button(label)
-        pop_style_color(1)
-        pop_style_color(1)
-        pop_style_color(1)
+            clicked = button(label, height=23, draw=True, tint=(0,0,0))[0]
 
         if clicked:
             changed = True

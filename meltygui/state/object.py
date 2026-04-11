@@ -11,8 +11,6 @@ from copy import copy
 from enum import Enum
 from typing import Any, Dict, Optional, Union, List, Tuple
 
-import torch
-from torch import Tensor, nn
 from transformers import PreTrainedTokenizerBase, LlamaTokenizerFast
 
 from src.lsd.gl_gui.model.core_markers import FieldMeta
@@ -524,6 +522,7 @@ class DictConversion(metaclass=FieldMeta):
             pass
 
         if do_print:
+            import torch
             if hasattr(torch, 'cuda') and torch.cuda.is_available():
                 mem_str = ""
                 for i in range(torch.cuda.device_count()):
@@ -740,6 +739,7 @@ class DictConversion(metaclass=FieldMeta):
         if do_print:
             print(f"Depth: {depth}, Value: {input_value}, Type: {type(input_value)}")
             mem_str = ""
+            import torch
             for i in range(torch.cuda.device_count()):
                 mem_alloc = torch.cuda.memory_allocated(i) / 1024 ** 3
                 mem_str += f"GPU {i}: {mem_alloc:.2f} GB\n"
@@ -754,6 +754,7 @@ class DictConversion(metaclass=FieldMeta):
         if input_value is None:
             return None
 
+        from torch import Tensor
         if isinstance(input_value, Tensor):
             return input_value
 
@@ -766,6 +767,7 @@ class DictConversion(metaclass=FieldMeta):
         if isinstance(input_value, PreTrainedTokenizerBase):
             return input_value
 
+        from torch import nn
         if isinstance(input_value, nn.Module):
             return input_value
 
@@ -1326,13 +1328,16 @@ class DictConversion(metaclass=FieldMeta):
         for part in parts[i:]:
             obj = getattr(obj, part)
 
-        # Get the specific enum value
+        # Get the actual enum value - prefer name-based lookup (always works),
+        # fall back to value-based only when name lookup fails.
         try:
             if issubclass(obj, Enum):
-                if value is not None:
-                    return obj(value)
-                else:
-                    return obj[value_name]  # This gets the enum value
+                try:
+                    return obj[value_name]  # name-based lookup
+                except KeyError:
+                    if value is not None:
+                        return obj(value)  # value-based fallback
+                    raise
             else:
                 raise ValueError(f"{class_path} is not an Enum class")
         except Exception as e:
@@ -1382,8 +1387,9 @@ class DictConversion(metaclass=FieldMeta):
         module = cls.__module__
         qualname = cls.__qualname__  # This already contains the full nested path
 
-        # Combine module with qualname
-        return f"{qualname}"
+        # Combine module with qualname so the class can be resolved by direct
+        # lookup, without depending on ClassRegistry having scanned the module.
+        return f"{module}.{qualname}"
         # cls = obj.__class__
         # module = cls.__module__d
         #
@@ -1449,7 +1455,13 @@ class DictConversion(metaclass=FieldMeta):
             return to_tuple
         elif isinstance(value, Enum):
             classtype = DictConversion.get_full_class_path(value)
-            results = (value.name, classtype, "Enum", value.value)
+            enum_val = value.value
+            # Only store the value if it's a simple literal type that survives
+            # str/literal(str round-trip. Complex values (dicts with function refs,
+            # dataclasses, etc.) are replaced with None - the name alone is sufficient.
+            if not isinstance(enum_val, (int, float, str, bool, type(None))):
+                enum_val = None
+            results = (value.name, classtype, "Enum", enum_val)
             return results
         # Handle lists
         elif isinstance(value, Dict):

@@ -77,7 +77,7 @@ class ImGuiStyleManager:
         if 'max_value' in input:
             value = min(value, input["max_value"])
 
-        modified_rgb = colorsys.hsv_to_rgb(h, s * saturation_scale, value)
+        modified_rgb = colorsys.hsv_to_rgb(h, min(1.0, s * saturation_scale), value)
         return (modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
 
     def make_custom(self, r, g, b, value, saturation_scale=1.0, alpha=1.0):

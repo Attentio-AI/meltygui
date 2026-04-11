@@ -141,6 +141,7 @@ class Background:
             debounce_key = user_id
 
             cache = cls._user_cache.get(user_id)
+
             stale_value = None
             if cache and h in cache:
                 if no_cache:

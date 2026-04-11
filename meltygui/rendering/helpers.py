@@ -1,6 +1,6 @@
 import imgui
 
-from lsd.gl_gui.melty import Melty
+from src.lsd.gl_gui.melty import Melty
 
 # Cache to track used space - key is snapped y position, value is max x used
 _floating_text_cache = {}

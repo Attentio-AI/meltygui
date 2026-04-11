@@ -1,11 +1,11 @@
 import os
+import sys
 from types import NoneType
 from typing import MutableMapping
 
 import imgui
 from imgui.core import _DrawList
 
-from server.server_gui import open_file
 from src.lsd.gl_gui.melty import Melty, add_to_collection
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
 from src.lsd.gl_gui.model.core_model.draw_state import TileMode
@@ -15,6 +15,27 @@ from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_conversion.path_finder import PendingState
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
 from src.lsd.gl_gui.view.core_views.folders_proxy import FolderProxy
+
+
+def open_file(path, app=None):
+    def default_file_manager():
+        # Detect platform
+        if sys.platform.startswith('darwin'):
+            return "open"
+        elif os.name == 'nt':
+            return "explorer"
+        elif os.name == 'posix':
+            return "nemo"
+
+    if app is None:
+        app = default_file_manager()
+
+    import subprocess
+    if os.path.exists(path):
+        subprocess.Popen([app, path])
+    else:
+        print(f"Path does not exist: {path}")
+
 
 
 def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add_delete=False, width=0, suffix="",

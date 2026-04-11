@@ -4,6 +4,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional, Any
 
+from src.lsd.gl_gui.model.model_enums import RelaxedEnum
 from src.lsd.gl_gui.view.core_conversion.chain_converters import module_to_address, address_to_general_parse, \
     general_parse_to_address, address_to_module, class_to_address, address_to_class, function_to_address, \
     address_to_function, general_parse_to_str, str_to_general_parse

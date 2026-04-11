@@ -1,7 +1,7 @@
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
 class Counters:
     # Nested window
-    nested_window_count = 32
+    nested_window_count = 6
 def some_func():
     print("hello world")
     
@@ -13,7 +13,7 @@ class Toggles:
     slow_down_threads = False
     render_depth = False
     ds_invalidate_stack = False
-    profile_mode = ProfileMode.ON
+    profile_mode = ProfileMode.LIGHT
     offscreen_debug = False
     debug_stale_tint = False
     
@@ -23,7 +23,7 @@ class Toggles:
     some_dict = [21,13,3,3]
     
     some_val = 2
-    contrast = 14.686
+    contrast = 15.513
     saturation = 0.815
     debug_context_menu = False
     debug_z_depth = False
@@ -51,5 +51,5 @@ def some_func():
     for i in range(25):
         print("someting")
         my_var = [100,69,13]
-        somethin = True
+        somethin = False
         some_func()

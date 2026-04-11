@@ -811,6 +811,7 @@ def render_func(*args, **o_kwargs):
             #     draw_state._external_change = True
 
             use_cache = kwargs.get("use_cache", False) and Melty.cache.enabled and not draw_state._external_change
+            draw_state._bypass_cache = kwargs.get("draw", False)
             draw_state.use_cache = use_cache
             # if (draw_state.parent_window is not None and draw_state.window_pos is not None and
             #         draw_state.parent_window.window_pos is not None and closable):
@@ -1180,16 +1181,6 @@ def render_func(*args, **o_kwargs):
                         Melty.cache.invalidate_up(draw_state._tile_id, max_depth=5, force=True)
                         draw_state._pending_convert = True
                         request_render()
-
-                if (draw_state.left is not None and draw_state.top is not None and
-                    draw_state.width is not None and draw_state.height is not None) and closable:
-                    if (draw_state.width > 0 and draw_state.height > 0):
-                        reset_to = imgui.get_cursor_screen_pos()
-
-                        imgui.invisible_button(str(unique) + "window_blocker", width=draw_state.width,
-                                               height=draw_state.height)
-                        imgui.set_cursor_screen_pos(reset_to)
-                        imgui.set_item_allow_overlap()
 
                 begin_group(unique)
 
@@ -1841,9 +1832,18 @@ def render_func(*args, **o_kwargs):
 
                 #### MAIN CALL #######################
                 Melty.push_clip((left, top,
-
                                  left + width,
                                  top + height - draw_state.footer_height))
+
+                if (draw_state.left is not None and draw_state.top is not None and
+                    draw_state.width is not None and draw_state.height is not None) and closable:
+                    if (draw_state.width > 0 and draw_state.height > 0):
+                        reset_to = imgui.get_cursor_screen_pos()
+
+                        imgui.invisible_button(str(unique) + "window_blocker", width=draw_state.width,
+                                               height=draw_state.height)
+                        imgui.set_cursor_screen_pos(reset_to)
+                        imgui.set_item_allow_overlap()
 
                 if show_bg:
                     Melty.bg_depth += 1
