@@ -11,6 +11,7 @@ and libcst_conversion.py stay untouched for backward compat.
 """
 import inspect
 import threading
+import tokenize
 import types
 from pathlib import PosixPath, Path
 
@@ -129,7 +130,7 @@ def function_to_address(input_value: types.FunctionType, draw_state, changed=Fal
         print(f"function_to_address: input changed for {input_value.__name__}, checking file {source_file}")
     try:
         source_lines, start_lineno = inspect.getsourcelines(unwrapped)
-    except (OSError, TypeError) as e:
+    except (OSError, TypeError, tokenize.TokenError, SyntaxError) as e:
         print(f"Could not get source lines for {input_value.__name__} in {source_file}: {e}")
         return changed, None
 
@@ -168,7 +169,7 @@ def class_to_address(input_value: type, draw_state, changed=False):
             return changed, Address(Path(source_file), start_lineno - 1,
                                     start_lineno - 1 + len(source_lines), source=input_value,
                                     watcher_ds=draw_state)
-        except (TypeError, OSError):
+        except (TypeError, OSError, tokenize.TokenError, SyntaxError):
             return changed, None
     else:
         return changed, None

@@ -18,7 +18,7 @@ class Toggles:
     debug_stale_tint = False
     
     #---------- Visual Settings ---------
-    brightness = 0.098
+    brightness = 0.473
     
     some_dict = [21,13,3,3]
     
