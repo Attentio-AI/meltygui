@@ -585,6 +585,9 @@ def draw_main(input_value, vis, draw_state=None):
         test_code = value
 
 
+    draw_with_modes(input_value=test_func, name="demo test",
+                                     show_bg=True, mode=(Mode.WINDOW), modes=[Mode.CODE_PLAIN_TEXT, Mode.CODE_UI])
+
     draw_tensor(some_test_tensor, name="Tensor", mode=Mode.WINDOW)
 
 
@@ -1550,10 +1553,28 @@ def seperator(height):
     imgui.separator()
     imgui.dummy(0, snap_int(height / 2))
 
+def test_func():
+
+    # Some comment
+    # Comment here
+    some_val = 1.4
+    some_dict = {"some_key" : -0.02, 
+    "key":False,
+    "key_2":2.421
+    }
+    # This is a comment
+    some_flag = False
+    
+    
+    
+    
+    
+    
+
 def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=6.0, bg_offset=0,
-            global_style=None, outline=True, bg_color=None, opacity=0.484,
-            style_manager=None, tint=None, outline_tint=None, selected=False,
-            hovered=False, pressed=False, nested_bg=False, **kwargs):
+        global_style=None, outline=True, bg_color=None, opacity=0.994,
+        style_manager=None, tint=None, outline_tint=None, selected=False,
+        hovered=False, pressed=False, nested_bg=False, **kwargs):
 
     # imgui.get_overlay_draw_list().add_text(left, top - 15, imgui.get_color_u32_rgba(1, 0, 0, 1), f"bg_ffset {bg_offset}")
 
@@ -1672,7 +1693,6 @@ def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=6.0, bg_offset=
     if opacity > 0.0:
         imgui.get_window_draw_list().add_rect_filled(*fill_rect, col=packed_fill, rounding=corner_radius)
 
-    return False, bg_color
     return False, bg_color
 
 @render_func(use_cache=True, shadow=True, selectable=False, show_bg=False, min_width=10,

@@ -1291,7 +1291,10 @@ class TileCacheMasked:
 
         if size is not None and self.enabled and draw_state.frame_count >= 2:
             t = self._tiles.get(rkey)
-            use_image = t and has_area and (t.size == (size[0], size[1])) and (not self._is_dirty(t))
+            use_image = (t and has_area
+                         and (t.size == (size[0], size[1]))
+                         and (not self._is_dirty(t))
+                         and (not draw_state.size_change))
 
             if use_image:
                 imgui.set_cursor_screen_pos((draw_state.left, draw_state.top))

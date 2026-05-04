@@ -42,18 +42,19 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
                 collection=None, display_name=None, meta=None, unique=None, is_tree=True,
                 show_name=True, name_func=None, show_type=False, show_unique=False,
                 on_search=False, trigger_collapse=False, trigger_expand=False,
-                draw_state=None, show_tint=False, opacity=1.0, show_add_delete=True,
+                draw_state=None, show_tint=False, opacity=1.23, show_add_delete=True,
                 on_drag=False, on_action=None, style_manager=None,
                 global_style=None, global_toggles=None, **kwargs):
 
     # ── Constants ──────────────────────────────────────────────
     # Depth-driven name brightness
-    depth_scale       = 0.061
+    depth_scale       = 0.06
     depth_offset      = -30.0
     name_value_factor = 0.777
     # Depth drives text saturation falloff
     sat_depth_factor  = -0.004
     sat_depth_offset  = -1.773
+
 
 
     spinner_icon_0 = ""

@@ -26,6 +26,7 @@ from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_conversion.address import (
     Address, to_address, update_address_cache, _evict_linecache,
+    shift_sibling_linenos,
 )
 from src.lsd.gl_gui.view.core_conversion.file_converters import (
     _detect_newline, _recompile, _recompile_class, _recompile_module,
@@ -179,7 +180,7 @@ def class_to_address(input_value: type, draw_state, changed=False):
 def load_cst_module(input_value: Address):
     text = _load_span(input_value)
     converted_cst = cst.parse_module(text)
-    general_parse = cst_module_to_dict(converted_cst)
+    general_parse = cst_module_to_dict(converted_cst) 
     general_parse.address = input_value
     general_parse.file_path = input_value.path
 
@@ -222,10 +223,23 @@ def _do_save(input_value, code_str):
         text = full_data.decode("latin-1")
     lines = text.split(newline)
     new_lines = code_str.split(newline)
-    lines[input_value.start:input_value.end] = new_lines
+
+    old_start = input_value.start
+    old_end = input_value.end
+
+    lines[old_start:old_end] = new_lines
     final_text = newline.join(lines)
     FileWatch.set_hash_from_content(input_value.path, final_text, draw_state=input_value._watcher_ds)
     input_value.path.write_text(final_text, encoding="utf-8")
+
+    new_end = old_start + len(new_lines)
+    delta = new_end - old_end
+
+    input_value.end = new_end
+    input_value._hash = input_value._compute_hash()
+
+    shift_sibling_linenos(input_value.source, input_value.path,
+                          after_lineno=old_end, delta=delta)
 
     if Toggles.slow_down_threads:
         for i in range(5):
@@ -308,17 +322,24 @@ def general_parse_to_address(input_value: GeneralParse, pending=False, draw_stat
         return False, None
     source = address.source
 
+    show_recompile = not recompile or (pending or changed)
+    show_save = not save or (pending or changed)
+
+    # Skip expensive dict→CST conversion when neither block will execute
+    if not show_recompile and not show_save:
+        return False, address
+
     convert_finished, back_to_cst = dict_to_cst(input_value=input_value, changed=changed)
     if isinstance(back_to_cst, Pending):
         return False, back_to_cst
     code_str = back_to_cst.code
-    if not recompile or (pending or changed):
+    if show_recompile:
         if source is not None:
             run_button(do_recompile, clicked=recompile and pending, name="do_recompile",
                         with_kwargs={"input_value": address.source,
                                  "code_str": code_str,
                                  "file_path": address.path})
-    if not save or (pending or changed):
+    if show_save:
         if source is not None:
             clicked, result = run_button(_do_save, with_kwargs={"input_value": address,
                                          "code_str": code_str},

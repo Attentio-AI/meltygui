@@ -17,6 +17,7 @@ from __future__ import annotations
 import difflib
 import functools
 import hashlib
+import sys
 import types
 from dataclasses import dataclass
 from pathlib import Path
@@ -162,6 +163,69 @@ def _evict_linecache(filename: str) -> None:
     """
     import linecache
     linecache.cache.pop(filename, None)
+
+
+def shift_sibling_linenos(saved_source, file_path, after_lineno: int, delta: int) -> None:
+    """Shift co_firstlineno of every code object in the same file
+    whose first line is > after_lineno, by `delta` lines.
+
+    Why: inspect.findsource walks backward from co_firstlineno hunting
+    for `def`/`class`/`lambda`/`@`. After we expand a function in the
+    file, sibling functions below have stale co_firstlineno that lands
+    inside the expanded body — findsource then walks back and returns
+    the wrong function's source. Patching co_firstlineno keeps every
+    other function's line numbers truthful without touching their code.
+    """
+    if delta == 0 or saved_source is None:
+        return
+
+    if isinstance(saved_source, types.ModuleType):
+        module = saved_source
+    else:
+        module_name = getattr(saved_source, "__module__", None)
+        module = sys.modules.get(module_name) if module_name else None
+        if module is None:
+            return
+
+    try:
+        target = Path(file_path).resolve()
+    except (OSError, ValueError):
+        return
+
+    def _same_file(code) -> bool:
+        try:
+            return Path(code.co_filename).resolve() == target
+        except (OSError, ValueError):
+            return code.co_filename == str(target)
+
+    def _maybe_shift(func):
+        if func is saved_source:
+            return
+        code = func.__code__
+        if not _same_file(code):
+            return
+        if code.co_firstlineno > after_lineno:
+            func.__code__ = code.replace(
+                co_firstlineno=code.co_firstlineno + delta)
+
+    def _walk_class(cls):
+        if cls is saved_source:
+            return
+        for val in list(vars(cls).values()):
+            if isinstance(val, types.FunctionType):
+                _maybe_shift(val)
+            elif isinstance(val, type):
+                _walk_class(val)
+            elif isinstance(val, (staticmethod, classmethod)):
+                inner = getattr(val, "__func__", None)
+                if isinstance(inner, types.FunctionType):
+                    _maybe_shift(inner)
+
+    for val in list(vars(module).values()):
+        if isinstance(val, types.FunctionType):
+            _maybe_shift(val)
+        elif isinstance(val, type):
+            _walk_class(val)
 
 
 def _resolve(value: Any) -> Address | None:
