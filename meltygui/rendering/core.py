@@ -315,7 +315,8 @@ def render_func(*args, **o_kwargs):
                     Melty.cache.invalidate_by_obj(Melty.registered_windows)
 
             if draw_state.closed and not input_value == Melty.registered_windows:
-                Melty.root_draw_states[draw_state.id] = []
+                if closable:
+                    Melty.root_draw_states[draw_state.id] = []
                 if return_extras:
                     return False, None, draw_state
                 return False, None
@@ -433,7 +434,8 @@ def render_func(*args, **o_kwargs):
                     draw_state._is_nested = True
 
                     parent_ds = draw_state._parent
-                    Melty.root_draw_states[parent_ds.id].append(draw_state)
+                    if draw_state not in Melty.root_draw_states[parent_ds.id]:
+                        Melty.root_draw_states[parent_ds.id].append(draw_state)
                     layer = layer + Melty.nested_layer_boost
                 else:
                     Melty.layers[min(layer, len(Melty.layers) - 1)].append(draw_state)
@@ -1027,6 +1029,12 @@ def render_func(*args, **o_kwargs):
             if clip_rect is not None:
                 draw_state.clip_rect = clip_rect
 
+                left_clipped_by = max(0, clip_rect[0] - draw_state.left)
+                top_clipped_by = max(0, clip_rect[1] - draw_state.top)
+                right_clipped_by = max(0, (draw_state.abs_left + draw_state.width) - (clip_rect[2]))
+                bottom_clipped_by = max(0, (draw_state.abs_top + draw_state.height) - (clip_rect[3]))
+                draw_state.clipped_by_rect = (left_clipped_by, top_clipped_by, right_clipped_by, bottom_clipped_by)
+
             # Filter out originated functions that have an error pending state
             # no point auto-applying a converter that will just error out.
             _error_originated = set()
@@ -1080,7 +1088,8 @@ def render_func(*args, **o_kwargs):
             if Melty.cache.mark_start_offscreen(draw_state=draw_state):
                 draw_state._current_max_column = 0
 
-                Melty.root_draw_states[draw_state.id] = []
+                if closable:
+                    Melty.root_draw_states[draw_state.id]
                 from src.lsd.gl_gui.view.core_views.new_core_view import draw_window
                 from src.lsd.gl_gui.view.core_views.new_core_view import pending_window
 
@@ -1425,7 +1434,7 @@ def render_func(*args, **o_kwargs):
                     draw_state._input_value = input_value
                     kwargs["input_value"] = draw_state._input_value
 
-                highlight = draw_state.selected
+                highlight = False
 
                 show_bg = kwargs.get("show_bg", False) or (
                         highlight and draw_state.height < 60) or not draw_state.expanded
@@ -1485,9 +1494,9 @@ def render_func(*args, **o_kwargs):
                         bg_return = draw_bg(bypass=True, left=draw_state.left, top=draw_state.top,
                                             width=draw_state.width + 1, height=draw_state.height + 1,
                                             rounding=draw_state.corner_radius, bg_offset=kwargs.get("bg_offset", 0),
-                                            depth=Melty.shadow_depth, selected=draw_state.selected,
+                                            depth=Melty.shadow_depth, selected=False,
                                             global_style=global_style, opacity=1.0 if show_bg else 0.0,
-                                            pressed=draw_state.pressed,
+                                            pressed=False,
                                             style_manager=style_manager, nested_bg=nested_bg)
                         if bg_return is not None:
                             bg_color = bg_return[1]
@@ -1529,8 +1538,6 @@ def render_func(*args, **o_kwargs):
                                 Melty.selected.remove(draw_state)
                             else:
                                 Melty.selected.add(draw_state)
-
-                            Melty.cache.invalidate(tile_id)
 
                         elif click.modifiers == glfw.MOD_SHIFT:
                             if draw_state in Melty.selected:
@@ -1577,15 +1584,9 @@ def render_func(*args, **o_kwargs):
                                             if item in Melty.selected:
                                                 Melty.selected.remove(item)
 
-                                        Melty.cache.invalidate(item._tile_id)
-
-                                Melty.cache.invalidate(draw_state._parent._tile_id)
-                                Melty.cache.invalidate(Melty.last_selected._parent._tile_id)
-
-                                request_render()
+                                        # Melty.cache.invalidate(item._tile_id)
 
                             Melty.last_selected = draw_state
-                            request_render()
 
                     draw_state.selected = draw_state in Melty.selected
 
@@ -1774,6 +1775,7 @@ def render_func(*args, **o_kwargs):
                     hover_eligible = draw_state.hover_eligible() and draw_state.hover_reported
                 else:
                     hover_eligible = False
+
                 if hover_eligible:
                     if closable:
                         Melty.any_window_hovered_pending = True

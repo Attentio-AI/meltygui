@@ -18,12 +18,13 @@ class Toggles:
     debug_stale_tint = False
     
     #---------- Visual Settings ---------
-    brightness = 0.473
+    brightness = 0.201
+    contrast = 1.400
     
     some_dict = [21,13,3,3]
     
     some_val = 2
-    contrast = 15.513
+
     saturation = 0.815
     debug_context_menu = False
     debug_z_depth = False
@@ -36,7 +37,7 @@ class Toggles:
 
 
 def shadow_depth_at(depth, active_layer):
-    scaling = 52.85
+    scaling = 53.42
     cap = 6.05
 
     divisor = max(cap, depth - scaling)
@@ -50,6 +51,6 @@ def some_func():
 
     for i in range(25):
         print("someting")
-        my_var = [100,69,13]
+        my_var = [88,69,13]
         somethin = False
         some_func()

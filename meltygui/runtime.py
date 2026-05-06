@@ -9,6 +9,7 @@ from typing import MutableMapping, Optional
 import glfw
 import imgui
 import libcst as cst
+from imgui.core import _DrawList
 from invoke import executor
 
 from rtree import index as rtree_index
@@ -179,7 +180,6 @@ class Melty:
     last_selected = None
     large_font = None
 
-    draw_state_stack = []
     root_draw_states = defaultdict(lambda: list())
     root_draw_states_by_layer = defaultdict(lambda: list())
 
@@ -386,7 +386,7 @@ class Melty:
         return [
             cls._bvh_id_to_ds[rid]
             for rid in cls._bvh.intersection((x, y, x, y))
-            if rid in cls._bvh_id_to_ds
+            if rid in cls._bvh_id_to_ds and not cls._bvh_id_to_ds[rid].closed
         ]
 
     @classmethod
@@ -544,12 +544,11 @@ class Melty:
             return cls.wrap_stack[-1]
 
     @classmethod
-    def post_frame(cls):
-        pass
-
-    @classmethod
     def draw(cls, draw_state, cursor_pos=None, detached=False):
         if draw_state is None:
+            return
+
+        if draw_state.closed:
             return
         # Melty.depth = 0
         Melty.bg_depth = draw_state._bg_depth
@@ -607,8 +606,6 @@ class Melty:
         from src.lsd.gl_gui.view.core_views.new_core_view import draw_with_modes
         draw_with_modes(Counters, name="counters", modes=(Mode.CODE_UI, Mode.CODE_PLAIN_TEXT, Mode.DEFAULT), mode=Mode.WINDOW)
 
-
-
         # cls.draw_blockers_to()
         # Manually mask windows
         # for window in Melty.registered_windows.values():
@@ -622,9 +619,10 @@ class Melty:
         cls.root_draw_states_by_layer = defaultdict(list)
         to_discard = set()
         dynamic_offset = 0
+        empty_parents = set()
         for parent_ds_id, ds_list in cls.root_draw_states.items():
             for idx, ds in enumerate(ds_list):
-                if ds.abs_closed:
+                if ds.abs_closed or ds.closed:
                     to_discard.add(ds)
                     ds.closed = True
                 else:
@@ -633,6 +631,8 @@ class Melty:
             for discard_ds in to_discard:
                 if discard_ds in ds_list:
                     ds_list.remove(discard_ds)
+
+
         for idx in range(len(cls.layers)):
             layer = cls.layers[idx]
             imgui.set_cursor_screen_pos((0, 0))
@@ -657,6 +657,7 @@ class Melty:
             # Sort by y position (draw_state.abs_top)
 
             # sort by draw_state.z_pos
+
             # sorted_root_ds = sorted(cls.root_draw_states_by_layer[idx], key=lambda ds: ds.z_pos)
 
             for d_idx, draw_state in enumerate(cls.root_draw_states_by_layer[idx]):
@@ -703,21 +704,6 @@ class Melty:
         from src.lsd.gl_gui.view.core_views.core_render import get_melty_state
         melty = get_melty_state()
 
-        # melty.last_mouse_pos = imgui.get_mouse_pos()
-        # # Did mouse move
-        # if len(melty.hover_stack) > 0:
-        #     last = melty.hover_stack[0]
-        #     hovered_draw_state = Melty.vis.root.draw_state_registry.get(last, None)
-        #     if hovered_draw_state is not None:
-        #         hovered_draw_state._hovered = True
-        #         Melty.hovered_drawstate_pending.add(hovered_draw_state.id)
-        #
-        # if len(melty.hotkey_stack) > 0:
-        #     last = melty.hotkey_stack[0]
-        #     hovered_draw_state = Melty.vis.root.draw_state_registry.get(last, None)
-        #     if hovered_draw_state is not None:
-        #         hovered_draw_state.hotkey_receiver = True
-
         melty.hover_stack = []
         melty.hotkey_stack = []
         melty.unique_stack = []
@@ -740,9 +726,6 @@ class Melty:
         style.item_spacing = Melty.original_spacing
         style.window_padding = Melty.original_window_padding
         style.frame_padding = Melty.original_frame_padding
-        # cls._root_by_module[module_id] = root
-        # cls._gen_by_module.setdefault(module_id, 0)
-        # cls._path_stack.clear()
 
         # Invalidate the text-focused view on any key press
         if cls.text_focused_ds is not None and cls.glfw_window is not None:
@@ -755,8 +738,78 @@ class Melty:
                     request_render()
                     break
 
+        overlay: _DrawList = imgui.get_overlay_draw_list()
+        window_size = imgui.get_io().display_size
+        overlay.add_text(window_size.x - 600, 5, imgui.get_color_u32_rgba(1, 1, 1, 1),
+                         f"FPS: {imgui.get_io().framerate:.1f}")
+
+        for selected_ds in cls.selected:
+            if selected_ds._kwargs.get("selectable", True):
+                clip_rect = selected_ds.abs_clip_rect
+                overlay.push_clip_rect(clip_rect[0], clip_rect[1], clip_rect[2], clip_rect[3], True)
+                selected_rect = selected_ds.abs_left, selected_ds.abs_top, selected_ds.width, selected_ds.height
+                overlay.add_rect_filled(selected_rect[0], selected_rect[1], selected_rect[0] + selected_rect[2],
+                                        selected_rect[1] + selected_rect[3],
+                                            imgui.get_color_u32_rgba(1, 1, 1, 0.3))
+                overlay.pop_clip_rect()
 
         Collisions.handle_collisions()
+
+        for parent_ds_id, ds_list in cls.root_draw_states.items():
+            if len(ds_list) == 0:
+                empty_parents.add(parent_ds_id)
+        for empty_parent in empty_parents:
+            cls.root_draw_states.pop(empty_parent, None)
+
+    @classmethod
+    def post_frame(cls, imgui_impl, window):
+        imgui_impl.begin_frame_split()
+        imgui.render()
+
+        fb_w, fb_h = imgui.get_io().display_size  # or your actual GL viewport size
+        draw_data = imgui.get_draw_data()
+        imgui_impl.render_except_overlay(draw_data)
+        Melty.cache.finalize_captures((int(fb_w), int(fb_h)))
+        imgui_impl.render_overlay_only(draw_data)
+
+        if Toggles.filters:
+            Melty.filter.brightness_contrast(
+                input_framebuffer=0,
+                output_framebuffer=0,
+                brightness=Toggles.brightness,
+                contrast=Toggles.contrast,
+                width=int(fb_w),
+                height=int(fb_h)
+            )
+
+            total_layers = 1.0 / ((Melty.max_layer - 1.0) * (Melty.max_depth - 1.0)) * 100.0
+
+            min_val, max_val = 0.0, total_layers
+            normalized_sub_mask, _, _ = Melty.filter.normalize(
+                Melty.cache._full_mask_tex, min_value=0.0000, max_value=total_layers)
+            diff = ((max_val - min_val) * 65535.0)
+
+            shadow_raw = Melty.filter.shadow_cast(
+                normalized_sub_mask,
+                max_steps=diff / 2.0
+
+            )
+
+            # Pass 3: Composite onto your color buffe
+            Melty.filter.shadow_composite(
+                input_framebuffer=0,
+                output_framebuffer=0,
+                shadow_map=shadow_raw,
+                depth_map=normalized_sub_mask,
+                shadow_opacity=0.9,
+                shadow_color=(0.0, 0.02, 0.05)  # Slightly blue shadows
+            )
+
+        glfw.swap_buffers(window)
+
+        from src.lsd.gl_gui.view.core_views.core_render import apply_drag_and_drop
+        apply_drag_and_drop()
+        pass
 
     @classmethod
     def get_latest_mouse(cls):

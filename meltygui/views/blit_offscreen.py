@@ -1366,7 +1366,10 @@ class TileCacheMasked:
 
         x, y = ctx.pos
         w, h = ctx.size
-        clip = self._get_current_clip_rect_screen()
+        if draw_state is None:
+            clip = self._get_current_clip_rect_screen()
+        else:
+            clip = draw_state.abs_clip_rect
         clipped = self._clip_rect(x, y, w, h, clip)
         self._key_to_ctx[ctx.key] = ctx
 

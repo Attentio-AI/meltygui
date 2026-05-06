@@ -610,9 +610,9 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, le
     # --- Drawing ---
     draw_list = imgui.get_window_draw_list()
     rect_min_x = left
-    rect_min_y = draw_state.clip_rect[1]
+    rect_min_y = draw_state.abs_clip_rect[1]
     rect_max_x = left + draw_state.content_width
-    rect_max_y = draw_state.clip_rect[3]
+    rect_max_y = draw_state.abs_clip_rect[3]
 
     draw_list.push_clip_rect(rect_min_x, rect_min_y, rect_max_x, rect_max_y, True)
 

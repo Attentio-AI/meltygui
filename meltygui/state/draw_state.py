@@ -374,6 +374,9 @@ class DrawState(DictConversion):
         self._start_z_pos = 3
         self._column_width = 0
 
+        # Used to cache abs_clip_rect
+        self.clipped_by_rect = None
+
         self._show_load = False
         self._show_save = False
         self._read_only = False
@@ -428,7 +431,7 @@ class DrawState(DictConversion):
     def clip_size(self):
         if self.clip_rect is None:
             return (self.width or self.min_width, self.height or self.min_height)
-        left, top, right, bottom = self.clip_rect
+        left, top, right, bottom = self.abs_clip_rect
         return (right - left, bottom - top)
 
     @property
@@ -568,6 +571,16 @@ class DrawState(DictConversion):
         return this_top
 
     @property
+    def abs_clip_rect(self):
+        abs_left = self.abs_left
+        abs_top = self.abs_top
+        clipped_by = self.clipped_by_rect
+
+        return (abs_left + clipped_by[0],
+                abs_top + clipped_by[1],
+                abs_left + self.width - clipped_by[2],
+                abs_top + self.height - clipped_by[3])
+    @property
     def abs_left(self):
         return self._abs_left()
 
@@ -676,7 +689,7 @@ class DrawState(DictConversion):
             draw_list.channels_set_current(Melty.get_channel())
 
     def inside_clip(self, child_draw_state=None):
-        clip_rect = self.clip_rect
+        clip_rect = self.abs_clip_rect
 
         if child_draw_state is None:
             child_draw_state = self

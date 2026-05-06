@@ -601,6 +601,12 @@ def draw_main(input_value, vis, draw_state=None):
     #     address_to_module,
     # ]
     # run_chain(toggles, name="Chain Debug", chain=chain, mode=Mode.WINDOW)
+    changed, value = draw_any(len(Melty.root_draw_states), name="root_draw_states", mode=Mode.WINDOW)
+    # for idx, ds_list in Melty.root_draw_states.items():
+    #     for ds in ds_list:
+    #         overlay: _DrawList = imgui.get_overlay_draw_list()
+    #         if ds.top is not None and ds.left is not None and ds.width is not None and ds.height is not None:
+    #             overlay.add_rect_filled(ds.left, ds.top, ds.left + ds.width, ds.top + ds.height, imgui.get_color_u32_rgba(1, 0, 0, 0.5))
 
     from src.lsd.gl_gui.model.app_model import Lora
     changed, value = draw_with_modes(input_value=Lora, name="lora class",
@@ -1557,22 +1563,16 @@ def test_func():
 
     # Some comment
     # Comment here
-    some_val = 1.4
+    some_val = 1.706
     some_dict = {"some_key" : -0.02, 
     "key":False,
     "key_2":2.421
     }
     # This is a comment
     some_flag = False
-    
-    
-    
-    
-    
-    
 
-def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=6.0, bg_offset=0,
-        global_style=None, outline=True, bg_color=None, opacity=0.994,
+def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=6.224, bg_offset=0,
+        global_style=None, outline=True, bg_color=None, opacity=1.059,
         style_manager=None, tint=None, outline_tint=None, selected=False,
         hovered=False, pressed=False, nested_bg=False, **kwargs):
 
