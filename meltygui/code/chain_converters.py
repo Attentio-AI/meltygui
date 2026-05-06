@@ -232,14 +232,18 @@ def _do_save(input_value, code_str):
     FileWatch.set_hash_from_content(input_value.path, final_text, draw_state=input_value._watcher_ds)
     input_value.path.write_text(final_text, encoding="utf-8")
 
-    new_end = old_start + len(new_lines)
-    delta = new_end - old_end
+    if old_start is not None:
+        resolved_old_end = old_end if old_end is not None else old_start + len(new_lines)
+        new_end = old_start + len(new_lines)
+        delta = new_end - resolved_old_end
 
-    input_value.end = new_end
-    input_value._hash = input_value._compute_hash()
+        input_value.end = new_end
+        input_value._hash = input_value._compute_hash()
 
-    shift_sibling_linenos(input_value.source, input_value.path,
-                          after_lineno=old_end, delta=delta)
+        shift_sibling_linenos(input_value.source, input_value.path,
+                              after_lineno=resolved_old_end, delta=delta)
+    else:
+        input_value._hash = input_value._compute_hash()
 
     if Toggles.slow_down_threads:
         for i in range(5):

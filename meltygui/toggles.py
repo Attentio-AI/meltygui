@@ -18,7 +18,7 @@ class Toggles:
     debug_stale_tint = False
     
     #---------- Visual Settings ---------
-    brightness = 0.201
+    brightness = 0.199
     contrast = 1.400
     
     some_dict = [21,13,3,3]
@@ -52,5 +52,5 @@ def some_func():
     for i in range(25):
         print("someting")
         my_var = [88,69,13]
-        somethin = False
+        somethin = True
         some_func()

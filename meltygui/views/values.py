@@ -1896,14 +1896,14 @@ def draw_comment(input_value: Comment, draw_state, cursor_hover=False):
     draw_list.add_text(center_x - character_width / 2, center_y - line_height / 2,
                        imgui.get_color_u32_rgba(0.8, 0.8, 0.7, 1.0), help_icon)
 
-    if cursor_hover:
-        popup_max_width = 300
-        text_size = imgui.calc_text_size(str(input_value), wrap_width=popup_max_width)
-        popup_width = popup_max_width
-
-        imgui.set_cursor_screen_pos((draw_state.abs_left + radius * 2 + 5, draw_state.abs_top))
-        draw_window(str(input_value), editable=False, window_pos=(0,0), width=popup_width, height=text_size[1] + 5,
-                    with_header_end=None, with_header=None, with_footer=None)
+    # if cursor_hover:
+    #     popup_max_width = 300
+    #     text_size = imgui.calc_text_size(str(input_value), wrap_width=popup_max_width)
+    #     popup_width = popup_max_width
+    #
+    #     imgui.set_cursor_screen_pos((draw_state.abs_left + radius * 2 + 5, draw_state.abs_top))
+    #     draw_window(str(input_value), editable=False, window_pos=(0,0), width=popup_width, height=text_size[1] + 5,
+    #                 with_header_end=None, with_header=None, with_footer=None)
     imgui.same_line(spacing=0)
     draw_str(str(input_value[1:]), alpha=0.2, selectable=False, editable=False,
              is_tree=False, with_header=None, show_name=False)
