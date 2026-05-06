@@ -386,7 +386,7 @@ class Melty:
         return [
             cls._bvh_id_to_ds[rid]
             for rid in cls._bvh.intersection((x, y, x, y))
-            if rid in cls._bvh_id_to_ds and not cls._bvh_id_to_ds[rid].closed
+            if rid in cls._bvh_id_to_ds and (not cls._bvh_id_to_ds[rid].closed or not cls._bvh_id_to_ds[rid].closable)
         ]
 
     @classmethod

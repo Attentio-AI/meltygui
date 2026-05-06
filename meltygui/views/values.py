@@ -1571,7 +1571,7 @@ def test_func():
     # This is a comment
     some_flag = False
 
-def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=6.224, bg_offset=0,
+def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=2.533, bg_offset=0,
         global_style=None, outline=True, bg_color=None, opacity=1.059,
         style_manager=None, tint=None, outline_tint=None, selected=False,
         hovered=False, pressed=False, nested_bg=False, **kwargs):
@@ -1580,23 +1580,23 @@ def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=6.224, bg_offse
 
     # -- Constants ---------------------------------
     depth_wrap        = 30
-    depth_scale       = 1.76
+    depth_scale       = 1.66
     corner_radius     = rounding
-    border_inset      = 2.998
-    border_inset_half = 0.619
-    stroke_width      = 3.178
+    border_inset      = 3.0
+    border_inset_half = 1.5
+    stroke_width      = 4.0
     # How depth maps to color intensity
     intensity_factor  = 0.042
-    intensity_offset  = 0.136
+    intensity_offset  = -0.448
     
     # Outline color tuning
-    outline_base      = 1.874
+    outline_base      = 1.773
     outline_depth_mul = 0.85
     outline_sat       = {'default': 1.1, 'nested': 1.473}
 
     # Beed color
     bleed_mix         = {'nested': 0.44, 'default': 0.454}
-    bleed_style       = {'value': -0.111, 'alpha': 1.199, 'saturation': 6.905}
+    bleed_style       = {'value': -0.111, 'alpha': 1.199, 'saturation': 7.045}
     outline_bleed_mix = 0.272
 
     # Hover offset per interaction state
