@@ -162,7 +162,7 @@ class TileMode(Enum):
          "content_region", "value_hash", "drag_window", "content_region", "did_render",
          "bounding_hovered", "dlt_count", "clip_rect",
  "scrolled", "is_hovered_last", "frame_count")
-@no_save_exclude('render_time',  "total_z_offset", 'closable', 'invalid_content_height',
+@no_save_exclude('render_time',  "total_z_offset", 'closable', 'has_full_tile', 'invalid_content_height',
                   "parent_window", "pressed", "bbox", "final_max_column",
                  'hover_rects', 'nested_window', 'use_cache', 'layer', "header_top", "header_left", "left_offset",
                  "top_offset", 'kwargs', "just_shadow", "header_width", "header_end_width",
@@ -221,6 +221,7 @@ class DrawState(DictConversion):
         self.bg_depth = 0
         self.pressed = False
         self.closable = False
+        self.has_full_tile = False
         self.behind = False
         self.tile_mode = TileMode.MAX
 
@@ -409,7 +410,7 @@ class DrawState(DictConversion):
         self.text_cursor_blink_time = 0.0
         self.text_double_click_time = 0.0
         self.text_last_click_pos = -1
-        self.text_prev_keys_down = set()
+        self.text_click_count = 0
 
         self._print_last_invalid = False
         self._last_invalidate = None

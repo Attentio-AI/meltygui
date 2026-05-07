@@ -295,13 +295,14 @@ def draw_footer(input_value=None, name="", key=None, melty=None, parent_show_add
                 on_drag=False, on_action=None, style_manager=None,
                 global_style=None, global_toggles=None, **kwargs):
 
-    for key, pending in draw_state._all_pending.items():
-        if pending is not None:
-            if pending.state == PendingState.ERROR:
-                from src.lsd.gl_gui.view.core_views.new_core_view import draw_pending
-                draw_pending(pending, name=f"{key}", tint=(1, 0, 0))
+    # for key, pending in draw_state._all_pending.items():
+    #     if pending is not None:
+    #         if pending.state == PendingAction.ERROR:
+    #             from src.lsd.gl_gui.view.core_views.new_core_view import draw_pending
+    #             draw_pending(pending, name=f"{key}", tint=(1, 0, 0))
 
-    imgui.text(f"{name}")
+    imgui.dummy(1,1)
+
 
 
 def draw_header_end(input_value=None, name="", key=None, melty=None, parent_show_add_delete=False,

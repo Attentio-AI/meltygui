@@ -632,6 +632,9 @@ class Melty:
                 if discard_ds in ds_list:
                     ds_list.remove(discard_ds)
 
+        selected_by_layer = defaultdict(list)
+        for selected_ds in cls.selected:
+            selected_by_layer[selected_ds.abs_layer].append(selected_ds)
 
         for idx in range(len(cls.layers)):
             layer = cls.layers[idx]
@@ -647,6 +650,18 @@ class Melty:
             for draw_state in layer:
                 if draw_state is not None:
                     cls.draw(draw_state)
+
+
+            selected_at_layer = selected_by_layer.get(idx, [])
+            # for draw_state in selected_at_layer:
+            #     draw_list = imgui.get_window_draw_list()
+            #     clip_rect = draw_state.abs_clip_rect
+            #     draw_list.push_clip_rect(clip_rect[0], clip_rect[1], clip_rect[2], clip_rect[3], True)
+            #     selected_rect = draw_state.abs_left, draw_state.abs_top, draw_state.width, draw_state.height
+            #     draw_list.add_rect_filled(selected_rect[0], selected_rect[1], selected_rect[0] + selected_rect[2],
+            #                               selected_rect[1] + selected_rect[3],
+            #                               imgui.get_color_u32_rgba(1, 1, 1, 0.3))
+            #     draw_list.pop_clip_rect()
 
             Melty.depth = 0
             if Melty.channels_split:
@@ -685,6 +700,8 @@ class Melty:
                     imgui.get_window_draw_list().channels_set_current(0)
                     imgui.get_window_draw_list().channels_merge()
                     Melty.channels_split = False
+
+
 
                 # Melty.depth = draw_state.depth + d_idx
                 # Melty.cache.draw_tile(draw_state)
@@ -750,7 +767,7 @@ class Melty:
                 selected_rect = selected_ds.abs_left, selected_ds.abs_top, selected_ds.width, selected_ds.height
                 overlay.add_rect_filled(selected_rect[0], selected_rect[1], selected_rect[0] + selected_rect[2],
                                         selected_rect[1] + selected_rect[3],
-                                            imgui.get_color_u32_rgba(1, 1, 1, 0.3))
+                                            imgui.get_color_u32_rgba(1, 1, 1, 0.01))
                 overlay.pop_clip_rect()
 
         Collisions.handle_collisions()

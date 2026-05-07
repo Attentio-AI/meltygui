@@ -95,14 +95,14 @@ class _Rect:
 # ==============================
 # GL helpers
 # ==============================
-def _create_color_tex(w: int, h: int, internal_format=gl.GL_RGBA8, clamp_to_border=False) -> int:
+def _create_color_tex(w: int, h: int, internal_format=gl.GL_RGBA8, clamp_to_border=False, filter=gl.GL_LINEAR) -> int:
     Melty.cache.tex_init_count += 1
 
     tex = gl.glGenTextures(1)
     gl.glBindTexture(gl.GL_TEXTURE_2D, tex)
     gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, internal_format, w, h, 0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, None)
-    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
-    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, filter)
+    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, filter)
     if clamp_to_border:
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_BORDER)
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_BORDER)
@@ -826,7 +826,7 @@ class TileCacheMasked:
             self._prev_occluders = {}
             return
 
-        if Melty.on_drag or imgui.is_mouse_down(2) or imgui.is_mouse_down(1):
+        if imgui.is_mouse_down(0) or imgui.is_mouse_down(2) or imgui.is_mouse_down(1):
             return
 
         # Collect only closable root window rects (both as targets and occluders)
@@ -835,6 +835,7 @@ class TileCacheMasked:
             if r.key in self._shadow_mask_keys:
                 continue
             ds = self.key_to_draw_state.get(r.key)
+
             if ds is not None and ds.closable:
                 root_rects[r.key] = r
 
@@ -862,6 +863,11 @@ class TileCacheMasked:
 
             occ_frozen = frozenset(occluders)
             new_occluders[key] = occ_frozen
+
+            if not occluders:
+                ds = my_rect.draw_state
+                if ds is not None and not ds.has_full_tile:
+                    ds.has_full_tile = True
 
             prev = self._prev_occluders.get(key)
             if prev is not None and occ_frozen != prev:
@@ -1006,7 +1012,7 @@ class TileCacheMasked:
             self._full_sub_mask_tex = _create_mask_tex(fb_w, fb_h, clamp_to_border=True)
             self._full_sub_mask_fbo, _ = _create_fbo_with_tex(self._full_sub_mask_tex, False, fb_w, fb_h)
 
-            self.snapshot_tex = _create_color_tex(fb_w, fb_h, clamp_to_border=True)
+            self.snapshot_tex = _create_color_tex(fb_w, fb_h, clamp_to_border=True, filter=gl.GL_NEAREST)
             self._snapshot_fbo, _ = _create_fbo_with_tex(self.snapshot_tex, False, fb_w, fb_h)
 
             self._scratch_fbo = gl.glGenFramebuffers(1)
@@ -1717,7 +1723,7 @@ class TileCacheMasked:
 
                 for r in subtree_rects_by_root.get(p.key, ()):
                     self.apply_blend_mode(r)
-                    self._draw_mask_rect_fresh(r, dp_x, dp_y, s_x, s_y, fb_h, float(r.layer) * INV_65535 )
+                    self._draw_mask_rect_fresh(r, dp_x, dp_y, s_x, s_y, fb_h, float(r.layer) * INV_65535)
 
                 # Copy pixels to tile
                 gl.glUseProgram(self._prog_copy)
@@ -1806,7 +1812,6 @@ class TileCacheMasked:
                     t_child = self._tiles.get(r.key)
                     is_self = (r.key == p.key)
 
-
                     use_child_cache = (
                             (not is_self)
                             and (t_child is not None)
@@ -1822,8 +1827,6 @@ class TileCacheMasked:
                     clip_ix0, clip_iy0 = int(floor(clip_x0)), int(floor(clip_y0))
                     clip_ix1, clip_iy1 = int(ceil(clip_x1)), int(ceil(clip_y1))
                     clip_iw, clip_ih = max(0, clip_ix1 - clip_ix0), max(0, clip_iy1 - clip_iy0)
-
-
 
                     # For cached tiles, use actual tile size from context to avoid stretching
                     if use_child_cache:

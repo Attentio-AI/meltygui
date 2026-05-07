@@ -2,9 +2,7 @@ from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
 class Counters:
     # Nested window
     nested_window_count = 6
-def some_func():
-    print("hello world")
-    
+
 
 class Toggles:
     # ---------- Invalidation Settings -----
@@ -20,9 +18,6 @@ class Toggles:
     #---------- Visual Settings ---------
     brightness = 0.199
     contrast = 1.400
-    some_dict = [21,13,3,3]
-    newval = 25
-    some_val = 2
 
     saturation = 0.815
     debug_context_menu = False
@@ -31,12 +26,11 @@ class Toggles:
     show_excluded = True
     filters = True
     show_excluded = True
-    
-    my_var= {1:15}
 
+# Utils
 def shadow_depth_at(depth, active_layer):
     scaling = 53.42
-    cap = 6.05
+    cap = 5.975
 
     divisor = max(cap, depth - scaling)
 
@@ -45,10 +39,3 @@ def shadow_depth_at(depth, active_layer):
     depth_and_layer *= Melty.layer_inc
     return depth_and_layer
     
-def some_func():
-
-    for i in range(25):
-        print("someting")
-        my_var = [88,69,13]
-        somethin = True
-        some_func()

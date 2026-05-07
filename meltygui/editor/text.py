@@ -75,21 +75,6 @@ for _i in range(26):
     _ch = chr(ord('a') + _i)
     _KEY_CHAR_MAP[_key] = (_ch, _ch.upper())
 
-# All typeable keys we track for press detection
-_TYPEABLE_KEYS = set(_KEY_CHAR_MAP.keys())
-
-# Special keys we also need to track
-_SPECIAL_KEYS = {
-    glfw.KEY_ENTER, glfw.KEY_KP_ENTER,
-    glfw.KEY_BACKSPACE, glfw.KEY_DELETE, glfw.KEY_TAB,
-    glfw.KEY_LEFT, glfw.KEY_RIGHT, glfw.KEY_UP, glfw.KEY_DOWN,
-    glfw.KEY_HOME, glfw.KEY_END,
-    glfw.KEY_PAGE_UP, glfw.KEY_PAGE_DOWN,
-}
-
-_ALL_TRACKED_KEYS = _TYPEABLE_KEYS | _SPECIAL_KEYS
-
-
 def tokenize(text):
     """Yields (text, color_key) tuples with Darcula-style token categories."""
     i = 0
@@ -310,6 +295,136 @@ def _get_indent(text, index):
     return indent
 
 
+def _indent_lines(text, lo, hi, dedent):
+    """Indent (or dedent) every line covered by [lo, hi] by one tab stop.
+    Returns (new_text, new_lo, new_hi). For selections, new_lo snaps to the
+    start of the first affected line so the whole shifted block stays highlighted."""
+    indent = '    '
+    has_sel = lo != hi
+
+    old_lines = text.split('\n')
+    old_starts = [0]
+    for line in old_lines:
+        old_starts.append(old_starts[-1] + len(line) + 1)
+
+    def line_of(pos):
+        L = 0
+        while L + 1 < len(old_lines) and old_starts[L + 1] <= pos:
+            L += 1
+        return L
+
+    line_lo = line_of(lo)
+    line_hi = line_of(hi - 1) if has_sel else line_lo
+
+    new_lines = list(old_lines)
+    delta = [0] * len(old_lines)  # positive = chars removed, negative = chars added
+    for i in range(line_lo, line_hi + 1):
+        if dedent:
+            n = 0
+            while n < len(indent) and n < len(new_lines[i]) and new_lines[i][n] == ' ':
+                n += 1
+            new_lines[i] = new_lines[i][n:]
+            delta[i] = n
+        else:
+            new_lines[i] = indent + new_lines[i]
+            delta[i] = -len(indent)
+
+    new_text = '\n'.join(new_lines)
+    new_starts = [0]
+    for line in new_lines:
+        new_starts.append(new_starts[-1] + len(line) + 1)
+
+    def adjust(pos):
+        L = line_of(pos)
+        old_col = pos - old_starts[L]
+        d = delta[L]
+        if d > 0:
+            new_col = max(0, old_col - d)
+        else:
+            new_col = old_col - d  # d negative, so subtract → add
+        new_col = min(new_col, len(new_lines[L]))
+        return new_starts[L] + new_col
+
+    if has_sel:
+        return new_text, new_starts[line_lo], adjust(hi)
+    return new_text, adjust(lo), adjust(hi)
+
+
+def _toggle_comment(text, lo, hi):
+    """Toggle '# ' Python comments on lines covered by [lo, hi].
+    Returns (new_text, new_lo, new_hi). Empty lines are skipped. If every
+    non-empty affected line is already commented, uncomments them all;
+    otherwise comments them at the min-indent column for visual alignment."""
+    has_sel = lo != hi
+
+    old_lines = text.split('\n')
+    old_starts = [0]
+    for line in old_lines:
+        old_starts.append(old_starts[-1] + len(line) + 1)
+
+    def line_of(pos):
+        L = 0
+        while L + 1 < len(old_lines) and old_starts[L + 1] <= pos:
+            L += 1
+        return L
+
+    line_lo = line_of(lo)
+    line_hi = line_of(hi - 1) if has_sel else line_lo
+
+    def indent_of(line):
+        return len(line) - len(line.lstrip(' '))
+
+    non_empty = [i for i in range(line_lo, line_hi + 1) if old_lines[i].strip()]
+    if not non_empty:
+        return text, lo, hi
+
+    all_commented = all(old_lines[i].lstrip(' ').startswith('#') for i in non_empty)
+    min_indent = min(indent_of(old_lines[i]) for i in non_empty)
+
+    new_lines = list(old_lines)
+    edits = {}  # line_idx -> (col, delta): chars inserted (>0) or removed (<0) at col
+    for i in non_empty:
+        line = old_lines[i]
+        if all_commented:
+            ind = indent_of(line)
+            after = line[ind:]
+            if after.startswith('# '):
+                new_lines[i] = line[:ind] + after[2:]
+                edits[i] = (ind, -2)
+            else:
+                new_lines[i] = line[:ind] + after[1:]
+                edits[i] = (ind, -1)
+        else:
+            new_lines[i] = line[:min_indent] + '# ' + line[min_indent:]
+            edits[i] = (min_indent, 2)
+
+    new_text = '\n'.join(new_lines)
+    new_starts = [0]
+    for line in new_lines:
+        new_starts.append(new_starts[-1] + len(line) + 1)
+
+    def adjust(pos):
+        L = line_of(pos)
+        old_col = pos - old_starts[L]
+        if L in edits:
+            col, d = edits[L]
+            if d > 0:
+                new_col = old_col + d if old_col >= col else old_col
+            else:
+                if old_col <= col:
+                    new_col = old_col
+                else:
+                    new_col = max(col, old_col + d)
+        else:
+            new_col = old_col
+        new_col = min(new_col, len(new_lines[L]))
+        return new_starts[L] + new_col
+
+    if has_sel:
+        return new_text, new_starts[line_lo], adjust(hi)
+    return new_text, adjust(lo), adjust(hi)
+
+
 def _has_selection(ds):
     return ds.text_selection_start != ds.text_selection_end
 
@@ -350,12 +465,9 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, le
     if left_mouse_clicked:
         print("Left mouse clicked on text editor")
 
-    # --- Read current keyboard state ---
-    current_keys = set()
-    for key in _ALL_TRACKED_KEYS:
-        if io.keys_down[key]:
-            current_keys.add(key)
-    just_pressed = current_keys - ds.text_prev_keys_down
+    # imgui.is_key_pressed(..., repeat=True) uses io.key_repeat_delay/rate
+    # so held keys auto-repeat at the OS-propecified cadence.
+    pressed = lambda k: imgui.is_key_pressed(k, repeat=True)
 
     # --- Mouse handling ---
     is_focused = Melty.text_focused_ds is ds
@@ -371,15 +483,25 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, le
                                        origin_x, origin_y, line_height)
 
         now = time.time()
-        if (now - ds.text_double_click_time < 0.3
-                and abs(click_pos - ds.text_last_click_pos) <= 1):
+        within_window = (now - ds.text_double_click_time < 0.3
+                         and abs(click_pos - ds.text_last_click_pos) <= 1)
+        ds.text_click_count = ds.text_click_count + 1 if within_window else 1
+        ds.text_double_click_time = now
+        ds.text_last_click_pos = click_pos
+
+        if ds.text_click_count == 2:
             ds.text_selection_start = _word_boundary_left(text, click_pos)
             ds.text_selection_end = _word_boundary_right(text, click_pos)
             ds.text_cursor_pos = ds.text_selection_end
-            ds.text_double_click_time = 0
+        elif ds.text_click_count >= 3:
+            line_start = _get_line_start(text, click_pos)
+            line_end = _get_line_end(text, click_pos)
+            if line_end < len(text):
+                line_end += 1  # include trailing newline so delete deletes the line
+            ds.text_selection_start = line_start
+            ds.text_selection_end = line_end
+            ds.text_cursor_pos = ds.text_selection_end
         else:
-            ds.text_double_click_time = now
-            ds.text_last_click_pos = click_pos
             ds.text_cursor_pos = click_pos
             if io.key_shift:
                 ds.text_selection_end = click_pos
@@ -400,34 +522,42 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, le
         ctrl = io.key_ctrl
 
         # --- Typed characters ---
-        for key in just_pressed:
-            if key in _KEY_CHAR_MAP and not ctrl:
-                ds.text_cursor_blink_time = time.time()
-                unshifted, shifted = _KEY_CHAR_MAP[key]
-                ch = shifted if shift else unshifted
+        if not ctrl:
+            for key, (unshifted, shifted) in _KEY_CHAR_MAP.items():
+                if pressed(key):
+                    ds.text_cursor_blink_time = time.time()
+                    ch = shifted if shift else unshifted
 
+                    if _has_selection(ds):
+                        text, ds.text_cursor_pos = _delete_selection(text, ds)
+                    text = text[:ds.text_cursor_pos] + ch + text[ds.text_cursor_pos:]
+                    ds.text_cursor_pos += len(ch)
+                    ds.text_selection_start = ds.text_cursor_pos
+                    ds.text_selection_end = ds.text_cursor_pos
+                    changed = True
+
+        # --- Tab / Shift+Tab ---
+        if pressed(glfw.KEY_TAB) and not ctrl:
+            ds.text_cursor_blink_time = time.time()
+            if shift or _has_selection(ds):
                 if _has_selection(ds):
-                    text, ds.text_cursor_pos = _delete_selection(text, ds)
-                text = text[:ds.text_cursor_pos] + ch + text[ds.text_cursor_pos:]
-                ds.text_cursor_pos += len(ch)
+                    lo, hi = _sel_range(ds)
+                else:
+                    lo = hi = ds.text_cursor_pos
+                text, new_lo, new_hi = _indent_lines(text, lo, hi, dedent=shift)
+                ds.text_selection_start = new_lo
+                ds.text_selection_end = new_hi
+                ds.text_cursor_pos = new_hi
+            else:
+                insert = '    '
+                text = text[:ds.text_cursor_pos] + insert + text[ds.text_cursor_pos:]
+                ds.text_cursor_pos += len(insert)
                 ds.text_selection_start = ds.text_cursor_pos
                 ds.text_selection_end = ds.text_cursor_pos
-                changed = True
-
-        # --- Tab ---
-        if glfw.KEY_TAB in just_pressed and not ctrl:
-            ds.text_cursor_blink_time = time.time()
-            insert = '    '
-            if _has_selection(ds):
-                text, ds.text_cursor_pos = _delete_selection(text, ds)
-            text = text[:ds.text_cursor_pos] + insert + text[ds.text_cursor_pos:]
-            ds.text_cursor_pos += len(insert)
-            ds.text_selection_start = ds.text_cursor_pos
-            ds.text_selection_end = ds.text_cursor_pos
             changed = True
 
         # --- Enter ---
-        if glfw.KEY_ENTER in just_pressed or glfw.KEY_KP_ENTER in just_pressed:
+        if pressed(glfw.KEY_ENTER) or pressed(glfw.KEY_KP_ENTER):
             ds.text_cursor_blink_time = time.time()
             indent = _get_indent(text, ds.text_cursor_pos)
             if _has_selection(ds):
@@ -440,7 +570,7 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, le
             changed = True
 
         # --- Backspace ---
-        if glfw.KEY_BACKSPACE in just_pressed:
+        if pressed(glfw.KEY_BACKSPACE):
             ds.text_cursor_blink_time = time.time()
             if _has_selection(ds):
                 text, ds.text_cursor_pos = _delete_selection(text, ds)
@@ -464,7 +594,7 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, le
                 changed = True
 
         # --- Delete ---
-        if glfw.KEY_DELETE in just_pressed:
+        if pressed(glfw.KEY_DELETE):
             ds.text_cursor_blink_time = time.time()
             if _has_selection(ds):
                 text, ds.text_cursor_pos = _delete_selection(text, ds)
@@ -480,7 +610,7 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, le
                 changed = True
 
         # --- Left ---
-        if glfw.KEY_LEFT in just_pressed:
+        if pressed(glfw.KEY_LEFT):
             ds.text_cursor_blink_time = time.time()
             if ctrl:
                 ds.text_cursor_pos = _word_boundary_left(text, ds.text_cursor_pos)
@@ -495,7 +625,7 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, le
                 ds.text_selection_end = ds.text_cursor_pos
 
         # --- Right ---
-        if glfw.KEY_RIGHT in just_pressed:
+        if pressed(glfw.KEY_RIGHT):
             ds.text_cursor_blink_time = time.time()
             if ctrl:
                 ds.text_cursor_pos = _word_boundary_right(text, ds.text_cursor_pos)
@@ -510,7 +640,7 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, le
                 ds.text_selection_end = ds.text_cursor_pos
 
         # --- Up ---
-        if glfw.KEY_UP in just_pressed:
+        if pressed(glfw.KEY_UP):
             ds.text_cursor_blink_time = time.time()
             line, col = _index_to_line_col(text, ds.text_cursor_pos)
             if line > 0:
@@ -524,7 +654,7 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, le
                 ds.text_selection_end = ds.text_cursor_pos
 
         # --- Down ---
-        if glfw.KEY_DOWN in just_pressed:
+        if pressed(glfw.KEY_DOWN):
             ds.text_cursor_blink_time = time.time()
             line, col = _index_to_line_col(text, ds.text_cursor_pos)
             total_lines = text.count('\n')
@@ -539,7 +669,7 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, le
                 ds.text_selection_end = ds.text_cursor_pos
 
         # --- Home ---
-        if glfw.KEY_HOME in just_pressed:
+        if pressed(glfw.KEY_HOME):
             ds.text_cursor_blink_time = time.time()
             if ctrl:
                 ds.text_cursor_pos = 0
@@ -552,7 +682,7 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, le
                 ds.text_selection_end = ds.text_cursor_pos
 
         # --- End ---
-        if glfw.KEY_END in just_pressed:
+        if pressed(glfw.KEY_END):
             ds.text_cursor_blink_time = time.time()
             if ctrl:
                 ds.text_cursor_pos = len(text)
@@ -565,19 +695,19 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, le
                 ds.text_selection_end = ds.text_cursor_pos
 
         # --- Ctrl+A ---
-        if ctrl and glfw.KEY_A in just_pressed:
+        if ctrl and pressed(glfw.KEY_A):
             ds.text_selection_start = 0
             ds.text_selection_end = len(text)
             ds.text_cursor_pos = len(text)
 
         # --- Ctrl+C ---
-        if ctrl and glfw.KEY_C in just_pressed:
+        if ctrl and pressed(glfw.KEY_C):
             if _has_selection(ds):
                 lo, hi = _sel_range(ds)
                 imgui.set_clipboard_text(text[lo:hi])
 
         # --- Ctrl+X ---
-        if ctrl and glfw.KEY_X in just_pressed:
+        if ctrl and pressed(glfw.KEY_X):
             if _has_selection(ds):
                 lo, hi = _sel_range(ds)
                 imgui.set_clipboard_text(text[lo:hi])
@@ -587,7 +717,7 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, le
                 changed = True
 
         # --- Ctrl+V ---
-        if ctrl and glfw.KEY_V in just_pressed:
+        if ctrl and pressed(glfw.KEY_V):
             ds.text_cursor_blink_time = time.time()
             clipboard = imgui.get_clipboard_text()
             if clipboard:
@@ -599,8 +729,18 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, le
                 ds.text_selection_end = ds.text_cursor_pos
                 changed = True
 
-    # Update previous key state
-    ds.text_prev_keys_down = current_keys
+        # --- Ctrl+/ (toggle line comment) ---
+        if ctrl and pressed(glfw.KEY_SLASH):
+            ds.text_cursor_blink_time = time.time()
+            if _has_selection(ds):
+                lo, hi = _sel_range(ds)
+            else:
+                lo = hi = ds.text_cursor_pos
+            text, new_lo, new_hi = _toggle_comment(text, lo, hi)
+            ds.text_selection_start = new_lo
+            ds.text_selection_end = new_hi
+            ds.text_cursor_pos = new_hi
+            changed = True
 
     # Clamp
     ds.text_cursor_pos = max(0, min(ds.text_cursor_pos, len(text)))
