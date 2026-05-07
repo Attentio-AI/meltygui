@@ -1571,7 +1571,7 @@ def test_func():
     # This is a comment
     some_flag = False
 
-def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=2.533, bg_offset=0,
+def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=2.418, bg_offset=0,
         global_style=None, outline=True, bg_color=None, opacity=1.059,
         style_manager=None, tint=None, outline_tint=None, selected=False,
         hovered=False, pressed=False, nested_bg=False, **kwargs):

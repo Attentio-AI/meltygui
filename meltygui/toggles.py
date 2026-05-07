@@ -20,9 +20,8 @@ class Toggles:
     #---------- Visual Settings ---------
     brightness = 0.199
     contrast = 1.400
-    
     some_dict = [21,13,3,3]
-    
+    newval = 25
     some_val = 2
 
     saturation = 0.815
@@ -34,7 +33,6 @@ class Toggles:
     show_excluded = True
     
     my_var= {1:15}
-
 
 def shadow_depth_at(depth, active_layer):
     scaling = 53.42

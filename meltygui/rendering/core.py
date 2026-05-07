@@ -413,7 +413,7 @@ def render_func(*args, **o_kwargs):
             if closable:
                 if draw_state is not None and draw_state.parent_window is not None:
                     # Nested window - layer above parent
-                    window_z_pos = draw_state.parent_window.layer + 2
+                    window_z_pos = draw_state.parent_window.layer
                 else:
                     # Managed windows are not nested, so we check the registry directly to find their layer
                     # Indicates this is not a nested window
@@ -436,7 +436,8 @@ def render_func(*args, **o_kwargs):
                     parent_ds = draw_state._parent
                     if draw_state not in Melty.root_draw_states[parent_ds.id]:
                         Melty.root_draw_states[parent_ds.id].append(draw_state)
-                    layer = layer + Melty.nested_layer_boost
+                        layer = layer + (len(Melty.root_draw_states[parent_ds.id]) * 2)
+                        Melty.layers[min(layer, len(Melty.layers) - 1)].append(draw_state)
                 else:
                     Melty.layers[min(layer, len(Melty.layers) - 1)].append(draw_state)
 
@@ -1613,7 +1614,7 @@ def render_func(*args, **o_kwargs):
 
                         returned_val = draw_context_menu(input_value=draw_state, mode=Mode.WINDOW, func=func,
                                                          tint=mixed_color, show_tint=False, show_add_delete=False,
-                                                         min_width=650, min_height=300,
+                                                         min_width=100, min_height=100,
                                                          persistent=False, anchor=Anchor.BOTTOM_LEFT,
                                                          with_footer=None, use_cache=True,
                                                          name=f"{name}##context_menu_{unique}", auto_resize=False,

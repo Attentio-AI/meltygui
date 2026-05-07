@@ -856,6 +856,7 @@ class TileCacheMasked:
                 rx0, ry0 = r.x, r.y
                 rx1, ry1 = rx0 + r.w, ry0 + r.h
                 if rx0 < mx1 and mx0 < rx1 and ry0 < my1 and my0 < ry1:
+                    # print(f"{r.draw_state.name}  From {rx0},{ry0},{rx1},{ry1} to {mx0},{my0},{mx1},{my1}")
                     occluders.append((r.key, snap_int(r.x), snap_int(r.y),
                                       snap_int(r.w), snap_int(r.h)))
 
@@ -870,10 +871,13 @@ class TileCacheMasked:
 
                 for pk in prev_map:
                     if pk not in curr_map or prev_map[pk] != curr_map[pk]:
+                        print(f"Occluder {pk} changed for {key}, invalidating {curr_map.get(pk), prev_map[pk]}")
                         needs_invalidate.append(key)
                         break
 
         for key in needs_invalidate:
+            draw_state = self.key_to_draw_state.get(key, None)
+            print(f"Invalidating {draw_state.name if draw_state else key} due to occluder changes")
             self.invalidate_up(key, force=True, max_depth=20)
 
         if needs_invalidate:
