@@ -1334,7 +1334,7 @@ class TileCacheMasked:
                                                                b=b,
                                                                uv_a=uv_a,
                                                                uv_b=uv_b,
-                                                               rounding=0)
+                                                               rounding=draw_state.corner_radius)
                 imgui.dummy(size[0], size[1])
 
                 # imgui.image(

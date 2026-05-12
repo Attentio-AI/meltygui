@@ -445,11 +445,11 @@ def draw_property(input_value:property, draw_state, **kwargs):
     # value = input_value.fget(input_value)
     # draw_any(value, name="value", show_bg=True, draw_state=draw_state)
 
-@render_func(is_default_for=(type), show_bg=False, use_cache=True, tint=(0.01406166236847639, 0.2259240746498108, 0.30232560634613037),
+@render_func(is_default_for=(type), show_bg=True, use_cache=False, shadow=False, tint=(0.01406166236847639, 0.2259240746498108, 0.30232560634613037),
              with_header=draw_header, with_footer=draw_footer)
 def draw_type(input_value:type, draw_state, **kwargs):
 
-    draw_collection(vars(input_value), name="vars", show_excluded=True)
+    draw_collection(vars(input_value), name="vars", shadow=False, use_cache=False, show_bg=True, show_excluded=True)
     # draw_collection(dir(input_value), name="dir", show_excluded=True)
     # draw_collection(input_value.__dict__, name="__dict__", show_excluded=True)
     # draw_collection(inspect.getmembers(input_value), name="inspect")
@@ -493,7 +493,8 @@ def draw_with_modes(input_value, modes, tab_state: TabState = None, draw_state=N
         empty(width=0, height=30, column=idx, shadow=False, name=f"empty_{mode}")
         mode_changed, value = draw_any(input_value, name=f"Mode: {mode}", mode=mode, selectable=False, show_name=False,
                                        auto_resize=True, disable_scroll=False, with_header=None, show_header=False,
-                                       show_bg=True, use_cache=False, shadow=False, column=idx)
+                                       indent_size=0,
+                                       show_bg=False, use_cache=False, shadow=False, column=idx)
         changed |= mode_changed
 
     return changed, value
@@ -1574,8 +1575,8 @@ def test_func():
     # This is a comment
     some_flag = False
 
-def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=5.0, bg_offset=0,
-        global_style=None, outline=True, bg_color=None, opacity=1.059,
+def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=6.0, bg_offset=0,
+        global_style=None, outline=True, bg_color=None, opacity=-0.089,
         style_manager=None, tint=None, outline_tint=None, selected=False,
         hovered=False, pressed=False, nested_bg=False, **kwargs):
 
@@ -2004,7 +2005,6 @@ def draw_float(input_value: float, draw_state, min_value=-100.0, max_value=100.0
                                       min_value=min_value,
                                       max_value=max_value)
                                       
-    # Augment
     
     if changed:
         return True, value
@@ -2360,7 +2360,7 @@ from src.lsd.gl_gui.view.core_conversion.search_conversion import SearchResults
 
 
 @render_func(is_default_for=SearchResults, use_cache=True, show_bg=True,
-             with_header=draw_header, indent_size=5)
+             with_header=draw_header, indent_size=0)
 def draw_search_results(input_value: SearchResults, draw_state=None):
     """Render search results — shows top_results via draw_collection."""
     top_results = input_value.get("top_results", {})
