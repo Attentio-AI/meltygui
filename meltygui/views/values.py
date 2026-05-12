@@ -578,6 +578,11 @@ def draw_main(input_value, vis, draw_state=None):
     global test_code
     from src.lsd.gl_gui.view.mode import Mode
 
+    changed, value = draw_with_modes(Mode, name="Modes", show_bg=True, mode=(Mode.WINDOW),
+                                     modes=(Mode.CODE_UI,
+                                            Mode.CODE_PLAIN_TEXT))
+
+
     changed, value = draw_with_modes(draw_header, name="draw_header", show_bg=True, mode=(Mode.WINDOW), modes=(Mode.CODE_UI,
                                                                                                                Mode.CODE_PLAIN_TEXT))
     if changed:

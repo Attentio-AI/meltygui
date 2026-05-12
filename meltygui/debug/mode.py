@@ -64,7 +64,9 @@ class Mode(Enum):
             kwargs={"show_bg":True, "selectable":False, "use_cache":True, "melty_window":True, "closable":True,
                     "with_header_end":draw_header_end, "auto_resize":False, "draggable":True, 'shadow':True,
                     "show_tint":True, "show_header":True, "with_footer":draw_footer, 'indent_size':5,
-                    "disable_scroll":False},
+                    "disable_scroll":False,
+                    "initial":{"width": 400, "height": 320}},
+
             recursive=False
         )
     }
@@ -75,7 +77,8 @@ class Mode(Enum):
             kwargs={"show_bg":True, "selectable":False, "use_cache":True, "shadow":True,
                     "melty_window":True, "closable":True,
                     "auto_resize":True, "is_tree":False, "show_tint":False, "show_header":True,
-                    "disable_scroll":False},
+                    "disable_scroll":False,
+                    "initial": {"width": 400, "height": 320}},
             recursive=False
         )
     }

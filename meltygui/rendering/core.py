@@ -170,6 +170,7 @@ def render_func(*args, **o_kwargs):
                     kwargs.pop('mode', None)
 
         as_window = kwargs.get("as_window", False)
+        initial_values = kwargs.get("initial", {})
         if as_window:
             kwargs['show_bg'] = True
             kwargs['z_offset'] = 0
@@ -348,6 +349,7 @@ def render_func(*args, **o_kwargs):
         if draw_state.kwargs.temp:
             draw_state.dlt_count = 0
 
+
         computed_unique = unique
         # -------------------------------------------------------------------------
 
@@ -460,6 +462,18 @@ def render_func(*args, **o_kwargs):
 
         kwargs['return_extras'] = False
 
+        # Set default values for initial on the first frame (before any input mutation)
+        if draw_state.frame_count < 2:
+            for item_name, initial_value in initial_values.items():
+                print(
+                    f"Setting initial value for {item_name} to {initial_value} in draw state {draw_state.name}")
+                if isinstance(getattr(draw_state, item_name, None), int):
+                    if getattr(draw_state, item_name) == 0:
+                        setattr(draw_state, item_name, initial_value)
+                else:
+                    if hasattr(draw_state, item_name) and getattr(draw_state, item_name) is None:
+                        setattr(draw_state, item_name, initial_value)
+
         if draw_state._is_nested:
             Counters.nested_window_count += 1
 
@@ -493,7 +507,7 @@ def render_func(*args, **o_kwargs):
         draw_state.auto_resize = auto_resize and not fixed_size
 
         # Restore expanded =================
-        if draw_state._last_expanded is not None and draw_state._last_expanded != draw_state.expanded:
+        if draw_state._last_expanded is not None and draw_state._last_expanded != draw_state.expanded and draw_state.frame_count > 2:
             if draw_state._last_expanded:
                 draw_state.expanded_rect = (
                     draw_state.abs_left, draw_state.abs_top, draw_state.width, draw_state.height)
