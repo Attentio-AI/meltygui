@@ -1,7 +1,7 @@
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
 class Counters:
     # Nested window
-    nested_window_count = 6
+    nested_window_count = 12
 
 
 class Toggles:

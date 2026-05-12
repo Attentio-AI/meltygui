@@ -1023,7 +1023,7 @@ def render_func(*args, **o_kwargs):
 
             push_id(unique)
 
-            if closable or column is not None:
+            if closable:
                 Melty.push_clip((draw_state.abs_left, draw_state.abs_top,
                                  draw_state.abs_left + draw_state.width,
                                  draw_state.abs_top + draw_state.height))
@@ -1031,11 +1031,12 @@ def render_func(*args, **o_kwargs):
             if clip_rect is not None:
                 draw_state.clip_rect = clip_rect
 
-                left_clipped_by = max(0, clip_rect[0] - draw_state.left)
-                top_clipped_by = max(0, clip_rect[1] - draw_state.top)
+                left_clipped_by = max(0, clip_rect[0] - draw_state.abs_left)
+                top_clipped_by = max(0, clip_rect[1] - draw_state.abs_top)
                 right_clipped_by = max(0, (draw_state.abs_left + draw_state.width) - (clip_rect[2]))
                 bottom_clipped_by = max(0, (draw_state.abs_top + draw_state.height) - (clip_rect[3]))
                 draw_state.clipped_by_rect = (left_clipped_by, top_clipped_by, right_clipped_by, bottom_clipped_by)
+
 
             # Filter out originated functions that have an error pending state
             # no point auto-applying a converter that will just error out.
@@ -2150,7 +2151,7 @@ def render_func(*args, **o_kwargs):
             #     request_render()
 
             if _has_imgui:
-                if closable or column is not None:
+                if closable:
                     Melty.pop_clip()
                 if fixed_size:
                     Melty.fixed_size_stack.pop()

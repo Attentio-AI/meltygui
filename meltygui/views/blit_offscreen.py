@@ -34,12 +34,6 @@ This ensures:
 """
 
 INV_65535 = 1.0 / 65535.0
-# Final depth values are stored as `depth_and_layer / 65535.5` (the .5 makes the
-# max value clear by the shader's `floor(v * 65535 + 0.5)` rounding). The cached
-# mask offset must use this same scale, otherwise a large layer delta accumulates
-# enough error to flip a depth test.
-RANK_SCALE = 65535.5
-INV_RANK_SCALE = 1.0 / RANK_SCALE
 
 
 # ==============================
@@ -1335,13 +1329,12 @@ class TileCacheMasked:
                 uv_a = (0.0, 1.0)
                 uv_b = (1.0, 0.0)
 
-
                 imgui.get_window_draw_list().add_image_rounded(t.tex,
                                                                a=a,
                                                                b=b,
                                                                uv_a=uv_a,
                                                                uv_b=uv_b,
-                                                               rounding=draw_state.corner_radius)
+                                                               rounding=0)
                 imgui.dummy(size[0], size[1])
 
                 # imgui.image(
@@ -1925,7 +1918,7 @@ class TileCacheMasked:
                     iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
 
                     if use_child_cache:
-                        offset = (float(depth_and_layer) - float(t_child.mask_layer)) * INV_RANK_SCALE
+                        offset = (float(depth_and_layer) - float(t_child.mask_layer)) * float(INV_65535)
                         self._draw_mask_rect_cached(
                             t_child.mask_tex,
                             ix0,
@@ -2042,7 +2035,7 @@ class TileCacheMasked:
 
                     depth_and_layer = r.depth_and_layer
                     if can_use_cached:
-                        offset = (float(depth_and_layer) - float(t.mask_layer)) * INV_RANK_SCALE
+                        offset = (float(depth_and_layer) - float(t.mask_layer)) * float(INV_65535)
 
                         shadow_margin = r.draw_state.shadow_margin if r.draw_state is not None else 0.0
 

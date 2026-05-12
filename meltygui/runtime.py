@@ -616,6 +616,23 @@ class Melty:
         #                                    draw_state.abs_top, draw_state.width, draw_state.height,
         #                                    f"window_mask_{unique}", 4)
 
+        if Toggles.debug_z_depth:
+            draw_state = list(cls.selected)[-1] if len(cls.selected) > 0 else None
+            if draw_state is not None:
+                draw_list = imgui.get_overlay_draw_list()
+                draw_list.add_text(draw_state.abs_left, draw_state.abs_top - 40, imgui.get_color_u32_rgba(1, 0, 0, 1),
+                                   f"Layer {draw_state.layer} "
+                                   f"Depth {draw_state.depth} "
+                                   f"zpos {draw_state.z_pos} "
+                                   f"depth_and_layer {draw_state.depth_and_layer} "
+                                   f"Melty.active_layer {Melty.active_layer} "
+                                   f"Melty.z_pos {Melty.z_pos} "
+                                   f"Melty.depth {Melty.depth}")
+
+            # draw_list.add_text(draw_state.abs_left, draw_state.abs_top - 20, imgui.get_color_u32_rgba(1, 1, 0, 1),
+            #                    f"kwargs['active_layer'] {kwargs['active_layer']} "
+            #                    )
+
         cls.root_draw_states_by_layer = defaultdict(list)
         to_discard = set()
         dynamic_offset = 0

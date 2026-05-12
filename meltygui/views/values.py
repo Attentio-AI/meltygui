@@ -476,12 +476,12 @@ def test_columns():
         draw_float(0.4, name=f"float_{i}", column=2)
 
 
-@render_func(use_cache=True, show_bg=False, shadow=False, disable_scroll=False, selectable=False, with_header=draw_header)
+@render_func(use_cache=False, show_bg=False, shadow=False, disable_scroll=False, selectable=False, with_header=draw_header)
 def draw_with_modes(input_value, modes, tab_state: TabState = None, draw_state=None):
     if not tab_state.selected_tabs:
         tab_state.selected_tabs = [modes[0]]
 
-    tab_changed, new_tabs = draw_tab_bar(tab_state.selected_tabs, collection=modes)
+    tab_changed, new_tabs = draw_tab_bar(tab_state.selected_tabs, z_offset=0, name="tab_bar", collection=modes)
     if tab_changed:
         tab_state.selected_tabs = new_tabs
 
@@ -490,9 +490,10 @@ def draw_with_modes(input_value, modes, tab_state: TabState = None, draw_state=N
     value = input_value
     for idx, mode in enumerate(tab_state.selected_tabs):
 
-        empty(width=0, height=30, column=idx)
-        mode_changed, value = draw_any(input_value, name=f"Mode: {mode}", mode=mode, selectable=False, auto_resize=True, disable_scroll=False,
-                                       show_bg=True, shadow=True, column=idx)
+        empty(width=0, height=30, column=idx, shadow=False, name=f"empty_{mode}")
+        mode_changed, value = draw_any(input_value, name=f"Mode: {mode}", mode=mode, selectable=False, show_name=False,
+                                       auto_resize=True, disable_scroll=False, with_header=None, show_header=False,
+                                       show_bg=True, use_cache=False, shadow=False, column=idx)
         changed |= mode_changed
 
     return changed, value
@@ -502,7 +503,7 @@ def draw_draw_state(input_value, **kwargs):
     pass
 
 
-@render_func(use_cache=True, show_bg=True, with_header=draw_header)
+@render_func(use_cache=False, shadow=False, show_bg=False)
 def run_chain(input_value, chain=None, draw_state=None, debug=False, **kwargs):
     """Debug render function: executes a chain step by step with imgui output.
 
@@ -537,8 +538,10 @@ def run_chain(input_value, chain=None, draw_state=None, debug=False, **kwargs):
                 imgui.text(f"  [{i}] {name} — (no change)")
 
         func_kwargs['name'] = f"{func.__name__} {kwargs.get('name', '')}"
+        func_kwargs['shadow'] = False
         func_kwargs['changed'] = changed
-        imgui.begin_group()
+        func_kwargs['show_header'] = False
+        # imgui.begin_group()
 
         next_cached = cache_tree.peek()
         start_time = glfw.get_time()
@@ -546,7 +549,7 @@ def run_chain(input_value, chain=None, draw_state=None, debug=False, **kwargs):
         end_time = glfw.get_time()
         duration_ms = (end_time - start_time) * 1000
         # imgui.text(f"  [{i}] {func.__name__} - {type(value).__name__} - {duration_ms:.2f} ms")
-        imgui.end_group()
+        # imgui.end_group()
         if isinstance(value, Pending):
             changed=False
             value=None
@@ -554,8 +557,8 @@ def run_chain(input_value, chain=None, draw_state=None, debug=False, **kwargs):
 
     cache_tree.end()
 
-    if debug:
-        draw_text(cache_tree.get_mapping_as_str(), name="Cache Tree Mapping", show_bg=True, width=draw_state.width)
+    # if debug:
+    #     draw_text(cache_tree.get_mapping_as_str(), name="Cache Key Mapping", show_bg=True, use_cache=True, width=draw_state.width)
 
     imgui.separator()
     return False, None
@@ -1587,7 +1590,7 @@ def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=5.0, bg_offset=
     stroke_width      = 4.0
     # How depth maps to color intensity
     intensity_factor  = 0.042
-    intensity_offset  = -0.448
+    intensity_offset  = -0.339
     
     # Outline color tuning
     outline_base      = 1.773
@@ -1807,8 +1810,7 @@ def draw_label(input_value: str, draw_state):
 
 
 
-@render_func(is_default_for=(str), shadow=False, show_bg=False, wrap=False, is_tree=False, show_add_delete=False,
-             use_cache=True, disable_scroll=True, with_header=draw_header)
+@render_func(is_default_for=(str), shadow=False, show_bg=False, wrap=False, is_tree=False, show_add_delete=False, use_cache=True, disable_scroll=True, with_header=None)
 def draw_str(input_value: str, draw_state, editable=True, alpha=1.0):
     if not editable:
         imgui.push_style_var(imgui.STYLE_ALPHA, alpha)
@@ -2002,6 +2004,8 @@ def draw_float(input_value: float, draw_state, min_value=-100.0, max_value=100.0
                                       min_value=min_value,
                                       max_value=max_value)
                                       
+    # Augment
+    
     if changed:
         return True, value
 
@@ -2015,7 +2019,7 @@ def draw_parameter(input_value):
         return draw_any(parameter_default, show_name=False, show_add_delete=False)
 
 
-@render_func(is_default_for=(types.MappingProxyType), show_add_delete=False, with_header=draw_header)
+@render_func(is_default_for=(types.MappingProxyType), shadow=False, show_bg=False,  show_add_delete=False, with_header=draw_header)
 def draw_mapping_proxy(input_value):
     # To list first, then back to mapping proxy
     try:
@@ -2484,7 +2488,8 @@ def draw_any(input_value:any, view_func=None, mode:any=None, chain=None, **kwarg
                 view_func = mode_config.func
                 kwargs_view_func = view_func
 
-    kwargs['use_cache'] = True
+
+    # kwargs['use_cache'] = True
     kwargs['mode'] = mode
     kwargs['view_func'] = kwargs_view_func
 
