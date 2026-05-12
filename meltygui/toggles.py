@@ -19,7 +19,7 @@ class Toggles:
     brightness = 0.199
     contrast = 1.400
 
-    saturation = 0.815
+    saturation = 0.351
     debug_context_menu = False
     debug_z_depth = False
     filters = True

@@ -39,7 +39,7 @@ stack_holder = {}
 channels_split_stack = False
 child_stack_holder = {}
 
-
+#2322
 def _run_convert_chain(value=None, chain=None, **extra_kwargs):
     """Run a list of converter functions in sequence.
 
@@ -51,7 +51,8 @@ def _run_convert_chain(value=None, chain=None, **extra_kwargs):
     matching as a fallback.
 
     Designed to run on a background thread.
-    Callable by Background.run (accepts value/chain as kwargs).
+    Callable by Background.run (accepts value/0000
+    chain as kwargs).
 
     Returns the final converted value (or Pending).
     """
@@ -1493,7 +1494,7 @@ def render_func(*args, **o_kwargs):
                         if func.__name__ == "draw_text":
                             pass
                         bg_return = draw_bg(bypass=True, left=draw_state.left, top=draw_state.top,
-                                            width=draw_state.width + 1, height=draw_state.height + 1,
+                                            width=draw_state.width, height=draw_state.height,
                                             rounding=draw_state.corner_radius, bg_offset=kwargs.get("bg_offset", 0),
                                             depth=Melty.shadow_depth, selected=False,
                                             global_style=global_style, opacity=1.0 if show_bg else 0.0,
@@ -2213,11 +2214,6 @@ def render_func(*args, **o_kwargs):
 
                 if draw_state._parent is not None:
                     draw_state._parent.invalid_content_height = True
-
-                draw_state.size_change = True
-            else:
-                if not Melty.on_drag and not imgui.is_mouse_down(1) and not imgui.is_mouse_down(2):
-                    draw_state.size_change = False
 
             if draw_state.width > 10000:
                 draw_state.width = 10000

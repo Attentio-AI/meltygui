@@ -272,7 +272,6 @@ class DrawState(DictConversion):
         self.drag_mode = DragMode.NONE
         self.use_child = False
         self.z_pos = 0
-        self.size_change = False
         self.depth_and_layer = (0, 0)
         self.content_height = 0
         self.invalid_content_height = True
@@ -581,6 +580,24 @@ class DrawState(DictConversion):
                 abs_top + clipped_by[1],
                 abs_left + self.width - clipped_by[2],
                 abs_top + self.height - clipped_by[3])
+
+    @property
+    def size_change(self):
+        if self._tile_id is None or self.width is None or self.height is None:
+            return True
+        #
+        # if (not imgui.is_mouse_down(0)
+        #         and not imgui.is_mouse_down(1)
+        #         and not imgui.is_mouse_down(2)):
+        #     return True
+
+        cache = Melty.cache
+        if cache is None:
+            return False
+        t = cache._tiles.get(self._tile_id)
+        if t is None:
+            return False
+        return t.size != (int(self.width), int(self.height))
     @property
     def abs_left(self):
         return self._abs_left()

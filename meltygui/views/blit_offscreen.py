@@ -34,6 +34,12 @@ This ensures:
 """
 
 INV_65535 = 1.0 / 65535.0
+# Final depth values are stored as `depth_and_layer / 65535.5` (the .5 makes the
+# max value clear by the shader's `floor(v * 65535 + 0.5)` rounding). The cached
+# mask offset must use this same scale, otherwise a large layer delta accumulates
+# enough error to flip a depth test.
+RANK_SCALE = 65535.5
+INV_RANK_SCALE = 1.0 / RANK_SCALE
 
 
 # ==============================
@@ -196,7 +202,7 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
                 snap_int(w),
                 snap_int(h),
                 gl.GL_COLOR_BUFFER_BIT,
-                gl.GL_NEAREST,
+                gl.GL_LINEAR,
             )
         finally:
             st.restore()
@@ -544,6 +550,10 @@ class TileCacheMasked:
         self._stack: List[_Ctx] = []
         self._key_to_ctx: Dict[str, _Ctx] = {}
         self._pending: List[_Pending] = []
+        # Last (clipped_rect, transform) each view marked its tile with. When this
+        # changes the cached subtree masks (Tile.mask_tex) of this tile and its
+        # ancestors are wrong, so we invalidate them once interaction has settled.
+        self._last_mark_clip: Dict[str, tuple] = {}
         self.all_keys = set()
 
         self._fb_size: Tuple[int, int] = (0, 0)
@@ -877,13 +887,11 @@ class TileCacheMasked:
 
                 for pk in prev_map:
                     if pk not in curr_map or prev_map[pk] != curr_map[pk]:
-                        print(f"Occluder {pk} changed for {key}, invalidating {curr_map.get(pk), prev_map[pk]}")
                         needs_invalidate.append(key)
                         break
 
         for key in needs_invalidate:
             draw_state = self.key_to_draw_state.get(key, None)
-            print(f"Invalidating {draw_state.name if draw_state else key} due to occluder changes")
             self.invalidate_up(key, force=True, max_depth=20)
 
         if needs_invalidate:
@@ -1177,39 +1185,52 @@ class TileCacheMasked:
         has_area = size is not None and size[0] != 0 and size[1] != 0
         use_image = t and has_area and (t.size == (size[0], size[1])) and (not self._is_dirty(t))
 
-        # x, y = draw_state.left, draw_state.abs_top
-        # w, h = draw_state.width, draw_state.height
-        # clip = draw_state.clip_rect
-        #
-        # clipped = self._clip_rect(x, y, w, h, clip)
-        # if not clipped:
-        #     print(clip)
-        # cx0, cy0, cw, ch = clipped if clipped else (0,0,0,0)
-
         if has_area and not draw_state.closed and use_image:
             corner_radius = getattr(draw_state, "corner_radius", 5.0) or 5.0
-            self.mask_mark_view(
-                draw_state,
-                layer,
-                draw_state.shadow_depth,
-                draw_state.left,
-                draw_state.top,
-                draw_state.width,
-                draw_state.height,
-                draw_state._tile_id,
-                corner_radius,
-            )
+            x, y = draw_state.left, draw_state.top
+            w, h = draw_state.width, draw_state.height
+            cb = draw_state.clipped_by_rect
+            clip = draw_state.abs_clip_rect if (cb is not None and any(cb)) else None
+            clipped = self._clip_rect(x, y, w, h, clip)
+            if clipped:
+                cx, cy, cw, ch = clipped
+                if cw > 0 and ch > 0:
+                    self.mask_mark_view(
+                        draw_state,
+                        layer,
+                        draw_state.shadow_depth,
+                        cx,
+                        cy,
+                        cw,
+                        ch,
+                        draw_state._tile_id,
+                        corner_radius,
+                    )
+            else:
+                self.mask_mark_view(
+                    draw_state,
+                    layer,
+                    draw_state.shadow_depth,
+                    x,
+                    y,
+                    w,
+                    h,
+                    draw_state._tile_id,
+                    corner_radius,
+                )
 
         if use_image:
-            imgui.set_cursor_screen_pos((draw_state.left, snap_int(draw_state.top)))
-            imgui.image(
-                t.tex,
-                snap_int(size[0]),
-                snap_int(size[1]),
-                uv0=(0.0, 1.0),
-                uv1=(1.0, 0.0),
-            )
-            imgui.set_item_allow_overlap()
+            a = draw_state.left, draw_state.top
+            b = draw_state.left + size[0], draw_state.top + size[1]
+            uv_a = (0.0, 1.0)
+            uv_b = (1.0, 0.0)
+
+            imgui.get_window_draw_list().add_image_rounded(t.tex,
+                                                           a=a,
+                                                           b=b,
+                                                           uv_a=uv_a,
+                                                           uv_b=uv_b,
+                                                           rounding=max(5.0, draw_state.corner_radius))
 
         imgui.pop_id()
         draw_state.last_seen = Melty.frame_count
@@ -1308,14 +1329,29 @@ class TileCacheMasked:
 
             if use_image:
                 imgui.set_cursor_screen_pos((draw_state.left, draw_state.top))
-                imgui.image(
-                    t.tex,
-                    snap_int(size[0]),
-                    snap_int(size[1]),
-                    uv0=(0.0, 1.0),
-                    uv1=(1.0, 0.0),
-                )
-                imgui.set_item_allow_overlap()
+
+                a = draw_state.left, draw_state.top
+                b = draw_state.left + size[0], draw_state.top + size[1]
+                uv_a = (0.0, 1.0)
+                uv_b = (1.0, 0.0)
+
+
+                imgui.get_window_draw_list().add_image_rounded(t.tex,
+                                                               a=a,
+                                                               b=b,
+                                                               uv_a=uv_a,
+                                                               uv_b=uv_b,
+                                                               rounding=draw_state.corner_radius)
+                imgui.dummy(size[0], size[1])
+
+                # imgui.image(
+                #     t.tex,
+                #     snap_int(size[0]),
+                #     snap_int(size[1]),
+                #     uv0=(0.0, 1.0),
+                #     uv1=(1.0, 0.0),
+                # )
+                # imgui.set_item_allowOverlap()
                 imgui.set_cursor_screen_pos((draw_state.left, draw_state.top + draw_state.content_height))
                 self._stack.append(
                     _Ctx(
@@ -1376,10 +1412,11 @@ class TileCacheMasked:
 
         x, y = ctx.pos
         w, h = ctx.size
-        if draw_state is None:
-            clip = self._get_current_clip_rect_screen()
+        cb = ctx.draw_state.clipped_by_rect if ctx.draw_state is not None else None
+        if cb is not None and any(cb):
+            clip = ctx.draw_state.abs_clip_rect
         else:
-            clip = draw_state.abs_clip_rect
+            clip = self._get_current_clip_rect_screen()
         clipped = self._clip_rect(x, y, w, h, clip)
         self._key_to_ctx[ctx.key] = ctx
 
@@ -1395,6 +1432,25 @@ class TileCacheMasked:
                 if w > 0 and h > 0:
                     self.mask_mark_view(ctx.draw_state, ctx.layer, ctx.depth_and_layer, x, y, w, h, ctx.key,
                                         corner_radius)
+
+            # If this view's clipped rect or layer changed, the cached layer
+            # masks of this view and its non-closable ancestors are stale. Refresh
+            # them when interaction has settled so we don't thrash during
+            # scroll/resize (mid-drag the size update path already regenerates
+            # from fresh rects).
+            settled = (not imgui.is_mouse_down(0) and not imgui.is_mouse_down(1)
+                       and not imgui.is_mouse_down(2) and not Melty.on_drag)
+            if settled:
+                rect = clipped if clipped else (x, y, w, h)
+                new_mark_state = (tuple(int(v) for v in rect), ctx.layer)
+                prev_mark_state = self._last_mark_clip.get(ctx.key)
+                if prev_mark_state is not None and prev_mark_state != new_mark_state:
+                    for pk in self.get_parent_keys(ctx.key):
+                        self.invalidate(pk)
+                        pds = self.key_to_draw_state.get(pk)
+                        if pds is not None and pds.closable:
+                            break
+                self._last_mark_clip[ctx.key] = new_mark_state
 
         if not self.enabled or ctx.drew_cached or ctx.draw_state.frame_count < 2:
             return
@@ -1837,7 +1893,7 @@ class TileCacheMasked:
                         child_ctx = self._key_to_ctx.get(r.key)
                         if child_ctx and child_ctx.size:
                             cx, cy = child_ctx.pos
-                            cw, ch = draw_state.width, draw_state.height
+                            cw, ch = child_ctx.size
                             sx0, sy0, sx1, sy1 = self._screen_rect_to_fb_xyxy(cx, cy, cw, ch, dp_x, dp_y, s_x, s_y,
                                                                               fb_h)
                         else:
@@ -1869,7 +1925,7 @@ class TileCacheMasked:
                     iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
 
                     if use_child_cache:
-                        offset = (float(depth_and_layer) - float(t_child.mask_layer)) * float(INV_65535)
+                        offset = (float(depth_and_layer) - float(t_child.mask_layer)) * INV_RANK_SCALE
                         self._draw_mask_rect_cached(
                             t_child.mask_tex,
                             ix0,
@@ -1950,6 +2006,10 @@ class TileCacheMasked:
                     t = self._tiles.get(r.key)
                     size_change = draw_state.size_change if draw_state else False
                     can_use_cached = (t is not None) and (t.mask_tex is not None) and (not size_change)
+
+                    # abs_clip = draw_state.abs_clip_rect if draw_state else None
+                    # abs_clip_w = abs_clip[2] - abs_clip[0] if abs_clip is not None else r.w
+                    # abs_clip_h = abs_clip[3] if abs_clip else r.h
                     clip_x0, clip_y0, clip_x1, clip_y1 = self._screen_rect_to_fb_xyxy(
                         r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y, fb_h
                     )
@@ -1961,6 +2021,9 @@ class TileCacheMasked:
 
                     if (can_use_cached or size_change) and tile_ctx and not draw_state is None:
                         tx, ty = draw_state.left, draw_state.top
+                        # if can_use_cached and t is not None:
+                        #     tw, th = t.size
+                        # else:
                         tw, th = draw_state.width, draw_state.height
                         x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(tx, ty, tw, th, dp_x, dp_y, s_x, s_y, fb_h)
                     else:
@@ -1979,7 +2042,7 @@ class TileCacheMasked:
 
                     depth_and_layer = r.depth_and_layer
                     if can_use_cached:
-                        offset = (float(depth_and_layer) - float(t.mask_layer)) * float(INV_65535)
+                        offset = (float(depth_and_layer) - float(t.mask_layer)) * INV_RANK_SCALE
 
                         shadow_margin = r.draw_state.shadow_margin if r.draw_state is not None else 0.0
 
