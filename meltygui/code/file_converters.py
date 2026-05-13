@@ -406,12 +406,12 @@ def _validate_local_names(code) -> None:
             if instr.argval not in first_ref:
                 first_ref[instr.argval] = "load"
 
-    for name, ref_type in first_ref.items():
-        if name not in param_names and ref_type == "load":
-            raise UnboundLocalError(
-                f"cannot access local variable '{name}' where it is "
-                f"not associated with a value"
-            )
+    # for name, ref_type in first_ref.items():
+    #     if name not in param_names and ref_type == "load":
+    #         raise UnboundLocalError(
+    #             f"cannot access local variable '{name}' where it is "
+    #             f"not associated with a value"
+    #         )
 
     for const in code.co_consts:
         if isinstance(const, types.CodeType):

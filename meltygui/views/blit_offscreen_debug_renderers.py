@@ -4,11 +4,12 @@ from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 
 
-@window
 class DebugBlitOffscreen:
     some_val = True
-    display_mask_rects = False
+    display_mask_rects = True
     display_roots = True
+
+    
 
 class OtherClass:
     some_val = False
@@ -24,4 +25,7 @@ def draw_blit_debug():
     imgui.text("Blit Debug Renderer")
     draw_with_modes(input_value=DebugBlitOffscreen, name="slkdjf", modes=ModeGroup.CODE)
 
-    imgui.text("Other Class")
+    from src.lsd.gl_gui.melty import Melty
+    offscreen = Melty.cache
+    from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
+

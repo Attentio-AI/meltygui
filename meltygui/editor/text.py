@@ -438,11 +438,12 @@ def _delete_selection(text, ds):
     return text[:lo] + text[hi:], lo
 
 
-@render_func(show_bg=True, wrap=False, use_cache=True, with_header=draw_header, shadow=True,
-             with_footer=draw_footer, selectable=False, searchable=True, bg_offset=-100)
+@render_func(show_bg=True, wrap=False, use_cache=True, with_header=draw_header, shadow=True, with_footer=draw_footer, selectable=False, searchable=True, bg_offset=-100)
 def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, left_mouse_up=False,
               left_mouse_down=False, left_mouse_drag=False, draw_state=None, request_focus=False):
     ds = draw_state
+    
+    line_height = 22 # Add support for this
 
     changed = False
     original_input = input_value

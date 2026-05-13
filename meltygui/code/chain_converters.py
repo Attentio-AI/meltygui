@@ -283,8 +283,10 @@ def run_button(input_value: any, with_kwargs=None, draw_state=None, clicked=Fals
 
     running = draw_state._running is input_value if run_in_background else False
 
-    fa_run_arrow = "\uf04b"
-    if clicked or running or imgui.button(f"{fa_run_arrow} {input_value.__name__}##{draw_state.unique}"):
+    fa_run_arrow = ""
+    from src.lsd.gl_gui.view.core_views.new_core_view import button
+    if clicked or running or button(f"{fa_run_arrow} {input_value.__name__}##{draw_state.unique}",
+     height=30, draw=True, value=0.4, saturation=1.5)[0]:
         with_kwargs['changed'] = True
         changed, value = input_value(**with_kwargs)
         if isinstance(value, Pending):
@@ -343,6 +345,8 @@ def general_parse_to_address(input_value: GeneralParse, pending=False, draw_stat
                         with_kwargs={"input_value": address.source,
                                  "code_str": code_str,
                                  "file_path": address.path})
+
+            imgui.dummy(1,1)
     if show_save:
         if source is not None:
             clicked, result = run_button(_do_save, with_kwargs={"input_value": address,
@@ -398,7 +402,6 @@ def str_to_general_parse(input_value, reference=None, changed=False, draw_state=
                 imgui.text_colored(f"Error parsing code: {e}", 1.0, 0.0, 0.0)
                 return True, reference
         else:
-            imgui.text_colored(f"No Change", 1.0, 0.0, 0.0)
             return False, None
     else:
         cst_module = cst.parse_module(input_str)

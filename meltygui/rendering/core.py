@@ -172,6 +172,7 @@ def render_func(*args, **o_kwargs):
 
         as_window = kwargs.get("as_window", False)
         initial_values = kwargs.get("initial", {})
+
         if as_window:
             kwargs['show_bg'] = True
             kwargs['z_offset'] = 0
@@ -275,6 +276,7 @@ def render_func(*args, **o_kwargs):
         draw_state: DrawState = kwargs.get("draw_state", get_draw_state(unique))
         closable = kwargs.get("closable", False)
         detached = kwargs.get("detached", False)
+        draw_state._view_func = func
 
         if closable:
             kwargs['use_cache'] = True
