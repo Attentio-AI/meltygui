@@ -1,4 +1,5 @@
 import types
+from collections import defaultdict
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -18,7 +19,7 @@ from src.lsd.gl_gui.view.core_conversion.libcst_conversion import GeneralParse, 
 from src.lsd.gl_gui.view.core_views.headers import draw_footer, draw_header_end, draw_header
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
 from src.lsd.gl_gui.view.core_views.new_core_view import draw_collection, draw_comment, draw_search_results, \
-    draw_general_parse, draw_any
+    draw_general_parse, draw_any, sort_dict_alphabetically, unsort_dict_alphabetically
 from src.lsd.gl_gui.view.core_views.text_editor import draw_text
 
 
@@ -45,6 +46,17 @@ class Mode(Enum):
                 return self.value[Any]
         return None
 
+    SORT = {
+        defaultdict: ModeOverrides(
+            kwargs={"show_bg": True, "selectable": False, "use_cache": True},
+            recursive=False,
+            func=(sort_dict_alphabetically,
+                  (draw_collection, {"show_add_delete":False, "selectable":False, "show_bg": False}),
+                  unsort_dict_alphabetically)
+        )
+    }
+
+
     SEARCH = {
         dict: ModeOverrides(
             kwargs={"show_bg":True, "selectable":False, "use_cache":True},
@@ -61,11 +73,11 @@ class Mode(Enum):
 
     WINDOW = {
         Any: ModeOverrides(
-            kwargs={"show_bg":True, "selectable":False, "use_cache":True, "melty_window":True, "closable":True,
-                    "with_header_end":draw_header_end, "auto_resize":False, "draggable":True, 'shadow':True,
+            kwargs={"show_bg":True, "selectable":False, "use_cache":True, "melty_window":False, "closable":True,
+                    "with_header_end":draw_header_end, "auto_resize":False, "draggable":True, 'shadow':False,
                     "show_tint":True, "show_header":True, "with_footer":draw_footer, 'indent_size':5,
                     "disable_scroll":False,
-                    "initial":{"width": 400, "height": 320}},
+                    "initial":{"width": 400, "height": 320, "window_pos": (100, 500)}},
 
             recursive=False
         )

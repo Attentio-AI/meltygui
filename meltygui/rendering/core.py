@@ -258,7 +258,7 @@ def render_func(*args, **o_kwargs):
         if hasattr(input_value, 'id'):
             suffix = f"{suffix}_{str(getattr(input_value, 'id'))}"
         else:
-            suffix = f"{old_suffix}_{suffix}_{unique_name}_{key}{column}"
+            suffix = f"{old_suffix}_{suffix}_{unique_name}_{key}"
 
         if "layer_unique" in kwargs:
             unique = kwargs.pop("layer_unique")
@@ -268,7 +268,7 @@ def render_func(*args, **o_kwargs):
                 unique = ui_id(datatype=type(input_value), suffix=name + unique_name + str(key) + func.__name__)
                 suffix = f"{unique_name}_{func.__name__}_{unique}_{key}"
             else:
-                unique = ui_id(datatype=type(input_value), suffix=suffix + unique_name + column +
+                unique = ui_id(datatype=type(input_value), suffix=suffix + unique_name +
                                                                   name + root_window_name +
                                                                   str(key) + func.__name__, idx=index)
 
@@ -294,12 +294,12 @@ def render_func(*args, **o_kwargs):
 
         tile_id = strhash(str(unique) + str(draw_state.id))
         draw_state._tile_id = tile_id
+
         if _has_imgui and len(Melty.melty_window_stack) > 0:
             draw_state.parent_window = kwargs.get("parent_window", Melty.melty_window_stack[-1])
             draw_state.left_offset, draw_state.top_offset = (
                 imgui.get_cursor_screen_pos()[0] - draw_state.parent_window.abs_left,
                 imgui.get_cursor_screen_pos()[1] - draw_state.parent_window.abs_top)
-
         if closable:
             # Only perform this check on floating windows
             if draw_state._parent is not None and not draw_state._parent.clipped:
@@ -856,7 +856,7 @@ def render_func(*args, **o_kwargs):
                     parent_wrap_top = fixed_size_draw_state.abs_top
                 elif draw_state.clip_rect is not None:
                     clip_size = draw_state.clip_size
-                    clip_rect = draw_state.clip_rect
+                    clip_rect = draw_state.abs_clip_rect
                     if clip_size is not None:
                         parent_wrap_width = clip_size[0]
                         parent_wrap_left = clip_rect[0]
@@ -949,13 +949,13 @@ def render_func(*args, **o_kwargs):
                                                  1] + parent_wrap_top + column_cursor_y + column_parent.header_height))
 
                 draw_state.left_offset, draw_state.top_offset = (
-                    imgui.get_cursor_screen_pos()[0] - draw_state.parent_window.left,
-                    imgui.get_cursor_screen_pos()[1] - draw_state.parent_window.top)
+                    imgui.get_cursor_screen_pos()[0] - draw_state.parent_window.abs_left,
+                    imgui.get_cursor_screen_pos()[1] - draw_state.parent_window.abs_top)
 
                 if not detached:
                     draw_state.left = draw_state.abs_left
                     draw_state.top = draw_state.abs_top
-                Collisions.register(column_parent)
+                # Collisions.check(column_parent)
 
                 Melty.fixed_size_stack.append(draw_state)
                 # Melty.push_clip((parent_wrap_left, parent_wrap_top + column_cursor_y + column_parent.header_height,
@@ -2167,11 +2167,13 @@ def render_func(*args, **o_kwargs):
             if _has_imgui:
                 if closable:
                     Melty.pop_clip()
+
                 if fixed_size:
                     Melty.fixed_size_stack.pop()
 
                 if column is not None and column_parent is not None and draw_state.parent_window is not None:
                     Melty.fixed_size_stack.pop()
+
                 if draw_state._has_popup:
                     is_popup_open = Melty.imgui_popup_open
 

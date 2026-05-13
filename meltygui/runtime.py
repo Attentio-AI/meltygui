@@ -1052,15 +1052,13 @@ class Melty:
         if fix_sized_ds is not None and fix_sized_ds.width is not None and fix_sized_ds.height is not None:
             margin = (len(Melty.bg_stack) + 1) * 2.0
             clip_rect = (
-                fix_sized_ds.left,
-                fix_sized_ds.top,
-                fix_sized_ds.left + fix_sized_ds.width,
-                fix_sized_ds.top + fix_sized_ds.height
+                fix_sized_ds.abs_left,
+                fix_sized_ds.abs_top,
+                fix_sized_ds.abs_left + fix_sized_ds.width,
+                fix_sized_ds.abs_top + fix_sized_ds.height
             )
         else:
             clip_rect = cls.get_clip_rect()
-
-
 
         if clip_rect is None:
             return x,y

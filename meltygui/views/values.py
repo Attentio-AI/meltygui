@@ -284,10 +284,6 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=No
                 if item_meta.view_function is None:
                     item_meta.view_function = draw_collection
 
-                item_func = item_meta.view_function
-            # else:
-
-            item_func = nested_func
 
             item_kwargs = {
                 'return_extras': True,
@@ -477,7 +473,7 @@ def test_columns():
 
 
 @render_func(use_cache=False, show_bg=False, shadow=False, disable_scroll=False, selectable=False, with_header=draw_header)
-def draw_with_modes(input_value, modes, tab_state: TabState = None, draw_state=None):
+def draw_with_modes(input_value, modes, tab_state: TabState = None, draw_state=None, unique=0):
     if not tab_state.selected_tabs:
         tab_state.selected_tabs = [modes[0]]
 
@@ -490,7 +486,7 @@ def draw_with_modes(input_value, modes, tab_state: TabState = None, draw_state=N
     value = input_value
     for idx, mode in enumerate(tab_state.selected_tabs):
 
-        empty(width=0, height=30, column=idx, shadow=False, name=f"empty_{mode}")
+        empty(width=0, height=30, column=idx, shadow=True, name=f"empty_{mode}")
         mode_changed, value = draw_any(input_value, name=f"Mode: {mode}", mode=mode, selectable=False, show_name=False,
                                        auto_resize=True, disable_scroll=False, with_header=None, show_header=False,
                                        indent_size=0,
@@ -570,18 +566,16 @@ some_test_tensor = torch.randn(3, 3)
 @render_func(use_cache=False, show_bg=True, selectable=False, show_tint=True, bg_offset=-1, with_header=draw_header)
 def draw_main(input_value, vis, draw_state=None):
     global test_obj
-    return_val = draw_window(Melty.profiles_results, show_bg=True, name="Profile Results")
-    return_val2 = draw_window(Melty.registered_windows, is_tree=True, show_add_delete=False, return_extras=True,
-                              name="Window Manager",
-                              z_absolute=-1)
     global cst_dict
     global test_code
     from src.lsd.gl_gui.view.mode import Mode
 
+    draw_any(Melty.registered_windows, name="Window Manager", show_bg=True, with_header=draw_header, mode=(Mode.SORT, Mode.WINDOW))
+
+
     changed, value = draw_with_modes(Mode, name="Modes", show_bg=True, mode=(Mode.WINDOW),
                                      modes=(Mode.CODE_UI,
                                             Mode.CODE_PLAIN_TEXT))
-
 
     changed, value = draw_with_modes(draw_header, name="draw_header", show_bg=True, mode=(Mode.WINDOW), modes=(Mode.CODE_UI,
                                                                                                                Mode.CODE_PLAIN_TEXT))
@@ -1165,9 +1159,7 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
 
 
 
-@render_func(is_default_for=ManagedWindow, is_tree=False, show_name=False, use_cache=True, shadow=False,
-             show_bg=False, selectable=False, show_add_delete=False, show_tint=False, wrap=False,
-             with_header=draw_header)
+@render_func(is_default_for=ManagedWindow, is_tree=False, show_name=False, use_cache=True, shadow=False, show_bg=False, selectable=False, show_add_delete=False, show_tint=False, wrap=False, with_header=draw_header)
 def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, mouse_down=False, **kwargs):
     try:
         window_draw_state = input_value.draw_state
@@ -1207,25 +1199,29 @@ def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, 
     if mouse_down:
         window_draw_state.closed = not window_draw_state.closed
 
+    button_height = 31
+    target_spacing = 81
+    target_tint_value = 0.103
+    
     if name == "Window Manager":
         button(f"{name}", color=(0, 0, 0, 0),
-               saturation=1.3, width=130)[0]
+               saturation=1.3, width=130, height=button_height)[0]
         return
 
     if window_draw_state.closed:
         if button(f"{name}", color=window_tint, z_offset=-2, value=0.1, factor=0.95, text_value=0.3,
-                  saturation=1.2, width=draw_state.content_width - 60, height=30)[0]:
+                  saturation=1.2, width=draw_state.content_width - target_spacing, height=button_height)[0]:
             window_draw_state.closed = False
     else:
         if button(f"{name}", saturation=1.5, z_offset=0, color=window_tint, factor=0.6, value=0.2, text_value=1.0,
-                  width=draw_state.content_width - 60, height=30)[0]:
+                  width=draw_state.content_width - target_spacing, height=button_height)[0]:
             window_draw_state.closed = True
 
     imgui.same_line()
 
     target_icon = ""  # Target icon (FontAwesome Unicode)
-    if button(f"{target_icon}", width=22, height=22, color=window_tint, z_offset=-1, value=0.4, factor=0.9,
-              saturation=0.2)[0]:
+    if button(f"{target_icon}##{name}", height=button_height, color=window_tint, z_offset=-2, value=target_tint_value, factor=0.9,
+              saturation=0.2, shadow=False)[0]:
         this_window_right = draw_state.abs_left + draw_state.width
         from_zero_x = window_draw_state.abs_left - window_draw_state.window_pos[0]
         from_zero_y = window_draw_state.abs_top - window_draw_state.window_pos[1]
@@ -1234,20 +1230,22 @@ def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, 
         Melty.cache.invalidate_up_by_obj(input_value)
 
     imgui.set_cursor_screen_pos(start_cursor)
+    
+    live_tint = (0.409, 0.1, 0.1)
 
     if window_draw_state.live:
-        fa_live_icon = "\uf0e7"
-        imgui.text_colored(fa_live_icon, 1.0, 0.0, 0.0)
+        fa_live_icon = ""
+        imgui.text_colored(fa_live_icon, *(live_tint))
         imgui.same_line()
-
-    if imgui.is_item_hovered():
-        imgui.begin_tooltip()
-        draw_state = window_draw_state.to_dict()
-        import json
-        json_str = json.dumps(draw_state, indent=2)
-
-        imgui.text(json_str)
-        imgui.end_tooltip()
+    #
+    # if imgui.is_item_hovered():
+    #     imgui.begin_tooltip()
+    #     draw_state = window_draw_state.to_dict()
+    #     import json
+    #     json_str = json.dumps(draw_state, indent=2)
+    #
+    #     imgui.text(json_str)
+    #     imgui.end_tooltip()
     # debug text
 
 
@@ -1596,7 +1594,7 @@ def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=6.0, bg_offset=
     stroke_width      = 4.0
     # How depth maps to color intensity
     intensity_factor  = 0.042
-    intensity_offset  = -0.339
+    intensity_offset  = -0.336
     
     # Outline color tuning
     outline_base      = 1.773
@@ -1604,7 +1602,7 @@ def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=6.0, bg_offset=
     outline_sat       = {'default': 1.1, 'nested': 1.473}
 
     # Beed color
-    bleed_mix         = {'nested': 0.44, 'default': 0.454}
+    bleed_mix         = {'nested': 0.433, 'default': 0.454}
     bleed_style       = {'value': -0.111, 'alpha': 1.199, 'saturation': 7.045}
     outline_bleed_mix = 0.272
 
@@ -1617,8 +1615,8 @@ def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=6.0, bg_offset=
     }
 
     bg_style = {
-        'value': 0.008, 'saturation': 1.086,
-        'alpha': 0.264, 'max_value': 2.1,
+        'value': -0.004, 'saturation': 1.101,
+        'alpha': 0.504, 'max_value': 2.1,
     }
     
     # ── Helpers ────────────────────────────────────────────────
@@ -1864,6 +1862,28 @@ def draw_str(input_value: str, draw_state, editable=True, alpha=1.0):
     if changed:
         return True, value
     return changed, value
+
+@render_func()
+def sort_dict_alphabetically(input_value):
+    changed = False
+    attr_name = "name"
+    first_item = next(iter(input_value.items()), None)[1]
+    if hasattr(first_item, attr_name):
+        sorted_dict = dict(sorted(input_value.items(), key=lambda item: str(getattr(item[1], attr_name)).lower()))
+        return changed, sorted_dict
+    else:
+        imgui.text("Cannot sort: items do not have 'name' attribute")
+        return False, None
+
+@render_func()
+def unsort_dict_alphabetically(input_value, ref=None, changed=False):
+    if ref is None:
+        imgui.text("Original order not available")
+        return False, None
+    else:
+        # ref is the original dict
+        ref.update(input_value)
+        return changed, ref
 
 @render_func(is_default_for=GeneralParse, show_add_delete=False, show_name=False, shadow=False,
              is_tree=False, use_cache=True, show_bg=False, with_header=draw_header, indent_size=0)
@@ -2295,38 +2315,38 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, *
 
         draw_list.add_rect(rect[0], rect[1], rect[2], rect[3], imgui.get_color_u32_rgba(*color), thickness=1.0, rounding=4)
 
-    if Toggles.debug_context_menu:
-        changed, value = draw_bool(input_value._print_last_invalid, name="Print Invalid", column=0)
-        if changed:
-            input_value._print_last_invalid = value
-
-        if input_value._last_invalidate is not None:
-            if input_value._print_last_invalid:
-                print_stack_trace(frames=input_value._last_invalidate)
-
-        if input_value.explain_convert is not None:
-            draw_str(str(input_value.explain_convert), name="explain_convert", column=0)
-
-        draw_str(f"{str(input_value._kwargs.get('mode', None))}", name="mode", editable=False, column=0)
-        draw_str(f"{str(input_value.content_height)}", name="content_height", editable=False, column=0)
-        draw_str(f"{str(input_value.height)}", name="height", editable=False, column=0)
-        draw_any(input_value._source, name="Height source", editable=False, column=0)
-
-        draw_str(f"{input_value.scroll_visible}", name="scroll_visible", column=0)
-        draw_str(f"{input_value._kwargs.get('disable_scroll', False)}", name="disable_scroll", column=0)
-        draw_str(str(input_value.scroll_offset), name="scroll_offset", column=0)
-        draw_str(f"Clip Rect {str(input_value.clip_rect)}", name="clip_rect", column=0)
-
-        if imgui.is_mouse_hovering_rect(draw_state.abs_left, draw_state.abs_top,
-                                            draw_state.abs_left + draw_state.width,
-                                            draw_state.abs_top + draw_state.height):
-            draw_list = imgui.get_overlay_draw_list()
-            rect = (input_value.abs_left, input_value.abs_top, input_value.abs_left + input_value.width,
-                    input_value.abs_top + input_value.height)
-            draw_overlay_rect(rect, color=(1, 1, 0, 0.5))
-            draw_overlay_rect(input_value.clip_rect, color=(0, 1, 0, 0.5), name="clip")
-
-            draw_debug(input_value.abs_left, input_value.abs_top, "Abs Left/Top", color=(1, 0, 0), size=8)
+    # if Toggles.debug_context_menu:
+    #     changed, value = draw_bool(input_value._print_last_invalid, name="Print Invalid", column=0)
+    #     if changed:
+    #         input_value._print_last_invalid = value
+    #
+    #     if input_value._last_invalidate is not None:
+    #         if input_value._print_last_invalid:
+    #             print_stack_trace(frames=input_value._last_invalidate)
+    #
+    #     if input_value.explain_convert is not None:
+    #         draw_str(str(input_value.explain_convert), name="explain_convert", column=0)
+    #
+    #     draw_str(f"{str(input_value._kwargs.get('mode', None))}", name="mode", editable=False, column=0)
+    #     draw_str(f"{str(input_value.content_height)}", name="content_height", editable=False, column=0)
+    #     draw_str(f"{str(input_value.height)}", name="height", editable=False, column=0)
+    #     draw_any(input_value._source, name="Height source", editable=False, column=0)
+    #
+    #     draw_str(f"{input_value.scroll_visible}", name="scroll_visible", column=0)
+    #     draw_str(f"{input_value._kwargs.get('disable_scroll', False)}", name="disable_scroll", column=0)
+    #     draw_str(str(input_value.scroll_offset), name="scroll_offset", column=0)
+    #     draw_str(f"Clip Rect {str(input_value.clip_rect)}", name="clip_rect", column=0)
+    #
+    #     if imgui.is_mouse_hovering_rect(draw_state.abs_left, draw_state.abs_top,
+    #                                         draw_state.abs_left + draw_state.width,
+    #                                         draw_state.abs_top + draw_state.height):
+    #         draw_list = imgui.get_overlay_draw_list()
+    #         rect = (input_value.abs_left, input_value.abs_top, input_value.abs_left + input_value.width,
+    #                 input_value.abs_top + input_value.height)
+    #         draw_overlay_rect(rect, color=(1, 1, 0, 0.5))
+    #         draw_overlay_rect(input_value.clip_rect, color=(0, 1, 0, 0.5), name="clip")
+    #
+    #         draw_debug(input_value.abs_left, input_value.abs_top, "Abs Left/Top", color=(1, 0, 0), size=8)
 
     draw_str(input_value._kwargs["func"].__name__, name="view_func", column=0)
     from src.lsd.gl_gui.view.mode import Mode

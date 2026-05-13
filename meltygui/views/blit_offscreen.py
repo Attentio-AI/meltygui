@@ -1997,6 +1997,7 @@ class TileCacheMasked:
                 for r in subtree_rects_by_root.get(key, ()):
                     draw_state = self.key_to_draw_state.get(r.key)
                     t = self._tiles.get(r.key)
+
                     size_change = draw_state.size_change if draw_state else False
                     can_use_cached = (t is not None) and (t.mask_tex is not None) and (not size_change)
 
@@ -2035,6 +2036,7 @@ class TileCacheMasked:
 
                     depth_and_layer = r.depth_and_layer
                     if can_use_cached:
+
                         offset = (float(depth_and_layer) - float(t.mask_layer)) * float(INV_65535)
 
                         shadow_margin = r.draw_state.shadow_margin if r.draw_state is not None else 0.0

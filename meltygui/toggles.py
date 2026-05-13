@@ -16,11 +16,11 @@ class Toggles:
     debug_stale_tint = False
     
     #---------- Visual Settings ---------
-    brightness = 0.199
-    contrast = 1.400
+    brightness = 0.218
+    contrast = 1.445
 
     saturation = 0.351
-    debug_context_menu = False
+
     debug_z_depth = False
     filters = True
     show_excluded = True
