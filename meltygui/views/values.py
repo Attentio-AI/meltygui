@@ -474,16 +474,16 @@ def draw_with_modes(input_value, modes, tab_state: TabState = None, draw_state=N
     if not tab_state.selected_tabs:
         tab_state.selected_tabs = [modes[0]]
     imgui.dummy(0, 5)
-    tint_value=0.215
+    tint_value=0.0
     tint_saturation=0.688
-    tab_changed, new_tabs = draw_tab_bar(input_value=tab_state.selected_tabs, tint_value=tint_value,
-                                                tab_height=25,
-                                                tint_saturation=tint_saturation, z_offset=0, name=f"tab_bar{unique}",
-                                         collection=modes, show_bg=False, as_toggles=False)
+    tab_changed, new_tabs = draw_tab_bar(input_value=tab_state.selected_tabs,
+                                                tab_height=22, show_bg=True, bg_offset=1,
+                                                 z_offset=1, name=f"tab_bar{unique}", wrap=True,
+                                         collection=modes, as_toggles=False)
     if tab_changed:
         tab_state.selected_tabs = new_tabs
 
-    imgui.dummy(0, 5)
+    imgui.dummy(0, 2)
     changed = False
     value = input_value
     for idx, mode in enumerate(tab_state.selected_tabs):
@@ -1140,7 +1140,8 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
 
 
 
-@render_func(is_default_for=ManagedWindow, is_tree=False, show_name=False, use_cache=True, shadow=False, show_bg=False, selectable=False, show_add_delete=False, show_tint=False, wrap=False, with_header=draw_header)
+@render_func(is_default_for=ManagedWindow, is_tree=False, show_name=False, use_cache=True, shadow=False, show_bg=False,
+             selectable=False, show_add_delete=False, show_tint=False, wrap=False, with_header=draw_header)
 def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, mouse_down=False, **kwargs):
     try:
         window_draw_state = input_value.draw_state
@@ -1584,7 +1585,7 @@ def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=6.0, bg_offset=
 
     # Beed color
     bleed_mix         = {'nested': 0.433, 'default': 0.454}
-    bleed_style       = {'value': -0.111, 'alpha': 1.199, 'saturation': 7.045}
+    bleed_style       = {'value': -0.111, 'alpha': 1.12, 'saturation': 7.045}
     outline_bleed_mix = 0.272
 
     # Hover offset per interaction state
@@ -1683,13 +1684,13 @@ def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=6.0, bg_offset=
 
     return False, bg_color
 
-@render_func(use_cache=True, shadow=True, selectable=False, show_bg=False, min_width=10, min_height=10, wrap=True)
-def button(input_value="", corner_radius=4, draw_state=None, left_mouse_held=False, left_mouse_down=False,
+@render_func(use_cache=True, shadow=False, selectable=False, show_bg=False, min_width=10, min_height=10, wrap=True)
+def button(input_value="", corner_radius=6, draw_state=None, alpha=1.0, left_mouse_held=False, left_mouse_down=False,
            color=(0.5, 0.5, 0.5), hovered=False, width=None, height=None, style_manager=None,
            factor=1.0, value=0.32, text_value=1.023, saturation=0.8, unique=0):
     if color is not None:
         if left_mouse_held:
-            draw_state.z_offset = -2.0
+            draw_state.z_offset = 0
         else:
             draw_state.z_offset = 3.0
 
@@ -1711,9 +1712,11 @@ def button(input_value="", corner_radius=4, draw_state=None, left_mouse_held=Fal
     height = max(min_size[1], height or 0)
     imgui.dummy(width, height)
     draw_list: _DrawList = imgui.get_window_draw_list()
-    draw_list.add_rect_filled(draw_state.abs_left, draw_state.abs_top, draw_state.abs_left + width,
-                              draw_state.abs_top + height, imgui.get_color_u32_rgba(*mixed_color[:3], 1.0),
-                              rounding=corner_radius)
+
+    if alpha > 0.0:
+        draw_list.add_rect_filled(draw_state.abs_left, draw_state.abs_top, draw_state.abs_left + width,
+                                  draw_state.abs_top + height, imgui.get_color_u32_rgba(*mixed_color[:3], 1.0),
+                                  rounding=corner_radius)
 
 
     draw_list.add_text(draw_state.abs_left + (width - min_size[0]) / 2.0 + 2,
@@ -1876,13 +1879,12 @@ def draw_usage(input_value: UsageRef):
 
     return False, None
 
-@render_func(is_default_for=(Comment), shadow=False,
-             use_cache=True, with_header=None, is_tree=False, tint=(0.2, 0.2, 0.1))
+@render_func(is_default_for=(Comment), shadow=False, use_cache=True, with_header=None, is_tree=False, tint=(0.2, 0.2, 0.1))
 def draw_comment(input_value: Comment, draw_state, cursor_hover=False):
     line_height = imgui.get_text_line_height()
     changed, value = False, input_value
     help_yellow= (0.8, 0.8, 0.3)
-    help_icon = "\u2753"
+    help_icon = "❓"
     draw_list: _DrawList = imgui.get_window_draw_list()
     character_width = imgui.calc_text_size(help_icon)[0]
     # Draw circle background for comment
@@ -1914,9 +1916,7 @@ def draw_comment(input_value: Comment, draw_state, cursor_hover=False):
     return changed, value
 
 
-@render_func(is_default_for=('tint'), has_popup=True, indent_size=0, is_tree=False,
-             show_name=True, selectable=False, wrap=True,
-             use_cache=False, with_header=draw_header)
+@render_func(is_default_for=('tint'), has_popup=True, indent_size=0, is_tree=False, show_name=False, selectable=False, wrap=True, use_cache=False, with_header=None)
 def draw_tuple(input_value: tuple, unique):
     if len(input_value) > 0 and isinstance(input_value[0], (float, int)):
         if len(input_value) == 4:
@@ -2208,8 +2208,10 @@ def draw_enum(input_value: Enum, global_style=None,  style_manager=None, enum_ti
 
 
 
-@render_func(is_tree=False, show_bg=True, shadow=False, use_cache=True, z_offset=0, header_same_line=True, show_add_delete=False, show_name=False, selectable=False, parent_show_add_delete=False, with_header=draw_header)
-def draw_tab_bar(input_value: list, tab_height=20, tint_value=0.01, tint_saturation=0.372, collection=None, as_toggles=False):
+@render_func(is_tree=False, show_bg=True, shadow=False, use_cache=True, z_offset=0, header_same_line=True,
+             indent_size=0,
+             show_add_delete=False, show_name=False, selectable=False, parent_show_add_delete=False, with_header=draw_header)
+def draw_tab_bar(input_value: list, tab_height=20, tint_value=0.202, tint_saturation=0.372, collection=None, as_toggles=False):
     """Tab bar with multi-select via shift-click. input_value is the list of selected items, collection is all available tabs."""
     if collection is None:
         return False, input_value
@@ -2217,23 +2219,24 @@ def draw_tab_bar(input_value: list, tab_height=20, tint_value=0.01, tint_saturat
     io = imgui.get_io()
     changed = False
     selected = list(input_value)
-    imgui.dummy(1,3)
 
-    push_style_var(imgui.STYLE_ITEM_SPACING, (2, 4))
+    imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0] - 6, imgui.get_cursor_screen_pos()[1]))
+
+    push_style_var(imgui.STYLE_ITEM_SPACING, (2, 0))
     for i, tab in enumerate(collection):
         raw = tab.name if hasattr(tab, 'name') else str(tab)
-        label_text = raw.replace("_", " ")
-        label = f"{label_text}##tab{i}"
+        # label_text = raw.replace("_", " ")
+        label = f"{raw}##tab{i}"
         active = tab in selected
-        value = 0.283
+        value = 0.238
 
         if active:
-            selected_value = 0.193
-            clicked = button(label, height=tab_height, value=value + selected_value, draw=True)[0]
+            selected_value = 0.204
+            clicked = button(label, indent_size=0, z_offset=2, height=tab_height, value=value + selected_value, draw=True)[0]
         else:
-            saturation = 0.999
+            saturation = 1.0
             z_offset = -3
-            clicked = button(label, height=tab_height, draw=True, value=value, saturation=saturation, z_offset=z_offset, shadow=False)[0]
+            clicked = button(label, indent_size=0, height=tab_height, draw=True, alpha=0.0, value=value, saturation=saturation, z_offset=z_offset, shadow=False)[0]
 
         if clicked:
             changed = True
@@ -2246,7 +2249,9 @@ def draw_tab_bar(input_value: list, tab_height=20, tint_value=0.01, tint_saturat
                 selected = [tab]
 
         same_line()
-    new_line()
+
+    imgui.dummy(0,0)
+
     pop_style_var(1)
 
     return changed, selected
@@ -2279,9 +2284,10 @@ def draw_debug(x,y, label, color=(1, 0, 0), size=16):
 #     imgui.text(f"Last Modified: {input_value.modified_time}")
 #
 #     return False, None
-@render_func(with_header=draw_header, use_cache=True, disable_scroll=True, is_tree=False)
+@render_func(use_cache=True, disable_scroll=True, show_header=False, header_same_line=False, show_tint=False, show_name=False, is_tree=False)
 def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, tab_state: TabState = None, **kwargs):
     # imgui.text(type(input_value._input_value).__name__)
+    imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0] - 3, imgui.get_cursor_screen_pos()[1] - 20))
     def draw_overlay_rect(rect, color=(1, 0, 0, 0.5), name=None):
 
         draw_list: _DrawList = imgui.get_overlay_draw_list()
@@ -2293,13 +2299,21 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, t
 
         draw_list.add_rect(rect[0], rect[1], rect[2], rect[3], imgui.get_color_u32_rgba(*color), thickness=1.0, rounding=4)
 
-    static_tabs = ["Info", "View Function"]
+    view_func_name = input_value._view_func.__name__
+
+    # Font awesome info icon unicode: \uf05a
+    info_icon_fa = " Info"
+    class_name = type(input_value._raw_input_value).__name__
+    static_tabs = [view_func_name]
     if not isinstance(input_value._raw_input_value, (int, float, str, bool)):
-        static_tabs.append("Class")
+        static_tabs.append(class_name)
+
+    static_tabs.append(info_icon_fa)
     if not tab_state.selected_tabs:
         tab_state.selected_tabs = [static_tabs[0]]
 
-    tab_changed, new_tabs = draw_tab_bar(tab_state.selected_tabs, wrap=True, tab_height=40, tint_value=0.4, z_offset=1, bg_offset=2, show_bg=True, name=f"tab_bar",
+    tab_changed, new_tabs = draw_tab_bar(tab_state.selected_tabs, wrap=True, tab_height=30, tint_value=0.7,
+                                         bg_offset=2, show_bg=True, name=f"tab_bar", z_offset=1,
                                          collection=static_tabs, as_toggles=False)
     if tab_changed:
         tab_state.selected_tabs = new_tabs
@@ -2307,10 +2321,11 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, t
     for t_idx, static_tab in enumerate(tab_state.selected_tabs):
         from src.lsd.gl_gui.view.mode import Mode
 
-        if static_tab == "Info":
+        if static_tab == info_icon_fa:
             text(f"{type(input_value._raw_input_value).__name__}", name="type", column=t_idx, editable=False)
+            text(f"{input_value._view_func.__name__}", show_bg=True, wrap=False, name="Rendered by", column=t_idx, editable=False)
 
-        if static_tab == "View Function":
+        if static_tab == view_func_name:
             view_func = input_value._view_func
             # Draw view function
             if view_func is not None:
@@ -2323,7 +2338,7 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, t
             else:
                 draw_str("No view function specified", name="View Function", column=t_idx, editable=False)
 
-        if static_tab == "Class":
+        if static_tab == class_name:
             # Draw class
             # Check if primitive type
             cls_change, new_cls = draw_with_modes(type(input_value._raw_input_value), column=t_idx,

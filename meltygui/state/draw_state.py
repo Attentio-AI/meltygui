@@ -399,7 +399,7 @@ class DrawState(DictConversion):
         self._hover_eligible_cache = {}  # path, frame
         self._tile_params = {}
         self._load_pending = False
-        self._save_pending = False
+        self._save_pending = None
 
         self.explain_convert = None
 
@@ -468,7 +468,7 @@ class DrawState(DictConversion):
         if new_bbox == self._bvh_bbox:
             return
         old_bbox = self._bvh_bbox
-        self._bvh_bbox = new_bbox
+        self._bvh_bbox = None
 
         if self._bvh_id is None:
             if new_bbox is not None and self.clipped:
@@ -635,7 +635,7 @@ class DrawState(DictConversion):
         return self.last_seen is not None and Melty.frame_count - self.last_seen < debounce
 
     def init_cst_state(self, node, module_id: str):
-        self.cst = CSTDrawBits()
+        self.cst = None
         self.cst.path_key = Melty.current_path()
         self.cst.module_id = module_id
         self.cst.root_gen = Melty.current_gen(module_id)

@@ -599,6 +599,7 @@ def render_func(*args, **o_kwargs):
                 kwargs.setdefault(key, default_value)
 
             kwargs = Melty.global_attrs | kwargs
+            kwargs = kwargs | meta.__dict__
             set_default("input_value", input_value)
             set_default("draw_state", draw_state)
             set_default("name", name)
@@ -614,6 +615,8 @@ def render_func(*args, **o_kwargs):
             kwargs = unique_events | kwargs
             ##############################################
 
+            if input_value.__class__.__name__ == "Lora":
+                pass
             kwargs = meta.__dict__ | kwargs
             for param in wanted_params:
                 if param not in kwargs and param != "kwargs" and param != 'args' and param != 'o_kwargs' and param != 'next_kwargs':
@@ -1644,7 +1647,7 @@ def render_func(*args, **o_kwargs):
                                                                    alpha=1.0)
                         from src.lsd.gl_gui.view.core_views.new_core_view import draw_window
 
-                        returned_val = draw_context_menu(input_value=draw_state, mode=Mode.WINDOW, func=func,
+                        returned_val = draw_context_menu(input_value=draw_state, mode=Mode.WINDOW_NO_HEADER, func=func,
                                                          tint=mixed_color, show_tint=False, show_add_delete=False,
                                                          min_width=100, min_height=100, disable_scroll=True,
                                                          persistent=False, anchor=Anchor.BOTTOM_LEFT,

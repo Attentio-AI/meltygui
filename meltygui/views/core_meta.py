@@ -10,7 +10,6 @@ class Meta:
 
     @staticmethod
     def get_child_meta(cls, field_name, value=None):
-
         child_meta = getattr(cls, f"{field_name}_meta", None)
         value_type = type(value)
         if cls is not None:
@@ -51,7 +50,7 @@ class Meta:
         self.view_function = None
         self.is_meta = True
 
-        # self.__dict__.update(kwargs)
+        self.__dict__.update(kwargs)
 
     @classmethod
     def get_default(cls, default_value=None):

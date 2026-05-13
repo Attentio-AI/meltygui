@@ -55,8 +55,6 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     sat_depth_factor  = -0.004
     sat_depth_offset  = -1.773
 
-
-
     spinner_icon_0 = ""
     spinner_icon_1 = ""
 
@@ -189,7 +187,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     from src.lsd.gl_gui.view.core_views.new_core_view import draw_tuple
 
     # ── Tint widget ────────────────────────────────────────────
-    if hasattr(input_value, "tint") and input_value.tint is not None:
+    if hasattr(input_value, "tint") and input_value.tint is not None and show_tint:
         draw_state._has_popup = True
         tint_changed, tint_value = draw_tuple(input_value.tint, show_name=False, show_header=False)
         if tint_changed:
@@ -265,7 +263,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
         same_line(spacing=3)
 
-    if draw_state.closable:
+    if draw_state.closable and show_tint:
         spinner_color = imgui.get_color_u32_rgba(1, 1, 1, 0.1)
         draw_list.add_text(imgui.get_cursor_screen_pos()[0] - icon_width + 10,
                            imgui.get_cursor_screen_pos()[1], spinner_color, spinner_icon)
