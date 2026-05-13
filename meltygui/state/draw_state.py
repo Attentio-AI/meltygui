@@ -280,7 +280,7 @@ class DrawState(DictConversion):
         self.imgui_is_toggled_open = False
 
         self._previous_hash = None
-        self.tint = (0,0,0)
+        self.tint = (0.485, 0.61, 0.76)
         self.current_tint = None
 
         self.unique = None  # stable UI ID
@@ -363,7 +363,9 @@ class DrawState(DictConversion):
         ### Columns
         self.final_max_column = 0
         self._current_max_column = 0
-        self._column_cursor = defaultdict(lambda: [0, 0])  # column -> (x, y)
+        self._column_cursor = defaultdict(lambda: [0, 0])
+        self._inner_cursor = 0 # column -> (x, y)
+        self._columns_top = None
         self._max_column_height = 0
         ### End Columns
         self._is_nested = False
@@ -482,6 +484,13 @@ class DrawState(DictConversion):
         self._tile_params['clip_rect'] = copy(self.clip_rect)
 
         return self._tile_params
+
+    # @property
+    # def inner_cursor(self):
+    #     if self._columns_top is None:
+    #         self._columns_top = imgui.get_cursor_pos()[1]
+    #
+    #     return self._columns_top - self.abs_top
 
     #
     # def __getattr__(self, name):

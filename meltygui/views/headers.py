@@ -195,7 +195,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         if tint_changed:
             input_value.tint = tint_value
         same_line()
-    elif show_tint:
+    elif show_tint and draw_state.tint is not None:
         draw_state._has_popup = True
         tint_changed, tint_value = draw_tuple(draw_state.tint, show_name=False, show_header=False)
         if tint_changed:

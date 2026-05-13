@@ -31,6 +31,7 @@ from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment, Gener
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
+from src.lsd.gl_gui.view.core_views.blit_offscreen_debug_renderers import draw_blit_debug
 from src.lsd.gl_gui.view.core_views.codec_register import registry as FILE_CODECS
 from src.lsd.gl_gui.view.core_views.core_meta import Meta
 from src.lsd.gl_gui.view.core_views.core_render import render_func
@@ -472,22 +473,22 @@ def test_columns():
         draw_float(0.4, name=f"float_{i}", column=2)
 
 
-@render_func(use_cache=False, show_bg=False, shadow=False, disable_scroll=False, selectable=False, with_header=draw_header)
+@render_func(use_cache=False, show_bg=False, shadow=False, disable_scroll=True, selectable=False)
 def draw_with_modes(input_value, modes, tab_state: TabState = None, draw_state=None, unique=0):
     if not tab_state.selected_tabs:
         tab_state.selected_tabs = [modes[0]]
+    imgui.dummy(0, 5)
 
-    tab_changed, new_tabs = draw_tab_bar(tab_state.selected_tabs, z_offset=0, name="tab_bar", collection=modes)
+    tab_changed, new_tabs = draw_tab_bar(tab_state.selected_tabs, z_offset=0, name=f"tab_bar{unique}",
+                                         collection=modes, as_toggles=False)
     if tab_changed:
         tab_state.selected_tabs = new_tabs
 
-
+    imgui.dummy(0, 5)
     changed = False
     value = input_value
     for idx, mode in enumerate(tab_state.selected_tabs):
-
-        empty(width=0, height=30, column=idx, shadow=True, name=f"empty_{mode}")
-        mode_changed, value = draw_any(input_value, name=f"Mode: {mode}", mode=mode, selectable=False, show_name=False,
+        mode_changed, value = draw_any(input_value, name=f"Mode: {mode} {unique}", mode=mode, selectable=False, show_name=False,
                                        auto_resize=True, disable_scroll=False, with_header=None, show_header=False,
                                        indent_size=0,
                                        show_bg=False, use_cache=False, shadow=False, column=idx)
@@ -574,6 +575,8 @@ def draw_main(input_value, vis, draw_state=None):
              mode=(Mode.SORT, Mode.WINDOW))
 
 
+    changed, value = draw_blit_debug(None, name="Blit Offscreen Debug", mode=(Mode.WINDOW))
+
     changed, value = draw_with_modes(Mode, name="Modes", show_bg=True, mode=(Mode.WINDOW),
                                      modes=(Mode.CODE_UI,
                                             Mode.CODE_PLAIN_TEXT))
@@ -597,20 +600,6 @@ def draw_main(input_value, vis, draw_state=None):
 
     changed, value = draw_with_modes(input_value=toggles, name="Toggles",
                                      show_bg=True, mode=(Mode.WINDOW), modes=[Mode.CODE_PLAIN_TEXT, Mode.CODE_UI])
-    # chain = [
-    #     module_to_address,
-    #     (address_to_general_parse, {'load':True}),
-    #     draw_collection,
-    #     (general_parse_to_address, {'save':False, 'recompile':False}),
-    #     address_to_module,
-    # ]
-    # run_chain(toggles, name="Chain Debug", chain=chain, mode=Mode.WINDOW)
-    changed, value = draw_any(len(Melty.root_draw_states), name="root_draw_states", mode=Mode.WINDOW)
-    # for idx, ds_list in Melty.root_draw_states.items():
-    #     for ds in ds_list:
-    #         overlay: _DrawList = imgui.get_overlay_draw_list()
-    #         if ds.top is not None and ds.left is not None and ds.width is not None and ds.height is not None:
-    #             overlay.add_rect_filled(ds.left, ds.top, ds.left + ds.width, ds.top + ds.height, imgui.get_color_u32_rgba(1, 0, 0, 0.5))
 
     from src.lsd.gl_gui.model.app_model import Lora
     changed, value = draw_with_modes(input_value=Lora, name="lora class",
@@ -744,8 +733,6 @@ name_edits = {}
 code_export_str = "Test"
 
 filesystem_proxy = FolderProxy("/home/lukas/test_folder", text_mode=True)
-
-
 
 # Main draw function, called by the GUI framework
 
@@ -1944,7 +1931,7 @@ def draw_comment(input_value: Comment, draw_state, cursor_hover=False):
 
 
 @render_func(is_default_for=('tint'), has_popup=True, indent_size=0, is_tree=False,
-             show_name=True, selectable=False,
+             show_name=True, selectable=False, wrap=True,
              use_cache=False, with_header=draw_header)
 def draw_tuple(input_value: tuple, unique):
     if len(input_value) > 0 and isinstance(input_value[0], (float, int)):
@@ -2022,7 +2009,8 @@ def draw_float_ctx(input_value):
 
 
 
-@render_func(is_default_for=float, use_cache=False, shadow=False, window_pos=(0,0), show_bg=False, wrap=False, is_tree=False, with_header=draw_header, with_header_end=draw_header_end)
+@render_func(is_default_for=float, use_cache=False, shadow=False,
+             show_bg=False, wrap=False, with_header=draw_header, with_header_end=draw_header_end)
 def draw_float(input_value: float, draw_state, min_value=-100.0, max_value=100.0, speed=0.001):
     imgui.set_next_item_width(min(600, max(30, draw_state.content_width)))
     changed, value = imgui.drag_float("", input_value,
@@ -2034,6 +2022,8 @@ def draw_float(input_value: float, draw_state, min_value=-100.0, max_value=100.0
     
     if changed:
         return True, value
+
+    return False, None
 
 @render_func(is_default_for=(Parameter), wraps=render_func, with_header=draw_header)
 def draw_parameter(input_value):
@@ -2238,7 +2228,7 @@ def draw_enum(input_value: Enum, global_style=None,  style_manager=None, enum_ti
 @render_func(is_tree=False, show_bg=False, shadow=False, use_cache=True, z_offset=0,
              header_same_line=True, show_add_delete=False, show_name=False, selectable=False,
              parent_show_add_delete=False, with_header=draw_header)
-def draw_tab_bar(input_value: list, collection=None, global_style=None, style_manager=None, tab_tint=(0.3, 0.3, 0.3)):
+def draw_tab_bar(input_value: list, collection=None, as_toggles=False):
     """Tab bar with multi-select via shift-click. input_value is the list of selected items, collection is all available tabs."""
     if collection is None:
         return False, input_value
@@ -2261,7 +2251,7 @@ def draw_tab_bar(input_value: list, collection=None, global_style=None, style_ma
 
         if clicked:
             changed = True
-            if io.key_shift:
+            if io.key_shift or as_toggles:
                 if active:
                     selected.remove(tab)
                 else:

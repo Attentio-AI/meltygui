@@ -217,9 +217,8 @@ def render_func(*args, **o_kwargs):
             Melty.channels_split = True
 
         old_convert_path = kwargs.get("convert_out", None) is not None or kwargs.get("convert_in", None) is not None
-
         if name == "" and is_root:
-            kwargs["name"] = str(len(melty_state_registry)) + "root"
+            kwargs["name"] = "Unnamed" + func.__name__ + input_value.__class__.__name__
             name = kwargs["name"]
 
         name_func = kwargs.get("name_func", None)
@@ -275,6 +274,9 @@ def render_func(*args, **o_kwargs):
         draw_state: DrawState = kwargs.get("draw_state", get_draw_state(unique))
         closable = kwargs.get("closable", False)
         detached = kwargs.get("detached", False)
+
+        if closable:
+            kwargs['use_cache'] = True
         start_detach = False
         if detached:
             Melty.detached = True
@@ -435,9 +437,8 @@ def render_func(*args, **o_kwargs):
 
                 if closable and len(Melty.melty_window_stack) > 0:
                     draw_state._is_nested = True
-
                     parent_ds = draw_state._parent
-                    if draw_state not in Melty.root_draw_states[parent_ds.id]:
+                    if draw_state not in set(Melty.root_draw_states[parent_ds.id]):
                         Melty.root_draw_states[parent_ds.id].append(draw_state)
                         layer = layer + (len(Melty.root_draw_states[parent_ds.id]) * 2)
                         Melty.layers[min(layer, len(Melty.layers) - 1)].append(draw_state)
@@ -513,7 +514,7 @@ def render_func(*args, **o_kwargs):
                     draw_state.abs_left, draw_state.abs_top, draw_state.width, draw_state.height)
             else:
                 draw_state._collapsed_rect = (
-                    draw_state.abs_left, draw_state.abs_top, draw_state.width, draw_state.height)
+                    draw_state.abs_left, draw_state.abs_top, draw_state.width, draw_state.header_height)
 
             if draw_state.expanded:
                 # Restore rect
@@ -844,7 +845,7 @@ def render_func(*args, **o_kwargs):
 
             if detached:
                 parent_wrap_width, parent_wrap_height = draw_state.clip_size
-                parent_wrap_left, parent_wrap_top = draw_state.clip_rect[0], draw_state.clip_rect[1]
+                parent_wrap_left, parent_wrap_top = draw_state.abs_clip_rect[0], draw_state.abs_clip_rect[1]
                 header_width = draw_state.header_width + draw_state.header_end_width
             else:
                 header_width = draw_state.header_width + draw_state.header_end_width
@@ -868,8 +869,8 @@ def render_func(*args, **o_kwargs):
                         parent_wrap_top = 0
                         parent_wrap_height = imgui.get_io().display_size[1]
                 else:
-                    clip_size = Melty.get_clip_size()
-                    clip_rect = Melty.get_clip_rect()
+                    clip_size = draw_state.clip_size
+                    clip_rect = draw_state.abs_clip_rect
                     if clip_size is not None:
                         parent_wrap_width = clip_size[0]
                         parent_wrap_left = clip_rect[0]
@@ -881,7 +882,7 @@ def render_func(*args, **o_kwargs):
                         parent_wrap_top = 0
                         parent_wrap_height = imgui.get_io().display_size[1]
 
-            column_parent = draw_state._parent
+            column_parent = draw_state._parent if len(Melty.fixed_size_stack) > 1 else draw_state.parent_window
 
             draw_state.final_max_column = draw_state._current_max_column
 
@@ -891,10 +892,15 @@ def render_func(*args, **o_kwargs):
             else:
                 column = kwargs.get("column", None)
 
+            draw_state._columns_top = None
+            if column is not None and column_parent._columns_top is None:
+                column_parent._columns_top = imgui.get_cursor_screen_pos()[1] - column_parent.abs_top
+
             draw_state._column_cursor = defaultdict(lambda: [0, 0])  # column -> (x, y)
             x_offset = draw_state.abs_left - parent_wrap_left
             indent_x = kwargs.get("indent_size", 0)
-
+            # if column_parent._current_max_column == 0:
+            #     column_parent._column_cursor = imgui.get_cursor_screen_pos()[1]
 
             if column is not None and column_parent is not None:
                 column_parent._current_max_column = max(column_parent._current_max_column, column)
@@ -908,6 +914,13 @@ def render_func(*args, **o_kwargs):
                 if (draw_state.auto_resize and not closable and not
                 Melty.is_wrapped() and passed_width is None):
                     draw_state.width = available_width
+
+            if column is not None and column_parent is not None:
+                max_height = column_parent.clip_size[1] - column_parent._columns_top
+                if not closable:
+                    draw_state.height = snap_int(min(draw_state.height, max_height))
+                    draw_state._source["height"] = "column not closable, item_rect[1]"
+
 
             single_line_avail = available_width - header_width - 5
             header_same_line = kwargs.get("header_same_line", False)
@@ -943,10 +956,10 @@ def render_func(*args, **o_kwargs):
             ################# Columns
             column_cursor_y = imgui.get_cursor_screen_pos()[1]
             if column is not None and column_parent is not None and draw_state.parent_window is not None:
-                column_cursor_y = column_parent._column_cursor[column][1]
+                column_cursor_y = column_parent._column_cursor[column][1] + column_parent._columns_top
                 imgui.set_cursor_screen_pos((parent_wrap_left + indent_x,
                                              -column_parent.scroll_offset[
-                                                 1] + parent_wrap_top + column_cursor_y + column_parent.header_height))
+                                                 1] + parent_wrap_top + column_cursor_y))
 
                 draw_state.left_offset, draw_state.top_offset = (
                     imgui.get_cursor_screen_pos()[0] - draw_state.parent_window.abs_left,
@@ -1630,7 +1643,7 @@ def render_func(*args, **o_kwargs):
 
                         returned_val = draw_context_menu(input_value=draw_state, mode=Mode.WINDOW, func=func,
                                                          tint=mixed_color, show_tint=False, show_add_delete=False,
-                                                         min_width=100, min_height=100,
+                                                         min_width=100, min_height=100, disable_scroll=True,
                                                          persistent=False, anchor=Anchor.BOTTOM_LEFT,
                                                          with_footer=None, use_cache=True,
                                                          name=f"{name}##context_menu_{unique}", auto_resize=False,
@@ -2199,6 +2212,8 @@ def render_func(*args, **o_kwargs):
                 draw_state.height = 30
                 draw_state._source["height"] = "min 30"
 
+
+
             if auto_resize and kwargs.get("fill_height", None) is None:
                 if kwargs.get("wrap", False):
                     if passed_width is None:
@@ -2207,8 +2222,8 @@ def render_func(*args, **o_kwargs):
 
                 if passed_height is None:
                     max_height = kwargs.get("max_height", 1e9)
-                    if column is not None and column_parent is not None:
-                        max_height = parent_wrap_height - column_parent._column_cursor[column][1]
+                    # if column is not None and column_parent is not None:
+                    #     max_height = column_parent.content_size[1] - column_parent._columns_top
 
                     if not closable:
                         draw_state.height = snap_int(min(item_rect[1], max_height))
@@ -2257,6 +2272,10 @@ def render_func(*args, **o_kwargs):
             if column is not None and column_parent is not None:
                 column_parent._column_cursor[column][
                     1] += draw_state.height  # This will lag behind a frame, but keeping code tidy instead
+            # elif column is None and column_parent is not None and column_parent._current_max_column == 0:
+            #     draw_state_bottom = draw_state.abs_top + draw_state.height
+            #     column_parent._inner_cursor = draw_state_bottom - column_parent.abs_top  # This will lag behind a frame, but keeping code tidy instead
+
             # if column_parent is not None:
             #     for i in range(column_parent.final_max_column):
             #         column_parent._column_cursor[i][1] += draw_state.height

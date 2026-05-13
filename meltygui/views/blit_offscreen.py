@@ -35,6 +35,13 @@ This ensures:
 
 INV_65535 = 1.0 / 65535.0
 
+# A tile backs a view with an offscreen texture sized to the view's bounds. Very
+# large views (long scroll regions, oversized layouts, etc.) would allocate
+# enormous textures (an 8000x8000 RGBA8 colour buffer alone is 256 MB, plus a
+# mask texture and a depth/stencil renderbuffer). When a view exceeds this size
+# on either axis it gracefully falls back to uncached rendering instead.
+MAX_TILE_DIM = 8000
+
 
 # ==============================
 # Small structs
@@ -640,6 +647,23 @@ class TileCacheMasked:
         if t is None:
             return True
         return t.last_clean_frame < t.last_invalidated_frame
+
+    @staticmethod
+    def _oversized(size: Optional[Tuple[int, int]]) -> bool:
+        """True if a view this size is too large to back with an offscreen tile."""
+        return size is not None and (size[0] > MAX_TILE_DIM or size[1] > MAX_TILE_DIM)
+
+    def _discard_tile(self, key: str) -> None:
+        """Drop a tile and free its GL resources (e.g. a view grew too large to cache)."""
+        t = self._tiles.pop(key, None)
+        if t is None:
+            return
+        gl.glDeleteFramebuffers(1, [t.fbo])
+        gl.glDeleteTextures(1, [t.tex])
+        if t.mask_tex:
+            gl.glDeleteTextures(1, [t.mask_tex])
+        if t.rbo:
+            gl.glDeleteRenderbuffers(1, [t.rbo])
 
     def set_enabled(self, on: bool) -> None:
         if on and not self.enabled:
@@ -1314,7 +1338,7 @@ class TileCacheMasked:
             )
             return False
 
-        if size is not None and self.enabled and draw_state.frame_count >= 2:
+        if size is not None and self.enabled and draw_state.frame_count >= 2 and not self._oversized(size):
             t = self._tiles.get(rkey)
             use_image = (t and has_area
                          and (t.size == (size[0], size[1]))
@@ -1449,6 +1473,11 @@ class TileCacheMasked:
             return
 
         if ctx.size and ctx.size[0] > 0 and ctx.size[1] > 0:
+            if self._oversized(ctx.size):
+                # Too large to back with an offscreen texture: drop any stale
+                # tile and render this view uncached from here on.
+                self._discard_tile(ctx.key)
+                return
             t = self._tiles.get(ctx.key)
             if self._dummy_vao is None:
                 vao = gl.glGenVertexArrays(1)

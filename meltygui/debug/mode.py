@@ -19,7 +19,7 @@ from src.lsd.gl_gui.view.core_conversion.libcst_conversion import GeneralParse, 
 from src.lsd.gl_gui.view.core_views.headers import draw_footer, draw_header_end, draw_header
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
 from src.lsd.gl_gui.view.core_views.new_core_view import draw_collection, draw_comment, draw_search_results, \
-    draw_general_parse, draw_any, sort_dict_alphabetically, unsort_dict_alphabetically
+    draw_general_parse, sort_dict_alphabetically, unsort_dict_alphabetically
 from src.lsd.gl_gui.view.core_views.text_editor import draw_text
 
 
@@ -28,6 +28,7 @@ class ModeOverrides:
     kwargs: Optional[dict] = None
     func: Optional[callable] = None
     recursive:Optional[bool] = True
+
 
 class Mode(Enum):
 
@@ -71,12 +72,13 @@ class Mode(Enum):
         )
     }
 
+
     WINDOW = {
         Any: ModeOverrides(
             kwargs={"show_bg":True, "selectable":False, "use_cache":True, "melty_window":False, "closable":True,
-                    "with_header_end":draw_header_end, "auto_resize":False, "draggable":True, 'shadow':False,
+                    "with_header_end":draw_header_end, "auto_resize":False, "draggable":True, 'shadow':True,
                     "show_tint":True, "show_header":True, "with_footer":draw_footer, 'indent_size':5,
-                    "disable_scroll":False, "show_add_delete":False,
+                   "show_add_delete":False, "with_header":draw_header,
                     "initial":{"width": 400, "height": 320, "window_pos": (100, 500)}},
 
             recursive=False
@@ -172,6 +174,7 @@ class Mode(Enum):
         ),
 
     }
+
 
     DEFAULT = {
         Any: ModeOverrides(
@@ -273,3 +276,8 @@ class Mode(Enum):
     #         recursive=True,
     #     ),
     # }
+
+
+class ModeGroup:
+    CODE = (Mode.CODE_UI, Mode.CODE_PLAIN_TEXT)
+
