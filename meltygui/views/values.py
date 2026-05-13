@@ -442,8 +442,7 @@ def draw_property(input_value:property, draw_state, **kwargs):
     # value = input_value.fget(input_value)
     # draw_any(value, name="value", show_bg=True, draw_state=draw_state)
 
-@render_func(is_default_for=(type), show_bg=True, use_cache=False, shadow=False, tint=(0.01406166236847639, 0.2259240746498108, 0.30232560634613037),
-             with_header=draw_header, with_footer=draw_footer)
+@render_func(is_default_for=(type), show_bg=True, use_cache=False, shadow=False, tint=(0.01406166236847639, 0.2259240746498108, 0.30232560634613037), with_header=draw_header, with_footer=draw_footer)
 def draw_type(input_value:type, draw_state, **kwargs):
 
     draw_collection(vars(input_value), name="vars", shadow=False, use_cache=False, show_bg=True, show_excluded=True)
@@ -571,15 +570,18 @@ def draw_main(input_value, vis, draw_state=None):
     global test_code
     from src.lsd.gl_gui.view.mode import Mode
 
+
     draw_any(Melty.registered_windows, name="Window Manager", show_name=False, with_header=draw_header,
              mode=(Mode.SORT, Mode.WINDOW))
 
+    for window_cls, kwargs in Melty.annotated_window_classes.values():
+        kwargs.setdefault('mode', Mode.WINDOW)
+        kwargs.setdefault('show_bg', True)
+        kwargs.setdefault('modes', (Mode.CODE_UI, Mode.CODE_PLAIN_TEXT))
+        kwargs.setdefault('name', f"{window_cls.__name__} Window")
+        draw_with_modes(window_cls, **kwargs)
 
     changed, value = draw_blit_debug(None, name="Blit Offscreen Debug", mode=(Mode.WINDOW))
-
-    changed, value = draw_with_modes(Mode, name="Modes", show_bg=True, mode=(Mode.WINDOW),
-                                     modes=(Mode.CODE_UI,
-                                            Mode.CODE_PLAIN_TEXT))
 
     changed, value = draw_with_modes(draw_header, name="draw_header", show_bg=True, mode=(Mode.WINDOW), modes=(Mode.CODE_UI,
                                                                                                                Mode.CODE_PLAIN_TEXT))
@@ -596,15 +598,6 @@ def draw_main(input_value, vis, draw_state=None):
                                      show_bg=True, mode=(Mode.WINDOW), modes=[Mode.CODE_PLAIN_TEXT, Mode.CODE_UI])
 
     draw_tensor(some_test_tensor, name="Tensor", mode=Mode.WINDOW)
-
-
-    changed, value = draw_with_modes(input_value=toggles, name="Toggles",
-                                     show_bg=True, mode=(Mode.WINDOW), modes=[Mode.CODE_PLAIN_TEXT, Mode.CODE_UI])
-
-    from src.lsd.gl_gui.model.app_model import Lora
-    changed, value = draw_with_modes(input_value=Lora, name="lora class",
-                                     show_bg=True, mode=(Mode.WINDOW), modes=[Mode.CODE_PLAIN_TEXT, Mode.CODE_UI])
-
 
     some_path = Path("/home/lukas/test_folder/test_list.txt")
     changed, value = draw_any(some_path, name="test_path_render", mode=(Mode.FILE_META, Mode.WINDOW))

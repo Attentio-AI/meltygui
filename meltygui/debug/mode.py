@@ -16,6 +16,7 @@ from src.lsd.gl_gui.view.core_conversion.file_converters import path_to_dict, by
     rf_dict_to_path, rf_str_to_bytes, rf_dict_to_str, load_file_bytes
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import GeneralParse, Conditional, Comment, \
     cst_to_dict, dict_to_cst, cst_module_to_str, str_to_cst_module
+from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.core_views.headers import draw_footer, draw_header_end, draw_header
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
 from src.lsd.gl_gui.view.core_views.new_core_view import draw_collection, draw_comment, draw_search_results, \
@@ -29,7 +30,7 @@ class ModeOverrides:
     func: Optional[callable] = None
     recursive:Optional[bool] = True
 
-
+@window
 class Mode(Enum):
 
     def get_config_for(self, input_value=None, the_type=None):
@@ -78,7 +79,7 @@ class Mode(Enum):
             kwargs={"show_bg":True, "selectable":False, "use_cache":True, "melty_window":False, "closable":True,
                     "with_header_end":draw_header_end, "auto_resize":False, "draggable":True, 'shadow':True,
                     "show_tint":True, "show_header":True, "with_footer":draw_footer, 'indent_size':5,
-                   "show_add_delete":False, "with_header":draw_header,
+                   "show_add_delete":False, "with_header":draw_header, "min_width": 200, "min_height": 60,
                     "initial":{"width": 400, "height": 320, "window_pos": (100, 500)}},
 
             recursive=False
@@ -97,36 +98,9 @@ class Mode(Enum):
         )
     }
 
-    CODE_DICT_STR = {
-        # cst.Module: ModeOverrides(
-        #     kwargs={"convert_in": [cst_to_dict, rf_dict_to_str],
-        #             "convert_out": [str_to_cst_module],
-        #             },
-        #     recursive=True,
-        #     func=draw_text
-        # ),
-        #
-        # types.FunctionType: ModeOverrides(
-        #     kwargs={"convert_in": [fn_to_cst],
-        #             "convert_out": [cst_to_fn],
-        #
-        #             },
-        #     recursive=True,
-        # ),
-
-        # types.ModuleType: ModeOverrides(
-        #     kwargs={"convert_in": [mod_to_cst],
-        #             "convert_out": [cst_to_mod],
-        #             },
-        #
-        #     recursive=True
-        # ),
-    }
-
     auto_load = True
     auto_save = False
     auto_recompile = False
-
 
     CODE_UI = {
         types.FunctionType: ModeOverrides(

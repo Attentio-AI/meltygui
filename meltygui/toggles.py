@@ -1,9 +1,12 @@
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
+from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
+
+
 class Counters:
     # Nested window
     nested_window_count = 16
 
-
+@window
 class Toggles:
     # ---------- Invalidation Settings -----
     invalidate_stack_trace = False
@@ -16,7 +19,7 @@ class Toggles:
     debug_stale_tint = False
     
     #---------- Visual Settings ---------
-    brightness = 0.218
+    brightness = 0.22
     contrast = 1.445
 
     saturation = 0.351

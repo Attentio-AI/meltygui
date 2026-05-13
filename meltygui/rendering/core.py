@@ -29,6 +29,7 @@ from src.lsd.gl_gui.melty import Melty, apply_collection_action, MeltyState
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
 from src.lsd.gl_gui.view.core_views.core_meta import Meta
+from src.lsd.gl_gui.view.core_views.core_undo import handle_undo
 
 melty_state_registry = {}
 static_melty = MeltyState()
@@ -2387,6 +2388,9 @@ def render_func(*args, **o_kwargs):
             if child_changed:
                 draw_state._pending = False
 
+
+            handle_undo(child_changed, return_value, draw_state)
+
             # Normal return path
             if kwargs.get("convert_out", None) is not None or kwargs.get("convert_in", None) is not None:
                 if return_extras:
@@ -2530,7 +2534,7 @@ def render_func(*args, **o_kwargs):
                     Melty.seen_values.append(id(input_value))
                 #################################################################################################
 
-                if kwargs.get("background", False):
+                if kwargs.get("background", False) and draw_state.frame_count > 3:
                     # Run the full wrapper with _converter_mode=True in the
                     # background call. This gives the func all the render_func
                     # machinery (draw_state, caching, parameter injection) but

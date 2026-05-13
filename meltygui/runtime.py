@@ -18,6 +18,7 @@ from src.lsd.gl_gui.background_v2 import Background
 from src.lsd.gl_gui.collection_action import CollectionAction
 from src.lsd.gl_gui.collision import Collisions
 from src.lsd.gl_gui.toggles import Toggles, Counters
+from src.lsd.gl_gui.view.core_views.decoration.window_decoration import set_window_registrar
 from src.lsd.gl_gui.view.core_views.monitor import Monitor
 from src.shader_library.shader_manager.texture_manager import TextureManager
 from src.shader_library.shader_manager.filter import Filter
@@ -223,6 +224,7 @@ class Melty:
     glfw_window = None
     clip_stack = []
     clip_stack_holder = {}
+    annotated_window_classes = {}
     registered_windows = defaultdict(lambda: ManagedWindow())
     scroll_stack = []
     tile_id_stack = []
@@ -340,6 +342,7 @@ class Melty:
     _bvh = rtree_index.Index()
     _bvh_next_id = 0
     _bvh_id_to_ds = {}
+
 
     @classmethod
     def bvh_register(cls, draw_state):
@@ -1325,6 +1328,8 @@ class Melty:
 
     @classmethod
     def init(cls, **kwargs):
+
+
         for key, value in kwargs.items():
             setattr(cls, key, value)
             # cls.global_attrs[key] = value
@@ -1358,6 +1363,9 @@ class Melty:
                 return True
         return False
 
+set_window_registrar(
+    lambda cls, kwargs: Melty.annotated_window_classes.__setitem__(cls.__name__, (cls, kwargs))
+)
 
 
 class Action:
@@ -1389,8 +1397,6 @@ class MouseAction:
         self.action_type = action_type
         self.button = button
         self.value = value
-
-
 
 from enum import Enum
 
