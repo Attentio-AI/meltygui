@@ -570,7 +570,8 @@ def draw_main(input_value, vis, draw_state=None):
     global test_code
     from src.lsd.gl_gui.view.mode import Mode
 
-    draw_any(Melty.registered_windows, name="Window Manager", show_bg=True, with_header=draw_header, mode=(Mode.SORT, Mode.WINDOW))
+    draw_any(Melty.registered_windows, name="Window Manager", show_name=False, with_header=draw_header,
+             mode=(Mode.SORT, Mode.WINDOW))
 
 
     changed, value = draw_with_modes(Mode, name="Modes", show_bg=True, mode=(Mode.WINDOW),

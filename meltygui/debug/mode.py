@@ -76,7 +76,7 @@ class Mode(Enum):
             kwargs={"show_bg":True, "selectable":False, "use_cache":True, "melty_window":False, "closable":True,
                     "with_header_end":draw_header_end, "auto_resize":False, "draggable":True, 'shadow':False,
                     "show_tint":True, "show_header":True, "with_footer":draw_footer, 'indent_size':5,
-                    "disable_scroll":False,
+                    "disable_scroll":False, "show_add_delete":False,
                     "initial":{"width": 400, "height": 320, "window_pos": (100, 500)}},
 
             recursive=False
