@@ -89,14 +89,14 @@ class GridDotsBackground:
 
     def render(self, width, height):
         if self.root is not None:
-            bg_settings = self.root.global_style.background_settings
             glUseProgram(self.shader)
             glUniform2f(glGetUniformLocation(self.shader, "resolution"), width, height)
-            glUniform1f(glGetUniformLocation(self.shader, "dotSpacing"), bg_settings.dot_spacing)
-            glUniform1f(glGetUniformLocation(self.shader, "dotSize"), bg_settings.dot_size)
-            glUniform1f(glGetUniformLocation(self.shader, "emphasisSize"), bg_settings.emphasis_size)
-            glUniform4f(glGetUniformLocation(self.shader, "dotColor"), *bg_settings.dot_color)
-            glUniform4f(glGetUniformLocation(self.shader, "bgColor"), *bg_settings.bg_color)
+            from src.lsd.gl_gui.model.app_model import BackgroundSettings
+            glUniform1f(glGetUniformLocation(self.shader, "dotSpacing"), BackgroundSettings.dot_spacing)
+            glUniform1f(glGetUniformLocation(self.shader, "dotSize"), BackgroundSettings.dot_size)
+            glUniform1f(glGetUniformLocation(self.shader, "emphasisSize"), BackgroundSettings.emphasis_size)
+            glUniform4f(glGetUniformLocation(self.shader, "dotColor"), *BackgroundSettings.dot_color)
+            glUniform4f(glGetUniformLocation(self.shader, "bgColor"), *BackgroundSettings.bg_color)
 
             glBindVertexArray(self.vao)
             glDrawArrays(GL_TRIANGLE_FAN, 0, 4)

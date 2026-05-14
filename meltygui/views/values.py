@@ -1,4 +1,5 @@
 import inspect
+import json
 import sys
 import threading
 import types
@@ -20,7 +21,7 @@ from src.lsd.gl_gui import toggles
 from src.lsd.gl_gui.melty import Melty, CollectionAction, ManagedWindow
 from src.lsd.gl_gui.model.core_model.draw_state import ZoomState, TileMode, DrawState, TabState
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.toggles import Toggles
+from src.lsd.gl_gui.toggles import Toggles, WindowManager
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_style_var, \
     push_style_color, pop_style_color, pop_style_var, end, begin
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
@@ -236,7 +237,8 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=No
                     continue
         display_name = None
 
-        if key in excluded:
+
+        if str(key).split("##")[0] in excluded:
             continue
 
         # apply global skip to all types
@@ -563,6 +565,7 @@ def run_chain(input_value, chain=None, draw_state=None, debug=False, **kwargs):
 
 some_test_tensor = torch.randn(3, 3)
 
+
 @render_func(use_cache=False, show_bg=True, selectable=False, show_tint=True, bg_offset=-1, with_header=draw_header)
 def draw_main(input_value, vis, draw_state=None):
     global test_obj
@@ -571,8 +574,12 @@ def draw_main(input_value, vis, draw_state=None):
     from src.lsd.gl_gui.view.mode import Mode
 
 
-    draw_any(Melty.registered_windows, name="Window Manager", show_name=False, with_header=draw_header,
-             mode=(Mode.SORT, Mode.WINDOW))
+    draw_any(Melty.registered_windows, name="Window Manager", with_header=draw_header,
+             mode=(Mode.WINDOW_MANAGER_SORTED, Mode.WINDOW))
+
+    from src.lsd.gl_gui.view.mode import ModeGroup
+    draw_with_modes(WindowManager, name="Excluded Windows", show_name=False, show_add_delete=True,
+                                       with_header=draw_header, modes=ModeGroup.CODE,  mode=(Mode.WINDOW))
 
     for window_cls, kwargs in Melty.annotated_window_classes.values():
         kwargs.setdefault('mode', Mode.WINDOW)
@@ -769,6 +776,7 @@ def draw_melty_windows(vis):
     Melty.window_stack.append((title, True))
 
     draw_main(name="Main Window", vis=vis, width=fb_w, height=fb_h)
+
     from src.lsd.gl_gui.applet.test_applet import render_app
     render_app()
 
@@ -1684,13 +1692,13 @@ def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=6.0, bg_offset=
 
     return False, bg_color
 
-@render_func(use_cache=True, shadow=False, selectable=False, show_bg=False, min_width=10, min_height=10, wrap=True)
+@render_func(use_cache=True, shadow=True, selectable=False, show_bg=False, min_width=10, min_height=10, wrap=True)
 def button(input_value="", corner_radius=6, draw_state=None, alpha=1.0, left_mouse_held=False, left_mouse_down=False,
            color=(0.5, 0.5, 0.5), hovered=False, width=None, height=None, style_manager=None,
            factor=1.0, value=0.32, text_value=1.023, saturation=0.8, unique=0):
     if color is not None:
         if left_mouse_held:
-            draw_state.z_offset = 0
+            draw_state.z_offset = -0.5
         else:
             draw_state.z_offset = 3.0
 
@@ -1715,8 +1723,9 @@ def button(input_value="", corner_radius=6, draw_state=None, alpha=1.0, left_mou
 
     if alpha > 0.0:
         draw_list.add_rect_filled(draw_state.abs_left, draw_state.abs_top, draw_state.abs_left + width,
-                                  draw_state.abs_top + height, imgui.get_color_u32_rgba(*mixed_color[:3], 1.0),
+                                  draw_state.abs_top + height, imgui.get_color_u32_rgba(*mixed_color[:3], alpha),
                                   rounding=corner_radius)
+
 
 
     draw_list.add_text(draw_state.abs_left + (width - min_size[0]) / 2.0 + 2,
@@ -1879,8 +1888,10 @@ def draw_usage(input_value: UsageRef):
 
     return False, None
 
-@render_func(is_default_for=(Comment), shadow=False, use_cache=True, with_header=None, is_tree=False, tint=(0.2, 0.2, 0.1))
+@render_func(is_default_for=(Comment), shadow=True, use_cache=True, show_bg=True, with_header=None, is_tree=False, tint=(0.0, 0.2, 0.1))
 def draw_comment(input_value: Comment, draw_state, cursor_hover=False):
+    margin = 10
+    imgui.dummy(0, margin)
     line_height = imgui.get_text_line_height()
     changed, value = False, input_value
     help_yellow= (0.8, 0.8, 0.3)
@@ -1890,7 +1901,7 @@ def draw_comment(input_value: Comment, draw_state, cursor_hover=False):
     # Draw circle background for comment
     radius = 18 / 2
     center_x = draw_state.abs_left + radius
-    center_y = draw_state.abs_top + radius
+    center_y = draw_state.abs_top + radius + margin
     color = imgui.get_color_u32_rgba(*help_yellow, 0.3)
     imgui.dummy(min(max(30, 30), 300), radius * 2)
     cursor_hover = imgui.is_item_hovered()
@@ -2141,9 +2152,7 @@ def draw_function(input_value, name, draw_state, unique):
     return False, input_value
 
 
-@render_func(is_default_for=(int), shadow=False, use_cache=True,
-             is_tree=False, wrap=True, header_same_line=True,
-             with_header=draw_header)
+@render_func(is_default_for=(int), shadow=False, use_cache=True, is_tree=False, wrap=True, header_same_line=True, with_header=draw_header)
 def draw_int(input_value: int, min_value=-100.0, max_value=100.0, speed=0.05, unique=0):
     int_text_width = imgui.calc_text_size(str(input_value))[0]
     imgui.set_next_item_width(int_text_width + 20)
@@ -2211,8 +2220,9 @@ def draw_enum(input_value: Enum, global_style=None,  style_manager=None, enum_ti
 @render_func(is_tree=False, show_bg=True, shadow=False, use_cache=True, z_offset=0, header_same_line=True,
              indent_size=0,
              show_add_delete=False, show_name=False, selectable=False, parent_show_add_delete=False, with_header=draw_header)
-def draw_tab_bar(input_value: list, tab_height=20, tint_value=0.202, tint_saturation=0.372, collection=None, as_toggles=False):
-    """Tab bar with multi-select via shift-click. input_value is the list of selected items, collection is all available tabs."""
+def draw_tab_bar(input_value: list, tab_height=20, tint_value=0.202, tint_saturation=0.372, collection=None, as_toggles=False, draw_state=None):
+    """Tab bar with multi-select via shift-click. input_value is the list of selected items, collection is all available tabs.
+    Tabs wrap onto a new row when the cumulative width would exceed draw_state.content_width."""
     if collection is None:
         return False, input_value
 
@@ -2223,12 +2233,25 @@ def draw_tab_bar(input_value: list, tab_height=20, tint_value=0.202, tint_satura
     imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0] - 6, imgui.get_cursor_screen_pos()[1]))
 
     push_style_var(imgui.STYLE_ITEM_SPACING, (2, 0))
+
+    # Mirror button()'s sizing: width = calc_text_size(label_text).x + 15.
+    # spacing matches STYLE_ITEM_SPACING.x set above.
+    spacing = 2
+    button_padding = 15
+    content_width = draw_state.content_width if draw_state is not None else 0
+    row_width = 0.0
+
+    def _tab_text(t):
+        return t.name if hasattr(t, 'name') else str(t)
+
     for i, tab in enumerate(collection):
-        raw = tab.name if hasattr(tab, 'name') else str(tab)
+        raw = _tab_text(tab)
         # label_text = raw.replace("_", " ")
         label = f"{raw}##tab{i}"
         active = tab in selected
         value = 0.238
+
+        tab_width = imgui.calc_text_size(raw).x + button_padding
 
         if active:
             selected_value = 0.204
@@ -2247,6 +2270,16 @@ def draw_tab_bar(input_value: list, tab_height=20, tint_value=0.202, tint_satura
                     selected.append(tab)
             else:
                 selected = [tab]
+
+        row_width = tab_width if row_width == 0 else row_width + spacing + tab_width
+
+        # Look ahead: if the next tab won't fit on this row, skip same_line()
+        # so imgui's cursor flows to the next line, and reset row_width.
+        if i < len(collection) - 1:
+            next_w = imgui.calc_text_size(_tab_text(collection[i + 1])).x + button_padding
+            if content_width > 0 and row_width + spacing + next_w > content_width:
+                row_width = 0
+                continue
 
         same_line()
 
@@ -2284,7 +2317,8 @@ def draw_debug(x,y, label, color=(1, 0, 0), size=16):
 #     imgui.text(f"Last Modified: {input_value.modified_time}")
 #
 #     return False, None
-@render_func(use_cache=True, disable_scroll=True, show_header=False, header_same_line=False, show_tint=False, show_name=False, is_tree=False)
+@render_func(use_cache=True, disable_scroll=True, show_header=False, header_same_line=False,
+             show_tint=False, show_name=False, is_tree=False)
 def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, tab_state: TabState = None, **kwargs):
     # imgui.text(type(input_value._input_value).__name__)
     imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0] - 3, imgui.get_cursor_screen_pos()[1] - 20))
@@ -2312,18 +2346,38 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, t
     if not tab_state.selected_tabs:
         tab_state.selected_tabs = [static_tabs[0]]
 
+    current_mode = input_value._kwargs.get('mode', None)
+    mode_tab = str(current_mode)
+    if current_mode is not None:
+        static_tabs.append(mode_tab)
+
     tab_changed, new_tabs = draw_tab_bar(tab_state.selected_tabs, wrap=True, tab_height=30, tint_value=0.7,
-                                         bg_offset=2, show_bg=True, name=f"tab_bar", z_offset=1,
+                                         bg_offset=2, show_bg=True, name=f"tab_bar", z_offset=1, draw=True,
                                          collection=static_tabs, as_toggles=False)
     if tab_changed:
         tab_state.selected_tabs = new_tabs
+
+    info_items = ["name", "current_mode", "mode", "show_add_delete"]
 
     for t_idx, static_tab in enumerate(tab_state.selected_tabs):
         from src.lsd.gl_gui.view.mode import Mode
 
         if static_tab == info_icon_fa:
-            text(f"{type(input_value._raw_input_value).__name__}", name="type", column=t_idx, editable=False)
-            text(f"{input_value._view_func.__name__}", show_bg=True, wrap=False, name="Rendered by", column=t_idx, editable=False)
+            text(f"{input_value._view_func.__name__}", show_bg=True, wrap=False, name="Rendered by", column=t_idx,
+                 editable=False)
+            text(f"{type(input_value._raw_input_value).__name__}", name="input_value type", column=t_idx, editable=False)
+
+            for info_item in info_items:
+                if info_item in input_value._kwargs:
+                    item_value = input_value._kwargs.get(info_item, 'Not found')
+                elif info_item in input_value.__dict__:
+                    item_value = getattr(input_value, info_item, 'Not found')
+                else:
+                    item_value = 'Not found'
+                text(f"{item_value}", name=info_item, column=t_idx, editable=False)
+
+            if button("print_stack_trace")[0]:
+                print_stack_trace()
 
         if static_tab == view_func_name:
             view_func = input_value._view_func
@@ -2345,6 +2399,12 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, t
                                                   modes=(Mode.CODE_PLAIN_TEXT, Mode.CODE_UI),
                                            name=type(input_value._raw_input_value).__name__)
 
+        if static_tab == mode_tab:
+            if current_mode is not None:
+                #prettiafy the string using an indent
+
+                mode_change, new_mode = text(str(current_mode.value), column=t_idx, width=draw_state.content_width,
+                                                        name=str(current_mode))
 
     return False, None
 

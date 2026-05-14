@@ -148,6 +148,7 @@ def render_func(*args, **o_kwargs):
             modes = (modes,) if modes is not None else None
 
         mode_stacked = False
+        current_mode = None
         if modes is not None:
             mode_config = modes[0].value.get(type(input_value), None)
             if mode_config is not None and mode_config.recursive:
@@ -161,6 +162,8 @@ def render_func(*args, **o_kwargs):
                     if mode_config is not None and mode_config.kwargs is not None:
                         override_kwargs = mode_config.kwargs.copy()
                         kwargs = kwargs | override_kwargs
+                        kwargs['current_mode'] = mode
+                        current_mode = mode
                         if not mode_config.recursive:
                             not_recursive.append(mode)
                         else:
@@ -297,7 +300,7 @@ def render_func(*args, **o_kwargs):
 
         auto_apply = kwargs.get("auto_apply", ())
 
-        tile_id = strhash(str(unique) + str(draw_state.id))
+        tile_id = f"{name}##{strhash(str(unique) + str(draw_state.id))}"
         draw_state._tile_id = tile_id
 
         if _has_imgui and len(Melty.melty_window_stack) > 0:
@@ -985,7 +988,8 @@ def render_func(*args, **o_kwargs):
                 draw_list: _DrawList = imgui.get_window_draw_list()
                 for c in range(1, draw_state.final_max_column + 1):
                     # Draw divider lines, we are the parent now
-                    draw_list.add_line(draw_state.left + snap_int(column_width * c), draw_state.top,
+                    columns_top = draw_state._columns_top if draw_state._columns_top is not None else draw_state.header_height
+                    draw_list.add_line(draw_state.left + snap_int(column_width * c), draw_state.top + snap_int(columns_top),
                                        draw_state.left + snap_int(column_width * c),
                                        draw_state.top + snap_int(draw_state.height),
                                        imgui.get_color_u32_rgba(0.0, 0.0, 0.0, 0.3), 1)

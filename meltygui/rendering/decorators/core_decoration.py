@@ -2,15 +2,13 @@ import functools
 import inspect
 from typing import Any
 
-from src.lsd.gl_gui.melty import Melty
-from src.lsd.gl_gui.utils.glfw_utils import request_render
-
 
 
 def defaults(*args, **kwargs):
     def decorator(cls):
         from src.lsd.gl_gui.view.core_views.core_meta import Meta
         new_meta = Meta(**kwargs)
+        from src.lsd.gl_gui.melty import Melty
         Melty.type_defaults[cls] = new_meta
         return cls
 
@@ -44,6 +42,7 @@ class auto_eval:
             return self
 
         # Register on first access if not already registered
+        from src.lsd.gl_gui.melty import Melty
         if obj not in Melty.live_attributes:
             Melty.live_attributes[obj] = set()
         if self.name not in Melty.live_attributes[obj]:
@@ -91,6 +90,9 @@ class auto_eval:
         return type(self)(self.fget, self.fset, fdel)
 
     def _on_change(self, obj, old_value, new_value):
+        from src.lsd.gl_gui.melty import Melty
+        from src.lsd.gl_gui.utils.glfw_utils import request_render
+
         if Melty.silence_invalidate:
             return
 
@@ -253,6 +255,7 @@ def hotkey(key):
                 kwargs.pop(name)
 
             for wanted_name, param in params.items():
+                from src.lsd.gl_gui.melty import Melty
                 if wanted_name in Melty.global_attrs and wanted_name not in kwargs:
                     kwargs[wanted_name] = Melty.global_attrs[wanted_name]
 

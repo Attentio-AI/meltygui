@@ -721,8 +721,6 @@ class Melty:
                     imgui.get_window_draw_list().channels_merge()
                     Melty.channels_split = False
 
-
-
                 # Melty.depth = draw_state.depth + d_idx
                 # Melty.cache.draw_tile(draw_state)
                 # last_bounding_hovered = draw_state._bounding_hovered
@@ -819,8 +817,8 @@ class Melty:
                 height=int(fb_h)
             )
 
+            # if Toggles.draw_melty:
             total_layers = 1.0 / ((Melty.max_layer - 1.0) * (Melty.max_depth - 1.0)) * 100.0
-
             min_val, max_val = 0.0, total_layers
             normalized_sub_mask, _, _ = Melty.filter.normalize(
                 Melty.cache._full_mask_tex, min_value=0.0000, max_value=total_layers)
@@ -832,15 +830,15 @@ class Melty:
 
             )
 
-            # Pass 3: Composite onto your color buffe
-            Melty.filter.shadow_composite(
-                input_framebuffer=0,
-                output_framebuffer=0,
-                shadow_map=shadow_raw,
-                depth_map=normalized_sub_mask,
-                shadow_opacity=0.9,
-                shadow_color=(0.0, 0.02, 0.05)  # Slightly blue shadows
-            )
+            if not Toggles.draw_legacy:
+                Melty.filter.shadow_composite(
+                    input_framebuffer=0,
+                    output_framebuffer=0,
+                    shadow_map=shadow_raw,
+                    depth_map=normalized_sub_mask,
+                    shadow_opacity=0.9,
+                    shadow_color=(0.0, 0.02, 0.05)  # Slightly darker shadows
+                )
 
         glfw.swap_buffers(window)
 

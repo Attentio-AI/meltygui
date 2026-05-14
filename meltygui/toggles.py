@@ -1,4 +1,5 @@
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import tint
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 
 
@@ -7,8 +8,9 @@ class Counters:
     nested_window_count = 16
 
 @window
+@tint({"draw_legacy": (0.8, 0.2, 0.2)})
 class Toggles:
-    # ---------- Invalidation Settings -----
+    # Invalidation settings
     invalidate_stack_trace = False
     debug_threads = False
     slow_down_threads = False
@@ -18,7 +20,7 @@ class Toggles:
     offscreen_debug = False
     debug_stale_tint = False
     
-    #---------- Visual Settings ---------
+    # Image Settings
     brightness = 0.22
     contrast = 1.445
 
@@ -30,7 +32,20 @@ class Toggles:
     filters = True
     show_excluded = True
 
-# Utils
+    # Drawing Settings
+    draw_melty = True
+    draw_legacy = True
+
+@window
+class LegacyToggles:
+    # All the padding settings from imgui style
+    item_spacing = (5, 2)
+    window_padding = (6, 6)
+    frame_padding = (4, 1)
+    line_height = 16
+
+
+# =========
 def shadow_depth_at(depth, active_layer):
     scaling = 53.42
     cap = 5.975
@@ -41,4 +56,7 @@ def shadow_depth_at(depth, active_layer):
     depth_and_layer = active_layer * Melty.max_depth + (depth * (scaling / (divisor)))
     depth_and_layer *= Melty.layer_inc
     return depth_and_layer
-    
+
+
+class WindowManager:
+    excluded_windows = ["demo test", "Egg Time", "Layer 1"]

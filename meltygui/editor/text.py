@@ -440,9 +440,10 @@ def _delete_selection(text, ds):
 
 @render_func(show_bg=True, wrap=False, use_cache=True, with_header=draw_header, shadow=True, with_footer=draw_footer, selectable=False, searchable=True, bg_offset=-100)
 def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, left_mouse_up=False,
-              left_mouse_down=False, left_mouse_drag=False, draw_state=None, request_focus=False):
+              left_mouse_down=False, left_mouse_drag=False, horizontal_scroll_drag=False,
+              draw_state=None, request_focus=False):
     ds = draw_state
-    
+
     line_height = 22 # Add support for this
 
     changed = False
@@ -457,7 +458,16 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, le
     left = imgui.get_cursor_screen_pos()[0]
     top = imgui.get_cursor_screen_pos()[1]
 
-    origin_x = left
+    # Right-click drag pans both axes. Vertical uses the framework's
+    # scroll_offset (the framework skips writing it while button 2 is down,
+    # so our edits aren't clobbered mid-drag). Horizontal uses our own
+    # text_h_scroll since the framework only manages vertical scroll.
+    if horizontal_scroll_drag:
+        ds.text_h_scroll -= horizontal_scroll_drag.dx
+        sx, sy = ds.scroll_offset
+        ds.scroll_offset = (sx, sy - horizontal_scroll_drag.dy)
+
+    origin_x = left - ds.text_h_scroll
     origin_y = top
 
     # --- Invisible button for mouse interaction ---
@@ -747,6 +757,27 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, le
     ds.text_cursor_pos = max(0, min(ds.text_cursor_pos, len(text)))
     ds.text_selection_start = max(0, min(ds.text_selection_start, len(text)))
     ds.text_selection_end = max(0, min(ds.text_selection_end, len(text)))
+
+    # --- Horizontal auto-scroll ---
+    # Only kicks in when the cursor moved this frame, so middle-drag pans
+    # are not snapped back. Brings the cursor into view on a single line.
+    visible_width = draw_state.content_width
+    if ds.text_cursor_pos != ds.text_prev_cursor_pos and visible_width > 0:
+        line_start = _get_line_start(text, ds.text_cursor_pos)
+        cursor_logical_x = imgui.calc_text_size(text[line_start:ds.text_cursor_pos]).x
+        edge_padding = 20.0
+        if cursor_logical_x - ds.text_h_scroll < edge_padding:
+            ds.text_h_scroll = max(0.0, cursor_logical_x - edge_padding)
+        elif cursor_logical_x - ds.text_h_scroll > visible_width - edge_padding:
+            ds.text_h_scroll = cursor_logical_x - visible_width + edge_padding
+    ds.text_prev_cursor_pos = ds.text_cursor_pos
+
+    # Clamp h_scroll to content bounds. calc_text_size on multi-line text
+    # returns the longest line's width, which is what we want.
+    max_line_width = imgui.calc_text_size(text).x
+    max_h_scroll = max(0.0, max_line_width - visible_width + 50.0)
+    ds.text_h_scroll = max(0.0, min(ds.text_h_scroll, max_h_scroll))
+    origin_x = left - ds.text_h_scroll
 
     # --- Drawing ---
     draw_list = imgui.get_window_draw_list()

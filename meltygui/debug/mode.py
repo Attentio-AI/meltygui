@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional, Any
 
 from src.lsd.gl_gui.model.model_enums import RelaxedEnum
+from src.lsd.gl_gui.toggles import WindowManager
 from src.lsd.gl_gui.view.core_conversion.chain_converters import module_to_address, address_to_general_parse, \
     general_parse_to_address, address_to_module, class_to_address, address_to_class, function_to_address, \
     address_to_function, general_parse_to_str, str_to_general_parse
@@ -54,6 +55,17 @@ class Mode(Enum):
             recursive=False,
             func=(sort_dict_alphabetically,
                   (draw_collection, {"show_add_delete":False, "selectable":False, "show_bg": False}),
+                  unsort_dict_alphabetically)
+        )
+    }
+
+    WINDOW_MANAGER_SORTED = {
+        defaultdict: ModeOverrides(
+            kwargs={"show_bg": True, "selectable": False, "use_cache": True},
+            recursive=False,
+            func=(sort_dict_alphabetically,
+                  (draw_collection, {"show_add_delete": False, "selectable": False, "show_bg": False,
+                                     "excluded":WindowManager.excluded_windows}),
                   unsort_dict_alphabetically)
         )
     }
@@ -119,7 +131,7 @@ class Mode(Enum):
             recursive=True,
             func=(function_to_address,
                   (address_to_general_parse, {'load': auto_load}),
-                  draw_collection,
+                  (draw_collection, {"show_add_delete": True}),
                   (general_parse_to_address, {'save': True,
                                               'recompile': True}),
                   address_to_function),
@@ -128,7 +140,7 @@ class Mode(Enum):
             recursive=True,
             func=(module_to_address,
                   (address_to_general_parse, {'load': auto_load}),
-                  draw_collection,
+                  (draw_collection, {"show_add_delete": True}),
                   (general_parse_to_address, {'save': True,
                                               'recompile': True}),
                   address_to_module),
@@ -136,7 +148,7 @@ class Mode(Enum):
         type: ModeOverrides(
             func=(class_to_address,
                   (address_to_general_parse, {'load': auto_load}),
-                  draw_collection,
+                  (draw_collection, {"show_add_delete": True}),
                   (general_parse_to_address, {'save': True,
                                               'recompile': True}),
                   address_to_class),
@@ -145,16 +157,16 @@ class Mode(Enum):
 
 
         Conditional: ModeOverrides(
-            kwargs={"tint": (0.2, 0.2, 0.1), 'show_add_delete': False, 'is_tree':False},
+            kwargs={"tint": (0.2, 0.2, 0.1), 'show_add_delete': True, 'is_tree':False},
             recursive=True,
         ),
         Comment: ModeOverrides(
-            kwargs={"tint": (0.2, 0.2, 0.1), 'show_add_delete': False, 'is_tree':False},
+            kwargs={"tint": (0.2, 0.2, 0.1), 'show_add_delete': True, 'is_tree':False},
             func=draw_comment,
             recursive=True,
         ),
         GeneralParse: ModeOverrides(
-            kwargs={'show_add_delete': False, "disable_scroll": False},
+            kwargs={'show_add_delete': True, "disable_scroll": False},
             recursive=True,
             func=draw_general_parse
         ),

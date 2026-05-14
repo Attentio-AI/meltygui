@@ -316,8 +316,7 @@ def draw_header_end(input_value=None, name="", key=None, melty=None, parent_show
         }
         bg_style = global_style.get_global_constant("bg_style", default=bg_style, folder="bg_styles")
         search_color = (style_manager.
-                        make_color_style_value(input=bg_style, saturation=0.7,
-                                               value=1.0))
+                        make_color_style_value(input=bg_style, saturation=0.7, value=1.0))
         push_style_color(imgui.COLOR_TEXT, *search_color)
         push_style_color(imgui.COLOR_BUTTON, *(0.0, 0.0, 0.0, 0.0))
         if imgui.button(f"\uf1f8##del"):
@@ -327,7 +326,7 @@ def draw_header_end(input_value=None, name="", key=None, melty=None, parent_show
         pop_style_color(2)
 
     if closable and not input_value == Melty.registered_windows:
-        close_icon = "\uf00d"
+        close_icon = ""
         from src.lsd.gl_gui.view.core_views.new_core_view import button
         if button(f"{close_icon}", show_bg=True, shadow=True, z_offset=10, tile_mode=TileMode.MAX, color=(9, 1, 1, 0))[0]:
             draw_state.closed = not draw_state.closed

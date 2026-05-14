@@ -412,6 +412,8 @@ class DrawState(DictConversion):
         self.text_double_click_time = 0.0
         self.text_last_click_pos = -1
         self.text_click_count = 0
+        self.text_h_scroll = 0.0
+        self.text_prev_cursor_pos = 0
 
         self._print_last_invalid = False
         self._last_invalidate = None
