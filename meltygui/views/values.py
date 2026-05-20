@@ -1586,7 +1586,6 @@ def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=6.0, bg_offset=
     outline_base      = 1.773
     outline_depth_mul = 0.85
     outline_sat       = {'default': 1.1, 'nested': 1.473}
-
     
     # More constants 
     bleed_mix         = {'nested': 0.433, 'default': 0.454}
@@ -1912,7 +1911,8 @@ def draw_comment(input_value: Comment, draw_state, cursor_hover=False):
     #     draw_window(str(input_value), editable=False, window_pos=(0,0), width=popup_width, height=text_size[1] + 5,
     #                 with_header_end=None, with_header=None, with_footer=None)
     imgui.same_line(spacing=0)
-    draw_str(str(input_value[1:]), alpha=0.6, selectable=False, editable=False,
+    alpha = 0.572
+    draw_str(str(input_value[1:]), alpha=alpha, selectable=False, editable=False,
              is_tree=False, with_header=None, show_name=False)
 
 
