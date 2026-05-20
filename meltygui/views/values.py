@@ -665,7 +665,7 @@ def draw_main(input_value, vis, draw_state=None):
 
     draw_window(test_obj, name="Layer 1")
 
-    draw_window(filesystem_proxy, name="Filesystem Test")
+    draw_window(filesystem_proxy, name="Filesystem")
 
     draw_any(input_value=proxy, name="CST Proxy", mode=Mode.WINDOW)
 
@@ -803,10 +803,7 @@ def draw_pending_texture(input_value: PendingTexture, draw_state):
     return return_val
 
 
-@render_func(is_default_for=numpy.uint32, show_bg=True,
-             use_cache=False, show_add_delete=False, z_offset=2, fill_height=True,
-             indent_size=0, min_width=100, min_height=100, wrap=False, disable_scroll=True,
-             enable_scroll=True, zoom_speed=0.3, with_header=draw_header, manual_content_height=True)
+@render_func(is_default_for=numpy.uint32, show_bg=True, use_cache=False, show_add_delete=False, z_offset=2, fill_height=True, indent_size=0, min_width=100, min_height=100, wrap=False, disable_scroll=True, enable_scroll=True, zoom_speed=0.3, with_header=draw_header, manual_content_height=True)
 def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mouse_drag, right_mouse_drag,
                  zoom_state: ZoomState, zoom_speed, header_height=0, min_zoom=0.1,
                  max_zoom=50.0, style_manager=None, max_brightness=5.0, max_contrast=5.0,
@@ -875,9 +872,15 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
 
     if style_manager is not None:
         mixed_color = style_manager.make_color_rgb(*mixed_color[:3],
-                                                   value=0.3, factor=0.9, saturation_scale=1.0, alpha=1.0)
+                                                   value=0.3,
+                                                   factor=0.9,
+                                                   saturation_scale=1.0,
+                                                   alpha=1.0)
         highlight_color = style_manager.make_color_rgb(*mixed_color[:3],
-                                                       value=1.0, factor=0.9, saturation_scale=1.0, alpha=1.0)
+                                                       value=1.0,
+                                                       factor=0.9,
+                                                       saturation_scale=1.0,
+                                                       alpha=1.0)
     io = imgui.get_io()
     overlay: _DrawList = imgui.get_overlay_draw_list()
 
@@ -1573,11 +1576,9 @@ def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=6.0, bg_offset=
         style_manager=None, tint=None, outline_tint=None, selected=False,
         hovered=False, pressed=False, nested_bg=False, **kwargs):
 
-    # imgui.get_overlay_draw_list().add_text(left, top - 15, imgui.get_color_u32_rgba(1, 0, 0, 1), f"bg_ffset {bg_offset}")
-
     # -- Constants ---------------------------------
     depth_wrap        = 30
-    depth_scale       = 1.66
+    depth_scale       = 2.34
     corner_radius     = rounding
     border_inset      = 3.0
     border_inset_half = 1.5
@@ -1888,13 +1889,13 @@ def draw_usage(input_value: UsageRef):
 
     return False, None
 
-@render_func(is_default_for=(Comment), shadow=True, use_cache=True, show_bg=True, with_header=None, is_tree=False, tint=(0.0, 0.2, 0.1))
+@render_func(is_default_for=(Comment), shadow=True, use_cache=True, show_bg=True, with_header=None, is_tree=False, tint=(0.0, 0.8, 0.9))
 def draw_comment(input_value: Comment, draw_state, cursor_hover=False):
-    margin = 10
+    margin = 0
     imgui.dummy(0, margin)
     line_height = imgui.get_text_line_height()
     changed, value = False, input_value
-    help_yellow= (0.8, 0.8, 0.3)
+    help_yellow_tint = (0.0, 0.8, 0.9)
     help_icon = "❓"
     draw_list: _DrawList = imgui.get_window_draw_list()
     character_width = imgui.calc_text_size(help_icon)[0]
@@ -1902,7 +1903,7 @@ def draw_comment(input_value: Comment, draw_state, cursor_hover=False):
     radius = 18 / 2
     center_x = draw_state.abs_left + radius
     center_y = draw_state.abs_top + radius + margin
-    color = imgui.get_color_u32_rgba(*help_yellow, 0.3)
+    color = imgui.get_color_u32_rgba(*help_yellow_tint, 0.3)
     imgui.dummy(min(max(30, 30), 300), radius * 2)
     cursor_hover = imgui.is_item_hovered()
     draw_list.add_circle_filled(center_x, center_y, radius, color)
@@ -1927,7 +1928,7 @@ def draw_comment(input_value: Comment, draw_state, cursor_hover=False):
     return changed, value
 
 
-@render_func(is_default_for=('tint'), has_popup=True, indent_size=0, is_tree=False, show_name=False, selectable=False, wrap=True, use_cache=False, with_header=None)
+@render_func(is_default_for=('tint', 'help_yellow_tint'), has_popup=True, indent_size=0, is_tree=False, show_name=False, selectable=False, wrap=True, use_cache=False, with_header=None)
 def draw_tuple(input_value: tuple, unique):
     if len(input_value) > 0 and isinstance(input_value[0], (float, int)):
         if len(input_value) == 4:

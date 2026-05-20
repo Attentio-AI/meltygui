@@ -7,6 +7,9 @@ class RelaxedEnum(Enum):
             return self.name == other.name
         return super().__eq__(other)
 
+    def __hash__(self):
+        return hash(self.name)
+
 
 class PromptType(RelaxedEnum):
     USER = 0

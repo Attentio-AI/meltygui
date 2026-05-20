@@ -12,32 +12,12 @@ from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.toggles import shadow_depth_at
 from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace
 from src.lsd.gl_gui.view.core_conversion.cache_tree import CacheTree, UNSET_VALUE
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import no_save, exclude, deep_refresh, no_save_exclude, \
-    invalidate_all
-
-
-# class decoration
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import no_save, exclude, deep_refresh, no_save_exclude
 
 class SynthColors(DictConversion):
     def __init__(self):
         super().__init__()
         self.letter_to_color = {}
-
-
-# @window
-# class Lora(DictConversion):
-#     def __init__(self):
-#         super().__init__()
-#         self.tint = (0.2, 0.26, 0.34)
-#         self.name: str = "Lora"
-#         self.rank = 4
-#
-#         ignore_render
-#         self.alpha = 2
-#         self.lora_scale = 0.1
-#         self.parent_module = None
-#         self.adapter = None
-#         self.target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
 
 
 class CSTDrawBits:
@@ -431,6 +411,8 @@ class DrawState(DictConversion):
         self._original_load_data = None
         self._original_input_ref = None
 
+        self._stack_trace = None
+
     @property
     def clip_size(self):
         if self.clip_rect is None:
@@ -470,7 +452,7 @@ class DrawState(DictConversion):
         if new_bbox == self._bvh_bbox:
             return
         old_bbox = self._bvh_bbox
-        self._bvh_bbox = None
+        self._bvh_bbox = new_bbox
 
         if self._bvh_id is None:
             if new_bbox is not None and self.clipped:

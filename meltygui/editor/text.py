@@ -6,6 +6,7 @@ import imgui
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.headers import draw_header, draw_footer
 from src.lsd.gl_gui.melty import Melty
+from src.lsd.gl_gui.fonts import Font
 
 
 def _hex(h):
@@ -231,17 +232,17 @@ def _get_line_end(text, index):
     return nl if nl != -1 else len(text)
 
 
-def _char_pos_to_xy(text, index, origin_x, origin_y, line_height):
+def _char_pos_to_xy(text, index, origin_x, origin_y, line_px):
     line, col = _index_to_line_col(text, index)
     col_text = text[_get_line_start(text, index):index]
     x = origin_x + imgui.calc_text_size(col_text).x
-    y = origin_y + line * line_height
+    y = origin_y + line * line_px
     return x, y
 
 
-def _xy_to_char_index(text, mx, my, origin_x, origin_y, line_height):
+def _xy_to_char_index(text, mx, my, origin_x, origin_y, line_px):
     lines = text.split('\n')
-    line_num = int((my - origin_y) / line_height)
+    line_num = int((my - origin_y) / line_px)
     line_num = max(0, min(line_num, len(lines) - 1))
 
     line_text = lines[line_num]
@@ -441,10 +442,15 @@ def _delete_selection(text, ds):
 @render_func(show_bg=True, wrap=False, use_cache=True, with_header=draw_header, shadow=True, with_footer=draw_footer, selectable=False, searchable=True, bg_offset=-100)
 def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, left_mouse_up=False,
               left_mouse_down=False, left_mouse_drag=False, horizontal_scroll_drag=False,
-              draw_state=None, request_focus=False):
+              draw_state=None, request_focus=False, line_height=1.2, font: Font=Font.JETBRAINS_MONO_19):
     ds = draw_state
 
-    line_height = 22 # Add support for this
+    _font_pushed = False
+    if font is not None and Melty.font_mgr is not None:
+        _font_handle = Melty.font_mgr.get(font)
+        if _font_handle is not None:
+            imgui.push_font(_font_handle)
+            _font_pushed = True
 
     changed = False
     original_input = input_value
@@ -453,7 +459,7 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, le
 
     text = input_value
     io = imgui.get_io()
-    line_height = imgui.get_text_line_height()
+    line_px = imgui.get_text_line_height() * line_height
 
     left = imgui.get_cursor_screen_pos()[0]
     top = imgui.get_cursor_screen_pos()[1]
@@ -491,7 +497,7 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, le
         is_focused = True
         ds.text_cursor_blink_time = time.time()
         click_pos = _xy_to_char_index(text, io.mouse_pos.x, io.mouse_pos.y,
-                                       origin_x, origin_y, line_height)
+                                       origin_x, origin_y, line_px)
 
         now = time.time()
         within_window = (now - ds.text_double_click_time < 0.3
@@ -522,7 +528,7 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, le
 
     if left_mouse_drag:
         drag_pos = _xy_to_char_index(text, left_mouse_drag.x, left_mouse_drag.y,
-                                      origin_x, origin_y, line_height)
+                                      origin_x, origin_y, line_px)
         ds.text_selection_end = drag_pos
         ds.text_cursor_pos = drag_pos
         ds.text_cursor_blink_time = time.time()
@@ -801,10 +807,10 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, le
                 sel_end_in_line = min(len(line_text), hi - line_abs_start)
                 sx = origin_x + imgui.calc_text_size(line_text[:sel_start_in_line]).x
                 ex = origin_x + imgui.calc_text_size(line_text[:sel_end_in_line]).x
-                sy = origin_y + line_idx * line_height
+                sy = origin_y + line_idx * line_px
                 if hi > line_abs_end and line_abs_end >= lo:
                     ex = origin_x + imgui.calc_text_size(line_text).x + imgui.calc_text_size(' ').x
-                draw_list.add_rect_filled(sx, sy, ex, sy + line_height, sel_color)
+                draw_list.add_rect_filled(sx, sy, ex, sy + line_px, sel_color)
             line_abs_start = line_abs_end + 1
 
     # Syntax highlighted text
@@ -816,9 +822,9 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, le
         for ch in token:
             if ch == '\n':
                 x = origin_x
-                y += line_height
+                y += line_px
                 continue
-            if y + line_height >= rect_min_y and y <= rect_max_y:
+            if y + line_px >= rect_min_y and y <= rect_max_y:
                 draw_list.add_text(x, y, color, ch)
             x += imgui.calc_text_size(ch).x
         t_idx += 1
@@ -826,18 +832,21 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, le
     # Cursor
     if is_focused and not _has_selection(ds):
         if (time.time() - ds.text_cursor_blink_time) % 1.0 < 0.5:
-            cx, cy = _char_pos_to_xy(text, ds.text_cursor_pos, origin_x, origin_y, line_height)
+            cx, cy = _char_pos_to_xy(text, ds.text_cursor_pos, origin_x, origin_y, line_px)
             cursor_color = 0xFFFFFFFF  # white
-            draw_list.add_line(cx, cy, cx, cy + line_height, cursor_color, 1.0)
+            draw_list.add_line(cx, cy, cx, cy + line_px, cursor_color, 1.0)
 
     draw_list.pop_clip_rect()
 
     if changed:
-        text_height = imgui.calc_text_size(str(text) + " ")[1] + 2
+        text_height = (text.count('\n') + 1) * line_px + 2
     else:
-        text_height = imgui.calc_text_size(str(input_value) + " ")[1] + 2
+        text_height = (input_value.count('\n') + 1) * line_px + 2
 
     imgui.dummy(draw_state.width, text_height)
+
+    if _font_pushed:
+        imgui.pop_font()
 
     if changed:
         rebuilt_text = text + '\n'.join(original_input.split('\n')[max_lines:])

@@ -14,7 +14,7 @@ from invoke import executor
 
 from rtree import index as rtree_index
 
-from src.lsd.gl_gui.background_v2 import Background
+from src.lsd.gl_gui.background import Background
 from src.lsd.gl_gui.collection_action import CollectionAction
 from src.lsd.gl_gui.collision import Collisions
 from src.lsd.gl_gui.toggles import Toggles, Counters
@@ -180,6 +180,7 @@ class Melty:
     selected = set()
     last_selected = None
     large_font = None
+    font_mgr = None
 
     root_draw_states = defaultdict(lambda: list())
     root_draw_states_by_layer = defaultdict(lambda: list())

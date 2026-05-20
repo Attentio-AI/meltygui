@@ -33,8 +33,8 @@ class Toggles:
     show_excluded = True
 
     # Drawing Settings
-    draw_melty = True
-    draw_legacy = True
+    draw_melty = False
+    draw_legacy = False
 
 @window
 class LegacyToggles:

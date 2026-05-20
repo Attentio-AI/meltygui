@@ -14,8 +14,7 @@ from typing import Any, Dict, Optional, Union, List, Tuple
 from transformers import PreTrainedTokenizerBase, LlamaTokenizerFast
 
 from src.lsd.gl_gui.model.core_markers import FieldMeta
-from src.lsd.gl_gui.model.class_utill import ClassUtility
-from src.lsd.gl_gui.model.global_undo_redo_manager import TrackedList, TrackedDict, TrackedSet
+from src.lsd.gl_gui.model.dict_conversion_util import ClassUtility
 from src.lsd.gl_gui.model.core_model.core_enums import generate_id
 from src.lsd.gl_gui.model.model_enums import RelaxedEnum
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import exclude, deep_refresh
@@ -31,6 +30,9 @@ _BRACKET_RE = re.compile(r'\[([^\]]*)\]')  # extracts inner text of each [...] i
 class DictConversion(metaclass=FieldMeta):
 
     _instances: weakref.WeakSet = weakref.WeakSet()
+    hash = None
+    is_class_dict = True
+    outliner_expanded_h = False
 
     def __init_subclass__(cls, **kw):
         super().__init_subclass__(**kw)
@@ -45,7 +47,6 @@ class DictConversion(metaclass=FieldMeta):
             self.__class__.default_instance = None
             self.__class__.default_instance = self.__class__()
 
-    hash = None
     def __post_init__(self):
         self.id = generate_id()
         self.hash = None
@@ -61,7 +62,6 @@ class DictConversion(metaclass=FieldMeta):
         self.tint = (0, 0, 0)  # Default black tint
         # self.child_collapsed = set()
         # self._history_manager = GlobalUndoRedoManager.get_instance()
-
 
     def from_dict(self, object_dict, excluded=None, class_root=None, vis=None):
         # ---- fast refs
@@ -342,8 +342,6 @@ class DictConversion(metaclass=FieldMeta):
                 continue
             setattr(self, key, new_instance.__dict__.get(key, None))
 
-
-
     def save(self, save_file: str):
         view_dict = self.to_dict()
         path_dir = os.path.dirname(save_file)
@@ -395,10 +393,6 @@ class DictConversion(metaclass=FieldMeta):
         else:
             print(f"Error: {save_file} does not exist")
             return None
-
-    is_class_dict = True
-    outliner_expanded_h = False
-
 
     @staticmethod
     def compute_hash(self, exclude=None, memo=None, depth=0, do_print=False, include_hidden=False):
@@ -648,7 +642,6 @@ class DictConversion(metaclass=FieldMeta):
         """
         return self.deepcopy_exclude(exclude=None, memo=None, depth=0, do_print=do_print, max_depth=max_depth)
 
-
     def deepcopy_exclude(self, exclude=None, include=None, memo=None, depth=0, do_print=False, max_depth=30):
         """
         Create a deep copy of the instance with custom attribute exclusions.
@@ -827,9 +820,6 @@ class DictConversion(metaclass=FieldMeta):
 
         return input_value
 
-
-
-
     # def __new__(cls, *args, **kwargs):
     #     instance = super().__new__(cls)
     #     # Initialize tracking attributes
@@ -874,16 +864,6 @@ class DictConversion(metaclass=FieldMeta):
         self._obj_path = computed_path
 
         return computed_path
-
-    def _wrap_container(self, value, attr_name):
-        """Wrap container types with tracked versions."""
-        if isinstance(value, list):
-            return TrackedList(self, attr_name, value)
-        elif isinstance(value, dict):
-            return TrackedDict(self, attr_name, value)
-        elif isinstance(value, set):
-            return TrackedSet(self, attr_name, value)
-        return value
 
     # def __setattr__(self, name: str, value: Any) -> None:
     #
@@ -1359,17 +1339,17 @@ class DictConversion(metaclass=FieldMeta):
                 return DictConversion.get_enum_value(found_class_path, combined_name, value, last_try=True)
 
     def has_valid_attr(self, obj, attr_name: str) -> bool:
-        """
-        Checks if the attribute exists and is not None.
-        """
-        exception_list = ["content_size", "content_pos"]
-
-        from src.lsd.gl_gui.model.dynamic_obj import DynamicObj
-        from src.lsd.gl_gui.model.app_model import GlobalStyle
-        from src.lsd.gl_gui.model.app_model import Style
-        from src.lsd.gl_gui.model.core_model.core_model import ViewConstants
-        return (hasattr(obj, attr_name) or attr_name in exception_list or
-                isinstance(obj, (DynamicObj, ViewConstants, GlobalStyle, Style)))
+        return True
+        # """
+        # Checks if the attribute exists and is not None.
+        # """
+        # exception_list = ["content_size", "content_pos"]
+        #
+        # from src.lsd.gl_gui.model.dynamic_obj import DynamicObj
+        # from src.lsd.gl_gui.model.app_model import GlobalStyle
+        # from src.lsd.gl_gui.model.app_model import Style
+        # return (hasattr(obj, attr_name) or attr_name in exception_list or
+        #         isinstance(obj, (DynamicObj, GlobalStyle, Node)))
 
 
     def on_load(self, vis, root):
@@ -1762,11 +1742,3 @@ class DictConversion(metaclass=FieldMeta):
             else:
                 current_dict[key] = new_value
 
-
-class WindowSettings(DictConversion):
-
-    def __init__(self):
-        super().__init__()
-        self.position = (100, 100)  # (x, y)
-        self.size = (800, 600)      # (width, height)
-        self.auto_resize = False

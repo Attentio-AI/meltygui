@@ -60,8 +60,6 @@ def live(cls):
                 if not initializing and visible and not name.startswith('_') \
                         and name != "driver" and Melty.frame_count > 3:
                     Melty.last_attr = name
-
-
                     if do_deep_refresh:
                         Melty.cache.invalidate_up_by_obj(obj=self, max_depth=2, force=True)
                     else:

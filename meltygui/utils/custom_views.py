@@ -12,7 +12,7 @@ from imgui import ImGuiError
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.model.model_enums import RelaxedEnum
 from src.lsd.gl_gui.utils.glfw_utils import _needs_render, print_stack_trace
-from src.lsd.lsd_utils import singleton
+from src.lsd.train.lsd_utils import singleton
 
 
 class GroupType(Enum):

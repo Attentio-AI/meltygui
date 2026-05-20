@@ -593,8 +593,12 @@ def render_func(*args, **o_kwargs):
                 if default_value is None:
                     default_value = (param_defaults or {}).get(key, default_value)
 
-                    # Create a new instance for the custom draw state object
-                    if type is not None and default_value is None:
+                    # Create a new instance of the custom draw state object.
+                    # Enum subclasses can't be constructed with no args - skip
+                    # them and let the param's signature default (often None)
+                    # pass through.
+                    if (type is not None and default_value is None
+                            and not (inspect.isclass(type) and issubclass(type, Enum))):
                         draw_state_misc[key] = type()
                         draw_state.misc_used.add(key)
                         default_value = draw_state_misc[key]
@@ -2320,14 +2324,26 @@ def render_func(*args, **o_kwargs):
                     draw_list.channels_merge()
 
         except Exception as e:
-            print_stack_trace(exception=e, section="Exception")
-            with trace_group(f"Drawing {func.__name__} {draw_state.name}", hash=draw_state.unique) as g:
-                watch = ["draw_state.name", "input_value", "convert_path", "clean_args.input_value", "func.__name__",
-                         "mode"]
-                print_stack_trace(frames=get_live_frames(), section="UI Thread",
-                                  group=g, watch=watch)
-                print_stack_trace(exception=e, section="Exception",
-                                  group=g, watch=watch)
+            # print_stack_trace(exception=e, section="Exception")
+            # Check if previous stack trace is the same as the current one to avoid flooding logs with the same error
+            is_same_exception = False
+            if draw_state is not None and draw_state._stack_trace is not None:
+                previous_exception = draw_state._stack_trace
+                if type(e) == type(previous_exception) and str(e) == str(previous_exception):
+                    is_same_exception = True
+
+            if not is_same_exception:
+                draw_state._stack_trace = e
+                with trace_group(f"Drawing {func.__name__} {draw_state.name}", hash=draw_state.unique) as g:
+                    watch = ["draw_state.name", "input_value", "convert_path", "clean_args.input_value", "func.__name__",
+                             "mode"]
+                    print_stack_trace(frames=get_live_frames(), section="UI Thread",
+                                      group=g, watch=watch)
+                    print_stack_trace(exception=e, section="Exception",
+                                      group=g, watch=watch)
+            else:
+                print(f"Exception in {func.__name__}: {e}")
+
 
         finally:
 
