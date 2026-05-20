@@ -3,14 +3,12 @@ import types
 from collections import defaultdict, deque
 from copy import copy
 from enum import Enum
-from pathlib import Path
 from typing import MutableMapping, Optional
 
 import glfw
 import imgui
 import libcst as cst
 from imgui.core import _DrawList
-from invoke import executor
 
 from rtree import index as rtree_index
 
@@ -22,8 +20,8 @@ from src.lsd.gl_gui.view.core_views.decoration.window_decoration import set_wind
 from src.lsd.gl_gui.view.core_views.monitor import Monitor
 from src.shader_library.shader_manager.texture_manager import TextureManager
 from src.shader_library.shader_manager.filter import Filter
-from src.lsd.gl_gui.view.events.input_handler import InputHandler, InputEvent
-from src.lsd.gl_gui.view.events.pynput_backend import ImGuiBackend
+from src.lsd.gl_gui.events.input_handler import InputHandler, InputEvent
+from src.lsd.gl_gui.events.event_backends import ImGuiBackend
 from src.lsd.gl_gui.model.core_model.core_enums import generate_id
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
 
@@ -46,8 +44,10 @@ class FileWatch:
     path_to_draw_states = {}   # path → set of draw_states
     draw_state_to_path = {}
     _ds_hashes = {}            # draw_state → hash (per-view, not per-path)
+    _ds_suppress_until = {}    # id(ds) → monotonic time until which to suppress dispatch
     _file_contents = {}
     output_debug_diff = True
+    _write_suppress_window = 1.0  # seconds - for truncate+write event pairs from write_text
 
     @classmethod
     def start(cls):
@@ -76,28 +76,39 @@ class FileWatch:
         if Melty.frame_count < 3:
             return
         draw_states = cls.path_to_draw_states.get(event.src_path)
-        if draw_states:
-            new_hash = cls._get_hash(event.src_path)
-            if new_hash:
-                debug_printed = False
-                for ds in list(draw_states):
-                    if new_hash != cls._ds_hashes.get(id(ds)):
-                        if cls.output_debug_diff and not debug_printed:
-                            old_lines = cls._file_contents.get(event.src_path, [])
-                            new_lines = cls._read_text(event.src_path)
-                            diff = difflib.unified_diff(
-                                old_lines, new_lines,
-                                fromfile=f"{event.src_path} (old)",
-                                tofile=f"{event.src_path} (new)",
-                            )
-                            print(''.join(diff) or f"[FileWatch] Binary or empty diff for {event.src_path}")
-                            debug_printed = True
+        if not draw_states:
+            return
+        new_hash = cls._get_hash(event.src_path)
+        if not new_hash:
+            return
+        now = time.monotonic()
+        debug_printed = False
+        for ds in list(draw_states):
+            # Same-view writes (set_hash_from_content) open a short suppress
+            # window. Multiple fs events may fire during one write (e.g. truncate
+            # then flush). Within the window we keep _ds_hashes synced with
+            # disk but never dispatch - so the view doesn't reload its own
+            # write, or intermediate events it never produced.
+            if now < cls._ds_suppress_until.get(id(ds), 0):
+                cls._ds_hashes[id(ds)] = new_hash
+                continue
+            if new_hash != cls._ds_hashes.get(id(ds)):
+                if cls.output_debug_diff and not debug_printed:
+                    old_lines = cls._file_contents.get(event.src_path, [])
+                    new_lines = cls._read_text(event.src_path)
+                    diff = difflib.unified_diff(
+                        old_lines, new_lines,
+                        fromfile=f"{event.src_path} (old)",
+                        tofile=f"{event.src_path} (new)",
+                    )
+                    print(''.join(diff) or f"[FileWatch] Binary or empty diff for {event.src_path}")
+                    debug_printed = True
 
-                        cls._ds_hashes[id(ds)] = new_hash
-                        cls.dispatch_event_for(ds)
+                cls._ds_hashes[id(ds)] = new_hash
+                cls.dispatch_event_for(ds)
 
-                if cls.output_debug_diff:
-                    cls._file_contents[event.src_path] = cls._read_text(event.src_path)
+        if cls.output_debug_diff:
+            cls._file_contents[event.src_path] = cls._read_text(event.src_path)
 
     @classmethod
     def register_draw_state(cls, draw_state, path: Path):
@@ -114,6 +125,7 @@ class FileWatch:
                 if not ds_set:
                     cls.path_to_draw_states.pop(old_path, None)
             cls._ds_hashes.pop(id(draw_state), None)
+            cls._ds_suppress_until.pop(id(draw_state), None)
             if not cls.path_to_draw_states.get(old_path):
                 cls._file_contents.pop(old_path, None)
 
@@ -145,18 +157,25 @@ class FileWatch:
     def set_hash_from_content(cls, path: Path, content: str, draw_state=None):
         """Pre-set hash from known content. Call before write.
 
+        Also opens a brief suppress window on the target draw_state(s) so
+        intermediate fs events from the upcoming write (e.g. the open("w")
+        truncate before the flush) don't trigger a self-reload.
+
         If draw_state is given, only update that view's hash — other
         views watching the same path will see the write as an external change.
         Otherwise update all draw_states for the path (old behaviour).
         """
         resolved = str(path.resolve())
         new_hash = hashlib.md5(content.encode()).hexdigest()
+        suppress_until = time.monotonic() + cls._write_suppress_window
 
         if draw_state is not None:
             cls._ds_hashes[id(draw_state)] = new_hash
+            cls._ds_suppress_until[id(draw_state)] = suppress_until
         else:
             for ds in list(cls.path_to_draw_states.get(resolved, ())):
                 cls._ds_hashes[id(ds)] = new_hash
+                cls._ds_suppress_until[id(ds)] = suppress_until
 
         if cls.output_debug_diff:
             cls._file_contents[resolved] = content.splitlines(keepends=True)
@@ -523,7 +542,7 @@ class Melty:
         for view_id, evts in cls.events.items():
             first_event = list(evts.values())[0]
             if first_event.tile_id is not None and not cls.on_drag:
-                Melty.cache.invalidate(first_event.tile_id)
+                Melty.cache.invalidate_up(first_event.tile_id, max_depth=10, force=True)
 
         Melty.all_uniques = set()
 
@@ -605,14 +624,13 @@ class Melty:
 
         Melty.mode_stack = []
 
-        from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
         from src.lsd.gl_gui.view.mode import Mode
         from src.lsd.gl_gui.view.core_views.new_core_view import draw_with_modes
-        draw_with_modes(Counters, name="counters", modes=(Mode.CODE_UI, Mode.CODE_PLAIN_TEXT, Mode.DEFAULT), mode=Mode.WINDOW)
+        draw_with_modes(Counters, name="counters", modes=(Mode.CODE_UI, Mode.CODE_PLAIN_TEXT), mode=Mode.WINDOW)
 
         # cls.draw_blockers_to()
         # Manually mask windows
-        # for window in Melty.registered_windows.values():
+        # for window in Melty.registered_windows.values():loadf
         #     draw_state = window.draw_state
         #     if not draw_state.closed:
         #         unique = f"{draw_state.id}"

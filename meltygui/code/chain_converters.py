@@ -300,7 +300,7 @@ def run_button(input_value: any, with_kwargs=None, draw_state=None, clicked=Fals
 
 
 @render_func(use_cache=True)
-def address_to_general_parse(input_value: Address, pending=False, changed=False, draw_state=None, load=False):
+def address_to_general_parse(input_value: Address, pending=False, changed=False, draw_state=None, auto_load=True, load=False):
     """Load node: class → cst.Module.
 
     - Resolves Address from the class on first call
@@ -308,6 +308,22 @@ def address_to_general_parse(input_value: Address, pending=False, changed=False,
     - Shows Load / Revert buttons when file changes on disk
     - Returns (True, cst.Module) when loaded, (False, cached) otherwise
     """
+    if draw_state.frame_count < 2 and auto_load:
+        load = True
+
+    from src.lsd.gl_gui.view.core_views.new_core_view import button
+    file_name = input_value.path.name if input_value.path is not None else "Unknown file"
+    folder_icon = ""
+    if button(f"{folder_icon} {file_name}", height=30, draw=True, value=0.4, saturation=1.5)[0]:
+        from src.lsd.gl_gui.utils.jump_to_code import open_in_intellij
+        line_number = input_value.start + 1 if input_value.start is not None else None
+        threading.Thread(
+            target=open_in_intellij,
+            args=(str(input_value.path),),
+            kwargs={"line_number": line_number},
+            daemon=True,
+        ).start()
+
     if pending or changed:
         clicked, result = run_button(load_cst_module, with_kwargs={"input_value": input_value},
                                      clicked=load)
@@ -319,7 +335,7 @@ def address_to_general_parse(input_value: Address, pending=False, changed=False,
 
 @render_func(use_cache=True)
 def general_parse_to_address(input_value: GeneralParse, pending=False, draw_state=None,
-                             changed=False, recompile=False, save=False):
+                             changed=False, recompile=False, save=False, s_key_pressed=None):
     """GeneralParse dict → Address. Handles recompile and save for any source type."""
     address = input_value.address
     if not isinstance(address, Address):
@@ -328,8 +344,14 @@ def general_parse_to_address(input_value: GeneralParse, pending=False, draw_stat
         return False, None
     source = address.source
 
+
     show_recompile = not recompile or (pending or changed)
     show_save = not save or (pending or changed)
+
+    save_hotkey = s_key_pressed and s_key_pressed.ctrl
+    if save_hotkey:
+        _do_save(address, code_str=input_value.source)
+        Melty.cache.invalidate_up(draw_state.parent_window._tile_id, max_depth=10)
 
     # Skip expensive dict→CST conversion when neither block will execute
     if not show_recompile and not show_save:

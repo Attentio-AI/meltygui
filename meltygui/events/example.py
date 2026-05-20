@@ -1,7 +1,7 @@
 """
 Example: InputHandler with various backends.
 """
-from src.lsd.gl_gui.view.events.input_handler import InputHandler
+from src.lsd.gl_gui.events.input_handler import InputHandler
 
 
 def demo_basic():
@@ -48,7 +48,7 @@ def demo_basic():
 
 def demo_json_backend():
     """Demo using JsonBackend for toolkit integration."""
-    from pynput_backend import JsonBackend
+    from event_backends import JsonBackend
     
     handler = InputHandler()
     backend = JsonBackend(handler)
@@ -75,7 +75,7 @@ def demo_json_backend():
 def demo_pynput():
     """Demo with real hardware (requires pynput)."""
     try:
-        from pynput_backend import PynputBackend, HAS_PYNPUT
+        from event_backends import PynputBackend, HAS_PYNPUT
         if not HAS_PYNPUT:
             raise ImportError()
     except ImportError:

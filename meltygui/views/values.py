@@ -503,7 +503,7 @@ def draw_draw_state(input_value, **kwargs):
 
 
 @render_func(use_cache=False, shadow=False, show_bg=False)
-def run_chain(input_value, chain=None, draw_state=None, debug=False, **kwargs):
+def run_chain(input_value, chain=None, draw_state=None, s_key_pressed=False, debug=False, **kwargs):
     """Debug render function: executes a chain step by step with imgui output.
 
     Shows function name, changed flag, output type, and a value preview
@@ -540,24 +540,19 @@ def run_chain(input_value, chain=None, draw_state=None, debug=False, **kwargs):
         func_kwargs['shadow'] = False
         func_kwargs['changed'] = changed
         func_kwargs['show_header'] = False
-        # imgui.begin_group()
+        func_kwargs['s_key_pressed'] = s_key_pressed
+        func_kwargs['draw'] = True
 
         next_cached = cache_tree.peek()
-        start_time = glfw.get_time()
         changed, value = func(input_value=value, reference=next_cached, **func_kwargs)
-        end_time = glfw.get_time()
-        duration_ms = (end_time - start_time) * 1000
-        # imgui.text(f"  [{i}] {func.__name__} - {type(value).__name__} - {duration_ms:.2f} ms")
-        # imgui.end_group()
+
         if isinstance(value, Pending):
             changed=False
             value=None
+
         value = cache_tree.step(changed, value)
 
     cache_tree.end()
-
-    # if debug:
-    #     draw_text(cache_tree.get_mapping_as_str(), name="Cache Key Mapping", show_bg=True, use_cache=True, width=draw_state.width)
 
     imgui.separator()
     return False, None
@@ -1572,10 +1567,9 @@ def test_func():
     some_flag = False
 
 def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=6.0, bg_offset=0,
-        global_style=None, outline=True, bg_color=None, opacity=-0.089,
+        global_style=None, outline=True, bg_color=None, opacity=0.0,
         style_manager=None, tint=None, outline_tint=None, selected=False,
         hovered=False, pressed=False, nested_bg=False, **kwargs):
-
     # -- Constants ---------------------------------
     depth_wrap        = 30
     depth_scale       = 2.34
@@ -1587,16 +1581,17 @@ def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=6.0, bg_offset=
     intensity_factor  = 0.042
     intensity_offset  = -0.336
     
+    some_var = [11,2,3]
     # Outline color tuning
     outline_base      = 1.773
     outline_depth_mul = 0.85
     outline_sat       = {'default': 1.1, 'nested': 1.473}
 
-    # Beed color
+    
+    # More constants 
     bleed_mix         = {'nested': 0.433, 'default': 0.454}
     bleed_style       = {'value': -0.111, 'alpha': 1.12, 'saturation': 7.045}
     outline_bleed_mix = 0.272
-
     # Hover offset per interaction state
     hover_offset_by_state = {
         'default':    -1.807,
@@ -1604,10 +1599,9 @@ def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=6.0, bg_offset=
         'pressed_hi': -1.813,   # pressed + opacity > 0.5
         'pressed_lo':  -0.441,
     }
-
     bg_style = {
         'value': -0.004, 'saturation': 1.101,
-        'alpha': 0.504, 'max_value': 2.1,
+        'alpha': 0.504, 'max_value': 2.0,
     }
     
     # ── Helpers ────────────────────────────────────────────────
@@ -1649,6 +1643,7 @@ def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=6.0, bg_offset=
         else:
             hover_offset = hover_offset_by_state['pressed_lo']
 
+        
     # ── Outline style ──────────────────────────────────────────
     sat = outline_sat['default']
     depth_mul = outline_depth_mul
@@ -1788,8 +1783,6 @@ def draw_bool(input_value: bool):
         
     return False, None
 
-
-
 @render_func(is_default_for=(str), shadow=False, show_bg=False, wrap=False, is_tree=False,
              show_add_delete=False, use_cache=False, disable_scroll=True, with_header=draw_header)
 def text(input_value: str, draw_state):
@@ -1871,7 +1864,7 @@ def unsort_dict_alphabetically(input_value, ref=None, changed=False):
         ref.update(input_value)
         return changed, ref
 
-@render_func(is_default_for=GeneralParse, show_add_delete=False, show_name=False, shadow=False, is_tree=False, use_cache=True, show_bg=False, with_header=draw_header, indent_size=0)
+@render_func(is_default_for=GeneralParse, show_add_delete=False, show_name=True, shadow=False, is_tree=False, use_cache=True, show_bg=False, with_header=draw_header, indent_size=0)
 def draw_general_parse(input_value: GeneralParse):
     changed, value = draw_collection(input_value=input_value, show_header=False, show_bg=False, indent_size=0, shadow=False,
                                      is_tree=False, show_add_delete=False, excluded=["decorators"])
@@ -1889,24 +1882,24 @@ def draw_usage(input_value: UsageRef):
 
     return False, None
 
-@render_func(is_default_for=(Comment), shadow=True, use_cache=True, show_bg=True, with_header=None, is_tree=False, tint=(0.0, 0.8, 0.9))
+@render_func(is_default_for=(Comment), shadow=True, use_cache=True, show_bg=True, with_header=None, is_tree=False)
 def draw_comment(input_value: Comment, draw_state, cursor_hover=False):
-    margin = 0
+    margin = 10
     imgui.dummy(0, margin)
     line_height = imgui.get_text_line_height()
     changed, value = False, input_value
-    help_yellow_tint = (0.0, 0.8, 0.9)
-    help_icon = "❓"
+    help_yellow_tint = (9.9999e-07, 9.999989e-07, 1e-06)
+    help_icon = ""
     draw_list: _DrawList = imgui.get_window_draw_list()
     character_width = imgui.calc_text_size(help_icon)[0]
     # Draw circle background for comment
-    radius = 18 / 2
+    radius = 6
     center_x = draw_state.abs_left + radius
-    center_y = draw_state.abs_top + radius + margin
+    center_y = draw_state.abs_top + radius + margin + 3
     color = imgui.get_color_u32_rgba(*help_yellow_tint, 0.3)
-    imgui.dummy(min(max(30, 30), 300), radius * 2)
+    imgui.dummy(radius * 2 + 2, radius * 2)
     cursor_hover = imgui.is_item_hovered()
-    draw_list.add_circle_filled(center_x, center_y, radius, color)
+    draw_list.add_circle_filled(center_x, center_y, radius, imgui.get_color_u32_rgba(0.8, 0.8, 0.7, 1.0))
     draw_list.add_text(center_x - character_width / 2, center_y - line_height / 2,
                        imgui.get_color_u32_rgba(0.8, 0.8, 0.7, 1.0), help_icon)
 
@@ -1919,7 +1912,7 @@ def draw_comment(input_value: Comment, draw_state, cursor_hover=False):
     #     draw_window(str(input_value), editable=False, window_pos=(0,0), width=popup_width, height=text_size[1] + 5,
     #                 with_header_end=None, with_header=None, with_footer=None)
     imgui.same_line(spacing=0)
-    draw_str(str(input_value[1:]), alpha=0.2, selectable=False, editable=False,
+    draw_str(str(input_value[1:]), alpha=0.6, selectable=False, editable=False,
              is_tree=False, with_header=None, show_name=False)
 
 
@@ -2256,11 +2249,15 @@ def draw_tab_bar(input_value: list, tab_height=20, tint_value=0.202, tint_satura
 
         if active:
             selected_value = 0.204
-            clicked = button(label, indent_size=0, z_offset=2, height=tab_height, value=value + selected_value, draw=True)[0]
+            clicked = button(label, indent_size=0, z_offset=2,
+                             height=tab_height, value=value + selected_value,
+                             draw=True)[0]
         else:
             saturation = 1.0
             z_offset = -3
-            clicked = button(label, indent_size=0, height=tab_height, draw=True, alpha=0.0, value=value, saturation=saturation, z_offset=z_offset, shadow=False)[0]
+            clicked = button(label, indent_size=0, height=tab_height, draw=True,
+                             alpha=0.0, value=value, saturation=saturation,
+                             z_offset=z_offset, shadow=False)[0]
 
         if clicked:
             changed = True

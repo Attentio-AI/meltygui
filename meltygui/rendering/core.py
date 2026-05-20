@@ -390,16 +390,6 @@ def render_func(*args, **o_kwargs):
         style_manager = Melty.style_manager
         collection = kwargs.get("collection", None)
 
-        # Handle untracked object invalidation
-        if not hasattr(input_value, "__melty__"):
-            if Melty.frame_count > 2 and draw_state.frame_count > 2:
-                if isinstance(input_value, (type(None), int, float, str, bool, tuple, set)):
-                    if draw_state._raw_input_value != input_value:
-                        Melty.cache.invalidate_up(draw_state._tile_id, max_depth=7)
-                        if kwargs.get("collection", None) is not None:
-                            Melty.cache.invalidate_up_by_obj(collection, name=name, max_depth=5)
-                            Melty.last_attr = draw_state.name
-                            request_render()
 
         draw_state._raw_input_value = input_value
         if draw_state._input_cache["external_state"][0] == UNSET_VALUE:
@@ -466,6 +456,17 @@ def render_func(*args, **o_kwargs):
                 return return_value
         else:
             Melty.active_layer = active_layer if active_layer is not None else 4
+
+        # Handle untracked object invalidation
+        if not hasattr(input_value, "__melty__"):
+            if Melty.frame_count > 2 and draw_state.frame_count > 2:
+                if isinstance(input_value, (type(None), int, float, str, bool, tuple, set)):
+                    if draw_state._raw_input_value != input_value:
+                        Melty.cache.invalidate_up(draw_state._tile_id, max_depth=7)
+                        if kwargs.get("collection", None) is not None:
+                            Melty.cache.invalidate_up_by_obj(collection, name=name, max_depth=5)
+                            Melty.last_attr = draw_state.name
+                            request_render()
 
         kwargs['return_extras'] = False
 
@@ -605,7 +606,10 @@ def render_func(*args, **o_kwargs):
 
                 kwargs.setdefault(key, default_value)
 
-            kwargs = Melty.global_attrs | kwargs
+            kwargs["style_manager"] = Melty.style_manager
+            kwargs["global_style"] = Melty.global_attrs["global_style"]
+            kwargs["global_toggle"] = Melty.global_attrs["global_toggle"]
+
             kwargs = kwargs | meta.__dict__
             set_default("input_value", input_value)
             set_default("draw_state", draw_state)
@@ -622,9 +626,6 @@ def render_func(*args, **o_kwargs):
             kwargs = unique_events | kwargs
             ##############################################
 
-            if input_value.__class__.__name__ == "Lora":
-                pass
-            kwargs = meta.__dict__ | kwargs
             for param in wanted_params:
                 if param not in kwargs and param != "kwargs" and param != 'args' and param != 'o_kwargs' and param != 'next_kwargs':
                     wanted_type = name_to_param_type.get(param, None)
@@ -1826,6 +1827,9 @@ def render_func(*args, **o_kwargs):
                     max_layer_depth = Melty.max_depth * Melty.max_layer + Melty.max_depth
                     priority = max_layer_depth - draw_state.z_pos
                     event_names = copy(wanted_params)
+
+                    # Remove event names from wanted params that aren't in kwargs
+                    event_names = [e for e in event_names if e in kwargs]
                     Melty.event_handler.register_hovered(tile_id, event_names, priority, tile_id,
                                                          selected=draw_state.selected,
                                                          blocker=closable)

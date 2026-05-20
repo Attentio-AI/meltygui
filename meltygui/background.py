@@ -89,7 +89,7 @@ class Background:
     @classmethod
     def run(cls, func, user_id, func_kwargs=None, *,
             stateful=False, no_cache=False, invalidate_id=None,
-            on_frame=None, frames=None, debounce=0):
+            on_frame=None, frames=None, debounce=10):
         """Run func with func_kwargs, with caching, debouncing, and background dispatch.
 
         Background.run's own parameters (user_id, stateful, no_cache, etc.) are

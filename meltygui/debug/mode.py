@@ -155,13 +155,12 @@ class Mode(Enum):
             recursive=True
         ),
 
-
         Conditional: ModeOverrides(
             kwargs={"tint": (0.2, 0.2, 0.1), 'show_add_delete': True, 'is_tree':False},
             recursive=True,
         ),
         Comment: ModeOverrides(
-            kwargs={"tint": (0.2, 0.2, 0.1), 'show_add_delete': True, 'is_tree':False},
+            kwargs={"tint": (0.1, 0.1, 0.1), "show_bg":False, "shadow":False, 'show_add_delete': True, 'is_tree':False},
             func=draw_comment,
             recursive=True,
         ),
@@ -174,77 +173,47 @@ class Mode(Enum):
     }
 
 
-    DEFAULT = {
-        Any: ModeOverrides(
-            kwargs={},
-            recursive=True,
-        )
-    }
-
+    code_plain_text_auto_load = False
+    code_plain_text_params = {'save': True,
+                              'recompile': False}
     CODE_PLAIN_TEXT = {
-        # cst.Module: ModeOverrides(
-        #     kwargs={"convert_in": [cst_module_to_str],
-        #             "convert_out": [str_to_cst_module],
-        #             "auto_apply": [load_text],
-        #             "horizontal": True},
-        #     func=draw_text,
-        #     recursive=True
-        # ),
-
-        # cst.Module: ModeOverrides(
-        #     func=(cst_module_to_str,
-        #           draw_text,
-        #           str_to_cst_module),
-        #     recursive=True
-        # ),
 
         types.FunctionType: ModeOverrides(
             recursive=True,
             func=(function_to_address,
-                  (address_to_general_parse, {'load': True}),
+                  (address_to_general_parse, {'load': code_plain_text_auto_load}),
                   general_parse_to_str,
                   draw_text,
                   str_to_general_parse,
-                  (general_parse_to_address, {'save': False,
-                                              'recompile': False}),
+                  (general_parse_to_address, code_plain_text_params),
                   address_to_function),
         ),
         types.ModuleType: ModeOverrides(
             recursive=True,
             func=(module_to_address,
-                  (address_to_general_parse, {'load': True}),
+                  (address_to_general_parse, {'load': code_plain_text_auto_load}),
                   general_parse_to_str,
                   draw_text,
                   str_to_general_parse,
-                  (general_parse_to_address, {'save': False,
-                                              'recompile': False}),
+                  (general_parse_to_address, code_plain_text_params),
                   address_to_module),
         ),
         type: ModeOverrides(
             func=(class_to_address,
-                  (address_to_general_parse, {'load': True}),
+                  (address_to_general_parse, {'load': code_plain_text_auto_load}),
                   general_parse_to_str,
                   draw_text,
                   str_to_general_parse,
-                  (general_parse_to_address, {'save': False,
-                                              'recompile': False}),
+                  (general_parse_to_address, code_plain_text_params),
                   address_to_class),
             recursive=True
         ),
-
-        # str: ModeOverrides(
-        #     kwargs={"mode": None, "indent_size": 30, "with_header": draw_header},
-        #     func=draw_text,
-        #     recursive=True,
-        # ),
     }
 
     # ── File metadata ────────────────────────────────────────
     #
     # Path on disk → metadata dict (name, size, modified, raw bytes).
     # Good for: file browsers, file inspectors, drag-and-drop targets.
-
-
 
     FILE_META = {
         Path: ModeOverrides(
@@ -261,19 +230,6 @@ class Mode(Enum):
             recursive=True,
         ),
     }
-
-    # ── File as plain text ───────────────────────────────────
-    #
-    # Path on disk → decoded string, drawn in a text editor.
-    # Good for: README, .txt, .md, .json - anything you want as raw text.
-
-    # FILE_TEXT = {
-    #     Path: ModeOverrides(
-    #         kwargs={"convert": [Path, bytes, str]},
-    #         func=draw_str,
-    #         recursive=True,
-    #     ),
-    # }
 
 
 class ModeGroup:
