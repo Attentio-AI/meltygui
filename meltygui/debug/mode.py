@@ -52,7 +52,7 @@ class Mode(Enum):
     SORT = {
         defaultdict: ModeOverrides(
             kwargs={"show_bg": True, "selectable": False, "use_cache": True},
-            recursive=False,
+            recursive=True,
             func=(sort_dict_alphabetically,
                   (draw_collection, {"show_add_delete":False, "selectable":False, "show_bg": False}),
                   unsort_dict_alphabetically)

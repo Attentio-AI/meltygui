@@ -431,7 +431,7 @@ def render_func(*args, **o_kwargs):
                     layer = len(Melty.registered_windows) + Melty.top_layer_boost
 
                 if closable and len(Melty.melty_window_stack) > 0:
-                    draw_state._is_nested = True
+                    draw_state.is_nested = True
                     parent_ds = draw_state._parent
                     if draw_state not in set(Melty.root_draw_states[parent_ds.id]):
                         Melty.root_draw_states[parent_ds.id].append(draw_state)

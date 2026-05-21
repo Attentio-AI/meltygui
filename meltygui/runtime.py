@@ -673,6 +673,25 @@ class Melty:
         return xa, ya, xb, yb
 
     @staticmethod
+    def _round_rect_point(px, py, x0, y0, x1, y1, r):
+        """Project a point on a rect's square boundary onto its rounded-corner
+        boundary, so the connector meets the visible (rounded) edge instead of
+        sitting just off the square corner. Points on the straight portions of
+        edges are left unchanged."""
+        if r <= 0.0:
+            return px, py
+        # Corner-arc center: clamp into the inner box inset by r. On a straight
+        # edge this stays level with the point (no shift); near a corner it pins
+        # to the arc center, and we reproject the point onto that arc.
+        cxc = x0 + r if px < x0 + r else (x1 - r if px > x1 - r else px)
+        cyc = y0 + r if py < y0 + r else (y1 - r if py > y1 - r else py)
+        dx, dy = px - cxc, py - cyc
+        d = math.hypot(dx, dy)
+        if d > r and d > 1e-6:
+            return cxc + dx / d * r, cyc + dy / d * r
+        return px, py
+
+    @staticmethod
     def _highlight_rgb(tint=None):
         """Super-bright version of a view's tint, used for the nested-view
         highlight (swoosh + outline boxes). Pass the tint stashed on the
@@ -688,17 +707,24 @@ class Melty:
                               saturation_scale=Swoosh.saturation)[:3]
 
     @staticmethod
-    def _draw_swoosh(overlay_dl, px, py, pw, ph, nx, ny, nw, nh, rgb):
+    def _draw_swoosh(overlay_dl, px, py, pw, ph, nx, ny, nw, nh, rgb,
+                     p_round=0.0, n_round=0.0):
         """Draw a curved connector from the parent view's outline to the nested
         view. The line is thick at both endpoints and tapers thin in the middle.
-        `rgb` is the resolved highlight color (see _highlight_rgb). Tunables
-        live on Swoosh.*."""
+        `rgb` is the resolved highlight color (see _highlight_rgb); p_round /
+        n_round are the parent/nested corner radii so the ends meet the rounded
+        edge. Tunables live on Swoosh.*."""
         # Anchor both ends at the center of the rects' shared edge (smoothed),
         # so the connector stays centered and glides as the rects move.
         x0, y0, x1, y1 = Melty._closest_perimeter_points(
             px, py, px + pw, py + ph,
             nx, ny, nx + nw, ny + nh,
         )
+
+        # Pull the ends onto the rounded-corner boundary so the end dots sit flush
+        # against the visible edge rather than the square corner.
+        x0, y0 = Melty._round_rect_point(x0, y0, px, py, px + pw, py + ph, p_round)
+        x1, y1 = Melty._round_rect_point(x1, y1, nx, ny, nx + nw, ny + nh, n_round)
 
         seg_dx, seg_dy = x1 - x0, y1 - y0
         seg_len = math.hypot(seg_dx, seg_dy)
@@ -873,7 +899,7 @@ class Melty:
         for parent_ds_id, ds_list in cls.root_draw_states.items():
 
             for idx, ds in enumerate(ds_list):
-                if ds.abs_closed:
+                if ds.abs_closed or ds.closed:
                     to_discard.add((parent_ds_id, ds))
                     ds.closed = True
                 else:
@@ -949,9 +975,9 @@ class Melty:
                         # Route to the window's z-order channel so this overlay
                         # sits above the window's own content but is masked by
                         # any higher-layer window (matches the renderer's mask).
-                        layer_index = offset_ds.window_index
+                        layer_index = draw_state.window_index
 
-                        overlay_dl.channels_set_current(min(Melty.max_layer - 1, layer_index))
+                        overlay_dl.channels_set_current(min(Melty.max_layer - 1, offset_ds.window_index))
 
                         # Color the highlight using the *parent* window's tint:
                         # the nested view doesn't always carry a tint of its own.
@@ -992,10 +1018,12 @@ class Melty:
                 # current: draw the child outline + swoosh of current bounds.
                 if child_highlight is not None and draw_state.width is not None and draw_state.height is not None:
                     overlay_dl, offset_ds, outline_col, highlight_rgb = child_highlight
-                    # cls.draw may have left the overlay on another channel; match ours.
-                    child_layer_index = draw_state.window_index
+                    # Route to the *nested* view's own overlay channel (not its
+                    # window_index, which collapses to the parent's layer for a
+                    # first-level nested view) so the line/outline aren't masked
+                    # by the nested window. cls.draw may also have moved the channel.
                     rounding = draw_state.corner_radius
-                    overlay_dl.channels_set_current(min(Melty.max_layer - 1, child_layer_index))
+                    overlay_dl.channels_set_current(layer_index)
 
                     overlay_dl.add_rect(draw_state.abs_left, draw_state.abs_top,
                                         draw_state.abs_left + draw_state.width,
@@ -1010,6 +1038,8 @@ class Melty:
                         draw_state.abs_left, draw_state.abs_top,
                         draw_state.width, draw_state.height,
                         highlight_rgb,
+                        p_round=offset_ds.corner_radius,
+                        n_round=draw_state.corner_radius,
                     )
 
                 if Melty.channels_split:
@@ -1119,7 +1149,6 @@ class Melty:
 
         if cls.frame_count % 120 == 0:
             nz = [(ch, n) for ch, n in enumerate(per_channel) if n > 0]
-            print(f"[overlay-mask] finalize frame={cls.frame_count} per_channel_idx(nonzero)={nz}")
 
     @classmethod
     def post_frame(cls, imgui_impl, window):
@@ -1130,7 +1159,6 @@ class Melty:
         draw_data = imgui.get_draw_data()
         imgui_impl.render_except_overlay(draw_data)
         Melty.cache.finalize_captures((int(fb_w), int(fb_h)))
-        imgui_impl.render_overlay_only(draw_data)
 
         if Toggles.filters:
             Melty.filter.brightness_contrast(
@@ -1164,6 +1192,10 @@ class Melty:
                     shadow_opacity=0.9,
                     shadow_color=(0.0, 0.02, 0.05)  # Slightly darker shadows
                 )
+
+        # Overlay last, so the highlight/swoosh sits on top of the shadow pass
+        # (the split renderer's intended slot: "below overlay" is everything above).
+        imgui_impl.render_overlay_only(draw_data)
 
         glfw.swap_buffers(window)
 

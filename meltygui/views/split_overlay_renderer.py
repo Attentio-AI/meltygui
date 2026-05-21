@@ -201,10 +201,6 @@ class SplitOverlayRenderer(GlfwRenderer):
             except Exception as e:
                 stencil_bits = f"query-failed({e})"
             non_empty = [(c, s, e) for (c, s, e) in ranges if e > s]
-            print(f"[overlay-mask] stencil_size={stencil_bits} draw_fbo={fbo} "
-                  f"top_channel={top_channel} total_cmds={len(commands)}")
-            print(f"[overlay-mask] window_channels={[(c, round(ds.abs_left or 0), round(ds.abs_top or 0)) for c, ds in window_channels]}")
-            print(f"[overlay-mask] non_empty_channel_ranges={non_empty}")
 
         for channel_idx, idx_lo, idx_hi in ranges:
             if idx_hi <= idx_lo:

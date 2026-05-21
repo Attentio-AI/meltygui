@@ -37,7 +37,7 @@ from src.lsd.gl_gui.view.core_views.codec_register import registry as FILE_CODEC
 from src.lsd.gl_gui.view.core_views.core_meta import Meta
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import hotkey
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import hotkey, tint
 from src.lsd.gl_gui.view.core_views.decoration.invalidation_decoration import live
 from src.lsd.gl_gui.view.core_views.folders_proxy import FolderProxy
 from src.lsd.gl_gui.view.core_views.headers import draw_header, draw_footer, draw_header_end
@@ -53,10 +53,7 @@ def empty(input_val):
     pass
 
 
-@render_func(use_cache=True, auto_resize=False, closable=True, selectable=False,
-             show_bg=True, melty_window=True, draggable=True, show_tint=True, tile_mode=TileMode.MAX,
-             with_header=draw_header, with_header_end=draw_header_end, indent_size=5,
-             with_footer=draw_footer)
+@render_func(use_cache=True, auto_resize=False, closable=True, selectable=False, show_bg=True, melty_window=True, draggable=True, show_tint=True, tile_mode=TileMode.MAX, with_header=draw_header, with_header_end=draw_header_end, indent_size=5, with_footer=draw_footer)
 # Deprecated: use draw_any(input_value, mode=Mode.WINDOW, ...) instead.
 def draw_window(input_value:any, view_func=None, draw_state=None, delete_down=False, search_text="", glfw_close_down=False, **kwargs):
     if delete_down and imgui.get_io().key_ctrl:
@@ -91,9 +88,7 @@ def draw_window(input_value:any, view_func=None, draw_state=None, delete_down=Fa
 def draw_module(input_value: types.ModuleType, draw_state, **kwargs):
     imgui.text(f"Module: {input_value.__name__}")
 
-@render_func(is_default_for=(dict, MutableMapping, defaultdict), use_cache=True, header_same_line=False, show_bg=True,
-             show_instance_vars=False, manual_content_height=True, disable_scroll=True, shadow=True, wrap=False,
-             with_header=draw_header, indent_size=5, searchable=True)
+@render_func(is_default_for=(dict, MutableMapping, defaultdict, tuple), use_cache=True, header_same_line=False, show_bg=True, show_instance_vars=False, manual_content_height=True, disable_scroll=True, shadow=True, wrap=False, with_header=draw_header, indent_size=5, searchable=True)
 def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=None, keys=None, get_attr=None, set_attr=None, show_excluded=False,
                     child_kwargs=None, nested_func=None, show_bg=True, show_search=True, on_collapse=False, search_text="",
                     on_expand=False, show_add_delete=True, item_spacing_y=1,
@@ -785,15 +780,13 @@ def draw_melty_windows(vis):
     end()
 
 
-@render_func(is_default_for=PendingTexture, use_cache=True, z_offset=0, selectable=False,
-             show_bg=False, auto_resize=True, with_header=draw_header)
+@render_func(is_default_for=PendingTexture, use_cache=True, z_offset=0, selectable=False, show_bg=False, auto_resize=True, with_header=draw_header)
 def draw_pending_texture(input_value: PendingTexture, draw_state):
     if input_value.texture_id is None:
         imgui.text(f"Uploading... {id(input_value)}")
         return False, None
 
-    return_val = draw_texture(input_value.texture_id, name=f"{draw_state.id}_inner",
-                              auto_resize=False, show_header=False, use_cache=True, wrap=False)
+    return_val = draw_texture(input_value.texture_id, name=f"{draw_state.id}_inner", auto_resize=False, show_header=False, use_cache=True, wrap=False)
 
     return return_val
 
@@ -1574,9 +1567,9 @@ def draw_bg(left=0, top=0, width=0, height=57, depth=0, rounding=5.952, bg_offse
         hovered=False, pressed=False, nested_bg=False, **kwargs):
     # -- Constants ---------------------------------
     depth_wrap        = 30
-    depth_scale       = 1.367
+    depth_scale       = 1.019
     corner_radius     = rounding
-    border_inset      = 3.0
+    border_inset      = 2.802
     border_inset_half = 1.5
     stroke_width      = 4.0
     # How depth maps to color intensity
@@ -1591,7 +1584,7 @@ def draw_bg(left=0, top=0, width=0, height=57, depth=0, rounding=5.952, bg_offse
     
 
     # More constants 
-    bleed_mix         = {'nested': 0.433, 'default': 0.454}
+    bleed_mix         = {'nested': 0.501, 'default': 0.446}
     bleed_style       = {'value': -0.111, 'alpha': 1.12, 'saturation': 7.045}
     outline_bleed_mix = 0.272
     # Hover offset per interaction state
@@ -1922,60 +1915,60 @@ def draw_comment(input_value: Comment, draw_state, cursor_hover=False):
         return True, value
     return changed, value
 
+#
+# @render_func(is_default_for=(tuple,), has_popup=True, indent_size=0, is_tree=False,
+#              show_name=True, selectable=False, wrap=True, use_cache=False, with_header=draw_header)
+# def draw_tuple_tint(input_value: tuple, unique, **kwargs):
+#     if len(input_value) > 0 and isinstance(input_value[0], (float, int)):
+#         if len(input_value) == 4:
+#             # imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (4, 0))
+#             # imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (4, 0))
+#
+#             color_list = list(input_value)
+#             color_flags = (imgui.COLOR_EDIT_NO_INPUTS | imgui.COLOR_EDIT_NO_LABEL | imgui.COLOR_EDIT_FLOAT |
+#                            imgui.COLOR_EDIT_NO_TOOLTIP)
+#             changed, color = imgui.color_edit4(
+#                 f"##picker_edit{unique}",
+#                 color_list[0], color_list[1], color_list[2], color_list[3],
+#                 flags=color_flags)
+#
+#             # imgui.pop_style_var(2)
+#             if changed:
+#                 input_value = (color[0], color[1], color[2], color[3])
+#         elif len(input_value) == 3:
+#             # imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (4, 0))
+#             # imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (4, 0))
+#
+#             color_list = list(input_value)
+#             color_flags = (imgui.COLOR_EDIT_NO_INPUTS | imgui.COLOR_EDIT_NO_LABEL |
+#                            imgui.COLOR_EDIT_NO_ALPHA | imgui.COLOR_EDIT_FLOAT |
+#                            imgui.COLOR_EDIT_NO_TOOLTIP)
+#             changed, color = imgui.color_edit3(
+#                 f"##picker_edit{unique}",
+#                 color_list[0], color_list[1], color_list[2],
+#                 flags=color_flags)
+#
+#             # imgui.pop_style_var(2)
+#             if changed:
+#                 input_value = (color[0], color[1], color[2])
+#         else:
+#             str_value = ", ".join([str(v) for v in input_value])
+#             changed, input_str = imgui.input_text("##tuple", str_value)
+#             if changed:
+#                 try:
+#                     new_tuple = eval(f"({input_str},)")
+#                     if isinstance(new_tuple, tuple):
+#                         input_value = new_tuple
+#                 except Exception as e:
+#                     print(f"Error parsing tuple: {e}")
+#                     pass
+#     else:
+#         changed, input_value = draw_collection(input_value=input_value, **kwargs)
+#
+#     return changed, input_value
 
-@render_func(is_default_for=(tuple), has_popup=True, indent_size=0, is_tree=False,
-             show_name=True, selectable=False, wrap=True, use_cache=False, with_header=draw_header)
-def draw_tuple_tint(input_value: tuple, unique):
-    if len(input_value) > 0 and isinstance(input_value[0], (float, int)):
-        if len(input_value) == 4:
-            # imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (4, 0))
-            # imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (4, 0))
 
-            color_list = list(input_value)
-            color_flags = (imgui.COLOR_EDIT_NO_INPUTS | imgui.COLOR_EDIT_NO_LABEL | imgui.COLOR_EDIT_FLOAT |
-                           imgui.COLOR_EDIT_NO_TOOLTIP)
-            changed, color = imgui.color_edit4(
-                f"##picker_edit{unique}",
-                color_list[0], color_list[1], color_list[2], color_list[3],
-                flags=color_flags)
-
-            # imgui.pop_style_var(2)
-            if changed:
-                input_value = (color[0], color[1], color[2], color[3])
-        elif len(input_value) == 3:
-            # imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (4, 0))
-            # imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (4, 0))
-
-            color_list = list(input_value)
-            color_flags = (imgui.COLOR_EDIT_NO_INPUTS | imgui.COLOR_EDIT_NO_LABEL |
-                           imgui.COLOR_EDIT_NO_ALPHA | imgui.COLOR_EDIT_FLOAT |
-                           imgui.COLOR_EDIT_NO_TOOLTIP)
-            changed, color = imgui.color_edit3(
-                f"##picker_edit{unique}",
-                color_list[0], color_list[1], color_list[2],
-                flags=color_flags)
-
-            # imgui.pop_style_var(2)
-            if changed:
-                input_value = (color[0], color[1], color[2])
-        else:
-            str_value = ", ".join([str(v) for v in input_value])
-            changed, input_str = imgui.input_text("##tuple", str_value)
-            if changed:
-                try:
-                    new_tuple = eval(f"({input_str},)")
-                    if isinstance(new_tuple, tuple):
-                        input_value = new_tuple
-                except Exception as e:
-                    print(f"Error parsing tuple: {e}")
-                    pass
-    else:
-        changed, input_value = draw_collection(input_value=input_value)
-
-    return changed, input_value
-
-
-@render_func(is_default_for=('tint', 'help_yellow_tint'), has_popup=True, indent_size=0, is_tree=False,
+@render_func(is_default_for=('tint', 'help_yellow_tint', 'context_select_tint'), has_popup=True, indent_size=0, is_tree=False,
              show_name=False, selectable=False, wrap=True, use_cache=False, with_header=None)
 def draw_tuple(input_value: tuple, unique):
     if len(input_value) > 0 and isinstance(input_value[0], (float, int)):
@@ -2062,7 +2055,7 @@ def draw_float(input_value: float, draw_state, min_value=-100.0, max_value=99.26
                                       min_value=min_value,
                                       max_value=max_value)
                                       
-    
+
     if changed:
         return True, value
 
@@ -2265,9 +2258,13 @@ def draw_enum(input_value: Enum, global_style=None,  style_manager=None, enum_ti
 
 
 @render_func(is_tree=False, show_bg=True, shadow=False, use_cache=True, z_offset=0, header_same_line=True, indent_size=0, show_add_delete=False, show_name=False, selectable=False, parent_show_add_delete=False, with_header=draw_header)
-def draw_tab_bar(input_value: list, tab_height=20, names=None, tint_value=0.202, tint_saturation=0.372, collection=None, as_toggles=False, draw_state=None):
+def draw_tab_bar(input_value: list, tab_height=20, names=None, tint_value=0.202, tint_saturation=0.372, unique=None, collection=None, as_toggles=False, tints=None, draw_state=None):
     """Tab bar with multi-select via shift-click. input_value is the list of selected items, collection is all available tabs.
-    Tabs wrap onto a new row when the cumulative width would exceed draw_state.content_width."""
+    Tabs wrap onto a new row when the cumulative width would exceed draw_state.content_width.
+
+    tints: optional list of (r, g, b) tint colors, one per tab in `collection`. Entries that are
+    None (or beyond the list) fall back to the neutral grey. (Defaults to None rather than [] to
+    avoid the mutable-default-arg pitfall; behaves identically to an empty list.)"""
     if collection is None:
         return False, input_value
 
@@ -2296,20 +2293,32 @@ def draw_tab_bar(input_value: list, tab_height=20, names=None, tint_value=0.202,
         if names is not None and i < len(names):
             label = f"{names[i]}"
         active = tab in selected
-        value = 0.238
+
+        tab_color = (0.5, 0.5, 0.5)
+        tinted = tints is not None and i < len(tints) and tints[i] is not None
+        if tinted:
+            tab_color = tints[i]
+
+        value = 0.3 if not tinted else 0.1
+
+        # make_color_rgb mixes `color` toward the theme color by `factor`; factor=1.0 (button's
+        # default) discards `color` entirely. Drop factor for tinted tabs so the tint shows, and
+        # give inactive tinted tabs a faint fill (the default alpha=0.0 draws no rect at all).
+        tab_factor = 0.50 if tinted else 1.0
 
         tab_width = imgui.calc_text_size(label.split("##")[0]).x + button_padding
 
         if active:
             selected_value = 0.204
-            clicked = button(label, indent_size=0, z_offset=2, name=f"tab_{i}",
+            clicked = button(label, indent_size=0, z_offset=2, name=f"tab_{i}_{unique}",
                              height=tab_height, value=value + selected_value,
-                             draw=True)[0]
+                             color=tab_color, factor=tab_factor, draw=True)[0]
         else:
-            saturation = 1.0
+            saturation = 1.0 if tinted else 0.3
             z_offset = -3
             clicked = button(label, indent_size=0, height=tab_height, draw=True,
-                             alpha=0.0, value=value, saturation=saturation, name=f"tab_{i}",
+                             alpha=0.0 if tinted else 0.0, value=value if not tinted else 0.1, saturation=saturation,
+                             name=f"tab_{i}_{unique}", color=tab_color, factor=tab_factor, text_value=1.0 if not tinted else 0.9,
                              z_offset=z_offset, shadow=False)[0]
 
         if clicked:
@@ -2370,17 +2379,10 @@ def draw_debug(x,y, label, color=(1, 0, 0), size=16):
 #
 #     return False, None
 @render_func(use_cache=True, disable_scroll=True, show_header=False, searchable=True, header_same_line=False, show_tint=False, show_name=False, is_tree=False)
-def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, search_text="", up_key_pressed=None,
+def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, search_text="", unique=None, up_key_pressed=None,
                          down_key_pressed=None, tab_state: TabState = None, **kwargs):
 
     context_menu_offset = input_value.context_menu_offset
-    # Draw rects ################
-    # overlay_dl = imgui.get_overlay_draw_list()
-    # overlay_dl.add_rect(draw_state.abs_left, draw_state.abs_top, draw_state.abs_left + draw_state.width,
-    #                     draw_state.abs_top + draw_state.height, imgui.get_color_u32_rgba(1, 0, 0, 0.5), thickness=1.0)
-    
-    #############################
-
     info_items = ["name", "closable", "current_mode", "mode", "show_add_delete", "_source", "width", "height", "content_height", "scroll_offset",
                   "final_max_column", "_column_cursor", "_content_rect", "_max_column_index", "_outside_column_height", "disable_scroll"]
 
@@ -2422,15 +2424,31 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, s
     input_value = offset_ds
 
     # Font awesome info icon unicode: \uf05a
+    gear_icon = f"\uf013"
+    config_icon_fa = f"{gear_icon} Config"
     info_icon_fa = " Info"
     view_func_name = offset_ds._view_func.__name__
     class_name = type(input_value._raw_input_value).__name__
 
+    # Font awesome: fa-code () for the view function, fa-cube () for the class.
+    func_tab = f" {view_func_name}"
+    class_tab = f" {class_name}"
+
+    # Static tint colors for the fixed Config / Info tabs; other tabs use the neutral grey.
+    config_tint = (0., 0.2, 0.967)  # steel blue
+    info_tint = (1.0, 0.64, 0.113)    # teal
+
     tab_names = []
+    tab_tints = []
+    tab_names.append(config_icon_fa)
+    tab_tints.append(config_tint)
     tab_names.append(info_icon_fa)
-    tab_names.append(view_func_name)
+    tab_tints.append(info_tint)
+    tab_names.append(func_tab)
+    tab_tints.append(None)
     if not isinstance(input_value._raw_input_value, (int, float, str, bool)):
-        tab_names.append(class_name)
+        tab_names.append(class_tab)
+        tab_tints.append(None)
 
     indices = list(range(len(tab_names)))
 
@@ -2445,8 +2463,8 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, s
     # Tab list
 
     tab_changed, new_tabs = draw_tab_bar(tab_state.selected_tabs, names=tab_names, wrap=True, tab_height=30, tint_value=0.7,
-                                         bg_offset=2, show_bg=True, name=f"tab_bar#{view_func_name}", z_offset=1, draw=True,
-                                         collection=indices, as_toggles=False)
+                                         show_bg=True, name=f"tab_bar#{view_func_name}{unique}", z_offset=-1, bg_offset=-3, draw=True,
+                                         collection=indices, tints=tab_tints, as_toggles=False)
     if tab_changed:
         tab_state.selected_tabs = new_tabs
 
@@ -2479,7 +2497,9 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, s
                 if button("print_stack_trace")[0]:
                     print_stack_trace()
 
-            if tab_names[static_tab] == view_func_name:
+            if tab_names[static_tab] == config_icon_fa:
+                mode_change, new_mode = text("Other", column=t_idx)
+            if tab_names[static_tab] == func_tab:
                 view_func = input_value._view_func
                 # Draw view function
                 if view_func is not None:
@@ -2492,7 +2512,7 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, s
                 else:
                     draw_str("No view function specified", name="View Function", column=t_idx, editable=False)
 
-            if tab_names[static_tab] == class_name:
+            if tab_names[static_tab] == class_tab:
                 # Draw class
                 # Skip if primitive type
                 cls_change, new_cls = draw_with_modes(type(input_value._raw_input_value), column=t_idx,
@@ -2505,6 +2525,7 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, s
 
                     mode_change, new_mode = text(str(current_mode.value), column=t_idx, width=draw_state.content_width,
                                                             name=str(current_mode))
+    imgui.dummy(0,30)
 
     return False, None
 

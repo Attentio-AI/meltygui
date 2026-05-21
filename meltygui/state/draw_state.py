@@ -457,7 +457,7 @@ class DrawState(DictConversion):
         if new_bbox == self._bvh_bbox:
             return
         old_bbox = self._bvh_bbox
-        self._bvh_bbox = new_bbox
+        self._bvh_bbox = self.bbox
 
         if self._bvh_id is None:
             if new_bbox is not None and self.clipped:
