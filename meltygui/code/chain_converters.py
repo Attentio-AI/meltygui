@@ -230,26 +230,30 @@ def _do_save(input_value, code_str):
     lines[old_start:old_end] = new_lines
     final_text = newline.join(lines)
     FileWatch.set_hash_from_content(input_value.path, final_text, draw_state=input_value._watcher_ds)
-    input_value.path.write_text(final_text, encoding="utf-8")
 
-    if old_start is not None:
-        resolved_old_end = old_end if old_end is not None else old_start + len(new_lines)
-        new_end = old_start + len(new_lines)
-        delta = new_end - resolved_old_end
+    try:
+        input_value.path.write_text(final_text, encoding="utf-8")
 
-        input_value.end = new_end
-        input_value._hash = input_value._compute_hash()
+        if old_start is not None:
+            resolved_old_end = old_end if old_end is not None else old_start + len(new_lines)
+            new_end = old_start + len(new_lines)
+            delta = new_end - resolved_old_end
 
-        shift_sibling_linenos(input_value.source, input_value.path,
-                              after_lineno=resolved_old_end, delta=delta)
-    else:
-        input_value._hash = input_value._compute_hash()
+            input_value.end = new_end
+            input_value._hash = input_value._compute_hash()
 
-    if Toggles.slow_down_threads:
-        for i in range(5):
-            import time
-            time.sleep(0.1)
-            print(f"Simulating slow load... {i + 1}/5")
+            shift_sibling_linenos(input_value.source, input_value.path,
+                                  after_lineno=resolved_old_end, delta=delta)
+        else:
+            input_value._hash = input_value._compute_hash()
+
+        if Toggles.slow_down_threads:
+            for i in range(5):
+                import time
+                time.sleep(0.1)
+                print(f"Simulating slow load... {i + 1}/5")
+    except Exception as e:
+        imgui.text_colored(f"Error saving file: {e}", 1.0, 0.0, 0.0)
 
     return True, input_value
 
@@ -300,7 +304,7 @@ def run_button(input_value: any, with_kwargs=None, draw_state=None, clicked=Fals
 
 
 @render_func(use_cache=True)
-def address_to_general_parse(input_value: Address, pending=False, changed=False, draw_state=None, auto_load=True, load=False):
+def address_to_general_parse(input_value: Address, pending=False, unique=None, changed=False, draw_state=None, auto_load=True, load=False):
     """Load node: class → cst.Module.
 
     - Resolves Address from the class on first call
@@ -326,7 +330,7 @@ def address_to_general_parse(input_value: Address, pending=False, changed=False,
 
     if pending or changed:
         clicked, result = run_button(load_cst_module, with_kwargs={"input_value": input_value},
-                                     clicked=load)
+                                     clicked=load, name=f"load_cst_module{unique}")
         if clicked:
             return result
 
@@ -334,7 +338,7 @@ def address_to_general_parse(input_value: Address, pending=False, changed=False,
     return False, None
 
 @render_func(use_cache=True)
-def general_parse_to_address(input_value: GeneralParse, pending=False, draw_state=None,
+def general_parse_to_address(input_value: GeneralParse, pending=False, draw_state=None, unique=None,
                              changed=False, recompile=False, save=False, s_key_pressed=None):
     """GeneralParse dict → Address. Handles recompile and save for any source type."""
     address = input_value.address
@@ -344,8 +348,7 @@ def general_parse_to_address(input_value: GeneralParse, pending=False, draw_stat
         return False, None
     source = address.source
 
-
-    show_recompile = not recompile or (pending or changed)
+    show_recompile = True
     show_save = not save or (pending or changed)
 
     save_hotkey = s_key_pressed and s_key_pressed.ctrl
@@ -363,7 +366,7 @@ def general_parse_to_address(input_value: GeneralParse, pending=False, draw_stat
     code_str = back_to_cst.code
     if show_recompile:
         if source is not None:
-            run_button(do_recompile, clicked=recompile and pending, name="do_recompile",
+            run_button(do_recompile, clicked=recompile and pending, name=f"do_recompile{unique}",
                         with_kwargs={"input_value": address.source,
                                  "code_str": code_str,
                                  "file_path": address.path})

@@ -471,7 +471,7 @@ def test_columns():
         draw_float(0.4, name=f"float_{i}", column=2)
 
 
-@render_func(use_cache=False, show_bg=False, shadow=False, disable_scroll=True, selectable=False)
+@render_func(use_cache=False, show_bg=False, shadow=False, selectable=False)
 def draw_with_modes(input_value, modes, tab_state: TabState = None, draw_state=None, unique=0):
     if not tab_state.selected_tabs:
         tab_state.selected_tabs = [modes[0]]
@@ -490,9 +490,8 @@ def draw_with_modes(input_value, modes, tab_state: TabState = None, draw_state=N
     value = input_value
     for idx, mode in enumerate(tab_state.selected_tabs):
         mode_changed, value = draw_any(input_value, name=f"Mode: {mode} {unique}", mode=mode, selectable=False, show_name=False,
-                                       auto_resize=True, disable_scroll=False, with_header=None, show_header=False,
-                                       indent_size=0,
-                                       show_bg=False, use_cache=False, shadow=False, column=idx)
+                                     with_header=None, show_header=False, disable_scroll=False, height=500,
+                                       indent_size=0, show_bg=False, use_cache=True, shadow=False, column=idx)
         changed |= mode_changed
 
     return changed, value
@@ -503,7 +502,7 @@ def draw_draw_state(input_value, **kwargs):
 
 
 @render_func(use_cache=False, shadow=False, show_bg=False)
-def run_chain(input_value, chain=None, draw_state=None, s_key_pressed=False, debug=False, **kwargs):
+def run_chain(input_value, chain=None, draw_state=None, s_key_pressed=False, unique=None, debug=False, **kwargs):
     """Debug render function: executes a chain step by step with imgui output.
 
     Shows function name, changed flag, output type, and a value preview
@@ -536,7 +535,7 @@ def run_chain(input_value, chain=None, draw_state=None, s_key_pressed=False, deb
                 name = getattr(func, '__name__', repr(func))
                 imgui.text(f"  [{i}] {name} — (no change)")
 
-        func_kwargs['name'] = f"{func.__name__} {kwargs.get('name', '')}"
+        func_kwargs['name'] = f"{func.__name__}{i}{kwargs.get('name', f'')}{unique}"
         func_kwargs['shadow'] = False
         func_kwargs['changed'] = changed
         func_kwargs['show_header'] = False
@@ -554,8 +553,7 @@ def run_chain(input_value, chain=None, draw_state=None, s_key_pressed=False, deb
 
     cache_tree.end()
 
-    imgui.separator()
-    return False, None
+    return changed, value
 
 
 some_test_tensor = torch.randn(3, 3)
@@ -590,8 +588,8 @@ def draw_main(input_value, vis, draw_state=None):
     if changed:
         test_code = value
 
-    changed, value = draw_with_modes(input_value=draw_bg, name="draw_bg",
-                                     show_bg=True, mode=(Mode.WINDOW), modes=[Mode.CODE_PLAIN_TEXT, Mode.CODE_UI])
+    changed, value = draw_any(input_value=draw_bg, name="draw_bg_other",
+                                     show_bg=True, mode=(Mode.CODE, Mode.WINDOW))
     if changed:
         test_code = value
 
@@ -1563,16 +1561,17 @@ def test_func():
     "key":False,
     "key_2":2.421
     }
+    
     # This is a comment
     some_flag = False
 
-def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=6.0, bg_offset=0,
+def draw_bg(left=0, top=0, width=0, height=57, depth=0, rounding=5.952, bg_offset=0,
         global_style=None, outline=True, bg_color=None, opacity=0.0,
         style_manager=None, tint=None, outline_tint=None, selected=False,
         hovered=False, pressed=False, nested_bg=False, **kwargs):
     # -- Constants ---------------------------------
     depth_wrap        = 30
-    depth_scale       = 2.34
+    depth_scale       = 1.367
     corner_radius     = rounding
     border_inset      = 3.0
     border_inset_half = 1.5
@@ -1581,12 +1580,13 @@ def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=6.0, bg_offset=
     intensity_factor  = 0.042
     intensity_offset  = -0.336
     
-    some_var = [11,2,3]
+    some_var = [29,2,3]
     # Outline color tuning
     outline_base      = 1.773
     outline_depth_mul = 0.85
     outline_sat       = {'default': 1.1, 'nested': 1.473}
     
+
     # More constants 
     bleed_mix         = {'nested': 0.433, 'default': 0.454}
     bleed_style       = {'value': -0.111, 'alpha': 1.12, 'saturation': 7.045}
@@ -1614,7 +1614,8 @@ def draw_bg(left=0, top=0, width=0, height=55, depth=0, rounding=6.0, bg_offset=
             color_a[2] * (1 - factor) + color_b[2] * factor,
         )
     # -- Depth calculation -------------------
-    wrapped_depth = (Melty.bg_depth % depth_wrap) + bg_offset
+    max_depth = 15
+    wrapped_depth = min(max_depth, (Melty.bg_depth % depth_wrap) + bg_offset)
     scaled_depth = wrapped_depth * depth_scale
     depth_intensity = (scaled_depth + intensity_offset) * intensity_factor
 
@@ -1707,7 +1708,6 @@ def button(input_value="", corner_radius=6, draw_state=None, alpha=1.0, left_mou
         mixed_color = (0, 0, 0)
 
     button_txt = str(input_value).split("##")[0]
-
     draw_state.corner_radius = corner_radius
     min_size = imgui.calc_text_size(button_txt)
 
@@ -1782,8 +1782,7 @@ def draw_bool(input_value: bool):
         
     return False, None
 
-@render_func(is_default_for=(str), shadow=False, show_bg=False, wrap=False, is_tree=False,
-             show_add_delete=False, use_cache=False, disable_scroll=True, with_header=draw_header)
+@render_func(is_default_for=(str), shadow=False, show_bg=False, wrap=False, is_tree=False, show_add_delete=False, use_cache=False, disable_scroll=True, with_header=draw_header)
 def text(input_value: str, draw_state):
     text_size = imgui.calc_text_size(str(input_value), wrap_width=draw_state.content_width)
     imgui.push_text_wrap_pos(draw_state.abs_left + draw_state.width)
@@ -1792,7 +1791,7 @@ def text(input_value: str, draw_state):
 
     return False, input_value
 
-@render_func(is_default_for=(str), shadow=False, show_bg=False, wrap=False, is_tree=False, show_add_delete=False, use_cache=True, disable_scroll=True, with_header=None)
+@render_func(is_default_for=(str), shadow=False, show_bg=False, wrap=False, is_tree=False, show_add_delete=False, use_cache=True, disable_scroll=True, with_header=draw_header)
 def draw_str(input_value: str, draw_state, editable=True, alpha=1.0):
     if not editable:
         imgui.push_style_var(imgui.STYLE_ALPHA, alpha)
@@ -1864,7 +1863,7 @@ def unsort_dict_alphabetically(input_value, ref=None, changed=False):
         return changed, ref
 
 @render_func(is_default_for=GeneralParse, show_add_delete=False, show_name=True, shadow=False, is_tree=False, use_cache=True, show_bg=False, with_header=draw_header, indent_size=0)
-def draw_general_parse(input_value: GeneralParse):
+def draw_general_parse(input_value: GeneralParse, show_add_delete=False):
     changed, value = draw_collection(input_value=input_value, show_header=False, show_bg=False, indent_size=0, shadow=False,
                                      is_tree=False, show_add_delete=False, excluded=["decorators"])
 
@@ -1921,7 +1920,60 @@ def draw_comment(input_value: Comment, draw_state, cursor_hover=False):
     return changed, value
 
 
-@render_func(is_default_for=('tint', 'help_yellow_tint'), has_popup=True, indent_size=0, is_tree=False, show_name=False, selectable=False, wrap=True, use_cache=False, with_header=None)
+@render_func(is_default_for=(tuple), has_popup=True, indent_size=0, is_tree=False,
+             show_name=True, selectable=False, wrap=True, use_cache=False, with_header=draw_header)
+def draw_tuple_tint(input_value: tuple, unique):
+    if len(input_value) > 0 and isinstance(input_value[0], (float, int)):
+        if len(input_value) == 4:
+            # imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (4, 0))
+            # imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (4, 0))
+
+            color_list = list(input_value)
+            color_flags = (imgui.COLOR_EDIT_NO_INPUTS | imgui.COLOR_EDIT_NO_LABEL | imgui.COLOR_EDIT_FLOAT |
+                           imgui.COLOR_EDIT_NO_TOOLTIP)
+            changed, color = imgui.color_edit4(
+                f"##picker_edit{unique}",
+                color_list[0], color_list[1], color_list[2], color_list[3],
+                flags=color_flags)
+
+            # imgui.pop_style_var(2)
+            if changed:
+                input_value = (color[0], color[1], color[2], color[3])
+        elif len(input_value) == 3:
+            # imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (4, 0))
+            # imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (4, 0))
+
+            color_list = list(input_value)
+            color_flags = (imgui.COLOR_EDIT_NO_INPUTS | imgui.COLOR_EDIT_NO_LABEL |
+                           imgui.COLOR_EDIT_NO_ALPHA | imgui.COLOR_EDIT_FLOAT |
+                           imgui.COLOR_EDIT_NO_TOOLTIP)
+            changed, color = imgui.color_edit3(
+                f"##picker_edit{unique}",
+                color_list[0], color_list[1], color_list[2],
+                flags=color_flags)
+
+            # imgui.pop_style_var(2)
+            if changed:
+                input_value = (color[0], color[1], color[2])
+        else:
+            str_value = ", ".join([str(v) for v in input_value])
+            changed, input_str = imgui.input_text("##tuple", str_value)
+            if changed:
+                try:
+                    new_tuple = eval(f"({input_str},)")
+                    if isinstance(new_tuple, tuple):
+                        input_value = new_tuple
+                except Exception as e:
+                    print(f"Error parsing tuple: {e}")
+                    pass
+    else:
+        changed, input_value = draw_collection(input_value=input_value)
+
+    return changed, input_value
+
+
+@render_func(is_default_for=('tint', 'help_yellow_tint'), has_popup=True, indent_size=0, is_tree=False,
+             show_name=False, selectable=False, wrap=True, use_cache=False, with_header=None)
 def draw_tuple(input_value: tuple, unique):
     if len(input_value) > 0 and isinstance(input_value[0], (float, int)):
         if len(input_value) == 4:
@@ -2090,9 +2142,7 @@ def draw_app_model(input_val):
     imgui.text("An App Model Instance")
 
 
-@render_func(is_default_for=(types.FunctionType, types.MethodType), show_add_delete=False,
-             show_bg=True, parent_show_add_delete=False,
-             is_tree=False, show_name=False, with_header=draw_header)
+@render_func(is_default_for=(types.FunctionType, types.MethodType), show_add_delete=False, show_bg=True, parent_show_add_delete=False, is_tree=False, show_name=False, with_header=draw_header)
 def draw_function(input_value, name, draw_state, unique):
     if not callable(input_value):
         imgui.text("Not a callable function")
@@ -2211,10 +2261,8 @@ def draw_enum(input_value: Enum, global_style=None,  style_manager=None, enum_ti
 
 
 
-@render_func(is_tree=False, show_bg=True, shadow=False, use_cache=True, z_offset=0, header_same_line=True,
-             indent_size=0,
-             show_add_delete=False, show_name=False, selectable=False, parent_show_add_delete=False, with_header=draw_header)
-def draw_tab_bar(input_value: list, tab_height=20, tint_value=0.202, tint_saturation=0.372, collection=None, as_toggles=False, draw_state=None):
+@render_func(is_tree=False, show_bg=True, shadow=False, use_cache=True, z_offset=0, header_same_line=True, indent_size=0, show_add_delete=False, show_name=False, selectable=False, parent_show_add_delete=False, with_header=draw_header)
+def draw_tab_bar(input_value: list, tab_height=20, names=None, tint_value=0.202, tint_saturation=0.372, collection=None, as_toggles=False, draw_state=None):
     """Tab bar with multi-select via shift-click. input_value is the list of selected items, collection is all available tabs.
     Tabs wrap onto a new row when the cumulative width would exceed draw_state.content_width."""
     if collection is None:
@@ -2241,22 +2289,24 @@ def draw_tab_bar(input_value: list, tab_height=20, tint_value=0.202, tint_satura
     for i, tab in enumerate(collection):
         raw = _tab_text(tab)
         # label_text = raw.replace("_", " ")
-        label = f"{raw}##tab{i}"
+        label = f"{raw}"
+        if names is not None and i < len(names):
+            label = f"{names[i]}"
         active = tab in selected
         value = 0.238
 
-        tab_width = imgui.calc_text_size(raw).x + button_padding
+        tab_width = imgui.calc_text_size(label.split("##")[0]).x + button_padding
 
         if active:
             selected_value = 0.204
-            clicked = button(label, indent_size=0, z_offset=2,
+            clicked = button(label, indent_size=0, z_offset=2, name=f"tab_{i}",
                              height=tab_height, value=value + selected_value,
                              draw=True)[0]
         else:
             saturation = 1.0
             z_offset = -3
             clicked = button(label, indent_size=0, height=tab_height, draw=True,
-                             alpha=0.0, value=value, saturation=saturation,
+                             alpha=0.0, value=value, saturation=saturation, name=f"tab_{i}",
                              z_offset=z_offset, shadow=False)[0]
 
         if clicked:
@@ -2274,8 +2324,9 @@ def draw_tab_bar(input_value: list, tab_height=20, tint_value=0.202, tint_satura
         # Look ahead: if the next tab won't fit on this row, skip same_line()
         # so imgui's cursor flows to the next line, and reset row_width.
         if i < len(collection) - 1:
-            next_w = imgui.calc_text_size(_tab_text(collection[i + 1])).x + button_padding
-            if content_width > 0 and row_width + spacing + next_w > content_width:
+            label = names[i + 1] if names is not None and i + 1 < len(names) else _tab_text(collection[i + 1])
+            next_w = imgui.calc_text_size(label).x + button_padding
+            if content_width > 0 and row_width + spacing + next_w + 20 > content_width:
                 row_width = 0
                 continue
 
@@ -2315,94 +2366,143 @@ def draw_debug(x,y, label, color=(1, 0, 0), size=16):
 #     imgui.text(f"Last Modified: {input_value.modified_time}")
 #
 #     return False, None
-@render_func(use_cache=True, disable_scroll=True, show_header=False, header_same_line=False,
-             show_tint=False, show_name=False, is_tree=False)
-def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, tab_state: TabState = None, **kwargs):
+@render_func(use_cache=True, disable_scroll=True, show_header=False, header_same_line=False, show_tint=False, show_name=False, is_tree=False)
+def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, up_key_pressed=None, down_key_pressed=None, tab_state: TabState = None, **kwargs):
+
+    context_menu_offset = input_value.context_menu_offset
+
+
+    # Draw rects ################
+    # overlay_dl = imgui.get_overlay_draw_list()
+    # overlay_dl.add_rect(draw_state.abs_left, draw_state.abs_top, draw_state.abs_left + draw_state.width,
+    #                     draw_state.abs_top + draw_state.height, imgui.get_color_u32_rgba(1, 0, 0, 0.5), thickness=1.0)
+    
+    #############################
+
+    info_items = ["name", "closable", "current_mode", "mode", "show_add_delete", "_source", "width", "height", "content_height", "scroll_offset",
+                  "final_max_column", "_column_cursor", "_content_rect", "_max_column_index", "_outside_column_height", "disable_scroll"]
+
     # imgui.text(type(input_value._input_value).__name__)
     imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0] - 3, imgui.get_cursor_screen_pos()[1] - 20))
-    def draw_overlay_rect(rect, color=(1, 0, 0, 0.5), name=None):
+    if up_key_pressed:
+        print("Up key pressed")
 
-        draw_list: _DrawList = imgui.get_overlay_draw_list()
-        if name is not None:
-            name_size = imgui.calc_text_size(name)
-            draw_list.add_text(rect[2] - name_size[0] - 4,
-                               rect[1] + 2,
-                               imgui.get_color_u32_rgba(*color), name)
+    fa_up_arrow = ""
+    fa_down_arrow = ""
+    if input_value._parent.id is not None:
+        if button(fa_up_arrow, height=30)[0] or up_key_pressed:
+            input_value.context_menu_offset += 1
+            Melty.cache.invalidate_up(draw_state._tile_id, max_depth=5)
+            Melty.cache.invalidate_up(input_value._tile_id, max_depth=5)
 
-        draw_list.add_rect(rect[0], rect[1], rect[2], rect[3], imgui.get_color_u32_rgba(*color), thickness=1.0, rounding=4)
+        imgui.same_line()
+    if input_value.context_menu_offset > 0:
+        if button(fa_down_arrow, height=30)[0] or down_key_pressed:
+            input_value.context_menu_offset = max(0, input_value.context_menu_offset - 1)
+            Melty.cache.invalidate_up(draw_state._tile_id, max_depth=5)
+            Melty.cache.invalidate_up(input_value._tile_id, max_depth=5)
 
-    view_func_name = input_value._view_func.__name__
+
+    else:
+        imgui.dummy(30, 30)
+
+    imgui.same_line()
+    imgui.text_colored(f"{context_menu_offset}", 1, 1, 1, 0.3)
+    imgui.same_line()
+
+    offset_ds = input_value
+    for i in range(context_menu_offset):
+        if offset_ds._parent is None:
+            break
+        offset_ds = offset_ds._parent
+   
+    input_value._offset_ds = offset_ds
+    input_value = offset_ds
 
     # Font awesome info icon unicode: \uf05a
     info_icon_fa = " Info"
+    view_func_name = offset_ds._view_func.__name__
     class_name = type(input_value._raw_input_value).__name__
-    static_tabs = [view_func_name]
-    if not isinstance(input_value._raw_input_value, (int, float, str, bool)):
-        static_tabs.append(class_name)
 
-    static_tabs.append(info_icon_fa)
+    tab_names = []
+    tab_names.append(info_icon_fa)
+    tab_names.append(view_func_name)
+    if not isinstance(input_value._raw_input_value, (int, float, str, bool)):
+        tab_names.append(class_name)
+
+    indices = list(range(len(tab_names)))
+
     if not tab_state.selected_tabs:
-        tab_state.selected_tabs = [static_tabs[0]]
+        tab_state.selected_tabs = [indices[0]]
 
     current_mode = input_value._kwargs.get('mode', None)
     mode_tab = str(current_mode)
     if current_mode is not None:
-        static_tabs.append(mode_tab)
+        tab_names.append(mode_tab)
 
-    tab_changed, new_tabs = draw_tab_bar(tab_state.selected_tabs, wrap=True, tab_height=30, tint_value=0.7,
-                                         bg_offset=2, show_bg=True, name=f"tab_bar", z_offset=1, draw=True,
-                                         collection=static_tabs, as_toggles=False)
+    # Tab list
+
+    tab_changed, new_tabs = draw_tab_bar(tab_state.selected_tabs, names=tab_names, wrap=True, tab_height=30, tint_value=0.7,
+                                         bg_offset=2, show_bg=True, name=f"tab_bar#{view_func_name}", z_offset=1, draw=True,
+                                         collection=indices, as_toggles=False)
     if tab_changed:
         tab_state.selected_tabs = new_tabs
 
-    info_items = ["name", "current_mode", "mode", "show_add_delete"]
 
     for t_idx, static_tab in enumerate(tab_state.selected_tabs):
         from src.lsd.gl_gui.view.mode import Mode
+        if static_tab < len(tab_names):
+            if tab_names[static_tab] == info_icon_fa:
+                text(f"{input_value._view_func.__name__}", show_bg=True, wrap=False, name="Rendered by", column=t_idx,
+                     editable=False)
+                text(f"{type(input_value._raw_input_value).__name__}", name="input_value type", column=t_idx, editable=False)
 
-        if static_tab == info_icon_fa:
-            text(f"{input_value._view_func.__name__}", show_bg=True, wrap=False, name="Rendered by", column=t_idx,
-                 editable=False)
-            text(f"{type(input_value._raw_input_value).__name__}", name="input_value type", column=t_idx, editable=False)
+                text(f"{input_value.window_index}", name="window_index", column=t_idx,
+                     editable=False, tint=(0.8, 0.8, 0.2))
 
-            for info_item in info_items:
-                if info_item in input_value._kwargs:
-                    item_value = input_value._kwargs.get(info_item, 'Not found')
-                elif info_item in input_value.__dict__:
-                    item_value = getattr(input_value, info_item, 'Not found')
+                for info_item in info_items:
+                    if info_item in input_value._kwargs:
+                        item_value = input_value._kwargs.get(info_item, 'Not found')
+                    elif info_item in input_value.__dict__:
+                        item_value = getattr(input_value, info_item, 'Not found')
+                    else:
+                        item_value = 'Not found'
+
+                    if isinstance(item_value, (int, float, str, bool, Enum)):
+                        text(f"{item_value}", name=info_item, column=t_idx, editable=False)
+                    else:
+                        draw_any(item_value, name=info_item, column=t_idx, show_name=True,
+                                show_header=True, show_add_delete=False, draw=True)
+
+                if button("print_stack_trace")[0]:
+                    print_stack_trace()
+
+            if tab_names[static_tab] == view_func_name:
+                view_func = input_value._view_func
+                # Draw view function
+                if view_func is not None:
+                    view_func_name = view_func.__name__ if hasattr(view_func, '__name__') else str(view_func)
+                    change, new_view_func = draw_with_modes(view_func, column=t_idx, modes=(Mode.CODE_PLAIN_TEXT, Mode.CODE_UI), name=view_func_name)
+                    if change:
+                        print(f"Changing view function from {view_func.__name__} to {new_view_func.__name__}")
+                        input_value._view_func = new_view_func
+                        # input_value._kwargs['view_function'] = new_view_func
                 else:
-                    item_value = 'Not found'
-                text(f"{item_value}", name=info_item, column=t_idx, editable=False)
+                    draw_str("No view function specified", name="View Function", column=t_idx, editable=False)
 
-            if button("print_stack_trace")[0]:
-                print_stack_trace()
+            if tab_names[static_tab] == class_name:
+                # Draw class
+                # Skip if primitive type
+                cls_change, new_cls = draw_with_modes(type(input_value._raw_input_value), column=t_idx,
+                                                      modes=(Mode.CODE_PLAIN_TEXT, Mode.CODE_UI),
+                                               name=type(input_value._raw_input_value).__name__)
 
-        if static_tab == view_func_name:
-            view_func = input_value._view_func
-            # Draw view function
-            if view_func is not None:
-                view_func_name = view_func.__name__ if hasattr(view_func, '__name__') else str(view_func)
-                change, new_view_func = draw_with_modes(view_func, column=t_idx, modes=(Mode.CODE_PLAIN_TEXT, Mode.CODE_UI), name=view_func_name)
-                if change:
-                    print(f"Changing view function from {view_func.__name__} to {new_view_func.__name__}")
-                    input_value._view_func = new_view_func
-                    # input_value._meta['view_function'] = new_view_func
-            else:
-                draw_str("No view function specified", name="View Function", column=t_idx, editable=False)
+            if tab_names[static_tab] == mode_tab:
+                if current_mode is not None:
+                    #prettiafy the string using json indent
 
-        if static_tab == class_name:
-            # Draw class
-            # Check if primitive type
-            cls_change, new_cls = draw_with_modes(type(input_value._raw_input_value), column=t_idx,
-                                                  modes=(Mode.CODE_PLAIN_TEXT, Mode.CODE_UI),
-                                           name=type(input_value._raw_input_value).__name__)
-
-        if static_tab == mode_tab:
-            if current_mode is not None:
-                #prettiafy the string using an indent
-
-                mode_change, new_mode = text(str(current_mode.value), column=t_idx, width=draw_state.content_width,
-                                                        name=str(current_mode))
+                    mode_change, new_mode = text(str(current_mode.value), column=t_idx, width=draw_state.content_width,
+                                                            name=str(current_mode))
 
     return False, None
 

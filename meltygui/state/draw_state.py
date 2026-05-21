@@ -148,7 +148,7 @@ class TileMode(Enum):
                  "top_offset", 'kwargs', "just_shadow", "header_width", "header_end_width",
                  "header_left_delta", "header_top_delta", "last_seen", "persistent", "shadow_margin", "bg_depth",
                  "anchor_pos", "just_shadow", 'hover_reported', 'explain_convert',
-                 'channel', 'next', 'previous', 'index_in_parent', 'relative_pos', 'context_menu_open',
+                 'channel', 'next', 'previous', 'index_in_parent', 'relative_pos',
                  'context_menu_ds', '_hover_eligible', 'just_shadow')
 @deep_refresh('scroll_offset', 'closed', '"search_text')
 class DrawState(DictConversion):
@@ -208,6 +208,8 @@ class DrawState(DictConversion):
 
         self.context_menu_open = False
         self.context_menu_ds = None
+        self.context_menu_offset = 0
+        self._offset_ds = None
 
         self.relative_pos = None
 
@@ -344,9 +346,11 @@ class DrawState(DictConversion):
         self.final_max_column = 0
         self._current_max_column = 0
         self._column_cursor = defaultdict(lambda: [0, 0])
+        self._outside_column_height = 0
         self._inner_cursor = 0 # column -> (x, y)
         self._columns_top = None
         self._max_column_height = 0
+        self._max_column_index = 0
         ### End Columns
         self._is_nested = False
         self.anchor_pos = Anchor.TOP_LEFT
@@ -412,6 +416,7 @@ class DrawState(DictConversion):
         self._original_input_ref = None
 
         self._stack_trace = None
+        self._nested_index = 0
 
     @property
     def clip_size(self):
@@ -494,8 +499,10 @@ class DrawState(DictConversion):
     @property
     def abs_layer(self):
 
-        if self.parent_window is not None:
+        if self.parent_window is not None and self.closable:
             return self.parent_window.abs_layer + 4
+        elif self.parent_window is not None:
+            return self.parent_window.abs_layer
         else:
             return self.layer
 
@@ -539,7 +546,7 @@ class DrawState(DictConversion):
             if self.parent_window is not None and self.parent_window is not self:
                 parent_left = self.parent_window._abs_left(depth=depth + 1)
             elif not self.closable:
-                parent_left = imgui.get_cursor_screen_pos()[0]
+                parent_left = 0
 
         window_pos_x = self.window_pos[0] if self.window_pos is not None else 0
         # this_left_offset = self.left_offset if not self.melty_window else window_pos_x
@@ -556,7 +563,7 @@ class DrawState(DictConversion):
             if self.parent_window is not None and self.parent_window is not self:
                 parent_top = self.parent_window._abs_top(depth=depth + 1)
             elif not self.closable:
-                parent_top = imgui.get_cursor_screen_pos()[1]
+                parent_top = 0
 
         anchor = self.anchor_offset
         window_pos_y = self.window_pos[1] if self.window_pos is not None else 0
@@ -617,6 +624,22 @@ class DrawState(DictConversion):
     def seen(self):
         debounce = 1
         return self.last_seen is not None and Melty.frame_count - self.last_seen < debounce
+
+    @property
+    def window_index(self):
+        parent_window = self.parent_window if not self.closable else self
+        nested_offset = self._nested_index if self.parent_window is not None else 0
+
+        return self.abs_layer + nested_offset
+
+        # if self.closable:
+        #     layer_index = min(Melty.max_layer - 1, self.abs_layer + self._nested_index - 2)
+        # elif self.parent_window is not None:
+        #     layer_index = min(Melty.max_layer - 1, self.abs_layer + self.parent_window._nested_index)
+        # else:
+        #     layer_index = min(Melty.max_layer - 1, self.abs_layer)
+
+        # return layer_index
 
     def init_cst_state(self, node, module_id: str):
         self.cst = None

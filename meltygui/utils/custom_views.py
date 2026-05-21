@@ -377,6 +377,11 @@ def end_frame():
     if Melty.imgui_crashed:
         return
 
+    # Merge the foreground/overlay channels before ImGui finalizes the frame because
+    # ImGui's render path requires merged channels, and this is the last frame
+    # after all user draws.
+    Melty.finalize_overlay_channels()
+
     if LSDView().group_stack[-1] == GroupType.FRAME:
         LSDView().group_stack.pop()
         return imgui.end_frame()

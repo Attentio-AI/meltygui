@@ -15,7 +15,7 @@ from rtree import index as rtree_index
 from src.lsd.gl_gui.background import Background
 from src.lsd.gl_gui.collection_action import CollectionAction
 from src.lsd.gl_gui.collision import Collisions
-from src.lsd.gl_gui.toggles import Toggles, Counters
+from src.lsd.gl_gui.toggles import Toggles, Counters, Tint
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import set_window_registrar
 from src.lsd.gl_gui.view.core_views.monitor import Monitor
 from src.shader_library.shader_manager.texture_manager import TextureManager
@@ -363,6 +363,16 @@ class Melty:
     _bvh_next_id = 0
     _bvh_id_to_ds = {}
 
+    # Foreground/overlay channel routing. The overlay draw list is channel-split
+    # into max_depth channels (like the window draw list); a view adds its
+    # overlay to channel = layer_channel(draw_state.layer). The top channel is
+    # the unmasked global default. The renderer uses _overlay_channel_ranges to
+    # stencil-mask out higher-layer windows per channel during its deferred pass.
+    _overlay_channels_active = False
+    _overlay_channel_ranges: list = []
+    _overlay_probe_logged = False
+    _debug_overlay_test = True  # controlled sub-top overlay to verify masking
+
 
     @classmethod
     def bvh_register(cls, draw_state):
@@ -402,6 +412,34 @@ class Melty:
         new_bbox = draw_state.bbox
         if new_bbox is not None:
             cls._bvh.insert(rid, new_bbox)
+
+    @classmethod
+    def _resolve_channel_command_ranges(cls, overlay, idx_boundaries):
+        """Partition the merged index buffer into per-channel index ranges.
+
+        Returns a list of (channel_idx, idx_lo, idx_hi) for each non-empty
+        channel, where [idx_lo, idx_hi) are positions in the merged index
+        buffer. We work in index space — not command space — because
+        ChannelsMerge fuses adjacent channels' draws into a single command when
+        their clip rect + texture match. A whole-command assignment would then
+        lump every channel's indices onto one channel; index ranges stay
+        correct regardless of fusion, and the renderer splits commands at these
+        boundaries."""
+        ranges = []
+        prev = 0
+        for ch, boundary in enumerate(idx_boundaries):
+            if boundary > prev:
+                ranges.append((ch, prev, boundary))
+            prev = boundary
+        return ranges
+
+    @classmethod
+    def layer_channel(cls, layer) -> int:
+        """Map a draw_state layer to its overlay draw-list channel, using the
+        same clamp as the window draw list. The top channel (max_depth - 1) is
+        the unmasked global channel; the renderer masks channel C with every
+        window whose layer_channel is greater than C."""
+        return max(0, min(int(layer), cls.max_depth - 1))
 
     @classmethod
     def bvh_query(cls, x, y):
@@ -555,6 +593,16 @@ class Melty:
         fb_w, fb_h = map(int, imgui.get_io().display_size)  # or your true GL FB size if HiDPI
         cls.cache.mask_begin_frame((fb_w, fb_h))
 
+        # Channel-split the foreground/overlay draw list the same way as the
+        # window draw list (max_depth channels) so per-window overlays can be
+        # stencil-masked by higher-layer windows during the deferred pass.
+        # Channel = Melty.layer_channel(draw_state.layer). The top channel is
+        # the unmasked default, so global overlays appear on top.
+        overlay = imgui.get_overlay_draw_list()
+        overlay.channels_split(Melty.max_layer)
+        overlay.channels_set_current(Melty.max_layer - 1)
+        cls._overlay_channels_active = True
+        cls._overlay_channel_ranges = []
 
         from src.lsd.gl_gui.view.core_views.core_render_helpers import clear_floating_text_cache
         clear_floating_text_cache()
@@ -622,21 +670,18 @@ class Melty:
     def end_frame(cls):
         cls.apply_move_to_front()
 
+        # Reset overlay routing to the top (global, unmasked) channel so
+        # end_frame draws - FPS counter, selection rects, debug text - don't
+        # accidentally land on whatever per-window channel a view last set.
+        if cls._overlay_channels_active:
+            imgui.get_overlay_draw_list().channels_set_current(cls.max_depth - 1)
+
         Melty.mode_stack = []
 
         from src.lsd.gl_gui.view.mode import Mode
         from src.lsd.gl_gui.view.core_views.new_core_view import draw_with_modes
         draw_with_modes(Counters, name="counters", modes=(Mode.CODE_UI, Mode.CODE_PLAIN_TEXT), mode=Mode.WINDOW)
 
-        # cls.draw_blockers_to()
-        # Manually mask windows
-        # for window in Melty.registered_windows.values():loadf
-        #     draw_state = window.draw_state
-        #     if not draw_state.closed:
-        #         unique = f"{draw_state.id}"
-        #         Melty.cache.mask_mark_view(draw_state.z_pos - 2, draw_state.left,
-        #                                    draw_state.abs_top, draw_state.width, draw_state.height,
-        #                                    f"window_mask_{unique}", 4)
 
         if Toggles.debug_z_depth:
             draw_state = list(cls.selected)[-1] if len(cls.selected) > 0 else None
@@ -651,25 +696,22 @@ class Melty:
                                    f"Melty.z_pos {Melty.z_pos} "
                                    f"Melty.depth {Melty.depth}")
 
-            # draw_list.add_text(draw_state.abs_left, draw_state.abs_top - 20, imgui.get_color_u32_rgba(1, 1, 0, 1),
-            #                    f"kwargs['active_layer'] {kwargs['active_layer']} "
-            #                    )
-
         cls.root_draw_states_by_layer = defaultdict(list)
-        to_discard = set()
         dynamic_offset = 0
         empty_parents = set()
+        to_discard = set()
+
         for parent_ds_id, ds_list in cls.root_draw_states.items():
+
             for idx, ds in enumerate(ds_list):
-                if ds.abs_closed or ds.closed:
-                    to_discard.add(ds)
+                if ds.abs_closed:
+                    to_discard.add((parent_ds_id, ds))
                     ds.closed = True
                 else:
                     cls.root_draw_states_by_layer[ds.abs_layer].append(ds)
 
-            for discard_ds in to_discard:
-                if discard_ds in ds_list:
-                    ds_list.remove(discard_ds)
+        for ds_id, discard_ds in to_discard:
+            cls.root_draw_states[ds_id].remove(discard_ds)
 
         selected_by_layer = defaultdict(list)
         for selected_ds in cls.selected:
@@ -719,12 +761,38 @@ class Melty:
                 #                            draw_state.top, draw_state.width, draw_state.height,
                 #                            f"view_mask_{draw_state.id}", 4)
                 Melty.active_layer = idx + (d_idx * 2)
+                draw_state._nested_index = (d_idx * 2)
                 Melty.z_pos = (Melty.active_layer * Melty.max_depth) + Melty.depth
 
                 draw_state.layer = Melty.active_layer
                 draw_state.z_pos = Melty.z_pos
                 draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer)
                 draw_state._kwargs['active_layer'] = Melty.active_layer
+
+                if draw_state._kwargs.get("traces", False) or True:
+                    if draw_state._parent is not None:
+                        offset_ds = draw_state._parent._offset_ds
+                        if offset_ds is None:
+                            offset_ds = draw_state._parent
+
+                        overlay_dl: _DrawList = imgui.get_overlay_draw_list()
+                        # Route to the window's z-order channel so this overlay
+                        # sits above the window's own content but is masked by
+                        # any higher-layer window (matches the renderer's mask).
+                        layer_index = offset_ds.window_index
+
+                        overlay_dl.channels_set_current(min(Melty.max_layer - 1, layer_index))
+
+                        overlay_dl.add_rect(offset_ds.abs_left, offset_ds.abs_top,
+                                            offset_ds.abs_left + offset_ds.width,
+                                            offset_ds.abs_top + offset_ds.height,
+                                            imgui.get_color_u32_rgba(*Tint.context_select_tint, Tint.context_select_bg_alpha),
+                                            thickness=2.0)
+                        overlay_dl.add_rect_filled(offset_ds.abs_left, offset_ds.abs_top,
+                                                   offset_ds.abs_left + offset_ds.width,
+                                                   offset_ds.abs_top + offset_ds.height, imgui.get_color_u32_rgba(
+                                *Tint.context_select_tint, Tint.context_select_outline_alpha))
+
 
                 if not Melty.channels_split:
                     imgui.get_window_draw_list().channels_split(Melty.max_depth)
@@ -739,6 +807,12 @@ class Melty:
                     imgui.get_window_draw_list().channels_set_current(0)
                     imgui.get_window_draw_list().channels_merge()
                     Melty.channels_split = False
+
+
+                    # for i in range(draw_state.context_menu_offset):
+                    #     if offset_ds._parent is None:
+                    #         break
+                    #     offset_ds = offset_ds._parent
 
                 # Melty.depth = draw_state.depth + d_idx
                 # Melty.cache.draw_tile(draw_state)
@@ -785,14 +859,13 @@ class Melty:
         if cls.text_focused_ds is not None and cls.glfw_window is not None:
             for k in range(32, 349):  # GLFW_KEY_SPACE through GLFW_KEY_LAST
                 if glfw.get_key(cls.glfw_window, k) == glfw.PRESS:
-                    if cls.text_focused_ds.parent_window is not None:
-                        Melty.cache.invalidate_up(cls.text_focused_ds.parent_window._tile_id)
-
                     Melty.cache.invalidate(cls.text_focused_ds._tile_id)
                     request_render()
                     break
 
         overlay: _DrawList = imgui.get_overlay_draw_list()
+
+
         window_size = imgui.get_io().display_size
         overlay.add_text(window_size.x - 600, 5, imgui.get_color_u32_rgba(1, 1, 1, 1),
                          f"FPS: {imgui.get_io().framerate:.1f}")
@@ -814,6 +887,37 @@ class Melty:
                 empty_parents.add(parent_ds_id)
         for empty_parent in empty_parents:
             cls.root_draw_states.pop(empty_parent, None)
+
+    @classmethod
+    def finalize_overlay_channels(cls):
+        """Capture per-channel index counts, then merge the foreground draw
+        list's channels. MUST run before imgui.end_frame(): ImGui's render path
+        requires channels to be merged, and leaving them split collapses the
+        per-channel content. We use cumulative index counts (not command
+        counts) as boundaries because ChannelsMerge drops trailing empty
+        commands and can fuse a channel's first command into the previous
+        channel's last command — index counts survive both."""
+        if not cls._overlay_channels_active:
+            return
+        overlay = imgui.get_overlay_draw_list()
+        cum_idx = 0
+        idx_boundaries = []
+        per_channel = []
+        for ch in range(cls.max_layer):
+            overlay.channels_set_current(ch)
+            n = overlay.idx_buffer_size
+            per_channel.append(n)
+            cum_idx += n
+            idx_boundaries.append(cum_idx)
+        overlay.channels_merge()
+        cls._overlay_channel_ranges = cls._resolve_channel_command_ranges(
+            overlay, idx_boundaries
+        )
+        cls._overlay_channels_active = False
+
+        if cls.frame_count % 120 == 0:
+            nz = [(ch, n) for ch, n in enumerate(per_channel) if n > 0]
+            print(f"[overlay-mask] finalize frame={cls.frame_count} per_channel_idx(nonzero)={nz}")
 
     @classmethod
     def post_frame(cls, imgui_impl, window):
@@ -944,6 +1048,8 @@ class Melty:
             if window_key in Melty.registered_windows:
                 draw_state.last_seen = None
                 del Melty.registered_windows[window_key]
+                if cls.text_focused_ds is not None and cls.text_focused_ds.parent_window is draw_state:
+                    cls.text_focused_ds = None
                 print(f"Deleted window {window_key}")
                 Melty.cache.invalidate_by_obj(Melty.registered_windows)
                 Melty.cache.invalidate_up(draw_state._tile_id, max_depth=4, force=True)
@@ -966,6 +1072,10 @@ class Melty:
             # if cls.pending_move_to_front[1]._is_nested:
             #     draw_state.layer += Melty.nested_layer_boost + 3
                 # draw_state.z_pos = (draw_state.layer * Melty.max_depth) + draw_state.depth
+
+            if cls.text_focused_ds is not None and cls.text_focused_ds.parent_window is not draw_state:
+                cls.text_focused_ds = None
+
             if window_key in Melty.registered_windows:
                 # Remove and re-insert to move to end (top)
                 window = Melty.registered_windows.pop(window_key)

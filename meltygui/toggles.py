@@ -8,6 +8,17 @@ class Counters:
     nested_window_count = 16
 
 @window
+class Tint:
+    # Context menu tints
+    context_select_tint = (1.0, 0.7, 0.2)
+    context_select_outline_alpha = 0.054
+    context_select_bg_alpha = 0.592
+    context_select_rounding = 5.0
+    
+    # Background constants
+    context_menu_bg_offset = 3.0
+
+@window
 @tint({"draw_legacy": (0.8, 0.2, 0.2)})
 class Toggles:
     # Invalidation settings
@@ -23,7 +34,6 @@ class Toggles:
     # Image Settings
     brightness = 0.22
     contrast = 1.445
-
     saturation = 0.351
 
     debug_z_depth = False

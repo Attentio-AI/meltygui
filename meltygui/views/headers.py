@@ -305,7 +305,7 @@ def draw_footer(input_value=None, name="", key=None, melty=None, parent_show_add
 
 def draw_header_end(input_value=None, name="", key=None, melty=None, parent_show_add_delete=False,
                     collection=None, draw_state=None, closable=False, style_manager=None,
-                    global_style=None, global_toggles=None, **kwargs):
+                    global_style=None, global_toggles=None, unique=None, **kwargs):
 
     if parent_show_add_delete:
         bg_style = {
@@ -328,7 +328,9 @@ def draw_header_end(input_value=None, name="", key=None, melty=None, parent_show
     if closable and not input_value == Melty.registered_windows:
         close_icon = ""
         from src.lsd.gl_gui.view.core_views.new_core_view import button
-        if button(f"{close_icon}", show_bg=True, shadow=True, z_offset=10, tile_mode=TileMode.MAX, color=(9, 1, 1, 0))[0]:
+        if button(f"{close_icon}##{unique}", show_bg=True, shadow=True, z_offset=10, tile_mode=TileMode.MAX, color=(9, 1, 1, 0))[0]:
             draw_state.closed = not draw_state.closed
             Melty.cache.invalidate_up_by_obj(Melty.registered_windows)
+            # if draw_state.parent_window is not None:
+            #     Melty.cache.invalidate_up(draw_state.parent_window._tile_id, max_depth=10)
 
