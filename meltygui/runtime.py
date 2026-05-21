@@ -1,3 +1,4 @@
+import math
 import time
 import types
 from collections import defaultdict, deque
@@ -15,7 +16,7 @@ from rtree import index as rtree_index
 from src.lsd.gl_gui.background import Background
 from src.lsd.gl_gui.collection_action import CollectionAction
 from src.lsd.gl_gui.collision import Collisions
-from src.lsd.gl_gui.toggles import Toggles, Counters, Tint
+from src.lsd.gl_gui.toggles import Toggles, Counters, Tint, Swoosh
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import set_window_registrar
 from src.lsd.gl_gui.view.core_views.monitor import Monitor
 from src.shader_library.shader_manager.texture_manager import TextureManager
@@ -494,6 +495,35 @@ class Melty:
         is_popup_open = imgui.is_popup_open("", flags=imgui.POPUP_ANY_POPUP)
         Melty.imgui_popup_open = is_popup_open
 
+        # Route the keyboard to the focused text view. While a text editor holds
+        # focus, any held key force-invalidates its tile (and its parent window
+        # subtree, so the cached window re-descends into the editor) BEFORE the
+        # views draw this frame. That lets draw_text re-execute and catch
+        # imgui's is_key_pressed edge in the SAME frame the key goes down, even
+        # when the mouse isn't hovering. This must run in begin_frame, not
+        # end_frame: end_frame invalidation lands one frame too late, after the
+        # key edge has already passed, which is why typing only worked while
+        # hovering (the hover path keeps the tile dirty before each draw).
+        if cls.text_focused_ds is not None and cls.glfw_window is not None:
+            focused = cls.text_focused_ds
+            # Esc releases text focus globally - no more needed. Re-render the
+            # (now-)focused text view so its cursor disappears this frame, then
+            # clear focus, which also unblocks global hotkeys via is_key_pressed.
+            if glfw.get_key(cls.glfw_window, glfw.KEY_ESCAPE) == glfw.PRESS:
+                if focused.parent_window is not None:
+                    cls.cache.invalidate_up(focused.parent_window._tile_id, force=True)
+                cls.cache.invalidate(focused._tile_id, force=True)
+                cls.text_focused_ds = None
+                request_render()
+            else:
+                for k in range(32, 349):  # GLFW_KEY_SPACE through GLFW_KEY_LAST
+                    if glfw.get_key(cls.glfw_window, k) == glfw.PRESS:
+                        if focused.parent_window is not None:
+                            cls.cache.invalidate_up(focused.parent_window._tile_id, force=True)
+                        cls.cache.invalidate(focused._tile_id, force=True)
+                        request_render()
+                        break
+
         # mouse_pos = imgui.get_mouse_pos()
         # ds_under_mouse = Melty.bvh_query(mouse_pos[0], mouse_pos[1])
         # for ds in ds_under_mouse:
@@ -606,6 +636,145 @@ class Melty:
 
         from src.lsd.gl_gui.view.core_views.core_render_helpers import clear_floating_text_cache
         clear_floating_text_cache()
+
+    @staticmethod
+    def _closest_perimeter_points(ax0, ay0, ax1, ay1, bx0, by0, bx1, by1):
+        """Connection points anchored at the center of the rects' shared edge.
+
+        On each axis the connection coordinate is the center of the overlap span
+        between the two rects, then clamped onto each rect. Where the rects
+        overlap this lands the connector on the midpoint of their shared edge;
+        where they don't it slides out to the facing edges/corners. The overlap
+        bounds use a smooth min/max (window Swoosh.edge_softness) so the
+        anchor glides as the overlap region changes instead of snapping at the
+        kinks of hard min/max. Returns (x0, y0, x1, y1).
+        """
+        k = Swoosh.edge_softness
+
+        def smin(a, b):
+            # Polynomial smooth-min: blends within a window of width k.
+            if k <= 0.0:
+                return a if a < b else b
+            h = max(k - abs(a - b), 0.0) / k
+            return (a if a < b else b) - h * h * k * 0.25
+
+        def smax(a, b):
+            return -smin(-a, -b)
+
+        def clamp(v, lo, hi):
+            return lo if v < lo else hi if v > hi else v
+
+        # Center of the (smoothed) overlap span on each axis = shared-edge center.
+        cx = (smax(ax0, bx0) + smin(ax1, bx1)) * 0.5
+        cy = (smax(ay0, by0) + smin(ay1, by1)) * 0.5
+
+        xa, ya = clamp(cx, ax0, ax1), clamp(cy, ay0, ay1)
+        xb, yb = clamp(cx, bx0, bx1), clamp(cy, by0, by1)
+        return xa, ya, xb, yb
+
+    @staticmethod
+    def _highlight_rgb(tint=None):
+        """Super-bright version of a view's tint, used for the nested-view
+        highlight (swoosh + outline boxes). Pass the tint stashed on the
+        draw_state at draw time (draw_state.current_tint): by this post-draw
+        pass the style manager no longer holds it. Falls back to the live tint,
+        then to a static tint, when nothing was stashed."""
+        sm = Melty.style_manager
+        if sm is None:
+            return Swoosh.tint
+        if tint is None:
+            tint = sm.get_tint()
+        return sm.make_custom(*tint, Swoosh.value,
+                              saturation_scale=Swoosh.saturation)[:3]
+
+    @staticmethod
+    def _draw_swoosh(overlay_dl, px, py, pw, ph, nx, ny, nw, nh, rgb):
+        """Draw a curved connector from the parent view's outline to the nested
+        view. The line is thick at both endpoints and tapers thin in the middle.
+        `rgb` is the resolved highlight color (see _highlight_rgb). Tunables
+        live on Swoosh.*."""
+        # Anchor both ends at the center of the rects' shared edge (smoothed),
+        # so the connector stays centered and glides as the rects move.
+        x0, y0, x1, y1 = Melty._closest_perimeter_points(
+            px, py, px + pw, py + ph,
+            nx, ny, nx + nw, ny + nh,
+        )
+
+        seg_dx, seg_dy = x1 - x0, y1 - y0
+        seg_len = math.hypot(seg_dx, seg_dy)
+        if seg_len < 1.0:
+            return
+
+        # Ramp the bow in with the connector's slope rather than turning it on:
+        # the ratio of the shorter axis span to the longer one is 0 when the line
+        # is axis-aligned and 1 at 45 degrees, so level runs stay straight and
+        # the curve grows smoothly as the line tilts toward diagonal.
+        adx, ady = abs(seg_dx), abs(seg_dy)
+        slope_ratio = min(adx, ady) / max(adx, ady) if max(adx, ady) > 1e-6 else 0.0
+        curve_factor = slope_ratio ** Swoosh.curve_ramp
+
+        # Quadratic bezier control point: midpoint bowed perpendicular to the chord
+        # by an amount scaled by curve_factor.
+        mx, my = (x0 + x1) * 0.5, (y0 + y1) * 0.5
+        perp_x, perp_y = -seg_dy / seg_len, seg_dx / seg_len
+        bow = seg_len * Swoosh.curve * curve_factor
+        cxp, cyp = mx + perp_x * bow, my + perp_y * bow
+
+        col = imgui.get_color_u32_rgba(*rgb, Swoosh.alpha)
+        segments = max(2, int(Swoosh.segments))
+        end_hw = Swoosh.end_thickness
+        mid_hw = Swoosh.mid_thickness
+        taper = Swoosh.taper
+
+        def bezier(t):
+            u = 1.0 - t
+            bx = u * u * x0 + 2 * u * t * cxp + t * t * x1
+            by = u * u * y0 + 2 * u * t * cyp + t * t * y1
+            # derivative for tangent direction
+            tx = 2 * u * (cxp - x0) + 2 * t * (x1 - cxp)
+            ty = 2 * u * (cyp - y0) + 2 * t * (y1 - cyp)
+            return bx, by, tx, ty
+
+        def half_width(t):
+            # (2t-1)^taper is 1 at the ends, 0 at the center.
+            edge = abs(2.0 * t - 1.0) ** taper
+            return mid_hw + (end_hw - mid_hw) * edge
+
+        # Build the two offset edges of the ribbon, then fill it segment by
+        # segment (the shape isn't convex, we fill quads as triangle pairs).
+        left = []
+        right = []
+        for i in range(segments + 1):
+            t = i / segments
+            bx, by, tx, ty = bezier(t)
+            tlen = math.hypot(tx, ty)
+            if tlen < 1e-6:
+                nxn, nyn = perp_x, perp_y
+            else:
+                nxn, nyn = -ty / tlen, tx / tlen
+            hw = half_width(t)
+            left.append((bx + nxn * hw, by + nyn * hw))
+            right.append((bx - nxn * hw, by - nyn * hw))
+
+        for i in range(segments):
+            l0, l1 = left[i], left[i + 1]
+            r0, r1 = right[i], right[i + 1]
+            overlay_dl.add_triangle_filled(l0[0], l0[1], r0[0], r0[1], l1[0], l1[1], col)
+            overlay_dl.add_triangle_filled(r0[0], r0[1], r1[0], r1[1], l1[0], l1[1], col)
+
+        # add_triangle_filled has hard (aliased) edges, but add_polyline is
+        # antialiased (DRAW_LIST_ANTI_ALIASED_LINES, on by default). Stroke the
+        # ribbon's two long edges to feather them; the square ends are covered by
+        # the AA cap circles below.
+        if Swoosh.aa_width > 0.0:
+            overlay_dl.add_polyline(left, col, flags=imgui.DRAW_NONE, thickness=Swoosh.aa_width)
+            overlay_dl.add_polyline(right, col, flags=imgui.DRAW_NONE, thickness=Swoosh.aa_width)
+
+        # Round caps over the flat (square) ends of the ribbon so the endpoints
+        # read as dots rather than squared-off edges.
+        cap_r = end_hw * Swoosh.cap_scale
+        overlay_dl.add_circle_filled(x0, y0, cap_r, col)
+        overlay_dl.add_circle_filled(x1, y1, cap_r, col)
 
     @classmethod
     def is_wrapped(cls):
@@ -769,6 +938,7 @@ class Melty:
                 draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer)
                 draw_state._kwargs['active_layer'] = Melty.active_layer
 
+                child_highlight = None
                 if draw_state._kwargs.get("traces", False) or True:
                     if draw_state._parent is not None:
                         offset_ds = draw_state._parent._offset_ds
@@ -783,15 +953,31 @@ class Melty:
 
                         overlay_dl.channels_set_current(min(Melty.max_layer - 1, layer_index))
 
+                        # Color the highlight using the *parent* window's tint:
+                        # the nested view doesn't always carry a tint of its own.
+                        # current_tint is stashed at draw time (the style manager's
+                        # live tint is gone by this post-draw highlight code).
+                        parent_tint = offset_ds.current_tint or (draw_state._kwargs.get("tint", (1, 1, 1))[:3], 1.0)
+                        highlight_rgb = Melty._highlight_rgb(parent_tint)
+                        outline_col = imgui.get_color_u32_rgba(*highlight_rgb, Tint.highlight_outline_alpha)
+                        bg_col = imgui.get_color_u32_rgba(*highlight_rgb, Tint.highlight_bg_alpha)
+
+                        # Parent view: faint fill + matching highlight outline.
+                        overlay_dl.add_rect_filled(offset_ds.abs_left, offset_ds.abs_top,
+                                                   offset_ds.abs_left + offset_ds.width,
+                                                   offset_ds.abs_top + offset_ds.height,
+                                                   bg_col, rounding=offset_ds.corner_radius)
                         overlay_dl.add_rect(offset_ds.abs_left, offset_ds.abs_top,
                                             offset_ds.abs_left + offset_ds.width,
                                             offset_ds.abs_top + offset_ds.height,
-                                            imgui.get_color_u32_rgba(*Tint.context_select_tint, Tint.context_select_bg_alpha),
-                                            thickness=2.0)
-                        overlay_dl.add_rect_filled(offset_ds.abs_left, offset_ds.abs_top,
-                                                   offset_ds.abs_left + offset_ds.width,
-                                                   offset_ds.abs_top + offset_ds.height, imgui.get_color_u32_rgba(
-                                *Tint.context_select_tint, Tint.context_select_outline_alpha))
+                                            outline_col, rounding=offset_ds.corner_radius,
+                                            thickness=Tint.highlight_outline_thickness)
+
+                        # The child outline + swoosh depend on the child's geometry,
+                        # which only becomes current after cls.draw(draw_state) below.
+                        # Stash the params and draw them post-draw to avoid a frame of lag.
+                        child_highlight = (overlay_dl, offset_ds,
+                                           outline_col, highlight_rgb)
 
 
                 if not Melty.channels_split:
@@ -801,6 +987,30 @@ class Melty:
 
                 if draw_state.unique not in cls.seen_unique:
                     cls.draw(draw_state)
+
+                # Now that the child has been drawn this frame, its geometry is
+                # current: draw the child outline + swoosh of current bounds.
+                if child_highlight is not None and draw_state.width is not None and draw_state.height is not None:
+                    overlay_dl, offset_ds, outline_col, highlight_rgb = child_highlight
+                    # cls.draw may have left the overlay on another channel; match ours.
+                    child_layer_index = draw_state.window_index
+                    rounding = draw_state.corner_radius
+                    overlay_dl.channels_set_current(min(Melty.max_layer - 1, child_layer_index))
+
+                    overlay_dl.add_rect(draw_state.abs_left, draw_state.abs_top,
+                                        draw_state.abs_left + draw_state.width,
+                                        draw_state.abs_top + draw_state.height,
+                                        outline_col, rounding=rounding,
+                                        thickness=Tint.highlight_outline_thickness)
+
+                    Melty._draw_swoosh(
+                        overlay_dl,
+                        offset_ds.abs_left, offset_ds.abs_top,
+                        offset_ds.width, offset_ds.height,
+                        draw_state.abs_left, draw_state.abs_top,
+                        draw_state.width, draw_state.height,
+                        highlight_rgb,
+                    )
 
                 if Melty.channels_split:
                     # Flatten layers into single channel
@@ -854,14 +1064,6 @@ class Melty:
         style.item_spacing = Melty.original_spacing
         style.window_padding = Melty.original_window_padding
         style.frame_padding = Melty.original_frame_padding
-
-        # Invalidate the text-focused view on any key press
-        if cls.text_focused_ds is not None and cls.glfw_window is not None:
-            for k in range(32, 349):  # GLFW_KEY_SPACE through GLFW_KEY_LAST
-                if glfw.get_key(cls.glfw_window, k) == glfw.PRESS:
-                    Melty.cache.invalidate(cls.text_focused_ds._tile_id)
-                    request_render()
-                    break
 
         overlay: _DrawList = imgui.get_overlay_draw_list()
 
@@ -1476,6 +1678,12 @@ class Melty:
 
     @classmethod
     def is_key_pressed(cls, key=glfw.KEY_ESCAPE):
+        # A focused text editor owns the keyboard. Block all global hotkeys so
+        # typing (including the editor's own Ctrl shortcuts) never leaks into
+        # app-level handlers. Centralized here so call sites don't each have to
+        # guard with `and Melty.text_focused_ds is None`.
+        if cls.text_focused_ds is not None:
+            return False
         if imgui.is_any_item_focused() or imgui.is_any_item_active():
             if not cls.ctrl_key():
                 # If any item is focused or active, we don't want to capture key presses

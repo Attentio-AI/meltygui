@@ -91,7 +91,9 @@ def draw_window(input_value:any, view_func=None, draw_state=None, delete_down=Fa
 def draw_module(input_value: types.ModuleType, draw_state, **kwargs):
     imgui.text(f"Module: {input_value.__name__}")
 
-@render_func(is_default_for=(dict, MutableMapping, defaultdict), use_cache=True, header_same_line=False, show_bg=True, show_instance_vars=False, manual_content_height=True, disable_scroll=True, shadow=True, wrap=False, with_header=draw_header, indent_size=5, searchable=True)
+@render_func(is_default_for=(dict, MutableMapping, defaultdict), use_cache=True, header_same_line=False, show_bg=True,
+             show_instance_vars=False, manual_content_height=True, disable_scroll=True, shadow=True, wrap=False,
+             with_header=draw_header, indent_size=5, searchable=True)
 def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=None, keys=None, get_attr=None, set_attr=None, show_excluded=False,
                     child_kwargs=None, nested_func=None, show_bg=True, show_search=True, on_collapse=False, search_text="",
                     on_expand=False, show_add_delete=True, item_spacing_y=1,
@@ -1561,9 +1563,10 @@ def test_func():
     "key":False,
     "key_2":2.421
     }
-    
-    # This is a comment
-    some_flag = False
+11
+4
+1
+
 
 def draw_bg(left=0, top=0, width=0, height=57, depth=0, rounding=5.952, bg_offset=0,
         global_style=None, outline=True, bg_color=None, opacity=0.0,
@@ -2366,12 +2369,11 @@ def draw_debug(x,y, label, color=(1, 0, 0), size=16):
 #     imgui.text(f"Last Modified: {input_value.modified_time}")
 #
 #     return False, None
-@render_func(use_cache=True, disable_scroll=True, show_header=False, header_same_line=False, show_tint=False, show_name=False, is_tree=False)
-def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, up_key_pressed=None, down_key_pressed=None, tab_state: TabState = None, **kwargs):
+@render_func(use_cache=True, disable_scroll=True, show_header=False, searchable=True, header_same_line=False, show_tint=False, show_name=False, is_tree=False)
+def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, search_text="", up_key_pressed=None,
+                         down_key_pressed=None, tab_state: TabState = None, **kwargs):
 
     context_menu_offset = input_value.context_menu_offset
-
-
     # Draw rects ################
     # overlay_dl = imgui.get_overlay_draw_list()
     # overlay_dl.add_rect(draw_state.abs_left, draw_state.abs_top, draw_state.abs_left + draw_state.width,

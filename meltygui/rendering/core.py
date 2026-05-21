@@ -400,8 +400,7 @@ def render_func(*args, **o_kwargs):
         draw_state._wrapper = wrapper
         draw_state._bg_stack = copy(Melty.bg_stack)
         draw_state._bg_depth = Melty.bg_depth
-        if style_manager is not None:
-            draw_state.current_tint = style_manager.get_tint()
+
 
         #############################################
         ###### Layer rendering delay
@@ -1137,6 +1136,9 @@ def render_func(*args, **o_kwargs):
             draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer)
 
             if Melty.cache.mark_start_offscreen(draw_state=draw_state):
+                if style_manager is not None:
+                    draw_state.current_tint = style_manager.get_tint()
+
                 draw_state._column_cursor = defaultdict(lambda: [0, 0])  # column -> (x, y)
                 draw_state._outside_column_height = 0
 

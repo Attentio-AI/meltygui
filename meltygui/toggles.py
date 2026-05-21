@@ -14,9 +14,32 @@ class Tint:
     context_select_outline_alpha = 0.054
     context_select_bg_alpha = 0.592
     context_select_rounding = 5.0
-    
+
     # Background constants
-    context_menu_bg_offset = 3.0
+    context_menu_bg_offset = 4.0
+
+    # Highlight outline boxes (parent + child views)
+    highlight_outline_thickness = 3.0   # outline line thickness
+    highlight_outline_rounding = 7.868    # corner radius of the outline boxes
+    highlight_outline_alpha = 0.518      # outline opacity
+    highlight_bg_alpha = 0.114           # parent fill opacity
+
+@window
+class Swoosh:
+    # Nested-window "swoosh" connector (parent outline -> nested view)
+    tint = (1.0, 0.7, 0.2)   # fallback color if no style manager is available
+    value = 0.631              # brightness of the highlight (super-bright tint)
+    saturation = 1.614        # saturation scale applied to the current tint
+    alpha = 1.0             # opacity of the swoosh
+    end_thickness = 3.815      # half-width at the two endpoints (thick)
+    cap_scale = 0.919          # end-cap dot radius as a multiple of end_thickness
+    mid_thickness = 0.924      # half-width at the middle (thin)
+    curve = 0.22             # max arc bow as a fraction of edge distance
+    curve_ramp = 0.581        # how the bow eases in with slope (>1 stays rounder longer)
+    edge_softness = 1.138     # a smoothing window for the mid-edge anchor (0 = hard)
+    segments = 40            # tessellation count (higher = smoother)
+    taper = 10.0              # slope of the end->middle thickness falloff
+    aa_width = 1.5           # antialiased edge-stroke width in px (0 = none)
 
 @window
 @tint({"draw_legacy": (0.8, 0.2, 0.2)})
