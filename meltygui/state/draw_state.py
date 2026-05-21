@@ -90,6 +90,7 @@ class AttrDict:
     def rebind(self, data):
         object.__setattr__(self, '_data', data)
 
+@exclude("_items", "_cursor")
 class CursorStack:
     def __init__(self):
         self._items = []
@@ -136,9 +137,9 @@ class TileMode(Enum):
          "misc_used", "draw_window_pos_y", "drag_delta", "screen_pos", "hover_rects", "melty_window", "auto_resize",
          "imgui_is_item_activated", "frame_count")
 @exclude("current_tint", "overhead_time", "premature_break", "drag_mode",
-         "clip_rect", "_input_value", "flow_spacing", "expanded_rect", 'max_column',
+         "clip_rect", "_input_value", "flow_spacing", "expanded_rect", 'max_column', 'text_selection_start', 'text_selection_end',
          'width', "height", "size_change", 'left', 'top', 'content_height', "clipped", "fully_clipped", "melty_window",
-         "hovered", "wrapped_top", "params", "scroll_visible", "depth_and_layer", "clipped_by_rect", "multi_line",
+         "hovered", "wrapped_top", "params", "scroll_visible", "depth_and_layer", "clipped_by_rect", "multi_line", "text_prev_cursor_pos", "text_cursor_pos", "text_selection_start", "text_selection_end", "text_is_focused", "text_cursor_blink_time",
          "premature_break", "wrapped_left", "_did_use_cache", "hover_rects", "window_pos", "content_width",
          "content_region", "value_hash", "drag_window", "content_region", "did_render", "footer_height", "footer_width",
          "bounding_hovered", "dlt_count", "clip_rect",

@@ -66,6 +66,7 @@ class Mode(Enum):
         )
     }
 
+
     WINDOW_MANAGER_SORTED = {
         defaultdict: ModeOverrides(
             kwargs={"show_bg": True, "selectable": False, "use_cache": True},
@@ -178,7 +179,7 @@ class Mode(Enum):
         ),
 
     }
-
+    
 
     code_plain_text_auto_load = False
     code_plain_text_params = {'save': True,
@@ -216,6 +217,7 @@ class Mode(Enum):
             recursive=True
         ),
     }
+
 
     # ── File metadata ────────────────────────────────────────
     #

@@ -618,7 +618,7 @@ class Melty:
 
         for view_id, evts in cls.events.items():
             first_event = list(evts.values())[0]
-            if first_event.tile_id is not None and not cls.on_drag:
+            if first_event.tile_id is not None and not imgui.is_mouse_down(0) and not imgui.is_mouse_down(1) and not imgui.is_mouse_down(2):
                 Melty.cache.invalidate_up(first_event.tile_id, max_depth=10, force=True)
 
         Melty.all_uniques = set()

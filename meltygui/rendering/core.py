@@ -321,7 +321,7 @@ def render_func(*args, **o_kwargs):
                 Melty.registered_windows[tile_id].window_args = kwargs
                 Melty.registered_windows[tile_id].name = name
 
-                if tile_id not in Melty.registered_windows:
+                if tile_id not in Melty.registered_windows and Melty.frame_count > 2:
                     Melty.cache.invalidate_by_obj(Melty.registered_windows)
 
             if draw_state.closed and not input_value == Melty.registered_windows:
@@ -2481,11 +2481,11 @@ def render_func(*args, **o_kwargs):
                     style.item_spacing = Melty.original_spacing
                     style.window_padding = Melty.original_window_padding
                     style.frame_padding = Melty.original_frame_padding
-
-                    if Melty.previous_select is not None:
-                        for prev_select in Melty.previous_select:
-                            Melty.cache.invalidate(prev_select._tile_id)
-                        Melty.previous_select = None
+                    #
+                    # if Melty.previous_select is not None:
+                    #     for prev_select in Melty.previous_select:
+                    #         Melty.cache.invalidate(prev_select._tile_id)
+                    #     Melty.previous_select = None
 
                     if Melty.channels_split:
                         draw_list = imgui.get_window_draw_list()
