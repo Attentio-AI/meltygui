@@ -26,6 +26,7 @@ def live(cls):
     @functools.wraps(original_setattr)
     def new_setattr(self, name: str, value: Any) -> None:
 
+
         # Set the attribute using the original __setattr__
         original_value = getattr(self, name, None)
         if original_setattr == object.__setattr__:
@@ -35,6 +36,7 @@ def live(cls):
 
         if Melty.silence_invalidate:
             return
+
         # Check if we're initializing
         initializing = getattr(self, init_flag, False)
 
@@ -56,7 +58,15 @@ def live(cls):
         # - attribute is not excluded
         # - object has invalidate method
         try:
-            if value != original_value:
+            # if name == "clipped" or name == "fully_clipped":
+            #     changed = value != original_value and value
+            # else:
+            changed = value != original_value
+
+            if changed:
+                # if Melty.frame_count > 10 and Melty.frame_count % 20 == 0 and name == "width":
+                #     print_stack_trace()
+
                 if not initializing and visible and not name.startswith('_') \
                         and name != "driver" and Melty.frame_count > 3:
                     Melty.last_attr = name
@@ -64,6 +74,14 @@ def live(cls):
                         Melty.cache.invalidate_up_by_obj(obj=self, max_depth=2, force=True)
                     else:
                         Melty.cache.invalidate_by_obj(self, name)
+
+                    from src.lsd.gl_gui.toggles import Toggles
+                    if Toggles.attrib_change_stack_trace:
+                        print_stack_trace()
+
+
+
+
         except Exception as e:
             pass
 

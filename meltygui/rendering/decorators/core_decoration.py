@@ -61,6 +61,7 @@ class auto_eval:
 
     def __set__(self, obj, value):
         # Register on first set if not already registered
+        from src.lsd.gl_gui.melty import Melty
         if obj not in Melty.live_attributes:
             Melty.live_attributes[obj] = set()
         if self.name not in Melty.live_attributes[obj]:
@@ -117,9 +118,14 @@ class auto_eval:
                 if do_deep_refresh:
                     Melty.cache.invalidate_up_by_obj(obj=obj, name=self.name, max_depth=3, force=True)
                     request_render()
+
+                    if hasattr(self, "context_menu_ds"):
+                        print(f"Context menu ds found, invalidating {self.name}")
                 else:
                     Melty.cache.invalidate_up_by_obj(obj, self.name, max_depth=3)
                     request_render()
+
+
 
         """Override this or add your universal callback logic here"""
 

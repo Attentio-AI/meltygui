@@ -487,7 +487,7 @@ def draw_with_modes(input_value, modes, tab_state: TabState = None, draw_state=N
     value = input_value
     for idx, mode in enumerate(tab_state.selected_tabs):
         mode_changed, value = draw_any(input_value, name=f"Mode: {mode} {unique}", mode=mode, selectable=False, show_name=False,
-                                     with_header=None, show_header=False, disable_scroll=False, height=500,
+                                     with_header=None, show_header=False, disable_scroll=False,
                                        indent_size=0, show_bg=False, use_cache=True, shadow=False, column=idx)
         changed |= mode_changed
 
@@ -499,7 +499,7 @@ def draw_draw_state(input_value, **kwargs):
 
 
 @render_func(use_cache=False, shadow=False, show_bg=False)
-def run_chain(input_value, chain=None, draw_state=None, s_key_pressed=False, unique=None, debug=False, **kwargs):
+def run_chain(input_value, chain=None, draw_state=None, disable_scroll=True, s_key_pressed=False, unique=None, debug=False, **kwargs):
     """Debug render function: executes a chain step by step with imgui output.
 
     Shows function name, changed flag, output type, and a value preview
@@ -520,6 +520,7 @@ def run_chain(input_value, chain=None, draw_state=None, s_key_pressed=False, uni
     cache_tree = draw_state._chain_stack
     cache_tree.begin()
     value = cache_tree.step(changed, value)
+    start_cursor = imgui.get_cursor_screen_pos()
 
     for i, func in enumerate(chain):
         if isinstance(func, tuple):
@@ -538,9 +539,11 @@ def run_chain(input_value, chain=None, draw_state=None, s_key_pressed=False, uni
         func_kwargs['show_header'] = False
         func_kwargs['s_key_pressed'] = s_key_pressed
         func_kwargs['draw'] = True
-
+    
         next_cached = cache_tree.peek()
         changed, value = func(input_value=value, reference=next_cached, **func_kwargs)
+
+        # imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0], start_cursor[1] + i* 300))
 
         if isinstance(value, Pending):
             changed=False
@@ -1139,8 +1142,7 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
 
 
 
-@render_func(is_default_for=ManagedWindow, is_tree=False, show_name=False, use_cache=True, shadow=False, show_bg=False,
-             selectable=False, show_add_delete=False, show_tint=False, wrap=False, with_header=draw_header)
+@render_func(is_default_for=ManagedWindow, is_tree=False, show_name=False, use_cache=True, shadow=False, show_bg=False, selectable=False, show_add_delete=False, show_tint=False, wrap=False, with_header=draw_header)
 def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, mouse_down=False, **kwargs):
     try:
         window_draw_state = input_value.draw_state
@@ -1561,7 +1563,7 @@ def test_func():
 1
 
 
-def draw_bg(left=0, top=0, width=0, height=57, depth=0, rounding=5.952, bg_offset=0,
+def draw_bg(left=0, top=0, width=0, height=57, depth=0, rounding=5.945, bg_offset=0,
         global_style=None, outline=True, bg_color=None, opacity=0.0,
         style_manager=None, tint=None, outline_tint=None, selected=False,
         hovered=False, pressed=False, nested_bg=False, **kwargs):
@@ -1579,7 +1581,7 @@ def draw_bg(left=0, top=0, width=0, height=57, depth=0, rounding=5.952, bg_offse
     some_var = [29,2,3]
     # Outline color tuning
     outline_base      = 1.773
-    outline_depth_mul = 0.85
+    outline_depth_mul = 0.891
     outline_sat       = {'default': 1.1, 'nested': 1.473}
     
 
@@ -1596,7 +1598,7 @@ def draw_bg(left=0, top=0, width=0, height=57, depth=0, rounding=5.952, bg_offse
     }
     bg_style = {
         'value': -0.004, 'saturation': 1.101,
-        'alpha': 0.504, 'max_value': 2.0,
+        'alpha': 0.504, 'max_value': 1.8,
     }
     
     # ── Helpers ────────────────────────────────────────────────
@@ -2383,8 +2385,8 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, s
                          down_key_pressed=None, tab_state: TabState = None, **kwargs):
 
     context_menu_offset = input_value.context_menu_offset
-    info_items = ["name", "closable", "current_mode", "mode", "show_add_delete", "_source", "width", "height", "content_height", "scroll_offset",
-                  "final_max_column", "_column_cursor", "_content_rect", "_max_column_index", "_outside_column_height", "disable_scroll"]
+    info_items = ["name", "column", "closable", "current_mode", "mode", "show_add_delete", "_source", "width", "height", "content_height", "scroll_offset",
+                  "final_max_column", "_column_cursor", "_content_rect", "_max_column_index", "_outside_column_height", "disable_scroll", ]
 
     # imgui.text(type(input_value._input_value).__name__)
     imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0] - 3, imgui.get_cursor_screen_pos()[1] - 20))
@@ -2494,7 +2496,7 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, s
                         draw_any(item_value, name=info_item, column=t_idx, show_name=True,
                                 show_header=True, show_add_delete=False, draw=True)
 
-                if button("print_stack_trace")[0]:
+                if button("print_stack_trace", column=t_idx)[0]:
                     print_stack_trace()
 
             if tab_names[static_tab] == config_icon_fa:

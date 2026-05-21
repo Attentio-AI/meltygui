@@ -62,27 +62,31 @@ class Background:
         cls._debounce_timers.clear()
         cls._debounce_latest.clear()
 
-        print("\n--- Hash timing averages (by type) ---")
-        for type_name, (total, count) in sorted(cls._hash_times.items()):
-            avg_ms = (total / count) * 1000
-            print(f"  {type_name:<30} avg={avg_ms:.3f}ms  n={count}")
-        print("--------------------------------------\n")
+        print_timings = False
 
-        print("--- Hash timing averages (dict keys, sorted by avg) ---")
-        sorted_keys = sorted(cls._dict_key_times.items(), key=lambda x: x[1][0] / x[1][1], reverse=True)
-        for key_name, (total, count) in sorted_keys:
-            avg_ms = (total / count) * 1000
-            print(f"  {key_name:<40} avg={avg_ms:.3f}ms  n={count}")
-        print("-------------------------------------------------------\n")
+        if print_timings:
+            print("\n--- Hash timing averages (by type) ---")
+            for type_name, (total, count) in sorted(cls._hash_times.items()):
+                avg_ms = (total / count) * 1000
+                print(f"  {type_name:<30} avg={avg_ms:.3f}ms  n={count}")
+            print("--------------------------------------\n")
 
-        print("--- Task timing averages (by function, sorted by avg) ---")
-        sorted_tasks = sorted(cls._task_times.items(), key=lambda x: x[1][0] / x[1][1], reverse=True)
-        for func_name, (total, count) in sorted_tasks:
-            avg_ms = (total / count) * 1000
-            print(f"  {func_name:<50} avg={avg_ms:.3f}ms  n={count}")
-        print("----------------------------------------------------------\n")
+            print("--- Hash timing averages (dict keys, sorted by avg) ---")
+            sorted_keys = sorted(cls._dict_key_times.items(), key=lambda x: x[1][0] / x[1][1], reverse=True)
+            for key_name, (total, count) in sorted_keys:
+                avg_ms = (total / count) * 1000
+                print(f"  {key_name:<40} avg={avg_ms:.3f}ms  n={count}")
+            print("-------------------------------------------------------\n")
 
-        print("Shutting down background thread pool...")
+            print("--- Task timing averages (by function, sorted by avg) ---")
+            sorted_tasks = sorted(cls._task_times.items(), key=lambda x: x[1][0] / x[1][1], reverse=True)
+            for func_name, (total, count) in sorted_tasks:
+                avg_ms = (total / count) * 1000
+                print(f"  {func_name:<50} avg={avg_ms:.3f}ms  n={count}")
+            print("----------------------------------------------------------\n")
+
+            print("Shutting down background thread pool...")
+
         cls._pool.shutdown(wait=True)
         print("Background thread pool shut down successfully.")
 

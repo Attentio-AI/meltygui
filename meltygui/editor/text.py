@@ -476,9 +476,6 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, le
     origin_x = left - ds.text_h_scroll
     origin_y = top
 
-    # --- Invisible button for mouse interaction ---
-    is_hovered = cursor_hover
-
     if left_mouse_clicked:
         print("Left mouse clicked on text editor")
 

@@ -57,6 +57,7 @@ class TabState(DictConversion):
 
 
 
+@exclude("zoom", "center_u", "center_v", "brightness", "contrast", "hue", "saturation")
 class ZoomState(DictConversion):
     def __init__(self):
         super().__init__()
@@ -131,17 +132,17 @@ class TileMode(Enum):
          "hotkey_receiver", "use_child", "cst", "search_text", "bg_color", "depth", "z_pos",
          "is_active", "clip_rect", "wrapped_top", "current_tint", "wrapped_left", "multi_line",
          "min_width", "min_height", "is_focused", "drag_window_pos_x", "drag_window_pos_y", "corner_radius",
-         "drag_mode", "is_hovered_last", "bg_shown", "draw_window_pos_x", "z_offset", "content_width",
+         "drag_mode", "is_hovered_last", "bg_shown", "draw_window_pos_x", "z_offset", "content_width", "melty_window",
          "misc_used", "draw_window_pos_y", "drag_delta", "screen_pos", "hover_rects", "melty_window", "auto_resize",
          "imgui_is_item_activated", "frame_count")
-@exclude("current_tint", "overhead_time", "premature_break",
+@exclude("current_tint", "overhead_time", "premature_break", "drag_mode",
          "clip_rect", "_input_value", "flow_spacing", "expanded_rect", 'max_column',
-         'width', "height", "size_change", 'left', 'top', 'content_height',
-         "hovered", "wrapped_top", "params", "scroll_visible", "depth_and_layer",
-         "premature_break", "wrapped_left", "_did_use_cache", "hover_rects",
-         "content_region", "value_hash", "drag_window", "content_region", "did_render",
+         'width', "height", "size_change", 'left', 'top', 'content_height', "clipped", "fully_clipped", "melty_window",
+         "hovered", "wrapped_top", "params", "scroll_visible", "depth_and_layer", "clipped_by_rect", "multi_line",
+         "premature_break", "wrapped_left", "_did_use_cache", "hover_rects", "window_pos", "content_width",
+         "content_region", "value_hash", "drag_window", "content_region", "did_render", "footer_height", "footer_width",
          "bounding_hovered", "dlt_count", "clip_rect",
- "scrolled", "is_hovered_last", "frame_count")
+ "scrolled", "is_hovered_last", "frame_count", "z_pos", "corner_radius")
 @no_save_exclude('render_time',  "total_z_offset", 'closable', 'has_full_tile', 'invalid_content_height',
                   "parent_window", "pressed", "bbox", "final_max_column",
                  'hover_rects', 'nested_window', 'use_cache', 'layer', "header_top", "header_left", "left_offset",
@@ -149,7 +150,7 @@ class TileMode(Enum):
                  "header_left_delta", "header_top_delta", "last_seen", "persistent", "shadow_margin", "bg_depth",
                  "anchor_pos", "just_shadow", 'hover_reported', 'explain_convert',
                  'channel', 'next', 'previous', 'index_in_parent', 'relative_pos',
-                 'context_menu_ds', '_hover_eligible', 'just_shadow')
+                    '_hover_eligible', 'just_shadow')
 @deep_refresh('scroll_offset', 'closed', '"search_text')
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
@@ -351,6 +352,7 @@ class DrawState(DictConversion):
         self._columns_top = None
         self._max_column_height = 0
         self._max_column_index = 0
+        self._columns_bottom = 0
         ### End Columns
         self._is_nested = False
         self.anchor_pos = Anchor.TOP_LEFT
@@ -420,8 +422,8 @@ class DrawState(DictConversion):
 
     @property
     def clip_size(self):
-        if self.clip_rect is None:
-            return (self.width or self.min_width, self.height or self.min_height)
+        # if self.clip_rect is None:
+        #     return (self.width or self.min_width, self.height or self.min_height)
         left, top, right, bottom = self.abs_clip_rect
         return (right - left, bottom - top)
 
@@ -457,7 +459,7 @@ class DrawState(DictConversion):
         if new_bbox == self._bvh_bbox:
             return
         old_bbox = self._bvh_bbox
-        self._bvh_bbox = self.bbox
+        self._bvh_bbox = new_bbox
 
         if self._bvh_id is None:
             if new_bbox is not None and self.clipped:

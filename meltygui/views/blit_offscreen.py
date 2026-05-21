@@ -169,6 +169,11 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
     if existing and existing.size == (w, h):
         return existing
 
+    # print("existing", existing.size if existing else None, "new", (w, h), "frame", frame_id, "tile_id", tile_id)
+
+    # if Melty.frame_count > 20:
+    #     print_stack_trace()
+
     if w == 0 or h == 0:
         return None
 
@@ -1301,7 +1306,6 @@ class TileCacheMasked:
 
         if f"{id(draw_state)}" not in self.py_id_to_keys:
             self.py_id_to_keys[f"{id(draw_state)}"] = set()
-
         self.py_id_to_keys[f"{id(draw_state)}"].add(rkey)
 
         imgui.push_id(f"{rkey}{layer}_offscreen")

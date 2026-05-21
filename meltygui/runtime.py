@@ -239,6 +239,7 @@ class Melty:
 
     last_draw_state = [(None, None)] * max_layer
     collection_index_stack = []
+    hovered_ds = None
 
     windows = []
     collection_stack = []
@@ -524,15 +525,16 @@ class Melty:
                         request_render()
                         break
 
-        # mouse_pos = imgui.get_mouse_pos()
-        # ds_under_mouse = Melty.bvh_query(mouse_pos[0], mouse_pos[1])
+        mouse_pos = imgui.get_mouse_pos()
+        ds_under_mouse = Melty.bvh_query(mouse_pos[0], mouse_pos[1])
+        # cls.hovered_ds = ds_under_mouse if ds_under_mouse else []
         # for ds in ds_under_mouse:
         #     ds._hover_eligible = Melty.frame_count
         #
-        # for ds in ds_under_mouse[-3:-1]:
+        # for ds in ds_under_mouse[-2:-1]:
         #     if ds is not None and not cls.on_drag:
-        #         if (not cls.on_drag and not imgui.is_mouse_down(1)):
-        #             Melty.cache.invalidate(ds._tile_id, do_store=False, force=True)
+        #         # if (not cls.on_drag and not imgui.is_mouse_down(2)):
+        #         Melty.cache.invalidate(ds._tile_id, do_store=False, force=True)
 
         cls.backend.pump()
 
@@ -548,15 +550,22 @@ class Melty:
         cls.events, cls.events_by_type = cls.event_handler.process_frame()
 
 
-        cls.window_drag = (("left_mouse_drag" in cls.events_by_type) or ("left_mouse_held" in cls.events_by_type))
+        cls.window_drag = ((("left_mouse_drag" in cls.events_by_type) or ("left_mouse_held" in cls.events_by_type)) or
+                           (("right_mouse_drag" in cls.events_by_type) or ("right_mouse_held" in cls.events_by_type)))
 
         left_mouse_drag_event = cls.events_by_type.get("left_mouse_drag", None)
+        right_mouse_drag_event = cls.events_by_type.get("right_mouse_drag", None)
+        if right_mouse_drag_event is not None:
+            is_window_resize = "window_resize" in str(right_mouse_drag_event.keys())
+        else:
+            is_window_resize = False
+
         if left_mouse_drag_event is not None:
-            is_window_drag = "window_move" in str(left_mouse_drag_event.keys())
+            is_window_drag = "window_move" in str(left_mouse_drag_event.keys()) or "corner_drag" in str(left_mouse_drag_event.keys())
         else:
             is_window_drag = False
 
-        cls.on_drag = (is_window_drag or ("left_mouse_down" in cls.events_by_type)) and (not cls.imgui_active)
+        cls.on_drag = (is_window_drag or is_window_resize or ("left_mouse_down" in cls.events_by_type)) and (not cls.imgui_active)
 
         cls.event_handler.begin_frame()
 
@@ -2376,4 +2385,5 @@ class ManagedWindow:
         self.draw_state = draw_state
         self.window_args = window_args
         self.name = name
+        self.hidden = False
 
