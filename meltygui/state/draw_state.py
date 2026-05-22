@@ -440,6 +440,12 @@ class DrawState(DictConversion):
         self._search_session = None
         self._search_last_term = None
         self._search_nav_pending = False
+        # Which local key (if any) is the global-current one for this view,
+        # latched on full search sub-renders so incidental repaints don't reset
+        # the highlight when sibling views are served from cache.
+        self._search_active_local = None
+        # draw_collection latches the index of its global-current matching key.
+        self._search_current_key = None
 
         self._print_last_invalid = False
         self._last_invalidate = None

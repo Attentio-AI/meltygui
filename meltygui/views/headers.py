@@ -176,7 +176,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     }
 
     # Type / unique label colors
-    type_label_color   = (3.672, 1.944, 2.861, 1.0)
+    type_label_color   = (3.489, 1.944, 2.861, 1.0)
     unique_label_color = (-1.535, 0.0, 0.9, 1.0)
 
     # ── Setup ──────────────────────────────────────────────────
@@ -305,6 +305,20 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         if not draw_state._name_edit:
             draw_list: _DrawList = imgui.get_window_draw_list()
             cursor_pos = imgui.get_cursor_screen_pos()
+            # Search-match highlight behind the key name (drawn before the text
+            # so glyphs are readable). Strong fill + outline for the active
+            # (global-current) match; a faint fill for the rest. The flags are
+            # set by draw_collection when this header's key matches the query.
+            if kwargs.get("search_match", False):
+                pad = 2.0
+                hx0, hy0 = cursor_pos[0] - pad, cursor_pos[1] - 1
+                hx1 = cursor_pos[0] + text_width + pad
+                hy1 = cursor_pos[1] + imgui.get_text_line_height() + 1
+                if kwargs.get("search_current", False):
+                    draw_list.add_rect_filled(hx0, hy0, hx1, hy1, (150 << 24) | (60 << 16) | (170 << 8) | 240)
+                    draw_list.add_rect(hx0, hy0, hx1, hy1, (255 << 24) | (90 << 16) | (200 << 8) | 255)
+                else:
+                    draw_list.add_rect_filled(hx0, hy0, hx1, hy1, (89 << 24) | (80 << 16) | (200 << 8) | 230)
             packed_name_color = imgui.get_color_u32_rgba(*name_color[:3], 1.0)
             draw_list.add_text(cursor_pos[0], cursor_pos[1], packed_name_color, clipped_name)
             imgui.dummy(text_width, imgui.get_frame_height())

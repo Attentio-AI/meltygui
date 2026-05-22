@@ -1222,14 +1222,14 @@ def render_func(*args, **o_kwargs):
                             tint=draw_state.tint,
                             mode=Mode.WINDOW_CLEAN,
                             pin_to_clip=True,
-                            window_pos=(0, -draw_state.height),
+                            window_pos=(0, -draw_state.clip_size[1]),
                             initial={"height": 30},
                             anchor=Anchor.BOTTOM_LEFT,
                             name=f"Find{unique}",
                             return_extras=True)
                     search_ds = extras[2]
                     if search_ds.last_seen is None:
-                        search_ds.window_pos = (0,-draw_state.height)
+                        search_ds.window_pos = (0,-draw_state.clip_size[1])
 
                     # Build this frame's cross-view aggregation session. A new
                     # term resets the global selection to the first match; nav
@@ -2529,16 +2529,19 @@ def render_func(*args, **o_kwargs):
                 Melty.mode_stack.pop()
             if _pushed_search:
                 Melty.search_stack.pop()
-                # Read the combined match total back from the session so the
-                # search UI shows results across each child view, and keep the
-                # global current index within range.
+                # Read the combined match count back from the session so the find
+                # UI shows results across every child view. Only commit it on a
+                # full re-render of the subtree (term:, nav, i.e. when
+                # scroll_to is set) - on incidental repaints some children may be
+                # served from cache and wouldn't have re-registered, which would
+                # otherwise confuse results. Always keep the global index in range.
                 session = draw_state._search_session
                 if session is not None:
-                    draw_state.text_search_count = session.total
-                    if session.total > 0:
-                        draw_state.text_search_current = draw_state.text_search_current % session.total
-                    else:
-                        draw_state.text_search_current = 0
+                    if session.scroll_to:
+                        draw_state.text_search_count = session.total
+                    total = draw_state.text_search_count
+                    draw_state.text_search_current = (
+                        draw_state.text_search_current % total if total > 0 else 0)
 
             draw_state.frame_count += 1
             if Melty.imgui_crashed:

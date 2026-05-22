@@ -66,7 +66,7 @@ class Toggles:
     
     # Filter SettingS
     brightness = 0.22
-    contrast = 1.445
+    contrast = 1.422
     saturation = 0.351
 
     debug_z_depth = False

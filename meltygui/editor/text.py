@@ -830,10 +830,21 @@ def draw_text(input_value: str, left_mouse_clicked=False,
 
     local_count = len(search_matches)
     if session is not None:
-        # Claim a slice of the global index space; current_local is set only
-        # when the global-current match lands within this view's matches.
-        _base, current_local = session.claim(local_count)
-        should_scroll = session.scroll_to and current_local is not None
+        if session.scroll_to:
+            # Full re-render: all views claim in order this frame, so offsets
+            # are consistent - recompute which local match is global active and
+            # latch it for incidental repaints.
+            _base, current_local = session.claim(local_count)
+            ds._search_active_local = current_local
+            should_scroll = current_local is not None
+        else:
+            # Incidental repaint: keep offset/total accounting consistent but
+            # reuse the latched active index so the highlight doesn't jump.
+            session.claim(local_count)
+            current_local = ds._search_active_local
+            if current_local is not None and current_local >= local_count:
+                current_local = None
+            should_scroll = False
     else:
         # Self-contained single-view find (no shared session in play).
         if local_count != ds.text_search_count:

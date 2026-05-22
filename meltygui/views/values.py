@@ -18,7 +18,7 @@ import torch
 from imgui.core import _DrawList
 
 from src.lsd.gl_gui import toggles
-from src.lsd.gl_gui.melty import Melty, CollectionAction, ManagedWindow
+from src.lsd.gl_gui.melty import Melty, CollectionAction, ManagedWindow, SearchTerm
 from src.lsd.gl_gui.model.core_model.draw_state import ZoomState, TileMode, DrawState, TabState
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.toggles import Toggles, WindowManager
@@ -44,7 +44,7 @@ from src.lsd.gl_gui.view.core_views.headers import draw_header, draw_footer, dra
 from src.lsd.gl_gui.view.core_views.inspect_utils import set_fn_defaults
 from src.lsd.gl_gui.view.core_views.monitor import Monitor
 from src.lsd.gl_gui.view.core_views.tensor_views import draw_tensor
-from src.lsd.gl_gui.view.core_views.text_editor import draw_text
+from src.lsd.gl_gui.view.core_views.text_editor import draw_text, _scroll_into_view
 from src.shader_library.shader_manager.texture_manager import PendingTexture
 
 
@@ -53,7 +53,7 @@ def empty(input_val):
     pass
 
 
-@render_func(use_cache=True, auto_resize=False, closable=True, selectable=False, show_bg=True, melty_window=True, draggable=True,
+@render_func(use_cache=True, auto_resize=False, closable=True, selectable=False, searchable=True, show_bg=True, melty_window=True, draggable=True,
              show_tint=True, tile_mode=TileMode.MAX, with_header=draw_header, with_header_end=draw_header_end, indent_size=5, with_footer=draw_footer)
 # Deprecated: use draw_any(input_value, mode=Mode.WINDOW, ...) instead.
 def draw_window(input_value:any, view_func=None, draw_state=None, delete_down=False, glfw_close_down=False, **kwargs):
@@ -89,8 +89,7 @@ def draw_window(input_value:any, view_func=None, draw_state=None, delete_down=Fa
 def draw_module(input_value: types.ModuleType, draw_state, **kwargs):
     imgui.text(f"Module: {input_value.__name__}")
 
-@render_func(is_default_for=(dict, MutableMapping, defaultdict, tuple), use_cache=True, header_same_line=False, show_bg=True, show_instance_vars=False,
-             manual_content_height=True, disable_scroll=True, shadow=True, wrap=False, with_header=draw_header, indent_size=5, searchable=True)
+@render_func(is_default_for=(dict, MutableMapping, defaultdict, tuple), use_cache=True, header_same_line=False, show_bg=True, show_instance_vars=False, manual_content_height=True, disable_scroll=True, shadow=True, wrap=False, with_header=draw_header, indent_size=5, searchable=True)
 def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=None, keys=None, get_attr=None, set_attr=None, show_excluded=False,
                     child_kwargs=None, nested_func=None, show_bg=True, show_search=True, on_collapse=False, search_text="",
                     on_expand=False, show_add_delete=True, item_spacing_y=1,
@@ -166,6 +165,29 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=No
 
         keys = list(keys)[:]
 
+    # --- search (key matching) ---
+    # The dual resolution like the text editor: a forwarded SearchTerm carries
+    # the shared cross-view session, or the owner's own session when this
+    # collection hosts the find UI. We claim one highlight per matching key, in
+    # visual order interleaved with the children (claimed below) so the
+    # combined next/prev sequence reads top-to-bottom. The current key is
+    # latched so incidental repaints don't shift the highlight.
+    _search_term = search_text or (draw_state.search_text if draw_state.search_active else "")
+    if isinstance(_search_term, SearchTerm):
+        search_session = _search_term
+    elif draw_state.search_active and draw_state._search_session is not None:
+        search_session = draw_state._search_session
+    else:
+        search_session = None
+    search_q = str(_search_term).lower() if (search_session is not None and _search_term) else ""
+    search_new_current_key = None
+    search_current_y = None
+    search_current_h = None
+    # On a full-search frame (term change / nav) the whole subtree is force-
+    # invalidated, so draw every row - even ones the off-screen optimization
+    # would normally skip - so their matches register and stay navigable.
+    _search_full_render = search_session is not None and search_session.scroll_to
+
     # --- unified loop ---
     drew_any = False
     all_meta = []
@@ -192,7 +214,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=No
                         relative_pos[1] - true_top + item_spacing_y)
 
         child_draw_state = draw_state._children.get(idx, None)
-        if not horizontal:
+        if not horizontal and not _search_full_render:
             if child_draw_state is not None and (
                     not draw_state.invalid_content_height or imgui.is_mouse_down(0) or imgui.is_mouse_down(
                 1) or imgui.is_mouse_down(2)):
@@ -252,12 +274,24 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=No
                                   key_str.endswith("meta")):
             continue
 
-        # ----- SEARCH CHECK (keys + item.name if present) -----
-        if search_token != "":
-            name_field = getattr(item, "name", None) or getattr(item, "__name__", "")
-            if ((search_token not in norm_string(key_str)) and
-                    (search_token not in norm_string(name_field))):
-                continue
+        # ----- search (key match) -----
+        # Claim a slot for a matched key *before* its child renders, so the
+        # slot order is visual top-to-bottom. On a full re-render (scroll_to)
+        # trust the claim to pick the first one and latch it; otherwise reuse
+        # the latch so the highlight is stable across incidental repaints.
+        key_is_match = bool(search_q) and search_q in key_str.lower()
+        key_is_current = False
+        if key_is_match:
+            key_row_y = imgui.get_cursor_screen_pos()[1]
+            _kbase, _klocal = search_session.claim(1)
+            if search_session.scroll_to:
+                key_is_current = (_klocal == 0)
+                if key_is_current:
+                    search_new_current_key = idx
+            else:
+                key_is_current = (idx == draw_state._search_current_key)
+            if key_is_current:
+                search_current_y = key_row_y
 
         item_meta = Meta.get_child_meta(parent_type, field_name=key, value=item)
         item_meta.collection_type = meta.field_type
@@ -297,6 +331,8 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=No
                 'show_add_delete': show_add_delete,
                 'y_offset': y_offset,
                 'mode': mode,
+                'search_match': key_is_match,
+                'search_current': key_is_current,
 
             }
 
@@ -318,6 +354,14 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=No
             #     else:
             #         item_kwargs['mode'] = mode
 
+            # On a full-search frame, force this child's body to actually run so
+            # it claims its children into the collection - disabling the off-screen
+            # skip only makes the wrapper run. a cached child would otherwise blit
+            # its image and never re-count, committing a partial total (the
+            # "results flicker back to only the visible ones" problem).
+            if _search_full_render and child_draw_state is not None:
+                Melty.cache.invalidate(child_draw_state._tile_id, force=True)
+
             item_return = draw_any(item, **item_kwargs)
 
             # item_return = item_func(item, **item_kwargs)
@@ -331,6 +375,8 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=No
                 draw_state._children[idx] = returned_ds
                 returned_ds._collection_draw_state = draw_state
                 returned_ds.relative_pos = relative_pos
+                if key_is_current:
+                    search_current_h = returned_ds.header_height
                 if horizontal:
                     imgui.same_line(spacing=0)
                     imgui.set_cursor_screen_pos((returned_ds.left + returned_ds.width, returned_ds.top))
@@ -385,6 +431,17 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=No
                 style_manager.set_imgui_tint(*prev_tint)
 
     Melty.collection_index_stack.pop()
+
+    # Latch which key is the global-current match (on full re-renders) and, when
+    # navigation just happened, scroll it into view. draw_collection disables
+    # its own scroll, so _scroll_into_view walks up to the real parent container.
+    if search_session is not None:
+        if search_session.scroll_to:
+            draw_state._search_current_key = search_new_current_key
+            if search_current_y is not None:
+                h = search_current_h or imgui.get_text_line_height()
+                _scroll_into_view(draw_state, search_current_y, search_current_y + h)
+
     end_pos = imgui.get_cursor_pos()[1]
     content_height = (end_pos - start_cursor)
     imgui.dummy(1, 1)
