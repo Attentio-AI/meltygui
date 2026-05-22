@@ -354,10 +354,12 @@ class TraceGroup:
 
     def _bar(self, text="", size=None):
         size = size or self.bar_size_inner
+        code = "\u2500"
+
         if text:
             pad = size - len(text) - 4
-            return f"{self.color}{_BLACK}{_BOLD} \u258c {text} {'\u2500' * max(pad, 0)} {_RESET}"
-        return f"{self.color}{_BLACK}{_BOLD} {'\u2500' * size} {_RESET}"
+            return f"{self.color}{_BLACK}{_BOLD} \u258c {text} {code * max(pad, 0)} {_RESET}"
+        return f"{self.color}{_BLACK}{_BOLD} {code * size} {_RESET}"
 
     def write_header(self):
         self.buf.write(f"\n{self._bar(self.label, size=self.bar_size_outer)}\n")
@@ -530,9 +532,10 @@ def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
         bar_color = _CYAN
         title = "Exception Trace" if exception else "Stack Trace"
         link = _caller_link()
-        buf.write(f"{_BOLD}{bar_color}{'\u2500' * 60}{_RESET}\n")
+        color_a = '\u2500'
+        buf.write(f"{_BOLD}{bar_color}{color_a * 60}{_RESET}\n")
         buf.write(f"{_BOLD}{bar_color}{title}{_RESET} {_DIM}[{thread_name}]{_RESET}{link}\n")
-        buf.write(f"{_BOLD}{bar_color}{'\u2500' * 60}{_RESET}\n")
+        buf.write(f"{_BOLD}{bar_color}{color_a * 60}{_RESET}\n")
 
     # Find the last user-code frame in an exception trace
     error_frame_idx = None
@@ -603,7 +606,8 @@ def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
 
     if not group:
         bar_color = _CYAN
-        buf.write(f"{_BOLD}{bar_color}{'\u2500' * 60}{_RESET}\n")
+        code = '\u2500'
+        buf.write(f"{_BOLD}{bar_color}{code * 60}{_RESET}\n")
 
     _dispatch(buf, group, file)
 

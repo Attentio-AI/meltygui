@@ -40,7 +40,7 @@ from src.lsd.gl_gui.view.core_views.cst_proxy import *
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import hotkey, tint
 from src.lsd.gl_gui.view.core_views.decoration.invalidation_decoration import live
 from src.lsd.gl_gui.view.core_views.folders_proxy import FolderProxy
-from src.lsd.gl_gui.view.core_views.headers import draw_header, draw_footer, draw_header_end
+from src.lsd.gl_gui.view.core_views.headers import draw_header, draw_footer, draw_header_end, render_search
 from src.lsd.gl_gui.view.core_views.inspect_utils import set_fn_defaults
 from src.lsd.gl_gui.view.core_views.monitor import Monitor
 from src.lsd.gl_gui.view.core_views.tensor_views import draw_tensor
@@ -53,9 +53,10 @@ def empty(input_val):
     pass
 
 
-@render_func(use_cache=True, auto_resize=False, closable=True, selectable=False, show_bg=True, melty_window=True, draggable=True, show_tint=True, tile_mode=TileMode.MAX, with_header=draw_header, with_header_end=draw_header_end, indent_size=5, with_footer=draw_footer)
+@render_func(use_cache=True, auto_resize=False, closable=True, selectable=False, show_bg=True, melty_window=True, draggable=True,
+             show_tint=True, tile_mode=TileMode.MAX, with_header=draw_header, with_header_end=draw_header_end, indent_size=5, with_footer=draw_footer)
 # Deprecated: use draw_any(input_value, mode=Mode.WINDOW, ...) instead.
-def draw_window(input_value:any, view_func=None, draw_state=None, delete_down=False, search_text="", glfw_close_down=False, **kwargs):
+def draw_window(input_value:any, view_func=None, draw_state=None, delete_down=False, glfw_close_down=False, **kwargs):
     if delete_down and imgui.get_io().key_ctrl:
         draw_state.closed = True
 
@@ -74,8 +75,8 @@ def draw_window(input_value:any, view_func=None, draw_state=None, delete_down=Fa
     kwargs['auto_resize'] = True
     kwargs.pop('max_height', None)
     kwargs['shadow'] = False
-    if search_text != "":
-        kwargs['search_text'] = search_text
+    # if search_text != "":
+    #     kwargs['search_text'] = search_text
 
     return_val = draw_any(input_value, view_func=view_func, **kwargs)
     if len(return_val) == 3:
@@ -88,7 +89,8 @@ def draw_window(input_value:any, view_func=None, draw_state=None, delete_down=Fa
 def draw_module(input_value: types.ModuleType, draw_state, **kwargs):
     imgui.text(f"Module: {input_value.__name__}")
 
-@render_func(is_default_for=(dict, MutableMapping, defaultdict, tuple), use_cache=True, header_same_line=False, show_bg=True, show_instance_vars=False, manual_content_height=True, disable_scroll=True, shadow=True, wrap=False, with_header=draw_header, indent_size=5, searchable=True)
+@render_func(is_default_for=(dict, MutableMapping, defaultdict, tuple), use_cache=True, header_same_line=False, show_bg=True, show_instance_vars=False,
+             manual_content_height=True, disable_scroll=True, shadow=True, wrap=False, with_header=draw_header, indent_size=5, searchable=True)
 def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=None, keys=None, get_attr=None, set_attr=None, show_excluded=False,
                     child_kwargs=None, nested_func=None, show_bg=True, show_search=True, on_collapse=False, search_text="",
                     on_expand=False, show_add_delete=True, item_spacing_y=1,
@@ -468,8 +470,8 @@ def test_columns():
         draw_float(0.4, name=f"float_{i}", column=2)
 
 
-@render_func(use_cache=False, show_bg=False, shadow=False, selectable=False)
-def draw_with_modes(input_value, modes, tab_state: TabState = None, draw_state=None, unique=0):
+@render_func(use_cache=False, show_bg=False, disable_scroll=True, shadow=False, selectable=False)
+def draw_with_modes(input_value, modes, tab_state: TabState = None, search_text="", draw_state=None, unique=0):
     if not tab_state.selected_tabs:
         tab_state.selected_tabs = [modes[0]]
     imgui.dummy(0, 5)
@@ -1558,9 +1560,6 @@ def test_func():
     "key":False,
     "key_2":2.421
     }
-11
-4
-1
 
 
 def draw_bg(left=0, top=0, width=0, height=57, depth=0, rounding=5.945, bg_offset=0,
@@ -1790,7 +1789,7 @@ def text(input_value: str, draw_state):
     return False, input_value
 
 @render_func(is_default_for=(str), shadow=False, show_bg=False, wrap=False, is_tree=False, show_add_delete=False, use_cache=True, disable_scroll=True, with_header=draw_header)
-def draw_str(input_value: str, draw_state, editable=True, alpha=1.0):
+def draw_str(input_value: str, draw_state, editable=True, immediate_return=False, alpha=1.0):
     if not editable:
         imgui.push_style_var(imgui.STYLE_ALPHA, alpha)
 
@@ -1821,9 +1820,13 @@ def draw_str(input_value: str, draw_state, editable=True, alpha=1.0):
         imgui.push_style_var(imgui.STYLE_ALPHA, 0)
 
     if line_count == 1:
-        imgui.set_next_item_width(draw_state.content_width)
-        changed, value = imgui.input_text("##str", str(input_value),
-                                          flags=imgui.INPUT_TEXT_ENTER_RETURNS_TRUE)
+        if immediate_return:
+            imgui.set_next_item_width(draw_state.content_width)
+            changed, value = imgui.input_text("##str", str(input_value))
+        else:
+            imgui.set_next_item_width(draw_state.content_width)
+            changed, value = imgui.input_text("##str", str(input_value),
+                                              flags=imgui.INPUT_TEXT_ENTER_RETURNS_TRUE)
     else:
         imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
         # disable scrolling
@@ -2059,7 +2062,7 @@ def draw_float(input_value: float, draw_state, min_value=-100.0, max_value=99.26
                                       
 
     if changed:
-        return True, value
+        return True, value\
 
     return False, None
 
@@ -2380,8 +2383,8 @@ def draw_debug(x,y, label, color=(1, 0, 0), size=16):
 #     imgui.text(f"Last Modified: {input_value.modified_time}")
 #
 #     return False, None
-@render_func(use_cache=True, disable_scroll=True, show_header=False, searchable=True, header_same_line=False, show_tint=False, show_name=False, is_tree=False)
-def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, search_text="", unique=None, up_key_pressed=None,
+@render_func(use_cache=True, disable_scroll=True, show_header=False, header_same_line=False, show_tint=False, show_name=False, is_tree=False)
+def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, unique=None, up_key_pressed=None,
                          down_key_pressed=None, tab_state: TabState = None, **kwargs):
 
     context_menu_offset = input_value.context_menu_offset
@@ -2475,6 +2478,24 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, s
         from src.lsd.gl_gui.view.mode import Mode
         if static_tab < len(tab_names):
             if tab_names[static_tab] == info_icon_fa:
+                
+                changed, watch = draw_text(draw_state.watch, tint=(0.1, 0.01, 0.4),
+                                          name="Watch", column=t_idx, immediate_return=True, editable=True, show_bg=True)
+                if changed:
+                    draw_state.watch = watch
+                if draw_state.watch in input_value._kwargs:
+                    item_value = input_value._kwargs.get(draw_state.watch, 'Not found')
+                elif draw_state.watch in input_value.__dict__:
+                    item_value = getattr(input_value, draw_state.watch, 'Not found')
+                else:
+                    item_value = 'Not found'
+
+                text(str(item_value), show_bg=False, tint=(0.1, 0.01, 0.4), wrap=False, header_single_line=True, name=f"{draw_state.watch}",
+                     column=t_idx, editable=False)
+
+
+                imgui.new_line()
+
                 text(f"{input_value._view_func.__name__}", show_bg=True, wrap=False, name="Rendered by", column=t_idx,
                      editable=False)
                 text(f"{type(input_value._raw_input_value).__name__}", name="input_value type", column=t_idx, editable=False)
@@ -2500,7 +2521,44 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, s
                     print_stack_trace()
 
             if tab_names[static_tab] == config_icon_fa:
-                mode_change, new_mode = text("Other", column=t_idx)
+                view_func = input_value._view_func
+                if view_func is None:
+                    text("No view function", column=t_idx)
+                else:
+                    # Unwrap the @render_func wrapper to read the original signature.
+                    raw_func = getattr(view_func, '__wrapped__', view_func)
+                    sig = inspect.signature(raw_func)
+                    ds_kwargs = input_value._kwargs or {}
+                    # Auto-injected params the user doesn't configure.
+                    skip_params = {"input_value", "draw_state", "args", "o_kwargs",
+                                   "kwargs", "meta", "viewstate", "self"}
+                    for param_name, param in sig.parameters.items():
+                        if param_name in skip_params:
+                            if param_name in ds_kwargs:
+                                param_value = ds_kwargs[param_name]
+                                text(f"{str(param_value)[:10]}", name=param_name, column=t_idx,
+                                     editable=False, tint=(0.8, 0.8, 0.2))
+                            continue
+
+                        if param.kind in (inspect.Parameter.VAR_POSITIONAL,
+                                          inspect.Parameter.VAR_KEYWORD):
+                            continue
+
+                        # Current value: kwarg override, else the signature default.
+                        if param_name in ds_kwargs:
+                            param_value = ds_kwargs[param_name]
+                        elif param.default is not inspect.Parameter.empty:
+                            param_value = object()
+                        else:
+                            param_value = None
+
+                        if isinstance(param_value, (int, float, str, bool, Enum)):
+                            text(f"{param_value}", name=param_name, column=t_idx,
+                                 editable=False)
+                        else:
+                            draw_any(param_value, name=param_name, column=t_idx,
+                                     show_name=True, show_header=True,
+                                     show_add_delete=False, draw=True)
             if tab_names[static_tab] == func_tab:
                 view_func = input_value._view_func
                 # Draw view function
@@ -2531,6 +2589,11 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, s
 
     return False, None
 
+@render_func(is_default_for=(DrawState), tint=(0.2, 0.6, 0.8), show_bg=True, shadow=False, with_header=None)
+def draw_draw_state_info(input_value: DrawState):
+    imgui.text(f"DrawState")
+    imgui.text(f"Tile ID: {input_value._tile_id}")
+    imgui.text(f"Content WxH: {input_value.content_width} x {input_value.content_height}")
 
 @render_func(use_cache=True, with_header=draw_header, show_bg=True, is_default_for=Pending)
 def draw_pending(input_value, draw_state=None):
@@ -2543,21 +2606,6 @@ def draw_pending(input_value, draw_state=None):
 
 
 from src.lsd.gl_gui.model.core_model.core_enums import PendingAction, ProfileMode
-from src.lsd.gl_gui.view.core_conversion.search_conversion import SearchResults
-
-
-@render_func(is_default_for=SearchResults, use_cache=True, show_bg=True,
-             with_header=draw_header, indent_size=0)
-def draw_search_results(input_value: SearchResults, draw_state=None):
-    """Render search results — shows top_results via draw_collection."""
-    top_results = input_value.get("top_results", {})
-    imgui.text("Found {} results".format(len(top_results)))
-    changed, new_top = draw_collection(top_results, name="results",
-                                        show_add_delete=False)
-    if changed:
-        input_value["top_results"] = new_top
-        return True, input_value
-    return False, input_value
 
 
 @render_func(use_cache=True, show_header=False, shadow=True)
@@ -2579,6 +2627,21 @@ def pending_window(input_value, button_name, pending=None, draw_state=None,
             
     return False, None
 
+
+@render_func(use_cache=True, max_height=500, searchable=False)
+def draw_search(input_value=None, draw_state=None):
+    """Floating find bar for searchable views that have no header. Rendered as
+    a Mode.WINDOW from core_render when search is active; draws the shared
+    render_search UI against the owning view's draw_state (search_owner)."""
+    owner = input_value
+    render_search(owner, unique=owner._tile_id, draw_state=draw_state)
+
+    if not input_value.search_active:
+        draw_state.closed = True
+
+    return False, input_value
+
+
 @render_func(use_cache=True, show_header=True, selectable=False, with_header=draw_header)
 def draw_single(input_value:any, view_func=None, mode:any=None, **kwargs):
     changed, return_val = view_func(input_value, mode=mode)
@@ -2598,10 +2661,13 @@ def draw_any(input_value:any, view_func=None, mode:any=None, chain=None, **kwarg
         if meta is None:
             if hasattr(Meta, 'get_child_meta'):
                 meta = Meta.get_child_meta(None, field_name=kwargs.get("name", ''), value=input_value)
-        if meta.view_function is None or 'draw_any' in meta.view_function.__name__:
-            meta.view_function = draw_collection
-        view_func = meta.view_function
-        kwargs_view_func = meta.view_function
+        if hasattr(meta, 'view_function'):
+            if meta.view_function is None or 'draw_any' in meta.view_function.__name__:
+                meta.view_function = draw_collection
+            view_func = meta.view_function
+            kwargs_view_func = meta.view_function
+        else:
+            view_func = draw_collection
 
     if mode is None:
         mode = Melty.mode_stack[-1] if len(Melty.mode_stack) > 0 else None
@@ -2611,41 +2677,15 @@ def draw_any(input_value:any, view_func=None, mode:any=None, chain=None, **kwarg
     else:
         main_mode = mode
 
-    # --- Search: inject search converters BEFORE the routing ---
-    # This way the routing sees SearchResults as the output type and
-    # routes to draw_search_results instead of draw_collection.
-    from src.lsd.gl_gui.view.core_conversion.search_conversion import SearchResults
-    _consumed_search = None
-    if (len(Melty.search_stack) > 0
-            and getattr(kwargs_view_func, '_searchable', False)
-            and not isinstance(input_value, SearchResults)):
-        from src.lsd.gl_gui.view.core_conversion.search_conversion import (
-            dict_to_search, search_to_dict, str_to_search, search_to_str,
-        )
-        import inspect as _inspect
-
-        # Determine what the convert_in chain produces (or the raw input type)
-        existing_in = kwargs.get("convert_in", None)
-        if existing_in is not None:
-            _last = existing_in[-1]
-            _out_type = _inspect.signature(_last).return_annotation
-        else:
-            _out_type = type(input_value)
-
-        if _out_type is not None and isinstance(_out_type, type) and issubclass(_out_type, dict):
-            kwargs["convert_in"] = list(existing_in or []) + [dict_to_search]
-            kwargs["convert_out"] = [search_to_dict] + list(kwargs.get("convert_out", None) or [])
-            kwargs["search_text"] = Melty.search_stack[-1]
-            from src.lsd.gl_gui.view.mode import Mode
-            main_mode = Mode.SEARCH
-            _consumed_search = Melty.search_stack.pop()
-        elif _out_type == str:
-            from src.lsd.gl_gui.view.mode import Mode
-            main_mode = Mode.SEARCH
-            kwargs["convert_in"] = list(existing_in or []) + [str_to_search]
-            kwargs["convert_out"] = [search_to_str] + list(kwargs.get("convert_out", None) or [])
-            kwargs["search_text"] = Melty.search_stack[-1]
-            _consumed_search = Melty.search_stack.pop()
+    # --- Search: forward the active search term to searchable child views ---
+    # The term rides Melty.search_stack so it reaches the whole subtree. We
+    # simply hand it to each searchable view via its "search_text` param and
+    # let the view decide what to do with it (the text editor highlights
+    # matches in place). No value conversion or filtering happens here.
+    # if (len(Melty.search_stack) > 0
+    #         and (getattr(kwargs_view_func, '_searchable', False) or kwargs.get("searchable", False))
+    #         and "search_text" not in kwargs):
+    #     kwargs["search_text"] = Melty.search_stack[-1]
 
     if main_mode is not None:
         # Loop over super types
@@ -2682,10 +2722,6 @@ def draw_any(input_value:any, view_func=None, mode:any=None, chain=None, **kwarg
 
 
     return_val = view_func(input_value, **kwargs)
-
-    # Restore search stack so siblings at the same level can also search
-    if _consumed_search is not None:
-        Melty.search_stack.append(_consumed_search)
 
     return return_val
 

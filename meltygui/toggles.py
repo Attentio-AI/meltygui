@@ -11,9 +11,9 @@ class Counters:
 class Tint:
     # Context menu tints
     context_select_tint = (1.0, 0.7, 0.2)
-    context_select_outline_alpha = 0.054
+    context_select_outline_alpha = -0.015
     context_select_bg_alpha = 0.592
-    context_select_rounding = 5.0
+    context_select_rounding = 4.988
 
     # Background constants
     context_menu_bg_offset = 4.0
@@ -23,6 +23,11 @@ class Tint:
     highlight_outline_rounding = 7.868    # corner radius of the outline boxes
     highlight_outline_alpha = 0.472      # outline opacity
     highlight_bg_alpha = 0.114           # parent fill opacity
+
+    # Selection rect (child views)
+    select_outline_thickness = 2.0       # selection outline line thickness
+    select_outline_alpha = 0.65          # selection outline opacity
+    select_bg_alpha = 0.08               # selection fill opacity
 
 @window
 class Swoosh:
@@ -48,6 +53,7 @@ class Toggles:
     show_hidden = False
     # Invalidation settings
     invalidate_stack_trace = False
+    text_focus_stack_trace = False
     attrib_change_stack_trace = False
 
     debug_threads = False
@@ -58,7 +64,7 @@ class Toggles:
     offscreen_debug = False
     debug_stale_tint = False
     
-    # Image Settings
+    # Filter SettingS
     brightness = 0.22
     contrast = 1.445
     saturation = 0.351

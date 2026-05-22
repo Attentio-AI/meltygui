@@ -31,6 +31,42 @@ import OpenGL.GL as gl
 _MOUSE_INPUTS = frozenset({'left_mouse', 'right_mouse', 'middle_mouse',
                            'cursor', 'scroll_y', 'scroll_x'})
 
+
+class SearchTerm(str):
+    """The active search string, plus a shared aggregation session.
+
+    A search owner pushes one of these onto Melty.search_stack; it forwards to
+    every searchable descendant as their `search_text`. Because it's a str
+    subclass, views can match against it directly, while the extra fields let
+    all views contribute to a single combined result set:
+
+      - current:  the global index (0..total-1) the owner wants selected
+      - scroll_to: whether the view holding `current` should scroll to it
+      - offset:   running base index; each view claims [offset, offset+count)
+      - total:    grand total across every view (read back by the owner)
+
+    offset/total are reset each frame (a fresh SearchTerm is pushed) and grow
+    as views register, in render order, so `current` maps to one match in one
+    view deterministically.
+    """
+    def __new__(cls, value="", current=0, scroll_to=False):
+        obj = super().__new__(cls, value)
+        obj.current = current
+        obj.scroll_to = scroll_to
+        obj.offset = 0
+        obj.total = 0
+        return obj
+
+    def claim(self, count):
+        """Register `count` matches for the calling view; return its base
+        offset and the local index of the global-current match (or None)."""
+        base = self.offset
+        self.offset += count
+        self.total += count
+        if count and base <= self.current < base + count:
+            return base, self.current - base
+        return base, None
+
 import hashlib
 import difflib
 from pathlib import Path
@@ -511,10 +547,25 @@ class Melty:
             # (now-)focused text view so its cursor disappears this frame, then
             # clear focus, which also unblocks global hotkeys via is_key_pressed.
             if glfw.get_key(cls.glfw_window, glfw.KEY_ESCAPE) == glfw.PRESS:
+                # Close any active search globally - no hover required. This must
+                # clear search_active (not just text focus): otherwise the search
+                # box's re-grab-when-unfocused logic would immediately reclaim
+                # focus and the find bar would never dismiss off-hover.
+                owner = cls.focused_ds
+                if owner is not None and getattr(owner, 'search_active', False):
+                    owner.search_active = False
+                    owner.search_text = ""
+                    owner._search_was_active = False
+                    if owner.parent_window is not None:
+                        cls.cache.invalidate_up(owner.parent_window._tile_id, force=True)
+                    cls.cache.invalidate(owner._tile_id, force=True)
+                    cls.focused_ds = None
                 if focused.parent_window is not None:
                     cls.cache.invalidate_up(focused.parent_window._tile_id, force=True)
                 cls.cache.invalidate(focused._tile_id, force=True)
                 cls.text_focused_ds = None
+                if Toggles.text_focus_stack_trace:
+                    print_stack_trace()
                 request_render()
             else:
                 for k in range(32, 349):  # GLFW_KEY_SPACE through GLFW_KEY_LAST
@@ -717,12 +768,25 @@ class Melty:
 
     @staticmethod
     def _draw_swoosh(overlay_dl, px, py, pw, ph, nx, ny, nw, nh, rgb,
-                     p_round=0.0, n_round=0.0):
+                     p_round=0.0, n_round=0.0, p_clip=None):
         """Draw a curved connector from the parent view's outline to the nested
         view. The line is thick at both endpoints and tapers thin in the middle.
         `rgb` is the resolved highlight color (see _highlight_rgb); p_round /
         n_round are the parent/nested corner radii so the ends meet the rounded
-        edge. Tunables live on Swoosh.*."""
+        edge. p_clip, if given, is the parent's absolute clip rect
+        (left, top, right, bottom): the parent end is anchored against the
+        *visible* (clipped) part of the parent rect so the cap dot never lands
+        on a region that's been scrolled/clipped away. Tunables live on
+        Swoosh.*."""
+        # Clamp the parent rect to its visible region so the connector anchors on
+        # what's actually on screen rather than a clipped-off edge.
+        if p_clip is not None:
+            cl, ct, cr, cb = p_clip
+            vx0, vy0 = max(px, cl), max(py, ct)
+            vx1, vy1 = min(px + pw, cr), min(py + ph, cb)
+            if vx1 > vx0 and vy1 > vy0:
+                px, py, pw, ph = vx0, vy0, vx1 - vx0, vy1 - vy0
+
         # Anchor both ends at the center of the rects' shared edge (smoothed),
         # so the connector stays centered and glides as the rects move.
         x0, y0, x1, y1 = Melty._closest_perimeter_points(
@@ -997,7 +1061,13 @@ class Melty:
                         outline_col = imgui.get_color_u32_rgba(*highlight_rgb, Tint.highlight_outline_alpha)
                         bg_col = imgui.get_color_u32_rgba(*highlight_rgb, Tint.highlight_bg_alpha)
 
-                        # Parent view: faint fill + matching highlight outline.
+                        # Parent view: faint fill + matching highlight outline,
+                        # clipped to the parent's own clip rect so the highlight
+                        # doesn't bleed past where the parent is scrolled/clipped.
+                        parent_clip = offset_ds.abs_clip_rect if offset_ds.clipped_by_rect is not None else None
+                        if parent_clip is not None:
+                            overlay_dl.push_clip_rect(parent_clip[0], parent_clip[1],
+                                                      parent_clip[2], parent_clip[3], True)
                         overlay_dl.add_rect_filled(offset_ds.abs_left, offset_ds.abs_top,
                                                    offset_ds.abs_left + offset_ds.width,
                                                    offset_ds.abs_top + offset_ds.height,
@@ -1007,12 +1077,14 @@ class Melty:
                                             offset_ds.abs_top + offset_ds.height,
                                             outline_col, rounding=offset_ds.corner_radius,
                                             thickness=Tint.highlight_outline_thickness)
+                        if parent_clip is not None:
+                            overlay_dl.pop_clip_rect()
 
                         # The child outline + swoosh depend on the child's geometry,
                         # which only becomes current after cls.draw(draw_state) below.
                         # Stash the params and draw them post-draw to avoid a frame of lag.
                         child_highlight = (overlay_dl, offset_ds,
-                                           outline_col, highlight_rgb)
+                                           outline_col, highlight_rgb, parent_clip)
 
 
                 if not Melty.channels_split:
@@ -1026,7 +1098,7 @@ class Melty:
                 # Now that the child has been drawn this frame, its geometry is
                 # current: draw the child outline + swoosh of current bounds.
                 if child_highlight is not None and draw_state.width is not None and draw_state.height is not None:
-                    overlay_dl, offset_ds, outline_col, highlight_rgb = child_highlight
+                    overlay_dl, offset_ds, outline_col, highlight_rgb, parent_clip = child_highlight
                     # Route to the *nested* view's own overlay channel (not its
                     # window_index, which collapses to the parent's layer for a
                     # first-level nested view) so the line/outline aren't masked
@@ -1049,6 +1121,7 @@ class Melty:
                         highlight_rgb,
                         p_round=offset_ds.corner_radius,
                         n_round=draw_state.corner_radius,
+                        p_clip=parent_clip,
                     )
 
                 if Melty.channels_split:
@@ -1112,14 +1185,37 @@ class Melty:
                          f"FPS: {imgui.get_io().framerate:.1f}")
 
         for selected_ds in cls.selected:
-            if selected_ds._kwargs.get("selectable", True):
-                clip_rect = selected_ds.abs_clip_rect
-                overlay.push_clip_rect(clip_rect[0], clip_rect[1], clip_rect[2], clip_rect[3], True)
-                selected_rect = selected_ds.abs_left, selected_ds.abs_top, selected_ds.width, selected_ds.height
-                overlay.add_rect_filled(selected_rect[0], selected_rect[1], selected_rect[0] + selected_rect[2],
-                                        selected_rect[1] + selected_rect[3],
-                                            imgui.get_color_u32_rgba(1, 1, 1, 0.01))
-                overlay.pop_clip_rect()
+            if not selected_ds._kwargs.get("selectable", True):
+                continue
+            if selected_ds.width is None or selected_ds.height is None:
+                continue
+
+            # Draw the selection rect to the selected view's own overlay
+            # channel (same as the nested-view highlight and swoosh) so a
+            # higher-layer window stencil-masks it, rather than the rect
+            # floating on top of everything on the global top channel.
+            overlay.channels_set_current(min(cls.max_layer - 1, selected_ds.window_index))
+
+            # Color from the view's storable tint, brightened the same way as
+            # the highlight boxes (current_tint may be None -> falls back to
+            # the live tint inside _highlight_rgb).
+            select_rgb = cls._highlight_rgb(selected_ds.current_tint)
+            bg_col = imgui.get_color_u32_rgba(*select_rgb, Tint.select_bg_alpha)
+            outline_col = imgui.get_color_u32_rgba(*select_rgb, Tint.select_outline_alpha)
+            rounding = selected_ds.corner_radius
+
+            clip_rect = selected_ds.abs_clip_rect
+            overlay.push_clip_rect(clip_rect[0], clip_rect[1], clip_rect[2], clip_rect[3], True)
+            x0, y0 = selected_ds.abs_left, selected_ds.abs_top
+            x1, y1 = x0 + selected_ds.width, y0 + selected_ds.height
+            overlay.add_rect_filled(x0, y0, x1, y1, bg_col, rounding=rounding)
+            overlay.add_rect(x0, y0, x1, y1, outline_col, rounding=rounding,
+                             thickness=Tint.select_outline_thickness)
+            overlay.pop_clip_rect()
+
+        # Restore the global top channel for any later overlay draws.
+        if cls._overlay_channels_active:
+            overlay.channels_set_current(cls.max_depth - 1)
 
         Collisions.handle_collisions()
 
@@ -1293,6 +1389,8 @@ class Melty:
                 del Melty.registered_windows[window_key]
                 if cls.text_focused_ds is not None and cls.text_focused_ds.parent_window is draw_state:
                     cls.text_focused_ds = None
+                    if Toggles.text_focus_stack_trace:
+                        print_stack_trace()
                 print(f"Deleted window {window_key}")
                 Melty.cache.invalidate_by_obj(Melty.registered_windows)
                 Melty.cache.invalidate_up(draw_state._tile_id, max_depth=4, force=True)
@@ -1318,6 +1416,8 @@ class Melty:
 
             if cls.text_focused_ds is not None and cls.text_focused_ds.parent_window is not draw_state:
                 cls.text_focused_ds = None
+                if Toggles.text_focus_stack_trace:
+                    print_stack_trace()
 
             if window_key in Melty.registered_windows:
                 # Remove and re-insert to move to end (top)

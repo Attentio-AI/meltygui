@@ -8,6 +8,7 @@ from collections import defaultdict
 from copy import copy
 from enum import Enum
 from functools import wraps
+from math import floor
 from typing import Any
 
 import glfw
@@ -25,7 +26,7 @@ from src.lsd.gl_gui.model.core_model.draw_state import DrawState, Hotkey, DragMo
 from src.lsd.gl_gui.model.core_model.core_enums import PendingAction
 from src.lsd.gl_gui.utils.custom_views import push_style_var, pop_style_var
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace, trace_group, get_live_frames
-from src.lsd.gl_gui.melty import Melty, apply_collection_action, MeltyState
+from src.lsd.gl_gui.melty import Melty, apply_collection_action, MeltyState, SearchTerm
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
 from src.lsd.gl_gui.view.core_views.core_meta import Meta
@@ -303,6 +304,9 @@ def render_func(*args, **o_kwargs):
         tile_id = f"{name}##{strhash(str(unique) + str(draw_state.id))}"
         draw_state._tile_id = tile_id
 
+        if "closed" in kwargs:
+            draw_state.closed = kwargs["closed"]
+
         if _has_imgui and len(Melty.melty_window_stack) > 0:
             draw_state.parent_window = kwargs.get("parent_window", Melty.melty_window_stack[-1])
             draw_state.left_offset, draw_state.top_offset = (
@@ -472,8 +476,6 @@ def render_func(*args, **o_kwargs):
         # Set default values for initial on the first frame (before any input mutation)
         if draw_state.frame_count < 2:
             for item_name, initial_value in initial_values.items():
-                print(
-                    f"Setting initial value for {item_name} to {initial_value} in draw state {draw_state.name}")
                 if isinstance(getattr(draw_state, item_name, None), int):
                     if getattr(draw_state, item_name) == 0:
                         setattr(draw_state, item_name, initial_value)
@@ -655,6 +657,7 @@ def render_func(*args, **o_kwargs):
                     draw_state.index_in_parent = new_index_in_parent
             Melty.last_draw_state[Melty.depth] = (draw_state, kwargs.get("collection", None))
 
+
             passed_z_offset = kwargs.get("z_offset", 0)
             ds_z_offset = draw_state.z_offset
             # if draw_state.pressed:
@@ -783,6 +786,26 @@ def render_func(*args, **o_kwargs):
                             draw_state.window_pos = (
                                 draw_state._initial_window_pos_resize[0] + max(0, handle_drag.total_dx),
                                 draw_state._initial_window_pos_resize[1] + max(0, handle_drag.total_dy))
+                        elif anchor_pos == Anchor.TOP_CENTER:
+                            draw_state.window_pos = (
+                                snap_int(draw_state._initial_window_pos_resize[0] + max(0, handle_drag.total_dx) / 2),
+                                draw_state.window_pos[1])
+                        elif anchor_pos == Anchor.BOTTOM_CENTER:
+                            draw_state.window_pos = (
+                                snap_int(draw_state._initial_window_pos_resize[0] + max(0, handle_drag.total_dx) / 2),
+                                draw_state._initial_window_pos_resize[1] + max(0, handle_drag.total_dy))
+                        elif anchor_pos == Anchor.CENTER_LEFT:
+                            draw_state.window_pos = (
+                                draw_state.window_pos[0],
+                                snap_int(draw_state._initial_window_pos_resize[1] + max(0, handle_drag.total_dy) / 2))
+                        elif anchor_pos == Anchor.CENTER_RIGHT:
+                            draw_state.window_pos = (
+                                draw_state._initial_window_pos_resize[0] + max(0, handle_drag.total_dx),
+                                snap_int(draw_state._initial_window_pos_resize[1] + max(0, handle_drag.total_dy) / 2))
+                        elif anchor_pos == Anchor.CENTER:
+                            draw_state.window_pos = (
+                                snap_int(draw_state._initial_window_pos_resize[0] + max(0, handle_drag.total_dx) / 2),
+                                snap_int(draw_state._initial_window_pos_resize[1] + max(0, handle_drag.total_dy) / 2))
                 else:
                     draw_state._initial_window_size = None
                     draw_state._initial_window_pos_resize = None
@@ -808,6 +831,12 @@ def render_func(*args, **o_kwargs):
 
                 anchor_pos = kwargs.get("anchor", Anchor.TOP_LEFT)
                 draw_state.anchor_pos = anchor_pos
+                draw_state.pin_to_clip = kwargs.get("pin_to_clip", False)
+                if draw_state.pin_to_clip:
+                    # Snapshot the active clip rect now - the live clip stack is
+                    # only valid at declaration time, but abs_left/abs_top are
+                    # recomputed throughout the frame.
+                    draw_state.pin_clip_rect = Melty.get_clip_rect()
                 imgui.set_cursor_screen_pos((snap_int(draw_state.abs_left), snap_int(draw_state.abs_top)))
 
             kwargs['melty_window'] = False
@@ -1118,9 +1147,13 @@ def render_func(*args, **o_kwargs):
                     Melty.cache.invalidate_up(draw_state._parent._tile_id, force=True)
                     request_render()
 
-            if "search_text" in wanted_params and kwargs.get("with_header", None) is not None and kwargs.get(
-                    "show_header", True):
+            if o_kwargs.get("searchable", False) or kwargs.get("searchable", False):
                 search_requested = draw_state.on_action("inverted_f_key_down")
+
+                if len(Melty.search_stack) > 0:
+                    kwargs["search_text"] = Melty.search_stack[-1]
+
+
                 if search_requested:
                     if search_requested.ctrl:
                         if Melty.focused_ds is not None:
@@ -1128,23 +1161,33 @@ def render_func(*args, **o_kwargs):
                             Melty.cache.invalidate(Melty.focused_ds._tile_id, force=True)
                             request_render()
                         draw_state.search_active = True
+                        # Reset so render_search re-requests focus, and release
+                        # the view's own text focus, so the search box takes
+                        # focus even if this view is already focused.
+                        draw_state._search_was_active = False
+                        Melty.text_focused_ds = None
                         Melty.focused_ds = draw_state
 
                 if draw_state.search_active:
+                    # Stay live while searching so the find UI (inline or the
+                    # floating draw_search window) keeps rendering even if the
+                    # view would otherwise be served from cache.
+                    # draw_state._external_change = True
                     esc_key = draw_state.on_action("escape_key_down_inverted")
                     if esc_key:
                         Melty.focused_ds = None
                         draw_state.search_active = False
+                        draw_state.search_text = ""
+                        draw_state._search_was_active = False
+                        if Toggles.text_focus_stack_trace:
+                            print_stack_trace()
                         request_render()
 
             # Push search term to stack so child views can apply search converters
-            _pushed_search = False
-            if draw_state.search_active and draw_state.search_text:
-                Melty.search_stack.append(draw_state.search_text)
-                _pushed_search = True
 
             content_rect = (0, 0)
             draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer)
+            _pushed_search = False
 
             if Melty.cache.mark_start_offscreen(draw_state=draw_state):
                 # imgui.get_overlay_draw_list().channels_set_current(draw_state.window_index + 1)
@@ -1163,6 +1206,50 @@ def render_func(*args, **o_kwargs):
                 from src.lsd.gl_gui.view.core_views.new_core_view import pending_window
 
                 from src.lsd.gl_gui.view.mode import Mode
+
+                # Floating find bar: searchable views that have no header can't
+                # show the inline search box, so float the shared render_search
+                # UI in a window anchored to this view's top-right.
+                _has_header = kwargs.get("show_header", True)
+                # if draw_state.search_active and not _has_header and kwargs.get("searchable", False):
+                from src.lsd.gl_gui.view.core_views.new_core_view import draw_search
+                # WINDOW_CLEAN (not WINDOW) - it auto-resizes to the find bar
+                # and drops the tree arrow/tint, matching pending_window.
+                if len(Melty.search_stack) == 0 and kwargs.get("searchable", False) and draw_state.search_active:
+                    extras = draw_search(input_value=draw_state,
+                            closed=False,
+                            auto_resize=True,
+                            tint=draw_state.tint,
+                            mode=Mode.WINDOW_CLEAN,
+                            pin_to_clip=True,
+                            window_pos=(0, -draw_state.height),
+                            initial={"height": 30},
+                            anchor=Anchor.BOTTOM_LEFT,
+                            name=f"Find{unique}",
+                            return_extras=True)
+                    search_ds = extras[2]
+                    if search_ds.last_seen is None:
+                        search_ds.window_pos = (0,-draw_state.height)
+
+                    # Build this frame's cross-view aggregation session. A new
+                    # term resets the global selection to the first match; nav
+                    # from the find UI flags a scroll. Children register their
+                    # matches into this SearchTerm as they render; its .total is
+                    # read back into text_search_count after the body (below).
+                    term_str = draw_state.search_text or ""
+                    scroll = False
+                    if draw_state._search_last_term != term_str:
+                        draw_state._search_last_term = term_str
+                        draw_state.text_search_current = 0
+                        scroll = True
+                    if draw_state._search_nav_pending:
+                        draw_state._search_nav_pending = False
+                        scroll = True
+                    session = SearchTerm(term_str, current=draw_state.text_search_current,
+                                         scroll_to=scroll)
+                    draw_state._search_session = session
+                    Melty.search_stack.append(session)
+                    _pushed_search = True
 
                 # Pre-discover load_data for revert actions
                 _chain_load_data_early = None
@@ -1612,10 +1699,14 @@ def render_func(*args, **o_kwargs):
                         Melty.last_selected = draw_state
                         if Melty.text_focused_ds is not None and Melty.text_focused_ds is not draw_state:
                             Melty.text_focused_ds = None
+                            if Toggles.text_focus_stack_trace:
+                                print_stack_trace()
 
                     elif click and not Melty.imgui_active:
                         if Melty.text_focused_ds is not None and Melty.text_focused_ds is not draw_state:
                             Melty.text_focused_ds = None
+                            if Toggles.text_focus_stack_trace:
+                                print_stack_trace()
                         Melty.previous_select = copy(Melty.selected)
                         if not click.modifiers:
                             if len(Melty.selected) == 1 and draw_state in Melty.selected:
@@ -1704,7 +1795,7 @@ def render_func(*args, **o_kwargs):
                         returned_val = draw_context_menu(input_value=draw_state, mode=Mode.WINDOW_NO_HEADER, func=func,
                                                          tint=mixed_color, show_tint=False, show_add_delete=False,
                                                          min_width=100, min_height=100, disable_scroll=True,
-                                                         persistent=False, anchor=Anchor.BOTTOM_LEFT,
+                                                         persistent=False, anchor=Anchor.TOP_LEFT,
                                                          bg_offset=Tint.context_menu_bg_offset,
                                                          with_footer=None, use_cache=True,
                                                          name=f"{name}##context_menu_{unique}", auto_resize=False,
@@ -1717,7 +1808,7 @@ def render_func(*args, **o_kwargs):
                         # ctx_ds.parent_window = Melty.melty_window_stack[-1] if len(Melty.melty_window_stack) > 0 else None
                         if ctx_ds.last_seen is None:
                             ctx_ds.closed = False
-                            ctx_ds.window_pos = (0, 0)
+                            ctx_ds.window_pos = (draw_state.width + 20, 0)
 
                         if ctx_ds.closed:
                             draw_state.context_menu_open = False
@@ -1936,8 +2027,8 @@ def render_func(*args, **o_kwargs):
                     if (draw_state.width > 0 and draw_state.height > 0):
                         reset_to = imgui.get_cursor_screen_pos()
 
-                        imgui.invisible_button(str(unique) + "window_blocker", width=draw_state.width,
-                                               height=draw_state.height)
+                        # imgui.invisible_button(str(unique) + "window_blocker", width=draw_state.width,
+                        #                        height=draw_state.height)
                         imgui.set_cursor_screen_pos(reset_to)
                         imgui.set_item_allow_overlap()
 
@@ -2316,14 +2407,13 @@ def render_func(*args, **o_kwargs):
                     else:
                         display_height = imgui.get_io().display_size[1]
                         if draw_state.expanded:
-                            min_height = content_rect[1] + draw_state.footer_height + draw_state.header_height + 10
+                            min_height = min(max_height, content_rect[1] + draw_state.footer_height + draw_state.header_height)
                         else:
                             min_height = 0
 
                         new_height = snap_int(max(min_height, min(item_rect[1], min(display_height, max_height))))
-                        if abs(new_height - draw_state.height) > 1:
-                            draw_state.height = snap_int(
-                                max(min_height, min(item_rect[1], min(display_height, max_height))))
+
+                        draw_state.height = snap_int(min(item_rect[1], min(display_height, max_height)))
                         draw_state._source["height"] = "closable, item_rect[1]"
 
             if (draw_state.width != original_width_b or
@@ -2437,8 +2527,18 @@ def render_func(*args, **o_kwargs):
 
             if mode_stacked:
                 Melty.mode_stack.pop()
-            if _pushed_search and len(Melty.search_stack) > 0:
+            if _pushed_search:
                 Melty.search_stack.pop()
+                # Read the combined match total back from the session so the
+                # search UI shows results across each child view, and keep the
+                # global current index within range.
+                session = draw_state._search_session
+                if session is not None:
+                    draw_state.text_search_count = session.total
+                    if session.total > 0:
+                        draw_state.text_search_current = draw_state.text_search_current % session.total
+                    else:
+                        draw_state.text_search_current = 0
 
             draw_state.frame_count += 1
             if Melty.imgui_crashed:

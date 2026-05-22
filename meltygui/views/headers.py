@@ -3,6 +3,7 @@ import sys
 from types import NoneType
 from typing import MutableMapping
 
+import glfw
 import imgui
 from imgui.core import _DrawList
 
@@ -11,7 +12,7 @@ from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
 from src.lsd.gl_gui.model.core_model.draw_state import TileMode
 from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.utils.custom_views import push_style_var, push_style_color, pop_style_color, pop_style_var
-from src.lsd.gl_gui.utils.glfw_utils import request_render
+from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
 from src.lsd.gl_gui.view.core_conversion.path_finder import PendingState
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
 from src.lsd.gl_gui.view.core_views.folders_proxy import FolderProxy
@@ -35,6 +36,99 @@ def open_file(path, app=None):
         subprocess.Popen([app, path])
     else:
         print(f"Path does not exist: {path}")
+
+
+
+def render_search(search_ds, draw_state, unique=None, ):
+    """Render the find UI for the searchable view whose state lives on
+    `search_ds`: the search input, match count, prev/next nav, and close.
+
+    Shared by draw_header (inline, when the view has a header) and draw_search
+    (a floating window, when it doesn't). All state — search_text, match count,
+    current index — lives on `search_ds`, the owning view's draw_state, so both
+    presentations drive the same search.
+    """
+    search_icon = ""
+    from src.lsd.gl_gui.view.core_views.text_editor import draw_text
+    # Grab focus on first open, and re-grab whenever nothing holds text focus.
+    # Window focus management (move-to-front / window activation) clears
+    # text_focused_ds when a window comes forward that doesn't contain the
+    # text field. The floating search box lives in its own window, so
+    # without re-grabbing it would drop focus after the first keypress. The
+    # re-grab runs before draw_text's key handling, so no keystroke is lost,
+    # and it won't steal focus from a user click into the editor (which
+    # leaves text_focused_ds non-None).
+    focus_search = (not search_ds._search_was_active) or Melty.text_focused_ds is None
+    search_ds._search_was_active = True
+    search_icon = ""
+    imgui.align_text_to_frame_padding()
+    imgui.text(search_icon)
+    imgui.same_line()
+    search_change, new_search = draw_text(search_ds.search_text, searchable=False,
+                                          shadow=False,
+                                          name=search_icon + str(unique), with_header=None,
+                                          with_header_end=None, width=draw_state.content_width-45,
+                                          with_footer=None, header_same_line=True, tint=search_ds.tint,
+                                          show_name=False, show_header=False, single_line=True,
+                                          request_focus=focus_search)
+    if search_change:
+        search_ds.search_text = new_search
+        # Re-render the owner's whole subtree so every child view recomputes its
+        # matches against the new term and the combined totals stays in sync.
+        Melty.cache.invalidate_up(search_ds._tile_id, force=True, max_depth=12)
+        request_render()
+    # initial use
+
+
+    # Match count + prev/next navigation. The count and current index are
+    # managed by the searchable view's body (e.g. the text editor); the
+    # arrows step the active match and ask the body to scroll it into view.
+
+
+    imgui.same_line()
+    from src.lsd.gl_gui.view.core_views.new_core_view import button
+    fa_x_icon = ""
+    imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0], imgui.get_cursor_screen_pos()[1] + 2))
+    if button(fa_x_icon, show_bg=True, use_cache=True, height=25, shadow=True, z_offset=10,
+              tile_mode=TileMode.MAX, color=(9, 1, 1, 0))[0]:
+        search_ds.search_active = False
+        search_ds._search_was_active = False
+        search_ds.search_text = ""
+        Melty.text_focused_ds = None
+
+    total = search_ds.text_search_count
+    if total > 0:
+        imgui.align_text_to_frame_padding()
+        imgui.text_colored(f"{search_ds.text_search_current + 1}/{total}",
+                           0.66, 0.74, 0.82, 1.0)
+        imgui.same_line(spacing=2)
+        nav = 0
+        if imgui.small_button(f"##search_prev{unique}"):
+            nav = -1
+        imgui.same_line(spacing=2)
+        if imgui.small_button(f"##search_next{unique}"):
+            nav = 1
+        # Enter = find next, Shift+Enter = find prev - but only if the search
+        # box (not the underlying editor) holds text focus, so that one inserts
+        # newlines until you click into the editor. is_key_pressed detects the edge;
+        # repeat=True lets a held Enter walk through results.
+        if (Melty.focused_ds is search_ds and Melty.text_focused_ds is not search_ds
+                and (imgui.is_key_pressed(glfw.KEY_ENTER, repeat=True)
+                     or imgui.is_key_pressed(glfw.KEY_KP_ENTER, repeat=True))):
+            nav = -1 if imgui.get_io().key_shift else 1
+
+        if nav != 0:
+            # total is the combined count across all views; stepping wraps over
+            # the entire result set. Flag a scroll and invalidate the owner's
+            # subtree so every child view recomputes and the one holding the new
+            # global search match scrolls to it.
+            search_ds.text_search_current = (search_ds.text_search_current + nav) % total
+            search_ds._search_nav_pending = True
+            Melty.cache.invalidate_up(search_ds._tile_id, force=True, max_depth=12)
+            request_render()
+    elif search_ds.search_text:
+        imgui.align_text_to_frame_padding()
+        imgui.text_colored("No results", 0.74, 0.5, 0.5, 1.0)
 
 
 
@@ -90,42 +184,6 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         name = display_name
 
     imgui.dummy(0, 0)
-
-    # Handles search events
-    if draw_state.search_active:
-        search_icon = ""
-        imgui.push_id(f"search_{unique}")
-
-        imgui.begin_group()
-        from src.lsd.gl_gui.view.core_views.text_editor import draw_text
-        focus_search = not draw_state._search_was_active
-        draw_state._search_was_active = True
-        search_change, new_search = draw_text(draw_state.search_text,
-                                              name=search_icon, with_header=None,
-                                              width=100, height=21, with_header_end=None,
-                                              with_footer=None, header_same_line=True,
-                                              show_name=False, show_header=False,
-                                              request_focus=focus_search)
-        if search_change:
-            draw_state.search_text = new_search
-
-        imgui.end_group()
-        imgui.pop_id()
-
-        imgui.same_line(spacing=0)
-
-        from src.lsd.gl_gui.view.core_views.new_core_view import button
-        if button("x", show_bg=True, use_cache=True, shadow=True, z_offset=10,
-                  tile_mode=TileMode.MAX, color=(9, 1, 1, 0))[0]:
-            draw_state.search_active = False
-            draw_state._search_was_active = False
-            draw_state.search_text = ""
-            Melty.text_focused_ds = None
-
-        imgui.same_line()
-    else:
-        draw_state.search_text = ""
-        draw_state._search_was_active = False
 
     on_change = False
     return_val = on_action

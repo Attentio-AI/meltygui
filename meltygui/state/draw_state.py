@@ -2,6 +2,7 @@ from collections import defaultdict
 from copy import copy
 from dataclasses import dataclass
 from enum import Enum
+from math import floor
 
 import glfw
 import imgui
@@ -38,9 +39,23 @@ class DragMode(Enum):
 
 class Anchor(Enum):
     TOP_LEFT = 'top_left'
+    TOP_CENTER = 'top_center'
     TOP_RIGHT = 'top_right'
+    CENTER_LEFT = 'center_left'
+    CENTER = 'center'
+    CENTER_RIGHT = 'center_right'
     BOTTOM_LEFT = 'bottom_left'
+    BOTTOM_CENTER = 'bottom_center'
     BOTTOM_RIGHT = 'bottom_right'
+
+
+# Anchor classification used for both anchor_offset (window placement) and
+# clip-rect pinning. Anything not in left/right is horizontally centered;
+# anything not in top/bottom is vertically centered.
+LEFT_ANCHORS = (Anchor.TOP_LEFT, Anchor.CENTER_LEFT, Anchor.BOTTOM_LEFT)
+RIGHT_ANCHORS = (Anchor.TOP_RIGHT, Anchor.CENTER_RIGHT, Anchor.BOTTOM_RIGHT)
+TOP_ANCHORS = (Anchor.TOP_LEFT, Anchor.TOP_CENTER, Anchor.TOP_RIGHT)
+BOTTOM_ANCHORS = (Anchor.BOTTOM_LEFT, Anchor.BOTTOM_CENTER, Anchor.BOTTOM_RIGHT)
 
 
 class ApplyMode(Enum):
@@ -135,7 +150,7 @@ class TileMode(Enum):
          "min_width", "min_height", "is_focused", "drag_window_pos_x", "drag_window_pos_y", "corner_radius",
          "drag_mode", "is_hovered_last", "bg_shown", "draw_window_pos_x", "z_offset", "content_width", "melty_window",
          "misc_used", "draw_window_pos_y", "drag_delta", "screen_pos", "hover_rects", "melty_window", "auto_resize",
-         "imgui_is_item_activated", "frame_count")
+         "imgui_is_item_activated", "frame_count", "text_search_current", "text_search_count")
 @exclude("current_tint", "overhead_time", "premature_break", "drag_mode",
          "clip_rect", "_input_value", "flow_spacing", "expanded_rect", 'max_column', 'text_selection_start', 'text_selection_end',
          'width', "height", "size_change", 'left', 'top', 'content_height', "clipped", "fully_clipped", "melty_window",
@@ -143,16 +158,17 @@ class TileMode(Enum):
          "premature_break", "wrapped_left", "_did_use_cache", "hover_rects", "window_pos", "content_width",
          "content_region", "value_hash", "drag_window", "content_region", "did_render", "footer_height", "footer_width",
          "bounding_hovered", "dlt_count", "clip_rect",
- "scrolled", "is_hovered_last", "frame_count", "z_pos", "corner_radius")
+ "scrolled", "is_hovered_last", "frame_count", "z_pos", "corner_radius",
+         "text_search_current", "text_search_count")
 @no_save_exclude('render_time',  "total_z_offset", 'closable', 'has_full_tile', 'invalid_content_height',
                   "parent_window", "pressed", "bbox", "final_max_column",
                  'hover_rects', 'nested_window', 'use_cache', 'layer', "header_top", "header_left", "left_offset",
                  "top_offset", 'kwargs', "just_shadow", "header_width", "header_end_width",
                  "header_left_delta", "header_top_delta", "last_seen", "persistent", "shadow_margin", "bg_depth",
-                 "anchor_pos", "just_shadow", 'hover_reported', 'explain_convert',
+                 "anchor_pos", "pin_to_clip", "pin_clip_rect", "just_shadow", 'hover_reported', 'explain_convert',
                  'channel', 'next', 'previous', 'index_in_parent', 'relative_pos',
                     '_hover_eligible', 'just_shadow')
-@deep_refresh('scroll_offset', 'closed', '"search_text')
+@deep_refresh('scroll_offset', 'closed', 'search_text', 'search_active')
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
 
@@ -165,6 +181,7 @@ class DrawState(DictConversion):
         self._loading = False
         self._pending = False
         self._running = False
+        self.watch = ""
 
         # Chain cache, split based on type, UNSET_VALUE as a default
         self._chain_stack = CacheTree()
@@ -357,6 +374,12 @@ class DrawState(DictConversion):
         ### End Columns
         self._is_nested = False
         self.anchor_pos = Anchor.TOP_LEFT
+        # When True, a child view anchors to a fixed clip rect corner instead
+        # of following the declaring view's scroll position. pin_clip_rect is a
+        # snapshot (left, top, right, bottom) of the active clip rect captured at
+        # declaration time, since the live clip stack is only valid then.
+        self.pin_to_clip = False
+        self.pin_clip_rect = None
         self._kwargs = {}
         self.kwargs = AttrDict({})
         self.hover_reported = True
@@ -401,6 +424,22 @@ class DrawState(DictConversion):
         self.text_click_count = 0
         self.text_h_scroll = 0.0
         self.text_prev_cursor_pos = 0
+
+        # Find-in-text search state. text_search_count/current are populated by
+        # draw_text each frame and consumed by the header's find UI (count +
+        # nav arrows). The underscore fields are private bookkeeping.
+        self.text_search_current = 0
+        self.text_search_count = 0
+        self._text_search_last_term = None
+        self._text_search_scroll_to = False
+
+        # Cross-view aggregation (search owner side). _search_session is a
+        # SearchTerm pushed onto Melty.search_stack each frame; after the
+        # owner's subtree renders, its .total is read back into text_search_count
+        # so the find UI shows the combined result count across all child views.
+        self._search_session = None
+        self._search_last_term = None
+        self._search_nav_pending = False
 
         self._print_last_invalid = False
         self._last_invalidate = None
@@ -529,17 +568,58 @@ class DrawState(DictConversion):
     @property
     def anchor_offset(self):
         anchor_margin = 3
-        offset = (0, 0)
 
-        if self.anchor_pos == Anchor.TOP_LEFT:
-            offset = (0, 0)
-        elif self.anchor_pos == Anchor.TOP_RIGHT:
-            offset = (-self.width, 0)
-        elif self.anchor_pos == Anchor.BOTTOM_LEFT:
-            offset = (0, -self.height + -anchor_margin)
-        elif self.anchor_pos == Anchor.BOTTOM_RIGHT:
-            offset = (-self.width, -self.height + -anchor_margin)
-        return offset
+        if self.anchor_pos in LEFT_ANCHORS:
+            offset_x = 0
+        elif self.anchor_pos in RIGHT_ANCHORS:
+            offset_x = -self.width
+        else:  # horizontally centered
+            offset_x = int(-self.width / 2)
+
+        if self.anchor_pos in TOP_ANCHORS:
+            offset_y = 0
+        elif self.anchor_pos in BOTTOM_ANCHORS:
+            offset_y = -self.height + -anchor_margin
+        else:  # vertically centered
+            offset_y = int(-self.height / 2)
+
+        return (offset_x, offset_y)
+
+    @property
+    def clip_anchor_base(self):
+        """Anchor reference point on the pinned clip rect.
+
+        When ``pin_to_clip`` is set, a child window anchors to the corner of the
+        active clip rect (snapshotted into ``pin_clip_rect`` at declaration time)
+        selected by ``anchor_pos`` instead of the scrolled position of the view
+        that declared it. ``anchor_offset`` then shifts the window so its own
+        anchor corner aligns to this point, so e.g. TOP_RIGHT keeps the window
+        glued to the clip rect's top-right corner regardless of how the
+        declaring view scrolls. Falls back to the parent window's bounds if no
+        clip rect was captured.
+        """
+        clip = self.pin_clip_rect
+        if clip is None:
+            if self.parent_window is None:
+                return None
+            clip = self.parent_window.abs_clip_rect
+        clip_left, clip_top, clip_right, clip_bottom = clip
+
+        if self.anchor_pos in LEFT_ANCHORS:
+            base_x = clip_left
+        elif self.anchor_pos in RIGHT_ANCHORS:
+            base_x = clip_right
+        else:  # horizontally centered
+            base_x = (clip_left + clip_right) / 2
+
+        if self.anchor_pos in TOP_ANCHORS:
+            base_y = clip_top
+        elif self.anchor_pos in BOTTOM_ANCHORS:
+            base_y = clip_bottom
+        else:  # vertically centered
+            base_y = (clip_top + clip_bottom) / 2
+
+        return (base_x, base_y)
 
     def _abs_left(self, depth=0):
         parent_left = 0
@@ -555,7 +635,13 @@ class DrawState(DictConversion):
         # this_left_offset = self.left_offset if not self.melty_window else window_pos_x
         anchor = self.anchor_offset
 
-        this_left = window_pos_x + parent_left + self.left_offset + anchor[0]
+        base = self.clip_anchor_base if self.pin_to_clip else None
+        if base is not None:
+            # Pin to the clip rect corner rather than the scrolled position of
+            # the declaring view (which left_offset tracks).
+            this_left = window_pos_x + base[0] + anchor[0]
+        else:
+            this_left = window_pos_x + parent_left + self.left_offset + anchor[0]
         return this_left
 
     def _abs_top(self, depth=0):
@@ -570,7 +656,14 @@ class DrawState(DictConversion):
 
         anchor = self.anchor_offset
         window_pos_y = self.window_pos[1] if self.window_pos is not None else 0
-        this_top = window_pos_y + parent_top + self.top_offset + anchor[1]
+
+        base = self.clip_anchor_base if self.pin_to_clip else None
+        if base is not None:
+            # Pin to the clip rect corner rather than the scrolled position of
+            # the declaring view (which top_offset tracks).
+            this_top = window_pos_y + base[1] + anchor[1]
+        else:
+            this_top = window_pos_y + parent_top + self.top_offset + anchor[1]
         return this_top
 
     @property
@@ -578,6 +671,8 @@ class DrawState(DictConversion):
         abs_left = self.abs_left
         abs_top = self.abs_top
         clipped_by = self.clipped_by_rect
+        if clipped_by is None:
+            return (abs_left, abs_top, abs_left + self.width, abs_top + self.height)
 
         return (abs_left + clipped_by[0],
                 abs_top + clipped_by[1],

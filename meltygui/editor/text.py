@@ -5,8 +5,9 @@ import imgui
 
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.headers import draw_header, draw_footer
-from src.lsd.gl_gui.melty import Melty
+from src.lsd.gl_gui.melty import Melty, SearchTerm
 from src.lsd.gl_gui.fonts import Font
+from src.lsd.gl_gui.utils.glfw_utils import request_render
 
 
 def _hex(h):
@@ -439,9 +440,39 @@ def _delete_selection(text, ds):
     return text[:lo] + text[hi:], lo
 
 
+def _scroll_into_view(ds, top_abs, bottom_abs, margin=40.0):
+    """Scroll the nearest scrollable ancestor (or the view itself) so the
+    screen-space band [top_abs, bottom_abs] is visible.
+
+    The editor doesn't always own its scrollbar — when rendered in a fixed
+    window it scrolls itself, but in the code chain a parent container scrolls
+    (and the editor's own scroll_offset is forced to 0). Walking up _parent to
+    the node whose scroll_visible is set, then nudging that node's scroll_offset
+    by the on-screen overflow, scrolls the right thing in both layouts.
+    """
+    node = ds
+    seen = set()
+    while node is not None and id(node) not in seen:
+        seen.add(id(node))
+        if getattr(node, 'scroll_visible', False):
+            view_top = node.abs_top + (node.header_height or 0)
+            view_bottom = node.abs_top + (node.height or 0) - (node.footer_height or 0)
+            sx, sy = node.scroll_offset
+            if top_abs < view_top + margin:
+                node.scroll_offset = (sx, sy - (view_top + margin - top_abs))
+                request_render()
+            elif bottom_abs > view_bottom - margin:
+                node.scroll_offset = (sx, sy + (bottom_abs - (view_bottom - margin)))
+                request_render()
+            return
+        nxt = node._parent
+        node = nxt if nxt is not node else None
+
+
 @render_func(show_bg=True, wrap=False, use_cache=True, with_header=draw_header, shadow=True, with_footer=draw_footer, selectable=False, searchable=True, bg_offset=-100)
-def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, left_mouse_up=False,
-              left_mouse_down=False, left_mouse_drag=False, horizontal_scroll_drag=False,
+def draw_text(input_value: str, left_mouse_clicked=False,
+              left_mouse_down=False, left_mouse_drag=False, horizontal_scroll_drag=False, search_text="",
+              single_line=False,
               draw_state=None, request_focus=False, line_height=1.2, font: Font=Font.JETBRAINS_MONO_19):
     ds = draw_state
 
@@ -485,6 +516,12 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, le
 
     # --- Mouse handling ---
     is_focused = Melty.text_focused_ds is ds
+    # A rebuilt cache can hand us a fresh draw_state object for the same tile;
+    # rebind focus by tile id so a cache hit doesn't silently drop it.
+    if (not is_focused and Melty.text_focused_ds is not None
+            and getattr(Melty.text_focused_ds, '_tile_id', None) == ds._tile_id):
+        Melty.text_focused_ds = ds
+        is_focused = True
     if request_focus:
         Melty.text_focused_ds = ds
         is_focused = True
@@ -570,8 +607,9 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, le
                 ds.text_selection_end = ds.text_cursor_pos
             changed = True
 
-        # --- Enter ---
-        if pressed(glfw.KEY_ENTER) or pressed(glfw.KEY_KP_ENTER):
+        # --- Enter --- (skipped for single-line fields like the search box,
+        # where Enter is used for find-next / Shift+Enter find-prev)
+        if (pressed(glfw.KEY_ENTER) or pressed(glfw.KEY_KP_ENTER)) and not single_line:
             ds.text_cursor_blink_time = time.time()
             indent = _get_indent(text, ds.text_cursor_pos)
             if _has_selection(ds):
@@ -761,6 +799,87 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, le
     ds.text_selection_start = max(0, min(ds.text_selection_start, len(text)))
     ds.text_selection_end = max(0, min(ds.text_selection_end, len(text)))
 
+    # --- Find-in-text search ---
+    # The term arrives either forwarded from an ancestor search owner (as a
+    # SearchTerm carrying the shared cross-view session) or, when this editor
+    # hosts the find UI itself, on ds.search_text with a session it pushed.
+    # We search locally, register our matches to the session so every view
+    # combines into one global set, and scroll to the global-current match
+    # when it lands in this view.
+    search_term = search_text or (ds.search_text if ds.search_active else "")
+    search_matches = []
+    if search_term:
+        low_text = text.lower()
+        low_term = str(search_term).lower()
+        start = 0
+        while True:
+            idx = low_text.find(low_term, start)
+            if idx == -1:
+                break
+            search_matches.append((idx, idx + len(low_term)))
+            start = idx + len(low_term)
+
+    # Resolve the aggregation session: the forwarded SearchTerm from child views,
+    # or the owner's own session when this editor hosts the find UI.
+    if isinstance(search_term, SearchTerm):
+        session = search_term
+    elif ds.search_active and ds._search_session is not None:
+        session = ds._search_session
+    else:
+        session = None
+
+    local_count = len(search_matches)
+    if session is not None:
+        # Claim a slice of the global index space; current_local is set only
+        # when the global-current match lands within this view's matches.
+        _base, current_local = session.claim(local_count)
+        should_scroll = session.scroll_to and current_local is not None
+    else:
+        # Self-contained single-view find (no shared session in play).
+        if local_count != ds.text_search_count:
+            ds.text_search_count = local_count
+            Melty.cache.invalidate(ds._tile_id, force=True)
+            request_render()
+        if search_matches:
+            if str(search_term) != ds._text_search_last_term:
+                target = 0
+                for i, (ms, _me) in enumerate(search_matches):
+                    if ms >= ds.text_cursor_pos:
+                        target = i
+                        break
+                ds.text_search_current = target
+                ds._text_search_scroll_to = True
+            ds.text_search_current = max(0, min(ds.text_search_current, local_count - 1))
+            current_local = ds.text_search_current
+            should_scroll = ds._text_search_scroll_to
+            ds._text_search_scroll_to = False
+        else:
+            ds.text_search_current = 0
+            current_local = None
+            should_scroll = False
+        ds._text_search_last_term = str(search_term)
+
+    if current_local is not None and should_scroll:
+        ms, me = search_matches[current_local]
+        line, _col = _index_to_line_col(text, ms)
+        # Vertical: scroll the editor (or its scroll parent) so the match
+        # line is on screen. origin_y is the content top at the current scroll.
+        match_top_abs = origin_y + line * line_px
+        _scroll_into_view(ds, match_top_abs, match_top_abs + line_px)
+
+        # Horizontal: default back to the line start (h_scroll 0) while paging
+        # through results, scrolling to only when the match wouldn't fit.
+        line_start = _get_line_start(text, ms)
+        match_x = imgui.calc_text_size(text[line_start:ms]).x
+        match_x_end = imgui.calc_text_size(text[line_start:me]).x
+        edge_padding = 20.0
+        if ds.content_width > 0:
+            if match_x_end <= ds.content_width - edge_padding:
+                ds.text_h_scroll = 0.0
+            else:
+                ds.text_h_scroll = max(0.0, match_x - edge_padding)
+        request_render()
+
     # --- Horizontal auto-scroll ---
     # Only kicks in when the cursor moved this frame, so middle-drag pans
     # are not snapped back. Brings the cursor into view on a single line.
@@ -809,6 +928,27 @@ def draw_text(input_value: str, cursor_hover=False, left_mouse_clicked=False, le
                     ex = origin_x + imgui.calc_text_size(line_text).x + imgui.calc_text_size(' ').x
                 draw_list.add_rect_filled(sx, sy, ex, sy + line_px, sel_color)
             line_abs_start = line_abs_end + 1
+
+    # Search match highlights (drawn behind the text so glyphs stay readable).
+    # The active match gets a stronger fill plus an outline; the others are faint.
+    if search_matches:
+        match_bg = (89 << 24) | (80 << 16) | (200 << 8) | 230   # faint yellow
+        cur_bg = (150 << 24) | (60 << 16) | (170 << 8) | 240    # active fill
+        cur_border = (255 << 24) | (90 << 16) | (200 << 8) | 255  # active outline
+        for m_idx, (ms, me) in enumerate(search_matches):
+            m_line, _ = _index_to_line_col(text, ms)
+            m_ls = _get_line_start(text, ms)
+            sx = origin_x + imgui.calc_text_size(text[m_ls:ms]).x
+            ex = origin_x + imgui.calc_text_size(text[m_ls:me]).x
+            sy = origin_y + m_line * line_px
+            ey = sy + line_px
+            if ey < rect_min_y or sy > rect_max_y:
+                continue
+            if m_idx == current_local:
+                draw_list.add_rect_filled(sx, sy, ex, ey, cur_bg)
+                draw_list.add_rect(sx, sy, ex, ey, cur_border)
+            else:
+                draw_list.add_rect_filled(sx, sy, ex, ey, match_bg)
 
     # Syntax highlighted text
     x = origin_x

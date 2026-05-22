@@ -20,7 +20,7 @@ from src.lsd.gl_gui.view.core_conversion.libcst_conversion import GeneralParse, 
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.core_views.headers import draw_footer, draw_header_end, draw_header
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
-from src.lsd.gl_gui.view.core_views.new_core_view import draw_collection, draw_comment, draw_search_results, \
+from src.lsd.gl_gui.view.core_views.new_core_view import draw_collection, draw_comment, \
     draw_general_parse, sort_dict_alphabetically, unsort_dict_alphabetically, draw_with_modes
 from src.lsd.gl_gui.view.core_views.text_editor import draw_text
 
@@ -79,27 +79,14 @@ class Mode(Enum):
     }
 
 
-    SEARCH = {
-        dict: ModeOverrides(
-            kwargs={"show_bg":True, "selectable":False, "use_cache":True},
-            recursive=False,
-            func=draw_search_results
-        ),
-
-        str: ModeOverrides(
-            kwargs={"show_bg": True, "selectable": False, "use_cache": True},
-            recursive=False,
-            func=draw_search_results
-        )
-    }
     WINDOW_NO_HEADER = {
         Any: ModeOverrides(
             kwargs={"show_bg": True, "selectable": False, "use_cache": True, "melty_window": False, "closable": True,
                     "with_header_end": draw_header_end, "auto_resize": False, "draggable": True, 'shadow': True,
                     "show_tint": False, "show_header": True, "with_footer": draw_footer, 'indent_size': 5,
-                    "disable_scroll": False,
+                    "disable_scroll": False, "search_text": "", "searchable": True,
                     "show_add_delete": False, "with_header": draw_header, "min_width": 200, "min_height": 60,
-                    "initial": {"width": 400, "height": 320, "window_pos": (100, 500)}},
+                    "initial": {"width": 400, "height": 420, "window_pos": (100, 500)}},
 
             recursive=False
         )
@@ -110,7 +97,7 @@ class Mode(Enum):
             kwargs={"show_bg":True, "selectable":False, "use_cache":True, "melty_window":False, "closable":True,
                     "with_header_end":draw_header_end, "auto_resize":False, "draggable":True, 'shadow':True,
                     "show_tint":True, "show_header":True, "with_footer":draw_footer, 'indent_size':5,
-                    "disable_scroll":False,
+                    "disable_scroll":False, "searchable": True,
                    "show_add_delete":False, "with_header":draw_header, "min_width": 200, "min_height": 60,
                     "initial":{"width": 400, "height": 320, "window_pos": (100, 500)}},
 
@@ -124,7 +111,7 @@ class Mode(Enum):
             kwargs={"show_bg":True, "selectable":False, "use_cache":True, "shadow":True,
                     "melty_window":True, "closable":True,
                     "auto_resize":True, "is_tree":False, "show_tint":False, "show_header":True,
-                    "disable_scroll":False,
+                    "disable_scroll":False, "searchable": True,
                     "initial": {"width": 400, "height": 320}},
             recursive=False
         )
@@ -286,8 +273,9 @@ def _populate_code_mode():
 
     def chain_for(address_in, address_out):
         return ModeOverrides(
-            kwargs={"disable_scroll": True},
+            kwargs={"disable_scroll": True, "searchable":True},
             recursive=True,
+
             func=(address_in,
                   (address_to_general_parse, {'load': True}),
                   (draw_with_modes, {'modes': inner_modes, 'disable_scroll': True, 'fill_height': compute_height}),

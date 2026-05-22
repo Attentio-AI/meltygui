@@ -87,7 +87,7 @@ class InputEvent:
     def alt(self) -> bool: return bool(self.modifiers & 4)
 
     @property
-    def meta(self) -> bool: return bool(self.modifiers & 8)
+    def metadata(self) -> bool: return bool(self.modifiers & 8)
 
 
 @dataclass(slots=True)
