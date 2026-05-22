@@ -88,7 +88,7 @@ def render_search(search_ds, draw_state, unique=None, ):
     imgui.same_line()
     from src.lsd.gl_gui.view.core_views.new_core_view import button
     fa_x_icon = ""
-    imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0], imgui.get_cursor_screen_pos()[1] + 2))
+    # imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0], imgui.get_cursor_screen_pos()[1] + 2))
     if button(fa_x_icon, show_bg=True, use_cache=True, height=25, shadow=True, z_offset=10,
               tile_mode=TileMode.MAX, color=(9, 1, 1, 0))[0]:
         search_ds.search_active = False
@@ -108,14 +108,15 @@ def render_search(search_ds, draw_state, unique=None, ):
         imgui.same_line(spacing=2)
         if imgui.small_button(f"##search_next{unique}"):
             nav = 1
-        # Enter = find next, Shift+Enter = find prev - but only if the search
-        # box (not the underlying editor) holds text focus, so that one inserts
-        # newlines until you click into the editor. is_key_pressed detects the edge;
-        # repeat=True lets a held Enter walk through results.
-        if (Melty.focused_ds is search_ds and Melty.text_focused_ds is not search_ds
-                and (imgui.is_key_pressed(glfw.KEY_ENTER, repeat=True)
-                     or imgui.is_key_pressed(glfw.KEY_KP_ENTER, repeat=True))):
-            nav = -1 if imgui.get_io().key_shift else 1
+        # Enter = find next, Shift+Enter = find prev — but only while the search
+        # box (not the underlying editor) holds text focus, so Enter still inserts
+        # newlines when you click into the editor. Drained from the GLFW-callback
+        # key queue (not imgui.is_key_pressed) so it isn't dropped on slow frames.
+        if Melty.focused_ds is search_ds and Melty.text_focused_ds is not search_ds:
+            _enter = [m for k, m in Melty.frame_key_events
+                      if k in (glfw.KEY_ENTER, glfw.KEY_KP_ENTER)]
+            if _enter:
+                nav = -1 if (_enter[-1] & glfw.MOD_SHIFT) else 1
 
         if nav != 0:
             # total is the combined count across all views; stepping wraps over
@@ -142,7 +143,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
     # ── Constants ──────────────────────────────────────────────
     # Depth-driven name brightness
-    depth_scale       = -1.876
+    depth_scale       = 0.06
     depth_offset      = -30.0
     name_value_factor = 0.777
     # Depth drives text saturation falloff
@@ -176,7 +177,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     }
 
     # Type / unique label colors
-    type_label_color   = (3.489, 1.944, 2.861, 1.0)
+    type_label_color   = (3.672, 1.944, 2.861, 1.0)
     unique_label_color = (-1.535, 0.0, 0.9, 1.0)
 
     # ── Setup ──────────────────────────────────────────────────

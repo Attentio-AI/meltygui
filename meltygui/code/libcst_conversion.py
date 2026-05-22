@@ -8,6 +8,7 @@ Dict results carry __cst__ for lossless round-trip reconstruction.
 The original immutable CST node is never serialized — just referenced.
 """
 
+import ast
 import enum
 import inspect
 import math
@@ -751,14 +752,15 @@ def cst_module_to_dict(value: cst.Module) -> dict:
         if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
             c = Comment(ll.comment.value)
             readable[c] = c
+            _merge_override_comment(c, readable)
 
     _classdef_to_dict = Melty._converters.get((cst.ClassDef, dict))
     _funcdef_to_dict = Melty._converters.get((cst.FunctionDef, dict))
 
     for stmt in value.body:
         if isinstance(stmt, cst.SimpleStatementLine):
-            # Leading comments
-            _extract_leading_comments(stmt, readable)
+            # Leading comments (override comments go to the field below)
+            _extract_leading_comments(stmt, readable, skip_overrides=True)
 
             last_key = None
             for node in stmt.body:
@@ -780,20 +782,25 @@ def cst_module_to_dict(value: cst.Module) -> dict:
 
             # Trailing inline comment
             _extract_trailing_comment(stmt, last_key, readable)
+            _attach_field_override(stmt, last_key, readable)
 
         elif isinstance(stmt, cst.ClassDef):
-            _extract_leading_comments(stmt, readable)
+            _extract_leading_comments(stmt, readable, skip_overrides=True)
             if _classdef_to_dict is not None:
                 try:
-                    readable[stmt.name.value] = _classdef_to_dict(stmt)
+                    child = _classdef_to_dict(stmt)
+                    _attach_leading_override(stmt, child)
+                    readable[stmt.name.value] = child
                 except (TypeError, ValueError):
                     pass
 
         elif isinstance(stmt, cst.FunctionDef):
-            _extract_leading_comments(stmt, readable)
+            _extract_leading_comments(stmt, readable, skip_overrides=True)
             if _funcdef_to_dict is not None:
                 try:
-                    readable[stmt.name.value] = _funcdef_to_dict(stmt)
+                    child = _funcdef_to_dict(stmt)
+                    _attach_leading_override(stmt, child)
+                    readable[stmt.name.value] = child
                 except (TypeError, ValueError):
                     pass
 
@@ -829,6 +836,8 @@ def dict_to_cst_module(value: dict) -> cst.Module:
         if all_comment_edits:
             result = _patch_module_comments(result, value)
 
+        result = _ensure_override_comment(result, value)
+        result = _apply_field_overrides(result, value.get("__overrides__"))
         return result
     except cst.ParserSyntaxError as e:
         return Pending(wrapped=ParseError(
@@ -1152,7 +1161,7 @@ def cst_classdef_to_dict(value: cst.ClassDef) -> dict:
     # Body-level assignments, nested classes, and comments
     for stmt in value.body.body:
         if isinstance(stmt, cst.SimpleStatementLine):
-            _extract_leading_comments(stmt, readable)
+            _extract_leading_comments(stmt, readable, skip_overrides=True)
 
             last_key = None
             for node in stmt.body:
@@ -1169,12 +1178,16 @@ def cst_classdef_to_dict(value: cst.ClassDef) -> dict:
                         last_key = node.target.value
 
             _extract_trailing_comment(stmt, last_key, readable)
+            _attach_field_override(stmt, last_key, readable)
 
-        # Nested class, recurse into a nested dict
+        # Nested class: recurse into a nested dict. The leading override comment
+        # above only configures the child, not this scope.
         elif isinstance(stmt, cst.ClassDef) and _classdef_to_dict is not None:
-            _extract_leading_comments(stmt, readable)
+            _extract_leading_comments(stmt, readable, skip_overrides=True)
             try:
-                readable[stmt.name.value] = _classdef_to_dict(stmt)
+                child = _classdef_to_dict(stmt)
+                _attach_leading_override(stmt, child)
+                readable[stmt.name.value] = child
             except (TypeError, ValueError):
                 pass
 
@@ -1241,6 +1254,9 @@ def dict_to_cst_classdef(value: dict) -> cst.ClassDef:
         if new_body is not result.body:
             result = result.with_changes(body=new_body)
 
+    result = _patch_leading_override(result, value)
+    result = _ensure_override_comment(result, value)
+    result = _apply_field_overrides(result, value.get("__overrides__"))
     return result
 
 
@@ -1481,8 +1497,9 @@ def _extract_block_assignments(stmts):
     seen: dict[str, int] = {}
     for stmt in stmts:
         if isinstance(stmt, cst.SimpleStatementLine):
-            # Leading comments (standalone lines above this statement)
-            _extract_leading_comments(stmt, result)
+            # Leading comments (standalone lines above the statement);
+            # override comments are routed to the field below instead.
+            _extract_leading_comments(stmt, result, skip_overrides=True)
 
             last_key = None
             for node in stmt.body:
@@ -1508,6 +1525,7 @@ def _extract_block_assignments(stmts):
 
             # Trailing inline comment on this statement
             _extract_trailing_comment(stmt, last_key, result)
+            _attach_field_override(stmt, last_key, result)
 
         elif isinstance(stmt, cst.If):
             # Leading comments on the if statement itself
@@ -1521,12 +1539,125 @@ def _extract_block_assignments(stmts):
     return result
 
 
-def _extract_leading_comments(stmt, result):
-    """Extract standalone comment lines from a statement's leading_lines."""
+def _extract_leading_comments(stmt, result, skip_overrides=False):
+    """Extract standalone comment lines from a statement's leading_lines.
+
+    skip_overrides leaves '# [...]' comments out of `result` — used when the
+    statement is a nested class/function, whose leading override comment is
+    routed to the child's own __overrides__ via _attach_leading_override.
+    """
     for ll in getattr(stmt, "leading_lines", ()):
         if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
+            if skip_overrides and _parse_override_comment(ll.comment.value) is not None:
+                continue
             c = Comment(ll.comment.value)
             result[c] = c
+            _merge_override_comment(c, result)
+
+
+def _attach_leading_override(stmt, child_dict):
+    """Route a leading '# [...]' comment above a nested class/function into
+    that child's __overrides__ (the first such comment wins)."""
+    if not isinstance(child_dict, dict) or isinstance(child_dict.get("__overrides__"), dict):
+        return
+    for ll in getattr(stmt, "leading_lines", ()):
+        if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
+            parsed = _parse_override_comment(ll.comment.value)
+            if parsed:
+                child_dict["__overrides__"] = parsed
+                return
+
+
+def _patch_leading_override(node, value):
+    """Update an override comment in node's OWN leading_lines from __overrides__.
+
+    Mirrors the in-place text-map update, but for the comment that sits above
+    a nested class/function (in its leading_lines) rather than in its body.
+    Only rewrites when the values actually changed.
+    """
+    if not isinstance(value, dict):
+        return node
+    overrides = value.get("__overrides__")
+    if not isinstance(overrides, dict):
+        return node
+    current = {k: v for k, v in overrides.items() if not _is_dunder(k)}
+    lines = list(getattr(node, "leading_lines", ()))
+    for i, ll in enumerate(lines):
+        if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
+            original = _parse_override_comment(ll.comment.value)
+            if original is not None:
+                if current != original:
+                    lines[i] = ll.with_changes(
+                        comment=cst.Comment(value=_format_override_comment(current)))
+                    return node.with_changes(leading_lines=lines)
+                return node
+    return node
+
+
+def _attach_field_override(stmt, field_name, result):
+    """Route a leading '# [...]' comment above a primitive field into the
+    parent's __overrides__ under '__<field>__'.
+
+    Primitives have no dict of their own to carry overrides, so the parent
+    collection holds them namespaced; draw_collection applies them to the
+    matching child at render time. The first override comment wins.
+    """
+    if field_name is None:
+        return
+    for ll in getattr(stmt, "leading_lines", ()):
+        if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
+            parsed = _parse_override_comment(ll.comment.value)
+            if parsed:
+                overrides = result.get("__overrides__")
+                if not isinstance(overrides, dict):
+                    overrides = {}
+                    result["__overrides__"] = overrides
+                overrides.setdefault(f"__{field_name}__", parsed)
+                return
+
+
+def _patch_field_overrides(stmts, overrides):
+    """Patch leading override comments above primitive fields from the parent's
+    namespaced __overrides__['__<field>__'] entries. Returns new statements if
+    anything changed, else None."""
+    if not isinstance(overrides, dict):
+        return None
+    field_ovs = {k[2:-2]: v for k, v in overrides.items()
+                 if isinstance(k, str) and len(k) > 4
+                 and k.startswith("__") and k.endswith("__")
+                 and isinstance(v, dict)}
+    if not field_ovs:
+        return None
+
+    new_stmts = list(stmts)
+    changed = False
+    for i, stmt in enumerate(new_stmts):
+        if not isinstance(stmt, cst.SimpleStatementLine):
+            continue
+        name = next((_assign_target_name(n) for n in stmt.body
+                     if _assign_target_name(n) is not None), None)
+        if name is None or name not in field_ovs:
+            continue
+        # Reuse the leading-line patcher with a synthetic overrides wrapper.
+        patched = _patch_leading_override(stmt, {"__overrides__": field_ovs[name]})
+        if patched is not stmt:
+            new_stmts[i] = patched
+            changed = True
+    return new_stmts if changed else None
+
+
+def _apply_field_overrides(node, overrides):
+    """Patch field leading override comments on node's body from `overrides`'
+    namespaced '__<field>__' entries (no-op if nothing changed)."""
+    if isinstance(node, cst.Module):
+        new = _patch_field_overrides(node.body, overrides)
+        if new is not None:
+            return node.with_changes(body=new)
+    elif isinstance(node, (cst.ClassDef, cst.FunctionDef)) and isinstance(node.body, cst.IndentedBlock):
+        new = _patch_field_overrides(node.body.body, overrides)
+        if new is not None:
+            return node.with_changes(body=node.body.with_changes(body=new))
+    return node
 
 
 def _extract_trailing_comment(stmt, var_key, result):
@@ -1535,6 +1666,146 @@ def _extract_trailing_comment(stmt, var_key, result):
     if tw is not None and hasattr(tw, "comment") and tw.comment is not None:
         c = Comment(tw.comment.value, inline=var_key)
         result[c] = c
+        _merge_override_comment(c, result)
+
+
+# ─── Override comments: a tiny key=value store embedded in a comment ──────────
+# A comment like  # [tint=(0.1, 0.2, 0.3), bg_offset=5]  parses into a dict
+# stored under result["__overrides__"]. Parsing is best-effort: anything that
+# doesn't match the shape is left as an ordinary comment and never raises.
+
+
+def _parse_override_comment(text):
+    """Parse a '# [k=v, ...]' override comment into a dict, or None.
+
+    The bracketed body is read as keyword arguments (commas inside tuples,
+    lists, etc. are respected) and each value is literal-eval'd. Returns None
+    on any malformed input — callers treat None as "not an override comment".
+    """
+    if not isinstance(text, str):
+        return None
+    body = text.lstrip("#").strip()
+    if not (body.startswith("[") and body.endswith("]")):
+        return None
+    inner = body[1:-1].strip()
+    if not inner:
+        return None
+    try:
+        call = ast.parse(f"dict({inner})", mode="eval").body
+        if not isinstance(call, ast.Call) or call.args:
+            return None
+        parsed = {}
+        for kw in call.keywords:
+            if kw.arg is None:  # reject **kwarg
+                return None
+            parsed[kw.arg] = ast.literal_eval(kw.value)
+        return parsed or None
+    except (SyntaxError, ValueError, TypeError):
+        return None
+
+
+def _format_override_value(value):
+    """Render an override value, cleaning float32 noise the same way the rest
+    of the converter does (e.g. 0.10000000149 → 0.1). Recurses into tuples and
+    lists so values like tint=(0.1, 0.2, 0.3) round-trip cleanly."""
+    if isinstance(value, bool):
+        return repr(value)  # bool is-a int/float; keep True/False
+    if isinstance(value, float):
+        return _clean_float(value)
+    if isinstance(value, tuple):
+        inner = ", ".join(_format_override_value(v) for v in value)
+        return f"({inner},)" if len(value) == 1 else f"({inner})"
+    if isinstance(value, list):
+        return "[" + ", ".join(_format_override_value(v) for v in value) + "]"
+    return repr(value)
+
+
+def _format_override_comment(overrides):
+    """Render an overrides dict back into a '# [k=v, ...]' comment string."""
+    parts = [f"{k}={_format_override_value(v)}" for k, v in overrides.items()
+             if not _is_dunder(k)]
+    return "# [" + ", ".join(parts) + "]"
+
+
+def _merge_override_comment(comment, result):
+    """If `comment` is an override comment, store its pairs in __overrides__.
+
+    The first override comment in a scope owns __overrides__; any later
+    '# [...]' comments at the same level stay as ordinary comments. This keeps
+    write-back unambiguous (one comment to regenerate) and round-trips stable.
+    """
+    if isinstance(result.get("__overrides__"), dict):
+        return
+    parsed = _parse_override_comment(str(comment))
+    if parsed:
+        result["__overrides__"] = parsed
+
+
+def _iter_direct_comment_texts(node):
+    """Yield comment texts attached directly in node's own scope.
+
+    Module header + top-level statement comments, or a class/function body's
+    statement comments. Does not descend into nested class/function bodies.
+    """
+    if isinstance(node, cst.Module):
+        for ll in node.header:
+            if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
+                yield ll.comment.value
+        stmts = node.body
+    elif isinstance(node, (cst.ClassDef, cst.FunctionDef)) and isinstance(node.body, cst.IndentedBlock):
+        # The node's own leading lines count too: a leading-line comment
+        # above this class/function means body insertion should duplicate it.
+        for ll in getattr(node, "leading_lines", ()):
+            if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
+                yield ll.comment.value
+        stmts = node.body.body
+    else:
+        stmts = ()
+    for stmt in stmts:
+        for ll in getattr(stmt, "leading_lines", ()):
+            if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
+                yield ll.comment.value
+        tw = getattr(stmt, "trailing_whitespace", None)
+        if tw is not None and getattr(tw, "comment", None) is not None:
+            yield tw.comment.value
+
+
+def _ensure_override_comment(node, value):
+    """Insert a '# [...]' comment for __overrides__ when none exists yet.
+
+    In-place edits to an existing override comment are handled by the
+    comment-edit text map; this only covers the "add a brand-new comment"
+    case, prepending it to the first statement of node's scope.
+    """
+    if not isinstance(value, dict):
+        return node
+    overrides = value.get("__overrides__")
+    if not isinstance(overrides, dict):
+        return node
+    pairs = {k: v for k, v in overrides.items() if not _is_dunder(k)}
+    if not pairs:
+        return node
+    # Already present? The text-map path keeps it in sync; don't duplicate.
+    if any(_parse_override_comment(t) is not None for t in _iter_direct_comment_texts(node)):
+        return node
+
+    comment_line = cst.EmptyLine(indent=True, comment=cst.Comment(value=_format_override_comment(pairs)))
+
+    if isinstance(node, cst.Module):
+        body = list(node.body)
+        if not body:
+            return node.with_changes(header=[comment_line, *node.header])
+        body[0] = body[0].with_changes(leading_lines=[comment_line, *body[0].leading_lines])
+        return node.with_changes(body=body)
+
+    if isinstance(node, (cst.ClassDef, cst.FunctionDef)) and isinstance(node.body, cst.IndentedBlock):
+        stmts = list(node.body.body)
+        if not stmts:
+            return node
+        stmts[0] = stmts[0].with_changes(leading_lines=[comment_line, *stmts[0].leading_lines])
+        return node.with_changes(body=node.body.with_changes(body=stmts))
+
+    return node
 
 
 def _collect_comment_edits(edits, text_map=None):
@@ -1549,6 +1820,23 @@ def _collect_comment_edits(edits, text_map=None):
             text_map[str(k)] = v
         elif isinstance(v, dict):
             _collect_comment_edits(v, text_map)
+
+    # Override comments: if __overrides__ changed relative to the comment it
+    # was parsed from, regenerate that comment. Done after the loop so it wins
+    # over a direct edit to the same comment. Only the first override comment at
+    # this level is rewritten; an unchanged override leaves its comment verbatim.
+    overrides = edits.get("__overrides__")
+    if isinstance(overrides, dict):
+        current = {kk: vv for kk, vv in overrides.items() if not _is_dunder(kk)}
+        for k in edits:
+            if not isinstance(k, Comment):
+                continue
+            original = _parse_override_comment(str(k))
+            if original is None:
+                continue
+            if current != original:
+                text_map[str(k)] = _format_override_comment(current)
+            break
     return text_map
 
 
@@ -1761,6 +2049,12 @@ def dict_to_cst_funcdef(value: dict) -> cst.FunctionDef:
             if new_body is not result.body:
                 result = result.with_changes(body=new_body)
 
+    # A leading override comment (before the def) lives on the top funcdef dict;
+    # body overrides (and field overrides) live under "locals".
+    result = _patch_leading_override(result, value)
+    if isinstance(local_edits, dict):
+        result = _ensure_override_comment(result, local_edits)
+        result = _apply_field_overrides(result, local_edits.get("__overrides__"))
     return result
 
 

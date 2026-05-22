@@ -439,7 +439,7 @@ def render_func(*args, **o_kwargs):
                     parent_ds = draw_state._parent
                     if draw_state not in set(Melty.root_draw_states[parent_ds.id]):
                         Melty.root_draw_states[parent_ds.id].append(draw_state)
-                        layer = layer + (len(Melty.root_draw_states[parent_ds.id]) * 2)
+                        layer = layer + (len(Melty.root_draw_states[parent_ds.id]))
                         Melty.layers[min(layer, len(Melty.layers) - 1)].append(draw_state)
                 else:
                     Melty.layers[min(layer, len(Melty.layers) - 1)].append(draw_state)
@@ -458,7 +458,7 @@ def render_func(*args, **o_kwargs):
                         return *return_value, draw_state
                 return return_value
         else:
-            Melty.active_layer = active_layer if active_layer is not None else 0
+            Melty.active_layer = active_layer if active_layer is not None else 4
 
         # Handle untracked object invalidation
         if not hasattr(input_value, "__melty__"):
@@ -1024,8 +1024,8 @@ def render_func(*args, **o_kwargs):
             ################# Columns
             if column is not None and column_parent is not None and draw_state.parent_window is not None:
                 column_cursor_y = column_parent._column_cursor[column][1] + column_parent._columns_top
-                imgui.set_cursor_screen_pos((parent_wrap_left + indent_x,
-                                             parent_wrap_top + column_cursor_y))
+                imgui.set_cursor_screen_pos((snap_int(parent_wrap_left + indent_x),
+                                             snap_int(parent_wrap_top + column_cursor_y)))
 
                 draw_state.left_offset, draw_state.top_offset = (
                     imgui.get_cursor_screen_pos()[0] - draw_state.parent_window.abs_left,
@@ -1082,8 +1082,7 @@ def render_func(*args, **o_kwargs):
             draw_state._bounding_hovered = new_bounding_hovered
             if (draw_state.width is None or draw_state.height is None or hover_changed or
                     draw_state._bounding_hovered or draw_state._imgui_popover_open):
-                if (not Melty.on_drag
-                        and not imgui.is_mouse_dragging(2) and not imgui.is_mouse_dragging(1)):
+                if (not Melty.on_drag and not imgui.is_mouse_down(2) and not imgui.is_mouse_down(1)):
                     if not draw_state.just_shadow:
                         Melty.cache.invalidate(tile_id, do_store=False, force=True)
 
@@ -1101,9 +1100,9 @@ def render_func(*args, **o_kwargs):
                     needs_invalidate = True
                 draw_state.clipped = inside_clip
 
-                # if needs_invalidate and not Melty.window_drag and not imgui.is_mouse_down(
-                #         1) and not imgui.is_mouse_down(2):
-                #     Melty.cache.invalidate(tile_id, force=True)
+                if needs_invalidate and not Melty.window_drag and not imgui.is_mouse_dragging(
+                        1) and not imgui.is_mouse_dragging(2):
+                    Melty.cache.invalidate(tile_id, force=True)
 
             if kwargs.get("shadow", False):
                 Melty.shadow_depth = Melty.shadow_depth + 1 + total_z_offset
@@ -1158,7 +1157,6 @@ def render_func(*args, **o_kwargs):
 
                 if len(Melty.search_stack) > 0:
                     kwargs["search_text"] = Melty.search_stack[-1]
-
 
                 if search_requested:
                     if search_requested.ctrl:
@@ -1225,6 +1223,7 @@ def render_func(*args, **o_kwargs):
                     extras = draw_search(input_value=draw_state,
                             closed=False,
                             auto_resize=True,
+                            swoosh=False,
                             tint=draw_state.tint,
                             mode=Mode.WINDOW_CLEAN,
                             pin_to_clip=True,
@@ -1596,6 +1595,20 @@ def render_func(*args, **o_kwargs):
                     draw_state._input_value = input_value
                     kwargs["input_value"] = draw_state._input_value
 
+                # __overrides__: a collection can carry a key=value store
+                # (parsed from a `# [tint=(red), bg_offset=5]` comment) that
+                # overrides all render kwargs for this view. Uses the finalized
+                # kwargs["input_value"] (set above for both the positional and
+                # convert_in paths) so direct and converted values are covered;
+                # applied here so the values feed show_bg/tint and clean up.
+                _ov_collection = kwargs.get("input_value")
+                if isinstance(_ov_collection, dict):
+                    _overrides = _ov_collection.get("__overrides__")
+                    if isinstance(_overrides, dict):
+                        for _ok, _ov in _overrides.items():
+                            if not (isinstance(_ok, str) and _ok.startswith("__")):
+                                kwargs[_ok] = _ov
+
                 highlight = False
 
                 show_bg = kwargs.get("show_bg", False) or (
@@ -1782,8 +1795,14 @@ def render_func(*args, **o_kwargs):
                 from src.lsd.gl_gui.view.core_views.new_core_view import default_context_menu
                 draw_context_menu = kwargs.get("context_menu", default_context_menu)
                 if draw_context_menu is not None:
+                    # Gate on the occlusion-aware bounding hover so a right-click
+                    # only opens the topmost view's menu - not views sitting
+                    # behind a closable window under the cursor. (on_action's
+                    # priority resolution should pick the topmost subscriber, but
+                    # this guards the case where the front window isn't itself a
+                    # right-click subscriber and therefore doesn't consume the event.)
                     right_click = draw_state.on_action("right_mouse_clicked")
-                    if right_click:
+                    if right_click and draw_state._bounding_hovered:
                         draw_state.context_menu_open = not draw_state.context_menu_open
                         if draw_state.context_menu_ds is not None:
                             draw_state.context_menu_ds.closed = not draw_state.context_menu_open
@@ -2028,15 +2047,15 @@ def render_func(*args, **o_kwargs):
                                  left + width,
                                  top + height - draw_state.footer_height))
 
-                if (draw_state.left is not None and draw_state.top is not None and
-                    draw_state.width is not None and draw_state.height is not None) and closable:
-                    if (draw_state.width > 0 and draw_state.height > 0):
-                        reset_to = imgui.get_cursor_screen_pos()
-
-                        # imgui.invisible_button(str(unique) + "window_blocker", width=draw_state.width,
-                        #                        height=draw_state.height)
-                        imgui.set_cursor_screen_pos(reset_to)
-                        imgui.set_item_allow_overlap()
+                # if (draw_state.left is not None and draw_state.top is not None and
+                #     draw_state.width is not None and draw_state.height is not None) and closable:
+                #     if (draw_state.width > 0 and draw_state.height > 0):
+                #         reset_to = imgui.get_cursor_screen_pos()
+                #
+                #         # imgui.invisible_button(str(unique) + "window_blocker", width=draw_state.width,
+                #         #                        height=draw_state.height)
+                #         imgui.set_cursor_screen_pos(reset_to)
+                #         imgui.set_item_allow_overlap()
 
                 if show_bg:
                     Melty.bg_depth += 1
@@ -2666,10 +2685,6 @@ def render_func(*args, **o_kwargs):
         use_cache = kwargs.get("use_cache", False) and Melty.cache.enabled
         draw_state.use_cache = use_cache
         kwargs.pop("use_cache", None)
-        if Toggles.offscreen_debug:
-            depth_tint = (Melty.depth * 0.05)
-            jet = jet_color(depth_tint)
-            floating_text(f"{func.__name__} w:{Melty.depth}", tint=jet)
 
         clip_height = draw_state.height
         needs_scroll = draw_state.content_height > clip_height and draw_state.multi_line
@@ -2781,7 +2796,6 @@ def render_func(*args, **o_kwargs):
                 if not is_primitive:
                     Melty.seen_values.pop()
 
-        Melty.silence_invalidate = True
 
         if do_scroll:
             Melty.pop_clip()

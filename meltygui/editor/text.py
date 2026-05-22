@@ -233,10 +233,14 @@ def _get_line_end(text, index):
     return nl if nl != -1 else len(text)
 
 
+def _mono_char_w():
+    """Glyph advance for the monospace editor font (current imgui font)."""
+    return imgui.calc_text_size("0").x
+
+
 def _char_pos_to_xy(text, index, origin_x, origin_y, line_px):
     line, col = _index_to_line_col(text, index)
-    col_text = text[_get_line_start(text, index):index]
-    x = origin_x + imgui.calc_text_size(col_text).x
+    x = origin_x + col * _mono_char_w()
     y = origin_y + line * line_px
     return x, y
 
@@ -247,23 +251,14 @@ def _xy_to_char_index(text, mx, my, origin_x, origin_y, line_px):
     line_num = max(0, min(line_num, len(lines) - 1))
 
     line_text = lines[line_num]
-    best_idx = 0
-    for i in range(len(line_text) + 1):
-        cx = origin_x + imgui.calc_text_size(line_text[:i]).x
-        if cx > mx:
-            if i > 0:
-                prev_cx = origin_x + imgui.calc_text_size(line_text[:i - 1]).x
-                if mx - prev_cx < cx - mx:
-                    best_idx = i - 1
-                else:
-                    best_idx = i
-            break
-        best_idx = i
+    char_w = _mono_char_w()
+    col = round((mx - origin_x) / char_w) if char_w else 0
+    col = max(0, min(col, len(line_text)))
 
     abs_idx = 0
     for l in range(line_num):
         abs_idx += len(lines[l]) + 1
-    abs_idx += best_idx
+    abs_idx += col
     return min(abs_idx, len(text))
 
 
@@ -502,6 +497,11 @@ def draw_text(input_value: str,
             imgui.push_font(_font_handle)
             _font_pushed = True
 
+    # Character advance. Every caller uses JetBrains Mono (monospace), so one
+    # character advance lets us position and measure text by character count
+    # instead of calling imgui.calc_text_size per glyph/slice each frame.
+    char_w = imgui.calc_text_size("0").x
+
     changed = False
     original_input = input_value
     max_lines = 1000  # limit for performance; can be adjusted or removed
@@ -526,9 +526,13 @@ def draw_text(input_value: str,
     origin_x = left - ds.text_h_scroll
     origin_y = top
 
-    # imgui.is_key_pressed(..., repeat=True) uses io.key_repeat_delay/rate
-    # so held keys auto-repeat at the OS-propecified cadence.
-    pressed = lambda k: imgui.is_key_pressed(k, repeat=True)
+    # Keystrokes come from the GLFW-callback queue (Melty.frame_key_events:
+    # ordered (glfw_key, mods) for PRESS/REPEAT this frame), so nothing is
+    # dropped on slow frames the way imgui.is_key_pressed (current frame only)
+    # would. `pressed(k)` is membership; the typed-char loop iterates in order.
+    _frame_keys = Melty.frame_key_events
+    _fired = {k for k, _m in _frame_keys}
+    pressed = lambda k: k in _fired
 
     # --- Mouse handling ---
     is_focused = Melty.text_focused_ds is ds
@@ -557,10 +561,14 @@ def draw_text(input_value: str,
         ds.text_last_click_pos = click_pos
 
         if ds.text_click_count == 2:
+            ds.text_drag_mode = 'word'
             ds.text_selection_start = _word_boundary_left(text, click_pos)
             ds.text_selection_end = _word_boundary_right(text, click_pos)
             ds.text_cursor_pos = ds.text_selection_end
+            ds.text_drag_anchor_lo = ds.text_selection_start
+            ds.text_drag_anchor_hi = ds.text_selection_end
         elif ds.text_click_count >= 3:
+            ds.text_drag_mode = 'line'
             line_start = _get_line_start(text, click_pos)
             line_end = _get_line_end(text, click_pos)
             if line_end < len(text):
@@ -568,19 +576,49 @@ def draw_text(input_value: str,
             ds.text_selection_start = line_start
             ds.text_selection_end = line_end
             ds.text_cursor_pos = ds.text_selection_end
+            ds.text_drag_anchor_lo = line_start
+            ds.text_drag_anchor_hi = line_end
         else:
+            ds.text_drag_mode = 'char'
             ds.text_cursor_pos = click_pos
             if io.key_shift:
                 ds.text_selection_end = click_pos
             else:
                 ds.text_selection_start = click_pos
                 ds.text_selection_end = click_pos
+            ds.text_drag_anchor_lo = ds.text_selection_start
+            ds.text_drag_anchor_hi = ds.text_selection_end
 
     if left_mouse_drag:
         drag_pos = _xy_to_char_index(text, left_mouse_drag.x, left_mouse_drag.y,
                                       origin_x, origin_y, line_px)
-        ds.text_selection_end = drag_pos
-        ds.text_cursor_pos = drag_pos
+        anchor_lo = ds.text_drag_anchor_lo
+        anchor_hi = ds.text_drag_anchor_hi
+        if ds.text_drag_mode in ('word', 'line') and (anchor_lo != anchor_hi):
+            # Snap the moving end to the word/line boundary under the mouse,
+            # then merge with the anchor span so the originally-selected
+            # word/line stays fully highlighted while dragging either way.
+            if ds.text_drag_mode == 'word':
+                edge_lo = _word_boundary_left(text, drag_pos)
+                edge_hi = _word_boundary_right(text, drag_pos)
+            else:
+                edge_lo = _get_line_start(text, drag_pos)
+                edge_hi = _get_line_end(text, drag_pos)
+                if edge_hi < len(text):
+                    edge_hi += 1
+            if drag_pos < anchor_lo:
+                # Extending left: anchor's far (right) edge is the fixed end.
+                ds.text_selection_start = anchor_hi
+                ds.text_selection_end = edge_lo
+                ds.text_cursor_pos = edge_lo
+            else:
+                # At/right of the anchor: anchor's left edge is fixed.
+                ds.text_selection_start = anchor_lo
+                ds.text_selection_end = max(anchor_hi, edge_hi)
+                ds.text_cursor_pos = ds.text_selection_end
+        else:
+            ds.text_selection_end = drag_pos
+            ds.text_cursor_pos = drag_pos
         ds.text_cursor_blink_time = time.time()
 
     # --- Keyboard handling ---
@@ -588,20 +626,23 @@ def draw_text(input_value: str,
         shift = io.key_shift
         ctrl = io.key_ctrl
 
-        # --- Typed characters ---
-        if not ctrl:
-            for key, (unshifted, shifted) in _KEY_CHAR_MAP.items():
-                if pressed(key):
-                    ds.text_cursor_blink_time = time.time()
-                    ch = shifted if shift else unshifted
-
-                    if _has_selection(ds):
-                        text, ds.text_cursor_pos = _delete_selection(text, ds)
-                    text = text[:ds.text_cursor_pos] + ch + text[ds.text_cursor_pos:]
-                    ds.text_cursor_pos += len(ch)
-                    ds.text_selection_start = ds.text_cursor_pos
-                    ds.text_selection_end = ds.text_cursor_pos
-                    changed = True
+        # --- Typed characters --- drained in order, using each key event's own
+        # modifiers so fast shift-typing across a slow frame stays shifted.
+        for _fk, _fmods in _frame_keys:
+            if _fmods & glfw.MOD_CONTROL:
+                continue
+            _cm = _KEY_CHAR_MAP.get(_fk)
+            if _cm is None:
+                continue
+            ds.text_cursor_blink_time = time.time()
+            ch = _cm[1] if (_fmods & glfw.MOD_SHIFT) else _cm[0]
+            if _has_selection(ds):
+                text, ds.text_cursor_pos = _delete_selection(text, ds)
+            text = text[:ds.text_cursor_pos] + ch + text[ds.text_cursor_pos:]
+            ds.text_cursor_pos += len(ch)
+            ds.text_selection_start = ds.text_cursor_pos
+            ds.text_selection_end = ds.text_cursor_pos
+            changed = True
 
         # --- Tab / Shift+Tab ---
         if pressed(glfw.KEY_TAB) and not ctrl:
@@ -863,14 +904,16 @@ def draw_text(input_value: str,
         # Horizontal: default back to the line start (h_scroll 0) while paging
         # through results, scrolling to only when the match wouldn't fit.
         line_start = _get_line_start(text, ms)
-        match_x = imgui.calc_text_size(text[line_start:ms]).x
-        match_x_end = imgui.calc_text_size(text[line_start:me]).x
+        match_x = (ms - line_start) * char_w
+        match_x_end = (me - line_start) * char_w
         edge_padding = 20.0
         if ds.content_width > 0:
             if match_x_end <= ds.content_width - edge_padding:
                 ds.text_h_scroll = 0.0
             else:
-                ds.text_h_scroll = max(0.0, match_x - edge_padding)
+                # Pin the match's end to the right edge so we scroll the least
+                # amount needed to reveal it, instead of dragging it to the left.
+                ds.text_h_scroll = max(0.0, match_x_end - ds.content_width + edge_padding)
         request_render()
 
     # --- Horizontal auto-scroll ---
@@ -879,7 +922,7 @@ def draw_text(input_value: str,
     visible_width = draw_state.content_width
     if ds.text_cursor_pos != ds.text_prev_cursor_pos and visible_width > 0:
         line_start = _get_line_start(text, ds.text_cursor_pos)
-        cursor_logical_x = imgui.calc_text_size(text[line_start:ds.text_cursor_pos]).x
+        cursor_logical_x = (ds.text_cursor_pos - line_start) * char_w
         edge_padding = 20.0
         if cursor_logical_x - ds.text_h_scroll < edge_padding:
             ds.text_h_scroll = max(0.0, cursor_logical_x - edge_padding)
@@ -887,9 +930,8 @@ def draw_text(input_value: str,
             ds.text_h_scroll = cursor_logical_x - visible_width + edge_padding
     ds.text_prev_cursor_pos = ds.text_cursor_pos
 
-    # Clamp h_scroll to content bounds. calc_text_size on multi-line text
-    # returns the longest line's width, which is what we want.
-    max_line_width = imgui.calc_text_size(text).x
+    # Clamp h_scroll to content bounds; the longest line drives the limit.
+    max_line_width = max((len(l) for l in text.split('\n')), default=0) * char_w
     max_h_scroll = max(0.0, max_line_width - visible_width + 50.0)
     ds.text_h_scroll = max(0.0, min(ds.text_h_scroll, max_h_scroll))
     origin_x = left - ds.text_h_scroll
@@ -911,14 +953,15 @@ def draw_text(input_value: str,
         line_abs_start = 0
         for line_idx, line_text in enumerate(lines):
             line_abs_end = line_abs_start + len(line_text)
-            if line_abs_end >= lo and line_abs_start <= hi:
+            sy = origin_y + line_idx * line_px
+            if (line_abs_end >= lo and line_abs_start <= hi
+                    and sy + line_px >= rect_min_y and sy <= rect_max_y):
                 sel_start_in_line = max(0, lo - line_abs_start)
                 sel_end_in_line = min(len(line_text), hi - line_abs_start)
-                sx = origin_x + imgui.calc_text_size(line_text[:sel_start_in_line]).x
-                ex = origin_x + imgui.calc_text_size(line_text[:sel_end_in_line]).x
-                sy = origin_y + line_idx * line_px
+                sx = origin_x + sel_start_in_line * char_w
+                ex = origin_x + sel_end_in_line * char_w
                 if hi > line_abs_end and line_abs_end >= lo:
-                    ex = origin_x + imgui.calc_text_size(line_text).x + imgui.calc_text_size(' ').x
+                    ex = origin_x + (len(line_text) + 1) * char_w  # +1 for trailing newline
                 draw_list.add_rect_filled(sx, sy, ex, sy + line_px, sel_color)
             line_abs_start = line_abs_end + 1
 
@@ -931,8 +974,8 @@ def draw_text(input_value: str,
         for m_idx, (ms, me) in enumerate(search_matches):
             m_line, _ = _index_to_line_col(text, ms)
             m_ls = _get_line_start(text, ms)
-            sx = origin_x + imgui.calc_text_size(text[m_ls:ms]).x
-            ex = origin_x + imgui.calc_text_size(text[m_ls:me]).x
+            sx = origin_x + (ms - m_ls) * char_w
+            ex = origin_x + (me - m_ls) * char_w
             sy = origin_y + m_line * line_px
             ey = sy + line_px
             if ey < rect_min_y or sy > rect_max_y:
@@ -943,24 +986,38 @@ def draw_text(input_value: str,
             else:
                 draw_list.add_rect_filled(sx, sy, ex, ey, match_bg)
 
-    # Syntax highlighted text
+    # Syntax highlighting text. Tokens are cached by text value, so unchanged
+    # content (scrolling, cursor blink, hover repaints) skip re-tokenizing and
+    # only pay a C-level str compare. Each token is drawn one line-segment at a
+    # time with a single add_text call rather than one call per glyph.
+    if getattr(ds, '_tok_cache_text', None) == text:
+        tokens = ds._tok_cache
+    else:
+        tokens = list(tokenize(text))
+        ds._tok_cache_text = text
+        ds._tok_cache = tokens
+
     x = origin_x
     y = origin_y
-    t_idx = 0
-    for token, color_key in tokenize(text):
+    for token, color_key in tokens:
         color = COLORS[color_key]
-        for ch in token:
-            if ch == '\n':
-                x = origin_x
-                y += line_px
-                continue
-            if y + line_px >= rect_min_y and y <= rect_max_y:
-                draw_list.add_text(x, y, color, ch)
-            x += imgui.calc_text_size(ch).x
-        t_idx += 1
+        start = 0
+        while True:
+            nl = token.find('\n', start)
+            seg = token[start:nl] if nl != -1 else token[start:]
+            if seg and y + line_px >= rect_min_y and y <= rect_max_y:
+                draw_list.add_text(x, y, color, seg)
+            if nl == -1:
+                x += len(seg) * char_w
+                break
+            x = origin_x
+            y += line_px
+            start = nl + 1
 
-    # Cursor
-    if is_focused and not _has_selection(ds):
+    # Cursor. Drawn at the caret even while a selection exists, so the active
+    # (moving) edge of a drag or shift-selection shows where delete and arrow
+    # keys will act from - text_cursor_pos already tracks that location.
+    if is_focused:
         if (time.time() - ds.text_cursor_blink_time) % 1.0 < 0.5:
             cx, cy = _char_pos_to_xy(text, ds.text_cursor_pos, origin_x, origin_y, line_px)
             cursor_color = 0xFFFFFFFF  # white

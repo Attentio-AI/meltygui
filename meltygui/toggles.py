@@ -49,8 +49,6 @@ class Swoosh:
 @window
 @tint({"draw_legacy": (0.8, 0.2, 0.2)})
 class Toggles:
-
-    show_hidden = False
     # Invalidation settings
     invalidate_stack_trace = False
     text_focus_stack_trace = False
@@ -61,9 +59,9 @@ class Toggles:
     render_depth = False
     ds_invalidate_stack = False
     profile_mode = ProfileMode.LIGHT
-    offscreen_debug = False
     debug_stale_tint = False
     
+
     # Filter SettingS
     brightness = 0.22
     contrast = 1.422
@@ -76,17 +74,15 @@ class Toggles:
     show_excluded = True
 
     # Shadow Settings
-
-    shadow_downscale = 2
+    shadow_downscale = 3
     shadow_edge_sharpness = 50.0
-
-    # Drawing Settings
-    draw_melty = False
+    
+    # [bg_offset=0, tint=(0.6604651, 0.1, 0.24270762503147125)]
     draw_legacy = False
     
-    class Legacy:
-        draw_legacy = True
-        show_shadows = False
+    # [tint=(0.28809088468551636, 0.6510206, 0.8976744413375854), bg_offset=0]
+    class Debug:
+        slow_frame_rate = False
 
 @window
 class LegacyToggles:

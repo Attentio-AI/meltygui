@@ -324,6 +324,127 @@ class ImGuiBackend:
 
 
 # =============================================================================
+# GLFW Callback Backend (event-queued, frame-rate independent)
+# =============================================================================
+
+class GlfwQueueBackend:
+    """Feeds the InputHandler from GLFW callbacks instead of sampling state once
+    per frame.
+
+    GLFW callbacks fire for *every* event during glfw.poll_events/wait_events,
+    even when rendering is slow, so nothing is dropped between frames — fixing
+    missed keystrokes, hard-to-click buttons, and skipped drags under load.
+
+    Callbacks are chained: any previously-registered callback (the imgui
+    GlfwRenderer's) is preserved and still called, so imgui keeps working.
+
+    Keyboard down/up and mouse buttons/scroll are fed to the handler queue
+    (consumed via on_action). Raw key presses/repeats are also recorded on
+    Melty.frame_key_events so the text editor can drain them in order rather
+    than polling imgui.is_key_pressed (which only sees the current frame).
+
+    Cursor position and modifiers stay sampled in pump() — they're level state,
+    so per-frame sampling loses nothing and avoids queue churn from raw motion.
+    """
+
+    def __init__(self, handler, window):
+        if not HAS_IMGUI:
+            raise ImportError("pip install imgui[glfw]")
+        self.handler = handler
+        self.window = window
+        self._prev_mouse_pos = (0.0, 0.0)
+        # Register our callbacks, chaining whatever was registered pre
+        # (imgui's GlfwRenderer). glfw.set_*_callback returns the prior callback.
+        self._prev_key = glfw.set_key_callback(window, self._on_key)
+        self._prev_char = glfw.set_char_callback(window, self._on_char)
+        self._prev_button = glfw.set_mouse_button_callback(window, self._on_button)
+        self._prev_scroll = glfw.set_scroll_callback(window, self._on_scroll)
+
+    @staticmethod
+    def _chain(prev, *args):
+        if prev is not None:
+            try:
+                prev(*args)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _set_mods(handler, mods):
+        handler.set_modifiers(
+            shift=bool(mods & glfw.MOD_SHIFT), ctrl=bool(mods & glfw.MOD_CONTROL),
+            alt=bool(mods & glfw.MOD_ALT), meta=bool(mods & glfw.MOD_SUPER))
+
+    def _on_key(self, window, key, scancode, action, mods):
+        try:
+            from src.lsd.gl_gui.melty import Melty
+            from src.lsd.gl_gui.utils.glfw_utils import request_render
+            self._set_mods(self.handler, mods)
+            x, y = glfw.get_cursor_pos(window)
+            name = ImGuiBackend.KEY_NAMES.get(key, f"key_{key}")
+            if action == glfw.PRESS or action == glfw.REPEAT:
+                # Ordered record for the text editor (preserves typed order, and
+                # repeats so a held key still inserts/navigates).
+                Melty.frame_key_events.append((key, mods))
+                if action == glfw.PRESS:
+                    self.handler.feed_down(name, x, y)
+                request_render()
+            elif action == glfw.RELEASE:
+                self.handler.feed_up(name, x, y)
+                request_render()
+        except Exception:
+            pass
+        self._chain(self._prev_key, window, key, scancode, action, mods)
+
+    def _on_char(self, window, codepoint):
+        # imgui consumes this for its own text editor; the app's text input
+        # uses frame_key_events. Just chain so imgui still gets the character.
+        self._chain(self._prev_char, window, codepoint)
+
+    def _on_button(self, window, button, action, mods):
+        try:
+            from src.lsd.gl_gui.utils.glfw_utils import request_render
+            self._set_mods(self.handler, mods)
+            x, y = glfw.get_cursor_pos(window)
+            name = ImGuiBackend.MOUSE_BUTTONS.get(button, f"mouse_{button}")
+            if action == glfw.PRESS:
+                self.handler.feed_down(name, x, y)
+            elif action == glfw.RELEASE:
+                self.handler.feed_up(name, x, y)
+            request_render()
+        except Exception:
+            pass
+        self._chain(self._prev_button, window, button, action, mods)
+
+    def _on_scroll(self, window, x_offset, y_offset):
+        try:
+            from src.lsd.gl_gui.utils.glfw_utils import request_render
+            if y_offset:
+                self.handler.feed_change("scroll_y", y_offset)
+            if x_offset:
+                self.handler.feed_change("scroll_x", x_offset)
+            request_render()
+        except Exception:
+            pass
+        self._chain(self._prev_scroll, window, x_offset, y_offset)
+
+    def pump(self):
+        """Per-frame: feed the latest cursor position (level state) and refresh
+        modifiers. Button/key/scroll edges already arrived via callbacks."""
+        io = imgui.get_io()
+        mx, my = io.mouse_pos
+        px, py = self._prev_mouse_pos
+        if (mx, my) != (px, py) and mx >= 0 and my >= 0:
+            self.handler.feed_move(mx, my, mx - px, my - py)
+        self._prev_mouse_pos = (mx, my)
+        self.handler.set_modifiers(
+            shift=io.key_shift, ctrl=io.key_ctrl, alt=io.key_alt, meta=io.key_super)
+
+    @property
+    def allow_hovering(self) -> bool:
+        return not imgui.is_window_hovered()
+
+
+# =============================================================================
 # Pynput Backend
 # =============================================================================
 

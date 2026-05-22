@@ -220,9 +220,27 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta,
 
         child_draw_state = draw_state._children.get(idx, None)
 
-        # Resolve the key (item, skips, key_str) BEFORE the off-screen skip, so
-        # every visible key is captured for the search matcher even when its row
-        # isn't rendered. These steps are cheap (no imgui.text).
+        # ----- off-screen detection -----
+        # Is this row scrolled outside the viewport? When not searching, skip it
+        # entirely up front (the perf early-out). On a search-counting frame keep
+        # `clipped` to decide below: reuse a cached match count (no render) or
+        # render to (re)count.
+        clipped = False
+        if (not horizontal and child_draw_state is not None
+                and child_draw_state.relative_pos is not None
+                and not Melty.frame_count <= 2
+                and (not draw_state.invalid_content_height or imgui.is_mouse_down(0)
+                     or imgui.is_mouse_down(1) or imgui.is_mouse_down(2))):
+            _spy = true_top + child_draw_state.relative_pos[1] - child_draw_state.header_height
+            _bottom = _spy + child_draw_state.height + child_draw_state.header_height
+            clipped = (_bottom + child_draw_state.height < rect[1] or _spy > rect[3])
+
+        if clipped and not _search_full_render:
+            imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0],
+                                         (true_top + child_draw_state.relative_pos[1] +
+                                          child_draw_state.height)))
+            continue
+
         Melty.collection_index_stack[this_collection] = idx
         item = None
         if get_attr is None:
@@ -265,26 +283,8 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta,
 
         if not show_excluded and ((key_str.startswith("_") or key_str.endswith("_")) or
                                   key_str.endswith("meta")):
+
             continue
-
-        # ----- off-screen skip (rendering only) -----
-        # On a full-search frame render every row so all matches claim and stay
-        # navigable; otherwise keep skipping clipped rows for performance.
-        if not horizontal and not _search_full_render:
-            if child_draw_state is not None and (
-                    not draw_state.invalid_content_height or imgui.is_mouse_down(0) or imgui.is_mouse_down(
-                1) or imgui.is_mouse_down(2)):
-                if not Melty.frame_count <= 2:
-                    if child_draw_state.relative_pos is not None:
-                        screen_pos = (true_left + child_draw_state.relative_pos[0],
-                                      true_top + child_draw_state.relative_pos[1] - child_draw_state.header_height)
-
-                        bottom = screen_pos[1] + child_draw_state.height + child_draw_state.header_height
-                        if (bottom + child_draw_state.height < rect[1] or screen_pos[1] > rect[3]):
-                            imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0],
-                                                         (true_top + child_draw_state.relative_pos[1] +
-                                                          child_draw_state.height)))
-                            continue
 
         # ----- SEARCH (key match) -----
         # Claim a slot per matching key, interleaved with its child (done in
@@ -304,6 +304,24 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta,
                 key_is_current = (idx == draw_state._search_current_key)
             if key_is_current:
                 search_current_y = key_row_y
+
+        # ----- off-screen: reuse cached match count (no render) -----
+        # On a counting frame an off-screen child whose count for this exact term
+        # is cached re-claims it without rendering - unless the global current is
+        # inside it, in which case we render it (below) to scroll to it. A cache
+        # miss (new term / never counted) also falls through to a forced render
+        # that recomputes and re-caches the count.
+        if _search_full_render and clipped and child_draw_state is not None and not key_is_current:
+            _cc = child_draw_state._search_count_cache
+            if _cc is not None and _cc[0] == search_q:
+                _cbase = search_session.offset
+                if not (search_session.scroll_to
+                        and _cbase <= search_session.current < _cbase + _cc[1]):
+                    search_session.claim(_cc[1])
+                    imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0],
+                                                 (true_top + child_draw_state.relative_pos[1] +
+                                                  child_draw_state.height)))
+                    continue
 
         item_meta = Meta.get_child_meta(parent_type, field_name=key, value=item)
         item_meta.collection_type = meta.field_type
@@ -349,6 +367,19 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta,
             }
 
             item_kwargs.update(child_kwargs)
+
+            # Per-field overrides: a `# [tint=...]` comment above a primitive
+            # field is stored on the parent under __overrides__['__<field>__'].
+            # Feed those into the child's kwargs (the child has no dict of its
+            # own to store them). Skip dunder keys defensively.
+            if isinstance(input_value, dict):
+                _parent_ov = input_value.get("__overrides__")
+                if isinstance(_parent_ov, dict):
+                    _field_ov = _parent_ov.get(f"__{key}__")
+                    if isinstance(_field_ov, dict):
+                        for _ok, _ov in _field_ov.items():
+                            if not (isinstance(_ok, str) and _ok.startswith("__")):
+                                item_kwargs[_ok] = _ov
             # if mode is None:
             #     mode = Melty.mode_stack[-1] if len(Melty.mode_stack) > 0 else None
             # if mode is not None:
@@ -366,10 +397,15 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta,
             #     else:
             #         item_kwargs['mode'] = mode
 
-            # On a full-search frame, force off-screen children to actually run
-            # (not blit from cache) so they claim their matches into the session.
-            if _search_full_render and child_draw_state is not None:
-                Melty.cache.invalidate(child_draw_state._tile_id, force=True)
+            # On a counting frame, force the rows we DO render (visible, not the
+            # off-screen current path and cache-misses that fell through above) to
+            # actually run so they claim, and snapshot the session offset so we
+            # can cache the number this child's subtree claims.
+            _claim_before = None
+            if _search_full_render and search_session is not None:
+                if child_draw_state is not None:
+                    Melty.cache.invalidate(child_draw_state._tile_id, force=True)
+                _claim_before = search_session.offset
 
             item_return = draw_any(item, **item_kwargs)
 
@@ -384,6 +420,8 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta,
                 draw_state._children[idx] = returned_ds
                 returned_ds._collection_draw_state = draw_state
                 returned_ds.relative_pos = relative_pos
+                if _claim_before is not None:
+                    returned_ds._search_count_cache = (search_q, search_session.offset - _claim_before)
                 if key_is_current:
                     search_current_h = returned_ds.header_height
                 if horizontal:
@@ -1645,7 +1683,7 @@ def draw_bg(left=0, top=0, width=0, height=57, depth=0, rounding=5.945, bg_offse
     intensity_factor  = 0.042
     intensity_offset  = -0.336
     
-    some_var = [29,2,3]
+    some_var = [32,18,19]
     # Outline color tuning
     outline_base      = 1.773
     outline_depth_mul = 0.891
@@ -1897,7 +1935,7 @@ def draw_str(input_value: str, draw_state, editable=True, immediate_return=False
             changed, value = imgui.input_text("##str", str(input_value),
                                               flags=imgui.INPUT_TEXT_ENTER_RETURNS_TRUE)
     else:
-        imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
+        imgui.set_cursor_screen_pos((snap_int(draw_state.abs_left), snap_int(draw_state.abs_top)))
         # disable scrolling
         changed, value = draw_text(str(input_value), editable=True, with_header=draw_header, show_name=False, is_tree=False)
         imgui.dummy(draw_state.content_width, text_height - height + 10)
@@ -2122,14 +2160,14 @@ def draw_float_ctx(input_value):
 
 
 
-@render_func(is_default_for=float, use_cache=False, shadow=False, 
+@render_func(is_default_for=float, use_cache=False, shadow=False,
              is_tree=False, show_bg=False, wrap=False, 
              with_header=draw_header, with_header_end=draw_header_end)
 def draw_float(input_value: float, 
                draw_state,
                min_value=-100.0, 
                max_value=99.264, 
-               speed=0.242):
+               speed=0.0042):
     imgui.set_next_item_width(min(600, max(30, draw_state.content_width)))
     changed, value = imgui.drag_float("", input_value,
                                       format='%.3f',
@@ -2465,8 +2503,8 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, u
                          down_key_pressed=None, tab_state: TabState = None, **kwargs):
 
     context_menu_offset = input_value.context_menu_offset
-    info_items = ["name", "column", "closable", "current_mode", "mode", "show_add_delete", "_source", "width", "height", "content_height", "scroll_offset",
-                  "final_max_column", "_column_cursor", "_content_rect", "_max_column_index", "_outside_column_height", "disable_scroll", ]
+    info_items = ["name", "column", "closable", "current_mode", "mode", "show_add_delete", "_source", "window_pos", "left", "top", "width", "height", "content_height", "scroll_offset",
+                  "final_max_column", "_column_cursor", "_content_rect", "_max_column_index", "_outside_column_height", "disable_scroll" ]
 
     # imgui.text(type(input_value._input_value).__name__)
     imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0] - 3, imgui.get_cursor_screen_pos()[1] - 20))

@@ -428,8 +428,6 @@ class DrawState(DictConversion):
         self._last_expanded = None
         self.expanded_rect = (0, 0, 0, 0)
         self._collapsed_rect = (0, 0, 0, 0)
-        self._hover_eligible_cache = {}  # path, frame
-        self._tile_params = {}
         self._load_pending = False
         self._save_pending = None
 
@@ -446,6 +444,13 @@ class DrawState(DictConversion):
         self.text_click_count = 0
         self.text_h_scroll = 0.0
         self.text_prev_cursor_pos = 0
+        # Drag granularity latched on mouse-down ('char' | 'word' | 'line') plus
+        # the anchor pos of the anchor word/line, so a double/triple-click drag
+        # extends by whole words/lines and keeps the anchor selected (IntelliJ
+        # style) instead of collapsing to a single caret.
+        self.text_drag_mode = 'char'
+        self.text_drag_anchor_lo = 0
+        self.text_drag_anchor_hi = 0
 
         # Find-in-text search state. text_search_count/current are populated by
         # draw_text each frame and consumed by the header's find UI (count +
@@ -471,6 +476,10 @@ class DrawState(DictConversion):
         # render force-draws that one child even if clipped, so it scrolls in).
         self._search_current_key = None
         self._search_current_child = None
+        # (term, claimed_count) cached when this view rendered+claimed, so an
+        # off-screen row can re-claim its match count without rendering while the
+        # term is unchanged (e.g. stepping through results).
+        self._search_count_cache = None
         # Closure set each frame: (term, session) -> claims this view's matches
         # into the session without imgui. Used by Melty.search_walk.
         self._search_matcher = None
@@ -528,27 +537,21 @@ class DrawState(DictConversion):
             pass
 
     def pos_changed(self):
-        """Update BVH index after position/size changes. Call from render_func."""
+        """Update BVH index after position/size changes. Call from render_func.
+
+        register/update/unregister own `_bvh_bbox` (it must mirror what's in the
+        rtree for deletes to match), so don't touch it here."""
         new_bbox = self.bbox
         if new_bbox == self._bvh_bbox:
             return
-        old_bbox = self._bvh_bbox
-        self._bvh_bbox = new_bbox
 
         if self._bvh_id is None:
             if new_bbox is not None and self.clipped:
                 Melty.bvh_register(self)
-                self._bvh_bbox = new_bbox
         elif not self.clipped:
             Melty.bvh_unregister(self)
-            self._bvh_bbox = None
         else:
-            Melty.bvh_update(self, old_bbox)
-
-    def tile_params(self):
-        self._tile_params['clip_rect'] = copy(self.clip_rect)
-
-        return self._tile_params
+            Melty.bvh_update(self)
 
     # @property
     # def inner_cursor(self):
@@ -601,7 +604,7 @@ class DrawState(DictConversion):
 
     @property
     def anchor_offset(self):
-        anchor_margin = 3
+        anchor_margin = 2
 
         if self.anchor_pos in LEFT_ANCHORS:
             offset_x = 0
@@ -676,7 +679,7 @@ class DrawState(DictConversion):
             this_left = window_pos_x + base[0] + anchor[0]
         else:
             this_left = window_pos_x + parent_left + self.left_offset + anchor[0]
-        return this_left
+        return int(this_left)
 
     def _abs_top(self, depth=0):
         parent_top = 0
@@ -698,7 +701,7 @@ class DrawState(DictConversion):
             this_top = window_pos_y + base[1] + anchor[1]
         else:
             this_top = window_pos_y + parent_top + self.top_offset + anchor[1]
-        return this_top
+        return int(this_top)
 
     @property
     def abs_clip_rect(self):
@@ -886,44 +889,38 @@ class DrawState(DictConversion):
         if self.just_shadow:
             return False
 
-        if rect is None:
-            left = self.left if self.left is not None else 0
-            top = self.top if self.top is not None else 0
-            width = self.width if self.width is not None else 0
-            height = self.height if self.height is not None else 0
-            rect = (left, top - 3, left + width, top + height + 3)
-
         if self.closed or not Melty.imgui_main_window_hovered:
             return False
 
         if not self.clipped:
             return False
 
-        clip_rect = Melty.get_clip_rect()
-        if clip_rect is not None:
-            left = rect[0]
-            top = rect[1]
-            right = rect[2]
-            bottom = rect[3]
-            rect = (max(left, clip_rect[0]), max(top, clip_rect[1]),
-                    min(right, clip_rect[2]), min(bottom, clip_rect[3]))
-
-
-        cached = self._hover_eligible_cache.get(rect, None)
-        if cached is None or cached[1] < Melty.frame_count:
-            this_frame = Melty.frame_count
-            if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[2], rect[3]):
-                if self.hover_reported is None or self.hover_reported or ignore_reports:
-                    self._hover_eligible_cache[rect] = (True, this_frame)
-                    return True
-                else:
-                    self._hover_eligible_cache[rect] = (False, this_frame)
+        if rect is None:
+            # Lean on the BVH: begin_frame already point-tested each view against
+            # the cursor (Melty.bvh_hover_ids), O(1) membership replaces
+            # imgui.is_mouse_hovering_rect on this view's own bbox.
+            if id(self) not in Melty.bvh_hover_ids:
+                return False
+            # The BVH stores raw bboxes, not clipped ones, so still check the
+            # cursor inside the active clip (scrolled-away views aren't hovered).
+            clip_rect = self.abs_clip_rect
+            if clip_rect is not None:
+                mx, my = imgui.get_mouse_pos()
+                if not (clip_rect[0] <= mx <= clip_rect[2] and clip_rect[1] <= my <= clip_rect[3]):
                     return False
+        else:
+            # Custom sub-region: clip it and point-test the cursor directly.
+            clip_rect = self.abs_clip_rect
+            if clip_rect is not None:
+                rect = (max(rect[0], clip_rect[0]), max(rect[1], clip_rect[1]),
+                        min(rect[2], clip_rect[2]), min(rect[3], clip_rect[3]))
+            mx, my = imgui.get_mouse_pos()
+            if not (rect[0] <= mx <= rect[2] and rect[1] <= my <= rect[3]):
+                return False
 
-            self._hover_eligible_cache[rect] = (False, this_frame)
+        if not (self.hover_reported is None or self.hover_reported or ignore_reports):
             return False
-
-        return cached[0]
+        return True
 
     @property
     def priority(self):
@@ -972,18 +969,18 @@ class DrawState(DictConversion):
         if (self._imgui_is_active or self._imgui_is_edited or self._imgui_is_item_hovered or self._imgui_popover_open):
             return True
 
+        if self.top is None or self.left is None or self.width is None or self.height is None:
+            return False
+
         mouse_x, mouse_y = imgui.get_mouse_pos()
         if not Melty.inside_clip(rect=(mouse_x, mouse_y, 1, 1)):
             return False
-        else:
-            if self.top is None or self.left is None or self.width is None or self.height is None:
-                return False
-            rect = (self.abs_left, self.abs_top - 3, self.width, self.height + 10)
 
-        if imgui.is_mouse_hovering_rect(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]):
-            if imgui.is_window_hovered() or Melty.imgui_popup_open:
-                return True
-        return False
+        if not (Melty.imgui_main_window_hovered or Melty.imgui_popup_open):
+            return False
+
+        # Cursor-over-this-view comes from the BVH hit test, not is_mouse_hovering_rect.
+        return id(self) in Melty.bvh_hover_ids
 
 
 class KeyMod(Enum):

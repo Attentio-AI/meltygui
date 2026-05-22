@@ -22,7 +22,7 @@ from src.lsd.gl_gui.view.core_views.monitor import Monitor
 from src.shader_library.shader_manager.texture_manager import TextureManager
 from src.shader_library.shader_manager.filter import Filter
 from src.lsd.gl_gui.events.input_handler import InputHandler, InputEvent
-from src.lsd.gl_gui.events.event_backends import ImGuiBackend
+from src.lsd.gl_gui.events.event_backends import ImGuiBackend, GlfwQueueBackend
 from src.lsd.gl_gui.model.core_model.core_enums import generate_id
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
 
@@ -399,6 +399,11 @@ class Melty:
     event_handler = InputHandler()
     backend = ImGuiBackend(event_handler)
     events = {}
+    # Raw (glfw_key, mods) for PRESS/REPEAT recorded by the GLFW callback backend
+    # since the last end_frame, in order. The focused text editor drains these
+    # instead of polling imgui.is_key_pressed, so keystrokes aren't lost on slow
+    # frames. Cleared in end_frame after this frame's views have read them.
+    frame_key_events = []
 
     texture_manager = TextureManager()
     returned_values = {}
@@ -423,6 +428,10 @@ class Melty:
     _bvh = rtree_index.Index()
     _bvh_next_id = 0
     _bvh_id_to_ds = {}
+    # id(ds) for every draw_state whose bbox is under the cursor this frame - a
+    # begin_frame snapshot of bvh_query. hover_eligible / is_bounding_hovered do
+    # O(1) membership against this instead of imgui.is_mouse_hovering_rect.
+    bvh_hover_ids = set()
 
     # Foreground/overlay channel routing. The overlay draw list is channel-split
     # into max_depth channels (like the window draw list); a view adds its
@@ -435,15 +444,21 @@ class Melty:
     _debug_overlay_test = True  # controlled sub-top overlay to verify masking
 
 
+    # rtree.delete only removes an entry when given the EXACT bbox it was
+    # inserted with. So _bvh_bbox always mirrors what's currently in the rtree
+    # for that draw_state - register/update/unregister keep them in lockstep,
+    # and every delete uses _bvh_bbox (not the live, possibly-changed bbox).
     @classmethod
     def bvh_register(cls, draw_state):
+        bbox = draw_state.bbox
+        if bbox is None:
+            return None
         rid = cls._bvh_next_id
         cls._bvh_next_id += 1
         draw_state._bvh_id = rid
         cls._bvh_id_to_ds[rid] = draw_state
-        bbox = draw_state.bbox
-        if bbox is not None:
-            cls._bvh.insert(rid, bbox)
+        cls._bvh.insert(rid, bbox)
+        draw_state._bvh_bbox = bbox
         return rid
 
     @classmethod
@@ -451,7 +466,7 @@ class Melty:
         rid = draw_state._bvh_id
         if rid is None:
             return
-        bbox = draw_state.bbox
+        bbox = draw_state._bvh_bbox
         if bbox is not None:
             try:
                 cls._bvh.delete(rid, bbox)
@@ -459,12 +474,14 @@ class Melty:
                 pass
         cls._bvh_id_to_ds.pop(rid, None)
         draw_state._bvh_id = None
+        draw_state._bvh_bbox = None
 
     @classmethod
-    def bvh_update(cls, draw_state, old_bbox):
+    def bvh_update(cls, draw_state):
         rid = draw_state._bvh_id
         if rid is None:
             return
+        old_bbox = draw_state._bvh_bbox
         if old_bbox is not None:
             try:
                 cls._bvh.delete(rid, old_bbox)
@@ -473,6 +490,27 @@ class Melty:
         new_bbox = draw_state.bbox
         if new_bbox is not None:
             cls._bvh.insert(rid, new_bbox)
+            draw_state._bvh_bbox = new_bbox
+        else:
+            cls._bvh_id_to_ds.pop(rid, None)
+            draw_state._bvh_id = None
+            draw_state._bvh_bbox = None
+
+    @classmethod
+    def prune_bvh(cls, stale_after=2):
+        """Drop draw_states that haven't rendered in `stale_after` frames — closed
+        windows, removed collection items, or objects replaced when their `unique`
+        changed. pos_changed only runs while a view renders, so without this they
+        linger in the index forever, producing duplicate hits and a wrong topmost."""
+        fc = cls.frame_count
+        stale = [rid for rid, ds in cls._bvh_id_to_ds.items()
+                 if ds is None or ds.last_seen is None or (fc - ds.last_seen) > stale_after]
+        for rid in stale:
+            ds = cls._bvh_id_to_ds.get(rid)
+            if ds is not None:
+                cls.bvh_unregister(ds)
+            else:
+                cls._bvh_id_to_ds.pop(rid, None)
 
     @classmethod
     def _resolve_channel_command_ranges(cls, overlay, idx_boundaries):
@@ -504,12 +542,18 @@ class Melty:
 
     @classmethod
     def bvh_query(cls, x, y):
-        """Hit test — returns all DrawStates under the point."""
-        return [
+        """Hit test — returns DrawStates under the point, front-most first.
+
+        rtree yields hits in tree order, not stacking order, so callers taking
+        [0] as 'the topmost view under the cursor' would get an arbitrary one.
+        Sort by shadow_depth — the same front-ness key the occlusion test uses."""
+        hits = [
             cls._bvh_id_to_ds[rid]
             for rid in cls._bvh.intersection((x, y, x, y))
             if rid in cls._bvh_id_to_ds and (not cls._bvh_id_to_ds[rid].closed or not cls._bvh_id_to_ds[rid].closable)
         ]
+        hits.sort(key=lambda ds: ds.shadow_depth or 0, reverse=True)
+        return hits
 
     @classmethod
     def begin_frame(cls):
@@ -599,16 +643,24 @@ class Melty:
                         request_render()
                         break
 
+        # Evict draw_states that stopped rendering (closed/removed/created) so
+        # the index doesn't keep stale, duplicate hits with wrong layering.
+        cls.prune_bvh()
+
         mouse_pos = imgui.get_mouse_pos()
         ds_under_mouse = Melty.bvh_query(mouse_pos[0], mouse_pos[1])
+        cls.bvh_hover_ids = {id(ds) for ds in ds_under_mouse}
         # cls.hovered_ds = ds_under_mouse if ds_under_mouse else []
         # for ds in ds_under_mouse:
         #     ds._hover_eligible = Melty.frame_count
         #
-        # for ds in ds_under_mouse[-2:-1]:
-        #     if ds is not None and not cls.on_drag:
-        #         # if (not cls.on_drag and not imgui.is_mouse_down(2)):
-        #         Melty.cache.invalidate(ds._tile_id, do_store=False, force=True)
+
+        ds = ds_under_mouse[0] if ds_under_mouse else None
+        if ds is not None and not cls.on_drag:
+            ds._bounding_hovered = True
+            # if (not cls.on_drag and not imgui.is_mouse_down(2)):
+            Melty.cache.invalidate(ds._tile_id, do_store=False, force=True)
+
 
         cls.backend.pump()
 
@@ -643,15 +695,15 @@ class Melty:
 
         cls.event_handler.begin_frame()
 
-        # if ("right_mouse_drag" in cls.events_by_type):
-        #     right_mouse_drag_events = cls.events_by_type["right_mouse_drag"]
-        #     for event in right_mouse_drag_events:
-        #         Melty.cache.invalidate(event)
+        if ("right_mouse_drag" in cls.events_by_type):
+            right_mouse_drag_events = cls.events_by_type["right_mouse_drag"]
+            for event in right_mouse_drag_events:
+                Melty.cache.invalidate(event)
         #
-        # if ("middle_mouse_drag" in cls.events_by_type):
-        #     right_mouse_drag_events = cls.events_by_type["middle_mouse_drag"]
-        #     for event in right_mouse_drag_events:
-        #         Melty.cache.invalidate(event)
+        if ("middle_mouse_drag" in cls.events_by_type):
+            right_mouse_drag_events = cls.events_by_type["middle_mouse_drag"]
+            for event in right_mouse_drag_events:
+                Melty.cache.invalidate(event)
 
         event_keys = list(cls.events.keys())
         # To string
@@ -692,7 +744,7 @@ class Melty:
 
         for view_id, evts in cls.events.items():
             first_event = list(evts.values())[0]
-            if first_event.tile_id is not None and not imgui.is_mouse_down(0) and not imgui.is_mouse_down(1) and not imgui.is_mouse_down(2):
+            if first_event.tile_id is not None and not imgui.is_mouse_down(0) and not imgui.is_mouse_down(1) and not imgui.is_mouse_down(2) and not cls.on_scroll:
                 Melty.cache.invalidate_up(first_event.tile_id, max_depth=10, force=True)
 
         Melty.all_uniques = set()
@@ -924,7 +976,7 @@ class Melty:
         input_value = draw_state._raw_input_value
         kwargs = draw_state._kwargs
         kwargs['layer_unique'] = draw_state.unique
-        imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
+        imgui.set_cursor_screen_pos((int(draw_state.abs_left), int(draw_state.abs_top)))
 
         if Toggles.debug_z_depth:
             draw_list = imgui.get_overlay_draw_list()
@@ -949,13 +1001,22 @@ class Melty:
             if return_val[0]:
                 Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=7, force=True, frame_delta=2)
                 if draw_state.parent_window is not None:
-                    Melty.cache.invalidate_up(draw_state._tile_id,max_depth=7, frame_delta=2)
-                    Melty.cache.invalidate_up(draw_state.parent_window._tile_id,max_depth=7, frame_delta=2)
+                    Melty.cache.invalidate_up(draw_state.parent_window._tile_id,max_depth=4, frame_delta=2)
                 request_render()
 
         Melty.bg_stack = original_bg_stack
 
     # cls.cache.remove_parent()
+
+    @classmethod
+    def init_input_backend(cls, window):
+        """Swap to the GLFW-callback input backend (event-queued, frame-rate
+        independent). Call once after the imgui GlfwRenderer is created so our
+        callbacks chain onto (and preserve) imgui's."""
+        try:
+            cls.backend = GlfwQueueBackend(cls.event_handler, window)
+        except Exception as e:
+            print(f"GlfwQueueBackend unavailable, keeping ImGuiBackend: {e}")
 
     @classmethod
     def end_frame(cls):
@@ -1051,8 +1112,8 @@ class Melty:
                 # Melty.cache.mask_mark_view(draw_state.z_pos, draw_state.left,
                 #                            draw_state.top, draw_state.width, draw_state.height,
                 #                            f"view_mask_{draw_state.id}", 4)
-                Melty.active_layer = idx + (d_idx * 2)
-                draw_state._nested_index = (d_idx * 2)
+                Melty.active_layer = idx + (d_idx)
+                draw_state._nested_index = (d_idx)
                 Melty.z_pos = (Melty.active_layer * Melty.max_depth) + Melty.depth
 
                 draw_state.layer = Melty.active_layer
@@ -1061,7 +1122,7 @@ class Melty:
                 draw_state._kwargs['active_layer'] = Melty.active_layer
 
                 child_highlight = None
-                if draw_state._kwargs.get("traces", False) or True:
+                if draw_state._kwargs.get("swoosh", True):
                     if draw_state._parent is not None:
                         offset_ds = draw_state._parent._offset_ds
                         if offset_ds is None:
@@ -1247,6 +1308,12 @@ class Melty:
                 empty_parents.add(parent_ds_id)
         for empty_parent in empty_parents:
             cls.root_draw_states.pop(empty_parent, None)
+
+        # Drop key events now that every view has rendered - including the
+        # windows drawn above in this method's layer loop (the editors, the
+        # floating search box). Clearing earlier would empty the buffer before
+        # those windows read it, which is why text input saw no keys.
+        cls.frame_key_events = []
 
     @classmethod
     def finalize_overlay_channels(cls):
@@ -1498,9 +1565,6 @@ class Melty:
             Melty.cache.invalidate_by_obj(Melty.registered_windows)
             Melty.cache.invalidate_up(cls.pending_move_to_front[1]._tile_id, max_depth=4, force=True)
             cls.pending_move_to_front = None
-
-        # Loop over all windows and set the draw_state.layer
-
 
     @classmethod
     def draw_blockers_to(cls):
@@ -1762,27 +1826,6 @@ class Melty:
     @classmethod
     def redo_clip(cls, undo_point_id):
         return cls.redo_clip_n(undo_point_id)
-
-    @classmethod
-    def invalidate(cls, parent=None, value=None, attr_name=None):
-        # if len(cls.dirty_objects) > 1000:
-        #     cls.all_dirty = True
-        #     cls.dirty_objects.clear()
-        #     return
-        cls.last_invalid_attr = f"{parent.__class__.__name__} {str(attr_name)}"
-        cls.last_invalid.append(cls.last_invalid_attr)
-        Melty.cache.invalidate_by_obj(cls.last_invalid)
-        Melty.cache.invalidate_by_obj(value)
-
-        if attr_name is not None:
-            Melty.cache.invalidate_by_obj(parent, attr_name)
-
-        else:
-            if value is not None and (hasattr(value, "__dict__") or isinstance(value, (dict, list, set))):
-                Melty.cache.invalidate_by_obj(value)
-
-            elif parent is not None:
-                Melty.cache.invalidate_by_obj(parent)
 
     @classmethod
     def current_path(cls) -> tuple[tuple[str, int | None], ...]:

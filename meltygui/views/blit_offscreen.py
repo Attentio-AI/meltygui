@@ -859,7 +859,7 @@ class TileCacheMasked:
             self._prev_occluders = {}
             return
 
-        if imgui.is_mouse_dragging(0) or imgui.is_mouse_dragging(2) or imgui.is_mouse_dragging(1):
+        if imgui.is_mouse_down(0) or imgui.is_mouse_down(2) or imgui.is_mouse_down(1):
             return
 
         # Collect only closable root window rects (both as targets and occluders)
@@ -1492,7 +1492,7 @@ class TileCacheMasked:
             gl.glBindVertexArray(self._dummy_vao)
 
             if (((t is None) or (t.size != (ctx.size[0], ctx.size[1]))) and not imgui.is_mouse_down(0)
-                    and not imgui.is_mouse_dragging(1) and not imgui.is_mouse_dragging(2)):
+                    and not imgui.is_mouse_down(1) and not imgui.is_mouse_down(2)):
                 t = _ensure_tile(t, ctx.size[0], ctx.size[1], frame_id=self._frame_id, draw_state=ctx.draw_state)
                 self.invalidate(ctx.key)
                 self._tiles[ctx.key] = t
