@@ -285,7 +285,7 @@ class Melty:
     # list, full with 32 Nones
     max_depth = 32
     nested_layer_boost = 1
-    top_layer_boost = 4
+    top_layer_boost = 5
     max_layer = 64
     drag_layer = 31
     layers = []
@@ -1051,11 +1051,11 @@ class Melty:
                 # Melty.cache.mask_mark_view(draw_state.z_pos, draw_state.left,
                 #                            draw_state.top, draw_state.width, draw_state.height,
                 #                            f"view_mask_{draw_state.id}", 4)
-                Melty.active_layer = idx + (d_idx)
-                draw_state._nested_index = (d_idx)
+                Melty.active_layer = idx + (d_idx * 2)
+                draw_state._nested_index = (d_idx * 2)
                 Melty.z_pos = (Melty.active_layer * Melty.max_depth) + Melty.depth
 
-                # draw_state.layer = Melty.active_layer
+                draw_state.layer = Melty.active_layer
                 draw_state.z_pos = Melty.z_pos
                 draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer)
                 draw_state._kwargs['active_layer'] = Melty.active_layer
@@ -1127,7 +1127,7 @@ class Melty:
                     # first-level nested view) so the line/outline aren't masked
                     # by the nested window. cls.draw may also have moved the channel.
                     rounding = draw_state.corner_radius
-                    overlay_dl.channels_set_current(min(draw_state.window_index - 1, Melty.max_layer -1))
+                    overlay_dl.channels_set_current(min(draw_state.window_index, Melty.max_layer -1))
 
                     overlay_dl.add_rect(draw_state.abs_left, draw_state.abs_top,
                                         draw_state.abs_left + draw_state.width,
@@ -1475,6 +1475,8 @@ class Melty:
             window_z_pos = len(Melty.registered_windows) + Melty.top_layer_boost
             cls.pending_move_to_front[1].layer = window_z_pos
             draw_state = cls.pending_move_to_front[1]
+            draw_state.active_layer = window_z_pos
+
             # if cls.pending_move_to_front[1]._is_nested:
             #     draw_state.layer += Melty.nested_layer_boost + 3
                 # draw_state.z_pos = (draw_state.layer * Melty.max_depth) + draw_state.depth

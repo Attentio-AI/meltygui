@@ -141,6 +141,27 @@ class TileMode(Enum):
     NONE = 'none'
     NO_MASK = 'no_mask'
 
+#
+# self.text_cursor_pos = 0
+# self.text_selection_start = 0
+# self.text_selection_end = 0
+# self.text_is_focused = False
+# self.text_cursor_blink_time = 0.0
+# self.text_double_click_time = 0.0
+# self.text_last_click_pos = -1
+# self.text_click_count = 0
+# self.text_h_scroll = 0.0
+# self.text_prev_cursor_pos = 0
+#
+# # Find-in-text search state. text_search_count/current are populated by
+# # draw_text each frame and consumed by the header's find UI (count +
+# # nav arrows). The underscore fields are private bookkeeping.
+# self.text_search_current = 0
+# self.text_search_count = 0
+# self._text_search_last_term = None
+# self._text_search_scroll_to = False
+
+
 @no_save("mouse_btn_state", "mouse_up", "mouse_down", "unique", "search_active",
          "shadow", "size_change", "drag_released", "clicked", "dragged",
          "dragged", "expanded_height", "clipped", "fully_clipped",  "header_height",
@@ -153,8 +174,8 @@ class TileMode(Enum):
          "imgui_is_item_activated", "frame_count", "text_search_current", "text_search_count")
 @exclude("current_tint", "overhead_time", "premature_break", "drag_mode",
          "clip_rect", "_input_value", "flow_spacing", "expanded_rect", 'max_column', 'text_selection_start', 'text_selection_end',
-         'width', "height", "size_change", 'left', 'top', 'content_height', "clipped", "fully_clipped", "melty_window",
-         "hovered", "wrapped_top", "params", "scroll_visible", "depth_and_layer", "clipped_by_rect", "multi_line", "text_prev_cursor_pos", "text_cursor_pos", "text_selection_start", "text_selection_end", "text_is_focused", "text_cursor_blink_time",
+         'width', "height", "size_change", 'left', 'top', 'content_height', "clipped", "fully_clipped", "melty_window", "text_double_click_time", "text_cursor_blink_time",
+         "hovered", "wrapped_top", "params", "scroll_visible", "depth_and_layer", "clipped_by_rect", "multi_line", "text_prev_cursor_pos", "text_cursor_pos", "text_h_scroll", "text_selection_start", "text_selection_end", "text_is_focused", "text_cursor_blink_time",
          "premature_break", "wrapped_left", "_did_use_cache", "hover_rects", "window_pos", "content_width",
          "content_region", "value_hash", "drag_window", "content_region", "did_render", "footer_height", "footer_width",
          "bounding_hovered", "dlt_count", "clip_rect",
@@ -553,14 +574,11 @@ class DrawState(DictConversion):
     #         super().__setattr__(name, value)
     @property
     def abs_layer(self):
-        layer_boost = 0
-        if self.root_window._front_layer:
-            layer_boost = 0
 
         if self.parent_window is not None and self.closable:
-            return self.parent_window.abs_layer + 4 + layer_boost
+            return self.parent_window.abs_layer + 4
         elif self.parent_window is not None:
-            return self.parent_window.abs_layer + layer_boost
+            return self.parent_window.abs_layer
         else:
             return self.layer
 

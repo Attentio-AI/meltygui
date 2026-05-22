@@ -89,9 +89,14 @@ def draw_window(input_value:any, view_func=None, draw_state=None, delete_down=Fa
 def draw_module(input_value: types.ModuleType, draw_state, **kwargs):
     imgui.text(f"Module: {input_value.__name__}")
 
-@render_func(is_default_for=(dict, MutableMapping, defaultdict, tuple), use_cache=True, header_same_line=False, show_bg=True, show_instance_vars=False, manual_content_height=True, disable_scroll=True, shadow=True, wrap=False, with_header=draw_header, indent_size=5, searchable=True)
-def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=None, keys=None, get_attr=None, set_attr=None, show_excluded=False,
-                    child_kwargs=None, nested_func=None, show_bg=True, show_search=True, on_collapse=False, search_text="",
+@render_func(is_default_for=(dict, MutableMapping, defaultdict, tuple, GeneralParse), use_cache=True,
+            header_same_line=False, show_bg=True, show_instance_vars=False, 
+            manual_content_height=True, disable_scroll=True, shadow=True, 
+            wrap=False, with_header=draw_header, indent_size=5, searchable=True)
+def draw_collection(input_value, draw_state, depth, style_manager, meta, 
+                    mode=None, keys=None, get_attr=None, set_attr=None, show_excluded=False,
+                    child_kwargs=None, nested_func=None, show_bg=True, show_search=True, 
+                    on_collapse=False, search_text="",
                     on_expand=False, show_add_delete=True, item_spacing_y=1,
                     horizontal=False, show_indices=False, excluded=None, **kwargs):
     """
@@ -1827,7 +1832,8 @@ def render_profiler_time(input_value=None, brief=False, style_manager=None,
 
 
 
-@render_func(header_same_line=True, is_default_for=(NoneType), shadow=False, is_tree=False, with_header=draw_header)
+@render_func(header_same_line=True, is_default_for=(NoneType), 
+             shadow=False, is_tree=False, with_header=draw_header)
 def draw_none(input_value: NoneType):
     imgui.align_text_to_frame_padding()
     imgui.text("None")
@@ -1925,16 +1931,18 @@ def unsort_dict_alphabetically(input_value, ref=None, changed=False):
         # ref is the original dict
         ref.update(input_value)
         return changed, ref
-
-@render_func(is_default_for=GeneralParse, show_add_delete=False, show_name=True, shadow=False, is_tree=False, use_cache=True, show_bg=False, with_header=draw_header, indent_size=0)
-def draw_general_parse(input_value: GeneralParse, show_add_delete=False):
-    changed, value = draw_collection(input_value=input_value, show_header=False, show_bg=False, indent_size=0, shadow=False,
-                                     is_tree=False, show_add_delete=False, excluded=["decorators"])
-
-    # imgui.text(f"Usages: {len(input_value.usages)}")
-    # _, _ = draw_collection(input_value=input_value.usages, show_bg=True, z_offset=2, shadow=True, tint=(0, 0.5, 0.1), name="Usage")
-
-    return changed, value
+#
+# @render_func(is_default_for=GeneralParse, show_add_delete=False, parent_show_add_delete=False, show_name=True, shadow=True,
+#              is_tree=True, use_cache=True, show_bg=True, with_header=draw_header, )
+# def draw_general_parse(input_value: GeneralParse, show_add_delete=False):
+#     changed, value = draw_dict(input_value=input_value, show_header=False, show_bg=False, indent_size=5,
+#                                      z_offset=7, bg_depth=2, shadow=True, use_cache=True,
+#                                      is_tree=False, show_add_delete=False, parent_show_add_delete=False, excluded=["decorators"])
+#
+#     # imgui.text(f"Usages: {len(input_value.usages)}")
+#     # _, _ = draw_collection(input_value=input_value.usages, show_bg=True, z_offset=2, shadow=True, tint=(0, 0.5, 0.1), name="Usage")
+#
+#     return changed, value
 
 
 @render_func(is_default_for=UsageRef, use_cache=True, shadow=True, z_offset=2, show_bg=True, with_header=draw_header,
@@ -2114,8 +2122,14 @@ def draw_float_ctx(input_value):
 
 
 
-@render_func(is_default_for=float, use_cache=False, shadow=False, is_tree=False, show_bg=False, wrap=False, with_header=draw_header, with_header_end=draw_header_end)
-def draw_float(input_value: float, draw_state, min_value=-100.0, max_value=99.264, speed=0.242):
+@render_func(is_default_for=float, use_cache=False, shadow=False, 
+             is_tree=False, show_bg=False, wrap=False, 
+             with_header=draw_header, with_header_end=draw_header_end)
+def draw_float(input_value: float, 
+               draw_state,
+               min_value=-100.0, 
+               max_value=99.264, 
+               speed=0.242):
     imgui.set_next_item_width(min(600, max(30, draw_state.content_width)))
     changed, value = imgui.drag_float("", input_value,
                                       format='%.3f',
@@ -2123,9 +2137,8 @@ def draw_float(input_value: float, draw_state, min_value=-100.0, max_value=99.26
                                       min_value=min_value,
                                       max_value=max_value)
                                       
-
     if changed:
-        return True, value\
+        return True, value
 
     return False, None
 
@@ -2196,9 +2209,10 @@ def draw_vis(input_val):
     imgui.text("An LSD Studio Instance")
 
 
-@render_func(is_default_for="ImGuiStyleManager", show_bg=True, tint=(0.7, 0.7, 0.1), with_header=draw_header)
+@render_func(is_default_for="ImGuiStyleManager", use_cache=True, with_header=None)
 def draw_vis(input_val):
     imgui.text("Style Manager")
+    return False, None
 
 
 @render_func(is_default_for="AppModel", show_bg=True, tint=(0.6, 0.2, 0.8), with_header=draw_header)
@@ -2474,7 +2488,6 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, u
             Melty.cache.invalidate_up(draw_state._tile_id, max_depth=5)
             Melty.cache.invalidate_up(input_value._tile_id, max_depth=5)
 
-
     else:
         imgui.dummy(30, 30)
 
@@ -2599,7 +2612,7 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, u
                         if param_name in skip_params:
                             if param_name in ds_kwargs:
                                 param_value = ds_kwargs[param_name]
-                                text(f"{str(param_value)[:10]}", name=param_name, column=t_idx,
+                                text(f"{param.__class__.__name__}", name=param_name, column=t_idx,
                                      editable=False, tint=(0.8, 0.8, 0.2))
                             continue
 

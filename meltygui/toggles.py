@@ -76,15 +76,8 @@ class Toggles:
     show_excluded = True
 
     # Shadow Settings
-    # Power-of-two factor to render the shadow pass at screen resolution.
-    # 1 = full res, 2 = half, 4 = quarter, etc. The low-res shadow map is
-    # composited (upscaled) over the full-res UI, trading shadow sharpness
-    # for performance in the expensive shadow_cast pass.
-    shadow_downscale = 3
 
-    # Bilateral-upsample edge sharpness in the shadow composite. Higher values
-    # snap the low-res shadow harder to the full-res rect edges (less fringing);
-    # lower values give a softer, more bleed-prone edge. Depths are in [0, 1].
+    shadow_downscale = 2
     shadow_edge_sharpness = 50.0
 
     # Drawing Settings
@@ -92,7 +85,8 @@ class Toggles:
     draw_legacy = False
     
     class Legacy:
-        draw_legacy = False
+        draw_legacy = True
+        show_shadows = False
 
 @window
 class LegacyToggles:

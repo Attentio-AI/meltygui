@@ -21,7 +21,7 @@ from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.core_views.headers import draw_footer, draw_header_end, draw_header
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
 from src.lsd.gl_gui.view.core_views.new_core_view import draw_collection, draw_comment, \
-    draw_general_parse, sort_dict_alphabetically, unsort_dict_alphabetically, draw_with_modes
+ sort_dict_alphabetically, unsort_dict_alphabetically, draw_with_modes
 from src.lsd.gl_gui.view.core_views.text_editor import draw_text
 
 
@@ -143,7 +143,7 @@ class Mode(Enum):
         type: ModeOverrides(
             func=(class_to_address,
                   (address_to_general_parse, {'load': auto_load}),
-                  (draw_collection, {"show_add_delete": True}),
+                  (draw_collection, {"show_add_delete": False}),
                   (general_parse_to_address, {'save': True,
                                               'recompile': True}),
                   address_to_class),
@@ -160,9 +160,9 @@ class Mode(Enum):
             recursive=True,
         ),
         GeneralParse: ModeOverrides(
-            kwargs={'show_add_delete': True, "disable_scroll": False},
+            kwargs={'show_add_delete': False, "disable_scroll": False, "is_tree": True},
             recursive=True,
-            func=draw_general_parse
+            func=draw_collection
         ),
 
     }

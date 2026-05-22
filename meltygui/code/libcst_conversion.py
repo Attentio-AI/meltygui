@@ -1145,28 +1145,38 @@ def cst_classdef_to_dict(value: cst.ClassDef) -> dict:
     if decorators:
         readable["decorators"] = decorators
 
-    # Body-level assignments and annotations
+    # cst_classdef_to_dict is itself the (ClassDef, Dict) converter - reusing
+    # it here gives nested classes the same recursive treatment.
+    _classdef_to_dict = Melty._converters.get((cst.ClassDef, dict))
+
+    # Body-level assignments, nested classes, and comments
     for stmt in value.body.body:
-        if not isinstance(stmt, cst.SimpleStatementLine):
-            continue
+        if isinstance(stmt, cst.SimpleStatementLine):
+            _extract_leading_comments(stmt, readable)
 
-        _extract_leading_comments(stmt, readable)
+            last_key = None
+            for node in stmt.body:
+                # debug = False  (plain assignment)
+                if isinstance(node, cst.Assign) and len(node.targets) == 1:
+                    target = node.targets[0].target
+                    if isinstance(target, cst.Name):
+                        readable[target.value] = _cst_to_python_or_raw(node.value)
+                        last_key = target.value
+                # debug: bool = False  (annotated assignment)
+                elif isinstance(node, cst.AnnAssign) and isinstance(node.target, cst.Name):
+                    if node.value is not None:
+                        readable[node.target.value] = _cst_to_python_or_raw(node.value)
+                        last_key = node.target.value
 
-        last_key = None
-        for node in stmt.body:
-            # x = False  (plain assignment)
-            if isinstance(node, cst.Assign) and len(node.targets) == 1:
-                target = node.targets[0].target
-                if isinstance(target, cst.Name):
-                    readable[target.value] = _cst_to_python_or_raw(node.value)
-                    last_key = target.value
-            # debug: bool = False  (annotated assignment)
-            elif isinstance(node, cst.AnnAssign) and isinstance(node.target, cst.Name):
-                if node.value is not None:
-                    readable[node.target.value] = _cst_to_python_or_raw(node.value)
-                    last_key = node.target.value
+            _extract_trailing_comment(stmt, last_key, readable)
 
-        _extract_trailing_comment(stmt, last_key, readable)
+        # Nested class, recurse into a nested dict
+        elif isinstance(stmt, cst.ClassDef) and _classdef_to_dict is not None:
+            _extract_leading_comments(stmt, readable)
+            try:
+                readable[stmt.name.value] = _classdef_to_dict(stmt)
+            except (TypeError, ValueError):
+                pass
 
     # __init__ self.X = literal
     init_fn = _find_init(value)
@@ -1257,6 +1267,25 @@ class _ClassPatcher(cst.CSTTransformer):
         self.edits = {k: v for k, v in edits.items() if not isinstance(k, Comment)}
         self._in_init = False
         self._depth = 0  # class body = 1, __init__ body = 2, nested = 3+
+        self._classdef_fn = Melty._converters.get((dict, cst.ClassDef))
+
+    def leave_ClassDef(self, original_node, updated_node):
+        # Nested class: name maps to a sub-dict whose __cst__ is a ClassDef.
+        # The root class never matches - its own name isn't among the member
+        # edits - and the __cst__ check keeps a dict-valued field from being
+        # mistaken for a nested class.
+        name = updated_node.name.value
+        edit_dict = self.edits.get(name)
+        if (self._classdef_fn is None
+                or not isinstance(edit_dict, dict)
+                or not isinstance(edit_dict.get("__cst__"), cst.ClassDef)):
+            return updated_node
+
+        edit_dict["__cst__"] = updated_node
+        try:
+            return self._classdef_fn(edit_dict)
+        except (TypeError, ValueError):
+            return updated_node
 
     def visit_IndentedBlock(self, node):
         self._depth += 1

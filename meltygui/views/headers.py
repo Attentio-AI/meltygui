@@ -142,7 +142,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
     # ── Constants ──────────────────────────────────────────────
     # Depth-driven name brightness
-    depth_scale       = 0.06
+    depth_scale       = -1.876
     depth_offset      = -30.0
     name_value_factor = 0.777
     # Depth drives text saturation falloff
@@ -259,7 +259,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         same_line()
 
     # ── Add button ─────────────────────────────────────────────
-    if show_add_delete and isinstance(input_value, (list, dict)) or hasattr(input_value, "__dict__"):
+    if show_add_delete and (isinstance(input_value, (list, dict)) or hasattr(input_value, "__dict__")):
         if show_add_delete:
             if imgui.small_button(f"\uf067##add{unique}"):
                 hinted_type = NoneType
