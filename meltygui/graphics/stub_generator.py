@@ -110,6 +110,7 @@ def generate_filter_stub(output_path: str = None) -> str:
         method_lines.append('        output_texture: Optional[int] = None,')
         method_lines.append('        output_framebuffer: Optional[int] = None,')
         method_lines.append('        input_framebuffer: Optional[int] = None,')
+        method_lines.append('        output_size: Optional[Tuple[int, int]] = None,')
 
         # Close signature
         method_lines.append('    ) -> int:')
@@ -132,6 +133,8 @@ def generate_filter_stub(output_path: str = None) -> str:
             '            output_texture: Optional specific output texture to render to',
             '            output_framebuffer: Optional framebuffer to render to (e.g., 0 for main screen)',
             '            input_framebuffer: Optional framebuffer to read from (e.g., 0 for main screen)',
+            '            output_size: Optional (width, height) render resolution; runs the shader',
+            '                at a lower resolution while sampling the full-res input',
             '        ',
             '        Returns:',
             '            Output texture ID (0 if rendering to framebuffer)',

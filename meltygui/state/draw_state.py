@@ -385,6 +385,7 @@ class DrawState(DictConversion):
         self.hover_reported = True
         self._start_z_pos = 3
         self._column_width = 0
+        self._front_layer = False
 
         # Used to cache abs_clip_rect
         self.clipped_by_rect = None
@@ -444,8 +445,14 @@ class DrawState(DictConversion):
         # latched on full search sub-renders so incidental repaints don't reset
         # the highlight when sibling views are served from cache.
         self._search_active_local = None
-        # draw_collection latches the index of its global-current matching key.
+        # draw_collection latches the index of its global-current matching key,
+        # and of the child whose subtree holds the global-current match (each
+        # render force-draws that one child even if clipped, so it scrolls in).
         self._search_current_key = None
+        self._search_current_child = None
+        # Closure set each frame: (term, session) -> claims this view's matches
+        # into the session without imgui. Used by Melty.search_walk.
+        self._search_matcher = None
 
         self._print_last_invalid = False
         self._last_invalidate = None
@@ -546,11 +553,14 @@ class DrawState(DictConversion):
     #         super().__setattr__(name, value)
     @property
     def abs_layer(self):
+        layer_boost = 0
+        if self.root_window._front_layer:
+            layer_boost = 0
 
         if self.parent_window is not None and self.closable:
-            return self.parent_window.abs_layer + 4
+            return self.parent_window.abs_layer + 4 + layer_boost
         elif self.parent_window is not None:
-            return self.parent_window.abs_layer
+            return self.parent_window.abs_layer + layer_boost
         else:
             return self.layer
 
@@ -731,9 +741,7 @@ class DrawState(DictConversion):
 
     @property
     def window_index(self):
-        parent_window = self.parent_window if not self.closable else self
         nested_offset = self._nested_index if self.parent_window is not None else 0
-
         return self.abs_layer + nested_offset
 
         # if self.closable:

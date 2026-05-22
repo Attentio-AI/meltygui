@@ -181,11 +181,11 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=No
         search_session = None
     search_q = str(_search_term).lower() if (search_session is not None and _search_term) else ""
     search_new_current_key = None
-    search_current_y = None
+    search_current_y = None  # screen-Y of the current key's row (for scroll)
     search_current_h = None
-    # On a full-search frame (term change / nav) the whole subtree is force-
-    # invalidated, so draw every row - even ones the off-screen optimization
-    # would normally skip - so their matches register and stay navigable.
+    # On a full-search frame (term change / nav) render every row - even ones
+    # the off-screen optimization would skip - so all matches register and stay
+    # navigable. Off-screen rows are force-rendered so they actually claim.
     _search_full_render = search_session is not None and search_session.scroll_to
 
     # --- unified loop ---
@@ -214,22 +214,10 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=No
                         relative_pos[1] - true_top + item_spacing_y)
 
         child_draw_state = draw_state._children.get(idx, None)
-        if not horizontal and not _search_full_render:
-            if child_draw_state is not None and (
-                    not draw_state.invalid_content_height or imgui.is_mouse_down(0) or imgui.is_mouse_down(
-                1) or imgui.is_mouse_down(2)):
-                if not Melty.frame_count <= 2:
-                    if child_draw_state.relative_pos is not None:
-                        screen_pos = (true_left + child_draw_state.relative_pos[0],
-                                      true_top + child_draw_state.relative_pos[1] - child_draw_state.header_height)
 
-                        bottom = screen_pos[1] + child_draw_state.height + child_draw_state.header_height
-                        if (bottom + child_draw_state.height < rect[1] or screen_pos[1] > rect[3]):
-                            imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0],
-                                                         (true_top + child_draw_state.relative_pos[1] +
-                                                          child_draw_state.height)))
-                            continue
-
+        # Resolve the key (item, skips, key_str) BEFORE the off-screen skip, so
+        # every visible key is captured for the search matcher even when its row
+        # isn't rendered. These steps are cheap (no imgui.text).
         Melty.collection_index_stack[this_collection] = idx
         item = None
         if get_attr is None:
@@ -274,18 +262,37 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=No
                                   key_str.endswith("meta")):
             continue
 
-        # ----- search (key match) -----
-        # Claim a slot for a matched key *before* its child renders, so the
-        # slot order is visual top-to-bottom. On a full re-render (scroll_to)
-        # trust the claim to pick the first one and latch it; otherwise reuse
-        # the latch so the highlight is stable across incidental repaints.
+        # ----- off-screen skip (rendering only) -----
+        # On a full-search frame render every row so all matches claim and stay
+        # navigable; otherwise keep skipping clipped rows for performance.
+        if not horizontal and not _search_full_render:
+            if child_draw_state is not None and (
+                    not draw_state.invalid_content_height or imgui.is_mouse_down(0) or imgui.is_mouse_down(
+                1) or imgui.is_mouse_down(2)):
+                if not Melty.frame_count <= 2:
+                    if child_draw_state.relative_pos is not None:
+                        screen_pos = (true_left + child_draw_state.relative_pos[0],
+                                      true_top + child_draw_state.relative_pos[1] - child_draw_state.header_height)
+
+                        bottom = screen_pos[1] + child_draw_state.height + child_draw_state.header_height
+                        if (bottom + child_draw_state.height < rect[1] or screen_pos[1] > rect[3]):
+                            imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0],
+                                                         (true_top + child_draw_state.relative_pos[1] +
+                                                          child_draw_state.height)))
+                            continue
+
+        # ----- SEARCH (key match) -----
+        # Claim a slot per matching key, interleaved with its child (done in
+        # draw_any below), so the combined next/prev order reads top-to-bottom.
+        # On a full-search-render trust the claim to pick the current key and latch
+        # it; otherwise reuse the latch so the highlight stays stable.
         key_is_match = bool(search_q) and search_q in key_str.lower()
         key_is_current = False
-        if key_is_match:
+        if key_is_match and search_session is not None:
             key_row_y = imgui.get_cursor_screen_pos()[1]
-            _kbase, _klocal = search_session.claim(1)
+            _kb, _kl = search_session.claim(1)
             if search_session.scroll_to:
-                key_is_current = (_klocal == 0)
+                key_is_current = (_kl == 0)
                 if key_is_current:
                     search_new_current_key = idx
             else:
@@ -354,11 +361,8 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=No
             #     else:
             #         item_kwargs['mode'] = mode
 
-            # On a full-search frame, force this child's body to actually run so
-            # it claims its children into the collection - disabling the off-screen
-            # skip only makes the wrapper run. a cached child would otherwise blit
-            # its image and never re-count, committing a partial total (the
-            # "results flicker back to only the visible ones" problem).
+            # On a full-search frame, force off-screen children to actually run
+            # (not blit from cache) so they claim their matches into the session.
             if _search_full_render and child_draw_state is not None:
                 Melty.cache.invalidate(child_draw_state._tile_id, force=True)
 
@@ -432,15 +436,15 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, mode=No
 
     Melty.collection_index_stack.pop()
 
-    # Latch which key is the global-current match (on full re-renders) and, when
-    # navigation just happened, scroll it into view. draw_collection disables
-    # its own scroll, so _scroll_into_view walks up to the real parent container.
-    if search_session is not None:
-        if search_session.scroll_to:
-            draw_state._search_current_key = search_new_current_key
-            if search_current_y is not None:
-                h = search_current_h or imgui.get_text_line_height()
-                _scroll_into_view(draw_state, search_current_y, search_current_y + h)
+    # Latch the global-current key (on full re-renders) and, if something
+    # just changed, scroll it into view. draw_collection disables its own
+    # scroll, so _scroll_into_view walks up to the real scroll container. (A
+    # search match inside a child is scrolled by that child itself.)
+    if search_session is not None and search_session.scroll_to:
+        draw_state._search_current_key = search_new_current_key
+        if search_current_y is not None:
+            h = search_current_h or imgui.get_text_line_height()
+            _scroll_into_view(draw_state, search_current_y, search_current_y + h)
 
     end_pos = imgui.get_cursor_pos()[1]
     content_height = (end_pos - start_cursor)
@@ -618,8 +622,8 @@ def run_chain(input_value, chain=None, draw_state=None, disable_scroll=True, s_k
 some_test_tensor = torch.randn(3, 3)
 
 
-@render_func(use_cache=False, show_bg=True, selectable=False, show_tint=True, bg_offset=-1, with_header=draw_header)
-def draw_main(input_value, vis, draw_state=None):
+@render_func(use_cache=False, show_bg=True, searchable=True, selectable=False, show_tint=True, bg_offset=-1, with_header=draw_header)
+def draw_main(input_value, vis, search_text="", draw_state=None):
     global test_obj
     global cst_dict
     global test_code
@@ -818,7 +822,7 @@ def draw_melty_windows(vis):
 
     Melty.begin_frame()
 
-    imgui.invisible_button("window_blocker", width=fb_w, height=fb_h)
+    # imgui.invisible_button("window_blocker", width=fb_w, height=fb_h)
     imgui.set_cursor_screen_pos((0, 0))
     imgui.set_item_allow_overlap()
 
@@ -853,7 +857,9 @@ def draw_pending_texture(input_value: PendingTexture, draw_state):
     return return_val
 
 
-@render_func(is_default_for=numpy.uint32, show_bg=True, use_cache=False, show_add_delete=False, z_offset=2, fill_height=True, indent_size=0, min_width=100, min_height=100, wrap=False, disable_scroll=True, enable_scroll=True, zoom_speed=0.3, with_header=draw_header, manual_content_height=True)
+@render_func(is_default_for=numpy.uint32, show_bg=True, use_cache=False, show_add_delete=False, z_offset=2, fill_height=True,
+             indent_size=0, min_width=100, min_height=100, wrap=False, disable_scroll=True,
+             enable_scroll=True, zoom_speed=0.3, with_header=draw_header, manual_content_height=True)
 def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mouse_drag, right_mouse_drag,
                  zoom_state: ZoomState, zoom_speed, header_height=0, min_zoom=0.1,
                  max_zoom=50.0, style_manager=None, max_brightness=5.0, max_contrast=5.0,
@@ -2109,7 +2115,7 @@ def draw_float_ctx(input_value):
 
 
 @render_func(is_default_for=float, use_cache=False, shadow=False, is_tree=False, show_bg=False, wrap=False, with_header=draw_header, with_header_end=draw_header_end)
-def draw_float(input_value: float, draw_state, min_value=-100.0, max_value=99.264, speed=0.001):
+def draw_float(input_value: float, draw_state, min_value=-100.0, max_value=99.264, speed=0.242):
     imgui.set_next_item_width(min(600, max(30, draw_state.content_width)))
     changed, value = imgui.drag_float("", input_value,
                                       format='%.3f',

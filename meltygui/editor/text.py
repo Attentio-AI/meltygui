@@ -440,6 +440,24 @@ def _delete_selection(text, ds):
     return text[:lo] + text[hi:], lo
 
 
+def _find_matches(text, term):
+    """Case-insensitive, non-overlapping substring match ranges (start, end)."""
+    matches = []
+    term = str(term) if term else ""
+    if not term:
+        return matches
+    low_text = text.lower()
+    low_term = term.lower()
+    start = 0
+    while True:
+        idx = low_text.find(low_term, start)
+        if idx == -1:
+            break
+        matches.append((idx, idx + len(low_term)))
+        start = idx + len(low_term)
+    return matches
+
+
 def _scroll_into_view(ds, top_abs, bottom_abs, margin=40.0):
     """Scroll the nearest scrollable ancestor (or the view itself) so the
     screen-space band [top_abs, bottom_abs] is visible.
@@ -469,8 +487,9 @@ def _scroll_into_view(ds, top_abs, bottom_abs, margin=40.0):
         node = nxt if nxt is not node else None
 
 
-@render_func(show_bg=True, wrap=False, use_cache=True, with_header=draw_header, shadow=True, with_footer=draw_footer, selectable=False, searchable=True, bg_offset=-100)
-def draw_text(input_value: str, left_mouse_clicked=False,
+@render_func(show_bg=True, wrap=False, use_cache=True, with_header=draw_header, shadow=True, with_footer=draw_footer,
+             selectable=False, searchable=True, bg_offset=-100)
+def draw_text(input_value: str,
               left_mouse_down=False, left_mouse_drag=False, horizontal_scroll_drag=False, search_text="",
               single_line=False,
               draw_state=None, request_focus=False, line_height=1.2, font: Font=Font.JETBRAINS_MONO_19):
@@ -506,9 +525,6 @@ def draw_text(input_value: str, left_mouse_clicked=False,
 
     origin_x = left - ds.text_h_scroll
     origin_y = top
-
-    if left_mouse_clicked:
-        print("Left mouse clicked on text editor")
 
     # imgui.is_key_pressed(..., repeat=True) uses io.key_repeat_delay/rate
     # so held keys auto-repeat at the OS-propecified cadence.
@@ -807,20 +823,12 @@ def draw_text(input_value: str, left_mouse_clicked=False,
     # combines into one global set, and scroll to the global-current match
     # when it lands in this view.
     search_term = search_text or (ds.search_text if ds.search_active else "")
-    search_matches = []
-    if search_term:
-        low_text = text.lower()
-        low_term = str(search_term).lower()
-        start = 0
-        while True:
-            idx = low_text.find(low_term, start)
-            if idx == -1:
-                break
-            search_matches.append((idx, idx + len(low_term)))
-            start = idx + len(low_term)
+    search_matches = _find_matches(text, search_term)
 
-    # Resolve the aggregation session: the forwarded SearchTerm from child views,
-    # or the owner's own session when this editor hosts the find UI.
+    # Register this view's results into the shared session during render. On a
+    # full-search frame (scroll_to) all views claim in order and offsets are
+    # synchronized - pick the global-current local match and latch it; on
+    # subsequent repaints reuse the latch so the highlight doesn't jump.
     if isinstance(search_term, SearchTerm):
         session = search_term
     elif ds.search_active and ds._search_session is not None:
@@ -831,46 +839,20 @@ def draw_text(input_value: str, left_mouse_clicked=False,
     local_count = len(search_matches)
     if session is not None:
         if session.scroll_to:
-            # Full re-render: all views claim in order this frame, so offsets
-            # are consistent - recompute which local match is global active and
-            # latch it for incidental repaints.
             _base, current_local = session.claim(local_count)
             ds._search_active_local = current_local
             should_scroll = current_local is not None
         else:
-            # Incidental repaint: keep offset/total accounting consistent but
-            # reuse the latched active index so the highlight doesn't jump.
             session.claim(local_count)
             current_local = ds._search_active_local
             if current_local is not None and current_local >= local_count:
                 current_local = None
             should_scroll = False
     else:
-        # Self-contained single-view find (no shared session in play).
-        if local_count != ds.text_search_count:
-            ds.text_search_count = local_count
-            Melty.cache.invalidate(ds._tile_id, force=True)
-            request_render()
-        if search_matches:
-            if str(search_term) != ds._text_search_last_term:
-                target = 0
-                for i, (ms, _me) in enumerate(search_matches):
-                    if ms >= ds.text_cursor_pos:
-                        target = i
-                        break
-                ds.text_search_current = target
-                ds._text_search_scroll_to = True
-            ds.text_search_current = max(0, min(ds.text_search_current, local_count - 1))
-            current_local = ds.text_search_current
-            should_scroll = ds._text_search_scroll_to
-            ds._text_search_scroll_to = False
-        else:
-            ds.text_search_current = 0
-            current_local = None
-            should_scroll = False
-        ds._text_search_last_term = str(search_term)
+        current_local = None
+        should_scroll = False
 
-    if current_local is not None and should_scroll:
+    if should_scroll:
         ms, me = search_matches[current_local]
         line, _col = _index_to_line_col(text, ms)
         # Vertical: scroll the editor (or its scroll parent) so the match

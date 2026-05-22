@@ -408,6 +408,7 @@ def render_func(*args, **o_kwargs):
 
         #############################################
         ###### Layer rendering delay
+        draw_state._front_layer = False
         original_active_layer = Melty.active_layer
         draw_state._start_z_pos = min(Melty.z_pos, 3)
         if Melty.cache is not None:
@@ -433,13 +434,14 @@ def render_func(*args, **o_kwargs):
 
                 if layer == len(Melty.registered_windows) - 1 and not "z_absolute" in kwargs:
                     layer = len(Melty.registered_windows) + Melty.top_layer_boost
+                    draw_state._front_layer = True
 
                 if closable and len(Melty.melty_window_stack) > 0:
                     draw_state.is_nested = True
                     parent_ds = draw_state._parent
                     if draw_state not in set(Melty.root_draw_states[parent_ds.id]):
                         Melty.root_draw_states[parent_ds.id].append(draw_state)
-                        layer = layer + (len(Melty.root_draw_states[parent_ds.id]) * 2)
+                        layer = layer + (len(Melty.root_draw_states[parent_ds.id]))
                         Melty.layers[min(layer, len(Melty.layers) - 1)].append(draw_state)
                 else:
                     Melty.layers[min(layer, len(Melty.layers) - 1)].append(draw_state)
@@ -816,8 +818,12 @@ def render_func(*args, **o_kwargs):
                 left_mouse_down = draw_state.on_action("left_mouse_down", "window_move", priority_delta=-1)
 
                 if left_mouse_down:
-                    if len(Melty.melty_window_stack) > 0 and Melty.melty_window_stack[-1].parent_window is None:
-                        Melty.move_window_to_front(Melty.melty_window_stack[-1])
+                    # draw_state is the window that just won the click
+                    # (left_mouse_down is its own on_action result). Pass it
+                    # directly rather than reading melty_window_stack[-1] - for
+                    # a child window move_window_to_front walks up to the
+                    # registered root, for a root window it's a no-op resolve.
+                    Melty.move_window_to_front(draw_state)
                 if on_drag and not imgui_active and not "window_pos" in kwargs:
                     if draw_state._initial_window_pos is None:
                         draw_state._initial_window_pos = (draw_state.window_pos[0],

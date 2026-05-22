@@ -1313,8 +1313,11 @@ class _ClassPatcher(cst.CSTTransformer):
                     return updated_node.with_changes(value=new_cst)
             return updated_node
 
-        # __init__: self.x = val (depth 2 = __init__ direct body)
-        if self._depth != 2:
+        # __init__: self.x = val (depth 2 = __init__ direct body).
+        # Note on _in_init check: every method body is also depth 2, so without
+        # it a self.X assignment in any method would be patched with the value
+        # extracted from __init__ (e.g. self._bvh_bbox = new_bbox → = None).
+        if not (self._in_init and self._depth == 2):
             return updated_node
         if not (isinstance(target, cst.Attribute)
                 and isinstance(target.value, cst.Name)
@@ -2164,14 +2167,18 @@ def dict_to_cst_call(value: dict) -> cst.Call:
         )
         surviving.append(new_arg)
 
-    # Pass 3: fix commas
+    # Pass 3: fix commas. Only touch commas that need it - args left over
+    # from the original keep their own Comma node (and its newline/indent
+    # whitespace), so multi-line kwargs don't collapse to one line. A
+    # MaybeSentinel comma means the arg was newly appended or was previously
+    # last, so it needs an inner comma now that something follows it.
     if surviving:
         fixed = []
         for i, arg in enumerate(surviving):
             is_last = (i == len(surviving) - 1)
             if is_last:
                 fixed.append(arg.with_changes(comma=last_comma))
-            elif inner_comma is not None:
+            elif isinstance(arg.comma, cst.MaybeSentinel) and inner_comma is not None:
                 fixed.append(arg.with_changes(comma=inner_comma))
             else:
                 fixed.append(arg)
@@ -2776,6 +2783,16 @@ def _callable_to_cst_expr(py_value, old_node=None):
     Preserves formatting from old_node via with_changes() when the
     node shape matches.
     """
+    # If old_node already refers to this exact callable, keep it verbatim.
+    # __qualname__ strips the module (e.g. numpy.uint32 → "uint32"), so
+    # rebuilding from it would lose any qualifier the node actually had.
+    if old_node is not None:
+        try:
+            if _cst_to_python(old_node) is py_value:
+                return old_node
+        except (TypeError, ValueError):
+            pass
+
     qualname = getattr(py_value, "__qualname__", None) or py_value.__name__
     parts = qualname.split(".")
 

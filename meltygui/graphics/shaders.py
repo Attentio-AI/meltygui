@@ -190,6 +190,12 @@ class ShadowComposite:
         'depth_map': (GLType.SAMPLER2D, None),
         'shadow_opacity': (GLType.FLOAT, 1.0),  # How dark shadows get
         'shadow_color': (GLType.VEC3, (0.0, 0.0, 0.0)),  # Shadow tint
+        # Resolution of shadow_map. May be lower than the screen when the shadow
+        # map is downscaled for performance; used to drive the bilateral upsample.
+        'shadow_size': (GLType.VEC2, None),
+        # How aggressively the upsample snaps the shadow to depth edges. Higher =
+        # crisper edges (less fringing), lower = softer. Depths are in [0, 1].
+        'depth_sharpness': (GLType.FLOAT, 50.0),
         'texture_size': (GLType.VEC2, None),
     }
     fragment_code = """
@@ -197,10 +203,45 @@ void main() {
     vec2 uv = v_texcoord;
 
     vec4 color = texture(u_texture, uv);
-    vec4 shadow = texture(shadow_map, uv);
     float depth = texture(depth_map, uv).r;
 
-    float shadow_intensity = shadow.r;
+    // Joint bilateral upsample of the (possibly low-res) shadow map. A plain
+    // bilinear fetch smears the shadow silhouette across the crisp rounded-rect
+    // edges, producing visible fringing. Instead we gather the four nearest
+    // low-res taps and weight each by (a) the usual bilinear weight and (b) how
+    // closely its receiver depth (stored in shadow.a by ShadowCast) matches the
+    // full-res depth at this pixel. Taps belonging to a different surface are
+    // rejected, so the shadow snaps back to the high-res geometry edge.
+    vec2 texel = 1.0 / shadow_size;
+    vec2 sample_pos = uv * shadow_size - 0.5;
+    vec2 base = floor(sample_pos);
+    vec2 frac = sample_pos - base;
+
+    float shadow_sum = 0.0;
+    float weight_sum = 0.0;
+
+    for (int x = 0; x <= 1; x++) {
+        for (int y = 0; y <= 1; y++) {
+            vec2 tap = (base + vec2(float(x), float(y)) + 0.5) * texel;
+            vec4 s = texture(shadow_map, tap);
+
+            float wx = (x == 0) ? (1.0 - frac.x) : frac.x;
+            float wy = (y == 0) ? (1.0 - frac.y) : frac.y;
+            float spatial = wx * wy;
+
+            float depth_weight = exp(-abs(s.a - depth) * depth_sharpness);
+
+            float w = spatial * depth_weight;
+            shadow_sum += s.r * w;
+            weight_sum += w;
+        }
+    }
+
+    // Fall back to a straight bilinear fetch if every tap was rejected (e.g. a
+    // thin feature with no depth-matching neighbor) so we never punch a hole.
+    float shadow_intensity = (weight_sum > 0.0001)
+        ? (shadow_sum / weight_sum)
+        : texture(shadow_map, uv).r;
 
     // Apply shadow by darkening toward shadow_color
     vec3 shadowed = mix(color.rgb, shadow_color, shadow_intensity * shadow_opacity);

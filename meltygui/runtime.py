@@ -67,6 +67,28 @@ class SearchTerm(str):
             return base, self.current - base
         return base, None
 
+
+def search_walk(ds, term, session):
+    """Count a subtree's search matches into `session` without rendering.
+
+    Each searchable view stashes a `_search_matcher(term, session)` closure on
+    its draw_state during render (capturing its content, term-independently).
+    The closure claims its own matches and recurses into children via this
+    function, so the whole tree — including off-screen rows the render skips —
+    contributes to the combined count. Containers without a matcher just
+    recurse into their children in order.
+    """
+    matcher = getattr(ds, '_search_matcher', None)
+    if matcher is not None:
+        matcher(term, session)
+        return
+    children = getattr(ds, '_children', None)
+    if children:
+        for key in sorted(children.keys(), key=lambda k: (isinstance(k, str), k)):
+            child = children[key]
+            if child is not None and child is not ds:
+                search_walk(child, term, session)
+
 import hashlib
 import difflib
 from pathlib import Path
@@ -138,7 +160,8 @@ class FileWatch:
                         fromfile=f"{event.src_path} (old)",
                         tofile=f"{event.src_path} (new)",
                     )
-                    print(''.join(diff) or f"[FileWatch] Binary or empty diff for {event.src_path}")
+                    if ''.join(diff):
+                        print(''.join(diff))
                     debug_printed = True
 
                 cls._ds_hashes[id(ds)] = new_hash
@@ -1028,11 +1051,11 @@ class Melty:
                 # Melty.cache.mask_mark_view(draw_state.z_pos, draw_state.left,
                 #                            draw_state.top, draw_state.width, draw_state.height,
                 #                            f"view_mask_{draw_state.id}", 4)
-                Melty.active_layer = idx + (d_idx * 2)
-                draw_state._nested_index = (d_idx * 2)
+                Melty.active_layer = idx + (d_idx)
+                draw_state._nested_index = (d_idx)
                 Melty.z_pos = (Melty.active_layer * Melty.max_depth) + Melty.depth
 
-                draw_state.layer = Melty.active_layer
+                # draw_state.layer = Melty.active_layer
                 draw_state.z_pos = Melty.z_pos
                 draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer)
                 draw_state._kwargs['active_layer'] = Melty.active_layer
@@ -1104,7 +1127,7 @@ class Melty:
                     # first-level nested view) so the line/outline aren't masked
                     # by the nested window. cls.draw may also have moved the channel.
                     rounding = draw_state.corner_radius
-                    overlay_dl.channels_set_current(layer_index)
+                    overlay_dl.channels_set_current(min(draw_state.window_index - 1, Melty.max_layer -1))
 
                     overlay_dl.add_rect(draw_state.abs_left, draw_state.abs_top,
                                         draw_state.abs_left + draw_state.width,
@@ -1282,20 +1305,38 @@ class Melty:
                 Melty.cache._full_mask_tex, min_value=0.0000, max_value=total_layers)
             diff = ((max_val - min_val) * 65535.0)
 
+            # Render the (expensive) shadow_cast pass at a reduced resolution.
+            # shadow_cast's math is in UV space, so a low-res mask produces the
+            # same soft shadow with far fewer fragment invocations. The composite
+            # filter samples the shadow map as a sampler2D (GL_LINEAR), so it
+            # upscales automatically over the full-res UI.
+            downscale = max(1, int(getattr(Toggles, "shadow_downscale", 1)))
+            shadow_size = (
+                max(1, int(fb_w) // downscale),
+                max(1, int(fb_h) // downscale),
+            ) if downscale > 1 else None
+
             shadow_raw = Melty.filter.shadow_cast(
                 normalized_sub_mask,
-                max_steps=diff / 2.0
-
+                max_steps=diff / 2.0,
+                output_size=shadow_size,
             )
 
             if not Toggles.draw_legacy:
+                # Resolution of the shadow map when composited - controls the
+                # bilateral upsample so the low-res shadow sticks to the crisp
+                # rounded-rect edges instead of fringing.
+                composite_shadow_size = shadow_size or (int(fb_w), int(fb_h))
                 Melty.filter.shadow_composite(
                     input_framebuffer=0,
                     output_framebuffer=0,
                     shadow_map=shadow_raw,
                     depth_map=normalized_sub_mask,
                     shadow_opacity=0.9,
-                    shadow_color=(0.0, 0.02, 0.05)  # Slightly darker shadows
+                    shadow_color=(0.0, 0.02, 0.05),  # Slightly blue shadow
+                    shadow_size=(float(composite_shadow_size[0]),
+                                 float(composite_shadow_size[1])),
+                    depth_sharpness=float(getattr(Toggles, "shadow_edge_sharpness", 50.0)),
                 )
 
         # Overlay last, so the highlight/swoosh sits on top of the shadow pass
@@ -1369,6 +1410,20 @@ class Melty:
             if draw_state is None:
                 return
 
+            # Child windows aren't registered with the window manager (only
+            # top-level windows, where parent_window is None, get registered).
+            # If this draw_state isn't itself registered, walk up the
+            # parent_window chain to the root window and bring it to front
+            # instead, so dragging/clicking a nested view raises its owner.
+            if draw_state._tile_id not in Melty.registered_windows:
+                node = draw_state
+                while (node._tile_id not in Melty.registered_windows
+                       and node.parent_window is not None
+                       and node.parent_window is not node):
+                    node = node.parent_window
+                if node._tile_id in Melty.registered_windows:
+                    draw_state = node
+
             window_key = draw_state._tile_id
             cls.pending_move_to_front = (window_key, draw_state)
 
@@ -1406,6 +1461,16 @@ class Melty:
             return
 
         if not cls.imgui_active:
+            # for widx, window in enumerate(Melty.registered_windows.values()):
+            #     if widx == len(Melty.registered_windows) - 1:
+            #         break
+            #     wds = window.draw_state
+            #     wds.layer = wds.abs_layer
+            #
+            # for root_window in Melty.root_draw_states:
+            #     for ds in Melty.root_draw_states[root_window]:
+            #         ds.layer = ds.abs_layer
+
             window_key = cls.pending_move_to_front[0]
             window_z_pos = len(Melty.registered_windows) + Melty.top_layer_boost
             cls.pending_move_to_front[1].layer = window_z_pos
@@ -1431,6 +1496,9 @@ class Melty:
             Melty.cache.invalidate_by_obj(Melty.registered_windows)
             Melty.cache.invalidate_up(cls.pending_move_to_front[1]._tile_id, max_depth=4, force=True)
             cls.pending_move_to_front = None
+
+        # Loop over all windows and set the draw_state.layer
+
 
     @classmethod
     def draw_blockers_to(cls):

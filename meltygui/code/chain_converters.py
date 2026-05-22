@@ -127,8 +127,6 @@ def function_to_address(input_value: types.FunctionType, draw_state, changed=Fal
     _evict_linecache(source_file)
     FileWatch.register_draw_state(draw_state, Path(source_file))
 
-    if changed:
-        print(f"function_to_address: input changed for {input_value.__name__}, checking file {source_file}")
     try:
         source_lines, start_lineno = inspect.getsourcelines(unwrapped)
     except (OSError, TypeError, tokenize.TokenError, SyntaxError) as e:
@@ -157,8 +155,6 @@ def module_to_address(input_value: types.ModuleType, draw_state, changed=False):
 @render_func()
 def class_to_address(input_value: type, draw_state, changed=False):
     if changed:
-        print(f"CLASS TO ADDRESS: FILE WATCH INPUT -- CHANGED")
-
         if input_value.__module__ in ('builtins', '_collections_abc'):
             return False, None
         try:
@@ -199,7 +195,6 @@ def load_cst_module(input_value: Address):
 
 @render_func(background=False)
 def do_recompile(input_value, code_str, file_path, changed=False):
-    print(f"do_recompile: {changed}")
     """Dispatch recompile to the right handler based on source type."""
     if isinstance(input_value, type):
         _recompile_class(input_value, code_str, str(file_path))

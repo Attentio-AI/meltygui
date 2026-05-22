@@ -13,9 +13,9 @@ class UndoManager:
 
 
 def handle_undo(changed, return_value, draw_state):
-
-    if changed:
-        print(f"{draw_state.name} changed")
+    #
+    # if changed:
+    #     print(f"{draw_state.name} changed")
 
 
     pass

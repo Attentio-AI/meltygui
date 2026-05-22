@@ -159,6 +159,7 @@ class Filter:
                     output_texture: Optional[int] = None,
                     output_framebuffer: Optional[int] = None,
                     input_framebuffer: Optional[int] = None,
+                    output_size: Optional[Tuple[int, int]] = None,
                     **uniforms
                 ) -> int:
                     """
@@ -170,12 +171,16 @@ class Filter:
                         output_texture: Optional specific output texture to render to
                         output_framebuffer: Optional framebuffer to render to (e.g., 0 for main screen)
                         input_framebuffer: Optional framebuffer to read from (e.g., 0 for main screen)
+                        output_size: Optional (width, height) render resolution. Runs the
+                            shader at a lower resolution than the input while still sampling
+                            the full-res input - the resulting smaller texture upscales
+                            automatically when sampled downstream.
                         **uniforms: Uniform values to pass to the shader
 
                     Returns:
                         The output texture ID (same as input if in_place=True, 0 if output_framebuffer)
                     """
-                    return self.apply(name, texture_id, in_place, output_texture, output_framebuffer, input_framebuffer, **uniforms)
+                    return self.apply(name, texture_id, in_place, output_texture, output_framebuffer, input_framebuffer, output_size=output_size, **uniforms)
 
                 # Set the method name for better debugging
                 shader_method.__name__ = name
@@ -210,6 +215,7 @@ class Filter:
               output_texture: Optional[int] = None,
               output_framebuffer: Optional[int] = None,
               input_framebuffer: Optional[int] = None,
+              output_size: Optional[Tuple[int, int]] = None,
               **uniforms) -> int:
         """
         Apply a shader filter to a texture or framebuffer.
@@ -243,7 +249,8 @@ class Filter:
             program, texture_id, full_uniforms,
             in_place=in_place, output_texture=output_texture,
             output_framebuffer=output_framebuffer,
-            input_framebuffer=input_framebuffer
+            input_framebuffer=input_framebuffer,
+            output_size=output_size
         )
     
     def chain(self) -> FilterChain:

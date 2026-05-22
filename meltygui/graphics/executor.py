@@ -95,7 +95,8 @@ class FilterExecutor:
                 uniforms: Dict[str, Any], in_place: bool = False,
                 output_texture: Optional[int] = None,
                 output_framebuffer: Optional[int] = None,
-                input_framebuffer: Optional[int] = None) -> int:
+                input_framebuffer: Optional[int] = None,
+                output_size: Optional[Tuple[int, int]] = None) -> int:
         """
         Execute a shader filter on a texture or framebuffer.
 
@@ -108,6 +109,12 @@ class FilterExecutor:
             output_texture: Optional output texture ID (creates new if None and not in_place)
             output_framebuffer: Optional framebuffer to render to (e.g., 0 for main screen).
             input_framebuffer: Optional framebuffer to read from (e.g., 0 for main screen).
+            output_size: Optional (width, height) for the render target. When set, the
+                shader runs at this resolution while still sampling the full-resolution
+                input texture - i.e. fewer fragment invocations. Ignored for in_place
+                (the copy-back blit requires matching dimensions). The smaller output
+                texture is sampled with GL_LINEAR, so downstream passes upscale it
+                automatically. Useful for cheap, soft effects like shadows.
 
         Returns:
             The output texture ID (or 0 if rendering to output_framebuffer)
@@ -132,25 +139,34 @@ class FilterExecutor:
             width = GL.glGetTexLevelParameteriv(GL.GL_TEXTURE_2D, 0, GL.GL_TEXTURE_WIDTH)
             height = GL.glGetTexLevelParameteriv(GL.GL_TEXTURE_2D, 0, GL.GL_TEXTURE_HEIGHT)
 
+        # Resolution of the render target. Defaults to the input size, but can be
+        # downscaled via output_size. The input texture is still sampled at full
+        # resolution (via normalized UV coordinates) regardless of the render size.
+        if output_size is not None and not in_place:
+            render_width = max(1, int(output_size[0]))
+            render_height = max(1, int(output_size[1]))
+        else:
+            render_width, render_height = width, height
+
         # Handle direct framebuffer rendering (e.g., to main screen)
         if output_framebuffer is not None:
             GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, output_framebuffer)
-            GL.glViewport(0, 0, width, height)
+            GL.glViewport(0, 0, render_width, render_height)
             out_tex = 0
         else:
-            fbo, temp_texture = self._get_fbo(width, height)
+            fbo, temp_texture = self._get_fbo(render_width, render_height)
 
             if in_place:
                 out_tex = temp_texture
             elif output_texture is not None:
                 out_tex = output_texture
             else:
-                out_tex = self._get_cached_texture(texture_id, width, height)
+                out_tex = self._get_cached_texture(texture_id, render_width, render_height)
 
             GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, fbo)
             GL.glFramebufferTexture2D(GL.GL_FRAMEBUFFER, GL.GL_COLOR_ATTACHMENT0,
                                       GL.GL_TEXTURE_2D, out_tex, 0)
-            GL.glViewport(0, 0, width, height)
+            GL.glViewport(0, 0, render_width, render_height)
 
         GL.glClear(GL.GL_COLOR_BUFFER_BIT)
         GL.glUseProgram(program.program_id)
@@ -173,9 +189,10 @@ class FilterExecutor:
                     sampler_bindings[name] = next_texture_unit
                     next_texture_unit += 1
 
-        # Auto-populate texture_size if needed
+        # Auto-populate texture_size if needed. Use the render target size so any
+        # texel-space math (e.g. blur kernels) matches the resolution we render at.
         if 'texture_size' in program.shader.uniforms and 'texture_size' not in uniforms:
-            uniforms = {**uniforms, 'texture_size': (float(width), float(height))}
+            uniforms = {**uniforms, 'texture_size': (float(render_width), float(render_height))}
 
         # Set uniforms (passing sampler bindings for texture unit assignment)
         self._set_uniforms(program, uniforms, sampler_bindings)
