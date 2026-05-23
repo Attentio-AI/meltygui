@@ -105,7 +105,8 @@ class FileWatch:
     _ds_hashes = {}            # draw_state → hash (per-view, not per-path)
     _ds_suppress_until = {}    # id(ds) → monotonic time until which to suppress dispatch
     _file_contents = {}
-    output_debug_diff = True
+    _path_hash_cache = {}      # resolved path → (mtime, md5); avoids re-reading unchanged files
+    output_debug_diff = False
     _write_suppress_window = 1.0  # seconds - for truncate+write event pairs from write_text
 
     @classmethod
@@ -116,11 +117,25 @@ class FileWatch:
 
     @classmethod
     def _get_hash(cls, path):
+        # Cache by (path, mtime): register_draw_state hashes the file to set a
+        # baseline, and can be called repeatedly during frame. Reading + MD5'ing
+        # the whole file every time is what made typing in large files stall.
+        # While typing the file isn't written (mtime unchanged) so we return the
+        # cached digest; a save bumps mtime so a re-read exactly once.
         try:
-            with open(path, 'rb') as f:
-                return hashlib.md5(f.read()).hexdigest()
+            mtime = Path(path).stat().st_mtime
         except OSError:
             return None
+        cached = cls._path_hash_cache.get(path)
+        if cached is not None and cached[0] == mtime:
+            return cached[1]
+        try:
+            with open(path, 'rb') as f:
+                digest = hashlib.md5(f.read()).hexdigest()
+        except OSError:
+            return None
+        cls._path_hash_cache[path] = (mtime, digest)
+        return digest
 
     @classmethod
     def _read_text(cls, path):
@@ -1409,6 +1424,16 @@ class Melty:
         # Overlay last, so the highlight/swoosh sits on top of the shadow pass
         # (the split renderer's intended slot: "below overlay" is everything above).
         imgui_impl.render_overlay_only(draw_data)
+
+        # Fulfill any pending MCP window screenshots now: the full frame is in
+        # GL_BACK and the GL context is current on this (render) thread.
+        from src.lsd.gl_gui.screenshot import process_captures
+        process_captures(window)
+
+        # Run any pending MCP eval_python commands on this (render) thread, where
+        # it's safe to touch Melty/imgui state.
+        from src.lsd.gl_gui.mcp_eval import process_evals
+        process_evals()
 
         glfw.swap_buffers(window)
 

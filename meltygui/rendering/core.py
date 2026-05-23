@@ -1165,6 +1165,12 @@ def render_func(*args, **o_kwargs):
                             Melty.cache.invalidate(Melty.focused_ds._tile_id, force=True)
                             request_render()
                         draw_state.search_active = True
+                        # Prefill the search box with the current text selection
+                        # (set by the editor's render_text frame), so Ctrl+F on a
+                        # selection searches for it immediately.
+                        _sel = getattr(draw_state, '_selection_text', '')
+                        if _sel:
+                            draw_state.search_text = _sel
                         # Reset so render_search re-requests focus, and release
                         # the view's own text focus, so the search box takes
                         # focus even if this view is already focused.

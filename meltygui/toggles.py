@@ -45,6 +45,9 @@ class Swoosh:
     segments = 31            # tessellation count (higher = smoother)
     taper = 10.0              # slope of the end->middle thickness falloff
     aa_width = 1.5           # antialiased edge-stroke width in px (0 = none)
+    
+    some_text = False
+    some_dict = [1,1,1,1]
 
 @window
 @tint({"draw_legacy": (0.8, 0.2, 0.2)})
@@ -53,7 +56,6 @@ class Toggles:
     invalidate_stack_trace = False
     text_focus_stack_trace = False
     attrib_change_stack_trace = False
-
     debug_threads = False
     slow_down_threads = False
     render_depth = False
@@ -61,7 +63,6 @@ class Toggles:
     profile_mode = ProfileMode.LIGHT
     debug_stale_tint = False
     
-
     # Filter SettingS
     brightness = 0.22
     contrast = 1.422
@@ -72,7 +73,7 @@ class Toggles:
     show_excluded = True
     filters = True
     show_excluded = True
-
+    
     # Shadow Settings
     shadow_downscale = 3
     shadow_edge_sharpness = 50.0

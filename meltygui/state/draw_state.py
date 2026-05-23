@@ -163,9 +163,9 @@ class TileMode(Enum):
 
 
 @no_save("mouse_btn_state", "mouse_up", "mouse_down", "unique", "search_active",
-         "shadow", "size_change", "drag_released", "clicked", "dragged",
+         "shadow", "size_change", "drag_released", "clicked", "dragged", "clipped_by_rect",
          "dragged", "expanded_height", "clipped", "fully_clipped",  "header_height",
-         "overhead_time", "scroll_visible", "depth_and_layer", "imgui_is_toggled_open",
+         "overhead_time", "scroll_visible", "depth_and_layer", "imgui_is_toggled_open", "top", "left",
          "hotkey_receiver", "use_child", "cst", "search_text", "bg_color", "depth", "z_pos",
          "is_active", "clip_rect", "wrapped_top", "current_tint", "wrapped_left", "multi_line",
          "min_width", "min_height", "is_focused", "drag_window_pos_x", "drag_window_pos_y", "corner_radius",

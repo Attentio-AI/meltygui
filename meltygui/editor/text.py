@@ -77,6 +77,16 @@ for _i in range(26):
     _ch = chr(ord('a') + _i)
     _KEY_CHAR_MAP[_key] = (_ch, _ch.upper())
 
+# Keys the editor repeats when held: every typed char plus certain navigation/edit
+# keys. Used to supplement frame_key_events with imgui's synthesized auto-repeat
+# (see draw_text) so held keys repeat even when the platform's GLFW backend
+# doesn't generate REPEAT actions.
+_REPEATABLE_KEYS = set(_KEY_CHAR_MAP) | {
+    glfw.KEY_BACKSPACE, glfw.KEY_DELETE, glfw.KEY_ENTER, glfw.KEY_KP_ENTER,
+    glfw.KEY_TAB, glfw.KEY_LEFT, glfw.KEY_RIGHT, glfw.KEY_UP, glfw.KEY_DOWN,
+    glfw.KEY_HOME, glfw.KEY_END,
+}
+
 def tokenize(text):
     """Yields (text, color_key) tuples with Darcula-style token categories."""
     i = 0
@@ -284,6 +294,60 @@ def _word_boundary_right(text, pos):
     return pos
 
 
+# Brackets select one-at-a-time even when adjacent (so '{ ['' etc. are
+# separately selectable), while runs of other punctuation (==, +=, ...) group.
+SOLO_CHARS = '(){}[]'
+
+
+def _char_class(c):
+    """Character class for double-click selection units. Runs of the same class
+    select together; newlines and brackets are one char per unit."""
+    if c in SOLO_CHARS:
+        return 'solo'
+    if c.isalnum() or c == '_':
+        return 'word'
+    if c == '\n':
+        return 'nl'
+    if c in ' \t\r':
+        return 'space'
+    return 'punct'
+
+
+def _select_unit_left(text, pos):
+    """Start of the click-selection unit containing `pos`.
+
+    Unlike _word_boundary_left (word navigation, which skips over punctuation to
+    the next identifier), this anchors on the character under the caret and
+    grows a run of its own class — so a lone '{' or '(', a run of operators, a
+    blank-line newline, or a stretch of spaces is each selectable on its own.
+    """
+    n = len(text)
+    if pos <= 0:
+        return 0
+    i = pos if pos < n else pos - 1
+    cls = _char_class(text[i])
+    if cls in ('nl', 'solo'):
+        return i  # a single newline (blank line) or bracket is its own unit
+    start = i
+    while start > 0 and _char_class(text[start - 1]) == cls:
+        start -= 1
+    return start
+
+
+def _select_unit_right(text, pos):
+    """End of the click-selection unit containing `pos` (see _select_unit_left)."""
+    n = len(text)
+    if pos >= n:
+        return n
+    cls = _char_class(text[pos])
+    if cls in ('nl', 'solo'):
+        return pos + 1
+    end = pos
+    while end < n and _char_class(text[end]) == cls:
+        end += 1
+    return end
+
+
 def _get_indent(text, index):
     ls = _get_line_start(text, index)
     indent = 0
@@ -485,7 +549,8 @@ def _scroll_into_view(ds, top_abs, bottom_abs, margin=40.0):
 @render_func(show_bg=True, wrap=False, use_cache=True, with_header=draw_header, shadow=True, with_footer=draw_footer,
              selectable=False, searchable=True, bg_offset=-100)
 def draw_text(input_value: str,
-              left_mouse_down=False, left_mouse_drag=False, horizontal_scroll_drag=False, search_text="",
+              left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
+              horizontal_scroll_drag=False, search_text="",
               single_line=False,
               draw_state=None, request_focus=False, line_height=1.2, font: Font=Font.JETBRAINS_MONO_19):
     ds = draw_state
@@ -529,8 +594,27 @@ def draw_text(input_value: str,
     # Keystrokes come from the GLFW-callback queue (Melty.frame_key_events:
     # ordered (glfw_key, mods) for PRESS/REPEAT this frame), so nothing is
     # dropped on slow frames the way imgui.is_key_pressed (current frame only)
-    # would. `pressed(k)` is membership; the typed-char loop iterates in order.
-    _frame_keys = Melty.frame_key_events
+    # would. But GLFW doesn't emit REPEAT actions on any platform, so in the
+    # focused editor we supplement the queue with imgui's synthesized auto-repeat
+    # (io.key_repeat_delay/rate) for held keys - skipping any key GLFW already
+    # reported this frame so we never double-input. `pressed(k)` is membership;
+    # the per-char loop iterates in order.
+    _frame_keys = list(Melty.frame_key_events)
+    if Melty.text_focused_ds is ds:
+        _glfw_this_frame = {k for k, _m in _frame_keys}
+        _repeat_mods = ((glfw.MOD_SHIFT if io.key_shift else 0)
+                        | (glfw.MOD_CONTROL if io.key_ctrl else 0)
+                        | (glfw.MOD_ALT if getattr(io, 'key_alt', False) else 0))
+        _any_down = False
+        for _rk in _REPEATABLE_KEYS:
+            if imgui.is_key_down(_rk):
+                _any_down = True
+            if _rk not in _glfw_this_frame and imgui.is_key_pressed(_rk, repeat=True):
+                _frame_keys.append((_rk, _repeat_mods))
+        # The loop otherwise sleeps on wait_events between GLFW events; keep it
+        # rendering while a key is held so imgui's repeat cadence is sampled.
+        if _any_down:
+            request_render()
     _fired = {k for k, _m in _frame_keys}
     pressed = lambda k: k in _fired
 
@@ -562,8 +646,8 @@ def draw_text(input_value: str,
 
         if ds.text_click_count == 2:
             ds.text_drag_mode = 'word'
-            ds.text_selection_start = _word_boundary_left(text, click_pos)
-            ds.text_selection_end = _word_boundary_right(text, click_pos)
+            ds.text_selection_start = _select_unit_left(text, click_pos)
+            ds.text_selection_end = _select_unit_right(text, click_pos)
             ds.text_cursor_pos = ds.text_selection_end
             ds.text_drag_anchor_lo = ds.text_selection_start
             ds.text_drag_anchor_hi = ds.text_selection_end
@@ -589,8 +673,18 @@ def draw_text(input_value: str,
             ds.text_drag_anchor_lo = ds.text_selection_start
             ds.text_drag_anchor_hi = ds.text_selection_end
 
-    if left_mouse_drag:
-        drag_pos = _xy_to_char_index(text, left_mouse_drag.x, left_mouse_drag.y,
+    # Extend the selection on cursor motion, and also every frame the button is
+    # held (left_mouse_held) once a drag is underway - so holding the cursor
+    # past the top/bottom edge keeps auto-scrolling and selecting more text,
+    # not just while the mouse is moving.
+    if left_mouse_drag or (left_mouse_held and ds.text_drag_mode):
+        mx = left_mouse_drag.x if left_mouse_drag else io.mouse_pos.x
+        my = left_mouse_drag.y if left_mouse_drag else io.mouse_pos.y
+        # Auto-scroll when the cursor hs/passes the view's top or bottom edge
+        # so the selection can reach text outside the viewport. No-ops when the
+        # cursor is comfortably inside.
+        _scroll_into_view(ds, my, my)
+        drag_pos = _xy_to_char_index(text, mx, my,
                                       origin_x, origin_y, line_px)
         anchor_lo = ds.text_drag_anchor_lo
         anchor_hi = ds.text_drag_anchor_hi
@@ -599,8 +693,8 @@ def draw_text(input_value: str,
             # then merge with the anchor span so the originally-selected
             # word/line stays fully highlighted while dragging either way.
             if ds.text_drag_mode == 'word':
-                edge_lo = _word_boundary_left(text, drag_pos)
-                edge_hi = _word_boundary_right(text, drag_pos)
+                edge_lo = _select_unit_left(text, drag_pos)
+                edge_hi = _select_unit_right(text, drag_pos)
             else:
                 edge_lo = _get_line_start(text, drag_pos)
                 edge_hi = _get_line_end(text, drag_pos)

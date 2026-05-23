@@ -90,10 +90,10 @@ def draw_module(input_value: types.ModuleType, draw_state, **kwargs):
     imgui.text(f"Module: {input_value.__name__}")
 
 @render_func(is_default_for=(dict, MutableMapping, defaultdict, tuple, GeneralParse), use_cache=True,
-            header_same_line=False, show_bg=True, show_instance_vars=False, 
-            manual_content_height=True, disable_scroll=True, shadow=True, 
+            header_same_line=False, show_bg=True, show_instance_vars=False,
+            manual_content_height=True, disable_scroll=True, shadow=True,
             wrap=False, with_header=draw_header, indent_size=5, searchable=True)
-def draw_collection(input_value, draw_state, depth, style_manager, meta, 
+def draw_collection(input_value, draw_state, depth, style_manager, meta,
                     mode=None, keys=None, get_attr=None, set_attr=None, show_excluded=False,
                     child_kwargs=None, nested_func=None, show_bg=True, show_search=True, 
                     on_collapse=False, search_text="",
@@ -2549,9 +2549,34 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, u
     view_func_name = offset_ds._view_func.__name__
     class_name = type(input_value._raw_input_value).__name__
 
+    # Find which class's source to show in the class tab.
+    # For a non-primitive value that's just the value's own class. For a
+    # primitive field (e.g. a float `rank`) the field itself has no source,
+    # so walk up the parent chain to the first object that does have source
+    # code -- so e.g. Lora.rank still shows Lora's class, labelled as parent.
+    raw_value = input_value._raw_input_value
+    class_to_show = None
+    class_is_parent = False
+    if not isinstance(raw_value, (int, float, str, bool)):
+        class_to_show = type(raw_value)
+    else:
+        ancestor = input_value._parent
+        while ancestor is not None:
+            a_raw = getattr(ancestor, '_raw_input_value', UNSET_VALUE)
+            a_type = type(a_raw) if a_raw is not UNSET_VALUE else None
+            if a_type is not None and getattr(a_type, '__module__', None) \
+                    not in (None, 'builtins', '_collections_abc'):
+                class_to_show = a_type
+                class_is_parent = True
+                break
+            ancestor = ancestor._parent
+
     # Font awesome: fa-code () for the view function, fa-cube () for the class.
     func_tab = f" {view_func_name}"
-    class_tab = f" {class_name}"
+    if class_to_show is not None:
+        class_tab = f" {class_to_show.__name__}" + (" (parent)" if class_is_parent else "")
+    else:
+        class_tab = f" {class_name}"
 
     # Static tint colors for the fixed Config / Info tabs; other tabs use the neutral grey.
     config_tint = (0., 0.2, 0.967)  # steel blue
@@ -2565,7 +2590,7 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, u
     tab_tints.append(info_tint)
     tab_names.append(func_tab)
     tab_tints.append(None)
-    if not isinstance(input_value._raw_input_value, (int, float, str, bool)):
+    if class_to_show is not None:
         tab_names.append(class_tab)
         tab_tints.append(None)
 
@@ -2687,11 +2712,15 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, u
                     draw_str("No view function specified", name="View Function", column=t_idx, editable=False)
 
             if tab_names[static_tab] == class_tab:
-                # Draw class
-                # Skip if primitive type
-                cls_change, new_cls = draw_with_modes(type(input_value._raw_input_value), column=t_idx,
+                # Draw class source. For a primitive field this is the parent
+                # object's class (e.g. Lora for a LoraID), so so label it
+                # clearly so it's obvious the source is the owning type.
+                if class_is_parent:
+                    text(f"Parent type of {class_name}", name="Source", column=t_idx,
+                         editable=False, tint=info_tint)
+                cls_change, new_cls = draw_with_modes(class_to_show, column=t_idx,
                                                       modes=(Mode.CODE_PLAIN_TEXT, Mode.CODE_UI),
-                                               name=type(input_value._raw_input_value).__name__)
+                                               name=class_to_show.__name__)
 
             if tab_names[static_tab] == mode_tab:
                 if current_mode is not None:

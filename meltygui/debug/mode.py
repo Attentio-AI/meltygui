@@ -55,18 +55,19 @@ class Mode(Enum):
             elif Any in self.value:
                 return self.value[Any]
         return None
-
+        
+    # [tint=(0.2,0.5,0.1)]
     SORT = {
         defaultdict: ModeOverrides(
             kwargs={"show_bg": True, "selectable": False, "use_cache": True},
             recursive=True,
             func=(sort_dict_alphabetically,
                   (draw_collection, {"show_add_delete":False, "selectable":False, "show_bg": False}),
-                  unsort_dict_alphabetically)
-        )
+                  
+          ))
     }
 
-
+    
     WINDOW_MANAGER_SORTED = {
         defaultdict: ModeOverrides(
             kwargs={"show_bg": True, "selectable": False, "use_cache": True},
@@ -77,8 +78,7 @@ class Mode(Enum):
                   unsort_dict_alphabetically)
         )
     }
-
-
+    
     WINDOW_NO_HEADER = {
         Any: ModeOverrides(
             kwargs={"show_bg": True, "selectable": False, "use_cache": True, "melty_window": False, "closable": True,
@@ -105,7 +105,6 @@ class Mode(Enum):
         )
     }
 
-
     WINDOW_CLEAN = {
         Any: ModeOverrides(
             kwargs={"show_bg":True, "selectable":False, "use_cache":True, "shadow":True,
@@ -118,7 +117,7 @@ class Mode(Enum):
     }
 
     auto_load = True
-    auto_save = False
+    auto_save = True
     auto_recompile = False
 
     CODE_UI = {
@@ -149,7 +148,6 @@ class Mode(Enum):
                   address_to_class),
             recursive=True
         ),
-
         Conditional: ModeOverrides(
             kwargs={"tint": (0.2, 0.2, 0.1), 'show_add_delete': True, 'is_tree':False},
             recursive=True,
@@ -166,8 +164,7 @@ class Mode(Enum):
         ),
 
     }
-    
-
+ 
     code_plain_text_auto_load = False
     code_plain_text_params = {'save': True,
                               'recompile': False}
@@ -204,7 +201,6 @@ class Mode(Enum):
             recursive=True
         ),
     }
-
 
     # ── File metadata ────────────────────────────────────────
     #

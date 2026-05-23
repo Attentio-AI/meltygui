@@ -11,6 +11,7 @@ and libcst_conversion.py stay untouched for backward compat.
 """
 import inspect
 import threading
+import time
 import tokenize
 import types
 from pathlib import PosixPath, Path
@@ -22,7 +23,7 @@ from src.lsd.gl_gui.melty import FileWatch, Melty
 from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
-from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
+from src.lsd.gl_gui.view.core_conversion.path_finder import Pending, PendingState
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_conversion.address import (
     Address, to_address, update_address_cache, _evict_linecache,
@@ -124,18 +125,33 @@ def function_to_address(input_value: types.FunctionType, draw_state, changed=Fal
 
     unwrapped = inspect.unwrap(input_value)
     source_file = inspect.getfile(unwrapped)
-    _evict_linecache(source_file)
     FileWatch.register_draw_state(draw_state, Path(source_file))
 
+    # inspect.getsourcelines reads + tokenizes the whole file (and _evict_linecache
+    # forces a fresh read), so it ran every frame while typing. Cache the resolved
+    # Address and re-resolve only when the input or the file's mtime changes:
+    # typing doesn't write the file, so it's a cache hit; a save bumps mtime and
+    # we re-resolve once with fresh line numbers.
+    try:
+        mtime = Path(source_file).stat().st_mtime
+    except OSError:
+        mtime = None
+    cached = getattr(draw_state, '_addr_cache', None)
+    if cached is not None and cached[0] is input_value and cached[1] == mtime:
+        return changed, cached[2]
+
+    _evict_linecache(source_file)
     try:
         source_lines, start_lineno = inspect.getsourcelines(unwrapped)
     except (OSError, TypeError, tokenize.TokenError, SyntaxError) as e:
         print(f"Could not get source lines for {input_value.__name__} in {source_file}: {e}")
         return changed, None
 
-    return changed, Address(Path(source_file), start_lineno - 1,
-                            start_lineno - 1 + len(source_lines), source=input_value,
-                            watcher_ds=draw_state)
+    address = Address(Path(source_file), start_lineno - 1,
+                      start_lineno - 1 + len(source_lines), source=input_value,
+                      watcher_ds=draw_state)
+    draw_state._addr_cache = (input_value, mtime, address)
+    return changed, address
 
 
 @render_func()
@@ -161,11 +177,24 @@ def class_to_address(input_value: type, draw_state, changed=False):
             import inspect
             source_file = inspect.getfile(input_value)
             FileWatch.register_draw_state(draw_state, Path(source_file))
+
+            # See function_to_address: cache the getsourcelines result by
+            # (input, file mtime) so typing doesn't re-read+tokenize the file.
+            try:
+                mtime = Path(source_file).stat().st_mtime
+            except OSError:
+                mtime = None
+            cached = getattr(draw_state, '_addr_cache', None)
+            if cached is not None and cached[0] is input_value and cached[1] == mtime:
+                return changed, cached[2]
+
             _evict_linecache(source_file)
             source_lines, start_lineno = inspect.getsourcelines(input_value)
-            return changed, Address(Path(source_file), start_lineno - 1,
-                                    start_lineno - 1 + len(source_lines), source=input_value,
-                                    watcher_ds=draw_state)
+            address = Address(Path(source_file), start_lineno - 1,
+                              start_lineno - 1 + len(source_lines), source=input_value,
+                              watcher_ds=draw_state)
+            draw_state._addr_cache = (input_value, mtime, address)
+            return changed, address
         except (TypeError, OSError, tokenize.TokenError, SyntaxError):
             return changed, None
     else:
@@ -407,26 +436,67 @@ def general_parse_to_str(input_value, changed=False, draw_state=None):
         return False, None
 
 
+@render_func(background=True)
+def parse_source_to_general(input_value):
+    """Parse an edited source string back into a GeneralParse, on a background
+    thread. cst.parse_module + cst_module_to_dict are O(buffer); running them
+    inline on str_to_general_parse blocked every keystroke. Mirrors CODE_UI's
+    load_cst_module. A syntax error mid-edit raises here and surfaces as a
+    PendingState.ERROR (Background.run catches it)."""
+    cst_module = cst.parse_module(str(input_value))
+    return True, cst_module_to_dict(cst_module)
+
+
+# Wait this long after the last edit before parsing. A full-buffer parse is
+# CPU-bound Python (cst.parse_module + cst_module_to_dict), so doing it per
+# keystroke blocks the next frame whether it runs inline or on a GIL-bound
+# pool thread. The parse only feeds save/round-trip, not the displayed text, so
+# deferring it until typing settles keeps keystrokes smooth.
+_PARSE_DEBOUNCE_S = 0.1
+
+
 @render_func(use_cache=True)
 def str_to_general_parse(input_value, reference=None, changed=False, draw_state=None):
     input_str = str(input_value)
-    if isinstance(reference, GeneralParse):
-        if changed:
-            try:
-                cst_module = cst.parse_module(input_str)
-                general_parse = cst_module_to_dict(cst_module)
-                general_parse.address = reference.address
-                return True, general_parse
-            except Exception as e:
+    has_ref = isinstance(reference, GeneralParse)
+
+    # Debounce the parse: while the text is still changing (or hasn't been
+    # stable for _PARSE_DEBOUNCE_S), keep showing the prior parse and don't
+    # touch the UI. request_render keeps frames coming until the timer elapses.
+    if input_str != getattr(draw_state, '_parse_pending_str', None):
+        draw_state._parse_pending_str = input_str
+        draw_state._parse_pending_at = time.monotonic()
+        request_render()
+        return False, reference if has_ref else None
+    if (input_str != getattr(draw_state, '_last_propagated_str', None)
+            and time.monotonic() - getattr(draw_state, '_parse_pending_at', 0.0) < _PARSE_DEBOUNCE_S):
+        request_render()
+        return False, reference if has_ref else None
+
+    # Parse the edited text back to a parse tree off the main thread.
+    # `reference` is the chain's cached prior parse for this position; we keep
+    # it flowing while the background parse is pending or the edit is unstable,
+    # so downstream save/recompile always get a valid (last-good) parse.
+    _c, general_parse = parse_source_to_general(input_value=input_str)
+
+    if isinstance(general_parse, Pending) or general_parse is None:
+        if isinstance(general_parse, Pending) and general_parse.state == PendingState.ERROR:
+            # Incomplete/invalid syntax mid-edit: keep the edited text live and
+            # surface the error; don't push a broken parse downstream.
+            if has_ref:
                 reference.source = input_str
-                imgui.text_colored(f"Error parsing code: {e}", 1.0, 0.0, 0.0)
-                return True, reference
-        else:
-            return False, None
-    else:
-        cst_module = cst.parse_module(input_str)
-        general_parse = cst_module_to_dict(cst_module)
+            imgui.text_colored("Error parsing code", 1.0, 0.0, 0.0)
+        # Background still running (or nothing changed): keep the previous parse.
+        return False, reference if has_ref else None
+
+    if not has_ref:
         return False, general_parse
+    general_parse.address = reference.address
+    # Propagate changed=True once, on the frame a new parse first lands, so
+    # downstream save/recompile can notice it without re-firing every frame.
+    fresh = getattr(draw_state, '_last_propagated_str', None) != input_str
+    draw_state._last_propagated_str = input_str
+    return fresh, general_parse
 
 
 
