@@ -544,17 +544,50 @@ def draw_property(input_value:property, draw_state, **kwargs):
     # value = input_value.fget(input_value)
     # draw_any(value, name="value", show_bg=True, draw_state=draw_state)
 
-@render_func(is_default_for=(type), show_bg=True, use_cache=False, shadow=False, tint=(0.01406166236847639, 0.2259240746498108, 0.30232560634613037), with_header=draw_header, with_footer=draw_footer)
-def draw_type(input_value:type, draw_state, **kwargs):
+@render_func(is_default_for=(type), show_bg=True, use_cache=False, shadow=False,
+             with_header=draw_header)
+def draw_type(input_value:type, **kwargs):
+    class_vars = {**{k: getattr(input_value, k) for k in vars(input_value)}}
 
-    draw_collection(vars(input_value), name="vars", shadow=False, use_cache=False, show_bg=True, show_excluded=True)
-    # draw_collection(dir(input_value), name="dir", show_excluded=True)
-    # draw_collection(input_value.__dict__, name="__dict__", show_excluded=True)
-    # draw_collection(inspect.getmembers(input_value), name="inspect")
-    keys = list(set(dir(input_value)) | set(vars(type(input_value))))
-    type_get_attr = lambda obj, key: getattr(obj, key, None)
-    type_set_attr = lambda obj, key, value: setattr(obj, key, value)
-    #draw_collection(input_value, name="inspect", keys=keys, get_attr=type_get_attr, set_attr=type_set_attr)
+    changed, new_dict = draw_collection(class_vars, draw=True, name=f"Class: {input_value.__name__}")
+
+    if changed:
+        for k, v in new_dict.items():
+            if k.startswith("_"):
+                continue
+            try:
+                imgui.text(f"Setting attribute {k} to value {v} on class {input_value.__name__}")
+                setattr(input_value, k, v)
+            except Exception as e:
+                imgui.text(f"Error setting attribute {k} on class {input_value.__name__}: {e}")
+
+
+@render_func()
+def class_to_var_dict(input_value: type, changed, draw_state, **kwargs):
+    class_vars = {**{k: getattr(input_value, k) for k in vars(input_value)}}
+    class_vars["__original__"] = input_value
+
+    return changed, class_vars
+
+
+@render_func()
+def var_dict_to_class(input_value, changed, **kwargs):
+    original_class = input_value.get("__original__", None)
+    if original_class is None:
+        imgui.text_colored("Error: No original class found in dict", 1.0, 0.0, 0.0, 1.0)
+        return False, None
+
+    if changed:
+        for k, v in input_value.items():
+            if k.startswith("_"):
+                continue
+            try:
+                imgui.text(f"Setting attribute {k} to value {v} on class {original_class.__name__}")
+                setattr(original_class, k, v)
+            except Exception as e:
+                imgui.text(f"Error setting attribute {k} on class {original_class.__name__}: {e}")
+
+    return False, None
 
 some_float = [0.0]
 cst_dict = {}
@@ -575,7 +608,7 @@ def test_columns():
 
 
 @render_func(use_cache=False, show_bg=False, disable_scroll=True, shadow=False, selectable=False)
-def draw_with_modes(input_value, modes, tab_state: TabState = None, search_text="", draw_state=None, unique=0):
+def draw_with_modes(input_value, modes, tab_state: TabState = None, changed=False, search_text="", draw_state=None, unique=0):
     if not tab_state.selected_tabs:
         tab_state.selected_tabs = [modes[0]]
     imgui.dummy(0, 5)
@@ -589,7 +622,7 @@ def draw_with_modes(input_value, modes, tab_state: TabState = None, search_text=
         tab_state.selected_tabs = new_tabs
 
     imgui.dummy(0, 2)
-    changed = False
+
     value = input_value
     for idx, mode in enumerate(tab_state.selected_tabs):
         mode_changed, value = draw_any(input_value, name=f"Mode: {mode} {unique}", mode=mode, selectable=False, show_name=False,
@@ -605,7 +638,8 @@ def draw_draw_state(input_value, **kwargs):
 
 
 @render_func(use_cache=False, shadow=False, show_bg=False)
-def run_chain(input_value, chain=None, draw_state=None, disable_scroll=True, s_key_pressed=False, unique=None, debug=False, **kwargs):
+def run_chain(input_value, chain=None, draw_state=None, disable_scroll=True,
+              s_key_pressed=False, changed=False, unique=None, debug=False, **kwargs):
     """Debug render function: executes a chain step by step with imgui output.
 
     Shows function name, changed flag, output type, and a value preview
@@ -616,7 +650,6 @@ def run_chain(input_value, chain=None, draw_state=None, disable_scroll=True, s_k
         return False, input_value
 
     value = input_value
-    changed = False
 
     if debug:
         imgui.text(f"Chain: {len(chain)} nodes")
@@ -625,14 +658,19 @@ def run_chain(input_value, chain=None, draw_state=None, disable_scroll=True, s_k
 
     cache_tree = draw_state._chain_stack
     cache_tree.begin()
-    value = cache_tree.step(changed, value)
+
     start_cursor = imgui.get_cursor_screen_pos()
+    mode_cache = True
 
     for i, func in enumerate(chain):
         if isinstance(func, tuple):
             func, func_kwargs = func
         else:
             func_kwargs = {}
+
+        mode_cache = func_kwargs.get('mode_cache', True)
+        if mode_cache:
+            value = cache_tree.step(changed, value)
 
         if debug:
             if not changed:
@@ -649,12 +687,11 @@ def run_chain(input_value, chain=None, draw_state=None, disable_scroll=True, s_k
         next_cached = cache_tree.peek()
         changed, value = func(input_value=value, reference=next_cached, **func_kwargs)
 
-        # imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0], start_cursor[1] + i* 300))
-
         if isinstance(value, Pending):
             changed=False
             value=None
 
+    if mode_cache:
         value = cache_tree.step(changed, value)
 
     cache_tree.end()
@@ -683,8 +720,8 @@ def draw_main(input_value, vis, search_text="", draw_state=None):
     for window_cls, kwargs in Melty.annotated_window_classes.values():
         kwargs.setdefault('mode', Mode.WINDOW)
         kwargs.setdefault('show_bg', True)
-        kwargs.setdefault('modes', (Mode.CODE_UI, Mode.CODE_PLAIN_TEXT))
-        kwargs.setdefault('name', f"{window_cls.__name__} Window")
+        kwargs.setdefault('modes', (Mode.CODE_UI, Mode.CODE_PLAIN_TEXT, Mode.RUNNING))
+        kwargs.setdefault('name', f"{window_cls.__name__}##@window")
         draw_with_modes(window_cls, **kwargs)
 
     changed, value = draw_blit_debug(None, name="Blit Offscreen Debug", mode=(Mode.WINDOW))
@@ -694,8 +731,15 @@ def draw_main(input_value, vis, search_text="", draw_state=None):
     if changed:
         test_code = value
 
-    changed, value = draw_any(input_value=draw_bg, name="draw_bg_other",
+    changed, value = draw_any(input_value=draw_bg, name="draw_bg_new_mode",
                                      show_bg=True, mode=(Mode.CODE, Mode.WINDOW))
+    if changed:
+        test_code = value
+
+    changed, value = draw_with_modes(input_value=draw_bg, name="draw_bg",
+                              show_bg=True, modes=(Mode.CODE_UI,
+                                                   Mode.CODE_PLAIN_TEXT,
+                                                   Mode.RUNNING), mode=(Mode.WINDOW))
     if changed:
         test_code = value
 
@@ -713,8 +757,8 @@ def draw_main(input_value, vis, search_text="", draw_state=None):
     from src.lsd.gl_gui.model.app_model import TensorView
     draw_window(TensorView, name="Tensorview")
 
-    global_toggles = vis.root.global_toggles
-    draw_any(global_toggles, name="Toggles", auto_resize=True, wrap=True, use_cache=True, show_bg=True, mode=Mode.WINDOW)
+    # global_toggles = vis.root.global_toggles
+    # draw_any(global_toggles, name="Toggles", auto_resize=True, wrap=True, use_cache=True, show_bg=True, mode=Mode.WINDOW)
     changed, new_val = draw_any(Melty.cache.enabled, name="Offscreen Rendering", wrap=True, show_bg=True, use_cache=True)
     if changed:
         if new_val:
@@ -745,7 +789,8 @@ def draw_main(input_value, vis, search_text="", draw_state=None):
         some_float[0] = new_float
 
     global selected_tabs
-    changed, new_tabs = draw_tab_bar(selected_tabs, collection=["Alpha", "Beta", "Gamma", "Delta"], name="Tab Bar Demo", mode=Mode.WINDOW)
+    changed, new_tabs = draw_tab_bar(selected_tabs, collection=["Alpha", "Beta", "Gamma", "Delta"],
+                                     name="Tab Bar Demo", mode=Mode.WINDOW)
     if changed:
         selected_tabs = new_tabs
 
@@ -1668,13 +1713,14 @@ def test_func():
     }
 
 
-def draw_bg(left=0, top=0, width=0, height=57, depth=0, rounding=5.945, bg_offset=0,
+def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset=0,
         global_style=None, outline=True, bg_color=None, opacity=0.0,
         style_manager=None, tint=None, outline_tint=None, selected=False,
         hovered=False, pressed=False, nested_bg=False, **kwargs):
     # -- Constants ---------------------------------
     depth_wrap        = 30
-    depth_scale       = 1.019
+    depth_scale       = 2.271
+    # [tint=(1,1,1)]
     corner_radius     = rounding
     border_inset      = 2.802
     border_inset_half = 1.5
@@ -1790,7 +1836,6 @@ def draw_bg(left=0, top=0, width=0, height=57, depth=0, rounding=5.945, bg_offse
         imgui.get_window_draw_list().add_rect_filled(*fill_rect, col=packed_fill, rounding=corner_radius)
 
     return False, bg_color
-
 @render_func(use_cache=True, shadow=True, selectable=False, show_bg=False, min_width=10, min_height=10, wrap=True)
 def button(input_value="", corner_radius=6, draw_state=None, alpha=1.0, left_mouse_held=False, left_mouse_down=False,
            color=(0.5, 0.5, 0.5), hovered=False, width=None, height=None, style_manager=None,
@@ -1895,7 +1940,9 @@ def text(input_value: str, draw_state):
 
     return False, input_value
 
-@render_func(is_default_for=(str), shadow=False, show_bg=False, wrap=False, is_tree=False, show_add_delete=False, use_cache=True, disable_scroll=True, with_header=draw_header)
+@render_func(is_default_for=(str), shadow=False, show_bg=False, wrap=False, 
+             is_tree=False, show_add_delete=False, use_cache=True,
+             disable_scroll=True, with_header=draw_header)
 def draw_str(input_value: str, draw_state, editable=True, immediate_return=False, alpha=1.0):
     if not editable:
         imgui.push_style_var(imgui.STYLE_ALPHA, alpha)
@@ -1907,6 +1954,8 @@ def draw_str(input_value: str, draw_state, editable=True, immediate_return=False
 
         imgui.pop_style_var(1)
         return False, input_value
+
+    some_int = 29
 
 
     line_count = input_value.count('\n') + 1
@@ -2161,7 +2210,7 @@ def draw_float_ctx(input_value):
 
 
 @render_func(is_default_for=float, use_cache=False, shadow=False,
-             is_tree=False, show_bg=False, wrap=False, 
+             is_tree=False, show_bg=False, wrap=False,
              with_header=draw_header, with_header_end=draw_header_end)
 def draw_float(input_value: float, 
                draw_state,

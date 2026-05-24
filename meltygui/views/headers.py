@@ -247,17 +247,34 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     from src.lsd.gl_gui.view.core_views.new_core_view import draw_tuple
 
     # ── Tint widget ────────────────────────────────────────────
-    if hasattr(input_value, "tint") and input_value.tint is not None and show_tint:
+    # A dict can carry its tint in __overrides__ (parsed from a `# [tint=(...)]`
+    # comment); edit that value directly so the change round-trips to source.
+    # The override comment is itself the opt-in, so this isn't conditional on
+    # show_tint (which is only set for top-level windows, not nested classes).
+    _overrides = input_value.get("__overrides__") if isinstance(input_value, dict) else None
+    if isinstance(_overrides, dict) and _overrides.get("tint") is not None:
+        draw_state._has_popup = True
+        tint_changed, tint_value = draw_tuple(_overrides["tint"], show_name=False, show_header=False)
+        if tint_changed:
+            _overrides["tint"] = tint_value
+            on_change = True
+            return_val = input_value
+        same_line()
+    elif hasattr(input_value, "tint") and input_value.tint is not None and show_tint:
         draw_state._has_popup = True
         tint_changed, tint_value = draw_tuple(input_value.tint, show_name=False, show_header=False)
         if tint_changed:
             input_value.tint = tint_value
+            on_change = True
+            return_val = input_value
         same_line()
     elif show_tint and draw_state.tint is not None:
         draw_state._has_popup = True
         tint_changed, tint_value = draw_tuple(draw_state.tint, show_name=False, show_header=False)
         if tint_changed:
             draw_state.tint = tint_value
+            on_change = True
+            return_val = input_value
         same_line()
 
     # ── Add button ─────────────────────────────────────────────

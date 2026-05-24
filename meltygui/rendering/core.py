@@ -208,6 +208,10 @@ def render_func(*args, **o_kwargs):
         active_layer = kwargs.get("active_layer", None)
 
         return_value = None
+        # Captured from the header render (e.g. an in-header tint edit) so it can
+        # be folded into the view's own changed/value result downstream.
+        header_changed = False
+        header_return = None
         is_root = Melty.depth == 0
         input_value = kwargs.get("input_value", input_value)
         content_margin = ((len(Melty.bg_stack)) * 2.0)
@@ -1165,12 +1169,6 @@ def render_func(*args, **o_kwargs):
                             Melty.cache.invalidate(Melty.focused_ds._tile_id, force=True)
                             request_render()
                         draw_state.search_active = True
-                        # Prefill the search box with the current text selection
-                        # (set by the editor's render_text frame), so Ctrl+F on a
-                        # selection searches for it immediately.
-                        _sel = getattr(draw_state, '_selection_text', '')
-                        if _sel:
-                            draw_state.search_text = _sel
                         # Reset so render_search re-requests focus, and release
                         # the view's own text focus, so the search box takes
                         # focus even if this view is already focused.
@@ -1679,6 +1677,9 @@ def render_func(*args, **o_kwargs):
                                             global_style=global_style, opacity=1.0 if show_bg else 0.0,
                                             pressed=False,
                                             style_manager=style_manager, nested_bg=nested_bg)
+                        # draw_bg paints into this view's tile rather than owning
+                        # one, so register it against this view's key for invalidate_by_func.
+                        Melty.cache.register_func_key(draw_bg, draw_state._tile_id)
                         if bg_return is not None:
                             bg_color = bg_return[1]
 
@@ -1885,7 +1886,11 @@ def render_func(*args, **o_kwargs):
 
                     imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0] + outline_margin,
                                                  imgui.get_cursor_screen_pos()[1] + outline_margin))
-                    draw_header(**kwargs)
+                    _header_ret = draw_header(**kwargs)
+                    if isinstance(_header_ret, tuple) and len(_header_ret) >= 1 and _header_ret[0]:
+                        header_changed = True
+                        if len(_header_ret) >= 2:
+                            header_return = _header_ret[1]
 
                     imgui.set_cursor_screen_pos(header_start_cursor)
                     end_group()
@@ -2171,8 +2176,10 @@ def render_func(*args, **o_kwargs):
             if passed_width is not None:
                 item_rect = (passed_width, item_rect[1])
             if return_value is not None and len(return_value) >= 2:
-                child_changed = return_value[0]
+                child_changed = return_value[0] or header_changed
                 new_value_child = return_value[1]
+                if header_changed and not return_value[0] and header_return is not None:
+                    new_value_child = header_return
                 report_value = new_value_child
                 report_changed = False
 

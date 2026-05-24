@@ -782,7 +782,10 @@ def draw_text(input_value: str,
                 changed = True
             elif ds.text_cursor_pos > 0:
                 if ctrl:
-                    new_pos = _word_boundary_left(text, ds.text_cursor_pos)
+                    # Same granular behaviour as ctrl-click selection so a
+                    # ctrl-backspace stops at a bracket/operator instead of
+                    # eating a whole run of '{(' etc.
+                    new_pos = _select_unit_left(text, ds.text_cursor_pos)
                     text = text[:new_pos] + text[ds.text_cursor_pos:]
                     ds.text_cursor_pos = new_pos
                 elif (ds.text_cursor_pos >= 4
@@ -806,7 +809,7 @@ def draw_text(input_value: str,
                 changed = True
             elif ds.text_cursor_pos < len(text):
                 if ctrl:
-                    new_pos = _word_boundary_right(text, ds.text_cursor_pos)
+                    new_pos = _select_unit_right(text, ds.text_cursor_pos)
                     text = text[:ds.text_cursor_pos] + text[new_pos:]
                 else:
                     text = text[:ds.text_cursor_pos] + text[ds.text_cursor_pos + 1:]

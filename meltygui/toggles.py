@@ -75,13 +75,13 @@ class Toggles:
     show_excluded = True
     
     # Shadow Settings
-    shadow_downscale = 3
+    shadow_downscale = 2
     shadow_edge_sharpness = 50.0
     
     # [bg_offset=0, tint=(0.6604651, 0.1, 0.24270762503147125)]
     draw_legacy = False
     
-    # [tint=(0.28809088468551636, 0.6510206, 0.8976744413375854), bg_offset=0]
+    # [tint=(0.06111411, 0.4413291811943054, 0.5255813598632812), bg_offset=0]
     class Debug:
         slow_frame_rate = False
 

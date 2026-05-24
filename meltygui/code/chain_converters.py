@@ -294,7 +294,7 @@ def dict_to_cst(input_value, changed=False):
     return False, back_to_cst
 
 
-@render_func(use_cache=True)
+@render_func(use_cache=True, selectable=False)
 def run_button(input_value: any, with_kwargs=None, draw_state=None, clicked=False):
     is_render_func = hasattr(input_value, "__render_func__")
     if not is_render_func:

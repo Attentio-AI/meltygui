@@ -21,7 +21,8 @@ from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.core_views.headers import draw_footer, draw_header_end, draw_header
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
 from src.lsd.gl_gui.view.core_views.new_core_view import draw_collection, draw_comment, \
- sort_dict_alphabetically, unsort_dict_alphabetically, draw_with_modes
+    sort_dict_alphabetically, unsort_dict_alphabetically, draw_with_modes, draw_type, \
+    class_to_var_dict, var_dict_to_class
 from src.lsd.gl_gui.view.core_views.text_editor import draw_text
 
 
@@ -40,7 +41,6 @@ class ModeOverrides:
 
 @window
 class Mode(Enum):
-
     def get_config_for(self, input_value=None, the_type=None):
         if input_value is not None:
             the_type = type(input_value)
@@ -116,35 +116,31 @@ class Mode(Enum):
         )
     }
 
-    auto_load = True
-    auto_save = True
-    auto_recompile = False
-
+    code_ui_auto_load = True
+    code_ui_params = {'save': True,
+                     'recompile': False}
     CODE_UI = {
         types.FunctionType: ModeOverrides(
             recursive=True,
             func=(function_to_address,
-                  (address_to_general_parse, {'load': auto_load}),
+                  (address_to_general_parse, {'load': code_ui_auto_load}),
                   (draw_collection, {"show_add_delete": True}),
-                  (general_parse_to_address, {'save': True,
-                                              'recompile': True}),
+                  (general_parse_to_address, code_ui_params),
                   address_to_function),
         ),
         types.ModuleType: ModeOverrides(
             recursive=True,
             func=(module_to_address,
-                  (address_to_general_parse, {'load': auto_load}),
+                  (address_to_general_parse, {'load': code_ui_auto_load}),
                   (draw_collection, {"show_add_delete": True}),
-                  (general_parse_to_address, {'save': True,
-                                              'recompile': True}),
+                  (general_parse_to_address, code_ui_params),
                   address_to_module),
         ),
         type: ModeOverrides(
             func=(class_to_address,
-                  (address_to_general_parse, {'load': auto_load}),
+                  (address_to_general_parse, {'load': code_ui_auto_load}),
                   (draw_collection, {"show_add_delete": False}),
-                  (general_parse_to_address, {'save': True,
-                                              'recompile': True}),
+                  (general_parse_to_address, code_ui_params),
                   address_to_class),
             recursive=True
         ),
@@ -165,7 +161,7 @@ class Mode(Enum):
 
     }
  
-    code_plain_text_auto_load = False
+    code_plain_text_auto_load = True
     code_plain_text_params = {'save': True,
                               'recompile': False}
     CODE_PLAIN_TEXT = {
@@ -200,6 +196,14 @@ class Mode(Enum):
                   address_to_class),
             recursive=True
         ),
+    }
+
+    RUNNING = {
+        type: ModeOverrides(
+            func=(draw_type),
+            recursive=False
+        ),
+
     }
 
     # ── File metadata ────────────────────────────────────────
@@ -265,17 +269,15 @@ def _populate_code_mode():
     """
     inner_modes = (Mode.CODE_INNER_TEXT, Mode.CODE_INNER_UI)
 
-
-
     def chain_for(address_in, address_out):
         return ModeOverrides(
             kwargs={"disable_scroll": True, "searchable":True},
             recursive=True,
 
             func=(address_in,
-                  (address_to_general_parse, {'load': True}),
+                  (address_to_general_parse, {'load': True,}),
                   (draw_with_modes, {'modes': inner_modes, 'disable_scroll': True, 'fill_height': compute_height}),
-                  (general_parse_to_address, {'save': True, 'recompile': False}),
+                  (general_parse_to_address, {'save': True, 'recompile': True}),
                   address_out),
         )
 

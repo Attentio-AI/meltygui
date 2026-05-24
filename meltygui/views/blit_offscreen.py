@@ -5,7 +5,7 @@ from collections import deque, defaultdict
 from copy import copy
 from dataclasses import dataclass
 from math import ceil, floor
-from typing import Dict, List, Optional, Tuple, MutableMapping
+from typing import Dict, List, Optional, Tuple, MutableMapping, Any
 
 from OpenGL import GL as gl
 import imgui
@@ -17,6 +17,7 @@ from src.lsd.gl_gui.model.core_model.draw_state import TileMode
 from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace, get_live_frames
 from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
+from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 
 """
 Per-view tile caching with a post-frame mask.
@@ -42,6 +43,10 @@ INV_65535 = 1.0 / 65535.0
 # on either axis it gracefully falls back to uncached rendering instead.
 MAX_TILE_DIM = 8000
 
+@window
+class InvalidateTracker:
+    invalidations: Dict[str, Any] = {"some_val":20}
+    some_int = 61
 
 # ==============================
 # Small structs
@@ -547,6 +552,9 @@ class TileCacheMasked:
         self.frame_tint = (0.5 + 0.5 * rf(), 0.5 + 0.5 * rf(), 0.5 + 0.5 * rf(), 1.0)
 
         self.py_id_to_keys: Dict[str, set] = {}
+        # Maps a draw function's id() -> set of view keys it produced, so we
+        # can invalidate every view drawn by a given @draw_func (e.g. draw_text).
+        self.func_id_to_keys: Dict[int, set] = {}
         self.key_to_parent_key: Dict[str, str] = {}
         self.parent_key_to_child_keys: Dict[str, dict] = {}
         self.parent_key_to_child_keys_last: Dict[str, dict] = {}
@@ -719,6 +727,55 @@ class TileCacheMasked:
             if keys is not None:
                 for k in keys:
                     self.invalidate(k, frame_delta=frame_delta)
+
+    @staticmethod
+    def _func_ids(func) -> set:
+        """Candidate ids for a render function: the function itself plus the raw
+        function it wraps. @render_func sets wrapper.__wrapped__ to the original
+        (via functools.wraps), so callers can pass either the imported wrapper
+        (e.g. draw_text) or the undecorated function and still match."""
+        ids = set()
+        if func is None:
+            return ids
+        ids.add(id(func))
+        wrapped = getattr(func, "__wrapped__", None)
+        if wrapped is not None:
+            ids.add(id(wrapped))
+        return ids
+
+    def _register_func_keys(self, draw_state, rkey) -> None:
+        """Record which render function produced this view key (both the wrapper
+        and the underlying function) so invalidate_by_func can find it later."""
+        for fn in (getattr(draw_state, "_wrapper", None), getattr(draw_state, "_view_func", None)):
+            for fid in self._func_ids(fn):
+                self.func_id_to_keys.setdefault(fid, set()).add(rkey)
+
+    def register_func_key(self, func, key) -> None:
+        """Associate an extra render function with an existing view key. Used for
+        helper functions that draw into another view's tile rather than owning a
+        tile themselves (e.g. draw_bg painting a view's background), so that
+        invalidate_by_func(draw_bg) reaches every view it backed."""
+        if key is None:
+            return
+        for fid in self._func_ids(func):
+            self.func_id_to_keys.setdefault(fid, set()).add(key)
+
+    def _keys_for_func(self, func) -> set:
+        keys = set()
+        for fid in self._func_ids(func):
+            keys |= self.func_id_to_keys.get(fid, set())
+        return keys
+
+    def invalidate_by_func(self, func, frame_delta=0):
+        """Invalidate every view drawn by the given @render_func, e.g.
+        invalidate_by_func(draw_text) rerenders all text views."""
+        for k in self._keys_for_func(func):
+            self.invalidate(k, frame_delta=frame_delta)
+
+    def invalidate_up_by_func(self, func, max_depth=4, force=False, frame_delta=0):
+        """Like invalidate_by_func, but also cascades up to parents/children."""
+        for k in self._keys_for_func(func):
+            self.invalidate_up(k, max_depth=max_depth, force=force, frame_delta=frame_delta)
 
     def apply_invalid(self):
         for t in self.pending_invalid:
@@ -1191,6 +1248,7 @@ class TileCacheMasked:
         rkey = self._resolve_key(key)
         self.py_id_to_keys.setdefault(f"{id(input_value)}", set()).add(rkey)
         self.py_id_to_keys.setdefault(f"{id(collection)}", set()).add(rkey)
+        self._register_func_keys(draw_state, rkey)
         self.key_to_parent_key[rkey] = parent_ctx.key if parent_ctx else None
 
     def draw_tile(self, draw_state):
@@ -1307,6 +1365,7 @@ class TileCacheMasked:
         if f"{id(draw_state)}" not in self.py_id_to_keys:
             self.py_id_to_keys[f"{id(draw_state)}"] = set()
         self.py_id_to_keys[f"{id(draw_state)}"].add(rkey)
+        self._register_func_keys(draw_state, rkey)
 
         imgui.push_id(f"{rkey}{layer}_offscreen")
         imgui.begin_group()
@@ -1685,6 +1744,7 @@ class TileCacheMasked:
         gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
 
     def finalize_captures(self, framebuffer_size: Tuple[int, int], global_toggles=None) -> None:
+
         self.all_keys = set()
         if self._snapshot_fbo is None:
             return

@@ -258,7 +258,7 @@ def cls_to_cst(input_value, data=None) -> cst.Module:
 
 @render_func()
 def recompile_cls_fn(input_value, ref=None, class_ref=None,
-                     hotswap_instances=False):
+                     hotswap_instances=True):
     """Save handler: hotswap class + write source to disk."""
     from src.lsd.gl_gui.view.core_conversion.path_finder import Pending, PendingState
     if class_ref is not None:
@@ -470,6 +470,8 @@ def _recompile(func: types.FunctionType, source: str,
         co_firstlineno=original_firstlineno
     )
 
+    Melty.cache.invalidate_up_by_func(func, max_depth=10)
+
 
 def _recompile_class(cls: type, source: str, filename: str) -> None:
     import sys
@@ -488,6 +490,8 @@ def _recompile_class(cls: type, source: str, filename: str) -> None:
         raise RuntimeError(f"'{cls.__name__}' is {type(new_cls).__name__}, not a class")
 
     _hotswap_class(cls, new_cls)
+
+    Melty.cache.invalidate_up_by_obj(cls, max_depth=10)
 
 
 def _recompile_module(module: types.ModuleType, source: str,
