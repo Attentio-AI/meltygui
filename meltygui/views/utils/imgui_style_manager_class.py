@@ -1,6 +1,8 @@
 import imgui
 import colorsys
 
+from src.lsd.gl_gui.global_style import GlobalStyle
+
 
 class ImGuiStyleManager:
     def __init__(self):
@@ -73,7 +75,7 @@ class ImGuiStyleManager:
             saturation_scale = saturation
         else:
             saturation_scale = input["saturation"]
-        value = (v * self.root.global_style.base_value) + value
+        value = (v * GlobalStyle.base_value) + value
         if 'max_value' in input:
             value = min(value, input["max_value"])
 
@@ -96,7 +98,7 @@ class ImGuiStyleManager:
 
     def make_color(self, value, saturation_scale=1.0, alpha=1.0):
         h, s, v = self.hsv
-        value = (v * self.root.global_style.secondary_value) + value
+        value = (v * GlobalStyle.secondary_value) + value
 
         modified_rgb = colorsys.hsv_to_rgb(h, s * saturation_scale, value)
         imgui_color = imgui.get_color_u32_rgba(modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
@@ -168,7 +170,7 @@ class ImGuiStyleManager:
         value = input["value"]
 
         saturation_scale = input["saturation"]
-        value = (v * self.root.global_style.base_value) + value
+        value = (v * GlobalStyle.base_value) + value
         if 'max_value' in input:
             value = min(value, input["max_value"])
         alpha = input["alpha"]
@@ -197,7 +199,7 @@ class ImGuiStyleManager:
             saturation_scale = saturation
         else:
             saturation_scale = input["saturation"]
-        value = (v * self.root.global_style.base_value) + value
+        value = (v * GlobalStyle.base_value) + value
         if 'max_value' in input:
             value = min(value, input["max_value"])
 
@@ -210,7 +212,7 @@ class ImGuiStyleManager:
         value = input["value"]
 
         saturation_scale = input["saturation"]
-        value = (v * self.root.global_style.base_value) + value
+        value = (v * GlobalStyle.base_value) + value
         if 'max_value' in input:
             value = min(value, input["max_value"])
         alpha = input["alpha"]
@@ -345,14 +347,14 @@ class ImGuiStyleManager:
         def make_color(input, alpha=1.0):
             value = input["value"]
             saturation_scale = input["saturation"]
-            self.root.global_style.base_value = 0.3
-            value = (v * self.root.global_style.base_value) + value
+            GlobalStyle.base_value = 0.3
+            value = (v * GlobalStyle.base_value) + value
             alpha = input["alpha"]
 
             modified_rgb = colorsys.hsv_to_rgb(h, s * saturation_scale, value)
             return (modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
 
-        glb_cst = self.root.global_style.main_const
+        glb_cst = GlobalStyle.main_const
 
         colors[imgui.COLOR_TEXT] = make_color(glb_cst["widget"]["text"])  # Nearly white text
         colors[imgui.COLOR_TEXT_DISABLED] = make_color(glb_cst["widget"]["text_disabled"])  # Grayed out text

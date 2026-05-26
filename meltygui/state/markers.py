@@ -4,15 +4,10 @@ from typing import Any
 from src.lsd.gl_gui.melty import Melty
 
 
-class Val:
-    def __init__(self, option:Any):
-        self.option = option
-
 
 def _is_field_candidate(v) -> bool:
     # Treat non-callables that aren't descriptors as "fields"
     return not callable(v) and not isinstance(v, (staticmethod, classmethod, property))
-
 
 class FieldMeta(type):
 
@@ -34,8 +29,6 @@ class FieldMeta(type):
             pass
 
         for key, value in namespace.items():
-            if key == "loras":
-                pass
             if key.startswith("__") and key.endswith("__"):
                 new_namespace[key] = value
                 continue
@@ -43,9 +36,6 @@ class FieldMeta(type):
             if not _is_field_candidate(value):
                 new_namespace[key] = value
                 continue
-
-            if key == "alpha":
-                pass
 
             value_annotation = namespace.get("__annotations__", {}).get(key, None)
 
@@ -110,28 +100,3 @@ class FieldMeta(type):
             if k not in obj.__dict__:
                 setattr(obj, k, v)
         return obj
-
-
-# disabled = Marker(disabled=True)
-# colored_text = Marker(colored_text=True)
-# class Car(metaclass=FieldMeta):
-#     # class attribute
-#     visibleinui
-#     wheels: int = 4
-#
-#     # instance attribute
-#     colored_text((1, 0, 0))
-#     year: int = 2025
-#
-#     disabled
-#     mileage: int = 0
-#
-# # c = Car()
-# print(c.year)  # 2025
-# print(c.mileage)  # 0
-# print(Car.wheels)  # 4
-#
-# # Meta
-# print(Car.year.meta)  # {'colored_text': True, 'args': (1, 0, 0)}
-# print(Car.mileage.meta)  # {'disabled': True}
-# print(Car.wheels.meta)  # {'visibleinui': True}

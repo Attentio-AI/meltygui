@@ -13,6 +13,9 @@ from imgui.core import _DrawList
 
 from rtree import index as rtree_index
 
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import DecorationManager
+from src.lsd.gl_gui.view.invalidation_tracker import InvalidateTracker
+
 from src.lsd.gl_gui.background import Background
 from src.lsd.gl_gui.collection_action import CollectionAction
 from src.lsd.gl_gui.collision import Collisions
@@ -30,6 +33,7 @@ import OpenGL.GL as gl
 
 _MOUSE_INPUTS = frozenset({'left_mouse', 'right_mouse', 'middle_mouse',
                            'cursor', 'scroll_y', 'scroll_x'})
+
 
 
 class SearchTerm(str):
@@ -147,7 +151,7 @@ class FileWatch:
 
     @classmethod
     def _on_event(cls, event):
-        if Melty.frame_count < 3:
+        if Melty.frame_count < 2:
             return
         draw_states = cls.path_to_draw_states.get(event.src_path)
         if not draw_states:
@@ -382,7 +386,13 @@ class Melty:
     imgui_crashed = False
     type_defaults = {}
     type_interrupts = {}
-    type_to_default_view_func = defaultdict(lambda: set())
+    default_view_functions = defaultdict(lambda: list())
+    default_kwargs_by_type = defaultdict(lambda: dict())
+    default_kwargs_by_attrib_type = defaultdict(lambda: defaultdict(lambda: dict()))
+
+    default_funcs_by_type = defaultdict(lambda: None)
+    default_funcs_by_name_type = defaultdict(lambda: defaultdict(lambda: list()))
+    default_funcs_by_name = defaultdict(lambda: None)
 
     silence_invalidate = False
     unique_stack = []
@@ -458,6 +468,38 @@ class Melty:
     _overlay_probe_logged = False
     _debug_overlay_test = True  # controlled sub-top overlay to verify masking
 
+    @classmethod
+    def get_default_view_function(cls, draw_state=None, real_type=None, collection_type=None, attrib_key=None):
+        if draw_state is not None:
+            real_type = draw_state._kwargs.get("real_type", type(draw_state._input_value))
+            collection_type = draw_state._kwargs.get("type_collection", type(draw_state._collection))
+            attrib_key = draw_state._kwargs.get("key", draw_state._kwargs.get("name", None))
+
+        default_view_function = None
+
+        default_by_name = cls.default_funcs_by_name[attrib_key]
+        default_by_name_type = cls.default_funcs_by_name_type[collection_type][attrib_key]
+        default_by_type = cls.default_funcs_by_type[real_type]
+        default_by_type_str = cls.default_funcs_by_name[real_type.__name__]
+
+        # loop over super types
+        super_types = real_type.__mro__[1:]
+        for t in super_types:
+            if default_by_type is not None:
+                break
+            default_by_type = cls.default_funcs_by_type[t]
+
+        if default_by_name is not None:
+            default_view_function = default_by_name
+        elif default_by_type_str is not None:
+            default_view_function = default_by_type_str
+
+        elif default_by_type is not None:
+            default_view_function = default_by_type
+        # elif len(default_by_name_type) > 0:
+        #     default_view_function = default_by_name_type[-1]
+
+        return default_view_function
 
     # rtree.delete only removes an entry when given the EXACT bbox it was
     # inserted with. So _bvh_bbox always mirrors what's currently in the rtree
@@ -1441,6 +1483,8 @@ class Melty:
         apply_drag_and_drop()
         pass
 
+        InvalidateTracker.on_frame_end()
+
     @classmethod
     def get_latest_mouse(cls):
         return imgui.get_io().mouse_pos
@@ -1940,13 +1984,10 @@ class Melty:
 
         for key, value in kwargs.items():
             setattr(cls, key, value)
-            # cls.global_attrs[key] = value
 
         FileWatch.start()
 
         cls.global_attrs["style_manager"] = getattr(cls, "style_manager", None)
-        cls.global_attrs["global_style"] = getattr(cls, "global_style", None)
-        cls.global_attrs["global_toggle"] = getattr(cls, "global_toggle", None)
 
         cls.annotation_mode = False
 
@@ -2537,6 +2578,9 @@ def apply_collection_action(action: CollectionAction):
 
     return None
 
+
+applied, skipped = DecorationManager.melty.replay(Melty)
+DecorationManager.melty = Melty
 
 class DepthState:
     def __init__(self):

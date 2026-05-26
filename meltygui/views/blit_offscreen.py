@@ -18,6 +18,7 @@ from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace, get_live_frames
 from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
+from src.lsd.gl_gui.view.invalidation_tracker import InvalidateTracker
 
 """
 Per-view tile caching with a post-frame mask.
@@ -43,10 +44,7 @@ INV_65535 = 1.0 / 65535.0
 # on either axis it gracefully falls back to uncached rendering instead.
 MAX_TILE_DIM = 8000
 
-@window
-class InvalidateTracker:
-    invalidations: Dict[str, Any] = {"some_val":20}
-    some_int = 61
+
 
 # ==============================
 # Small structs
@@ -649,7 +647,7 @@ class TileCacheMasked:
         self._enq_copy_keys: set[str] = set()
         self._frame_id: int = 0
 
-        self.pending_invalid = []
+        # self.pending_invalid = []
         self._prev_occluders: Dict[str, frozenset] = {}  # tile_key -> frozenset of (key, x, y, w, h)
 
     @property
@@ -777,11 +775,11 @@ class TileCacheMasked:
         for k in self._keys_for_func(func):
             self.invalidate_up(k, max_depth=max_depth, force=force, frame_delta=frame_delta)
 
-    def apply_invalid(self):
-        for t in self.pending_invalid:
-            if t is not None:
-                t.dirty = self._is_dirty(t)
-        self.pending_invalid.clear()
+    # def apply_invalid(self):
+        # for t in self.pending_invalid:
+        #     if t is not None:
+        #         t.dirty = self._is_dirty(t)
+        # self.pending_invalid.clear()
 
     def get_parent_keys(self, key):
         all_keys = [key]
@@ -800,7 +798,6 @@ class TileCacheMasked:
         return all_keys
 
     def invalidate_up(self, k: str, max_depth=4, force=False, frame_delta=0) -> None:
-
         if k not in self._tiles:
             k = self.key_to_parent_key.get(k, None)
 
@@ -823,7 +820,7 @@ class TileCacheMasked:
                         pt.last_invalidated_frame = max(pt.last_invalidated_frame, self._frame_id + 1) + frame_delta
                         pt.dirty = self._is_dirty(pt)
                         pt.force_invalidate = True
-                        self.pending_invalid.append(pt)
+                        # self.pending_invalid.append(pt)
             if above:
                 continue
             if below:
@@ -866,10 +863,11 @@ class TileCacheMasked:
         )
 
     def invalidate(self, k: str, force=False, do_store=True, frame_delta=0) -> None:
+        draw_state = self.key_to_draw_state.get(k, None)
         if Melty.frame_count > 100 and Melty.frame_count % 30 == 0:
-            draw_state = self.key_to_draw_state.get(k, None)
             if draw_state is not None and draw_state._print_last_invalid:
                 print_stack_trace()
+
 
         if Toggles.invalidate_stack_trace:
             if Melty.frame_count > 100 and Melty.frame_count % 30 == 0:
@@ -881,7 +879,8 @@ class TileCacheMasked:
             target_frame = self._frame_id + 1
             t.last_invalidated_frame = max(t.last_invalidated_frame, target_frame)
             t.dirty = self._is_dirty(t)
-            self.pending_invalid.append(t)
+            InvalidateTracker.invalidations[k] = (draw_state, Melty.frame_count)
+
             if force:
                 t.force_invalidate = True
 
@@ -896,14 +895,14 @@ class TileCacheMasked:
                     pt.force_invalidate = True
                     pt.last_invalidated_frame = max(pt.last_invalidated_frame, self._frame_id + 1) + frame_delta
                     pt.dirty = self._is_dirty(pt)
-                    self.pending_invalid.append(pt)
+                    InvalidateTracker.invalidations[k] = (draw_state, Melty.frame_count)
 
     def invalidate_all(self) -> None:
         for t in self._tiles.values():
             if t is not None:
                 t.last_invalidated_frame = max(t.last_invalidated_frame, self._frame_id + 1)
                 t.force_invalidate = True
-                self.pending_invalid.append(t)
+                # self.force_invalid.append(t)
         request_render()
 
     def _detect_occluder_changes(self, mask_rects):
@@ -1532,7 +1531,7 @@ class TileCacheMasked:
                             break
                 self._last_mark_clip[ctx.key] = new_mark_state
 
-        if not self.enabled or ctx.drew_cached or ctx.draw_state.frame_count < 2:
+        if not self.enabled or ctx.drew_cached or ctx.draw_state.frame_count < 1:
             return
 
         if ctx.size and ctx.size[0] > 0 and ctx.size[1] > 0:
@@ -1743,7 +1742,8 @@ class TileCacheMasked:
 
         gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
 
-    def finalize_captures(self, framebuffer_size: Tuple[int, int], global_toggles=None) -> None:
+    def finalize_captures(self, framebuffer_size: Tuple[int, int]) -> None:
+
 
         self.all_keys = set()
         if self._snapshot_fbo is None:
@@ -1900,10 +1900,7 @@ class TileCacheMasked:
                         gl.glBindTexture(gl.GL_TEXTURE_2D, self._sub_mask_tex)
                         gl.glUniform1i(self._loc_uSubMask, 2)
 
-                        if global_toggles is not None and getattr(global_toggles, "offscreen_debug", False):
-                            gl.glUniform4f(self._loc_copy_uTint, *self.frame_tint)
-                        else:
-                            gl.glUniform4f(self._loc_copy_uTint, 1.0, 1.0, 1.0, 1.0)
+                        gl.glUniform4f(self._loc_copy_uTint, 1.0, 1.0, 1.0, 1.0)
 
                         gl.glUniform4f(self._loc_uSrcRectPx, float(x0), float(y0), float(x1), float(y1))
                         gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
@@ -2173,6 +2170,5 @@ class TileCacheMasked:
             self._enq_copy_keys.clear()
             self._cancelled_keys.clear()
             self._recording = False
-            self.apply_invalid()
             self.did_deviate.clear()
             self.seen_ids.clear()

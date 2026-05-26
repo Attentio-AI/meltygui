@@ -1,7 +1,8 @@
 from enum import Enum
 from typing import Any
 
-from src.lsd.gl_gui.melty import Melty
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import DecorationManager
+
 
 class Meta:
     default = None
@@ -21,21 +22,21 @@ class Meta:
                 child_meta = type(value).meta
         if child_meta is None:
             if isinstance(value, Enum):
-                type_default = Melty.type_defaults.get(Enum, None)
+                type_default = DecorationManager.melty.type_defaults.get(Enum, None)
             else:
-                if isinstance(field_name, str) and field_name in Melty.type_defaults:
-                    type_default = Melty.type_defaults.get(field_name, None)
+                if isinstance(field_name, str) and field_name in DecorationManager.melty.type_defaults:
+                    type_default = DecorationManager.melty.type_defaults.get(field_name, None)
                 else:
                     type_default = next(
-                        (Melty.type_defaults[cls] for cls in value_type.__mro__ if cls in Melty.type_defaults),
+                        (DecorationManager.melty.type_defaults[cls] for cls in value_type.__mro__ if cls in DecorationManager.melty.type_defaults),
                         None
                     )
                     if type_default is None:
                         # Try string name instead
                         type_default = next(
-                            (Melty.type_defaults[name] for name in
+                            (DecorationManager.melty.type_defaults[name] for name in
                              (cls.__name__ for cls in value_type.__mro__)
-                             if name in Melty.type_defaults),
+                             if name in DecorationManager.melty.type_defaults),
                             None)
             child_meta = Meta.get_new_defaults(value=value)
             child_meta.name = field_name

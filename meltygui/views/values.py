@@ -18,6 +18,7 @@ import torch
 from imgui.core import _DrawList
 
 from src.lsd.gl_gui import toggles
+from src.lsd.gl_gui.global_style import GlobalStyle
 from src.lsd.gl_gui.melty import Melty, CollectionAction, ManagedWindow, SearchTerm
 from src.lsd.gl_gui.model.core_model.draw_state import ZoomState, TileMode, DrawState, TabState
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
@@ -53,38 +54,6 @@ def empty(input_val):
     pass
 
 
-@render_func(use_cache=True, auto_resize=False, closable=True, selectable=False, searchable=True, show_bg=True, melty_window=True, draggable=True,
-             show_tint=True, tile_mode=TileMode.MAX, with_header=draw_header, with_header_end=draw_header_end, indent_size=5, with_footer=draw_footer)
-# Deprecated: use draw_any(input_value, mode=Mode.WINDOW, ...) instead.
-def draw_window(input_value:any, view_func=None, draw_state=None, delete_down=False, glfw_close_down=False, **kwargs):
-    if delete_down and imgui.get_io().key_ctrl:
-        draw_state.closed = True
-
-
-    if 'name' not in kwargs:
-        kwargs['name'] = str(input_value)
-
-    kwargs['show_bg'] = False
-    kwargs['selectable'] = False
-    kwargs['return_extras'] = True
-    kwargs['with_header'] = None
-    kwargs['with_header_end'] = None
-    kwargs['with_footer'] = None
-    kwargs['is_tree'] = False
-    kwargs['closable'] = False
-    kwargs['auto_resize'] = True
-    kwargs.pop('max_height', None)
-    kwargs['shadow'] = False
-    # if search_text != "":
-    #     kwargs['search_text'] = search_text
-
-    return_val = draw_any(input_value, view_func=view_func, **kwargs)
-    if len(return_val) == 3:
-        return_val = (return_val[0], return_val[1], draw_state)
-
-
-    return return_val
-
 @render_func(is_default_for=types.ModuleType, use_cache=True, show_bg=True, with_header=draw_header, with_footer=draw_footer)
 def draw_module(input_value: types.ModuleType, draw_state, **kwargs):
     imgui.text(f"Module: {input_value.__name__}")
@@ -102,29 +71,13 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta,
     """
     Universal collection renderer
     """
-    if draw_state.name == "cst_dict":
-        pass
-
     if excluded is None:
         excluded = set()
 
     if child_kwargs is None:
         child_kwargs = {}
-    if isinstance(input_value, defaultdict):
-        pass
+
     changed = False
-    # ----- SIMPLE NORMALIZER (lowercase, remove spaces, '_' and '-') -----
-    _TRANS = str.maketrans("", "", " _-")
-
-    def norm_string(s) -> str:
-        if s is None:
-            return ""
-        try:
-            s = str(s)
-        except Exception:
-            s = ""
-        return s.lower().translate(_TRANS)
-
     if hasattr(input_value, 'children') and isinstance(input_value.children, (list, dict, defaultdict,
                                                                               types.MappingProxyType, deque)):
         input_value = input_value.children
@@ -134,12 +87,17 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta,
     else:
         imgui.dummy(1,1)
 
-    search_token = ""
 
     # --- Setup per collection type ---
     collection = input_value
-    parent_type = input_value.__class__
-
+    # When the value *is* a class (e.g. an @window-registered class drawn
+    # directly), its meta-attribute `{field}_meta` overrides live on the class
+    # itself, not on its metaclass. Use the class as parent_type so get_child_meta
+    # can find them; otherwise fall back to the instance when type.
+    parent_type = input_value if isinstance(input_value, type) else input_value.__class__
+    if isinstance(input_value, (str, int, float, bool, Enum, NoneType)):
+        imgui.text("No view for type: " + str(type(input_value)))
+        return False, None
     if keys is None:
         if isinstance(input_value, (dict, list, tuple, set, defaultdict, MutableMapping, types.MappingProxyType, deque)):
             apply_change = True
@@ -195,7 +153,6 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta,
 
     # --- unified loop ---
     drew_any = False
-    all_meta = []
 
     start_cursor = imgui.get_cursor_pos()[1]
     rect = Melty.get_clip_rect()
@@ -205,12 +162,15 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta,
     Melty.collection_index_stack.append(0)
     this_collection = len(Melty.collection_index_stack) - 1
 
+    max_items = 5000
     start_index = 0
-    end_index = len(keys) - 1
+    end_index = min(len(keys) - 1, max_items)
 
     scroll_offset = draw_state.scroll_offset
     true_left = draw_state.left - scroll_offset[0]
     true_top = draw_state.top - scroll_offset[1]
+
+    # remove excluded from keys
 
     for idx in range(start_index, end_index + 1):
         key = keys[idx]
@@ -281,9 +241,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta,
         else:
             key_str = str(key)
 
-        if not show_excluded and ((key_str.startswith("_") or key_str.endswith("_")) or
-                                  key_str.endswith("meta")):
-
+        if not show_excluded and (key_str.startswith("_") or key_str.endswith("_")):
             continue
 
         # ----- SEARCH (key match) -----
@@ -323,9 +281,6 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta,
                                                   child_draw_state.height)))
                     continue
 
-        item_meta = Meta.get_child_meta(parent_type, field_name=key, value=item)
-        item_meta.collection_type = meta.field_type
-
         prev_tint = None
         try:
             if isinstance(collection, FolderProxy):
@@ -335,23 +290,19 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta,
                     style_manager.set_imgui_tint(*codec.tint)
 
             y_offset = Melty.collection_spacing
-            all_meta.append(item_meta)
+            # all_meta.append(item_meta)
             if show_indices:
                 display_name = f"{str(idx)}"
 
-            if nested_func is None:
-                if item_meta is None:
-                    if hasattr(Meta, 'get_child_meta'):
-                        item_meta = Meta.get_child_meta(None, field_name=kwargs.get("name", ''), value=input_value)
-
-                if item_meta.view_function is None:
-                    item_meta.view_function = draw_collection
+            if key == "keep_for_frames":
+                pass
 
 
             item_kwargs = {
+                'type_collection' : kwargs.get("real_type", type(input_value)),
+                'real_type': type(item),
                 'return_extras': True,
                 'key': key,
-                'meta': item_meta,
                 'on_collapse': on_collapse,
                 'on_expand': on_expand,
                 'collection': input_value,
@@ -363,10 +314,8 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta,
                 'mode': mode,
                 'search_match': key_is_match,
                 'search_current': key_is_current,
-
             }
 
-            item_kwargs.update(child_kwargs)
 
             # Per-field overrides: a `# [tint=...]` comment above a primitive
             # field is stored on the parent under __overrides__['__<field>__'].
@@ -380,22 +329,8 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta,
                         for _ok, _ov in _field_ov.items():
                             if not (isinstance(_ok, str) and _ok.startswith("__")):
                                 item_kwargs[_ok] = _ov
-            # if mode is None:
-            #     mode = Melty.mode_stack[-1] if len(Melty.mode_stack) > 0 else None
-            # if mode is not None:
-            #     # Loop over super types
-            #     mode_config = None
-            #     for super_type in type(item).__mro__:
-            #         mode_config = mode.value.get(super_type, None)
-            #         if mode_config is not None:
-            #             break
-            #     if mode_config is not None:
-            #         override_kwargs = mode_config.kwargs
-            #         item_kwargs = item_kwargs | override_kwargs
-            #         if mode_config.func is not None:
-            #             item_func = mode_config.func
-            #     else:
-            #         item_kwargs['mode'] = mode
+
+            item_kwargs = item_kwargs | child_kwargs
 
             # On a counting frame, force the rows we DO render (visible, not the
             # off-screen current path and cache-misses that fell through above) to
@@ -408,8 +343,6 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta,
                 _claim_before = search_session.offset
 
             item_return = draw_any(item, **item_kwargs)
-
-            # item_return = item_func(item, **item_kwargs)
 
             if len(item_return) == 3:
                 item_changed, out_val, returned_ds = item_return
@@ -465,13 +398,12 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta,
                         setattr(input_value, key_str, out_val)
 
             changed |= item_changed
-            drew_any = True
 
 
 
         except Exception as e:
             print(f"Error rendering field '{key_str}' of {type(input_value).__name__}: {e}")
-            print_colored_traceback(*sys.exc_info())
+            print_stack_trace(exception=e)
 
         finally:
             if prev_tint is not None:
@@ -493,43 +425,11 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta,
     content_height = (end_pos - start_cursor)
     imgui.dummy(1, 1)
 
-    # if len(children_draw_states) == len(keys):
-    #     draw_state._children = children_draw_states
-
-    #
-    # over_layer_draw_list: _DrawList = imgui.get_overlay_draw_list()
-    # color = imgui.get_color_u32_rgba(1, 0, 0, 1)
-    # over_layer_draw_list.add_text(draw_state.left, draw_state.abs_top, color,f"{Melty.nested_collections}  {break_index} {len(keys)} ")
-    # if nested_collection:
-    #     Melty.nested_collections -= 1
-
-    # imgui.set_cursor_screen_pos((current_cursor[0], current_cursor[1] + draw_state.scroll_offset[1]))
-    # current_cursor = imgui.get_cursor_screen_pos()
     if not imgui.is_mouse_down(0) and not imgui.is_mouse_down(1) and not imgui.is_mouse_down(2) and not premature_break:
         draw_state.content_height = snap_int(content_height)
         draw_state.invalid_content_height = False
 
     draw_state.premature_break = premature_break
-
-    # ----------------- top spacing -----------
-    last_key = list(keys)[-1] if len(keys) > 0 else None
-
-    if not drew_any:
-        last_key = None
-
-    last_meta = all_meta[-1] if len(all_meta) > 0 else None
-    if hasattr(last_meta, 'tmp_draw_state'):
-        last_draw_state = last_meta.tmp_draw_state if last_meta is not None else draw_state
-
-        # if Melty.window_enabled and melty.drag_in_progress:
-        #     # last_item = collection[last_key] if (isinstance(collection, dict) and last_key in collection) else None
-        #     _, flow_spacing = draw_drag_drop_target(do_flow=True, enable_flow=True, melty=melty, offset=0,
-        #                                             collection=ordered_driver, key=last_key, on_drag=False,
-        #                                             draw_state=last_draw_state, tag="bottom")
-    # ------------------ end spacing -----------
-
-    # if drew_any and len(keys) > 1:
-    #     imgui.dummy(0, 2)
 
     return changed, input_value
 
@@ -549,7 +449,7 @@ def draw_property(input_value:property, draw_state, **kwargs):
 def draw_type(input_value:type, **kwargs):
     class_vars = {**{k: getattr(input_value, k) for k in vars(input_value)}}
 
-    changed, new_dict = draw_collection(class_vars, draw=True, name=f"Class: {input_value.__name__}")
+    changed, new_dict = draw_collection(class_vars, draw=True, real_type=input_value, name=f"Class: {input_value.__name__}")
 
     if changed:
         for k, v in new_dict.items():
@@ -608,7 +508,7 @@ def test_columns():
 
 
 @render_func(use_cache=False, show_bg=False, disable_scroll=True, shadow=False, selectable=False)
-def draw_with_modes(input_value, modes, tab_state: TabState = None, changed=False, search_text="", draw_state=None, unique=0):
+def draw_with_modes(input_value, modes, tab_state: TabState = None, search_text="", draw_state=None, unique=0):
     if not tab_state.selected_tabs:
         tab_state.selected_tabs = [modes[0]]
     imgui.dummy(0, 5)
@@ -622,7 +522,7 @@ def draw_with_modes(input_value, modes, tab_state: TabState = None, changed=Fals
         tab_state.selected_tabs = new_tabs
 
     imgui.dummy(0, 2)
-
+    changed = False
     value = input_value
     for idx, mode in enumerate(tab_state.selected_tabs):
         mode_changed, value = draw_any(input_value, name=f"Mode: {mode} {unique}", mode=mode, selectable=False, show_name=False,
@@ -639,7 +539,7 @@ def draw_draw_state(input_value, **kwargs):
 
 @render_func(use_cache=False, shadow=False, show_bg=False)
 def run_chain(input_value, chain=None, draw_state=None, disable_scroll=True,
-              s_key_pressed=False, changed=False, unique=None, debug=False, **kwargs):
+              s_key_pressed=False, unique=None, debug=False, **kwargs):
     """Debug render function: executes a chain step by step with imgui output.
 
     Shows function name, changed flag, output type, and a value preview
@@ -650,6 +550,7 @@ def run_chain(input_value, chain=None, draw_state=None, disable_scroll=True,
         return False, input_value
 
     value = input_value
+    changed = False
 
     if debug:
         imgui.text(f"Chain: {len(chain)} nodes")
@@ -659,7 +560,6 @@ def run_chain(input_value, chain=None, draw_state=None, disable_scroll=True,
     cache_tree = draw_state._chain_stack
     cache_tree.begin()
 
-    start_cursor = imgui.get_cursor_screen_pos()
     mode_cache = True
 
     for i, func in enumerate(chain):
@@ -683,8 +583,11 @@ def run_chain(input_value, chain=None, draw_state=None, disable_scroll=True,
         func_kwargs['show_header'] = False
         func_kwargs['s_key_pressed'] = s_key_pressed
         func_kwargs['draw'] = True
+        func_kwargs['real_type'] = type(input_value)
     
         next_cached = cache_tree.peek()
+        if isinstance(value, str):
+            imgui.text(f"  [{i}] {func.__name__} — str: '{value[:30]}'")
         changed, value = func(input_value=value, reference=next_cached, **func_kwargs)
 
         if isinstance(value, Pending):
@@ -703,19 +606,18 @@ some_test_tensor = torch.randn(3, 3)
 
 
 @render_func(use_cache=False, show_bg=True, searchable=True, selectable=False, show_tint=True, bg_offset=-1, with_header=draw_header)
-def draw_main(input_value, vis, search_text="", draw_state=None):
+def draw_main(input_value, vis, search_text="", **kwargs):
     global test_obj
     global cst_dict
     global test_code
     from src.lsd.gl_gui.view.mode import Mode
 
-
-    draw_any(Melty.registered_windows, name="Window Manager", with_header=draw_header,
+    draw_any(Melty.registered_windows, name="Dock", with_header=draw_header,
              mode=(Mode.WINDOW_MANAGER_SORTED, Mode.WINDOW))
-
-    from src.lsd.gl_gui.view.mode import ModeGroup
-    draw_with_modes(WindowManager, name="Excluded Windows", show_name=False, show_add_delete=True,
-                                       with_header=draw_header, modes=ModeGroup.CODE,  mode=(Mode.WINDOW))
+    #
+    # from src.lsd.gl_gui.view.mode import ModeGroup
+    # draw_with_modes(WindowManager, name="Excluded Windows", show_name=True, show_add_delete=True,
+    #                 with_header=draw_header, modes=ModeGroup.CODE,  mode=(Mode.WINDOW))
 
     for window_cls, kwargs in Melty.annotated_window_classes.values():
         kwargs.setdefault('mode', Mode.WINDOW)
@@ -749,100 +651,94 @@ def draw_main(input_value, vis, search_text="", draw_state=None):
 
     draw_tensor(some_test_tensor, name="Tensor", mode=Mode.WINDOW)
 
-    some_path = Path("/home/lukas/test_folder/test_list.txt")
-    changed, value = draw_any(some_path, name="test_path_render", mode=(Mode.FILE_META, Mode.WINDOW))
-    if changed:
-        path = value
+    # some_path = Path("/home/lukas/test_folder/test_list.txt")
+    # changed, value = draw_any(some_path, name="test_path_render", mode=(Mode.FILE_META, Mode.WINDOW))
+    # if changed:
+    #     path = value
 
     from src.lsd.gl_gui.model.app_model import TensorView
-    draw_window(TensorView, name="Tensorview")
+    draw_any(TensorView, name="Tensorview", mode=(Mode.WINDOW))
 
-    # global_toggles = vis.root.global_toggles
     # draw_any(global_toggles, name="Toggles", auto_resize=True, wrap=True, use_cache=True, show_bg=True, mode=Mode.WINDOW)
-    changed, new_val = draw_any(Melty.cache.enabled, name="Offscreen Rendering", wrap=True, show_bg=True, use_cache=True)
-    if changed:
-        if new_val:
-            Melty.cache.set_enabled(True)
-        else:
-            Melty.cache.set_enabled(False)
-        Melty.cache.invalidate_all()
-        request_render()
+    # changed, new_val = draw_any(Melty.cache.enabled, name="Offscreen Rendering", wrap=True, show_bg=True, use_cache=True)
+    # if changed:
+    #     if new_val:
+    #         Melty.cache.set_enabled(True)
+    #     else:
+    #         Melty.cache.set_enabled(False)
+    #     Melty.cache.invalidate_all()
+    #     request_render()
 
-    changed, new_val = draw_any(Melty.cache.copy_debug_mode, name="Offscreen Debug", wrap=True, use_cache=True)
-    if changed:
-        # Melty.cache.offscreen_debug_mode = new_val
-        Melty.cache.copy_debug_mode = new_val
-        Melty.cache.invalidate_all()
-        request_render()
+    # changed, new_val = draw_any(Melty.cache.copy_debug_mode, name="Offscreen Debug", wrap=True, use_cache=True)
+    # if changed:
+    #     # Melty.cache.offscreen_debug_mode = new_val
+    #     Melty.cache.copy_debug_mode = new_val
+    #     Melty.cache.invalidate_all()
+    #     request_render()
 
-    changed, new_val = draw_any(Melty.cache.offscreen_scale, name="Debug Scale",
-                                min_value=0.0, max_value=255.0, wrap=True, use_cache=True)
-    if changed:
-        Melty.cache.offscreen_scale = new_val
-        Melty.cache.invalidate_all()
-        request_render()
+    # changed, new_val = draw_any(Melty.cache.offscreen_scale, name="Debug Scale",
+    #                             min_value=0.0, max_value=255.0, wrap=True, use_cache=True)
+    # if changed:
+    #     Melty.cache.offscreen_scale = new_val
+    #     Melty.cache.invalidate_all()
+    #     request_render()
+    #
+    # global some_float
+    # changed, new_float = draw_window(some_float[0], name="Conversion Test", view_func=draw_collection, convert=dict)
+    # if changed:
+    #     print("New float value:", new_float)
+    #     some_float[0] = new_float
 
-    global some_float
-    changed, new_float = draw_window(some_float[0], name="Conversion Test", view_func=draw_collection, convert=dict)
-    if changed:
-        print("New float value:", new_float)
-        some_float[0] = new_float
-
-    global selected_tabs
-    changed, new_tabs = draw_tab_bar(selected_tabs, collection=["Alpha", "Beta", "Gamma", "Delta"],
-                                     name="Tab Bar Demo", mode=Mode.WINDOW)
-    if changed:
-        selected_tabs = new_tabs
+    # global selected_tabs
+    # changed, new_tabs = draw_tab_bar(selected_tabs, collection=["Alpha", "Beta", "Gamma", "Delta"],
+    #                                  name="Tab Bar Demo", mode=Mode.WINDOW)
+    # if changed:
+    #     selected_tabs = new_tabs
 
 
-    draw_enum_tabs(ProfileMode, name="Enum Tab Bar Demo", mode=Mode.WINDOW)
+    # draw_enum_tabs(ProfileType, name="Enum Tab Bar Demo", mode=Mode.WINDOW)
 
-    draw_window(Monitor, name="Monitor")
+    # draw_window(monitor, name="Monitor")
 
-    draw_window(threading.enumerate(), name="Threads")
+    # draw_window(threading.enumerate(), name="Threads")
 
     # draw_window(core_model, name="Module test")
 
-    test_columns(input_value="Nolkjlkjne", mode=Mode.WINDOW, name="Test columns")
+    # test_columns(input_value="Nksjlkjne", mode=Mode.WINDOW, name="Test Columns")
 
-    draw_window(draw_main, name="Draw Main Function")
+    # draw_window(draw_main, name="Draw Main Function")
 
-    draw_window(test_obj, name="Layer 1")
+    # draw_window(test_obj, name="Layer 1")
 
-    draw_window(filesystem_proxy, name="Filesystem")
+    draw_any(filesystem_proxy, name="Filesystem", mode=Mode.WINDOW)
 
     draw_any(input_value=proxy, name="CST Proxy", mode=Mode.WINDOW)
 
-    draw_window(vis.root.lora_collection, name="Test Window 1")
-    draw_window(vis.root.lora_collection.loras, name="Test Window 2", child_kwargs={
-        'expanded': False, 'is_tree':False, 'show_add_delete': False})
-    draw_window(Melty.last_invalid, show_bg=True, name="Last Invalid")
+    draw_collection(vis.root.lora_collection, name="Test Window 1", mode=Mode.WINDOW)
 
-    draw_window(input_value=Melty.type_to_default_view_func, is_tree=True,
-                show_add_delete=False, name="Type Defaults")
+    draw_any(vis.root.lora_collection.loras, name="Test Window 3", child_kwargs={
+       'is_tree':True, 'expanded':False, 'show_add_delete': False}, mode=Mode.WINDOW)
 
-    # draw_window(Melty.registered_windows, is_tree=True,
-    #             show_add_delete=False, name="Test window manager")
 
-    draw_window("test", name="Test Widget Window")
-    draw_window(Melty.cache.snapshot_tex, show_bg=True, name="Snapshot Texture", live=True)
+    # draw_window("test", name="Test Widget Window")
 
-    changed, new_val = draw_window(0.0, layer=31, name="Test return")
-    if changed:
-        print("Value changed:", new_val)
+    # changed, new_val = draw_window(0.0, layer=31, name="Test return")
+    # if changed:
+    #     print("Value changed:", new_val)
 
-    changed, new_val = draw_window([1, 2, 3, 4, 5], name="Test List", horizontal=True, tint=(1, 0, 0))
+    # changed, new_val = draw_window([1, 2, 3, 4, 5], name="Test List", horizontal=True, tint=(1, 0, 0))
 
     normalized_sub_mask, _, _ = Melty.filter.normalize(Melty.cache._mask_tex)
-    draw_window(normalized_sub_mask, show_bg=True, max_contrast=30, jet=True,
-                max_brightness=30, name="mask_tex", live=True)
+    draw_texture(normalized_sub_mask, show_bg=True, max_contrast=30, jet=True,
+                max_brightness=30, name="mask_tex", live=True, mode=Mode.WINDOW)
+    draw_any(Melty.cache.snapshot_tex, show_bg=True, name="Viewport", live=True, mode=Mode.WINDOW)
 
     normalized_sub_mask, _, _ = Melty.filter.normalize(Melty.cache._full_mask_tex)
-    draw_window(normalized_sub_mask, show_bg=True, max_contrast=30, jet=True,
-                max_brightness=30, name="full_mask_tex", live=True)
-
-    draw_window("input_val", name="Outer live", view_func=test_widget, live=True)
-    draw_window("input_val", name="Outer no live", view_func=test_widget, live=False)
+    draw_any(normalized_sub_mask, show_bg=True, max_contrast=30, jet=True,
+                max_brightness=30, name="full_mask_tex", live=True, mode=Mode.WINDOW)
+    #
+    # draw_window("input_val", name="Outer live", view_func=test_widget, live=True)
+    # draw_window("input_val", name="Outer no live", view_func=test_widget, live=False)
 
     # draw_window(Melty.last_request_render, show_bg=True, name="Last Invalid")
 
@@ -1295,8 +1191,10 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
 
 
 
-@render_func(is_default_for=ManagedWindow, is_tree=False, show_name=False, use_cache=True, shadow=False, show_bg=False, selectable=False, show_add_delete=False, show_tint=False, wrap=False, with_header=draw_header)
-def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, mouse_down=False, **kwargs):
+@render_func(is_default_for=ManagedWindow, is_tree=False, show_name=False, use_cache=True, 
+             shadow=False, show_bg=False, selectable=False, show_add_delete=False, 
+             show_tint=False, wrap=False, with_header=draw_header)
+def draw_managed_window(input_value, name, draw_state, mouse_down=False, selectable=False, **kwargs):
     try:
         window_draw_state = input_value.draw_state
     except Exception as e:
@@ -1345,7 +1243,7 @@ def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, 
         return
 
     if window_draw_state.closed:
-        if button(f"{name}", color=window_tint, z_offset=-2, value=0.1, factor=0.95, text_value=0.3,
+        if button(f"{name}", color=window_tint, z_offset=-2, tint_value=0.1, factor=0.95, text_value=0.3,
                   saturation=1.2, width=draw_state.content_width - target_spacing, height=button_height)[0]:
             window_draw_state.closed = False
     else:
@@ -1356,7 +1254,7 @@ def draw_managed_window(input_value, name, draw_state, style_manager, unique=0, 
     imgui.same_line()
 
     target_icon = ""  # Target icon (FontAwesome Unicode)
-    if button(f"{target_icon}##{name}", height=button_height, color=window_tint, z_offset=-2, value=target_tint_value, factor=0.9,
+    if button(f"{target_icon}##{name}", height=button_height, color=window_tint, z_offset=-2, tint_value=target_tint_value, factor=0.9,
               saturation=0.2, shadow=False)[0]:
         this_window_right = draw_state.abs_left + draw_state.width
         from_zero_x = window_draw_state.abs_left - window_draw_state.window_pos[0]
@@ -1398,7 +1296,7 @@ def export_code(test_param_2: int = 5):
 @render_func(use_cache=False)
 def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
                           collection, key, melty, y_offset, enable_flow, min_width,
-                          unique, tag, style_manager, global_style, offset=0, indent_size=10):
+                          unique, tag, style_manager, offset=0, indent_size=10):
     if Melty.active_layer == Melty.drag_layer:
         return False, 0.0
 
@@ -1506,7 +1404,7 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
             # opacity = 1.0 if active_drop else opacity
 
             bg_tint = Melty.get_bg_color(-1)
-            bg_style = global_style.get_global_constant("bg_style", folder="bg_styles")
+            bg_style = GlobalStyle.get_global_constant("bg_style", folder="bg_styles")
 
             color = style_manager.make_custom_styled(*bg_tint, input=bg_style,
                                                      value=1.3,
@@ -1664,9 +1562,9 @@ bg_style_default = {
 }
 
 
-def get_bg_color(depth, rounding, global_style, style_manager, auto_resize):
-    depth_factor = global_style.get_global_constant("depth_factor", default=1.0, folder="bg_styles") * 0.95
-    depth_offset = global_style.get_global_constant("depth_offset", default=0.0, folder="bg_styles") - 1.3
+def get_bg_color(depth, rounding, style_manager, auto_resize):
+    depth_factor = GlobalStyle.get_global_constant("depth_factor", default=1.0, folder="bg_styles") * 0.95
+    depth_offset = GlobalStyle.get_global_constant("depth_offset", default=0.0, folder="bg_styles") - 1.3
     dynamic_value = max(0, (float(depth + depth_offset) * depth_factor))
 
     hovered_offset = 0.0
@@ -1677,8 +1575,8 @@ def get_bg_color(depth, rounding, global_style, style_manager, auto_resize):
                 c1[2] * (1 - fac) + c2[2] * fac)
 
     global bg_style_default
-    bg_style = global_style.get_global_constant("bg_style", default=bg_style_default, folder="bg_styles")
-    outline_factor = global_style.get_global_constant("outline_factor", default=1.0, folder="bg_styles") * 1.4
+    bg_style = GlobalStyle.get_global_constant("bg_style", default=bg_style_default, folder="bg_styles")
+    outline_factor = GlobalStyle.get_global_constant("outline_factor", default=1.0, folder="bg_styles") * 1.4
 
     if not auto_resize:
         outline_factor *= 1.3
@@ -1714,12 +1612,12 @@ def test_func():
 
 
 def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset=0,
-        global_style=None, outline=True, bg_color=None, opacity=0.0,
+        outline=True, bg_color=None, opacity=0.0,
         style_manager=None, tint=None, outline_tint=None, selected=False,
         hovered=False, pressed=False, nested_bg=False, **kwargs):
     # -- Constants ---------------------------------
     depth_wrap        = 30
-    depth_scale       = 2.271
+    depth_scale       = 1.629
     # [tint=(1,1,1)]
     corner_radius     = rounding
     border_inset      = 2.802
@@ -1839,7 +1737,7 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
 @render_func(use_cache=True, shadow=True, selectable=False, show_bg=False, min_width=10, min_height=10, wrap=True)
 def button(input_value="", corner_radius=6, draw_state=None, alpha=1.0, left_mouse_held=False, left_mouse_down=False,
            color=(0.5, 0.5, 0.5), hovered=False, width=None, height=None, style_manager=None,
-           factor=1.0, value=0.32, text_value=1.023, saturation=0.8, unique=0):
+           factor=1.0, tint_value=0.32, text_value=1.023, saturation=0.8, unique=0):
     if color is not None:
         if left_mouse_held:
             draw_state.z_offset = -0.5
@@ -1847,9 +1745,9 @@ def button(input_value="", corner_radius=6, draw_state=None, alpha=1.0, left_mou
             draw_state.z_offset = 3.0
 
         if hovered:
-            mixed_color = style_manager.make_color_rgb(color[0], color[1], color[2], value=value + 0.05, factor=factor, saturation_scale=saturation, alpha=1.0)
+            mixed_color = style_manager.make_color_rgb(color[0], color[1], color[2], value=tint_value + 0.05, factor=factor, saturation_scale=saturation, alpha=1.0)
         else:
-            mixed_color = style_manager.make_color_rgb(color[0], color[1], color[2], value=value, factor=factor, saturation_scale=saturation, alpha=1.0)
+            mixed_color = style_manager.make_color_rgb(color[0], color[1], color[2], value=tint_value, factor=factor, saturation_scale=saturation, alpha=1.0)
         text_color = style_manager.make_color_rgb(color[0], color[1], color[2], value=text_value, factor=factor, saturation_scale=0.4, alpha=1.0)
     else:
         text_color = (1.0, 1.0, 1.0)
@@ -1882,8 +1780,7 @@ def button(input_value="", corner_radius=6, draw_state=None, alpha=1.0, left_mou
     return False, input_value
 
 
-def render_profiler_time(input_value=None, brief=False, style_manager=None,
-                         global_style=None):
+def render_profiler_time(input_value=None, brief=False, style_manager=None ):
     """
     Renders the time taken for a specific operation in the profiler.
     """
@@ -1898,12 +1795,12 @@ def render_profiler_time(input_value=None, brief=False, style_manager=None,
     else:
         formatted_value = f"{in_ms:.2f} ms"
     golden_yellow = (2.0, 0.5, 0)
-    dynamic_saturation_factor = global_style.profiler["object_attr"][
+    dynamic_saturation_factor = GlobalStyle.profiler["object_attr"][
         "dynamic_saturation_factor"]
-    dynamic_saturation_offset = global_style.profiler["object_attr"][
+    dynamic_saturation_offset = GlobalStyle.profiler["object_attr"][
         "dynamic_saturation_offset"]
-    saturation = global_style.profiler["object_attr"]["saturation"]
-    value = global_style.profiler["object_attr"]["value"]
+    saturation = GlobalStyle.profiler["object_attr"]["saturation"]
+    value = GlobalStyle.profiler["object_attr"]["value"]
     dynamic_sat = (float(in_ms + dynamic_saturation_offset) * dynamic_saturation_factor)
     text_tint = style_manager.make_color_rgb(*golden_yellow, factor=1.0 - dynamic_sat,
                                              value=min(1.0, max(0, value + dynamic_sat * 0.5)),
@@ -1915,7 +1812,7 @@ def render_profiler_time(input_value=None, brief=False, style_manager=None,
 
 
 
-@render_func(header_same_line=True, is_default_for=(NoneType), 
+@render_func(header_same_line=True, is_default_for=(types.NoneType),
              shadow=False, is_tree=False, with_header=draw_header)
 def draw_none(input_value: NoneType):
     imgui.align_text_to_frame_padding()
@@ -2302,6 +2199,13 @@ def draw_vis(input_val):
     return False, None
 
 
+@render_func(is_default_for="Melty", use_cache=True, with_header=None)
+def draw_vis(input_val):
+    imgui.text("Melty")
+    return False, None
+
+
+
 @render_func(is_default_for="AppModel", show_bg=True, tint=(0.6, 0.2, 0.8), with_header=draw_header)
 def draw_app_model(input_val):
     imgui.text("An App Model Instance")
@@ -2385,7 +2289,7 @@ def draw_debug_label(input_value: str):
 
 
 @render_func(is_default_for=Enum, is_tree=False, shadow=False, header_same_line=True, parent_show_add_delete=False, with_header=draw_header)
-def draw_enum(input_value: Enum, global_style=None,  style_manager=None, enum_tint=(0.3, 0.3, 0.3)):
+def draw_enum(input_value: Enum,  style_manager=None, enum_tint=(0.3, 0.3, 0.3)):
     unique = "enum"
     # imgui.set_next_item_width(imgui.get_content_region_available().x)
     selected_idx = next(enumerate(input_value.__class__))[1]
@@ -2395,7 +2299,7 @@ def draw_enum(input_value: Enum, global_style=None,  style_manager=None, enum_ti
         a_pretty_name = option.name.replace("_", " ").capitalize()
         label = f"{a_pretty_name}##{unique}{i}"
         active = (input_value == option)
-        radio_style = global_style.radio_button
+        radio_style = GlobalStyle.radio_button
         if active:
             color = style_manager.make_color_style_rgb(*enum_tint, radio_style["active_base"])
             hover = style_manager.make_color_style_rgb(*enum_tint, radio_style["active_hover"])
@@ -2548,11 +2452,13 @@ def draw_debug(x,y, label, color=(1, 0, 0), size=16):
 #
 #     return False, None
 @render_func(use_cache=True, disable_scroll=True, show_header=False, header_same_line=False, show_tint=False, show_name=False, is_tree=False)
-def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, unique=None, up_key_pressed=None,
-                         down_key_pressed=None, tab_state: TabState = None, **kwargs):
+def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, unique=None, up_key_pressed=None,
+                      down_key_pressed=None, tab_state: TabState = None, **kwargs):
+
+
 
     context_menu_offset = input_value.context_menu_offset
-    info_items = ["name", "column", "closable", "current_mode", "mode", "show_add_delete", "_source", "window_pos", "left", "top", "width", "height", "content_height", "scroll_offset",
+    info_items = ["name", "_default_view_func", "column", "closable", "current_mode", "mode", "show_add_delete", "_source", "window_pos", "left", "top", "width", "height", "content_height", "scroll_offset",
                   "final_max_column", "_column_cursor", "_content_rect", "_max_column_index", "_outside_column_height", "disable_scroll" ]
 
     # imgui.text(type(input_value._input_value).__name__)
@@ -2598,6 +2504,9 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, u
     view_func_name = offset_ds._view_func.__name__
     class_name = type(input_value._raw_input_value).__name__
 
+
+
+
     # Find which class's source to show in the class tab.
     # For a non-primitive value that's just the value's own class. For a
     # primitive field (e.g. a float `rank`) the field itself has no source,
@@ -2609,8 +2518,9 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, u
     if not isinstance(raw_value, (int, float, str, bool)):
         class_to_show = type(raw_value)
     else:
+        max_walk = 4
         ancestor = input_value._parent
-        while ancestor is not None:
+        while ancestor is not None and max_walk > 0:
             a_raw = getattr(ancestor, '_raw_input_value', UNSET_VALUE)
             a_type = type(a_raw) if a_raw is not UNSET_VALUE else None
             if a_type is not None and getattr(a_type, '__module__', None) \
@@ -2619,6 +2529,8 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, u
                 class_is_parent = True
                 break
             ancestor = ancestor._parent
+            max_walk -= 1
+
 
     # Font awesome: fa-code () for the view function, fa-cube () for the class.
     func_tab = f" {view_func_name}"
@@ -2690,6 +2602,15 @@ def default_context_menu(input_value, draw_state, cursor_hover_inverted, func, u
 
                 text(f"{input_value.window_index}", name="window_index", column=t_idx,
                      editable=False, tint=(0.8, 0.8, 0.2))
+
+                text(f"{input_value._default_view_func}", name="default_view_func", column=t_idx,
+                     editable=False)
+
+                text(f"{input_value._kwargs.get('real_type', None)}", name="kwargs type", column=t_idx,
+                     editable=False)
+
+                text(f"{input_value._kwargs.get('type_collection', None)}", name="kwargs collection type", column=t_idx,
+                     editable=False)
 
                 for info_item in info_items:
                     if info_item in input_value._kwargs:
@@ -2840,26 +2761,39 @@ def draw_single(input_value:any, view_func=None, mode:any=None, **kwargs):
     return changed, return_val
 
 
+@render_func(use_cache=False, show_header=True, selectable=False, with_header=draw_header)
+def draw_blank(input_value: any, **kwargs):
+
+    return False, None
+
+
 def draw_any(input_value:any, view_func=None, mode:any=None, chain=None, **kwargs):
     # ── New chain system (opt-in) ─────────────────────────────
     # if chain is not None:
     #     from src.lsd.gl_gui.view.core_conversion.chain import run_chain
     #     return run_chain(chain, input_value, **kwargs)
 
+    # print(f"{kwargs.get('key', None)}: draw_any called with type {type(input_value).__name__} and view_func {view_func.__name__ if view_func else None}")
+
     # # meta selection
     kwargs_view_func = view_func
+    key = kwargs.get("key", None)
+    real_type = kwargs.get("real_type", type(input_value))
+    collection_type = kwargs.get("type_collection", type(kwargs.get("collection", None)))
+
+    # if view_func is None:
+    #     view_func = Melty.get_default_view_function(real_type=real_type, collection_type=collection_type, attrib_key=key)
+    #
+    # if view_func is None:
+    #     view_func = draw_collection
+
     if view_func is None:
-        meta = kwargs.get("meta", None)
-        if meta is None:
-            if hasattr(Meta, 'get_child_meta'):
-                meta = Meta.get_child_meta(None, field_name=kwargs.get("name", ''), value=input_value)
-        if hasattr(meta, 'view_function'):
-            if meta.view_function is None or 'draw_any' in meta.view_function.__name__:
-                meta.view_function = draw_collection
-            view_func = meta.view_function
-            kwargs_view_func = meta.view_function
-        else:
-            view_func = draw_collection
+        new_default = Melty.get_default_view_function(real_type=real_type, collection_type=collection_type,
+                                                      attrib_key=key)
+        if new_default is None:
+            new_default = draw_collection
+        if view_func is None:
+            view_func = new_default
 
     if mode is None:
         mode = Melty.mode_stack[-1] if len(Melty.mode_stack) > 0 else None
@@ -2911,7 +2845,6 @@ def draw_any(input_value:any, view_func=None, mode:any=None, chain=None, **kwarg
     # kwargs['use_cache'] = True
     kwargs['mode'] = mode
     kwargs['view_func'] = kwargs_view_func
-
 
     return_val = view_func(input_value, **kwargs)
 

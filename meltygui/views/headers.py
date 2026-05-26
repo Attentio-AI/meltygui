@@ -7,6 +7,7 @@ import glfw
 import imgui
 from imgui.core import _DrawList
 
+from src.lsd.gl_gui.global_style import GlobalStyle
 from src.lsd.gl_gui.melty import Melty, add_to_collection
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
 from src.lsd.gl_gui.model.core_model.draw_state import TileMode
@@ -139,7 +140,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
                 on_search=False, trigger_collapse=False, trigger_expand=False,
                 draw_state=None, show_tint=False, opacity=1.23, show_add_delete=True,
                 on_drag=False, on_action=None, style_manager=None,
-                global_style=None, global_toggles=None, **kwargs):
+                **kwargs):
 
     # ── Constants ──────────────────────────────────────────────
     # Depth-driven name brightness
@@ -367,7 +368,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         from src.lsd.gl_gui.view.core_views.new_core_view import render_profiler_time
         render_profiler_time(
             input_value=draw_state.render_time, brief=True,
-            style_manager=style_manager, global_style=global_style,
+            style_manager=style_manager,
         )
         same_line(spacing=3)
 
@@ -382,7 +383,7 @@ def draw_footer(input_value=None, name="", key=None, melty=None, parent_show_add
                 on_search=False, trigger_collapse=False, trigger_expand=False,
                 draw_state=None, show_tint=False, opacity=1.0, show_add_delete=True,
                 on_drag=False, on_action=None, style_manager=None,
-                global_style=None, global_toggles=None, **kwargs):
+                **kwargs):
 
     # for key, pending in draw_state._all_pending.items():
     #     if pending is not None:
@@ -396,7 +397,7 @@ def draw_footer(input_value=None, name="", key=None, melty=None, parent_show_add
 
 def draw_header_end(input_value=None, name="", key=None, melty=None, parent_show_add_delete=False,
                     collection=None, draw_state=None, closable=False, style_manager=None,
-                    global_style=None, global_toggles=None, unique=None, **kwargs):
+                    unique=None, **kwargs):
 
     if parent_show_add_delete:
         bg_style = {
@@ -405,7 +406,7 @@ def draw_header_end(input_value=None, name="", key=None, melty=None, parent_show
             "alpha": 1.0,
             'max_value': 1.0
         }
-        bg_style = global_style.get_global_constant("bg_style", default=bg_style, folder="bg_styles")
+        bg_style = GlobalStyle.get_global_constant("bg_style", default=bg_style, folder="bg_styles")
         search_color = (style_manager.
                         make_color_style_value(input=bg_style, saturation=0.7, value=1.0))
         push_style_color(imgui.COLOR_TEXT, *search_color)

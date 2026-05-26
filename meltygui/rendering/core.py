@@ -21,7 +21,6 @@ from src.lsd.gl_gui.toggles import Counters, Toggles, Tint
 from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
 from src.lsd.gl_gui.view.core_conversion.address import to_address, Address
 from src.lsd.gl_gui.view.core_conversion.path_finder import PendingState
-from src.lsd.gl_gui.view.core_views.core_render_helpers import floating_text
 from src.lsd.gl_gui.model.core_model.draw_state import DrawState, Hotkey, DragMode, Anchor, TileMode, AttrDict
 from src.lsd.gl_gui.model.core_model.core_enums import PendingAction
 from src.lsd.gl_gui.utils.custom_views import push_style_var, pop_style_var
@@ -116,6 +115,7 @@ def render_func(*args, **o_kwargs):
     header_defaults = o_kwargs
     param_defaults = {p: params[p].default for p in params if params[p].default is not inspect.Parameter.empty}
 
+
     """
     Decorator for render functions.
     - Computes stable UI ID (unique) from callstack+meta.
@@ -139,6 +139,7 @@ def render_func(*args, **o_kwargs):
         _has_imgui = not kwargs.pop('_converter_mode', False)
 
         if _has_imgui and Melty.annotation_mode:
+            # log_stack_trace()
             args = [list(kwargs)[0]]
             annotation = annotation_track(*args, wrapper=wrapper, **o_kwargs)
             if annotation is not None:
@@ -217,16 +218,15 @@ def render_func(*args, **o_kwargs):
         content_margin = ((len(Melty.bg_stack)) * 2.0)
 
         kwargs = o_kwargs | kwargs
-
-        if header_defaults is not None:
-            kwargs = header_defaults | kwargs
+        #
+        # if header_defaults is not None:
+        #     kwargs = header_defaults | kwargs
 
         if _has_imgui and not Melty.channels_split:
             draw_list = imgui.get_window_draw_list()
             draw_list.channels_split(Melty.max_depth)
             Melty.channels_split = True
 
-        old_convert_path = kwargs.get("convert_out", None) is not None or kwargs.get("convert_in", None) is not None
         if name == "" and is_root:
             kwargs["name"] = "Unnamed" + func.__name__ + input_value.__class__.__name__
             name = kwargs["name"]
@@ -455,6 +455,10 @@ def render_func(*args, **o_kwargs):
 
                 Melty.cache.mark_uncached(name, input_value, collection, tile_id, draw_state)
 
+                if Toggles.layer_stack_trace:
+                    get_stack = get_live_frames(skip_count=1)
+                    draw_state._layer_stack_trace = get_stack
+
                 if return_extras:
                     if len(return_value) == 3:
                         return return_value
@@ -501,6 +505,9 @@ def render_func(*args, **o_kwargs):
                 # return False, None
 
         Melty.seen_unique.add(unique)
+
+        if "expanded" in kwargs:
+            draw_state.expanded = kwargs["expanded"]
 
         if not draw_state.expanded:
             kwargs.pop("width", None)
@@ -570,25 +577,25 @@ def render_func(*args, **o_kwargs):
         if _has_imgui and closable and draw_state._is_nested and draw_state.current_tint is not None:
             style_manager.set_imgui_tint(*draw_state.current_tint)
         try:
-            meta = kwargs.get("meta", None)
-            if meta is None:
-                # Use class meta as default if available
-                if hasattr(type(input_value), "meta"):
-                    meta = getattr(type(input_value), "meta")
-                else:
-                    if hasattr(Meta, 'get_child_meta'):
-                        meta = Meta.get_child_meta(None, field_name=kwargs.get("name", ''), value=input_value)
-                    else:
-                        meta = Meta.get_new_defaults(default_value=input_value)
-
-            if name is not None and name != "":
-                meta.name = name
-
-            meta.unique = unique
+            # meta = kwargs.get("meta", None)
+            # if meta is None:
+            #     # Use class meta as default if available
+            #     if hasattr(type(input_value), "meta"):
+            #         meta = getattr(type(input_value), "meta")
+            #     else:
+            #         if hasattr(Meta, 'get_child_meta'):
+            #             meta = Meta.get_child_meta(None, field_name=kwargs.get("name", ''), value=input_value)
+            #         else:
+            #             meta = Meta.get_new_defaults(default_value=input_value)
+            #
+            # if name is not None and name != "":
+            #     meta.name = name
+            #
+            # meta.unique = unique
 
             def set_default(key, default_value, type=None):
-                if key in vars(meta) and vars(meta)[key] is not None:
-                    default_value = vars(meta)[key]
+                # if key in vars(meta) and vars(meta)[key] is not None:
+                #     default_value = vars(meta)[key]
                 draw_state_misc = draw_state.misc
                 # Custom draw state object to be dynamically created for unmatched params
                 if key in draw_state.misc and type is not None:
@@ -615,10 +622,12 @@ def render_func(*args, **o_kwargs):
                 kwargs.setdefault(key, default_value)
 
             kwargs["style_manager"] = Melty.style_manager
-            kwargs["global_style"] = Melty.global_attrs["global_style"]
-            kwargs["global_toggle"] = Melty.global_attrs["global_toggle"]
 
-            kwargs = kwargs | meta.__dict__
+
+            kwargs = Melty.default_kwargs_by_type[kwargs.get("real_type", type(input_value))] | kwargs
+            kwargs = Melty.default_kwargs_by_attrib_type[kwargs.get("type_collection", type(collection))][key] | kwargs
+            # kwargs = kwargs | meta.__dict__
+
             set_default("input_value", input_value)
             set_default("draw_state", draw_state)
             set_default("name", name)
@@ -627,7 +636,7 @@ def render_func(*args, **o_kwargs):
             set_default("window_stack", Melty.window_stack)
             set_default("func", func)
             set_default("render_func", wrapper)
-            kwargs.setdefault('meta', meta)
+            # kwargs.setdefault('meta', meta)
 
             ########## New event handler system ##########
             unique_events = Melty.events.get(tile_id, {})
@@ -642,6 +651,9 @@ def render_func(*args, **o_kwargs):
                     set_default(param, None, wanted_type)
 
             draw_state._kwargs = kwargs
+
+            # draw_state._default_view_func = Melty.get_default_view_function(draw_state)
+
             if draw_state.kwargs is None:
                 draw_state.kwargs = AttrDict(kwargs)
             else:
@@ -742,8 +754,30 @@ def render_func(*args, **o_kwargs):
                 # melty_hovered = draw_state.on_action("on_hover", view_id="window_hover", priority_delta=1)
                 Melty.melty_window_stack.append(draw_state)
 
-                if draw_state.window_pos is None and draw_state.width is not None:
+                if draw_state.window_pos is None:
                     draw_state.window_pos = (0, 0)
+
+                if Melty.frame_count < 2:
+                    os_window_size = imgui.get_io().display_size
+
+                    if draw_state.width is None or draw_state.width < 5:
+                        draw_state.width = 200
+
+                    if draw_state.height is None or draw_state.height < 5:
+                        draw_state.height = 100
+
+
+                    left = draw_state.abs_left
+                    top = draw_state.abs_top
+                    right = draw_state.window_pos[0] + draw_state.width
+                    bottom = draw_state.window_pos[1] + draw_state.height
+
+                    inside_display = (left < os_window_size[0] and right > 0 and top < os_window_size[1] and bottom > 0)
+                    if not inside_display:
+                        draw_state.window_pos = (min(max(0, os_window_size[0] - draw_state.width), draw_state.window_pos[0]),
+                                                 min(max(0, os_window_size[1] - draw_state.height), draw_state.window_pos[1]))
+
+
 
                 if 'window_pos' in kwargs:
                     draw_state.window_pos = kwargs.get('window_pos', draw_state.window_pos)
@@ -1064,7 +1098,7 @@ def render_func(*args, **o_kwargs):
                                                             0.0, 1.0), fa_live_icon)
                 Melty.cache.invalidate_up(tile_id, max_depth=1)
             kwargs.pop("live", None)
-            if not meta.visible_in_ui:
+            if not kwargs.get('visible_in_ui', True):
                 if return_extras:
                     return False, None, draw_state
                 return False, None
@@ -1210,7 +1244,6 @@ def render_func(*args, **o_kwargs):
 
                 if closable:
                     Melty.root_draw_states[draw_state.id]
-                from src.lsd.gl_gui.view.core_views.new_core_view import draw_window
                 from src.lsd.gl_gui.view.core_views.new_core_view import pending_window
 
                 from src.lsd.gl_gui.view.mode import Mode
@@ -1622,7 +1655,15 @@ def render_func(*args, **o_kwargs):
                 # Input value is indexable
                 if isinstance(input_value, dict) and "decorators" in input_value:
                     for decorator_name, decorator_value in input_value["decorators"].items():
-                        if "tint" in decorator_value and decorator_value["tint"] is not None:
+                        # A decorator targeting a specific attribute (e.g.
+                        # @defaults(attrib="x", tint=...)) carries that child's
+                        # overrides - its tint belongs to that child, not the
+                        # whole class node - so don't tint the node from it.
+                        if isinstance(decorator_value, dict) and (
+                                decorator_value.get("attr") or decorator_value.get("attrib")):
+                            continue
+                        if isinstance(decorator_value, dict) and \
+                                decorator_value.get("tint") is not None:
                             previous_tint = style_manager.get_tint()
                             style_manager.set_imgui_tint(*decorator_value["tint"])
                 elif "tint" in kwargs and kwargs.get("tint", None) is not None:
@@ -1662,7 +1703,6 @@ def render_func(*args, **o_kwargs):
                     draw_state.corner_radius = 5.0
                     from src.lsd.gl_gui.view.core_views.new_core_view import draw_bg
                     style_manager = Melty.global_attrs['style_manager']
-                    global_style = Melty.global_attrs['global_style']
 
                     bg_color = (0, 0, 0, 0)
                     if draw_state.width > 5 and draw_state.height > 5:
@@ -1674,7 +1714,7 @@ def render_func(*args, **o_kwargs):
                                             width=draw_state.width, height=draw_state.height,
                                             rounding=draw_state.corner_radius, bg_offset=kwargs.get("bg_offset", 0),
                                             depth=Melty.shadow_depth, selected=False,
-                                            global_style=global_style, opacity=1.0 if show_bg else 0.0,
+                                            opacity=1.0 if show_bg else 0.0,
                                             pressed=False,
                                             style_manager=style_manager, nested_bg=nested_bg)
                         # draw_bg paints into this view's tile rather than owning
@@ -1799,8 +1839,8 @@ def render_func(*args, **o_kwargs):
                     draw_state.selected = draw_state in Melty.selected
 
                 ########### CONTEXT MENU HANDLING ############
-                from src.lsd.gl_gui.view.core_views.new_core_view import default_context_menu
-                draw_context_menu = kwargs.get("context_menu", default_context_menu)
+                from src.lsd.gl_gui.view.core_views.new_core_view import draw_context_menu
+                draw_context_menu = kwargs.get("context_menu", draw_context_menu)
                 if draw_context_menu is not None:
                     # Gate on the occlusion-aware bounding hover so a right-click
                     # only opens the topmost view's menu - not views sitting
@@ -1823,7 +1863,6 @@ def render_func(*args, **o_kwargs):
                                                                    value=0.03, factor=0.2,
                                                                    saturation_scale=0.5,
                                                                    alpha=1.0)
-                        from src.lsd.gl_gui.view.core_views.new_core_view import draw_window
                         returned_val = draw_context_menu(input_value=draw_state, mode=Mode.WINDOW_NO_HEADER, func=func,
                                                          tint=mixed_color, show_tint=False, show_add_delete=False,
                                                          min_width=100, min_height=100, disable_scroll=True,
@@ -2820,12 +2859,15 @@ def render_func(*args, **o_kwargs):
 
     def add_default(register_type):
         o_kwargs.pop('is_default_for', None)
-        new_meta = Meta()
-        new_meta.view_function = wrapper
-        Melty.type_defaults[register_type] = new_meta
+        # new_meta = Meta()
+        # new_meta.view_function = wrapper
+        # Melty.type_defaults[register_type] = new_meta
 
         if not isinstance((register_type), str):
-            Melty.type_to_default_view_func[register_type].add(func)
+            Melty.default_funcs_by_type[register_type] = wrapper
+            Melty.default_funcs_by_name[register_type.__name__] = wrapper
+        else:
+            Melty.default_funcs_by_name[register_type] = wrapper
 
     is_default_for = o_kwargs.get('is_default_for', None)
     if isinstance(is_default_for, (tuple, list)):

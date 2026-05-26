@@ -1,5 +1,5 @@
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import tint
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import tint, DecorationManager
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 
 
@@ -49,7 +49,7 @@ class Swoosh:
     some_text = False
     some_dict = [1,1,1,1]
 
-@window
+@window(tint=(0.8, 0.4, 0.2))
 @tint({"draw_legacy": (0.8, 0.2, 0.2)})
 class Toggles:
     # Invalidation settings
@@ -62,6 +62,7 @@ class Toggles:
     ds_invalidate_stack = False
     profile_mode = ProfileMode.LIGHT
     debug_stale_tint = False
+    show_line_break = False
     
     # Filter SettingS
     brightness = 0.22
@@ -73,15 +74,16 @@ class Toggles:
     show_excluded = True
     filters = True
     show_excluded = True
-    
+    layer_stack_trace = False
+    show_line_breaks = False
     # Shadow Settings
-    shadow_downscale = 2
+    shadow_downscale = 3
     shadow_edge_sharpness = 50.0
     
     # [bg_offset=0, tint=(0.6604651, 0.1, 0.24270762503147125)]
     draw_legacy = False
     
-    # [tint=(0.06111411, 0.4413291811943054, 0.5255813598632812), bg_offset=0]
+    # [tint=(0.07995672523975372, 0.3076798617839813, 0.3581395149230957), bg_offset=0]
     class Debug:
         slow_frame_rate = False
 
@@ -101,9 +103,8 @@ def shadow_depth_at(depth, active_layer):
 
     divisor = max(cap, depth - scaling)
 
-    from src.lsd.gl_gui.melty import Melty
-    depth_and_layer = active_layer * Melty.max_depth + (depth * (scaling / (divisor)))
-    depth_and_layer *= Melty.layer_inc
+    depth_and_layer = active_layer * DecorationManager.melty.max_depth + (depth * (scaling / (divisor)))
+    depth_and_layer *= DecorationManager.melty.layer_inc
     return depth_and_layer
 
 

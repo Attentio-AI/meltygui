@@ -4,6 +4,7 @@ import sys
 import imgui
 
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
+from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.utils.custom_views import LSDView, print_stack_trace, push_style_color, pop_style_color, \
     print_colored_traceback
 from src.lsd.gl_gui.melty import Melty
@@ -13,7 +14,7 @@ def set_cursor_pos_y(pos_y):
     current_y = imgui.get_cursor_pos_y()
     imgui.set_cursor_pos_y(pos_y)
     height = imgui.get_cursor_pos_y() - current_y
-    if Melty.vis.root.global_toggles.show_line_breaks:
+    if Toggles.show_line_breaks:
         if draw_rect(width=5, height=None, color=(1.0, 0.0, 1.0, 0.8)):
             print_stack_trace(skip=-2)
 
@@ -22,21 +23,21 @@ def set_cursor_pos_x(pos_x):
     current_x = imgui.get_cursor_pos_x()
     imgui.set_cursor_pos_x(pos_x)
     width = imgui.get_cursor_pos_x() - current_x
-    if Melty.vis.root.global_toggles.show_line_breaks:
+    if Toggles.show_line_breaks:
         if draw_rect(width=5, height=None, color=(1.0, 0.0, 1.0, 0.8)):
             print_stack_trace(skip=-2)
 
 
 def set_cursor_screen_pos(pos):
     imgui.set_cursor_screen_pos(pos)
-    if Melty.vis.root.global_toggles.show_line_breaks:
+    if Toggles.show_line_breaks:
         if draw_rect(width=5, height=None, color=(1.0, 0.0, 1.0, 0.8)):
             print_stack_trace(skip=-2)
 
 
 def set_cursor_screen_position(pos):
     imgui.set_cursor_screen_position(pos)
-    if Melty.vis.root.global_toggles.show_line_breaks:
+    if Toggles.show_line_breaks:
         if draw_rect(width=5, height=None, color=(1.0, 0.0, 1.0, 0.8)):
             print_stack_trace(skip=-2)
 
@@ -44,20 +45,20 @@ def set_cursor_screen_position(pos):
 def set_cursor_pos(pos):
     current_pos = imgui.get_cursor_pos()
     imgui.set_cursor_pos(pos)
-    if Melty.vis.root.global_toggles.show_line_breaks:
+    if Toggles.show_line_breaks:
         if draw_rect(width=5, height=None, color=(1.0, 0.0, 1.0, 0.8)):
             print_stack_trace(skip=-2)
 
 
 def spacing():
     imgui.spacing()
-    if Melty.vis.root.global_toggles.show_line_breaks:
+    if Toggles.show_line_breaks:
         if draw_rect(width=3, height=None, color=(0, 0.1, 0.7, 0.8)):
             print_stack_trace(skip=-2)
 
 
 def indent(indent_size=None, attr_name=None):
-    if Melty.vis.root.global_toggles.show_line_breaks:
+    if Toggles.show_line_breaks:
         if draw_rect(width=3, height=None, color=(0.1, 0.1, 1.0, 0.8)):
             print_stack_trace(skip=-2)
             if attr_name is not None:
@@ -70,7 +71,7 @@ def indent(indent_size=None, attr_name=None):
 
 
 def same_line(spacing=None):
-    if Melty.vis.root.global_toggles.show_line_breaks:
+    if Toggles.show_line_breaks:
         if draw_rect(width=3, height=None, color=(1.0, 0.5, 0.1, 0.5)):
             print_stack_trace(skip=-2)
         if not (is_hovered(width=3, height=None) and imgui.is_mouse_down(imgui.MOUSE_BUTTON_MIDDLE)):
@@ -86,7 +87,7 @@ def same_line(spacing=None):
 
 
 def new_line():
-    if Melty.vis.root.global_toggles.show_line_breaks:
+    if Toggles.show_line_breaks:
         if draw_rect(width=3, height=None, color=(0.5, 0, 0, 0.5)):
             print_stack_trace(skip=-2)
         if not (is_hovered(width=3, height=None) and imgui.is_mouse_down(imgui.MOUSE_BUTTON_MIDDLE)):

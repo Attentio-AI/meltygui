@@ -1,9 +1,8 @@
 
 
-
-
 _register = None
 _pending = []
+
 
 def set_window_registrar(register_fn):
     global _register

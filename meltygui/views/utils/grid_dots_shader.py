@@ -1,6 +1,8 @@
 import numpy as np
 from OpenGL.GL import *
 
+from src.lsd.gl_gui.global_style import BackgroundSettings
+
 
 class GridDotsBackground:
     def __init__(self, dot_spacing=15.0, dot_size=1.0, emphasis_size=1.2, dot_color=(0.2, 0.23, 0.3, 1.0),
@@ -91,7 +93,6 @@ class GridDotsBackground:
         if self.root is not None:
             glUseProgram(self.shader)
             glUniform2f(glGetUniformLocation(self.shader, "resolution"), width, height)
-            from src.lsd.gl_gui.model.app_model import BackgroundSettings
             glUniform1f(glGetUniformLocation(self.shader, "dotSpacing"), BackgroundSettings.dot_spacing)
             glUniform1f(glGetUniformLocation(self.shader, "dotSize"), BackgroundSettings.dot_size)
             glUniform1f(glGetUniformLocation(self.shader, "emphasisSize"), BackgroundSettings.emphasis_size)

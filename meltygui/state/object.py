@@ -1221,16 +1221,19 @@ class DictConversion(metaclass=FieldMeta):
         if module is None:
             return None
 
-        obj = module
-        for part in parts[i:]:
-            obj = getattr(obj, part)
-        # members = inspect.getmembers(module, inspect.isclass)
+        try:
+            obj = module
+            for part in parts[i:]:
+                obj = getattr(obj, part)
+            # members = inspect.getmembers(module, inspect.isclass)
 
-        if not inspect.isclass(obj):
-            print(f"{class_path} is not a class")
-            return None
+            if not inspect.isclass(obj):
+                print(f"{class_path} is not a class")
+                return None
 
-        return obj()
+            return obj()
+        except Exception as e:
+            print(f"Error instantiating {class_path}: {str(e)}")
 
     # except Exception as e:
     #     target_class_name = parts[-1]
@@ -1340,16 +1343,6 @@ class DictConversion(metaclass=FieldMeta):
 
     def has_valid_attr(self, obj, attr_name: str) -> bool:
         return True
-        # """
-        # Checks if the attribute exists and is not None.
-        # """
-        # exception_list = ["content_size", "content_pos"]
-        #
-        # from src.lsd.gl_gui.model.dynamic_obj import DynamicObj
-        # from src.lsd.gl_gui.model.app_model import GlobalStyle
-        # from src.lsd.gl_gui.model.app_model import Style
-        # return (hasattr(obj, attr_name) or attr_name in exception_list or
-        #         isinstance(obj, (DynamicObj, GlobalStyle, Node)))
 
 
     def on_load(self, vis, root):

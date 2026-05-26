@@ -12,6 +12,7 @@ from contextlib import contextmanager
 import glfw
 
 from src.lsd.gl_gui.toggles import Toggles
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import DecorationManager
 
 # ── Module roots for user code detection ─────────────────
 _MODULE_ROOTS = ["src/lsd/"]
@@ -861,9 +862,8 @@ _needs_render = threading.Event()
 
 
 def request_render():
-    from src.lsd.gl_gui.melty import Melty
     if Toggles.invalidate_stack_trace:
-        if Melty.frame_count > 0 and Melty.frame_count % 10 == 0:
+        if DecorationManager.melty.frame_count > 0 and DecorationManager.melty.frame_count % 10 == 0:
             print_stack_trace(size=5)
     _needs_render.set()
     glfw.post_empty_event()
