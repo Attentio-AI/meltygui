@@ -477,8 +477,15 @@ class Melty:
 
         default_view_function = None
 
+        # Most specific: a per-(collection_type, attribute) override registered
+        # by viewdefaults or a field annotation (e.g. `test_tint: draw_tuple`).
+        by_name_type = cls.default_funcs_by_name_type.get(collection_type)
+        if by_name_type is not None:
+            candidate = by_name_type.get(attrib_key)
+            if callable(candidate):
+                return candidate
+
         default_by_name = cls.default_funcs_by_name[attrib_key]
-        default_by_name_type = cls.default_funcs_by_name_type[collection_type][attrib_key]
         default_by_type = cls.default_funcs_by_type[real_type]
         default_by_type_str = cls.default_funcs_by_name[real_type.__name__]
 
@@ -496,8 +503,6 @@ class Melty:
 
         elif default_by_type is not None:
             default_view_function = default_by_type
-        # elif len(default_by_name_type) > 0:
-        #     default_view_function = default_by_name_type[-1]
 
         return default_view_function
 
@@ -898,6 +903,20 @@ class Melty:
         return sm.make_custom(*tint, Swoosh.value,
                               saturation_scale=Swoosh.saturation)[:3]
 
+    @staticmethod
+    def _saturated_rgb(tint=None):
+        """Super-bright version of a view's tint, used for the nested-view
+        highlight (swoosh + outline boxes). Pass the tint stashed on the
+        draw_state at draw time (draw_state.current_tint): by this post-draw
+        pass the style manager no longer holds it. Falls back to the live tint,
+        then to a static tint, when nothing was stashed."""
+        sm = Melty.style_manager
+        if sm is None:
+            return Swoosh.tint
+        if tint is None:
+            tint = sm.get_tint()
+        return sm.make_custom(*tint,
+                              saturation_scale=1.0, value=0.6)[:3]
     @staticmethod
     def _draw_swoosh(overlay_dl, px, py, pw, ph, nx, ny, nw, nh, rgb,
                      p_round=0.0, n_round=0.0, p_clip=None):

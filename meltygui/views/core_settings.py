@@ -46,4 +46,6 @@ def meta_preset(func, *o_args, **o_kwargs):
 
             retrieved_meta = func(**kwargs)
             return retrieved_meta
+
+    wrapper.__meta_preset__ = True
     return wrapper

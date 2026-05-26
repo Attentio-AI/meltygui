@@ -28,7 +28,7 @@ from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace, t
 from src.lsd.gl_gui.melty import Melty, apply_collection_action, MeltyState, SearchTerm
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
-from src.lsd.gl_gui.view.core_views.core_meta import Meta
+from src.lsd.gl_gui.view.core_views.core_meta import AnnotationOverride
 from src.lsd.gl_gui.view.core_views.core_undo import handle_undo
 
 melty_state_registry = {}
@@ -139,11 +139,12 @@ def render_func(*args, **o_kwargs):
         _has_imgui = not kwargs.pop('_converter_mode', False)
 
         if _has_imgui and Melty.annotation_mode:
-            # log_stack_trace()
-            args = [list(kwargs)[0]]
-            annotation = annotation_track(*args, wrapper=wrapper, **o_kwargs)
-            if annotation is not None:
-                return annotation
+            # The function is being evaluated as a field annotation / class
+            # decorator (e.g. `alpha: as_float(min_value=15.0)`), not actually
+            # rendering. Hand the positional value and the call-time kwargs to
+            # annotation_track, which returns a lambda the metaclass registers
+            # into Melty's default maps. Never falls through to a real render.
+            return annotation_track(input_value, wrapper=wrapper, call_kwargs=kwargs)
 
         modes = kwargs.get("mode", None)
         if not isinstance(modes, tuple):
@@ -218,9 +219,9 @@ def render_func(*args, **o_kwargs):
         content_margin = ((len(Melty.bg_stack)) * 2.0)
 
         kwargs = o_kwargs | kwargs
-        #
-        # if header_defaults is not None:
-        #     kwargs = header_defaults | kwargs
+
+        if header_defaults is not None:
+            kwargs = header_defaults | kwargs
 
         if _has_imgui and not Melty.channels_split:
             draw_list = imgui.get_window_draw_list()
@@ -577,21 +578,6 @@ def render_func(*args, **o_kwargs):
         if _has_imgui and closable and draw_state._is_nested and draw_state.current_tint is not None:
             style_manager.set_imgui_tint(*draw_state.current_tint)
         try:
-            # meta = kwargs.get("meta", None)
-            # if meta is None:
-            #     # Use class meta as default if available
-            #     if hasattr(type(input_value), "meta"):
-            #         meta = getattr(type(input_value), "meta")
-            #     else:
-            #         if hasattr(Meta, 'get_child_meta'):
-            #             meta = Meta.get_child_meta(None, field_name=kwargs.get("name", ''), value=input_value)
-            #         else:
-            #             meta = Meta.get_new_defaults(default_value=input_value)
-            #
-            # if name is not None and name != "":
-            #     meta.name = name
-            #
-            # meta.unique = unique
 
             def set_default(key, default_value, type=None):
                 # if key in vars(meta) and vars(meta)[key] is not None:
@@ -626,7 +612,6 @@ def render_func(*args, **o_kwargs):
 
             kwargs = Melty.default_kwargs_by_type[kwargs.get("real_type", type(input_value))] | kwargs
             kwargs = Melty.default_kwargs_by_attrib_type[kwargs.get("type_collection", type(collection))][key] | kwargs
-            # kwargs = kwargs | meta.__dict__
 
             set_default("input_value", input_value)
             set_default("draw_state", draw_state)
@@ -636,7 +621,6 @@ def render_func(*args, **o_kwargs):
             set_default("window_stack", Melty.window_stack)
             set_default("func", func)
             set_default("render_func", wrapper)
-            # kwargs.setdefault('meta', meta)
 
             ########## New event handler system ##########
             unique_events = Melty.events.get(tile_id, {})
@@ -651,8 +635,6 @@ def render_func(*args, **o_kwargs):
                     set_default(param, None, wanted_type)
 
             draw_state._kwargs = kwargs
-
-            # draw_state._default_view_func = Melty.get_default_view_function(draw_state)
 
             if draw_state.kwargs is None:
                 draw_state.kwargs = AttrDict(kwargs)
@@ -772,10 +754,10 @@ def render_func(*args, **o_kwargs):
                     right = draw_state.window_pos[0] + draw_state.width
                     bottom = draw_state.window_pos[1] + draw_state.height
 
-                    inside_display = (left < os_window_size[0] and right > 0 and top < os_window_size[1] and bottom > 0)
-                    if not inside_display:
-                        draw_state.window_pos = (min(max(0, os_window_size[0] - draw_state.width), draw_state.window_pos[0]),
-                                                 min(max(0, os_window_size[1] - draw_state.height), draw_state.window_pos[1]))
+                    # inside_display = (left < os_window_size[0] and right > 0 and top < os_window_size[1] and bottom > 0)
+                    # if not inside_display:
+                    #     draw_state.window_pos = (min(max(0, os_window_size[0] - draw_state.width), draw_state.window_pos[0]),
+                    #                              min(max(0, os_window_size[1] - draw_state.height), draw_state.window_pos[1]))
 
 
 
@@ -1877,9 +1859,10 @@ def render_func(*args, **o_kwargs):
                         # Melty.bg_depth -= bg_offset
                         draw_state.context_menu_ds = ctx_ds
                         # ctx_ds.parent_window = Melty.melty_window_stack[-1] if len(Melty.melty_window_stack) > 0 else None
-                        if ctx_ds.last_seen is None:
-                            ctx_ds.closed = False
-                            ctx_ds.window_pos = (snap_int(draw_state.width) + 20, 0)
+                        if Melty.frame_count > 2:
+                            if ctx_ds.last_seen is None:
+                                ctx_ds.closed = False
+                                ctx_ds.window_pos = (snap_int(draw_state.width) + 20, 0)
 
                         if ctx_ds.closed:
                             draw_state.context_menu_open = False
@@ -3102,45 +3085,43 @@ def listens_for(hotkey):
     return decorator
 
 
-def annotation_track(*args, wrapper, **kwargs):
-    first_arg = args[0] if args else None
-    if Melty.annotation_mode:
-        # Class decoration mode, with args
-        if 'for_type' in kwargs and not isinstance(first_arg, type):
-            def class_wrapper(cls):
-                inner_args = args[1:]
-                return wrapper(cls, *inner_args, **kwargs)
+def annotation_track(first_arg=None, *, wrapper, call_kwargs=None):
+    """Capture a ``@render_func`` view function that is being used as an
+    annotation (rather than rendered) at class-definition time.
 
-            return class_wrapper
+    Three shapes are handled:
+      * ``@view(for_type=T)`` on a class — deferred decorator, registers a type
+        default once the class arrives.
+      * ``@view`` on a class — registers that class as its own type default.
+      * ``field: view`` / ``field: view(**kwargs)`` — returns an
+        ``AnnotationOverride`` carrier; ``FieldMeta`` registers it per-attribute.
+    """
+    if not Melty.annotation_mode:
+        return None
 
-        # Class decoration mode, ie. @render_as_float
-        if isinstance(first_arg, type):
-            for_type = kwargs.get('for_type', None)
-            kwargs.pop('for_type', None)
-            kwargs.pop('default_value', None)
-            args = args[1:] if len(args) > 1 else ()
+    call_kwargs = dict(call_kwargs or {})
 
-            new_meta = Meta()
-            for k, v in kwargs.items():
-                setattr(new_meta, k, v)
-            new_meta.view_function = wrapper
-            if for_type is not None:
-                first_arg.default_meta_for = getattr(first_arg, 'default_meta_for', {})
-                first_arg.default_meta_for[for_type] = new_meta
-            else:
-                first_arg.meta = new_meta
+    # @view(for_type=T) used as a class decorator: the class hasn't arrived yet.
+    if 'for_type' in call_kwargs and not isinstance(first_arg, type):
+        def class_wrapper(cls):
+            return annotation_track(cls, wrapper=wrapper, call_kwargs=call_kwargs)
 
-            return first_arg
+        return class_wrapper
 
-        # # View function was used as annotation, ie. some_param: as_float = 0.0
-        new_meta = Meta()
+    # @view / @view(for_type=T) decorating a class: register a type default,
+    # the same maps is_default_for writes to.
+    if isinstance(first_arg, type):
+        for_type = call_kwargs.get('for_type', first_arg)
+        Melty.default_funcs_by_type[for_type] = wrapper
+        if isinstance(for_type, type):
+            Melty.default_funcs_by_name[for_type.__name__] = wrapper
+        elif isinstance(for_type, str):
+            Melty.default_funcs_by_name[for_type] = wrapper
+        return first_arg
 
-        for k, v in kwargs.items():
-            setattr(new_meta, k, v)
-        new_meta.view_function = wrapper
-        return new_meta
-
-    return None
+    # View function used as a field annotation (bare or called with kwargs).
+    # The call-time kwargs are considered per-field overrides.
+    return AnnotationOverride(wrapper, call_kwargs)
 
 
 def apply_drag_and_drop():

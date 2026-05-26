@@ -28,14 +28,14 @@ from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_styl
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
 from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE, CacheTree
 from src.lsd.gl_gui.view.core_conversion.chain_converters import class_to_address, \
-    address_to_class, general_parse_to_address, module_to_address, address_to_module, address_to_general_parse
+    address_to_class, general_parse_to_address, module_to_address, address_to_module, address_to_general_parse, \
+    function_to_address
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment, GeneralParse, UsageRef
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
 from src.lsd.gl_gui.view.core_views.blit_offscreen_debug_renderers import draw_blit_debug
 from src.lsd.gl_gui.view.core_views.codec_register import registry as FILE_CODECS
-from src.lsd.gl_gui.view.core_views.core_meta import Meta
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import hotkey, tint
@@ -58,7 +58,7 @@ def empty(input_val):
 def draw_module(input_value: types.ModuleType, draw_state, **kwargs):
     imgui.text(f"Module: {input_value.__name__}")
 
-@render_func(is_default_for=(dict, MutableMapping, defaultdict, tuple, GeneralParse), use_cache=True,
+@render_func(is_default_for=(dict, MutableMapping, defaultdict, tuple, list, GeneralParse), use_cache=True,
             header_same_line=False, show_bg=True, show_instance_vars=False,
             manual_content_height=True, disable_scroll=True, shadow=True,
             wrap=False, with_header=draw_header, indent_size=5, searchable=True)
@@ -715,7 +715,7 @@ def draw_main(input_value, vis, search_text="", **kwargs):
     draw_any(input_value=proxy, name="CST Proxy", mode=Mode.WINDOW)
 
     draw_collection(vis.root.lora_collection, name="Test Window 1", mode=Mode.WINDOW)
-
+    draw_any(vis.root.lora_collection, name="Test Window 2", mode=Mode.WINDOW)
     draw_any(vis.root.lora_collection.loras, name="Test Window 3", child_kwargs={
        'is_tree':True, 'expanded':False, 'show_add_delete': False}, mode=Mode.WINDOW)
 
@@ -2344,6 +2344,11 @@ def draw_tab_bar(input_value: list, tab_height=20, names=None, tint_value=0.202,
     io = imgui.get_io()
     changed = False
     selected = list(input_value)
+    if selected is None:
+        selected = []
+    if names is None and hasattr(input_value, 'keys') and hasattr(input_value, 'values'):
+        input_value = list(input_value.values())
+        names = list(input_value.keys())
 
     imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0] - 6, imgui.get_cursor_screen_pos()[1]))
 
@@ -2409,7 +2414,7 @@ def draw_tab_bar(input_value: list, tab_height=20, names=None, tint_value=0.202,
         # Look ahead: if the next tab won't fit on this row, skip same_line()
         # so imgui's cursor flows to the next line, and reset row_width.
         if i < len(collection) - 1:
-            label = names[i + 1] if names is not None and i + 1 < len(names) else _tab_text(collection[i + 1])
+            label = names[i + 1] if names is not None and i + 2 < len(names) else _tab_text(collection[i + 1])
             next_w = imgui.calc_text_size(label).x + button_padding
             if content_width > 0 and row_width + spacing + next_w + 20 > content_width:
                 row_width = 0
@@ -2444,21 +2449,43 @@ def draw_debug(x,y, label, color=(1, 0, 0), size=16):
     draw_list.add_text(x + size + 2, y - size / 2, imgui.get_color_u32_rgba(*color, 1.0), label)
 
 
-# @render_func(is_default_for=(FileWatch))
-# def draw_file_watch(input_value: FileWatch):
-#     imgui.text(f"Watching: {input_value._path}")
-#     imgui.text(f"Size: {input_value.size} bytes")
-#     imgui.text(f"Last Modified: {input_value.modified_time}")
-#
-#     return False, None
-@render_func(use_cache=True, disable_scroll=True, show_header=False, header_same_line=False, show_tint=False, show_name=False, is_tree=False)
+
+
+@render_func(use_cache=True, show_bg=True)
+def draw_tint_context(input_value: DrawState, tab_state: TabState = None, **kwargs):
+
+    tint_sources = {
+        "draw_state": [input_value, "tint"],
+        "data class": [input_value, "_input_value", "tint"],
+        "class decoration": [class_to_address, address_to_general_parse, "decorations", "defaults", "tint"],
+        "render_function_arg": [input_value, "view_func", function_to_address, "..."],
+        "render_function_decoration": 5,
+        "code comment": 6,
+    }
+
+    changed, selected_tabs = draw_tab_bar(tab_state.selected_tabs, name="Source", show_name=True, names=list(tint_sources.keys()),
+                                          collection=list(tint_sources.values()), unique="tint_context")
+    if changed:
+        tab_state.selected_tabs = selected_tabs
+
+    if tint_sources["draw_state"] in tab_state.selected_tabs:
+        changed, new_tint = draw_tuple(input_value.tint, name="draw_state_tint")
+        if changed:
+            input_value.tint = new_tint
+
+
+    imgui.text("Context Menu Tint")
+
+@render_func(use_cache=True, disable_scroll=True, show_header=False,
+             header_same_line=False, show_tint=False, show_name=False, is_tree=False)
 def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, unique=None, up_key_pressed=None,
                       down_key_pressed=None, tab_state: TabState = None, **kwargs):
 
 
 
     context_menu_offset = input_value.context_menu_offset
-    info_items = ["name", "_default_view_func", "column", "closable", "current_mode", "mode", "show_add_delete", "_source", "window_pos", "left", "top", "width", "height", "content_height", "scroll_offset",
+    info_items = ["name", "_default_view_func", "column", "closable", "current_mode", "mode",
+                  "show_add_delete", "_source", "window_pos", "left", "top", "width", "height", "content_height", "scroll_offset",
                   "final_max_column", "_column_cursor", "_content_rect", "_max_column_index", "_outside_column_height", "disable_scroll" ]
 
     # imgui.text(type(input_value._input_value).__name__)
@@ -2503,8 +2530,8 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     info_icon_fa = " Info"
     view_func_name = offset_ds._view_func.__name__
     class_name = type(input_value._raw_input_value).__name__
-
-
+    paint_brush_icon = f"\uf1fc"
+    tint_tab_name = f"{paint_brush_icon} Tint"
 
 
     # Find which class's source to show in the class tab.
@@ -2539,18 +2566,21 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     else:
         class_tab = f" {class_name}"
 
+
     # Static tint colors for the fixed Config / Info tabs; other tabs use the neutral grey.
     config_tint = (0., 0.2, 0.967)  # steel blue
     info_tint = (1.0, 0.64, 0.113)    # teal
 
     tab_names = []
     tab_tints = []
-    tab_names.append(config_icon_fa)
-    tab_tints.append(config_tint)
     tab_names.append(info_icon_fa)
     tab_tints.append(info_tint)
+    tab_names.append(config_icon_fa)
+    tab_tints.append(config_tint)
     tab_names.append(func_tab)
     tab_tints.append(None)
+    tab_names.append(tint_tab_name)
+    tab_tints.append(Melty._saturated_rgb(draw_state.tint))  # Custom tint for the tint tab
     if class_to_show is not None:
         tab_names.append(class_tab)
         tab_tints.append(None)
@@ -2577,6 +2607,12 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     for t_idx, static_tab in enumerate(tab_state.selected_tabs):
         from src.lsd.gl_gui.view.mode import Mode
         if static_tab < len(tab_names):
+            if tab_names[static_tab] == tint_tab_name:
+                changed, new_tint = draw_tint_context(input_value, name="Context Tint", column=t_idx)
+                if changed:
+                    pass
+
+
             if tab_names[static_tab] == info_icon_fa:
                 
                 changed, watch = draw_text(draw_state.watch, tint=(0.1, 0.01, 0.4),
@@ -2767,7 +2803,7 @@ def draw_blank(input_value: any, **kwargs):
     return False, None
 
 
-def draw_any(input_value:any, view_func=None, mode:any=None, chain=None, **kwargs):
+def draw_any(input_value:any=None, view_func=None, mode:any=None, chain=None, **kwargs):
     # ── New chain system (opt-in) ─────────────────────────────
     # if chain is not None:
     #     from src.lsd.gl_gui.view.core_conversion.chain import run_chain

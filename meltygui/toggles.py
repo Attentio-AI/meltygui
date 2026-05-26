@@ -49,7 +49,7 @@ class Swoosh:
     some_text = False
     some_dict = [1,1,1,1]
 
-@window(tint=(0.8, 0.4, 0.2))
+@window(tint=(0.9, 0.4, 0.1))
 @tint({"draw_legacy": (0.8, 0.2, 0.2)})
 class Toggles:
     # Invalidation settings
@@ -77,7 +77,7 @@ class Toggles:
     layer_stack_trace = False
     show_line_breaks = False
     # Shadow Settings
-    shadow_downscale = 3
+    shadow_downscale = 2
     shadow_edge_sharpness = 50.0
     
     # [bg_offset=0, tint=(0.6604651, 0.1, 0.24270762503147125)]

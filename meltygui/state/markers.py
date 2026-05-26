@@ -9,6 +9,48 @@ def _is_field_candidate(v) -> bool:
     # Treat non-callables that aren't descriptors as "fields"
     return not callable(v) and not isinstance(v, (staticmethod, classmethod, property))
 
+
+def _extract_override(annotation, value):
+    """Turn a field annotation into ``(view_function, override_kwargs)`` so it
+    can be registered in Melty's default maps, or return ``None`` if it carries
+    no override.
+
+    Supported annotation shapes (all resolved at class-definition time):
+      * ``field: draw_float(min_value=15.0)`` — already an ``AnnotationOverride``.
+      * ``field: draw_tuple``               — a bare ``@render_func`` view fn.
+      * ``field: no_render``                — a ``@meta_preset`` (returns kwargs).
+      * ``field: render_with(fn)``          — a meta_preset already called (dict).
+    """
+    if annotation is None:
+        return None
+
+    # Carrier produced by a @render_func used in annotation position.
+    if getattr(annotation, 'is_annotation_override', False):
+        return annotation.view_function, dict(annotation.kwargs)
+
+    # Bare @render_func view function: route this attribute to it with no kwargs.
+    if getattr(annotation, '__render_func__', False):
+        return annotation, {}
+
+    # Bare @meta_preset (e.g. no_render): calling it yields a kwargs dict.
+    if getattr(annotation, '__meta_preset__', False):
+        try:
+            annotation = annotation()
+        except Exception:
+            return None
+
+    # A meta_preset result: a plain kwargs dict, possibly carrying view_function.
+    if isinstance(annotation, dict):
+        ov_kwargs = dict(annotation)
+        # meta_preset fills *args/**kwargs params with junk for varargs presets.
+        ov_kwargs.pop('args', None)
+        ov_kwargs.pop('kwargs', None)
+        view_function = ov_kwargs.pop('view_function', None)
+        return view_function, ov_kwargs
+
+    return None
+
+
 class FieldMeta(type):
 
     @classmethod
@@ -23,10 +65,10 @@ class FieldMeta(type):
     def __new__(mcls, name, bases, namespace):
         new_namespace = {}
         field_defaults = {}
-        field_meta = {}
-
-        if name == "Lora":
-            pass
+        # key -> (view_function|None, override_kwargs); registered into Melty's
+        # default maps below, once the class object exists to key them by.
+        pending_overrides = {}
+        annotations = namespace.get("__annotations__", {})
 
         for key, value in namespace.items():
             if key.startswith("__") and key.endswith("__"):
@@ -37,55 +79,25 @@ class FieldMeta(type):
                 new_namespace[key] = value
                 continue
 
-            value_annotation = namespace.get("__annotations__", {}).get(key, None)
+            field_defaults[key] = value
+            new_namespace[key] = value
 
-            # marker line
-            if hasattr(value, 'is_meta'):
-                value.name = key
-                field_defaults[key] = value.default_value
-                field_meta[key] = value
-                new_namespace[key] = value.default_value
-                new_namespace[f"{key}_meta"] = value
-            elif hasattr(value_annotation, 'is_meta'):
-                meta = value_annotation
-                meta.name = key
-                field_defaults[key] = value
-                field_meta[key] = meta
-                new_namespace[key] = value
-                new_namespace[f"{key}_meta"] = meta
-                field_meta[key].field_type = type(value)
-            elif callable(value_annotation):
-                try:
-                    meta = value_annotation(value)
-                    if hasattr(meta, 'is_meta'):
-                        meta.name = key
-                        field_defaults[key] = value
-                        field_meta[key] = meta
-                        new_namespace[key] = value
-                        new_namespace[f"{key}_meta"] = meta
-                        field_meta[key].field_type = type(value)
-                except Exception as e:
-                    # print(f"Error creating Meta for field {key} with annotation {value_annotation}: {e}")
-                    field_defaults[key] = value
-                    new_namespace[key] = value
-                    from src.lsd.gl_gui.view.core_views.core_meta import Meta
-                    field_meta[key] = Meta.get_child_meta(None, key, value)
-                    new_namespace[f"{key}_meta"] = field_meta[key]
-                    field_meta[key].field_type = value_annotation
-            else:
-                # Plain value still becomes a field
-                field_defaults[key] = value
-                new_namespace[key] = value
-                from src.lsd.gl_gui.view.core_views.core_meta import Meta
-                field_meta[key] = Meta.get_child_meta(None, key, value)
-                new_namespace[f"{key}_meta"] = field_meta[key]
-                field_meta[key].field_type = value_annotation
-
+            override = _extract_override(annotations.get(key, None), value)
+            if override is not None:
+                pending_overrides[key] = override
 
         new_namespace["__field_defaults__"] = field_defaults
-        new_namespace["__field_meta__"] = field_meta
 
         cls = super().__new__(mcls, name, bases, new_namespace)
+
+        # Store per-attribute annotation overrides in the same Melty maps that
+        # @defaults and type defaults use, keyed by (class, attribute).
+        for key, (view_function, ov_kwargs) in pending_overrides.items():
+            if view_function is not None:
+                Melty.default_funcs_by_name_type[cls][key] = view_function
+            for ov_key, ov_val in ov_kwargs.items():
+                Melty.default_kwargs_by_attrib_type[cls][key][ov_key] = ov_val
+
         return cls
 
     def __call__(cls, *args, **kwargs):
