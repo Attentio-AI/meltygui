@@ -222,6 +222,24 @@ def load_cst_module(input_value: Address):
 # draw_collection
 ########################
 
+# Last successful recompile time per Address, for the "fresh" indicator next
+# to the file-load button in address_to_general_parse. Keyed by Address: the
+# same Address object flows through the chain (address → general_parse →
+# address), so the store side (general_parse_to_address) and the display side
+# (address_to_general_parse) agree on the key.
+_last_compile_times: dict = {}
+
+
+def record_compile(address):
+    """Stamp `address` as compiled just now."""
+    _last_compile_times[address] = time.time()
+
+
+def get_compile_time(address):
+    """Last compile time for `address`, or None if never compiled this session."""
+    return _last_compile_times.get(address)
+
+
 @render_func(background=False)
 def do_recompile(input_value, code_str, file_path, changed=False):
     """Dispatch recompile to the right handler based on source type."""
@@ -352,6 +370,16 @@ def address_to_general_parse(input_value: Address, pending=False, unique=None, c
             daemon=True,
         ).start()
 
+    # Last-compiled indicator: shows the wall-clock time of the most recent
+    # recompile for this file (Ctrl+Enter or the do_recompile button).
+    compile_time = get_compile_time(input_value)
+    if compile_time is not None:
+        check_icon = ""
+        imgui.same_line()
+        imgui.align_text_to_frame_padding()
+        imgui.text_colored(f"{check_icon} compiled {time.strftime('%H:%M:%S', time.localtime(compile_time))}",
+                           0.55, 0.8, 0.55, 1.0)
+
     if pending or changed:
         clicked, result = run_button(load_cst_module, with_kwargs={"input_value": input_value},
                                      clicked=load, name=f"load_cst_module{unique}")
@@ -363,7 +391,8 @@ def address_to_general_parse(input_value: Address, pending=False, unique=None, c
 
 @render_func(use_cache=True)
 def general_parse_to_address(input_value: GeneralParse, pending=False, draw_state=None, unique=None,
-                             changed=False, recompile=False, save=False, s_key_pressed=None):
+                             changed=False, recompile=False, save=False, s_key_pressed=None,
+                             enter_key_pressed=None):
     """GeneralParse dict → Address. Handles recompile and save for any source type."""
     address = input_value.address
     if not isinstance(address, Address):
@@ -380,6 +409,14 @@ def general_parse_to_address(input_value: GeneralParse, pending=False, draw_stat
         _do_save(address, code_str=input_value.source)
         Melty.cache.invalidate_up(draw_state.parent_window._tile_id, max_depth=10)
 
+    # Ctrl+Enter: hotswap the edited code without writing to disk. Mirrors the
+    # Ctrl+S save hotkey above, but routes through do_recompile instead.
+    recompile_hotkey = enter_key_pressed and enter_key_pressed.ctrl
+    if recompile_hotkey and source is not None:
+        do_recompile(input_value=source, code_str=input_value.source, file_path=address.path)
+        record_compile(address)
+        Melty.cache.invalidate_up(draw_state.parent_window._tile_id, max_depth=10)
+
     # Skip expensive dict→CST conversion when neither block will execute
     if not show_recompile and not show_save:
         return False, address
@@ -390,10 +427,14 @@ def general_parse_to_address(input_value: GeneralParse, pending=False, draw_stat
     code_str = back_to_cst.code
     if show_recompile:
         if source is not None:
-            run_button(do_recompile, clicked=recompile and pending, name=f"do_recompile{unique}",
+            recompiled, _ = run_button(do_recompile, clicked=recompile and pending, name=f"do_recompile{unique}",
                         with_kwargs={"input_value": address.source,
                                  "code_str": code_str,
                                  "file_path": address.path})
+            if recompiled:
+                record_compile(address)
+                # Refresh the cached file path node so its compiled indicator updates.
+                Melty.cache.invalidate_up(draw_state.parent_window._tile_id, max_depth=10)
 
             imgui.dummy(1,1)
     if show_save:
@@ -402,9 +443,99 @@ def general_parse_to_address(input_value: GeneralParse, pending=False, draw_stat
                                          "code_str": code_str},
                                          clicked=save)
             if clicked:
-                Melty.cache.invalidate_up(draw_state.parent_window._tile_id, max_depth=10)
-                return True, address
+                if draw_state.parent_window is not None:
+                    Melty.cache.invalidate_up(draw_state.parent_window._tile_id, max_depth=10)
+                    return True, address
     return False, address
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║                                focus: a reversible lens node                                      ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+def _focus_get(obj, key):
+    return obj.get(key) if isinstance(obj, dict) else getattr(obj, key, None)
+
+
+def _focus_set(obj, key, value):
+    if isinstance(obj, dict):
+        obj[key] = value
+    else:
+        setattr(obj, key, value)
+
+
+@render_func(use_cache=False, show_bg=False, selectable=False, show_name=False,
+             with_header=None)
+def focus(input_value, path=(), default=None, draw_state=None, changed=False, **kwargs):
+    """Descend a STATIC key `path` into `input_value` to a single leaf, render
+    that leaf with its normal renderer (draw_tuple, for a tint), and write any
+    edit back into the container *in place*.
+
+    This is the one primitive that turns the existing reversible converter pairs
+    (class_to_address ↔ address_to_class, address_to_general_parse ↔
+    general_parse_to_address) into full read/write lenses: drop `focus` where
+    `draw_collection` would sit in a chain and it edits just the focused leaf.
+
+    Contract — identical to every other chain node: returns (changed, value).
+      - read   : leaf exists → render the picker; (False, input_value) until edited.
+      - write  : on a picker edit, mutate container[path] and return (True, input_value)
+                 so a downstream save node runs once.
+      - add    : leaf missing → show a "+ Add" button; clicking creates the leaf
+                 (and any missing intermediate dicts) with `default` and returns
+                 (True, input_value), so the same save node persists the new value
+                 (e.g. writes a fresh `# [tint=(...)]` comment for a code source).
+
+    `path` is a constant supplied by the lens definition — it is NEVER stored in
+    draw_state (which is GC'd on a short TTL). The only transient thing is
+    `input_value`, the container reference flowing through the chain; it lives for
+    this frame only. The reverse direction works because we keep the parent
+    container in the value — the same move Address makes by carrying `.source`.
+
+    Handles dict-key and attribute access uniformly, so the same node focuses a
+    GeneralParse dict (code-comment / decoration tint), a draw_state, or a data
+    class instance.
+    """
+    from src.lsd.gl_gui.view.core_views.new_core_view import draw_tuple, button
+
+    if not path:
+        imgui.text_colored("focus: empty path", 1.0, 0.4, 0.0)
+        return False, input_value
+
+    leaf_key = path[-1]
+
+    # Walk to the leaf's parent; note where (if anywhere) the chain breaks so the
+    # add path knows it many containers to create.
+    parent = input_value
+    reachable = True
+    for key in path[:-1]:
+        nxt = _focus_get(parent, key)
+        if nxt is None:
+            reachable = False
+            break
+        parent = nxt
+
+    leaf = _focus_get(parent, leaf_key) if reachable else None
+
+    # ── Present: the reusable picker (every lens funnels through this) ─────────
+    if leaf is not None:
+        tint_changed, new_tint = draw_tuple(leaf, name=str(leaf_key))
+        if tint_changed:
+            _focus_set(parent, leaf_key, new_tint)
+            return True, input_value  # hand the parent container to the save side
+        return False, input_value
+
+    # ── Absent: offer to create it ───────────────────────────────────────────────
+    if button(f" Add {leaf_key}", height=26)[0]:
+        node = input_value
+        for key in path[:-1]:           # create missing intermediate containers
+            child = _focus_get(node, key)
+            if child is None:
+                child = {}
+                _focus_set(node, key, child)
+            node = child
+        _focus_set(node, leaf_key, default if default is not None else (0.485, 0.61, 0.76))
+        return True, input_value
+    return False, input_value
 
 
 @render_func(use_cache=True)

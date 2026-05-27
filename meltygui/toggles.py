@@ -67,7 +67,10 @@ class Toggles:
     # Filter SettingS
     brightness = 0.22
     contrast = 1.422
-    saturation = 0.351
+    saturation = -0.43
+    
+    prefered_header_width = 77
+    max_preferred_header_width = 200
 
     debug_z_depth = False
     filters = True

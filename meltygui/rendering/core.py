@@ -179,6 +179,7 @@ def render_func(*args, **o_kwargs):
         as_window = kwargs.get("as_window", False)
         initial_values = kwargs.get("initial", {})
 
+
         if as_window:
             kwargs['show_bg'] = True
             kwargs['z_offset'] = 0
@@ -216,6 +217,8 @@ def render_func(*args, **o_kwargs):
         header_return = None
         is_root = Melty.depth == 0
         input_value = kwargs.get("input_value", input_value)
+
+
         content_margin = ((len(Melty.bg_stack)) * 2.0)
 
         kwargs = o_kwargs | kwargs
@@ -275,12 +278,12 @@ def render_func(*args, **o_kwargs):
         else:
             root_window_name = Melty.melty_window_stack[-1].name if len(Melty.melty_window_stack) > 0 else "Root"
             if is_root:
-                unique = ui_id(datatype=type(input_value), suffix=name + unique_name + str(key) + func.__name__)
+                unique = ui_id(suffix=name + unique_name + str(key) + func.__name__)
                 suffix = f"{unique_name}_{func.__name__}_{unique}_{key}"
             else:
-                unique = ui_id(datatype=type(input_value), suffix=suffix + unique_name +
-                                                                  name + root_window_name +
-                                                                  str(key) + func.__name__, idx=index)
+                unique = ui_id(suffix=suffix + unique_name +
+                                      name + root_window_name +
+                                      str(key) + func.__name__, idx=index)
 
         draw_state: DrawState = kwargs.get("draw_state", get_draw_state(unique))
         closable = kwargs.get("closable", False)
@@ -318,6 +321,7 @@ def render_func(*args, **o_kwargs):
                 imgui.get_cursor_screen_pos()[0] - draw_state.parent_window.abs_left,
                 imgui.get_cursor_screen_pos()[1] - draw_state.parent_window.abs_top)
         if closable:
+
             # Only perform this check on floating windows
             if draw_state._parent is not None and not draw_state._parent.clipped:
                 if return_extras:
@@ -418,6 +422,17 @@ def render_func(*args, **o_kwargs):
         if Melty.cache is not None:
             draw_state._parent_ctx = Melty.cache.get_current_parent()
 
+        # Set default values from initial on the first frame (before any potential mutation)
+        if draw_state.frame_count < 2:
+            for item_name, initial_value in initial_values.items():
+                if isinstance(getattr(draw_state, item_name, None), int):
+                    if getattr(draw_state, item_name) == 0 or kwargs.get("force_initial", False):
+                        setattr(draw_state, item_name, initial_value)
+                else:
+                    if hasattr(draw_state, item_name) and (getattr(draw_state, item_name) is None or kwargs.get(
+                            "force_initial", False)):
+                        setattr(draw_state, item_name, initial_value)
+
         if active_layer is None and _has_imgui:
             if closable:
                 if draw_state is not None and draw_state.parent_window is not None:
@@ -440,6 +455,31 @@ def render_func(*args, **o_kwargs):
                     layer = len(Melty.registered_windows) + Melty.top_layer_boost
 
                 if closable and len(Melty.melty_window_stack) > 0:
+                    if kwargs.get("inline", False):
+                        if kwargs.get("with_header", None) is not None:
+                            imgui.push_id(tile_id + "_inline")
+
+                            pre_header_cursor = imgui.get_cursor_screen_pos()
+                            kwargs['style_manager'] = style_manager
+                            kwargs['draw_state'] = draw_state
+                            kwargs["with_header"](**draw_state._kwargs)
+
+                            imgui.pop_id()
+                            draw_state.left_offset, draw_state.top_offset = (
+                                imgui.get_cursor_screen_pos()[0] - draw_state._parent.abs_left,
+                                imgui.get_cursor_screen_pos()[1] - draw_state._parent.abs_top)
+                            if not draw_state.expanded:
+                                return_value = (False, None)
+                                if return_extras:
+                                    if len(return_value) == 3:
+                                        return return_value
+                                    else:
+                                        return *return_value, draw_state
+                                return return_value
+
+                        else:
+                            imgui.text(f"{name}")
+
                     draw_state.is_nested = True
                     parent_ds = draw_state._parent
                     if draw_state not in set(Melty.root_draw_states[parent_ds.id]):
@@ -482,15 +522,7 @@ def render_func(*args, **o_kwargs):
 
         kwargs['return_extras'] = False
 
-        # Set default values for initial on the first frame (before any input mutation)
-        if draw_state.frame_count < 2:
-            for item_name, initial_value in initial_values.items():
-                if isinstance(getattr(draw_state, item_name, None), int):
-                    if getattr(draw_state, item_name) == 0:
-                        setattr(draw_state, item_name, initial_value)
-                else:
-                    if hasattr(draw_state, item_name) and getattr(draw_state, item_name) is None:
-                        setattr(draw_state, item_name, initial_value)
+
 
         if draw_state._is_nested:
             Counters.nested_window_count += 1
@@ -703,6 +735,11 @@ def render_func(*args, **o_kwargs):
                 parent_wrap = False
                 this_wrap = False
 
+            # This view's effective wrap state - True if it sets wrap=True or
+            # inherits it from an ancestor. Captured here because wrap_stack is
+            # popped before the final width assignment, and a view wrapped only
+            # by inheritance (wrap kwarg False) must still take the wrap sizing
+            # path; otherwise its width is never set and flickers as None.
             Melty.wrap_stack.append(this_wrap or parent_wrap)
 
             # ── Converter path (no imgui) ───────────────────────────
@@ -734,6 +771,9 @@ def render_func(*args, **o_kwargs):
 
             if closable:
                 # melty_hovered = draw_state.on_action("on_hover", view_id="window_hover", priority_delta=1)
+                # Commit last frame's accumulated max header width so headers
+                # padded this width read a stable value, then clear the
+                # accumulator for the headers about to render into this window.
                 Melty.melty_window_stack.append(draw_state)
 
                 if draw_state.window_pos is None:
@@ -855,6 +895,7 @@ def render_func(*args, **o_kwargs):
 
                 anchor_pos = kwargs.get("anchor", Anchor.TOP_LEFT)
                 draw_state.anchor_pos = anchor_pos
+                draw_state.parent_anchor_pos = kwargs.get("parent_anchor", Anchor.TOP_LEFT)
                 draw_state.pin_to_clip = kwargs.get("pin_to_clip", False)
                 if draw_state.pin_to_clip:
                     # Snapshot the active clip rect now - the live clip stack is
@@ -911,7 +952,8 @@ def render_func(*args, **o_kwargs):
             if fixed_size:
                 Melty.fixed_size_stack.append(draw_state)
 
-            if fixed_size and auto_resize and closable and draw_state.multi_line and kwargs.get("fill_height", None) is None:
+            if (fixed_size and auto_resize and closable and draw_state.multi_line
+                    and not Melty.is_wrapped() and kwargs.get("fill_height", None) is None):
                 draw_state.width = 400
 
             if detached:
@@ -979,7 +1021,7 @@ def render_func(*args, **o_kwargs):
 
 
                 parent_wrap_left = draw_state.abs_left + snap_int(parent_wrap_width * column)
-                available_width = parent_wrap_width - 2 - indent_x
+                available_width = parent_wrap_width - indent_x
             else:
                 available_width = (parent_wrap_width - x_offset - content_margin)
 
@@ -994,7 +1036,7 @@ def render_func(*args, **o_kwargs):
                     draw_state.height = snap_int(min(draw_state.height, max_height))
                     draw_state._source["height"] = "column not closable, item_rect[1]"
 
-            if kwargs.get("fill_height", None) is not None and passed_height is None and auto_resize:
+            if kwargs.get("fill_height", None) is not None and passed_height is None and auto_resize and not closable:
                 # Is fill height callable?
                 if callable(kwargs.get("fill_height")):
                     fill_height_result = kwargs.get("fill_height")(draw_state)
@@ -1007,16 +1049,20 @@ def render_func(*args, **o_kwargs):
                     available_width = snap_int(parent_wrap_width)
                 else:
                     fixed_size_draw_state = Melty.fixed_size_stack[-2]
-                    parent_wrap_width = fixed_size_draw_state.width - 10
+                    parent_wrap_width = fixed_size_draw_state.width
                     parent_wrap_height = fixed_size_draw_state.height - content_margin - 20
                     available_width = snap_int(parent_wrap_width)
                     draw_state.height = snap_int(parent_wrap_height)
                     draw_state._source["height"] = "fill height"
                     draw_state.width = snap_int(available_width)
 
-            single_line_avail = available_width - header_width - 5
+            single_line_avail = available_width - header_width - 10
+            # Auto expand (go multi-line) when the content can't fit on a
+            # single line at its min_width. Falls back to 150 when no
+            # min_width is set so widgets without one keep prior behavior.
+            single_line_trigger = kwargs.get("min_width", draw_state.min_width) or 150
             header_same_line = kwargs.get("header_same_line", False)
-            if ((single_line_avail < 150 or (
+            if ((single_line_avail < single_line_trigger or (
                     draw_state.height is not None and draw_state.height - draw_state.footer_height > 50))
                     and not header_same_line):
                 draw_state.multi_line = True
@@ -1924,6 +1970,13 @@ def render_func(*args, **o_kwargs):
                     draw_state.header_width = header_rect[0]
                     draw_state.header_height = header_rect[1]
 
+                    # Fold this header's natural width into the parent window's
+                    # running max so sibling headers align to the widest one.
+                    if draw_state.parent_window is not None and not draw_state.multi_line:
+                        draw_state.parent_window.max_header_width = min(Toggles.max_preferred_header_width, max(
+                            draw_state.parent_window.max_header_width,
+                            draw_state.header_natural_width))
+
                     if not draw_state.multi_line:
                         same_line()
 
@@ -1953,14 +2006,18 @@ def render_func(*args, **o_kwargs):
                     if closable:
                         margin = 0
                     else:
-                        margin = 10
+                        margin = 0
 
                     if clip_size is not None:
-                        end_x = max(draw_state.left,
-                                    draw_state.left + clip_size[0] - draw_state.header_end_width - margin)
-                        end_x = max(end_x, draw_state.left + draw_state.header_width + 10)
+                        # Right-align the end header to the window's right edge. We
+                        # deliberately don't clamp it past the main header (i.e. no
+                        # `max(end_x, abs_left + header_width + 10)`): when space is
+                        # tight the end header overlaps/draws on top of the header
+                        # rather than clipping off the right edge of the window.
+                        end_x = max(draw_state.abs_left,
+                                    draw_state.abs_left + clip_size[0] - draw_state.header_end_width - margin)
                         if not draw_state.expanded:
-                            end_x = draw_state.left + draw_state.header_width + 10
+                            end_x = draw_state.abs_left + draw_state.header_width + 10
                         imgui.set_cursor_screen_pos((end_x,
                                                      imgui.get_cursor_screen_pos()[1] + outline_margin))
 
@@ -3039,7 +3096,7 @@ def combine(h: int, s: str) -> int:
     return ((h * 16777619) ^ strhash(s)) & 0xffffffff
 
 
-def ui_id(datatype=None, suffix=None, idx=0) -> int:
+def ui_id(suffix=None, idx=0) -> int:
     """
     Generate a stable UI ID from the call stack + optional metadata.
 
@@ -3054,8 +3111,8 @@ def ui_id(datatype=None, suffix=None, idx=0) -> int:
 
     scope = f"{cls_name}.{func_name}" if cls_name else func_name
     h = combine(h, scope)
-    datatype = datatype if datatype is not None else Any
-    h = combine(h, str(datatype))
+    # datatype = datatype if datatype is not None else Any
+    # h = combine(h, str(datatype))
     suffix_int = strhash(str(suffix))
 
     unique = h if suffix is None else (((h * 16777619) ^ suffix_int) + (idx + 1))

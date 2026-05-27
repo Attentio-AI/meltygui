@@ -186,7 +186,9 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     if display_name is not None:
         name = display_name
 
-    imgui.dummy(0, 0)
+    imgui.dummy(5, 0)
+
+    start_x = imgui.get_cursor_screen_pos()[0]
 
     on_change = False
     return_val = on_action
@@ -353,7 +355,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
             if changed or imgui.is_key_pressed(imgui.KEY_ESCAPE) or not imgui.is_item_active():
                 draw_state._name_edit = False
 
-        same_line(spacing=3)
+        same_line(spacing=0)
 
     if draw_state.closable and show_tint:
         spinner_color = imgui.get_color_u32_rgba(1, 1, 1, 0.1)
@@ -361,6 +363,8 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
                            imgui.get_cursor_screen_pos()[1], spinner_color, spinner_icon)
         imgui.dummy(15, 15)
         imgui.same_line()
+
+    end_x = imgui.get_cursor_screen_pos()[0]
 
     # ── Profiler ───────────────────────────────────────────────
     is_profiling = Toggles.profile_mode == ProfileMode.ON
@@ -373,6 +377,20 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         same_line(spacing=3)
 
     pop_style_var(1)
+
+    # Record the natural (pre-pad) header width so core_render can fold it into
+    # the parent window's running max for the next frame.
+    draw_state.header_natural_width = end_x - start_x
+    if kwargs.get("align_header", True) and show_name:
+        # Pad to the widest header in this window (cached per-window), with the
+        # preferred width as a floor. Fall back to the floor when no window.
+        parent_window = draw_state.parent_window
+        pad_target = Toggles.prefered_header_width
+        if parent_window is not None:
+            pad_target = max(pad_target, parent_window.max_header_width)
+        if end_x - start_x < pad_target:
+            imgui.dummy(pad_target - (end_x - start_x), 1)
+            imgui.same_line(0)
 
     return on_change, return_val
 

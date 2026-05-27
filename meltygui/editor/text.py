@@ -759,8 +759,10 @@ def draw_text(input_value: str,
             changed = True
 
         # --- Enter --- (skipped for single-line fields like the search box,
-        # where Enter is used for find-next / Shift+Enter find-prev)
-        if (pressed(glfw.KEY_ENTER) or pressed(glfw.KEY_KP_ENTER)) and not single_line:
+        # where Enter is reserved for find-next / Shift+Enter find-prev).
+        # Ctrl+Enter is reserved for recompile (general_go_to_address), so we
+        # don't insert a newline when Ctrl is held.
+        if (pressed(glfw.KEY_ENTER) or pressed(glfw.KEY_KP_ENTER)) and not single_line and not ctrl:
             ds.text_cursor_blink_time = time.time()
             indent = _get_indent(text, ds.text_cursor_pos)
             if _has_selection(ds):

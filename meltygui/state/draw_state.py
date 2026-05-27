@@ -70,6 +70,12 @@ class TabState(DictConversion):
         self.selected_tabs = []
 
 
+@no_save_exclude()
+class DropDownState(DictConversion):
+    def __init__(self):
+        super().__init__()
+        self.selected = None
+
 
 @exclude("zoom", "center_u", "center_v", "brightness", "contrast", "hue", "saturation")
 class ZoomState(DictConversion):
@@ -185,8 +191,9 @@ class TileMode(Enum):
                   "parent_window", "pressed", "bbox", "final_max_column",
                  'hover_rects', 'nested_window', 'use_cache', "header_top", "header_left", "left_offset",
                  "top_offset", 'kwargs', "just_shadow", "header_width", "header_end_width",
+                 "header_natural_width", "max_header_width",
                  "header_left_delta", "header_top_delta", "last_seen", "persistent", "shadow_margin", "bg_depth",
-                 "anchor_pos", "pin_to_clip", "pin_clip_rect", "just_shadow", 'hover_reported', 'explain_convert',
+                 "anchor_pos", "parent_anchor_pos", "pin_to_clip", "pin_clip_rect", "just_shadow", 'hover_reported', 'explain_convert',
                  'channel', 'next', 'previous', 'index_in_parent', 'relative_pos',
                     '_hover_eligible', 'just_shadow')
 @deep_refresh('scroll_offset', 'closed', 'search_text', 'search_active')
@@ -286,7 +293,7 @@ class DrawState(DictConversion):
         self._shadow_depth = 0
         self.shadow = True
         self.cst = None
-        self.window_pos = (0,0)
+        self.window_pos: draw_collection(show_name=False) = (0,0)
         self.window_size = None
         self._initial_window_pos = None
         self._initial_window_pos_resize = None
@@ -367,6 +374,12 @@ class DrawState(DictConversion):
         self.header_left = 0
         self.header_width = 0
         self.header_end_width = 0
+        # Natural (pre-pad) width of this window's own header.
+        self.header_natural_width = 0
+        # Multi-window header widths: max_header_width is the stable value
+        # read while padding headers this frame. _max_header_width_acc is the
+        # running max accumulated as children render, committed at window push.
+        self.max_header_width = 0
         self.clip_rect = None
         self.dlt_count = DecorationManager.melty.save_draw_state_for
         self.premature_break = False
@@ -396,6 +409,10 @@ class DrawState(DictConversion):
         ### End Columns
         self._is_nested = False
         self.anchor_pos = Anchor.TOP_LEFT
+        # Which point on the parent the child anchors to. Independent of
+        # anchor_pos (the child's own origin). Defaults to TOP_LEFT so parent
+        # anchoring is opt-in and legacy top-left layout is preserved.
+        self.parent_anchor_pos = Anchor.TOP_LEFT
         # When True, a child view anchors to a fixed clip rect corner instead
         # of following the declaring view's scroll position. pin_clip_rect is a
         # snapshot (left, top, right, bottom) of the active clip rect captured at
@@ -591,10 +608,13 @@ class DrawState(DictConversion):
         if self.closed and self.closable:
             return True
 
-        elif self.parent_window is not None:
+        if not self.expanded:
+            return True
+
+        if self.parent_window is not None:
             return self.parent_window.abs_closed
-        else:
-            return False
+
+        return False
 
     @property
     def root_window(self):
@@ -620,6 +640,37 @@ class DrawState(DictConversion):
             offset_y = -self.height + -anchor_margin
         else:  # vertically centered
             offset_y = int(-self.height / 2)
+
+        return (offset_x, offset_y)
+
+    @property
+    def parent_anchor_offset(self):
+        """Offset from the parent window's top-left to the anchor point on the
+        parent selected by ``anchor_pos``.
+
+        This is the parent-side counterpart to ``anchor_offset`` (which selects
+        the child's own corner). The two are independent: ``parent_anchor_pos``
+        picks the point on the parent, ``anchor_pos`` picks the child's corner
+        that lands on it. Returns (0, 0) for a TOP_LEFT parent anchor (the
+        default), preserving the legacy top-left-relative layout.
+        """
+        parent = self.parent_window
+        if parent is None or parent is self:
+            return (0, 0)
+
+        if self.parent_anchor_pos in LEFT_ANCHORS:
+            offset_x = 0
+        elif self.parent_anchor_pos in RIGHT_ANCHORS:
+            offset_x = parent.width
+        else:  # horizontally centered
+            offset_x = int(parent.width / 2)
+
+        if self.parent_anchor_pos in TOP_ANCHORS:
+            offset_y = 0
+        elif self.parent_anchor_pos in BOTTOM_ANCHORS:
+            offset_y = parent.height
+        else:  # vertically centered
+            offset_y = int(parent.height / 2)
 
         return (offset_x, offset_y)
 
@@ -679,7 +730,8 @@ class DrawState(DictConversion):
             # the declaring view (which left_offset tracks).
             this_left = window_pos_x + base[0] + anchor[0]
         else:
-            this_left = window_pos_x + parent_left + self.left_offset + anchor[0]
+            this_left = (window_pos_x + parent_left + self.left_offset
+                         + self.parent_anchor_offset[0] + anchor[0])
         return int(this_left)
 
     def _abs_top(self, depth=0):
@@ -701,7 +753,8 @@ class DrawState(DictConversion):
             # the declaring view (which top_offset tracks).
             this_top = window_pos_y + base[1] + anchor[1]
         else:
-            this_top = window_pos_y + parent_top + self.top_offset + anchor[1]
+            this_top = (window_pos_y + parent_top + self.top_offset
+                        + self.parent_anchor_offset[1] + anchor[1])
         return int(this_top)
 
     @property

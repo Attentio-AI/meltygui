@@ -1134,7 +1134,6 @@ class Melty:
             for idx, ds in enumerate(ds_list):
                 if ds.abs_closed or ds.closed:
                     to_discard.add((parent_ds_id, ds))
-                    ds.closed = True
                 else:
                     cls.root_draw_states_by_layer[ds.abs_layer].append(ds)
 
@@ -1188,6 +1187,7 @@ class Melty:
                 # Melty.cache.mask_mark_view(draw_state.z_pos, draw_state.left,
                 #                            draw_state.top, draw_state.width, draw_state.height,
                 #                            f"view_mask_{draw_state.id}", 4)
+
                 Melty.active_layer = idx + (d_idx)
                 draw_state._nested_index = (d_idx)
                 Melty.z_pos = (Melty.active_layer * Melty.max_depth) + Melty.depth
@@ -1201,8 +1201,10 @@ class Melty:
                 if draw_state._kwargs.get("swoosh", True):
                     if draw_state._parent is not None:
                         offset_ds = draw_state._parent._offset_ds
+
                         if offset_ds is None:
                             offset_ds = draw_state._parent
+
 
                         overlay_dl: _DrawList = imgui.get_overlay_draw_list()
                         # Route to the window's z-order channel so this overlay

@@ -5,11 +5,12 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional, Any
 
+from src.lsd.gl_gui.model.core_model.draw_state import Anchor
 from src.lsd.gl_gui.model.model_enums import RelaxedEnum
 from src.lsd.gl_gui.toggles import WindowManager
 from src.lsd.gl_gui.view.core_conversion.chain_converters import module_to_address, address_to_general_parse, \
     general_parse_to_address, address_to_module, class_to_address, address_to_class, function_to_address, \
-    address_to_function, general_parse_to_str, str_to_general_parse
+    address_to_function, general_parse_to_str, str_to_general_parse, focus
 from src.lsd.gl_gui.view.core_conversion.file_converters import path_to_dict, bytes_to_str, load_text, recompile_module, \
     recompile, fn_to_cst, cst_to_fn, recompile_fn, \
     mod_to_cst, cst_to_mod, recompile_mod_fn, \
@@ -22,7 +23,7 @@ from src.lsd.gl_gui.view.core_views.headers import draw_footer, draw_header_end,
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
 from src.lsd.gl_gui.view.core_views.new_core_view import draw_collection, draw_comment, \
     sort_dict_alphabetically, unsort_dict_alphabetically, draw_with_modes, draw_type, \
-    class_to_var_dict, var_dict_to_class
+    class_to_var_dict, var_dict_to_class, draw_dropdown, draw_blank, draw_drop_down_item
 from src.lsd.gl_gui.view.core_views.text_editor import draw_text
 
 
@@ -44,30 +45,67 @@ class Mode(Enum):
     def get_config_for(self, input_value=None, the_type=None):
         if input_value is not None:
             the_type = type(input_value)
-        config = self.value.get(the_type, None)
+
+        config = self.unwrapped.get(the_type, None)
         if config is not None:
             return config
 
         for super_type in type(input_value).__mro__:
-            config = self.value.get(super_type, None)
+            config = self.unwrapped.get(super_type, None)
             if config is not None:
                 return config
-            elif Any in self.value:
-                return self.value[Any]
+
+        if Any in self.unwrapped:
+            return self.unwrapped[Any]
         return None
-        
-    # [tint=(0.2,0.5,0.1)]
+
+    def __init__(self, *args, **kwargs):
+        unwrapped = {}
+        if isinstance(self.value, dict):
+            for key, value in self.value.items():
+                if isinstance(key, tuple):
+                    for sub_key in key:
+                        unwrapped[sub_key] = value
+                else:
+                    unwrapped[key] = value
+            self.unwrapped = unwrapped
+
+
+    # [tint=(0.2,0.1,0.1)]
     SORT = {
         defaultdict: ModeOverrides(
             kwargs={"show_bg": True, "selectable": False, "use_cache": True},
             recursive=True,
             func=(sort_dict_alphabetically,
                   (draw_collection, {"show_add_delete":False, "selectable":False, "show_bg": False}),
-                  
+
           ))
     }
 
-    
+
+    DROPDOWN_WINDOW = {
+        (Any): ModeOverrides(
+            kwargs={"show_bg": False, "selectable": False, "min_width": 10, "wrap":True, "z_offset":0,
+                    "shadow":False, "is_tree": False, "use_cache": True},
+            recursive=False,
+            func=draw_drop_down_item
+        ),
+        (dict, list, tuple): ModeOverrides(
+            kwargs={"show_bg": True, "selectable": False, "use_cache": True, "melty_window": False,
+                    "closable": True,
+                    "with_header_end": draw_header_end, "auto_resize": True, "draggable": True,
+                    'shadow': True, "return_item": True,
+                    "show_tint": False, "show_header": False, 'indent_size': 5,
+                    "disable_scroll": False, "searchable": True, "wrap":True,
+                    "child_kwargs": {"force_initial":True, "initial": {"window_pos": (0, 0), "closed":False},
+                                     "bg_offset":2, "swoosh":False, "auto_resize":True, "closed":False,
+                                     "return_item": True,
+                                     "inline":True, "anchor": Anchor.TOP_LEFT, "parent_anchor": Anchor.TOP_LEFT},
+                    "show_add_delete": False, "with_header": draw_header, "min_width": 10, "min_height": 20},
+            recursive=True,
+        )
+    }
+
     WINDOW_MANAGER_SORTED = {
         defaultdict: ModeOverrides(
             kwargs={"show_bg": True, "selectable": False, "use_cache": True},
@@ -160,7 +198,7 @@ class Mode(Enum):
         ),
 
     }
- 
+
     code_plain_text_auto_load = True
     code_plain_text_params = {'save': True,
                               'recompile': False}
@@ -281,7 +319,7 @@ def _populate_code_mode():
                   address_out),
         )
 
-    Mode.CODE.value.update({
+    Mode.CODE.unwrapped.update({
         types.FunctionType: chain_for(function_to_address, address_to_function),
         types.ModuleType: chain_for(module_to_address, address_to_module),
         type: chain_for(class_to_address, address_to_class),
@@ -289,6 +327,96 @@ def _populate_code_mode():
 
 
 _populate_code_mode()
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  Tint lenses - named, static accessors for "where does this tint live"       ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+#
+# Each TintLens member is a bidirectional accessor for one tint source. The whole
+# point: every source plugs into the *same* draw_tuple picker, `focus`, and the
+# tint's location is static config that lives here in code - never in draw_state
+# (which is GC'd on a short TTL).
+#
+# Adding a source is one line, with a factory:
+#
+#   mem_lens("Draw state", lambda ds: ds)                  # live attr/dict in memory
+#   code_lens("Code comment", ("__overrides__", "tint"))   # parsed from source code
+#
+#   - mem_lens  → focus reads/writes the live attribute or dict-key directly.
+#   - code_lens → the CODE_UI chain is GENERATED from the path + the source
+#                 object's type (class / function / module), with `focus` slotted
+#                 in where draw_collection sits in CODE_UI. draw_any(root, chain=...)
+#                 runs it: parse → focus → save+recompile. No paired save mode.
+#
+# `default` is what the "+ Add" affordance in focus stamps in when the source has
+# no tint yet. Render a TintLens member with draw_any to get the radio dropdown.
+
+_TINT_DEFAULT = (0.485, 0.61, 0.76)
+
+# Address-resolver pairs (load-side, save-side) per source-object type - the same
+# pairs CODE_UI dispatches on. Generating from these keeps code lenses one-liners.
+_ADDR_PAIRS = {
+    type: (class_to_address, address_to_class),
+    types.FunctionType: (function_to_address, address_to_function),
+    types.ModuleType: (module_to_address, address_to_module),
+}
+_TINT_SAVE = {'save': True, 'recompile': True}
+
+
+def _build_code_chain(root, path, default):
+    """CODE_UI with `focus` in place of draw_collection: parse → focus → save."""
+    load_node, save_node = _ADDR_PAIRS.get(type(root), _ADDR_PAIRS[type])
+    return (load_node,
+            (address_to_general_parse, {'load': True}),
+            (focus, {'path': path, 'default': default}),
+            (general_parse_to_address, _TINT_SAVE),
+            save_node)
+
+
+@dataclass
+class LensSpec:
+    label: str
+    root: Any                      # draw_state -> the object the lens starts from
+    path: tuple                    # key/attr path to the tint leaf
+    default: tuple = _TINT_DEFAULT  # value the "+ Add" affordance stamps in
+    chain: Any = None              # code lenses: root -> generated chain tuple; None = in-memory
+
+
+def mem_lens(label, root, path=("tint",), default=_TINT_DEFAULT):
+    """A tint that lives as a live attribute/dict-key in memory (draw_state, data
+    class). focus reads/writes it directly — no parse, no save side."""
+    return LensSpec(label, root=root, path=path, default=default, chain=None)
+
+
+def code_lens(label, path, default=_TINT_DEFAULT):
+    """A tint that lives in source code (a comment / decoration). The parse→save
+    chain is generated from the path + owning object type at dispatch time."""
+    return LensSpec(label, root=_tint_source_object, path=path, default=default,
+                    chain=lambda root: _build_code_chain(root, path, default))
+
+
+def _tint_source_object(draw_state):
+    """The class / function / module whose source code owns this element — i.e.
+    where a code-comment or decoration tint would be parsed from. For a data
+    instance that's its (non-builtin) class; for a primitive it's None (the
+    caller falls back to an in-memory lens)."""
+    raw = getattr(draw_state, "_raw_input_value", None)
+    if raw is None:
+        return None
+    if isinstance(raw, (types.FunctionType, type, types.ModuleType)):
+        return raw
+    the_type = type(raw)
+    if getattr(the_type, "__module__", None) in (None, "builtins", "_collections_abc"):
+        return None
+    return the_type
+
+
+class TintLens(Enum):
+    DRAW_STATE   = mem_lens("Draw state", lambda ds: ds)
+    DATA_CLASS   = mem_lens("Data class", lambda ds: getattr(ds, "_raw_input_value", None))
+    CODE_COMMENT = code_lens("Code comment", ("__overrides__", "tint"))
+    DECORATION   = code_lens("Decoration", ("decorators", "defaults", "tint"))
 
 
 class ModeGroup:

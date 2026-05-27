@@ -70,6 +70,8 @@ class FieldMeta(type):
         pending_overrides = {}
         annotations = namespace.get("__annotations__", {})
 
+
+
         for key, value in namespace.items():
             if key.startswith("__") and key.endswith("__"):
                 new_namespace[key] = value
