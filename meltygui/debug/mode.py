@@ -11,7 +11,8 @@ from src.lsd.gl_gui.toggles import WindowManager
 from src.lsd.gl_gui.view.core_conversion.chain_converters import module_to_address, address_to_general_parse, \
     general_parse_to_address, address_to_module, class_to_address, address_to_class, function_to_address, \
     address_to_function, general_parse_to_str, str_to_general_parse, focus, \
-    caller_to_address, address_to_call_parse, call_dict_to_save, caller_site
+    caller_to_address, address_to_call_parse, call_dict_to_save, caller_site, \
+    class_to_address_incl_overrides
 from src.lsd.gl_gui.view.core_conversion.file_converters import path_to_dict, bytes_to_str, load_text, recompile_module, \
     recompile, fn_to_cst, cst_to_fn, recompile_fn, \
     mod_to_cst, cst_to_mod, recompile_mod_fn, \
@@ -316,7 +317,7 @@ def _populate_code_mode():
             func=(address_in,
                   (address_to_general_parse, {'load': True,}),
                   (draw_with_modes, {'modes': inner_modes, 'disable_scroll': True, 'fill_height': compute_height}),
-                  (general_parse_to_address, {'save': True, 'recompile': True}),
+                  (general_parse_to_address, {'save': True, 'recompile': False}),
                   address_out),
         )
 
@@ -363,7 +364,7 @@ _ADDR_PAIRS = {
     types.FunctionType: (function_to_address, address_to_function),
     types.ModuleType: (module_to_address, address_to_module),
 }
-_CODE_SAVE = {'save': True, 'recompile': True}
+_CODE_SAVE = {'save': True, 'recompile': False}
 
 
 def _owning_source(draw_state):
@@ -381,70 +382,106 @@ def _owning_source(draw_state):
     return the_type
 
 
-def _build_code_chain(root, tail, default):
+def _build_code_chain(root, tail, default, kind, prefix_class=True, ensure_import=None,
+                      load_override=None):
     """CODE_UI with `focus` in place of draw_collection: parse → focus → save.
-    A class span parses to {<ClassName>: {...}}, so class roots get the class name
-    prefixed onto the focus path."""
+
+    A class span parses to {<ClassName>: {...}}, so things INSIDE the class
+    (class vars, decorator kwargs) need the class name prefixed onto the focus
+    path. An override `# [...]` comment, however, lives at the span's MODULE
+    level (above the class) and round-trips there — so code_comment passes
+    prefix_class=False to target the top-level __overrides__ directly.
+
+    ensure_import=(module, name) makes the save also insert that import if the
+    file lacks it (so a synthesized @defaults decorator resolves)."""
     load_node, save_node = _ADDR_PAIRS.get(type(root), _ADDR_PAIRS[type])
-    prefix = (root.__name__,) if isinstance(root, type) else ()
+    if load_override is not None and isinstance(root, type):
+        load_node = load_override        # e.g. extend the span to include a leading comment
+    prefix = (root.__name__,) if (prefix_class and isinstance(root, type)) else ()
+    save_kwargs = dict(_CODE_SAVE)
+    if ensure_import is not None:
+        save_kwargs['ensure_import'] = ensure_import
     return (load_node,
             (address_to_general_parse, {'load': True}),
-            (focus, {'path': prefix + tail, 'default': default}),
-            (general_parse_to_address, _CODE_SAVE),
+            (focus, {'path': prefix + tail, 'default': default, 'kind': kind}),
+            (general_parse_to_address, save_kwargs),
             save_node)
 
 
 @dataclass
 class Lens:
-    label: str            # full label for the context-menu row
+    label: str            # unique display id (kind + name) - drives draw_state identity
     name: str             # the field/leaf name this lens reads/writes
     root: Any             # draw_state -> the object the chain starts from
     path: tuple           # in-place kinds: attr-name path to the leaf
     default: Any = None   # value the "+ Add" affordance stamps in
     chain: Any = None     # code kinds: root -> generated chain tuple; None = in-place
+    kind: str = ""        # short, clean display label (no attr name; no internal prefix)
 
 
 # ── Lens kinds (generic over `name`) ──────────────────────────────────────────
 
 def draw_state_attr(name, default=None):
-    return Lens(f"Draw state · {name}", name, root=lambda ds: ds, path=(name,), default=default)
+    return Lens(f"Draw state · {name}", name, root=lambda ds: ds, path=(name,),
+                default=default, kind="Draw state")
 
 
 def instance_attr(name, default=None):
     return Lens(f"Instance attr · {name}", name,
                 root=lambda ds: getattr(ds, "_raw_input_value", None),
-                path=(name,), default=default)
+                path=(name,), default=default, kind="Instance")
 
 
 def class_var(name, default=None):
     return Lens(f"Class variable · {name}", name, root=_owning_source, path=(name,),
-                default=default, chain=lambda root: _build_code_chain(root, (name,), default))
+                default=default, kind="Class variable",
+                chain=lambda root: _build_code_chain(root, (name,), default, "Class variable"))
+
+
+_DEFAULTS_IMPORT = ("src.lsd.gl_gui.view.core_views.decoration.core_decoration", "defaults")
 
 
 def decoration(name, default=None, decorator="defaults"):
     tail = ("decorators", decorator, name)
+    # A synthesized @defaults needs its import; ensure it in the same save write.
+    imp = _DEFAULTS_IMPORT if decorator == "defaults" else None
     return Lens(f"Decoration · {name}", name, root=_owning_source, path=tail,
-                default=default, chain=lambda root: _build_code_chain(root, tail, default))
+                default=default, kind="Decoration",
+                chain=lambda root: _build_code_chain(root, tail, default, "Decoration",
+                                                     ensure_import=imp))
 
 
 def code_comment(name, default=None):
+    # An override comment lives at the span's MODULE level (above the class), so
+    # no class-name prefix. The class span from getsourcelines excludes a comment
+    # above the class, so we load via class_to_address_incl_overrides, which
+    # extends the span up to include it - otherwise it never round-trips.
     tail = ("__overrides__", name)
     return Lens(f"Code comment · {name}", name, root=_owning_source, path=tail,
-                default=default, chain=lambda root: _build_code_chain(root, tail, default))
+                default=default, kind="Code comment",
+                chain=lambda root: _build_code_chain(root, tail, default, "Code comment",
+                                                     prefix_class=False,
+                                                     load_override=class_to_address_incl_overrides))
 
 
 def caller_arg(name, default=None):
     """Edit the literal a caller passed for `name`, e.g. draw_text(tint=(1,0,1)).
-    Anchored on the call site (draw_state._call_frames, captured on menu-open),
-    not on the data or its class. The chain is fixed (independent of root type):
-    frames → call-statement Address → parse the Call's kwargs → focus → save."""
+    Anchored on the call site (draw_state._call_site — the (filename, lineno)
+    resolved once when frames were grabbed on menu-open), not on the data or its
+    class. The chain is fixed (independent of root type): site → call-statement
+    Address → parse the Call's kwargs → focus → save.
+
+    Reads the cached site rather than re-walking the live stack: during a tint
+    drag the stack changes (parents are skipped), so re-deriving would flip the
+    site mid-drag and cancel the edit."""
     chain = (caller_to_address,
              (address_to_call_parse, {'load': True}),
-             (focus, {'path': (name,), 'default': default}),
+             (focus, {'path': (name,), 'default': default, 'kind': "Caller"}),
              (call_dict_to_save, {'save': True}))
     return Lens(f"Caller arg · {name}", name,
-                root=lambda ds: caller_site(getattr(ds, "_call_frames", None)),
-                path=(name,), default=default, chain=lambda root: chain)
+                root=lambda ds: getattr(ds, "_call_site", None),
+                path=(name,), default=default, kind="Caller",
+                chain=lambda root: chain)
 
 
 # A list of lenses per attribute - draw_tint_context renders every entry, so you

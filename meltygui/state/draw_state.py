@@ -11,7 +11,7 @@ from src.lsd.gl_gui.toggles import shadow_depth_at
 from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace
 from src.lsd.gl_gui.view.core_conversion.cache_tree import CacheTree, UNSET_VALUE
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import no_save, exclude, deep_refresh, no_save_exclude, \
-    DecorationManager
+    DecorationManager, defaults
 
 
 class SynthColors(DictConversion):
@@ -258,11 +258,15 @@ class DrawState(DictConversion):
         self.context_menu_ds = None
         self.context_menu_offset = 0
         self._offset_ds = None
-        # The stack frames captured lazily in the inline render pass the first
-        # frame this widget's context menu is open, then kept until app restart
-        # (see core_render). Underscore-prefixed → not serialized. Powers the
-        # caller-arg lens / jump-to-caller (see the literal at the call site).
-        self._call_frames = None
+        # Resolved call site (filename, line) of where this widget was invoked,
+        # computed ONCE in the inline render pass of first frame its context menu
+        # is opened (see core_render) and cached until app restart. We cache the
+        # resolved tuple - NOT the raw frames - so the inspect-arg lens / jump
+        # button read a stable value; re-walking the live stack each frame would
+        # flip mid-drag (the "skip parents" optimization changes the call stack).
+        # Underscore-prefixed → not serialized.
+        self._call_site = None
+        self._call_site_captured = False
 
         self.relative_pos = None
 

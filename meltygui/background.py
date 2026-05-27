@@ -108,6 +108,17 @@ class Background:
             h = cls._timed_hash(func_kwargs.get("input_value", None), user_id)
         else:
             print(f"Warning no 'value' or 'input_value' in func_kwargs for {func.__name__} with user_id {user_id}, using 0 as hash")
+            h = "0_" + str(user_id)
+
+        # A side-effect payload (e.g. a save's `code_str`) isn't the hashed input
+        # but DOES change the operation. The hashed input for _do_save is the
+        # Address, which is stable across edits - so without folding the payload
+        # in, two writes to the same location share a hash and the debounce /
+        # in-flight dedup below sees the second as a duplicate and drops its
+        # content. That's the intermittent "lost save". Fold it in so distinct
+        # content gets a distinct key (identical content still dedups, correctly).
+        if "code_str" in func_kwargs:
+            h = f"{h}|{cls.simple_hash(value=func_kwargs.get('code_str'))}"
 
         # if "search_text" in func_kwargs:
         #     h_s = cls._timed_hash(func_kwargs.get('search_text', None), user_id)

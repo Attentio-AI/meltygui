@@ -456,7 +456,7 @@ def draw_property(input_value:property, draw_state, **kwargs):
 def draw_type(input_value:type, **kwargs):
     class_vars = {**{k: getattr(input_value, k) for k in vars(input_value)}}
 
-    changed, new_dict = draw_collection(class_vars, draw=True, real_type=input_value, name=f"Class: {input_value.__name__}")
+    changed, new_dict = draw_collection(class_vars, draw=True, real_type=input_value, disable_scroll=True, name=f"Class: {input_value.__name__}", tint=(0.485, 0.61, 0.76))
 
     if changed:
         for k, v in new_dict.items():
@@ -544,7 +544,7 @@ def draw_draw_state(input_value, **kwargs):
     pass
 
 
-@render_func(use_cache=False, shadow=False, show_bg=False, selectable=False)
+@render_func(use_cache=False, shadow=False, show_bg=False, disable_scroll=True, selectable=False)
 def run_chain(input_value, chain=None, draw_state=None, disable_scroll=True,
               s_key_pressed=False, enter_key_pressed=False, unique=None, debug=False, **kwargs):
     """Debug render function: executes a chain step by step with imgui output.
@@ -647,7 +647,7 @@ def draw_main(input_value, vis, search_text="", **kwargs):
         kwargs.setdefault('show_bg', True)
         kwargs.setdefault('modes', (Mode.CODE_UI, Mode.CODE_PLAIN_TEXT, Mode.RUNNING))
         kwargs.setdefault('name', f"{window_cls.__name__}##@window")
-        draw_with_modes(window_cls, **kwargs)
+        draw_with_modes(window_cls, **kwargs, tint=(0.87, 0.4, 0.15))
 
     changed, value = draw_blit_debug(None, name="Blit Offscreen Debug", mode=(Mode.WINDOW))
 
@@ -739,7 +739,7 @@ def draw_main(input_value, vis, search_text="", **kwargs):
 
     global drop_down_selection
     changed, selection = draw_dropdown(drop_down_selection, collection=dropdown_demo_data,
-                                       name="Dropdown Demo", mode=Mode.WINDOW)
+                                       name="Dropdown Demo", mode=Mode.WINDOW, tint=(0.8186046, 0.1, 0.1))
     if changed:
         drop_down_selection = selection
         print("Drop down change", str(selection))
@@ -866,7 +866,8 @@ def draw_pending_texture(input_value: PendingTexture, draw_state):
         imgui.text(f"Uploading... {id(input_value)}")
         return False, None
 
-    return_val = draw_texture(input_value.texture_id, name=f"{draw_state.id}_inner", auto_resize=False, show_header=False, use_cache=True, wrap=False)
+    return_val = draw_texture(input_value.texture_id, name=f"{draw_state.id}_inner", auto_resize=False,
+                              show_header=False, use_cache=True, wrap=False, caller_arg=(0.513, 0.62, 0.74), tint=(0.9, 0.9, 0.92))
 
     return return_val
 
@@ -1747,7 +1748,7 @@ def button(input_value="", draw_state=None, alpha=1.0, left_mouse_held=False, sh
     if color is not None:
         if shadow:
             if left_mouse_held:
-                draw_state.z_offset = 2.0
+                draw_state.z_offset = 0
             else:
                 draw_state.z_offset = 3.0
         else:
@@ -1764,6 +1765,8 @@ def button(input_value="", draw_state=None, alpha=1.0, left_mouse_held=False, sh
     else:
         text_color = (1.0, 1.0, 1.0)
         mixed_color = (0, 0, 0)
+        
+
 
     button_txt = str(input_value).split("##")[0]
     min_size = imgui.calc_text_size(button_txt)
@@ -1842,12 +1845,12 @@ def draw_bool(input_value: bool):
         
     return False, None
 
-@render_func(is_default_for=(str), shadow=False, show_bg=False, is_tree=False, wrap=False, show_header=False,
+@render_func(is_default_for=(str), shadow=False, wrap_text=False, show_bg=False, is_tree=False, wrap=False, show_header=False,
              show_add_delete=False, use_cache=False, show_name=False, disable_scroll=True, min_width=30, with_header=draw_header)
-def text(input_value: str, wrap, draw_state):
+def text(input_value: str, wrap, wrap_text, draw_state):
 
     text_size = imgui.calc_text_size(str(input_value), wrap_width=draw_state.content_width)
-    if text_size[1] > imgui.get_text_line_height() * 4 and not wrap:
+    if wrap_text and text_size[1] > imgui.get_text_line_height() * 4 and not wrap:
         imgui.push_text_wrap_pos(draw_state.abs_left + draw_state.width)
         imgui.text_wrapped(str(input_value))
         imgui.pop_text_wrap_pos()
@@ -1984,7 +1987,7 @@ def draw_comment(input_value: Comment, draw_state, cursor_hover=False):
 
 @render_func(is_default_for=('tint', 'help_yellow_tint', 'context_select_tint'), has_popup=True, indent_size=0, is_tree=False,
              show_name=False, selectable=False, wrap=True, min_width=40, use_cache=False, with_header=None)
-def draw_tuple(input_value: tuple, unique):
+def draw_tuple(input_value: tuple, name, unique):
     if len(input_value) > 0 and isinstance(input_value[0], (float, int)):
         if len(input_value) == 4:
             # imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (4, 0))
@@ -1994,7 +1997,7 @@ def draw_tuple(input_value: tuple, unique):
             color_flags = (imgui.COLOR_EDIT_NO_INPUTS | imgui.COLOR_EDIT_NO_LABEL | imgui.COLOR_EDIT_FLOAT |
                            imgui.COLOR_EDIT_NO_TOOLTIP)
             changed, color = imgui.color_edit4(
-                f"##picker_edit{unique}",
+                f"##picker_edit{unique}{name}",
                 color_list[0], color_list[1], color_list[2], color_list[3],
                 flags=color_flags)
 
@@ -2010,7 +2013,7 @@ def draw_tuple(input_value: tuple, unique):
                            imgui.COLOR_EDIT_NO_ALPHA | imgui.COLOR_EDIT_FLOAT |
                            imgui.COLOR_EDIT_NO_TOOLTIP)
             changed, color = imgui.color_edit3(
-                f"##picker_edit{unique}",
+                f"##picker_edit{unique}{name}",
                 color_list[0], color_list[1], color_list[2],
                 flags=color_flags)
 
@@ -2326,7 +2329,7 @@ def draw_tab_bar(input_value: list, tab_height=20, names=None, tint_value=0.202,
             saturation = 1.0 if tinted else 0.3
             clicked = button(label, indent_size=0, height=tab_height, draw=True,
                              alpha=0.0 if tinted else 0.0, value=value if not tinted else 0.1, saturation=saturation,
-                             name=f"tab_{i}_{unique}", color=tab_color, factor=tab_factor, text_value=1.0 if not tinted else 0.9,
+                             name=f"tab_{i}_{unique}_deactivated", color=tab_color, factor=tab_factor, text_value=1.0 if not tinted else 0.9,
                             shadow=False)[0]
 
         if clicked:
@@ -2388,10 +2391,10 @@ def draw_lens(lens, draw_state):
     from src.lsd.gl_gui.view.core_conversion.chain_converters import focus
     root = lens.root(draw_state)
     if root is None:
-        imgui.text_colored(f"{lens.label}: n/a here", 0.5, 0.5, 0.5)
+        imgui.text_colored(f"{lens.kind or lens.label}: n/a here", 0.5, 0.5, 0.5)
         return False, None
     if lens.chain is None:
-        return focus(root, path=lens.path, default=lens.default, name=lens.label)
+        return focus(root, path=lens.path, default=lens.default, kind=lens.kind, name=lens.label + lens.name)
     return draw_any(root, chain=lens.chain(root), name=lens.label)
 
 
@@ -2543,7 +2546,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
         from src.lsd.gl_gui.view.mode import Mode
         if static_tab < len(tab_names):
             if tab_names[static_tab] == tint_tab_name:
-                changed, new_tint = draw_tint_context(input_value, name="Context Tint", column=t_idx)
+                changed, new_tint = draw_tint_context(input_value, name=f"Context Tint##{unique}", column=t_idx)
                 if changed:
                     pass
 
@@ -2568,7 +2571,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
                 imgui.new_line()
 
                 text(f"{input_value._view_func.__name__}", show_bg=True, show_name=True, show_header=True, wrap=True, name="Rendered by", column=t_idx,
-                     editable=False)
+                     editable=False, tint=(0.84, 0.68, 0.639))
                 text(f"{type(input_value._raw_input_value).__name__}", name="input_value type", column=t_idx, editable=False)
 
                 text(f"{input_value.window_index}", name="window_index", column=t_idx,
@@ -2641,9 +2644,20 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
                                      show_add_delete=False, draw=True)
             if tab_names[static_tab] == func_tab:
                 # Jump-to-caller: open the call site where this widget's render
-                # func was invoked. Uses stack frames captured lazily on menu-open
-                # (_call_frames); caller_site is the lightweight
-                # (filename, lineno) - only available at level 0.
+                # func was invoked. Reads the (filename, lineno) cached at
+                # menu-open (_call_site) - only available at offset 0.
+                _site = getattr(input_value, '_call_site', None)
+                if _site is not None:
+                    _caller_file, _caller_line = _site
+                    if button(f" Caller: {Path(_caller_file).name}:{_caller_line}",
+                              height=30, draw=True, value=0.4, saturation=1.5,
+                              column=t_idx, name="jump_to_caller")[0]:
+                        from src.lsd.gl_gui.utils.jump_to_code import open_in_intellij
+                        threading.Thread(
+                            target=open_in_intellij,
+                            args=(str(_caller_file),),
+                            kwargs={"line_number": _caller_line},
+                            daemon=True).start()
 
                 view_func = input_value._view_func
                 # Draw view function

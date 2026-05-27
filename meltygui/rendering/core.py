@@ -457,7 +457,7 @@ def render_func(*args, **o_kwargs):
 
         window_key = tile_id
         draw_state.persistent = kwargs.get("persistent", True)
-        if draw_state.kwargs.temp:
+        if draw_state.kwargs is not None and draw_state.kwargs.temp:
             draw_state.dlt_count = 0
 
 
@@ -532,8 +532,16 @@ def render_func(*args, **o_kwargs):
             # appearing - that frame simply has no frames yet, which is fine), then
             # left alone until app restart. inspect.stack is expensive, so the
             # context_menu_open gate keeps it off the steady-state hot path.
-            if draw_state.context_menu_open and draw_state._call_frames is None:
-                draw_state._call_frames = get_live_frames(skip_count=0)
+            #
+            # Resolve the (filename, lineno) HERE, from this frame's stack, and
+            # cache just that tuple - never the raw frames. The lens/jump button
+            # must NOT re-walk the live stack again: a mouse drag re-renders with
+            # parents first (an optimization), which changes the stack and would
+            # make the walk land elsewhere, breaking the edit mid-drag.
+            if draw_state.context_menu_open and not draw_state._call_site_captured:
+                draw_state._call_site_captured = True
+                from src.lsd.gl_gui.view.core_conversion.chain_converters import caller_site
+                draw_state._call_site = caller_site(get_live_frames(skip_count=0))
 
             if closable:
                 if draw_state is not None and draw_state.parent_window is not None:
@@ -2526,8 +2534,9 @@ def render_func(*args, **o_kwargs):
                 #     raise Exception("Pending needs to be handled before saving to cache")
                 return_value = (report_changed, report_value, *return_value[2:])
 
-                draw_state.content_height = draw_state._content_rect[1]
-                draw_state._source["content_height"] = "content rect height"
+            draw_state.content_height = draw_state._content_rect[1]
+            draw_state._source["content_height"] = "content rect height"
+
             if use_cache:
                 Melty.cache.mark_end_offscreen()
 

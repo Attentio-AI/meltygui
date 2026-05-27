@@ -30,6 +30,7 @@ from src.lsd.gl_gui.model.core_model.core_enums import generate_id
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
 
 import OpenGL.GL as gl
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
 
 _MOUSE_INPUTS = frozenset({'left_mouse', 'right_mouse', 'middle_mouse',
                            'cursor', 'scroll_y', 'scroll_x'})
@@ -2682,6 +2683,8 @@ class MeltyState:
     def to_delete(self, key, collection):
         self.items_to_delete.append((key, collection))
 
+
+@defaults(tint=(0.2391563206911087, 0.47928887605667114, 0.7674418687820435))
 class ManagedWindow:
     def __init__(self, input_value=None, draw_state=None, window_args=None, name=None):
         self.input_value = input_value

@@ -1,5 +1,5 @@
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import tint, DecorationManager
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import tint, DecorationManager, defaults
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 
 
@@ -49,8 +49,10 @@ class Swoosh:
     some_text = False
     some_dict = [1,1,1,1]
 
-@window(tint=(0.9, 0.4, 0.1))
-@tint({"draw_legacy": (0.8, 0.2, 0.2)})
+
+# [tint=(0.20465117692947388, 0.06351824, 0.01618172600865364)]
+@window(tint=(0.9, 0.8, 0.8))
+@defaults(tint=(0.7162790298461914, 0.3299143, 0.10994052141904831))
 class Toggles:
     # Invalidation settings
     invalidate_stack_trace = False
@@ -60,17 +62,16 @@ class Toggles:
     slow_down_threads = False
     render_depth = False
     ds_invalidate_stack = False
-    profile_mode = ProfileMode.OFF
+    profile_mode = ProfileMode.LIGHT
     debug_stale_tint = False
-    show_line_break = False
-    
+    show_line_break = True
     # Filter SettingS
     brightness = 0.22
     contrast = 1.422
     saturation = -0.4
     prefered_header_width = 77
-    max_preferred_header_width = 200
-
+    max_preferred_header_width = 20
+    
     debug_z_depth = False
     filters = True
     show_excluded = True
@@ -82,13 +83,10 @@ class Toggles:
     shadow_downscale = 2
     shadow_edge_sharpness = 50.0
     
-    # [bg_offset=0, tint=(0.6604651, 0.1, 0.24270762503147125)]
     draw_legacy = False
     
-    # [tint=(0.07995672523975372, 0.3076798617839813, 0.3581395149230957), bg_offset=0]
     class Debug:
         slow_frame_rate = False
-
 @window
 class LegacyToggles:
     # All the padding settings from imgui style

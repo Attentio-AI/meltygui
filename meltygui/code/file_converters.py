@@ -487,6 +487,25 @@ def _recompile(func: types.FunctionType, source: str,
     Melty.cache.invalidate_up_by_func(func, max_depth=10)
 
 
+def _exec_file_imports(filename: str, namespace: dict) -> None:
+    """Best-effort: exec the file's top-level import lines into `namespace`.
+
+    Used to resolve a name (e.g. a freshly-inserted `@defaults` import) that the
+    running module's globals don't have yet. Each import is exec'd in isolation;
+    failures are ignored (relative/conditional imports may not stand alone)."""
+    try:
+        text = Path(filename).read_text(encoding="utf-8")
+    except OSError:
+        return
+    for ln in text.splitlines():
+        s = ln.strip()
+        if s.startswith("import ") or s.startswith("from "):
+            try:
+                exec(s, namespace)
+            except Exception:
+                pass
+
+
 def _recompile_class(cls: type, source: str, filename: str) -> None:
     import sys
     dedented = textwrap.dedent(source)
@@ -495,7 +514,13 @@ def _recompile_class(cls: type, source: str, filename: str) -> None:
     namespace = dict(vars(mod)) if mod is not None else {}
 
     code = compile(dedented, filename, "exec")
-    exec(code, namespace)
+    try:
+        exec(code, namespace)
+    except NameError:
+        # A just-inserted import (e.g. the @defaults decorator) isn't in the live
+        # module globals yet. Pull in the file's imports and retry once.
+        _exec_file_imports(filename, namespace)
+        exec(code, namespace)
 
     new_cls = namespace.get(cls.__name__)
     if new_cls is None:

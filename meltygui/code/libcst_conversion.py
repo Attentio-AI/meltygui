@@ -22,6 +22,7 @@ from libcst._nodes.internal import CodegenState as _CodegenState
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.view.core_conversion.path_finder import convert, PendingState
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
 
 
 def register(fn):
@@ -142,6 +143,7 @@ class Loop(dict):
 
 
 
+# [tint=(0.0, 4.4898104079038603e-07, 1e-06)]
 class GeneralParse(dict):
     def __init__(self, *args, source="", file_path=None, line_offset=0, **kwargs):
         super().__init__(*args, **kwargs)
@@ -1586,6 +1588,11 @@ def _patch_leading_override(node, value):
         if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
             original = _parse_override_comment(ll.comment.value)
             if original is not None:
+                if not current:
+                    # All overrides deleted → drop the comment line entirely
+                    # rather than leave an empty `# []`.
+                    del lines[i]
+                    return node.with_changes(leading_lines=lines)
                 if current != original:
                     lines[i] = ll.with_changes(
                         comment=cst.Comment(value=_format_override_comment(current)))
@@ -1720,6 +1727,12 @@ def _format_override_value(value):
     return repr(value)
 
 
+# Sentinel in a comment text_map meaning "delete this comment line" (vs. a str,
+# which rewrites it). Used when an override comment's last key is removed so we
+# drop the `# [...]` line instead of leaving an empty `# []`.
+_REMOVE_COMMENT = object()
+
+
 def _format_override_comment(overrides):
     """Render an overrides dict back into a '# [k=v, ...]' comment string."""
     parts = [f"{k}={_format_override_value(v)}" for k, v in overrides.items()
@@ -1835,7 +1848,8 @@ def _collect_comment_edits(edits, text_map=None):
             if original is None:
                 continue
             if current != original:
-                text_map[str(k)] = _format_override_comment(current)
+                # Empty → remove the comment line entirely (not `# []`).
+                text_map[str(k)] = _format_override_comment(current) if current else _REMOVE_COMMENT
             break
     return text_map
 
@@ -1849,15 +1863,19 @@ def _patch_module_comments(module, comment_edits):
     result = module
     changed = False
 
-    # Patch header comments
-    new_header = list(module.header)
-    for i, ll in enumerate(new_header):
+    # Patch header comments (a _REMOVE_COMMENT mapping drops the line)
+    new_header = []
+    for ll in module.header:
         if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
             new_text = text_map.get(ll.comment.value)
-            if new_text is not None:
-                new_header[i] = ll.with_changes(
-                    comment=cst.Comment(value=new_text))
+            if new_text is _REMOVE_COMMENT:
                 changed = True
+                continue
+            if new_text is not None:
+                new_header.append(ll.with_changes(comment=cst.Comment(value=new_text)))
+                changed = True
+                continue
+        new_header.append(ll)
 
     if changed:
         result = result.with_changes(header=new_header)
@@ -2186,16 +2204,20 @@ def _patch_stmt_comments(stmt, text_map):
     result = stmt
     changed = False
 
-    # Leading comments (EmptyLine nodes)
+    # Leading comments (EmptyLine nodes); a _REMOVE_COMMENT mapping drops the line
     if hasattr(result, "leading_lines") and result.leading_lines:
-        new_lines = list(result.leading_lines)
-        for j, ll in enumerate(new_lines):
+        new_lines = []
+        for ll in result.leading_lines:
             if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
                 new_text = text_map.get(ll.comment.value)
-                if new_text is not None:
-                    new_lines[j] = ll.with_changes(
-                        comment=cst.Comment(value=new_text))
+                if new_text is _REMOVE_COMMENT:
                     changed = True
+                    continue
+                if new_text is not None:
+                    new_lines.append(ll.with_changes(comment=cst.Comment(value=new_text)))
+                    changed = True
+                    continue
+            new_lines.append(ll)
         if changed:
             result = result.with_changes(leading_lines=new_lines)
 
@@ -2203,7 +2225,11 @@ def _patch_stmt_comments(stmt, text_map):
     tw = getattr(result, "trailing_whitespace", None)
     if tw is not None and hasattr(tw, "comment") and tw.comment is not None:
         new_text = text_map.get(tw.comment.value)
-        if new_text is not None:
+        if new_text is _REMOVE_COMMENT:
+            result = result.with_changes(
+                trailing_whitespace=tw.with_changes(comment=None))
+            changed = True
+        elif new_text is not None:
             result = result.with_changes(
                 trailing_whitespace=tw.with_changes(
                     comment=cst.Comment(value=new_text)))
@@ -2340,34 +2366,73 @@ def _patch_range_args(iter_node, new_args):
     return iter_node.with_changes(args=patched)
 
 
-def _patch_decorators(func_node, dec_edits):
-    """Patch decorator kwargs on a FunctionDef from a decorators dict.
+def _build_decorator(name, kwargs_dict):
+    """Synthesize a brand-new `@name(k=v, ...)` decorator node from scratch (no
+    template Call). Used when the UI adds a decorator the source didn't have.
+    Returns None if no renderable kwargs."""
+    args = []
+    for k, v in kwargs_dict.items():
+        if _is_dunder(k):
+            continue
+        cst_val = _python_to_cst_expr(v)
+        if cst_val is None:
+            continue
+        args.append(cst.Arg(keyword=cst.Name(k), value=cst_val,
+                            equal=cst.AssignEqual(
+                                whitespace_before=cst.SimpleWhitespace(""),
+                                whitespace_after=cst.SimpleWhitespace(""))))
+    if not args:
+        return None
+    return cst.Decorator(decorator=cst.Call(func=cst.Name(name), args=args))
 
-    dec_edits maps decorator name → sub-dict of kwargs.
-    Each sub-dict is passed through dict→cst.Call conversion.
+
+def _patch_decorators(func_node, dec_edits):
+    """Patch / add / drop decorator kwargs on a ClassDef or FunctionDef so the UI
+    can add, update, and delete decorations and have it round-trip.
+
+    dec_edits maps decorator name → {kwarg: value}.
+      - existing decorator, kwargs present → patch via dict→cst.Call
+      - existing decorator, kwargs emptied → drop the decorator (clean delete)
+      - name not on the node               → synthesize `@name(k=v, ...)`
     """
-    call_to_dict = Melty._converters.get((cst.Call, dict))
     dict_to_call = Melty._converters.get((dict, cst.Call))
     if dict_to_call is None:
         return func_node
 
+    edits = {k: v for k, v in dec_edits.items()
+             if isinstance(k, str) and not _is_dunder(k) and isinstance(v, dict)}
+
     new_decorators = []
+    seen = set()
     changed = False
     for dec in func_node.decorators:
-        if isinstance(dec.decorator, cst.Call):
-            func_name = _call_func_name(dec.decorator)
-            if func_name and func_name in dec_edits:
-                edit_sub = dec_edits[func_name]
-                if isinstance(edit_sub, dict):
-                    edit_sub["__cst__"] = dec.decorator
-                    try:
-                        new_call = dict_to_call(edit_sub)
-                        new_decorators.append(dec.with_changes(decorator=new_call))
-                        changed = True
-                        continue
-                    except (TypeError, ValueError):
-                        pass
+        func_name = _call_func_name(dec.decorator) if isinstance(dec.decorator, cst.Call) else None
+        if func_name and func_name in edits:
+            seen.add(func_name)
+            edit_sub = dict(edits[func_name])
+            kw_pairs = {k: v for k, v in edit_sub.items() if not _is_dunder(k)}
+            if not kw_pairs:
+                # Last kwarg removed → drop the decorator entirely (delete).
+                changed = True
+                continue
+            edit_sub["__cst__"] = dec.decorator
+            try:
+                new_decorators.append(dec.with_changes(decorator=dict_to_call(edit_sub)))
+                changed = True
+                continue
+            except (TypeError, ValueError):
+                pass
         new_decorators.append(dec)
+
+    # Synthesize decorators the edits added but the node lacked (the @ line lands
+    # just above the def; libcst indents it from the surrounding block).
+    for name, sub in edits.items():
+        if name in seen:
+            continue
+        new_dec = _build_decorator(name, sub)
+        if new_dec is not None:
+            new_decorators.append(new_dec)
+            changed = True
 
     if changed:
         return func_node.with_changes(decorators=new_decorators)

@@ -173,34 +173,89 @@ def module_to_address(input_value: types.ModuleType, draw_state, changed=False):
 ########################################### CHAIN START
 @render_func()
 def class_to_address(input_value: type, draw_state, changed=False):
-    if changed:
-        if input_value.__module__ in ('builtins', '_collections_abc'):
-            return False, None
+    # Resolve on EVERY call (guarded by the mtime cache), like function_to_address
+    # - NOT gated on `changed`. Gating let the cached span go stale after a sibling
+    # edit shifted the class's lines, so a save wrote to the wrong range. A save
+    # bumps mtime, so the next render re-resolves fresh line numbers.
+    if not isinstance(input_value, type) or input_value.__module__ in ('builtins', '_collections_abc'):
+        return changed, None
+    try:
+        import inspect
+        source_file = inspect.getfile(input_value)
+        FileWatch.register_draw_state(draw_state, Path(source_file))
+
+        # Cache the getsourcelines result by (input, file mtime) so typing
+        # doesn't re-read+tokenize the file; a save bumps mtime and we re-resolve.
         try:
-            import inspect
-            source_file = inspect.getfile(input_value)
-            FileWatch.register_draw_state(draw_state, Path(source_file))
+            mtime = Path(source_file).stat().st_mtime
+        except OSError:
+            mtime = None
+        cached = getattr(draw_state, '_addr_cache', None)
+        if cached is not None and cached[0] is input_value and cached[1] == mtime:
+            return changed, cached[2]
 
-            # See function_to_address: cache the getsourcelines result by
-            # (input, file mtime) so typing doesn't re-read+tokenize the file.
-            try:
-                mtime = Path(source_file).stat().st_mtime
-            except OSError:
-                mtime = None
-            cached = getattr(draw_state, '_addr_cache', None)
-            if cached is not None and cached[0] is input_value and cached[1] == mtime:
-                return changed, cached[2]
+        _evict_linecache(source_file)
+        source_lines, start_lineno = inspect.getsourcelines(input_value)
+        address = Address(Path(source_file), start_lineno - 1,
+                          start_lineno - 1 + len(source_lines), source=input_value,
+                          watcher_ds=draw_state)
+        draw_state._addr_cache = (input_value, mtime, address)
+        return changed, address
+    except (TypeError, OSError, tokenize.TokenError, SyntaxError):
+        return changed, None
 
-            _evict_linecache(source_file)
-            source_lines, start_lineno = inspect.getsourcelines(input_value)
-            address = Address(Path(source_file), start_lineno - 1,
-                              start_lineno - 1 + len(source_lines), source=input_value,
-                              watcher_ds=draw_state)
-            draw_state._addr_cache = (input_value, mtime, address)
-            return changed, address
-        except (TypeError, OSError, tokenize.TokenError, SyntaxError):
-            return changed, None
-    else:
+
+@render_func()
+def class_to_address_incl_overrides(input_value: type, draw_state, changed=False):
+    """Like class_to_address, but extends the span UPWARD over a contiguous
+    leading `# [...]` override comment immediately above the class.
+
+    getsourcelines starts at `class X:`, so a comment above it falls outside the
+    span — meaning a module-level override comment would never round-trip and the
+    code_comment lens would re-add/duplicate it. Pulling the comment into the span
+    (loaded as the module header) makes add/update/delete stable.
+
+    Resolves on EVERY call (guarded by the mtime cache), like function_to_address
+    — NOT gated on `changed`. Gating let the cached span go stale after another
+    edit shifted the class's lines, so the whole-class-span save wrote to the
+    wrong range (duplicated/dropped lines, failed delete). A save bumps mtime, so
+    the next render re-resolves fresh line numbers."""
+    if not isinstance(input_value, type) or input_value.__module__ in ('builtins', '_collections_abc'):
+        return changed, None
+    try:
+        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _parse_override_comment
+        source_file = inspect.getfile(input_value)
+        FileWatch.register_draw_state(draw_state, Path(source_file))
+        try:
+            mtime = Path(source_file).stat().st_mtime
+        except OSError:
+            mtime = None
+        cached = getattr(draw_state, '_addr_cache', None)
+        if cached is not None and cached[0] is input_value and cached[1] == mtime:
+            return changed, cached[2]
+
+        _evict_linecache(source_file)
+        source_lines, start_lineno = inspect.getsourcelines(input_value)
+        start0 = start_lineno - 1
+        end0 = start0 + len(source_lines)
+
+        data = Path(source_file).read_bytes()
+        newline = _detect_newline(data)
+        try:
+            file_lines = data.decode("utf-8").split(newline)
+        except UnicodeDecodeError:
+            file_lines = data.decode("latin-1").split(newline)
+        ext_start = start0
+        j = start0 - 1
+        while j >= 0 and _parse_override_comment(file_lines[j].strip()) is not None:
+            ext_start = j
+            j -= 1
+
+        address = Address(Path(source_file), ext_start, end0,
+                          source=input_value, watcher_ds=draw_state)
+        draw_state._addr_cache = (input_value, mtime, address)
+        return changed, address
+    except (TypeError, OSError, tokenize.TokenError, SyntaxError):
         return changed, None
 
 
@@ -257,9 +312,85 @@ def do_recompile(input_value, code_str, file_path, changed=False):
     return True, None
 
 
+def _import_stmt_end(lines, i):
+    """Index of the LAST line of the (possibly multi-line) import statement that
+    starts at line i — following backslash continuations and unclosed parens, so
+    callers never split a continued import."""
+    stmt = lines[i]
+    while i + 1 < len(lines) and (
+            stmt.rstrip().endswith("\\") or stmt.count("(") > stmt.count(")")):
+        i += 1
+        stmt += "\n" + lines[i]
+    return i, stmt
+
+
+def _ensure_import_lines(lines, module, name):
+    """If `name` isn't already imported in `lines`, insert `from module import
+    name` after the file's leading import block. Returns (lines, inserted_count).
+
+    Best-effort textual scan (no parse — this runs inside the save write). Treats
+    the run of leading import/comment/blank/docstring lines as the import block
+    and inserts after it. Continuation-aware (backslash + parens) so it never
+    inserts in the middle of a multi-line import."""
+    # ── Dedup: is `name` already imported? (join continuations before checking) ──
+    i = 0
+    while i < len(lines):
+        s = lines[i].strip()
+        if s.startswith("import ") or s.startswith("from "):
+            end, stmt = _import_stmt_end(lines, i)
+            syms = stmt.split("import", 1)[1] if "import" in stmt else ""
+            for ch in "(),\\\n":
+                syms = syms.replace(ch, " ")
+            if name in [t.split(".")[0] for t in syms.split()]:
+                return lines, 0
+            i = end + 1
+            continue
+        i += 1
+
+    # ── Find the insert point: end of the leading import block ──────────────────
+    insert_idx = 0
+    i = 0
+    in_doc = None          # triple-quote delimiter while inside a module docstring
+    seen_code = False
+    while i < len(lines):
+        s = lines[i].strip()
+        if in_doc is not None:                       # inside a multi-line docstring
+            insert_idx = i + 1
+            if in_doc in s:
+                in_doc = None
+            i += 1
+            continue
+        if s == "" or s.startswith("#"):
+            i += 1
+            continue
+        if not seen_code and (s.startswith('"""') or s.startswith("'''")):
+            q = s[:3]
+            seen_code = True
+            insert_idx = i + 1
+            if not (len(s) > 3 and s.count(q) >= 2):  # not a one-line docstring
+                in_doc = q
+            i += 1
+            continue
+        if s.startswith("import ") or s.startswith("from "):
+            seen_code = True
+            end, _ = _import_stmt_end(lines, i)       # skip past continuations
+            insert_idx = end + 1
+            i = end + 1
+            continue
+        break  # first real code - stop scanning the import block
+    new_lines = list(lines)
+    new_lines.insert(insert_idx, f"from {module} import {name}")
+    return new_lines, 1
+
+
 @render_func(background=True)
-def _do_save(input_value, code_str):
-    """Write code_str back into the file at the Address's span."""
+def _do_save(input_value, code_str, ensure_import=None):
+    """Write code_str back into the file at the Address's span.
+
+    ensure_import=(module, name) also inserts a missing import in the SAME write
+    (atomic — avoids a second racing write), so e.g. a synthesized @defaults
+    decorator has its import. The import insert shifts line numbers; our own
+    Address is adjusted, siblings re-resolve via the mtime bump."""
     full_data = input_value.path.read_bytes()
     newline = _detect_newline(full_data)
     try:
@@ -273,6 +404,11 @@ def _do_save(input_value, code_str):
     old_end = input_value.end
 
     lines[old_start:old_end] = new_lines
+
+    inserted = 0
+    if ensure_import is not None:
+        lines, inserted = _ensure_import_lines(lines, ensure_import[0], ensure_import[1])
+
     final_text = newline.join(lines)
     FileWatch.set_hash_from_content(input_value.path, final_text, draw_state=input_value._watcher_ds)
 
@@ -285,6 +421,11 @@ def _do_save(input_value, code_str):
             delta = new_end - resolved_old_end
 
             input_value.end = new_end
+            # Account for an import inserted above our span so the Address stays
+            # valid this frame (siblings heal on the next mtime-driven re-resolve).
+            if inserted:
+                input_value.start = old_start + inserted
+                input_value.end = new_end + inserted
             input_value._hash = input_value._compute_hash()
 
             shift_sibling_linenos(input_value.source, input_value.path,
@@ -335,7 +476,7 @@ def run_button(input_value: any, with_kwargs=None, draw_state=None, clicked=Fals
     fa_run_arrow = ""
     from src.lsd.gl_gui.view.core_views.new_core_view import button
     if clicked or running or button(f"{fa_run_arrow} {input_value.__name__}##{draw_state.unique}",
-     height=30, draw=True, value=0.4, saturation=1.5)[0]:
+     height=30, draw=True, value=0.4, saturation=1.5, name=f"{input_value.__name__}{draw_state.unique}_run")[0]:
         with_kwargs['changed'] = True
         changed, value = input_value(**with_kwargs)
         if isinstance(value, Pending):
@@ -392,11 +533,14 @@ def address_to_general_parse(input_value: Address, pending=False, unique=None, c
     # ── Steady state ──────────────────────────────────────────
     return False, None
 
-@render_func(use_cache=True)
-def general_parse_to_address(input_value: GeneralParse, pending=False, draw_state=None, unique=None,
+@render_func(use_cache=True, selectable=False)
+def general_parse_to_address(input_value: GeneralParse=None, pending=False, draw_state=None, unique=None,
                              changed=False, recompile=False, save=False, s_key_pressed=None,
-                             enter_key_pressed=None):
-    """GeneralParse dict → Address. Handles recompile and save for any source type."""
+                             enter_key_pressed=None, ensure_import=None):
+    """GeneralParse dict → Address. Handles recompile and save for any source type.
+
+    ensure_import=(module, name) is forwarded to _do_save so a synthesized
+    decorator (e.g. @defaults) gets its import inserted in the same write."""
     address = input_value.address
     if not isinstance(address, Address):
         imgui.text_colored("Saving unavailable...\ninput_value.address is not set",
@@ -404,8 +548,17 @@ def general_parse_to_address(input_value: GeneralParse, pending=False, draw_stat
         return False, None
     source = address.source
 
+    # Latch the save intent across the background dict_to_cst latency. An edit
+    # (focus Add/Delete, a single color pick) sets changed=True for ONE frame -
+    # which lands exactly on dict_to_cst's Pending and is gone by the time the
+    # conversion completes, so the save was just dropped. Hold the intent until
+    # _do_save actually completes, then clear it.
+    if changed:
+        draw_state._lens_save_pending = True
+    save_pending = getattr(draw_state, '_lens_save_pending', False)
+
     show_recompile = True
-    show_save = not save or (pending or changed)
+    show_save = not save or pending or changed or save_pending
 
     save_hotkey = s_key_pressed and s_key_pressed.ctrl
     if save_hotkey:
@@ -426,6 +579,14 @@ def general_parse_to_address(input_value: GeneralParse, pending=False, draw_stat
 
     convert_finished, back_to_cst = dict_to_cst(input_value=input_value, changed=changed)
     if isinstance(back_to_cst, Pending):
+        if back_to_cst.state == PendingState.ERROR:
+            # Conversion failed (e.g. unparseable edit) - give up the latch so it
+            # doesn't spin requesting renders forever.
+            draw_state._lens_save_pending = False
+        elif save_pending:
+            # Still converting. Keep the latch + keep frames coming so the save
+            # fires the moment the (background) code_str lands.
+            request_render()
         return False, back_to_cst
     code_str = back_to_cst.code
     if show_recompile:
@@ -443,12 +604,18 @@ def general_parse_to_address(input_value: GeneralParse, pending=False, draw_stat
     if show_save:
         if source is not None:
             clicked, result = run_button(_do_save, with_kwargs={"input_value": address,
-                                         "code_str": code_str},
-                                         clicked=save)
+                                         "code_str": code_str,
+                                         "ensure_import": ensure_import},
+                                         clicked=save or save_pending)
+            # We reached a real code_str and dispatched the write to the background
+            # thread, which writes regardless of further pumping. Clear the latch
+            # on dispatch (not on completion) so an errored/never-completing save
+            # can't spin the latch forever; Background invalidates on completion.
+            draw_state._lens_save_pending = False
             if clicked:
                 if draw_state.parent_window is not None:
                     Melty.cache.invalidate_up(draw_state.parent_window._tile_id, max_depth=10)
-                    return True, address
+                return True, address
     return False, address
 
 
@@ -467,9 +634,8 @@ def _focus_set(obj, key, value):
         setattr(obj, key, value)
 
 
-@render_func(use_cache=True, show_bg=True, selectable=False, show_name=True,
-             with_header=draw_header, is_tree=True)
-def focus(input_value, path=(), default=None, draw_state=None, changed=False, **kwargs):
+@render_func(use_cache=False, show_bg=False, selectable=False, is_tree=False)
+def focus(input_value, path=(), default=None, kind=None, draw_state=None, unique=None, changed=False, **kwargs):
     """Descend a STATIC key `path` into `input_value` to a single leaf, render
     that leaf with its normal renderer (draw_tuple, for a tint), and write any
     edit back into the container *in place*.
@@ -500,6 +666,7 @@ def focus(input_value, path=(), default=None, draw_state=None, changed=False, **
     """
     from src.lsd.gl_gui.view.core_views.new_core_view import draw_tuple, button
 
+    changed, new_value = False, input_value
     if not path:
         imgui.text_colored("focus: empty path", 1.0, 0.4, 0.0)
         return False, input_value
@@ -519,27 +686,47 @@ def focus(input_value, path=(), default=None, draw_state=None, changed=False, **
 
     leaf = _focus_get(parent, leaf_key) if reachable else None
 
-    # Display label so the button/picker says which source it modifies: prefer
-    # a label carried on the parsed dict (the caller node stamps call+file:line:fn),
-    # else the path target (shows the class for code lenses, e.g.
-    # Foo.__overrides__.tint), else the lens name from draw_state.
-    if isinstance(input_value, dict) and input_value.get("__label__"):
-        label = input_value["__label__"]
-    elif len(path) > 1:
-        label = ".".join(str(p) for p in path)
+    # Clean label: the lens name + a plain target name - the class for code
+    # lenses, the enclosing fn for the caller, the data class for an instance.
+    # No internal keys (__overrides__ etc.); the "where" lives in the jump button.
+    if len(path) > 1:
+        target = str(path[0])                        # class name (code lenses)
+    elif isinstance(input_value, dict):
+        _a = input_value.get("__address__")
+        target = getattr(getattr(_a, "source", None), "__name__", None) \
+            if isinstance(_a, Address) else None     # caller's enclosing fn
+    elif input_value is not None and type(input_value).__name__ != "DrawState":
+        target = type(input_value).__name__          # data instance class
     else:
-        label = str(draw_state.name)
+        target = None
+    base = kind or str(draw_state.name)
+    label = f"{base} · {target}" if target else base
 
     imgui.same_line()
-    text_width = imgui.calc_text_size(label)[0]
     imgui.text(label)
+
+    # Code-jump button - open the source where this lens's value lives. The call
+    # dict carries __address__; a GeneralParse carries .address. Live other values
+    # (draw_state / instance) have no source location, so no button is shown.
+    _addr = input_value.get("__address__") if isinstance(input_value, dict) else None
+    if _addr is None:
+        _addr = getattr(input_value, "address", None)
+
+    if isinstance(_addr, Address) and _addr.path is not None:
+        _line = (_addr.start or 0) + 1
+        imgui.same_line()
+        if button(f"{_addr.path.name}:{_line}##{unique}", height=24, name=f"jump{base}{leaf_key}{unique}")[0]:
+            import threading
+            from src.lsd.gl_gui.utils.jump_to_code import open_in_intellij
+            threading.Thread(target=open_in_intellij, args=(str(_addr.path),),
+                             kwargs={"line_number": _line}, daemon=True).start()
 
     # ── Present: the reusable picker (every lens funnels through this) ─────────
     if leaf is not None:
-        tint_changed, new_tint = draw_tuple(leaf, align_header=False, show_name=True, wrap=True, with_header=draw_header, name=leaf_key)
+        tint_changed, new_tint = draw_tuple(leaf, with_header=draw_header, name=f"{unique}{leaf_key}_tuple_{unique}")
         if tint_changed:
             _focus_set(parent, leaf_key, new_tint)
-            return True, input_value  # hand the parent container to the save side
+            changed, new_value = True, input_value  # hand the mutated container to the save node
         # Delete: drop this source's override so it stops winning. For a dict
         # (code/caller) the key is popped → dict_to_cst() removes it from source on
         # save; for a live attr it's set to None. Return changed so the save side
@@ -547,31 +734,33 @@ def focus(input_value, path=(), default=None, draw_state=None, changed=False, **
         imgui.same_line()
 
         delete_icon = ""
-        if button(f"{delete_icon}", show_name=True, height=26)[0]:
+        if button(f"{delete_icon}##{unique}", name=f"{leaf_key}_delete_{unique}", height=26)[0]:
             if isinstance(parent, dict):
                 parent.pop(leaf_key, None)
             else:
                 _focus_set(parent, leaf_key, None)
-            return True, input_value
-        return False, input_value
+            changed, new_value = True, input_value
+    else:
 
-    # ── Absent: offer to create it ───────────────────────────────────────────────
-    if button(f"", height=26)[0]:
-        node = input_value
-        for key in path[:-1]:           # create missing intermediate containers
-            child = _focus_get(node, key)
-            if child is None:
-                child = {}
-                _focus_set(node, key, child)
-            node = child
-        try:
-            _focus_set(node, leaf_key, default if default is not None else (0.485, 0.61, 0.76))
-        except Exception as e:
-            print_stack_trace(exception=e)
-            print("Error setting value in focus node:", e)
-            return False, input_value
-        return True, input_value
-    return False, input_value
+        # ── Not present: offer to add it ───────────────────────────────────────────────
+        if button(f"##{leaf_key}{unique}", name=f"{leaf_key}_add_{unique}", height=26)[0]:
+            node = input_value
+            for key in path[:-1]:           # create missing intermediate containers
+                child = _focus_get(node, key)
+                if child is None:
+                    child = {}
+                    _focus_set(node, key, child)
+                node = child
+            try:
+                _focus_set(node, leaf_key, default if default is not None else (0.485, 0.61, 0.76))
+                changed, new_value = True, input_value
+
+            except Exception as e:
+                print_stack_trace(exception=e)
+                print("Error setting value in focus node:", e)
+                changed, new_value = False, input_value
+
+    return changed, new_value
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -579,9 +768,11 @@ def focus(input_value, path=(), default=None, draw_state=None, changed=False, **
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 #
 # These let the context menu edit `draw_text(..., tint=(1,0,1))` by parsing the
-# CALLER's body. The call site comes from draw_state._call_frames (captured
-# lazily on menu-open in core_render). Reuses the existing cst_call_to_dict /
-# dict_to_cst_call converters (the same nodes that parse @decorator(...) calls).
+# CALLER's statement. The call site comes from draw_state._call_site - the
+# (filename, lineno) resolved once (via caller_site) when frames were grabbed on
+# menu-open in core_render; never re-walked from the live stack. Reuses the
+# existing cst_call_to_dict / dict_to_cst_call converters (the same ones that
+# parse @decorator(...) calls).
 
 _DISPATCH_SKIP = ("core_render.py",)  # the render_func wrapper lives here
 
@@ -604,13 +795,18 @@ def caller_site(frames):
     if not frames:
         return None
     # frames is outermost-first; walk innermost-first to find the nearest caller.
-    for entry in reversed(frames):
+    for idx, entry in enumerate(reversed(frames)):
+
         filename, lineno, func_name = entry[0], entry[1], entry[2]
         base = filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
         if base in _DISPATCH_SKIP:
             continue
         if base == "melty.py" and func_name == "draw":   # Melty.draw re-dispatch
             continue
+        if base == "new_core_view.py" and func_name == "draw_any":  # Melty.draw re-dispatch
+            continue
+
+
         return filename, lineno
     return None
 
@@ -747,6 +943,12 @@ def caller_to_address(input_value, draw_state, changed=False):
         return changed, None
     filename, lineno = input_value
     path = Path(filename)
+    # Register the watch on THIS draw_state so _do_save's set_hashed_content
+    # (called with address._watcher_ds = this draw_state) actually opens the
+    # self-write suppress window; otherwise our own write bounces back as an
+    # external change. Idempotent: register_draw_state returns early if already
+    # registered.
+    FileWatch.register_draw_state(draw_state, path)
     try:
         mtime = path.stat().st_mtime
     except OSError:
@@ -833,14 +1035,15 @@ def address_to_call_parse(input_value, draw_state=None, changed=False, load=Fals
     return True, d
 
 
-@render_func(background=True)
-def dict_to_call_code(input_value, changed=False):
+def _build_call_code(d):
     """Edited call-kwargs dict -> reindented call-statement source string.
 
-    Background node mirroring dict_to_cst for the class chain: rebuilds the Call
-    via dict_to_cst_call, splices it back into the span module, and re-applies the
-    indentation stripped at parse time."""
-    d = input_value
+    Plain + synchronous: rebuilding one call statement (dict_to_cst_call +
+    deep_replace of a tiny span module + reindent) is microseconds, unlike the
+    class chain's whole-module reconstruction. It is NOT a background node — that
+    was the bug: as a background node it returned Pending on the edit frame, so
+    the save branch was skipped and the edit lost; and Background.run deep-hashed
+    the CST-laden dict on the UI thread every frame."""
     span_module = d.get("__call_module__")
     old_call = d.get("__cst__")
     converter = Melty._converters.get((dict, cst.Call))
@@ -850,10 +1053,7 @@ def dict_to_call_code(input_value, changed=False):
     code = new_module.code
     if indent:
         code = "\n".join((indent + ln if ln.strip() else ln) for ln in code.split("\n"))
-    if Toggles.slow_down_threads:
-        for i in range(5):
-            time.sleep(0.1)
-    return False, code
+    return code
 
 
 @render_func(background=True)
@@ -884,11 +1084,12 @@ def call_dict_to_save(input_value, draw_state=None, unique=None, changed=False,
                       recompile=False, save=False, s_key_pressed=None):
     """Edited call-kwargs dict -> write the call statement back to source.
 
-    Mirrors general_parse_to_address: async background conversion + run_button
-    save (and a recompile button when a source object is available), instead of a
-    blocking inline _do_save. Saving is gated on `changed`, so it fires once per
-    edit rather than every frame. The file mtime bump then makes
-    address_to_call_parse re-parse a fresh dict next frame.
+    Disk writes go through run_button(_do_save) (background), like
+    general_parse_to_address — never a synchronous/inline write. The statement
+    code is assembled synchronously (it's a single tiny statement, unlike the
+    class chain's whole-module reconstruction, so it doesn't need a background
+    node) and only on save. Saving fires once per edit (changed) or on Ctrl+S; the
+    file mtime bump then makes address_to_call_parse re-parse a fresh dict.
 
     The recompile button hotswaps the enclosing function (address.source, set by
     caller_to_address) from its full post-save source — so it only appears when
@@ -902,37 +1103,28 @@ def call_dict_to_save(input_value, draw_state=None, unique=None, changed=False,
         return False, None
     source = address.source
 
-    show_recompile = source is not None
-    show_save = not save or changed
-
-    save_hotkey = s_key_pressed and s_key_pressed.ctrl
-    if save_hotkey:
-        _f, hk_code = dict_to_call_code(input_value=d, changed=True)
-        if not isinstance(hk_code, Pending):
-            _do_save(address, code_str=hk_code)
-            if Melty.cache is not None and draw_state.parent_window is not None:
-                Melty.cache.invalidate_up(draw_state.parent_window._tile_id, max_depth=10)
-
-    if not show_recompile and not show_save:
-        return False, address
-
-    convert_finished, code = dict_to_call_code(input_value=d, changed=changed)
-    if isinstance(code, Pending):
-        return False, code
-
-    if show_recompile and source is not None:
-        # Recompile reads the enclosing function's FULL post-save source itself,
-        # so it gets the def block (not the statement `span` used for the save).
+    # Recompile button (async). It reads the enclosing function's FULL post-save
+    # source itself, so it does not need the statement code - show it whenever a
+    # source resolved, independent of edits.
+    if source is not None:
         run_button(recompile_caller_fn, clicked=recompile, name=f"recompile_caller{unique}",
                    with_kwargs={"input_value": address})
         imgui.dummy(1, 1)
-    if show_save:
-        clicked, result = run_button(_do_save, clicked=save,
-                                     with_kwargs={"input_value": address, "code_str": code})
-        if clicked:
-            if Melty.cache is not None and draw_state.parent_window is not None:
-                Melty.cache.invalidate_up(draw_state.parent_window._tile_id, max_depth=10)
-            return True, address
+
+    # Save - ALWAYS async, through run_button(_do_save) (_do_save is
+    # @render_func(background=True)), exactly like general_parse_to_address. Never a
+    # bare _do_save(...) - that wrote to disk synchronously. Fires on an edit
+    # (save) or Ctrl+S. The statement code is assembled synchronously (pure
+    # CST→string, no disk I/O) and only when saving: doing it every frame
+    # deep-hashed the CST on the UI thread, and as a background node it returned
+    # Pending on the edit frame and dropped the save.
+    save_hotkey = bool(s_key_pressed and s_key_pressed.ctrl)
+    if changed or save_hotkey:
+        run_button(_do_save, clicked=(save or save_hotkey), name=f"do_save{unique}",
+                   with_kwargs={"input_value": address, "code_str": _build_call_code(d)})
+        if Melty.cache is not None and draw_state.parent_window is not None:
+            Melty.cache.invalidate_up(draw_state.parent_window._tile_id, max_depth=10)
+        return True, address
     return False, address
 
 
