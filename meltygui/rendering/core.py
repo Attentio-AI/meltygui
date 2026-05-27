@@ -94,6 +94,96 @@ def _run_convert_chain(value=None, chain=None, **extra_kwargs):
     return value
 
 
+# Horizontal scrollbar content_width is increased when a scrollbar is active, so
+# content doesn't render underneath the bar. Sized to cover the track plus its
+# right-edge margin in draw_overlay_scrollbar.
+SCROLLBAR_RESERVE = 10.0
+
+
+def draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height):
+    """Draw an interactive vertical scrollbar onto the overlay draw list.
+
+    Hover and drag are routed through ``draw_state.on_action`` against the
+    grab's screen-space rect, so the scrollbar competes for the cursor like any
+    other view. Dragging the grab mutates ``draw_state.scroll_offset`` in place;
+    the wheel-scroll path in the wrapper still owns wheel input.
+
+    Painting to the overlay draw list (rather than the window list) keeps the
+    bar above the clipped, scrolled content it sits on top of.
+    """
+    if max_scroll_y <= 0 or clip_height <= 0:
+        return
+
+    content_height = draw_state.content_height
+    if content_height <= 0:
+        return
+
+    # Viewport in screen space - the scroll region starts under the header.
+    view_left = draw_state.abs_left
+    view_top = draw_state.abs_top + draw_state.header_height
+    view_width = draw_state.width
+    bar_offset = -1.0
+
+    # Track geometry, glued to the right edge of the viewport.
+    bar_width = 4.0
+    margin = 2.0
+    track_x2 = view_left + view_width - margin + bar_offset
+    track_x1 = track_x2 - bar_width + bar_offset
+    track_y1 = view_top + margin
+    track_y2 = view_top + clip_height - margin - draw_state.header_height
+    track_h = track_y2 - track_y1
+    if track_h <= 0.0:
+        return
+
+    # Proportional grab with a floor; travel is how far the grab can slide.
+    ratio = clip_height / content_height
+    grab_h = max(20.0, min(track_h, ratio * track_h))
+    travel = max(0.0, track_h - grab_h)
+
+    scroll_y = draw_state.scroll_offset[1]
+    t = max(0.0, min(1.0, scroll_y / max_scroll_y))
+    grab_y1 = track_y1 + travel * t
+    grab_y2 = grab_y1 + grab_h
+
+    # Interaction: hit-test the grab rect, support hover + left-drag on it. A
+    # large priority_delta lets the narrow grab win the cursor over the content
+    # views nested beneath it.
+    grab_rect = (track_x1, grab_y1, track_x2, grab_y2)
+    hovered = draw_state.on_action("cursor_hover", view_id="scrollbar_grab",
+                                   rect=grab_rect, priority_delta=15) is not None
+    drag = draw_state.on_action("left_mouse_drag", view_id="scrollbar_grab",
+                                rect=grab_rect, priority_delta=15)
+
+    active = drag is not None
+    if active and travel > 0.0 and Melty.frame_count > 2:
+        # Map grab pixel motion back into scroll-offset motion.
+        scroll_per_px = max_scroll_y / travel
+        new_y = max(0.0, min(scroll_y + drag.dy * scroll_per_px, max_scroll_y))
+        draw_state.scroll_offset = (draw_state.scroll_offset[0], new_y)
+        Melty.selected = {draw_state}
+        # Re-place the grab so it tracks the cursor on the same frame.
+        t = max(0.0, min(1.0, new_y / max_scroll_y))
+        grab_y1 = track_y1 + travel * t
+        grab_y2 = grab_y1 + grab_h
+
+    # Paint to the overlay list so the bar floats above clipped content.
+    tint = draw_state.current_tint
+    grab_alpha = 0.9 if (hovered or active) else 0.5
+    if tint is not None:
+        col_grab = imgui.get_color_u32_rgba(*tint[:3], grab_alpha)
+    else:
+        col_grab = imgui.get_color_u32_rgba(1, 1, 1, grab_alpha)
+    col_border = imgui.get_color_u32(imgui.COLOR_BORDER)
+
+    dl = imgui.get_window_draw_list()
+    dl.channels_set_current(Melty.get_channel() + 4)
+    # dl.add_rect(track_x1, track_y1, track_x2, track_y2, col_border, rounding=3.0)
+    if grab_y2 > grab_y1:
+        dl.add_rect_filled(track_x1, grab_y1, track_x2, grab_y2, col_grab, rounding=3.0)
+        # dl.add_rect(track_x1, grab_y1, track_x2, grab_y2, col_border, rounding=3.0)
+
+
+
 def render_func(*args, **o_kwargs):
     func = args[0] if args else None
     if not callable(func):
@@ -434,6 +524,17 @@ def render_func(*args, **o_kwargs):
                         setattr(draw_state, item_name, initial_value)
 
         if active_layer is None and _has_imgui:
+            # Call-site capture for the caller-arg lens / jump-to-caller. This is
+            # the INLINE pass (active_layer is None), invoked from the user's own
+            # render code - so the live stack still holds the draw_text(...) call,
+            # unlike the Melty.draw re-dispatch pass. Captured once per widget the
+            # first frame its context menu is open (one frame later than the menu
+            # appearing - that frame simply has no frames yet, which is fine), then
+            # left alone until app restart. inspect.stack is expensive, so the
+            # context_menu_open gate keeps it off the steady-state hot path.
+            if draw_state.context_menu_open and draw_state._call_frames is None:
+                draw_state._call_frames = get_live_frames(skip_count=0)
+
             if closable:
                 if draw_state is not None and draw_state.parent_window is not None:
                     # Nested window - layer above parent
@@ -1073,6 +1174,13 @@ def render_func(*args, **o_kwargs):
                 draw_state.content_width = single_line_avail
                 draw_state._source["content_width"] = "single_line_avail"
 
+            # When a scrollbar is visible (scroll_visible reflects last frame's
+            # scroll state), subtract room for it so content doesn't draw under
+            # the bar. disable_scroll views never get a bar, so skip them.
+            if draw_state.scroll_visible and not kwargs.get("disable_scroll", False):
+                draw_state.content_width = max(0, draw_state.content_width - SCROLLBAR_RESERVE)
+                draw_state._source["content_width"] += " - scrollbar"
+
             if draw_state.expanded:
                 draw_state.min_width = kwargs.get("min_width", draw_state.min_width)
                 draw_state.min_height = kwargs.get("min_height", draw_state.min_height)
@@ -1103,8 +1211,7 @@ def render_func(*args, **o_kwargs):
                 # Collisions.check(column_parent)
 
                 Melty.fixed_size_stack.append(draw_state)
-                # Melty.push_clip((parent_wrap_left, parent_wrap_top + column_cursor_y + column_parent.header_height,
-                #                  parent_wrap_left + parent_wrap_width, parent_wrap_top + column_cursor_y + column_parent.header_height + parent_wrap_height))
+
 
             if draw_state.final_max_column > 0:
                 column_width = snap_int(draw_state.content_width / (draw_state.final_max_column + 1))
@@ -1678,7 +1785,6 @@ def render_func(*args, **o_kwargs):
 
                 show_bg = kwargs.get("show_bg", False) or (
                         highlight and draw_state.height < 60) or not draw_state.expanded
-                expected_type = param_types[0] if len(param_types) > 0 else None
 
                 # Input value is indexable
                 if isinstance(input_value, dict) and "decorators" in input_value:
@@ -1735,9 +1841,6 @@ def render_func(*args, **o_kwargs):
                     bg_color = (0, 0, 0, 0)
                     if draw_state.width > 5 and draw_state.height > 5:
                         nested_bg = not closable and kwargs.get("bg_offset", 0) >= 0
-
-                        if func.__name__ == "draw_text":
-                            pass
                         bg_return = draw_bg(bypass=True, left=draw_state.left, top=draw_state.top,
                                             width=draw_state.width, height=draw_state.height,
                                             rounding=draw_state.corner_radius, bg_offset=kwargs.get("bg_offset", 0),
@@ -1753,26 +1856,6 @@ def render_func(*args, **o_kwargs):
 
                     Melty.bg_color_stack.append(bg_color)
 
-                ##########################
-                # if draw_state.context_menu_open and (
-                #         draw_state.context_menu_ds is None or not draw_state.context_menu_ds.closed):
-                #     # Set channel to front for context menu
-                #     offset_ds = draw_state
-                #     for i in range(draw_state.context_menu_offset):
-                #         if offset_ds._parent is None:
-                #             break
-                #         offset_ds = offset_ds._parent
-                #
-                #     overlay_dl: _DrawList = imgui.get_window_draw_list()
-                #     overlay_dl.add_rect(offset_ds.abs_left, offset_ds.abs_top,
-                #                         offset_ds.abs_left + offset_ds.width,
-                #                         offset_ds.abs_top + offset_ds.height,
-                #                         imgui.get_color_u32_rgba(*(GlobalTint.context_select_tint), 0.8),
-                #                         thickness=2.0)
-                #     overlay_dl.add_rect_filled(offset_ds.abs_left, offset_ds.abs_top,
-                #                                offset_ds.abs_left + offset_ds.width,
-                #                                offset_ds.abs_top + offset_ds.height, imgui.get_color_u32_rgba(
-                #             *(GlobalTint.context_select_tint), 0.3))
                 ########################
 
                 if Melty.channels_split:
@@ -1882,6 +1965,9 @@ def render_func(*args, **o_kwargs):
                         if draw_state.context_menu_ds is not None:
                             draw_state.context_menu_ds.closed = not draw_state.context_menu_open
                     if draw_state.context_menu_open:
+                        # (Call-site frames are captured in the inline pass - see the
+                        # `active_layer is None` block - not here in the full-render
+                        # pass, where the stack is Melty.draw's pre backpatch.)
                         # if draw_state._is_nested:
                         #     bg_offset = 0
                         # Melty.bg_depth += bg_offset
@@ -1954,7 +2040,26 @@ def render_func(*args, **o_kwargs):
 
                     imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0] + outline_margin,
                                                  imgui.get_cursor_screen_pos()[1] + outline_margin))
+
+                    # Clip the main header so it doesn't draw over the end header.
+                    # The end header is right-aligned to the window edge, so its left
+                    # edge sits at clip_size[0] - header_end_width (header_end_width is
+                    # the prior frame's measurement but good enough to clip against).
+                    # Only when expanded: collapsed views place the end header right
+                    # after the header, so there's no overlap to clip.
+                    _hdr_clip = draw_state.clip_size
+                    if _hdr_clip is None and (not auto_resize or closable):
+                        _hdr_clip = (draw_state.width, draw_state.height)
+                    _hdr_clipped = False
+                    if _hdr_clip is not None and draw_state.expanded and draw_state.header_end_width:
+                        _hdr_right = draw_state.abs_left + _hdr_clip[0] - draw_state.header_end_width
+                        Melty.push_clip((draw_state.abs_left, draw_state.abs_top,
+                                         _hdr_right, draw_state.abs_top + draw_state.height))
+                        _hdr_clipped = True
+
                     _header_ret = draw_header(**kwargs)
+                    if _hdr_clipped:
+                        Melty.pop_clip()
                     if isinstance(_header_ret, tuple) and len(_header_ret) >= 1 and _header_ret[0]:
                         header_changed = True
                         if len(_header_ret) >= 2:
@@ -2599,21 +2704,6 @@ def render_func(*args, **o_kwargs):
             if start_detach:
                 Melty.detached = False
 
-            if is_root:
-                style = imgui.get_style()
-                style.item_spacing = Melty.original_spacing
-                style.window_padding = Melty.original_window_padding
-                style.frame_padding = Melty.original_frame_padding
-
-                # if Melty.previous_select is not None:
-                #     for prev_select in Melty.previous_select:
-                #         Melty.cache.invalidate(prev_select._tile_id)
-                #     Melty.previous_select = None
-
-                if Melty.channels_split:
-                    draw_list = imgui.get_window_draw_list()
-                    Melty.channels_split = False
-                    draw_list.channels_merge()
 
         except Exception as e:
             # print_stack_trace(exception=e, section="Exception")
@@ -2639,6 +2729,17 @@ def render_func(*args, **o_kwargs):
 
         finally:
 
+            if is_root:
+                style = imgui.get_style()
+                style.item_spacing = Melty.original_spacing
+                style.window_padding = Melty.original_window_padding
+                style.frame_padding = Melty.original_frame_padding
+
+                if Melty.channels_split:
+                    draw_list = imgui.get_window_draw_list()
+                    Melty.channels_split = False
+                    draw_list.channels_merge()
+
             Melty.active_layer = original_active_layer
             Melty.shadow_depth = start_shadow_depth
 
@@ -2646,6 +2747,7 @@ def render_func(*args, **o_kwargs):
                 Melty.mode_stack.pop()
             if _pushed_search:
                 Melty.search_stack.pop()
+
                 # Read the combined match count back from the session so the find
                 # UI shows results across every child view. Only commit it on a
                 # full re-render of the subtree (term:, nav, i.e. when
@@ -2701,11 +2803,6 @@ def render_func(*args, **o_kwargs):
                     style.item_spacing = Melty.original_spacing
                     style.window_padding = Melty.original_window_padding
                     style.frame_padding = Melty.original_frame_padding
-                    #
-                    # if Melty.previous_select is not None:
-                    #     for prev_select in Melty.previous_select:
-                    #         Melty.cache.invalidate(prev_select._tile_id)
-                    #     Melty.previous_select = None
 
                     if Melty.channels_split:
                         draw_list = imgui.get_window_draw_list()
@@ -2724,9 +2821,6 @@ def render_func(*args, **o_kwargs):
                 if return_extras:
                     return child_changed, new_value, return_draw_state
                 return child_changed, new_value
-
-            # if child_changed or draw_state._output_value_cache is UNSET_VALUE:
-            #     draw_state._output_value_cache = new_value
 
             if isinstance(new_value, Pending):
                 draw_state._loading = new_value
@@ -2813,13 +2907,8 @@ def render_func(*args, **o_kwargs):
                     draw_state.scroll_offset = (current_x,
                                                 max(min_scroll_y, min(new_offset_y, max_scroll_y)))
 
-            # if not draw_state.closed:
-            #     draw_vertical_scrollbar(draw_state.content_height, view_height=draw_state._parent.height,
-            #                             view_width=draw_state._parent.width,
-            #                             scroll_offset=draw_state.scroll_offset[1], scrollbar_width=5,
-            #                             left=draw_state._parent.left,
-            #                             top=draw_state._parent.top,
-            #                             tint=current_tint),
+            if not draw_state.closed:
+                draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height - draw_state.footer_height)
 
         do_scroll = needs_scroll
         scroll_offset = draw_state.scroll_offset if do_scroll else (0, 0)
@@ -2899,10 +2988,6 @@ def render_func(*args, **o_kwargs):
 
     def add_default(register_type):
         o_kwargs.pop('is_default_for', None)
-        # new_meta = Meta()
-        # new_meta.view_function = wrapper
-        # Melty.type_defaults[register_type] = new_meta
-
         if not isinstance((register_type), str):
             Melty.default_funcs_by_type[register_type] = wrapper
             Melty.default_funcs_by_name[register_type.__name__] = wrapper

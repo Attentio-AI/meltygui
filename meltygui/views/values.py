@@ -544,7 +544,7 @@ def draw_draw_state(input_value, **kwargs):
     pass
 
 
-@render_func(use_cache=False, shadow=False, show_bg=False)
+@render_func(use_cache=False, shadow=False, show_bg=False, selectable=False)
 def run_chain(input_value, chain=None, draw_state=None, disable_scroll=True,
               s_key_pressed=False, enter_key_pressed=False, unique=None, debug=False, **kwargs):
     """Debug render function: executes a chain step by step with imgui output.
@@ -2245,44 +2245,17 @@ def draw_debug_label(input_value: str):
 
 
 @render_func(is_default_for=Enum, is_tree=False, shadow=False, header_same_line=True, parent_show_add_delete=False, with_header=draw_header)
-def draw_enum(input_value: Enum,  style_manager=None, enum_tint=(0.3, 0.3, 0.3)):
-    unique = "enum"
-    # imgui.set_next_item_width(imgui.get_content_region_available().x)
-    selected_idx = next(enumerate(input_value.__class__))[1]
-    changed = False
-    push_style_var(imgui.STYLE_ITEM_SPACING, (2, 4))
-    for i, option in enumerate(input_value.__class__):
-        a_pretty_name = option.name.replace("_", " ").capitalize()
-        label = f"{a_pretty_name}##{unique}{i}"
-        active = (input_value == option)
-        radio_style = GlobalStyle.radio_button
-        if active:
-            color = style_manager.make_color_style_rgb(*enum_tint, radio_style["active_base"])
-            hover = style_manager.make_color_style_rgb(*enum_tint, radio_style["active_hover"])
-            pressed = style_manager.make_color_style_rgb(*enum_tint, radio_style["active_pressed"])
-        else:
-            color = style_manager.make_color_style_rgb(*enum_tint, radio_style["inactive_base"])
-            hover = style_manager.make_color_style_rgb(*enum_tint, radio_style["inactive_hover"])
-            pressed = style_manager.make_color_style_rgb(*enum_tint, radio_style["inactive_pressed"])
-        push_style_color(imgui.COLOR_BUTTON, *color)
-        push_style_color(imgui.COLOR_BUTTON_HOVERED, *hover)
-        push_style_color(imgui.COLOR_BUTTON_ACTIVE, *pressed)
-        clicked = imgui.button(label)
-        pop_style_color(1)
-        pop_style_color(1)
-        pop_style_color(1)
-        if clicked:
-            selected_idx = option
-            changed = True
-        same_line()
-    new_line()
-    enum_class = input_value.__class__
-    if changed:
-        selected_enum = enum_class(selected_idx)
-    else:
-        selected_enum = input_value
-    pop_style_var(1)
-    return changed, selected_enum
+def draw_enum(input_value: Enum, style_manager=None, enum_tint=(0.3, 0.3, 0.3)):
+    # Delegate to draw_tab_bar so enums get its wrapping and styling for free.
+    # Enums are single-select: pass the current value as the lone selection and
+    # render every member as a tab; names are the prettified member names.
+    options = list(input_value.__class__)
+    names = [opt.name.replace("_", " ").capitalize() for opt in options]
+    changed, selected = draw_tab_bar([input_value], collection=options, names=names,
+                                     unique="enum", as_toggles=False)
+    if changed and selected:
+        return True, selected[0]
+    return False, input_value
 
 
 
@@ -2351,7 +2324,7 @@ def draw_tab_bar(input_value: list, tab_height=20, names=None, tint_value=0.202,
                              color=tab_color, factor=tab_factor, draw=True)[0]
         else:
             saturation = 1.0 if tinted else 0.3
-            clicked = button(label, indent_size=0, height=tab_height, draw=True, z_offset=0,
+            clicked = button(label, indent_size=0, height=tab_height, draw=True,
                              alpha=0.0 if tinted else 0.0, value=value if not tinted else 0.1, saturation=saturation,
                              name=f"tab_{i}_{unique}", color=tab_color, factor=tab_factor, text_value=1.0 if not tinted else 0.9,
                             shadow=False)[0]
@@ -2371,7 +2344,7 @@ def draw_tab_bar(input_value: list, tab_height=20, names=None, tint_value=0.202,
         # Look ahead: if the next tab won't fit on this row, skip same_line()
         # so imgui's cursor flows to the next line, and reset row_width.
         if i < len(collection) - 1:
-            label = names[i + 1] if names is not None and i + 2 < len(names) else _tab_text(collection[i + 1])
+            label = names[i + 1] if names is not None and i + 1 < len(names) else _tab_text(collection[i + 1])
             next_w = imgui.calc_text_size(label).x + button_padding
             if content_width > 0 and row_width + spacing + next_w + 20 > content_width:
                 row_width = 0
@@ -2408,57 +2381,32 @@ def draw_debug(x,y, label, color=(1, 0, 0), size=16):
 
 
 
-def _auto_select_tint_lens(draw_state):
-    """Pick the lens whose tint is currently in effect, mirroring the render-time
-    precedence in core_render (decoration > data class > draw_state). Uses cheap
-    in-memory probes; the parse-backed sources (comment / decoration) are still
-    reachable from the dropdown. Extending auto-select to them means reading the
-    GeneralParse that address_to_general_parse already caches — left as a hook."""
-    from src.lsd.gl_gui.view.mode import TintLens
-    raw = getattr(draw_state, "_raw_input_value", None)
-    if getattr(raw, "tint", None) is not None:
-        return TintLens.DATA_CLASS
-    return TintLens.DRAW_STATE
-
-
-@render_func(use_cache=True, show_bg=True)
-def draw_tint_context(input_value: DrawState, tab_state: TabState = None, **kwargs):
-    """Edit this element's tint without caring where the tint lives.
-
-    A TintLens names each source as a bidirectional accessor; every one funnels
-    through the same draw_tuple picker via `focus`. We auto-select the source
-    that's currently winning, and the dropdown lets you override — editing then
-    writes back to wherever that source's tint actually lives (a draw_state attr,
-    a data-class field, or a `# [tint=(...)]` comment that gets re-saved + hot-
-    swapped through the code chain)."""
-    from src.lsd.gl_gui.view.mode import TintLens
+def draw_lens(lens, draw_state):
+    """Render a single Lens against draw_state: resolve its root, then either
+    focus the live leaf in place (in-place kinds) or run its generated
+    parse→focus→save chain (code kinds). Returns (changed, _)."""
     from src.lsd.gl_gui.view.core_conversion.chain_converters import focus
-    ds = input_value
-
-    # Auto-select the winning lens; the manual override is ephemeral user state
-    # (fine to be GC'd - only the focus DEFAULTS are persistent, and they live on
-    # TintLens, not draw_state).
-    current = getattr(ds, "_tint_lens_choice", None) or _auto_select_tint_lens(ds)
-
-    # Dropdown to switch lenses by name (draw_any routes Enum -> draw_enum radios).
-    sel_changed, chosen = draw_any(current, name="Tint source")
-    if sel_changed:
-        ds._tint_lens_choice = chosen
-        current = chosen
-
-    spec = current.value
-    root = spec.root(ds)
+    root = lens.root(draw_state)
     if root is None:
-        imgui.text_colored(f"'{spec.label}' has no source for this element", 0.7, 0.7, 0.7)
+        imgui.text_colored(f"{lens.label}: n/a here", 0.5, 0.5, 0.5)
         return False, None
+    if lens.chain is None:
+        return focus(root, path=lens.path, default=lens.default, name=lens.label)
+    return draw_any(root, chain=lens.chain(root), name=lens.label)
 
-    if spec.chain is None:
-        # In-memory attribute / dict-key: focus reads + writes it directly.
-        changed, _ = focus(root, path=spec.path, default=spec.default, name=spec.label)
-    else:
-        # Source-code tint: run the generated parse -> focus -> save chain.
-        changed, _ = draw_any(root, chain=spec.chain(root), name=spec.label)
 
+@render_func(use_cache=True, show_bg=True, selectable=False)
+def draw_tint_context(input_value: DrawState, tab_state: TabState = None, **kwargs):
+    """Render every tint source as its own picker. Each lens in
+    LENSES_BY_ATTR["tint"] is shown via the same focus/draw_tuple machinery;
+    present sources get a color picker, absent ones get a "+ Add". No precedence
+    or selection — just one row per source of tint."""
+    from src.lsd.gl_gui.view.mode import LENSES_BY_ATTR
+    ds = input_value
+    changed = False
+    for lens in LENSES_BY_ATTR.get("tint", []):
+        c, _ = draw_lens(lens, ds)
+        changed = changed or c
     return changed, None
 
 @render_func(use_cache=True, disable_scroll=True, show_header=False,
@@ -2583,7 +2531,9 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     # Tab list
 
     tab_changed, new_tabs = draw_tab_bar(tab_state.selected_tabs, names=tab_names, wrap=True, tab_height=30, tint_value=0.7,
-                                         show_bg=True, name=f"tab_bar#{view_func_name}{unique}", z_offset=-1, bg_offset=-3, draw=True,
+                                         width=max(50, draw_state.content_width - 100),
+                                         show_bg=True, name=f"tab_bar#{view_func_name}{unique}",
+                                         z_offset=-1, bg_offset=-3, draw=True, 
                                          collection=indices, tints=tab_tints, as_toggles=False)
     if tab_changed:
         tab_state.selected_tabs = new_tabs
@@ -2617,7 +2567,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
 
                 imgui.new_line()
 
-                text(f"{input_value._view_func.__name__}", show_bg=True, show_name=True, show_header=True, wrap=False, name="Rendered by", column=t_idx,
+                text(f"{input_value._view_func.__name__}", show_bg=True, show_name=True, show_header=True, wrap=True, name="Rendered by", column=t_idx,
                      editable=False)
                 text(f"{type(input_value._raw_input_value).__name__}", name="input_value type", column=t_idx, editable=False)
 
@@ -2642,7 +2592,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
                         item_value = 'Not found'
 
                     if isinstance(item_value, (int, float, str, bool, Enum)):
-                        text(f"{item_value}", name=info_item, wrap=False, show_name=True, show_header=True, column=t_idx, editable=False)
+                        text(f"{item_value}", name=info_item, show_name=True, show_header=True, column=t_idx, editable=False)
                     else:
                         draw_any(item_value, name=info_item, column=t_idx, show_name=True,
                                 show_header=True, show_add_delete=False, draw=True)
@@ -2690,6 +2640,11 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
                                      show_name=True, show_header=True,
                                      show_add_delete=False, draw=True)
             if tab_names[static_tab] == func_tab:
+                # Jump-to-caller: open the call site where this widget's render
+                # func was invoked. Uses stack frames captured lazily on menu-open
+                # (_call_frames); caller_site is the lightweight
+                # (filename, lineno) - only available at level 0.
+
                 view_func = input_value._view_func
                 # Draw view function
                 if view_func is not None:
@@ -2738,9 +2693,9 @@ def draw_dropdown(input_value, collection, name, draw_state, drop_down_state: Dr
     selection; clicking it opens the (click-to-open) root popover. Nested dict
     rows inside the popover open their own sub-menus on hover. Returns
     (changed, selected_leaf) when the user picks a value."""
-    arrow_icon = "\uf078"
+    arrow_icon = ""
     drop_down_display_str = f"{arrow_icon} {name}: {str(input_value)[:30]}"
-    arrow_icon = "\uf078"
+    arrow_icon = ""
     text(arrow_icon)
     clicked, selected = button(drop_down_display_str, name=f"{name}_dd_trigger",
                                show_bg=True, width=draw_state.content_width - 10, height=25)
@@ -2793,7 +2748,8 @@ def pending_window(input_value, button_name, pending=None, draw_state=None,
         return True, PendingAction.APPLY
     if show_revert:
         same_line()
-        if button("Revert", width=100, height=25, color=(0.8, 0.3, 0.3), factor=0.3, value=0.0, text_value=2.0, saturation=0.4)[0]:
+        if button("Revert", width=100, height=25, color=(0.8, 0.3, 0.3),
+                  factor=0.3, value=0.0, text_value=2.0, saturation=0.4)[0]:
             return True, PendingAction.REVERT
     if show_load:
         same_line()
@@ -2856,6 +2812,11 @@ def draw_any(input_value:any=None, view_func=None, mode:any=None, chain=None, **
             new_default = draw_collection
         if view_func is None:
             view_func = new_default
+
+    # Explicit chain= (e.g. a lens) runs the render_func chain executor directly,
+    # bypassing type/mode routing. Mode-derived chains are still handled below.
+    if chain is not None:
+        return run_chain(input_value, chain=chain, **kwargs)
 
     if mode is None:
         mode = Melty.mode_stack[-1] if len(Melty.mode_stack) > 0 else None

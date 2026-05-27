@@ -20,8 +20,9 @@ import imgui
 import libcst as cst
 
 from src.lsd.gl_gui.melty import FileWatch, Melty
+from src.lsd.gl_gui.background import Background
 from src.lsd.gl_gui.toggles import Toggles
-from src.lsd.gl_gui.utils.glfw_utils import request_render
+from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
 from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending, PendingState
 from src.lsd.gl_gui.view.core_views.core_render import render_func
@@ -35,6 +36,8 @@ from src.lsd.gl_gui.view.core_conversion.file_converters import (
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
     cst_module_to_dict, dict_to_cst_module, GeneralParse,
 )
+from src.lsd.gl_gui.view.core_views.headers import draw_header
+from src.lsd.gl_gui.view.core_views.text_editor import draw_text
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -345,7 +348,7 @@ def run_button(input_value: any, with_kwargs=None, draw_state=None, clicked=Fals
     return False, None
 
 
-@render_func(use_cache=True)
+@render_func(use_cache=True, selectable=False)
 def address_to_general_parse(input_value: Address, pending=False, unique=None, changed=False, draw_state=None, auto_load=True, load=False):
     """Load node: class → cst.Module.
 
@@ -464,8 +467,8 @@ def _focus_set(obj, key, value):
         setattr(obj, key, value)
 
 
-@render_func(use_cache=False, show_bg=False, selectable=False, show_name=False,
-             with_header=None)
+@render_func(use_cache=True, show_bg=True, selectable=False, show_name=True,
+             with_header=draw_header, is_tree=True)
 def focus(input_value, path=(), default=None, draw_state=None, changed=False, **kwargs):
     """Descend a STATIC key `path` into `input_value` to a single leaf, render
     that leaf with its normal renderer (draw_tuple, for a tint), and write any
@@ -516,16 +519,44 @@ def focus(input_value, path=(), default=None, draw_state=None, changed=False, **
 
     leaf = _focus_get(parent, leaf_key) if reachable else None
 
+    # Display label so the button/picker says which source it modifies: prefer
+    # a label carried on the parsed dict (the caller node stamps call+file:line:fn),
+    # else the path target (shows the class for code lenses, e.g.
+    # Foo.__overrides__.tint), else the lens name from draw_state.
+    if isinstance(input_value, dict) and input_value.get("__label__"):
+        label = input_value["__label__"]
+    elif len(path) > 1:
+        label = ".".join(str(p) for p in path)
+    else:
+        label = str(draw_state.name)
+
+    imgui.same_line()
+    text_width = imgui.calc_text_size(label)[0]
+    imgui.text(label)
+
     # ── Present: the reusable picker (every lens funnels through this) ─────────
     if leaf is not None:
-        tint_changed, new_tint = draw_tuple(leaf, name=str(leaf_key))
+        tint_changed, new_tint = draw_tuple(leaf, align_header=False, show_name=True, wrap=True, with_header=draw_header, name=leaf_key)
         if tint_changed:
             _focus_set(parent, leaf_key, new_tint)
             return True, input_value  # hand the parent container to the save side
+        # Delete: drop this source's override so it stops winning. For a dict
+        # (code/caller) the key is popped → dict_to_cst() removes it from source on
+        # save; for a live attr it's set to None. Return changed so the save side
+        # persists the removal, same as an edit.
+        imgui.same_line()
+
+        delete_icon = ""
+        if button(f"{delete_icon}", show_name=True, height=26)[0]:
+            if isinstance(parent, dict):
+                parent.pop(leaf_key, None)
+            else:
+                _focus_set(parent, leaf_key, None)
+            return True, input_value
         return False, input_value
 
     # ── Absent: offer to create it ───────────────────────────────────────────────
-    if button(f" Add {leaf_key}", height=26)[0]:
+    if button(f"", height=26)[0]:
         node = input_value
         for key in path[:-1]:           # create missing intermediate containers
             child = _focus_get(node, key)
@@ -533,9 +564,376 @@ def focus(input_value, path=(), default=None, draw_state=None, changed=False, **
                 child = {}
                 _focus_set(node, key, child)
             node = child
-        _focus_set(node, leaf_key, default if default is not None else (0.485, 0.61, 0.76))
+        try:
+            _focus_set(node, leaf_key, default if default is not None else (0.485, 0.61, 0.76))
+        except Exception as e:
+            print_stack_trace(exception=e)
+            print("Error setting value in focus node:", e)
+            return False, input_value
         return True, input_value
     return False, input_value
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  Caller kwarg lens nodes: edit a kwarg literal at the call site                ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+#
+# These let the context menu edit `draw_text(..., tint=(1,0,1))` by parsing the
+# CALLER's body. The call site comes from draw_state._call_frames (captured
+# lazily on menu-open in core_render). Reuses the existing cst_call_to_dict /
+# dict_to_cst_call converters (the same nodes that parse @decorator(...) calls).
+
+_DISPATCH_SKIP = ("core_render.py",)  # the render_func wrapper lives here
+
+
+def caller_site(frames):
+    """Walk outward from the render_func wrapper to the first frame that ISN'T
+    render-dispatch machinery, and return its (filename, lineno).
+
+    Widgets are re-dispatched via Melty.draw -> draw_state._wrapper(**kwargs)
+    (melty.py:1074), so the frame directly above the wrapper is often the
+    DISPATCHER, not the user's draw_text(...) call. We skip the render_func
+    wrapper (core_render.py) and the Melty.draw frame so the result is the real
+    caller — the user's call for a directly-invoked widget, or the dispatch's
+    caller for a re-dispatched one.
+
+    Returning just (filename, lineno) is critical: the frames list carries each
+    frame's f_locals (the whole AppModel, tensors, cyclic refs). Feeding that
+    into draw_any/render_func would hash/compare it and hang. The lens root calls
+    this so the chain's input_value is a tiny, cheap-to-hash tuple."""
+    if not frames:
+        return None
+    # frames is outermost-first; walk innermost-first to find the nearest caller.
+    for entry in reversed(frames):
+        filename, lineno, func_name = entry[0], entry[1], entry[2]
+        base = filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        if base in _DISPATCH_SKIP:
+            continue
+        if base == "melty.py" and func_name == "draw":   # Melty.draw re-dispatch
+            continue
+        return filename, lineno
+    return None
+
+
+def _first_call(module):
+    """The outermost cst.Call in a parsed statement (don't descend into nested
+    calls), or None."""
+    found = {}
+
+    class _V(cst.CSTVisitor):
+        def visit_Call(self, node):
+            if 'c' not in found:
+                found['c'] = node
+            return False  # outermost only
+
+    module.visit(_V())
+    return found.get('c')
+
+
+def _module_for_file(target_path):
+    """The live module object whose __file__ resolves to target_path, or None.
+
+    Filters on basename before the (syscall-heavy) Path.resolve() so we don't
+    stat every module in sys.modules — that loop was a measurable chunk of the
+    tint-tab open cost."""
+    import sys
+    target_name = target_path.name
+    for m in list(sys.modules.values()):
+        f = getattr(m, "__file__", None)
+        if not f:
+            continue
+        if f.rsplit("/", 1)[-1].rsplit("\\", 1)[-1] != target_name:
+            continue
+        try:
+            if Path(f).resolve() == target_path:
+                return m
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def _enclosing_function(filename, lineno):
+    """The live function object whose `def` encloses (filename, lineno) — the
+    nearest def at or above the line, walking module + class scopes. Lets the
+    caller lens hotswap that function after a literal in its body is edited.
+    Returns None for closures/nested funcs not reachable from module vars."""
+    try:
+        target = Path(filename).resolve()
+    except (OSError, ValueError):
+        return None
+    module = _module_for_file(target)
+    if module is None:
+        return None
+    best = {"fn": None, "line": -1}
+
+    def consider(fn):
+        inner = inspect.unwrap(fn)
+        code = getattr(inner, "__code__", None)
+        if code is None:
+            return
+        try:
+            same = Path(code.co_filename).resolve() == target
+        except (OSError, ValueError):
+            same = code.co_filename == str(target)
+        if same and code.co_firstlineno <= lineno and code.co_firstlineno > best["line"]:
+            best["line"] = code.co_firstlineno
+            best["fn"] = inner
+
+    def walk(scope):
+        for val in list(vars(scope).values()):
+            if isinstance(val, types.FunctionType):
+                consider(val)
+            elif isinstance(val, (staticmethod, classmethod)):
+                f = getattr(val, "__func__", None)
+                if isinstance(f, types.FunctionType):
+                    consider(f)
+            elif isinstance(val, type):
+                walk(val)
+
+    walk(module)
+    return best["fn"]
+
+
+def _resolve_call_address(input_value):
+    """(filename, lineno) -> Address of the enclosing call STATEMENT, with the
+    enclosing function attached as .source.
+
+    Plain function (no imgui, no draw_state) so it can run on a Background thread:
+    a full-file libcst parse + PositionProvider is far too slow to run inline on
+    the render call. Finds the outermost Call covering the line so multi-line
+    calls round-trip as one statement."""
+    filename, lineno = input_value
+    path = Path(filename)
+    address = Address(path, lineno - 1, lineno)  # line default
+    try:
+        from libcst.metadata import MetadataWrapper, PositionProvider
+        wrapper = MetadataWrapper(cst.parse_module(path.read_text(encoding='utf-8')))
+        found = {}
+
+        class _CallFinder(cst.CSTVisitor):
+            METADATA_DEPENDENCIES = (PositionProvider,)
+
+            def visit_Call(self, node):
+                r = self.get_metadata(PositionProvider, node)
+                if r.start.line <= lineno <= r.end.line:
+                    key = (r.start.line, -r.end.line)  # outermost wins
+                    if 'key' not in found or key < found['key']:
+                        found['key'] = key
+                        found['span'] = (r.start.line, r.end.line)
+
+        wrapper.visit(_CallFinder())
+        if 'span' in found:
+            s, e = found['span']
+            address = Address(path, s - 1, e)
+    except Exception as ex:
+        print(f"_resolve_call_address: could not resolve call span in {filename}:{lineno}: {ex}")
+
+    # Enclosing function = recompile hint (None → save-only).
+    address.source = _enclosing_function(filename, lineno)
+    return address
+
+
+@render_func()
+def caller_to_address(input_value, draw_state, changed=False):
+    """(filename, lineno) -> Address spanning the call STATEMENT at the call site.
+
+    The actual resolution (full-file libcst parse + PositionProvider + enclosing
+    function lookup) runs on a Background thread via _resolve_call_address — never
+    on the UI thread — and is cached by (filename, lineno, mtime). Returns
+    (changed, None) while the background resolve is pending; the caller row fills
+    in once it lands. Input is the lightweight site from caller_site() — never the
+    raw frames (which carry f_locals)."""
+    if not input_value or len(input_value) != 2:
+        return changed, None
+    filename, lineno = input_value
+    path = Path(filename)
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        mtime = None
+    cached = getattr(draw_state, '_caller_addr_cache', None)
+    if cached is not None and cached[0] == (filename, lineno) and cached[1] == mtime:
+        return changed, cached[2]
+
+    parent_tile = (draw_state._parent._tile_id
+                   if draw_state._parent is not None else draw_state._tile_id)
+    result = Background.run(
+        _resolve_call_address,
+        user_id=str(draw_state.unique) + "|caller_addr",
+        func_kwargs={"input_value": (filename, lineno)},
+        invalidate_id=parent_tile,
+        on_frame=Melty.frame_count,
+    )
+    if isinstance(result, tuple) and len(result) == 2 and isinstance(result[1], int):
+        result = result[0]
+    if not isinstance(result, Address):
+        return changed, None  # still resolving on the background thread
+
+    result._watcher_ds = draw_state
+    draw_state._caller_addr_cache = ((filename, lineno), mtime, result)
+    return changed, result
+
+
+@render_func(use_cache=True)
+def address_to_call_parse(input_value, draw_state=None, changed=False, load=False):
+    """Address(call statement) -> dict of the call's kwargs via cst_call_to_dict.
+
+    Carries the enclosing span module + address on the dict (dunder keys, ignored
+    by focus and by dict_to_cst_call's edit scan) so the save node can write back.
+    Re-parses only when the file's mtime changes; otherwise returns the cached
+    dict so focus renders every frame."""
+    if not isinstance(input_value, Address):
+        return changed, None
+    address = input_value
+    try:
+        mtime = address.path.stat().st_mtime
+    except OSError:
+        mtime = None
+    cached = getattr(draw_state, '_call_dict_cache', None)
+    if cached is not None and cached[0] == address._hash and cached[1] == mtime:
+        return False, cached[2]
+    try:
+        # The call statement is usually indented (inside a function), but
+        # parse_module rejects leading indentation - dedent first, and remember
+        # the removed prefix so the save node can re-indent on write-back.
+        import textwrap
+        raw = _load_span(address)
+        dedented = textwrap.dedent(raw)
+        first_raw = raw.split("\n", 1)[0]
+        first_ded = dedented.split("\n", 1)[0]
+        indent = first_raw[:len(first_raw) - len(first_ded)]
+        span_module = cst.parse_module(dedented)
+    except Exception as ex:
+        print(f"address_to_call_parse: parse failed for {address.path}: {ex}")
+        return False, cached[2] if cached else None
+    call_node = _first_call(span_module)
+    if call_node is None:
+        return False, None
+    converter = Melty._converters.get((cst.Call, dict))
+    d = converter(call_node)
+    d["__call_module__"] = span_module
+    d["__address__"] = address
+    d["__indent__"] = indent
+
+    # Human label for the picker/buttons: called-name @ file:line (enclosing fn).
+    func_node = call_node.func
+    if isinstance(func_node, cst.Name):
+        call_name = func_node.value
+    elif isinstance(func_node, cst.Attribute):
+        call_name = func_node.attr.value
+    else:
+        call_name = "call"
+    fn = getattr(address, "source", None)
+    fn_name = getattr(fn, "__name__", None)
+    line_no = (address.start or 0) + 1
+    suffix = f" ({fn_name})" if fn_name else ""
+    d["__label__"] = f"{call_name}  {address.path.name}:{line_no}{suffix}"
+
+    draw_state._call_dict_cache = (address._hash, mtime, d)
+    return True, d
+
+
+@render_func(background=True)
+def dict_to_call_code(input_value, changed=False):
+    """Edited call-kwargs dict -> reindented call-statement source string.
+
+    Background node mirroring dict_to_cst for the class chain: rebuilds the Call
+    via dict_to_cst_call, splices it back into the span module, and re-applies the
+    indentation stripped at parse time."""
+    d = input_value
+    span_module = d.get("__call_module__")
+    old_call = d.get("__cst__")
+    converter = Melty._converters.get((dict, cst.Call))
+    new_call = converter(d)
+    new_module = span_module.deep_replace(old_call, new_call)
+    indent = d.get("__indent__", "")
+    code = new_module.code
+    if indent:
+        code = "\n".join((indent + ln if ln.strip() else ln) for ln in code.split("\n"))
+    if Toggles.slow_down_threads:
+        for i in range(5):
+            time.sleep(0.1)
+    return False, code
+
+
+@render_func(background=True)
+def recompile_caller_fn(input_value, changed=False):
+    """Hotswap the enclosing function from its full, post-save source on disk.
+
+    The save side writes the edited literal into the file; this reads the whole
+    enclosing `def` back (fresh — linecache evicted) and reuses the function
+    hotswap (_recompile) so the edit goes live. Recompiling just the statement
+    span wouldn't redefine anything, which is why this loads the full function."""
+    address = input_value
+    fn = getattr(address, "source", None)
+    if not isinstance(fn, types.FunctionType):
+        return False, None
+    unwrapped = inspect.unwrap(fn)
+    _evict_linecache(str(address.path))
+    try:
+        src_lines, _start = inspect.getsourcelines(unwrapped)
+    except (OSError, TypeError, tokenize.TokenError, SyntaxError) as e:
+        print(f"recompile_caller_fn: could not read source for {unwrapped.__name__}: {e}")
+        return False, None
+    _recompile(unwrapped, "".join(src_lines), str(address.path))
+    return True, fn
+
+
+@render_func(use_cache=True, selectable=False)
+def call_dict_to_save(input_value, draw_state=None, unique=None, changed=False,
+                      recompile=False, save=False, s_key_pressed=None):
+    """Edited call-kwargs dict -> write the call statement back to source.
+
+    Mirrors general_parse_to_address: async background conversion + run_button
+    save (and a recompile button when a source object is available), instead of a
+    blocking inline _do_save. Saving is gated on `changed`, so it fires once per
+    edit rather than every frame. The file mtime bump then makes
+    address_to_call_parse re-parse a fresh dict next frame.
+
+    The recompile button hotswaps the enclosing function (address.source, set by
+    caller_to_address) from its full post-save source — so it only appears when
+    that function resolved; otherwise this is save-only (shows on next load)."""
+    d = input_value
+    if not isinstance(d, dict):
+        return False, d
+    address = d.get("__address__")
+    if not isinstance(address, Address):
+        imgui.text_colored("Saving unavailable...\nno call address", 1.0, 0.0, 0.0)
+        return False, None
+    source = address.source
+
+    show_recompile = source is not None
+    show_save = not save or changed
+
+    save_hotkey = s_key_pressed and s_key_pressed.ctrl
+    if save_hotkey:
+        _f, hk_code = dict_to_call_code(input_value=d, changed=True)
+        if not isinstance(hk_code, Pending):
+            _do_save(address, code_str=hk_code)
+            if Melty.cache is not None and draw_state.parent_window is not None:
+                Melty.cache.invalidate_up(draw_state.parent_window._tile_id, max_depth=10)
+
+    if not show_recompile and not show_save:
+        return False, address
+
+    convert_finished, code = dict_to_call_code(input_value=d, changed=changed)
+    if isinstance(code, Pending):
+        return False, code
+
+    if show_recompile and source is not None:
+        # Recompile reads the enclosing function's FULL post-save source itself,
+        # so it gets the def block (not the statement `span` used for the save).
+        run_button(recompile_caller_fn, clicked=recompile, name=f"recompile_caller{unique}",
+                   with_kwargs={"input_value": address})
+        imgui.dummy(1, 1)
+    if show_save:
+        clicked, result = run_button(_do_save, clicked=save,
+                                     with_kwargs={"input_value": address, "code_str": code})
+        if clicked:
+            if Melty.cache is not None and draw_state.parent_window is not None:
+                Melty.cache.invalidate_up(draw_state.parent_window._tile_id, max_depth=10)
+            return True, address
+    return False, address
 
 
 @render_func(use_cache=True)

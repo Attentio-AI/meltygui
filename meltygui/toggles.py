@@ -60,15 +60,14 @@ class Toggles:
     slow_down_threads = False
     render_depth = False
     ds_invalidate_stack = False
-    profile_mode = ProfileMode.LIGHT
+    profile_mode = ProfileMode.OFF
     debug_stale_tint = False
     show_line_break = False
     
     # Filter SettingS
     brightness = 0.22
     contrast = 1.422
-    saturation = -0.43
-    
+    saturation = -0.4
     prefered_header_width = 77
     max_preferred_header_width = 200
 

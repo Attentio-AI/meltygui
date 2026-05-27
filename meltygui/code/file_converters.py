@@ -23,6 +23,7 @@ from src.lsd.gl_gui.melty import Melty
 
 import libcst as cst
 
+from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace
 from src.lsd.gl_gui.view.core_conversion.address import Address, invalidate_address_cache, update_address_cache
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import invalidate_usage_cache
 
@@ -202,6 +203,9 @@ def recompile_fn(input_value, ref=None, function_ref=None):
     ref.path.write_text(newline.join(lines), encoding="utf-8")
     invalidate_usage_cache(ref.path)
     new_ref = Address(ref.path, ref.start, ref.start + len(new_lines))
+    yellow = "\033[93m"
+    reset = "\033[0m"
+    print(f"{yellow}[File Write] Updated file {ref.path}{reset}")
     if function_ref is not None:
         update_address_cache(function_ref, new_ref)
     else:
@@ -282,6 +286,9 @@ def recompile_cls_fn(input_value, ref=None, class_ref=None,
     lines[ref.start:ref.end] = new_lines
     ref.path.write_text(newline.join(lines), encoding="utf-8")
     invalidate_usage_cache(ref.path)
+    yellow = "\033[93m"
+    reset = "\033[0m"
+    print(f"{yellow}[File Write] Updated file {ref.path}{reset}")
     new_ref = Address(ref.path, ref.start, ref.start + len(new_lines))
     if class_ref is not None:
         update_address_cache(class_ref, new_ref)
@@ -315,6 +322,9 @@ def save_span_fn(input_value, ref=None):
     new_lines = input_value.split(newline)
     lines[ref.start:ref.end] = new_lines
     ref.path.write_text(newline.join(lines), encoding="utf-8")
+    yellow = "\033[93m"
+    reset = "\033[0m"
+    print(f"{yellow}[File Write] Updated file {ref.path}{reset}")
     invalidate_usage_cache(ref.path)
     return None, Address(ref.path, ref.start, ref.start + len(new_lines))
 
@@ -449,26 +459,30 @@ def _recompile(func: types.FunctionType, source: str,
         new_func = namespace.get(unwrapped.__name__)
 
     if new_func is None:
-        raise RuntimeError(f"Recompilation produced no function named '{unwrapped.__name__}'")
+        print_stack_trace()
+
     if not callable(new_func):
-        raise RuntimeError(f"'{unwrapped.__name__}' is {type(new_func).__name__}, not a function")
+        print_stack_trace()
 
     new_func = inspect.unwrap(new_func)
 
-    _validate_global_names(new_func.__code__, namespace)
-    _validate_local_names(new_func.__code__)
+    try:
+        _validate_global_names(new_func.__code__, namespace)
+        _validate_local_names(new_func.__code__)
 
-    original_firstlineno = unwrapped.__code__.co_firstlineno
+        original_firstlineno = unwrapped.__code__.co_firstlineno
 
-    unwrapped.__code__ = new_func.__code__
-    unwrapped.__defaults__ = new_func.__defaults__
-    unwrapped.__kwdefaults__ = new_func.__kwdefaults__
-    unwrapped.__annotations__ = new_func.__annotations__
-    unwrapped.__doc__ = new_func.__doc__
+        unwrapped.__code__ = new_func.__code__
+        unwrapped.__defaults__ = new_func.__defaults__
+        unwrapped.__kwdefaults__ = new_func.__kwdefaults__
+        unwrapped.__annotations__ = new_func.__annotations__
+        unwrapped.__doc__ = new_func.__doc__
 
-    unwrapped.__code__ = unwrapped.__code__.replace(
-        co_firstlineno=original_firstlineno
-    )
+        unwrapped.__code__ = unwrapped.__code__.replace(
+            co_firstlineno=original_firstlineno
+        )
+    except Exception as e:
+        print_stack_trace(exception=e)
 
     Melty.cache.invalidate_up_by_func(func, max_depth=10)
 

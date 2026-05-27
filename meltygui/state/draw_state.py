@@ -258,6 +258,11 @@ class DrawState(DictConversion):
         self.context_menu_ds = None
         self.context_menu_offset = 0
         self._offset_ds = None
+        # The stack frames captured lazily in the inline render pass the first
+        # frame this widget's context menu is open, then kept until app restart
+        # (see core_render). Underscore-prefixed → not serialized. Powers the
+        # caller-arg lens / jump-to-caller (see the literal at the call site).
+        self._call_frames = None
 
         self.relative_pos = None
 

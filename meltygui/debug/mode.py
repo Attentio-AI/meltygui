@@ -10,7 +10,8 @@ from src.lsd.gl_gui.model.model_enums import RelaxedEnum
 from src.lsd.gl_gui.toggles import WindowManager
 from src.lsd.gl_gui.view.core_conversion.chain_converters import module_to_address, address_to_general_parse, \
     general_parse_to_address, address_to_module, class_to_address, address_to_class, function_to_address, \
-    address_to_function, general_parse_to_str, str_to_general_parse, focus
+    address_to_function, general_parse_to_str, str_to_general_parse, focus, \
+    caller_to_address, address_to_call_parse, call_dict_to_save, caller_site
 from src.lsd.gl_gui.view.core_conversion.file_converters import path_to_dict, bytes_to_str, load_text, recompile_module, \
     recompile, fn_to_cst, cst_to_fn, recompile_fn, \
     mod_to_cst, cst_to_mod, recompile_mod_fn, \
@@ -330,29 +331,30 @@ _populate_code_mode()
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║  Tint lenses - named, static accessors for "where does this tint live"       ║
+# ║  Lenses - generic, field-parameterized accessors for "where does X live"      ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 #
-# Each TintLens member is a bidirectional accessor for one tint source. The whole
-# point: every source plugs into the *same* draw_tuple picker, `focus`, and the
-# tint's location is static config that lives here in code - never in draw_state
-# (which is GC'd on a short TTL).
+# A Lens is a bidirectional accessor parameterized by a leaf NAME. The lens KIND
+# encodes the storage space (and so the read/write mechanism); the name fills in
+# which leaf. There is no "tint lens" vs "outline lens" - there's `class_var` and
+# you call it `class_var("tint")` or `class_var("outline_color")`.
 #
-# Adding a source is one line, with a factory:
+# Kinds (all generic over `name`):
 #
-#   mem_lens("Draw state", lambda ds: ds)                  # live attr/dict in memory
-#   code_lens("Code comment", ("__overrides__", "tint"))   # parsed from source code
+#   draw_state_attr(name)  live attr on the draw_state    → in place, ephemeral
+#   instance_attr(name)    live attr on the data object   → in place
+#   class_var(name)        class-body assignment in source → parse → focus → save
+#   decoration(name)       @defaults(name=...) decorator     → parse → focus → save
+#   code_comment(name)     # [name=...] override comment      → parse → focus → save
 #
-#   - mem_lens  → focus reads/writes the live attribute or dict-key directly.
-#   - code_lens → the CODE_UI chain is GENERATED from the path + the source
-#                 object's type (class / function / module), with `focus` slotted
-#                 in where draw_collection sits in CODE_UI. draw_any(root, chain=...)
-#                 runs it: parse → focus → save+recompile. No paired save mode.
+# In-place kinds run `focus(root, path)` directly. Code kinds generate a
+# parse→focus→save chain (CODE_UI with `focus` swapped for draw_collection) and
+# run it via draw_any(root, chain=...). A class span parses to {<ClassName>: {...}}
+# (cst_module_to_dict), so class-anchored paths are prefixed with the class name.
 #
 # `default` is what the "+ Add" affordance in focus stamps in when the source has
-# no tint yet. Render a TintLens member with draw_any to get the radio dropdown.
-
-_TINT_DEFAULT = (0.485, 0.61, 0.76)
+# no value yet. To add a source for an attribute: append one constructor call to
+# its list in LENSES_BY_ATTR.
 
 # Address-resolver pairs (load-side, save-side) per source-object type - the same
 # pairs CODE_UI dispatches on. Generating from these keeps code lenses one-liners.
@@ -361,46 +363,13 @@ _ADDR_PAIRS = {
     types.FunctionType: (function_to_address, address_to_function),
     types.ModuleType: (module_to_address, address_to_module),
 }
-_TINT_SAVE = {'save': True, 'recompile': True}
+_CODE_SAVE = {'save': True, 'recompile': True}
 
 
-def _build_code_chain(root, path, default):
-    """CODE_UI with `focus` in place of draw_collection: parse → focus → save."""
-    load_node, save_node = _ADDR_PAIRS.get(type(root), _ADDR_PAIRS[type])
-    return (load_node,
-            (address_to_general_parse, {'load': True}),
-            (focus, {'path': path, 'default': default}),
-            (general_parse_to_address, _TINT_SAVE),
-            save_node)
-
-
-@dataclass
-class LensSpec:
-    label: str
-    root: Any                      # draw_state -> the object the lens starts from
-    path: tuple                    # key/attr path to the tint leaf
-    default: tuple = _TINT_DEFAULT  # value the "+ Add" affordance stamps in
-    chain: Any = None              # code lenses: root -> generated chain tuple; None = in-memory
-
-
-def mem_lens(label, root, path=("tint",), default=_TINT_DEFAULT):
-    """A tint that lives as a live attribute/dict-key in memory (draw_state, data
-    class). focus reads/writes it directly — no parse, no save side."""
-    return LensSpec(label, root=root, path=path, default=default, chain=None)
-
-
-def code_lens(label, path, default=_TINT_DEFAULT):
-    """A tint that lives in source code (a comment / decoration). The parse→save
-    chain is generated from the path + owning object type at dispatch time."""
-    return LensSpec(label, root=_tint_source_object, path=path, default=default,
-                    chain=lambda root: _build_code_chain(root, path, default))
-
-
-def _tint_source_object(draw_state):
-    """The class / function / module whose source code owns this element — i.e.
-    where a code-comment or decoration tint would be parsed from. For a data
-    instance that's its (non-builtin) class; for a primitive it's None (the
-    caller falls back to an in-memory lens)."""
+def _owning_source(draw_state):
+    """The class / function / module whose source code owns this element — where a
+    class_var / decoration / comment would be parsed from. For a data instance
+    that's its (non-builtin) class; for a primitive it's None."""
     raw = getattr(draw_state, "_raw_input_value", None)
     if raw is None:
         return None
@@ -412,11 +381,85 @@ def _tint_source_object(draw_state):
     return the_type
 
 
-class TintLens(Enum):
-    DRAW_STATE   = mem_lens("Draw state", lambda ds: ds)
-    DATA_CLASS   = mem_lens("Data class", lambda ds: getattr(ds, "_raw_input_value", None))
-    CODE_COMMENT = code_lens("Code comment", ("__overrides__", "tint"))
-    DECORATION   = code_lens("Decoration", ("decorators", "defaults", "tint"))
+def _build_code_chain(root, tail, default):
+    """CODE_UI with `focus` in place of draw_collection: parse → focus → save.
+    A class span parses to {<ClassName>: {...}}, so class roots get the class name
+    prefixed onto the focus path."""
+    load_node, save_node = _ADDR_PAIRS.get(type(root), _ADDR_PAIRS[type])
+    prefix = (root.__name__,) if isinstance(root, type) else ()
+    return (load_node,
+            (address_to_general_parse, {'load': True}),
+            (focus, {'path': prefix + tail, 'default': default}),
+            (general_parse_to_address, _CODE_SAVE),
+            save_node)
+
+
+@dataclass
+class Lens:
+    label: str            # full label for the context-menu row
+    name: str             # the field/leaf name this lens reads/writes
+    root: Any             # draw_state -> the object the chain starts from
+    path: tuple           # in-place kinds: attr-name path to the leaf
+    default: Any = None   # value the "+ Add" affordance stamps in
+    chain: Any = None     # code kinds: root -> generated chain tuple; None = in-place
+
+
+# ── Lens kinds (generic over `name`) ──────────────────────────────────────────
+
+def draw_state_attr(name, default=None):
+    return Lens(f"Draw state · {name}", name, root=lambda ds: ds, path=(name,), default=default)
+
+
+def instance_attr(name, default=None):
+    return Lens(f"Instance attr · {name}", name,
+                root=lambda ds: getattr(ds, "_raw_input_value", None),
+                path=(name,), default=default)
+
+
+def class_var(name, default=None):
+    return Lens(f"Class variable · {name}", name, root=_owning_source, path=(name,),
+                default=default, chain=lambda root: _build_code_chain(root, (name,), default))
+
+
+def decoration(name, default=None, decorator="defaults"):
+    tail = ("decorators", decorator, name)
+    return Lens(f"Decoration · {name}", name, root=_owning_source, path=tail,
+                default=default, chain=lambda root: _build_code_chain(root, tail, default))
+
+
+def code_comment(name, default=None):
+    tail = ("__overrides__", name)
+    return Lens(f"Code comment · {name}", name, root=_owning_source, path=tail,
+                default=default, chain=lambda root: _build_code_chain(root, tail, default))
+
+
+def caller_arg(name, default=None):
+    """Edit the literal a caller passed for `name`, e.g. draw_text(tint=(1,0,1)).
+    Anchored on the call site (draw_state._call_frames, captured on menu-open),
+    not on the data or its class. The chain is fixed (independent of root type):
+    frames → call-statement Address → parse the Call's kwargs → focus → save."""
+    chain = (caller_to_address,
+             (address_to_call_parse, {'load': True}),
+             (focus, {'path': (name,), 'default': default}),
+             (call_dict_to_save, {'save': True}))
+    return Lens(f"Caller arg · {name}", name,
+                root=lambda ds: caller_site(getattr(ds, "_call_frames", None)),
+                path=(name,), default=default, chain=lambda root: chain)
+
+
+# A list of lenses per attribute - draw_tint_context renders every entry, so you
+# get one color picker (or "+ Add") per source. Append a constructor to extend.
+_TINT_DEFAULT = (0.485, 0.61, 0.76)
+LENSES_BY_ATTR = {
+    "tint": [
+        caller_arg("tint", _TINT_DEFAULT),
+        draw_state_attr("tint", _TINT_DEFAULT),
+        instance_attr("tint", _TINT_DEFAULT),
+        class_var("tint", _TINT_DEFAULT),
+        decoration("tint", _TINT_DEFAULT),
+        code_comment("tint", _TINT_DEFAULT),
+    ],
+}
 
 
 class ModeGroup:
