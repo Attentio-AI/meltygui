@@ -489,7 +489,7 @@ def caller_arg(name, default=None):
 _TINT_DEFAULT = (0.485, 0.61, 0.76)
 LENSES_BY_ATTR = {
     "tint": [
-        caller_arg("tint", _TINT_DEFAULT),
+         caller_arg("tint", _TINT_DEFAULT),
         draw_state_attr("tint", _TINT_DEFAULT),
         instance_attr("tint", _TINT_DEFAULT),
         class_var("tint", _TINT_DEFAULT),

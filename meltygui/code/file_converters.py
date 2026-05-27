@@ -529,6 +529,7 @@ def _recompile_class(cls: type, source: str, filename: str) -> None:
         raise RuntimeError(f"'{cls.__name__}' is {type(new_cls).__name__}, not a class")
 
     _hotswap_class(cls, new_cls)
+    _redirect_class_registrations(cls, new_cls)
 
     Melty.cache.invalidate_up_by_obj(cls, max_depth=10)
 
@@ -556,6 +557,7 @@ def _recompile_module(module: types.ModuleType, source: str,
 
             elif isinstance(old_obj, type) and isinstance(new_obj, type):
                 _hotswap_class(old_obj, new_obj)
+                _redirect_class_registrations(old_obj, new_obj)
                 invalidate_address_cache(old_obj)
                 module.__dict__[name] = old_obj
     except Exception as e:
@@ -617,3 +619,41 @@ def _hotswap_class(old_cls: type, new_cls: type) -> None:
                 setattr(old_cls, name, new_val)
             except (AttributeError, TypeError):
                 pass
+
+
+def _redirect_class_registrations(old_cls: type, new_cls: type) -> None:
+    """Repoint decorator-driven global registries from `new_cls` back to `old_cls`.
+
+    `_recompile_class` re-execs the class body, which RE-RUNS its decorators
+    (`@window`, `@defaults`, …). Those decorators don't just mutate the class —
+    they register it in module-level registries. So the throwaway `new_cls` ends
+    up registered while the rest of the app still holds the hotswapped `old_cls`:
+    the two diverge, and edits made through the UI (which now draws `new_cls`)
+    never reach the object everyone else reads. (Symptom: a class-var toggle like
+    `Toggles.profile_mode` silently stops taking effect after a recompile.)
+
+    Hotswap's contract is that `old_cls` stays canonical, so we move every fresh
+    registration onto it — keeping the newly-parsed decoration kwargs (e.g. an
+    edited `@window(tint=...)`) but bound to the original identity.
+
+    Decorators that merely `setattr` dunders on the class (`@tint`, `@exclude`,
+    `@no_save`, …) need no repair — hotswap already copied those onto `old_cls`.
+    """
+    if new_cls is old_cls:
+        return
+
+    # @window - name-keyed; the re-exec OVERWROTE the entry with new_cls.
+    wins = getattr(Melty, "annotated_window_classes", None)
+    if isinstance(wins, dict):
+        entry = wins.get(new_cls.__name__)
+        if entry is not None and entry[0] is new_cls:
+            wins[new_cls.__name__] = (old_cls, entry[1])  # keep fresh kwargs
+
+    # @defaults - class-keyed; the re-exec added a parallel new_cls entry. Move it
+    # onto old_cls (replacing the pre-edit state) and drop the new_cls key.
+    for reg_name in ("default_kwargs_by_type",
+                     "default_kwargs_by_attrib_type",
+                     "default_funcs_by_name_type"):
+        reg = getattr(Melty, reg_name, None)
+        if isinstance(reg, dict) and new_cls in reg:
+            reg[old_cls] = reg.pop(new_cls)

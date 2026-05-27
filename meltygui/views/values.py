@@ -456,7 +456,7 @@ def draw_property(input_value:property, draw_state, **kwargs):
 def draw_type(input_value:type, **kwargs):
     class_vars = {**{k: getattr(input_value, k) for k in vars(input_value)}}
 
-    changed, new_dict = draw_collection(class_vars, draw=True, real_type=input_value, disable_scroll=True, name=f"Class: {input_value.__name__}", tint=(0.485, 0.61, 0.76))
+    changed, new_dict = draw_collection(class_vars, draw=True, real_type=input_value, disable_scroll=True, name=f"Class: {input_value.__name__}", tint=(0.6, 0.6, 0.1))
 
     if changed:
         for k, v in new_dict.items():
@@ -647,7 +647,7 @@ def draw_main(input_value, vis, search_text="", **kwargs):
         kwargs.setdefault('show_bg', True)
         kwargs.setdefault('modes', (Mode.CODE_UI, Mode.CODE_PLAIN_TEXT, Mode.RUNNING))
         kwargs.setdefault('name', f"{window_cls.__name__}##@window")
-        draw_with_modes(window_cls, **kwargs, tint=(0.87, 0.4, 0.15))
+        draw_with_modes(window_cls, **kwargs)
 
     changed, value = draw_blit_debug(None, name="Blit Offscreen Debug", mode=(Mode.WINDOW))
 
@@ -739,7 +739,7 @@ def draw_main(input_value, vis, search_text="", **kwargs):
 
     global drop_down_selection
     changed, selection = draw_dropdown(drop_down_selection, collection=dropdown_demo_data,
-                                       name="Dropdown Demo", mode=Mode.WINDOW, tint=(0.8186046, 0.1, 0.1))
+                                       name="Dropdown Demo", mode=Mode.WINDOW, tint=(0.180984, 0.2, 0.2))
     if changed:
         drop_down_selection = selection
         print("Drop down change", str(selection))
@@ -867,7 +867,7 @@ def draw_pending_texture(input_value: PendingTexture, draw_state):
         return False, None
 
     return_val = draw_texture(input_value.texture_id, name=f"{draw_state.id}_inner", auto_resize=False,
-                              show_header=False, use_cache=True, wrap=False, caller_arg=(0.513, 0.62, 0.74), tint=(0.9, 0.9, 0.92))
+                              show_header=False, use_cache=True, wrap=False, tint=(0.1, 0.1, 0.52))
 
     return return_val
 
@@ -2410,6 +2410,7 @@ def draw_tint_context(input_value: DrawState, tab_state: TabState = None, **kwar
     for lens in LENSES_BY_ATTR.get("tint", []):
         c, _ = draw_lens(lens, ds)
         changed = changed or c
+        imgui.separator()
     return changed, None
 
 @render_func(use_cache=True, disable_scroll=True, show_header=False,

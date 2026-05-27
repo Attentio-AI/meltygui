@@ -144,6 +144,7 @@ class Loop(dict):
 
 
 # [tint=(0.0, 4.4898104079038603e-07, 1e-06)]
+@defaults(tint=(0.485, 0.61, 0.76))
 class GeneralParse(dict):
     def __init__(self, *args, source="", file_path=None, line_offset=0, **kwargs):
         super().__init__(*args, **kwargs)
@@ -2485,15 +2486,76 @@ def cst_call_to_dict(value: cst.Call) -> dict:
     for arg in value.args:
         if arg.keyword is not None:
             readable[arg.keyword.value] = _cst_to_python_or_raw(arg.value)
+        elif arg.star == "**" and isinstance(arg.value, cst.Dict):
+            # `**{**kwargs, 'clint': True}`: surface the literal string-keyed entries
+            # as editable kwargs (the leading **splat passes through via __cst__).
+            # This is how a kwarg lives on a call that also splats **kwargs without
+            # a runtime "multiple values" collision; see dict_to_cst_call.
+            for el in arg.value.elements:
+                if isinstance(el, cst.DictElement) and isinstance(el.key, cst.SimpleString):
+                    try:
+                        key = ast.literal_eval(el.key.value)
+                    except (ValueError, SyntaxError):
+                        continue
+                    if isinstance(key, str):
+                        readable[key] = _cst_to_python_or_raw(el.value)
 
     readable["__cst__"] = value
     return readable
+
+
+def _patch_starstar_dict(star_arg, edits):
+    """Update/drop the literal string-keyed entries of a `**{...}` dict arg from
+    `edits` (popping consumed keys). Keeps splat (`**x`) and non-string-key
+    elements. The mirror of cst_call_to_dict's read of merged-dict kwargs."""
+    d = star_arg.value
+    new_elements = []
+    for el in d.elements:
+        if isinstance(el, cst.DictElement) and isinstance(el.key, cst.SimpleString):
+            try:
+                key = ast.literal_eval(el.key.value)
+            except (ValueError, SyntaxError):
+                new_elements.append(el)
+                continue
+            if isinstance(key, str) and key in edits:
+                new_val = edits.pop(key)
+                cst_v = _python_to_cst_expr(new_val, el.value)
+                new_elements.append(el.with_changes(value=cst_v) if cst_v is not None else el)
+            elif isinstance(key, str):
+                pass  # key absent from edits → deleted → drop the element
+            else:
+                new_elements.append(el)
+        else:
+            new_elements.append(el)  # **splat / non-string key - keep
+    # Collapse a now-redundant `**{**x}` back to plain `**x`.
+    if len(new_elements) == 1 and isinstance(new_elements[0], cst.StarredDictElement):
+        return star_arg.with_changes(value=new_elements[0].value)
+    return star_arg.with_changes(value=d.with_changes(elements=new_elements))
+
+
+def _merge_new_into_starstar(star_arg, new_kwargs):
+    """Fold new kwargs INTO a `**` arg as a merged dict literal:
+    `**kwargs` → `**{**kwargs, 'k': v, ...}`. This is what makes adding a kwarg to
+    a call that splats **kwargs safe — `f(**kwargs, k=v)` raises "multiple values"
+    at runtime if kwargs already has k, but the merged dict can't collide."""
+    val = star_arg.value
+    elements = list(val.elements) if isinstance(val, cst.Dict) else [cst.StarredDictElement(value=val)]
+    for k, v in new_kwargs.items():
+        cst_v = _python_to_cst_expr(v)
+        if cst_v is None:
+            continue
+        elements.append(cst.DictElement(key=cst.SimpleString(repr(k)), value=cst_v))
+    return star_arg.with_changes(value=cst.Dict(elements=elements))
 
 
 @register
 def dict_to_cst_call(value: dict) -> cst.Call:
     """Reconstruct a Call from a dict, patching kwargs and handling
     insert/pop with sibling-cloned formatting.
+
+    Kwargs added to a call that splats **kwargs are folded into a merged dict
+    literal (`**{**kwargs, 'k': v}`) rather than appended as `k=v` — the latter
+    raises "multiple values for keyword 'k'" at runtime if kwargs already has k.
     """
     old_node = value.get("__cst__")
     if old_node is None or not isinstance(old_node, cst.Call):
@@ -2502,7 +2564,15 @@ def dict_to_cst_call(value: dict) -> cst.Call:
     edits = {k: v for k, v in value.items()
              if not (_is_dunder(k))}
 
-    if not edits:
+    # `not edits` can mean "no changes" OR "every kwarg was deleted". Only short-
+    # circuit when the call actually has no readable kwargs to delete - otherwise a
+    # delete of the last kwarg would be silently ignored.
+    has_readable_kwargs = any(a.keyword is not None for a in old_node.args) or any(
+        a.star == "**" and isinstance(a.value, cst.Dict)
+        and any(isinstance(e, cst.DictElement) and isinstance(e.key, cst.SimpleString)
+                for e in a.value.elements)
+        for a in old_node.args)
+    if not edits and not has_readable_kwargs:
         return old_node
 
     # Grab formatting template from existing kwargs
@@ -2523,11 +2593,17 @@ def dict_to_cst_call(value: dict) -> cst.Call:
     elif len(real_args) == 1:
         last_comma = real_args[0].comma
 
-    # Pass 1: keep positional args, edit/drop kwargs
+    # Pass 1: keep positional args, edit/drop kwargs. A `**{...}` dict arg gets
+    # its string-keyed entries updated/dropped too; note its index for Pass 2.
     surviving = []
+    starstar_idx = None
     for arg in old_node.args:
         if arg.keyword is None:
-            surviving.append(arg)  # positional - pass through
+            if arg.star == "**":
+                if isinstance(arg.value, cst.Dict):
+                    arg = _patch_starstar_dict(arg, edits)
+                starstar_idx = len(surviving)
+            surviving.append(arg)  # positional / splat - pass through
             continue
         kw_name = arg.keyword.value
         if kw_name in edits:
@@ -2539,7 +2615,11 @@ def dict_to_cst_call(value: dict) -> cst.Call:
                 surviving.append(arg)
         # else arg was removed (popped) - drop it
 
-    # Pass 2: append new kwargs
+    # Pass 2: add new kwargs. If the call splats **mapping, fold them INTO it as a
+    # merged dict (collision-proof); otherwise make plain `k=v` keyword args.
+    if edits and starstar_idx is not None:
+        surviving[starstar_idx] = _merge_new_into_starstar(surviving[starstar_idx], edits)
+        edits = {}
     for kw_name, val in edits.items():
         cst_val = _python_to_cst_expr(val)
         if cst_val is None:

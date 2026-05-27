@@ -149,6 +149,8 @@ def function_to_address(input_value: types.FunctionType, draw_state, changed=Fal
     except (OSError, TypeError, tokenize.TokenError, SyntaxError) as e:
         print(f"Could not get source lines for {input_value.__name__} in {source_file}: {e}")
         return changed, None
+    
+    print(f"[function_to_address] Resolved address for {input_value.__name__} in {source_file}: lines {start_lineno}-{start_lineno + len(source_lines) - 1}")
 
     address = Address(Path(source_file), start_lineno - 1,
                       start_lineno - 1 + len(source_lines), source=input_value,
@@ -200,6 +202,7 @@ def class_to_address(input_value: type, draw_state, changed=False):
                           start_lineno - 1 + len(source_lines), source=input_value,
                           watcher_ds=draw_state)
         draw_state._addr_cache = (input_value, mtime, address)
+        print(f"[class_to_address] Resolved address for {input_value.__name__} in {source_file}: lines {address.start}-{address.end}")
         return changed, address
     except (TypeError, OSError, tokenize.TokenError, SyntaxError):
         return changed, None
@@ -261,11 +264,13 @@ def class_to_address_incl_overrides(input_value: type, draw_state, changed=False
 
 @render_func(background=True)
 def load_cst_module(input_value: Address):
+
     text = _load_span(input_value)
     converted_cst = cst.parse_module(text)
     general_parse = cst_module_to_dict(converted_cst) 
     general_parse.address = input_value
     general_parse.file_path = input_value.path
+    print(f"Loaded {input_value.path} lines {input_value.start}-{input_value.end}")
 
     if Toggles.slow_down_threads:
         for i in range(5):
@@ -801,10 +806,8 @@ def caller_site(frames):
         base = filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
         if base in _DISPATCH_SKIP:
             continue
-        if base == "melty.py" and func_name == "draw":   # Melty.draw re-dispatch
-            continue
-        if base == "new_core_view.py" and func_name == "draw_any":  # Melty.draw re-dispatch
-            continue
+        # if base == "melty.py" and func_name == "draw":   # Melty.draw re-dispatch
+        #     continue
 
 
         return filename, lineno
@@ -894,32 +897,37 @@ def _resolve_call_address(input_value):
     """(filename, lineno) -> Address of the enclosing call STATEMENT, with the
     enclosing function attached as .source.
 
-    Plain function (no imgui, no draw_state) so it can run on a Background thread:
-    a full-file libcst parse + PositionProvider is far too slow to run inline on
-    the render call. Finds the outermost Call covering the line so multi-line
-    calls round-trip as one statement."""
+    Plain function (no imgui, no draw_state) so it can run on a Background thread.
+    Uses the stdlib `ast` module (C-accelerated) to find the outermost Call
+    covering the line, so multi-line calls round-trip as one statement.
+
+    NOTE: do NOT use libcst's MetadataWrapper+PositionProvider here. That pass is
+    pure-Python and O(whole file); on a large caller file (new_core_view.py) it
+    took ~1.1s AND, being CPU-bound, held the GIL — starving the render thread for
+    the duration (an 800ms+ frame stall). ast.parse + ast.walk does the same span
+    lookup in single-digit ms because the parse is in C. The small per-statement
+    span is re-parsed with libcst downstream (address_to_call_parse), where the
+    cost is bounded by the statement, not the file."""
+    import ast
     filename, lineno = input_value
     path = Path(filename)
     address = Address(path, lineno - 1, lineno)  # line default
     try:
-        from libcst.metadata import MetadataWrapper, PositionProvider
-        wrapper = MetadataWrapper(cst.parse_module(path.read_text(encoding='utf-8')))
-        found = {}
-
-        class _CallFinder(cst.CSTVisitor):
-            METADATA_DEPENDENCIES = (PositionProvider,)
-
-            def visit_Call(self, node):
-                r = self.get_metadata(PositionProvider, node)
-                if r.start.line <= lineno <= r.end.line:
-                    key = (r.start.line, -r.end.line)  # outermost wins
-                    if 'key' not in found or key < found['key']:
-                        found['key'] = key
-                        found['span'] = (r.start.line, r.end.line)
-
-        wrapper.visit(_CallFinder())
-        if 'span' in found:
-            s, e = found['span']
+        tree = ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
+        best_key = None
+        span = None
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            start = node.lineno
+            end = getattr(node, 'end_lineno', None) or start
+            if start <= lineno <= end:
+                key = (start, -end)  # outermost wins
+                if best_key is None or key < best_key:
+                    best_key = key
+                    span = (start, end)
+        if span is not None:
+            s, e = span
             address = Address(path, s - 1, e)
     except Exception as ex:
         print(f"_resolve_call_address: could not resolve call span in {filename}:{lineno}: {ex}")

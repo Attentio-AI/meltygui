@@ -302,7 +302,7 @@ class DrawState(DictConversion):
         self._shadow_depth = 0
         self.shadow = True
         self.cst = None
-        self.window_pos: draw_collection(show_name=False) = (0,0)
+        self.window_pos = (0,0)
         self.window_size = None
         self._initial_window_pos = None
         self._initial_window_pos_resize = None
