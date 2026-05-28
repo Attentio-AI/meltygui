@@ -57,6 +57,7 @@ class Pin(Enum):
     render time: PARENT -> ``_parent`` (immediate render-tree parent), WINDOW ->
     ``parent_window`` (enclosing Melty window)."""
     PARENT = 'parent'
+    GRANDPARENT = 'grandparent'
     WINDOW = 'window'
     # The active clip rect (scissor test) rather than a view's box. Clamped to
     # the parent window so corners track the visible edge - e.g. bottom becomes
@@ -281,6 +282,11 @@ class DrawState(DictConversion):
         # Underscore-prefixed → not serialized.
         self._call_site = None
         self._call_site_captured = False
+        # Set by the context menu when it walks UP to this draw state via the
+        # up-arrow offset; this view never had its own menu open, so the normal
+        # context_menu_open capture gate never fired. The flag causes the next
+        # inline render will capture the call site anyway (lazy, one-shot).
+        self._call_site_requested = False
 
         self.relative_pos = None
 
@@ -308,7 +314,7 @@ class DrawState(DictConversion):
         self._imgui_is_edited = False
         self._imgui_popover_open = False
         self.imgui_is_item_activated = False
-        self.clipped = True
+        self.inside_clip = True
         self.fully_clipped = True
         self.scroll_visible = False
         self._unmanaged_window = False
@@ -595,9 +601,9 @@ class DrawState(DictConversion):
             return
 
         if self._bvh_id is None:
-            if new_bbox is not None and self.clipped:
+            if new_bbox is not None and self.inside_clip:
                 DecorationManager.melty.bvh_register(self)
-        elif not self.clipped:
+        elif not self.inside_clip:
             DecorationManager.melty.bvh_unregister(self)
         else:
             DecorationManager.melty.bvh_update(self)
@@ -628,7 +634,7 @@ class DrawState(DictConversion):
     def abs_layer(self):
 
         if self.parent_window is not None and self.closable:
-            return self.parent_window.abs_layer + 4
+            return self.parent_window.abs_layer + self._kwargs.get("layer_offset", 4)
         elif self.parent_window is not None:
             return self.parent_window.abs_layer
         else:
@@ -636,6 +642,7 @@ class DrawState(DictConversion):
 
     @property
     def abs_closed(self):
+
         if self.closed and self.closable:
             return True
 
@@ -644,6 +651,8 @@ class DrawState(DictConversion):
 
         if self.parent_window is not None:
             return self.parent_window.abs_closed
+
+
 
         return False
 
@@ -717,8 +726,9 @@ class DrawState(DictConversion):
         window's bounds. Returns None when nothing is available to pin to.
 
         When ``pin_clamp`` is set (Pin.CLIP), the resulting rect is intersected
-        with the immediate parent view (``_parent``) so each edge clamps to the
-        parent's visible bound, not the whole window.
+        with the immediate parent view's clip (``_parent``) and the parent
+        window's rect so each edge clamps to the parent's visible bound and
+        stays inside the window box.
         """
         if self.pin_target is not None:
             rect = self.pin_target.abs_clip_rect
@@ -729,15 +739,27 @@ class DrawState(DictConversion):
         else:
             return None
 
-        if self.pin_clamp and self._parent is not None and self._parent is not self:
-            # Pin.CLIP: clamp each edge to the immediate parent view's bounds so
-            # each corner tracks the visible edge, e.g. min(parent_bottom,
-            # window_bottom). Clamping the (window-level) clip snapshot against the
-            # parent view is what pins the pin in to the parent clip rather than
-            # the whole window. Live each frame even though the clip is a snapshot.
-            p = self._parent.abs_clip_rect
-            rect = (max(rect[0], p[0]), max(rect[1], p[1]),
-                    min(rect[2], p[2]), min(rect[3], p[3]))
+        if self.pin_clamp:
+            # Pin.CLIP: clamp each edge to the parent bound so the corner tracks
+            # it: e.g. min(parent_bottom, clip_bottom). Clamping the clip snapshot
+            # against the parent view's clip pulls the pin in to the parent clip
+            # rather than the whole screen. Also clamp against the parent window's
+            # rect (its box, not its clip - the window clip can be the whole
+            # screen) to keep the pin inside the window if the parent clip extends
+            # further. Live each time even though the clip is a snapshot.
+            clamps = []
+            if self._parent is not None and self._parent is not self:
+                clamps.append(self._parent.abs_clip_rect)
+            win = self.parent_window
+            if win is not None and win is not self:
+                clamps.append((win.abs_left, win.abs_top,
+                               win.abs_left + win.width, win.abs_top + win.height))
+            else:
+                print("Warning: pin_clamp is set but no parent window found; pinning to clip without clamping.")
+
+            for c in clamps:
+                rect = (max(rect[0], c[0]), max(rect[1], c[1]),
+                        min(rect[2], c[2]), min(rect[3], c[3]))
         return rect
 
     @property
@@ -792,6 +814,17 @@ class DrawState(DictConversion):
             # Pin to the clip rect corner rather than the scrolled position of
             # the declaring view (which left_offset tracks).
             this_left = window_pos_x + base[0] + anchor[0]
+            if (self.pin_clamp and self.width is not None
+                    and self.parent_window is not None and self.parent_window is not self):
+                # Box-level clamp: the rect clamp only repositions the anchor
+                # point, so if anchor_offset shifts the box its far edge can
+                # still hang off the window. Pull the box back so it stays
+                # inside the window horizontally (favoring the left edge if the
+                # box is wider than the window).
+                win = self.parent_window
+                win_left = win._abs_left(depth=depth + 1)
+                this_left = min(this_left, win_left + win.width - self.width)
+                this_left = max(this_left, win_left)
         else:
             this_left = (window_pos_x + parent_left + self.left_offset
                          + self.parent_anchor_offset[0] + anchor[0])
@@ -815,6 +848,15 @@ class DrawState(DictConversion):
             # Pin to the clip rect corner rather than the scrolled position of
             # the declaring view (which top_offset tracks).
             this_top = window_pos_y + base[1] + anchor[1]
+            if (self.pin_clamp and self.height is not None
+                    and self.parent_window is not None and self.parent_window is not self):
+                # Box-level clamp: see _abs_left. Keeps the bottom edge from
+                # hanging below the window (favoring the top edge if the box
+                # is taller than the window).
+                win = self.parent_window
+                win_top = win._abs_top(depth=depth + 1)
+                this_top = min(this_top, win_top + win.height - self.height)
+                this_top = max(this_top, win_top)
         else:
             this_top = (window_pos_y + parent_top + self.top_offset
                         + self.parent_anchor_offset[1] + anchor[1])
@@ -871,6 +913,7 @@ class DrawState(DictConversion):
     def shadow_depth(self):
         depth, active_layer = self.depth_and_layer
         return shadow_depth_at(depth, active_layer)
+
 
     @property
     def seen(self):
@@ -972,7 +1015,7 @@ class DrawState(DictConversion):
             draw_list = imgui.get_window_draw_list()
             draw_list.channels_set_current(DecorationManager.melty.get_channel())
 
-    def inside_clip(self, child_draw_state=None):
+    def is_inside_clip(self, child_draw_state=None):
         clip_rect = self.abs_clip_rect
 
         if child_draw_state is None:
@@ -984,8 +1027,8 @@ class DrawState(DictConversion):
         clip_left, clip_top, clip_right, clip_bottom = clip_rect
 
         if child_draw_state is not None:
-            left = child_draw_state.left
-            top = child_draw_state.top
+            left = child_draw_state.abs_left
+            top = child_draw_state.abs_top
             width = child_draw_state.width
             height = child_draw_state.height
 
@@ -1009,7 +1052,7 @@ class DrawState(DictConversion):
         if self.closed or not DecorationManager.melty.imgui_main_window_hovered:
             return False
 
-        if not self.clipped:
+        if not self.inside_clip:
             return False
 
         if rect is None:

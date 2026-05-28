@@ -89,8 +89,8 @@ class Mode(Enum):
 
     DROPDOWN_WINDOW = {
         (Any): ModeOverrides(
-            kwargs={"show_bg": False, "selectable": False, "min_width": 10, "wrap":True, "z_offset":0,
-                    "shadow":False, "is_tree": False, "use_cache": True},
+            kwargs={"show_bg": False, "selectable": False, "min_width": 10, "min_height":20, "wrap":True, "z_offset":0,
+                    "shadow":False, "is_tree": False, "use_cache": True, "layer_offset": 1},
             recursive=False,
             func=draw_drop_down_item
         ),
@@ -149,8 +149,8 @@ class Mode(Enum):
 
     FLOATING = {
         Any: ModeOverrides(
-            kwargs={"use_cache": True, "melty_window": False, "closable": True, "pin_to_clip": Pin.CLIP,
-                    "auto_resize": True, "draggable": True, "window_pos":(0,0), "anchor":Anchor.BOTTOM_RIGHT, "parent_anchor": Anchor.TOP_RIGHT,
+            kwargs={"use_cache": True, "melty_window": False, "closable": True, "layer_offset":1,
+                    "auto_resize": True, "draggable": True, "window_pos":(0,0), "swoosh": False,
                     "initial": {"width": 400, "height": 320, "window_pos": (0, 0)}},
 
             recursive=False

@@ -3,6 +3,7 @@ import time
 import glfw
 import imgui
 
+from src.lsd.gl_gui.model.core_model.draw_state import Anchor, Pin
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.headers import draw_header, draw_footer
 from src.lsd.gl_gui.melty import Melty, SearchTerm
@@ -1138,7 +1139,8 @@ def draw_text(input_value: str,
     
     if jump_to is not None:
         from src.lsd.gl_gui.view.mode import Mode
-        draw_jump_to(jump_to, mode=Mode.FLOATING)
+        draw_jump_to(jump_to, mode=Mode.FLOATING, anchor= Anchor.BOTTOM_RIGHT, parent_anchor= Anchor.TOP_RIGHT,
+                     pin_to_clip = Pin.CLIP)
     
 
     if changed:

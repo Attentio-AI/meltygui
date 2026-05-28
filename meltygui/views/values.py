@@ -149,7 +149,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta,
     drew_any = False
 
     start_cursor = imgui.get_cursor_pos()[1]
-    rect = Melty.get_clip_rect()
+    rect = draw_state.abs_clip_rect
 
     premature_break = False
 
@@ -450,7 +450,8 @@ def draw_property(input_value:property, draw_state, **kwargs):
 def draw_type(input_value:type, **kwargs):
     class_vars = {**{k: getattr(input_value, k) for k in vars(input_value)}}
 
-    changed, new_dict = draw_collection(class_vars, draw=True, real_type=input_value, disable_scroll=True, name=f"Class: {input_value.__name__}", tint=(0.6, 0.6, 0.1))
+    changed, new_dict = draw_collection(class_vars, real_type=input_value, disable_scroll=True,
+                                        name=f"Class: {input_value.__name__}")
 
     if changed:
         for k, v in new_dict.items():
@@ -2360,6 +2361,9 @@ def draw_tab_bar(input_value: list, tab_height=20, names=None, tint_value=0.202,
 
     pop_style_var(1)
 
+    if changed:
+        Melty.refresh_nested_windows(draw_state)
+
     return changed, selected
 
 
@@ -2458,7 +2462,19 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
         if offset_ds._parent is None:
             break
         offset_ds = offset_ds._parent
-   
+
+    # The user walked up to an ancestor (offset > 0). That ancestor never had its
+    # OWN context menu open, so the context_menu_open capture gate never ran for
+    # it and its _call_site is None - caller lenses come up empty. Ask its next
+    # inline render to capture the site (lazy, one-shot), and invalidate it so it
+    # re-renders fresh rather than from cache (where the capture line is skipped).
+    if (offset_ds is not input_value and not offset_ds._call_site_captured
+            and not offset_ds._call_site_requested):
+        offset_ds._call_site_requested = True
+        if Melty.cache is not None:
+            Melty.cache.invalidate_up(offset_ds._tile_id, max_depth=5)
+        request_render()
+
     input_value._offset_ds = offset_ds
     input_value = offset_ds
 
@@ -2543,7 +2559,6 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     if tab_changed:
         tab_state.selected_tabs = new_tabs
 
-
     for t_idx, static_tab in enumerate(tab_state.selected_tabs):
         from src.lsd.gl_gui.view.mode import Mode
         if static_tab < len(tab_names):
@@ -2551,7 +2566,6 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
                 changed, new_tint = draw_tint_context(input_value, name=f"Context Tint##{unique}", column=t_idx)
                 if changed:
                     pass
-
 
             if tab_names[static_tab] == info_icon_fa:
                 
@@ -2652,7 +2666,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
                 if _site is not None:
                     _caller_file, _caller_line = _site
                     if button(f" Caller: {Path(_caller_file).name}:{_caller_line}",
-                              height=30, draw=True, value=0.4, saturation=1.5,
+                              height=30, value=0.4, saturation=1.5,
                               column=t_idx, name="jump_to_caller")[0]:
                         from src.lsd.gl_gui.utils.jump_to_code import open_in_intellij
                         threading.Thread(

@@ -13,6 +13,7 @@ from imgui.core import _DrawList
 
 from rtree import index as rtree_index
 
+from src.lsd.gl_gui.view.attribute_churn import AttributeChurnMonitor
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import DecorationManager
 from src.lsd.gl_gui.view.invalidation_tracker import InvalidateTracker
 
@@ -331,6 +332,7 @@ class Melty:
     tile_id_stack = []
     wrap_stack = []
     previous_select = None
+    nested_window_refresh = None
 
     content_height_stack = []
 
@@ -1036,11 +1038,13 @@ class Melty:
 
     @classmethod
     def draw(cls, draw_state, cursor_pos=None, detached=False):
+
         if draw_state is None:
             return
 
         if draw_state.closed:
             return
+
         # Melty.depth = 0
         Melty.bg_depth = draw_state._bg_depth
 
@@ -1096,9 +1100,45 @@ class Melty:
             print(f"GlfwQueueBackend unavailable, keeping ImGuiBackend: {e}")
 
     @classmethod
+    def apply_refresh_nested_windows(cls, nested_window_refresh=None):
+        if nested_window_refresh is None:
+            parent_window = cls.nested_window_refresh
+            cls.nested_window_refresh = None
+
+        else:
+            parent_window = nested_window_refresh
+
+        if parent_window is None:
+            return
+
+        to_discard = set()
+
+        parent_ds_id = parent_window.id
+        ds_list = cls.root_draw_states.get(parent_ds_id, [])
+        for idx, ds in enumerate(ds_list):
+            to_discard.add((parent_ds_id, ds))
+            if ds.closable:
+                cls.apply_refresh_nested_windows(ds)
+
+        for ds_id, discard_ds in to_discard:
+            cls.root_draw_states[ds_id].remove(discard_ds)
+
+        Melty.cache.invalidate_up(parent_window._tile_id,
+                                  max_depth=10, force=True)
+
+
+    @classmethod
+    def refresh_nested_windows(cls, draw_state):
+        parent_window = draw_state.parent_window if draw_state.parent_window is not None else \
+        Melty.melty_window_stack[
+            -1] if len(Melty.melty_window_stack) > 0 else draw_state
+        cls.nested_window_refresh = parent_window
+
+    @classmethod
     def end_frame(cls):
         cls.apply_move_to_front()
 
+        cls.apply_refresh_nested_windows()
         # Reset overlay routing to the top (global, unmasked) channel so
         # end_frame draws - FPS counter, selection rects, debug text - don't
         # accidentally land on whatever per-window channel a view last set.
@@ -1110,7 +1150,6 @@ class Melty:
         from src.lsd.gl_gui.view.mode import Mode
         from src.lsd.gl_gui.view.core_views.new_core_view import draw_with_modes
         draw_with_modes(Counters, name="counters", modes=(Mode.CODE_UI, Mode.CODE_PLAIN_TEXT), mode=Mode.WINDOW)
-
 
         if Toggles.debug_z_depth:
             draw_state = list(cls.selected)[-1] if len(cls.selected) > 0 else None
@@ -1131,7 +1170,6 @@ class Melty:
         to_discard = set()
 
         for parent_ds_id, ds_list in cls.root_draw_states.items():
-
             for idx, ds in enumerate(ds_list):
                 if ds.abs_closed or ds.closed:
                     to_discard.add((parent_ds_id, ds))
@@ -1249,11 +1287,11 @@ class Melty:
                         child_highlight = (overlay_dl, offset_ds,
                                            outline_col, highlight_rgb, parent_clip)
 
-
                 if not Melty.channels_split:
                     imgui.get_window_draw_list().channels_split(Melty.max_depth)
                     imgui.get_window_draw_list().channels_set_current(min(Melty.active_layer, Melty.max_depth - 1))
                     Melty.channels_split = True
+
 
                 if draw_state.unique not in cls.seen_unique:
                     cls.draw(draw_state)
@@ -1506,6 +1544,7 @@ class Melty:
         pass
 
         InvalidateTracker.on_frame_end()
+        AttributeChurnMonitor.on_frame_end()
 
     @classmethod
     def get_latest_mouse(cls):

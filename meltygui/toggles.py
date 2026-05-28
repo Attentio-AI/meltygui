@@ -7,6 +7,7 @@ class Counters:
     # Nested window
     nested_window_count = 16
 
+
 @window
 class Tint:
     # Context menu tints
@@ -50,13 +51,13 @@ class Swoosh:
     some_dict = [1,1,1,1]
 
 
-# [tint=(0.5674418, 0.2077406644821167, 0.08709574)]
 @window(tint=(0.9, 0.4, 0.0))
 class Toggles:
     # Invalidation settings
     invalidate_stack_trace = False
     text_focus_stack_trace = False
     attrib_change_stack_trace = False
+    attrib_churn_log = False
     debug_threads = False
     slow_down_threads = False
     render_depth = False

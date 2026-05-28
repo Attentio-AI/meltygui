@@ -5,6 +5,7 @@ import re
 import libcst as cst
 
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import exclude
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
 
 # ==============================
 # Formatting & whitespace constants
@@ -586,7 +587,6 @@ class CSTDictProxy(dict):
 
 @exclude(["star", "header", "lpar", "rpar", "footer", "comma", "lbracket", "rbracket", "default_newline", "default_indent", "encoding", "has_trailing_newline"])
 class CSTProxy:
-    __slots__ = ("_node", "_field_names", "_dirty", "_parent", "_parent_field", "_error", "__dict__")
 
     def __init__(self, node: cst.CSTNode):
         object.__setattr__(self, "_node", node)

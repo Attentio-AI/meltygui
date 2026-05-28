@@ -21,7 +21,7 @@ import libcst as cst
 
 from src.lsd.gl_gui.melty import FileWatch, Melty
 from src.lsd.gl_gui.background import Background
-from src.lsd.gl_gui.model.core_model.draw_state import Pin
+from src.lsd.gl_gui.model.core_model.draw_state import Pin, Anchor
 from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
 from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
@@ -512,7 +512,7 @@ def address_to_general_parse(input_value: Address, pending=False, unique=None, c
     from src.lsd.gl_gui.view.core_views.new_core_view import button
     file_name = input_value.path.name if input_value.path is not None else "Unknown file"
     folder_icon = ""
-    if button(f"{folder_icon} {file_name}", height=30, draw=True, value=0.4, saturation=1.5)[0]:
+    if button(f"{folder_icon} {file_name}", height=30, value=0.4, saturation=1.5)[0]:
         from src.lsd.gl_gui.utils.jump_to_code import open_in_intellij
         line_number = input_value.start + 1 if input_value.start is not None else None
         threading.Thread(
@@ -603,7 +603,7 @@ def general_parse_to_address(input_value: GeneralParse=None, pending=False, draw
             recompiled, _ = run_button(do_recompile, clicked=recompile and pending, name=f"do_recompile{unique}",
                         with_kwargs={"input_value": address.source,
                                  "code_str": code_str,
-                                 "file_path": address.path})
+                                 "file_path": address.path}, mode=Mode.FLOATING, pin_to_clip=Pin.CLIP, parent_anchor=Anchor.BOTTOM_LEFT)
             if recompiled:
                 record_compile(address)
                 # Refresh the cached file path node so its compiled indicator updates.
@@ -669,7 +669,7 @@ def focus(input_value, path=(), default=None, kind=None, draw_state=None, unique
     this frame only. The reverse direction works because we keep the parent
     container in the value — the same move Address makes by carrying `.source`.
 
-    Handles dict-key and attribute access uniformly, so the same node focuses a
+    Handles dict-key and attribute access uniformly, so the same node focuses aj
     GeneralParse dict (code-comment / decoration tint), a draw_state, or a data
     class instance.
     """

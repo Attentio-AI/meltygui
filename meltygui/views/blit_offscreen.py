@@ -810,10 +810,10 @@ class TileCacheMasked:
         if parent_draw_state is not None and parent_draw_state._print_last_invalid:
             print_stack_trace()
         for top, child, child_draw_state in child_keys_list:
-            inside_clip, below, above = parent_draw_state.inside_clip(child_draw_state)
+            inside_clip, below, above = parent_draw_state.is_inside_clip(child_draw_state)
             if child_draw_state is not None and child_draw_state._print_last_invalid:
                 print_stack_trace()
-            if child_draw_state.clipped and inside_clip:
+            if child_draw_state.inside_clip and inside_clip:
                 if child != k:
                     pt = self._tiles.get(child)
                     if pt is not None:
@@ -971,6 +971,7 @@ class TileCacheMasked:
 
         for key in needs_invalidate:
             draw_state = self.key_to_draw_state.get(key, None)
+
             self.invalidate_up(key, force=True, max_depth=20)
 
         if needs_invalidate:

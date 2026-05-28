@@ -2542,7 +2542,20 @@ def _patch_decorators(func_node, dec_edits):
             edit_sub = dict(edits[func_name])
             kw_pairs = {k: v for k, v in edit_sub.items() if not _is_dunder(k)}
             if not kw_pairs:
-                # Last kwarg removed → drop the decorator entirely (delete).
+                # No kwargs in the edited dict. "Empties → delete" only holds for a
+                # decorator the UI actually modeled: a KEYWORD-arg decorator like
+                # @defaults(tint=...). A decorator with positional args (e.g.
+                # @deep_save("a","b"), @deep_refresh("x")) has no kwargs to begin with
+                # - cst_call_to_dict surfaces none - so an empty kw_pairs is NOT a
+                # delete; dropping it here silently ate all decorators on any
+                # round-trip. Preserve such decorators untouched; only drop a truly
+                # keyword-only decorator whose kwargs were all removed.
+                has_positional = isinstance(dec.decorator, cst.Call) and any(
+                    a.keyword is None for a in dec.decorator.args)
+                if has_positional:
+                    new_decorators.append(dec)
+                    continue
+                # Keyword-only decorator, everything removed → real delete.
                 changed = True
                 continue
             edit_sub["__cst__"] = dec.decorator
