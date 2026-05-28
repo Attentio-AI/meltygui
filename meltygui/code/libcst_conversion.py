@@ -1091,10 +1091,15 @@ def dict_to_cst_dict(value: dict) -> cst.Dict:
 
 @register
 def cst_list_to_list(value: cst.List) -> list:
+    """Skip `*splat` elements — can't express them as plain Python values; the
+    write side preserves them in place. Mirrors cst_dict_to_dict's handling of
+    `**splat`. Previously we appended `_cst_node_to_code(el)` (which includes the
+    trailing comma!), and _patch_sequence re-parsed that string as `_ = *x,` —
+    successfully, as a 1-tuple — then assigned the resulting Tuple back into the
+    outer StarredElement.value, doubling the star (`*x` → `**x,,`)."""
     result = []
     for el in value.elements:
         if isinstance(el, cst.StarredElement):
-            result.append(_cst_node_to_code(el))
             continue
         result.append(_cst_to_python_or_raw(el.value))
     return result
@@ -1116,10 +1121,11 @@ def list_to_cst_list(value: list) -> cst.List:
 
 @register
 def cst_tuple_to_tuple(value: cst.Tuple) -> tuple:
+    """Skip `*splat` elements — see cst_list_to_list for the reasoning. The
+    write side (_patch_sequence) preserves them in their original positions."""
     result = []
     for el in value.elements:
         if isinstance(el, cst.StarredElement):
-            result.append(_cst_node_to_code(el))
             continue
         result.append(_cst_to_python_or_raw(el.value))
     return tuple(result)
@@ -3330,18 +3336,24 @@ def _patch_sequence(py_values, old_node, node_cls):
     """Patch a cst.List or cst.Tuple in-place, preserving comma formatting.
 
     Walks old elements in parallel with new Python values:
-      - Surviving positions: update value, keep comma/whitespace
-      - New positions (list grew): clone comma style from last old element
-      - Removed positions (list shrank): drop extras
+      - Surviving non-starred positions: update value, keep comma/whitespace
+      - StarredElement positions (`*x`): pass through unchanged in place — they
+        don't appear in py_values (cst_tuple/list_to_tuple skip them), so they
+        aren't matched against py_values, just preserved
+      - New positions (sequence grew): appended at the end, comma cloned
+      - Removed positions (sequence shrank): drop trailing non-starred slots
       - Last element: strip trailing comma only if original had none
     """
     old_els = list(old_node.elements)
     new_els = []
 
-    # Determine which comma style to clone for new/promoted elements.
-    # Use the first non-last element's comma (inner comma).
+    # Determine the comma style to clone for new/promoted elements. Get it from
+    # the first non-starred element (a starred element's whitespace may differ).
+    non_starred_old = [el for el in old_els if not isinstance(el, cst.StarredElement)]
     inner_comma = cst.Comma(whitespace_after=cst.SimpleWhitespace(""))
-    if len(old_els) >= 2:
+    if len(non_starred_old) >= 2:
+        inner_comma = non_starred_old[0].comma
+    elif len(old_els) >= 2:
         inner_comma = old_els[0].comma
 
     # Did the original have a trailing comma on its last element?
@@ -3349,20 +3361,28 @@ def _patch_sequence(py_values, old_node, node_cls):
     if old_els and not isinstance(old_els[-1].comma, cst.MaybeSentinel):
         had_trailing = True
 
-    for i, py_val in enumerate(py_values):
-        if i < len(old_els):
-            # Surviving position - keep comma, update value
-            old_el = old_els[i]
-            new_value = _python_to_cst_expr(py_val, old_el.value)
-            if new_value is None:
-                new_value = old_el.value
-            new_els.append(old_el.with_changes(value=new_value))
-        else:
-            # New position - build element, clone inner comma
-            new_value = _python_to_cst_expr(py_val)
-            if new_value is None:
-                continue
-            new_els.append(cst.Element(value=new_value, comma=inner_comma))
+    # Walk old_els; advance py_values only for non-starred slots. Starred
+    # elements (`*x`) pass through unchanged at their original positions.
+    py_iter = iter(py_values)
+    py_exhausted = object()
+    for old_el in old_els:
+        if isinstance(old_el, cst.StarredElement):
+            new_els.append(old_el)
+            continue
+        py_val = next(py_iter, py_exhausted)
+        if py_val is py_exhausted:
+            continue  # this non-starred slot was dropped
+        new_value = _python_to_cst_expr(py_val, old_el.value)
+        if new_value is None:
+            new_value = old_el.value
+        new_els.append(old_el.with_changes(value=new_value))
+
+    # Any py_values left over → new slots appended at the end.
+    for py_val in py_iter:
+        new_value = _python_to_cst_expr(py_val)
+        if new_value is None:
+            continue
+        new_els.append(cst.Element(value=new_value, comma=inner_comma))
 
     # Ensure every non-last element has a real comma.
     # (Old last element had MaybeSentinel.DEFAULT and is no longer last.)

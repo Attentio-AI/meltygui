@@ -617,7 +617,7 @@ class Melty:
             for rid in cls._bvh.intersection((x, y, x, y))
             if rid in cls._bvh_id_to_ds and (not cls._bvh_id_to_ds[rid].closed or not cls._bvh_id_to_ds[rid].closable)
         ]
-        hits.sort(key=lambda ds: ds.shadow_depth or 0, reverse=True)
+        hits.sort(key=lambda ds: ds.z_pos or 0, reverse=True)
         return hits
 
     @classmethod
@@ -715,17 +715,22 @@ class Melty:
         mouse_pos = imgui.get_mouse_pos()
         ds_under_mouse = Melty.bvh_query(mouse_pos[0], mouse_pos[1])
         cls.bvh_hover_ids = {id(ds) for ds in ds_under_mouse}
-        # cls.hovered_ds = ds_under_mouse if ds_under_mouse else []
+
+        last_hovered = cls.hovered_ds
+        cls.hovered_ds = ds_under_mouse[0] if ds_under_mouse else None
         # for ds in ds_under_mouse:
         #     ds._hover_eligible = Melty.frame_count
         #
+        # if cls.hovered_ds is not None and not cls.on_drag:
+        #     if (not cls.on_drag and not imgui.is_mouse_down(2)):
+        #         Melty.cache.invalidate(cls.hovered_ds._parent._tile_id, do_store=False, force=True)
 
-        ds = ds_under_mouse[0] if ds_under_mouse else None
-        if ds is not None and not cls.on_drag:
-            ds._bounding_hovered = True
-            # if (not cls.on_drag and not imgui.is_mouse_down(2)):
-            Melty.cache.invalidate(ds._tile_id, do_store=False, force=True)
-
+        hovered_id = id(cls.hovered_ds) if cls.hovered_ds is not None else None
+        last_hovered_id = id(last_hovered) if last_hovered is not None else None
+        #
+        # if hovered_id != last_hovered_id:
+        #     if last_hovered is not None:
+        #         Melty.cache.invalidate(last_hovered, do_store=False, force=True)
 
         cls.backend.pump()
 
@@ -809,8 +814,11 @@ class Melty:
 
         for view_id, evts in cls.events.items():
             first_event = list(evts.values())[0]
-            if first_event.tile_id is not None and not imgui.is_mouse_down(0) and not imgui.is_mouse_down(1) and not imgui.is_mouse_down(2) and not cls.on_scroll:
-                Melty.cache.invalidate_up(first_event.tile_id, max_depth=10, force=True)
+            if first_event.tile_id != "hovered":
+                if (first_event.tile_id is not None and not imgui.is_mouse_down(0) and not imgui.is_mouse_down(1)
+                        and not imgui.is_mouse_down(2) and not cls.on_scroll):
+                        print(first_event)
+                        Melty.cache.invalidate_up(first_event.tile_id, max_depth=6, force=True)
 
         Melty.all_uniques = set()
 

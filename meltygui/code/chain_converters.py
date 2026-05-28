@@ -204,7 +204,6 @@ def class_to_address(input_value: type, draw_state, changed=False):
                           start_lineno - 1 + len(source_lines), source=input_value,
                           watcher_ds=draw_state)
         draw_state._addr_cache = (input_value, mtime, address)
-        print(f"[class_to_address] Resolved address for {input_value.__name__} in {source_file}: lines {address.start}-{address.end}")
         return changed, address
     except (TypeError, OSError, tokenize.TokenError, SyntaxError):
         return changed, None
@@ -603,7 +602,9 @@ def general_parse_to_address(input_value: GeneralParse=None, pending=False, draw
             recompiled, _ = run_button(do_recompile, clicked=recompile and pending, name=f"do_recompile{unique}",
                         with_kwargs={"input_value": address.source,
                                  "code_str": code_str,
-                                 "file_path": address.path}, mode=Mode.FLOATING, pin_to_clip=Pin.CLIP, parent_anchor=Anchor.BOTTOM_LEFT)
+                                 "file_path": address.path}, mode=Mode.FLOATING, pin_to_clip=Pin.PARENT,
+                                       parent_anchor=Anchor.BOTTOM_LEFT,
+                                       tint=(0.141828, 0.6, 0.7))
             if recompiled:
                 record_compile(address)
                 # Refresh the cached file path node so its compiled indicator updates.
@@ -643,7 +644,7 @@ def _focus_set(obj, key, value):
         setattr(obj, key, value)
 
 
-@render_func(use_cache=False, show_bg=False, selectable=False, is_tree=False)
+@render_func(use_cache=False, show_bg=False, selectable=False, is_tree=False, with_header=draw_header)
 def focus(input_value, path=(), default=None, kind=None, draw_state=None, unique=None, changed=False, **kwargs):
     """Descend a STATIC key `path` into `input_value` to a single leaf, render
     that leaf with its normal renderer (draw_tuple, for a tint), and write any

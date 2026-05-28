@@ -184,10 +184,10 @@ class TileMode(Enum):
 
 @no_save("mouse_btn_state", "mouse_up", "mouse_down", "unique", "search_active",
          "shadow", "size_change", "drag_released", "clicked", "dragged", "clipped_by_rect",
-         "dragged", "expanded_height", "clipped", "fully_clipped",  "header_height",
+         "dragged", "expanded_height", "clipped", "fully_clipped",  "header_height", "inside_clip", "layer",
          "overhead_time", "scroll_visible", "depth_and_layer", "imgui_is_toggled_open", "top", "left",
          "hotkey_receiver", "use_child", "cst", "search_text", "bg_color", "depth", "z_pos",
-         "is_active", "clip_rect", "wrapped_top", "current_tint", "wrapped_left", "multi_line",
+         "is_active", "clip_rect", "wrapped_top", "current_tint", "wrapped_left", "multi_line", "content_height",
          "min_width", "min_height", "is_focused", "drag_window_pos_x", "drag_window_pos_y", "corner_radius",
          "drag_mode", "is_hovered_last", "bg_shown", "draw_window_pos_x", "z_offset", "content_width", "melty_window",
          "misc_used", "draw_window_pos_y", "drag_delta", "screen_pos", "hover_rects", "melty_window", "auto_resize",
@@ -1107,7 +1107,7 @@ class DrawState(DictConversion):
 
         if self.hover_eligible(rect):
             if priority is None:
-                max_layer_depth = DecorationManager.melty.max_depth * DecorationManager.melty.max_layer + DecorationManager.melty.max_depth
+                max_layer_depth = DecorationManager.melty.max_depth * DecorationManager.melty.max_depth + DecorationManager.melty.max_depth
                 layer_and_depth = DecorationManager.melty.active_layer * DecorationManager.melty.max_depth + DecorationManager.melty.depth
                 priority = max_layer_depth - layer_and_depth
 

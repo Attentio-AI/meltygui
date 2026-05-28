@@ -51,7 +51,7 @@ class Swoosh:
     some_dict = [1,1,1,1]
 
 
-@window(tint=(0.9, 0.4, 0.0))
+@window(tint=(0.5, 0.3, 0.0))
 class Toggles:
     # Invalidation settings
     invalidate_stack_trace = False
@@ -62,14 +62,14 @@ class Toggles:
     slow_down_threads = False
     render_depth = False
     ds_invalidate_stack = False
-    profile_mode = ProfileMode.LIGHT
+    profile_mode = ProfileMode.ON
     debug_stale_tint = False
     show_line_break = True
     # Filter SettingS
-    brightness = 0.22
-    contrast = 1.422
+    brightness = 0.313
+    contrast = 1.565
     saturation = -0.4
-    prefered_header_width = 77
+    prefered_header_width = 160
     max_preferred_header_width = 20
     
     debug_z_depth = False

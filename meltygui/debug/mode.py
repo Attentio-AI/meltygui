@@ -139,9 +139,22 @@ class Mode(Enum):
             kwargs={"show_bg":True, "selectable":False, "use_cache":True, "melty_window":False, "closable":True,
                     "with_header_end":draw_header_end, "auto_resize":False, "draggable":True, 'shadow':True,
                     "show_tint":True, "show_header":True, "with_footer":draw_footer, 'indent_size':5,
-                    "disable_scroll":False, "searchable": True,
+                     "searchable": True, "disable_scroll": False,
                    "show_add_delete":False, "with_header":draw_header, "min_width": 200, "min_height": 60,
                     "initial":{"width": 400, "height": 320, "window_pos": (100, 500)}},
+
+            recursive=False
+        )
+    }
+
+    MODE_WINDOW = {
+        Any: ModeOverrides(
+            kwargs={"show_bg": True, "selectable": False, "use_cache": True, "melty_window": False, "closable": True,
+                    "with_header_end": draw_header_end, "auto_resize": False, "draggable": True, 'shadow': True,
+                    "show_tint": True, "show_header": True, "with_footer": draw_footer, 'indent_size': 5,
+                    "searchable": True, "disable_scroll": True,
+                    "show_add_delete": False, "with_header": draw_header, "min_width": 200, "min_height": 60,
+                    "initial": {"width": 400, "height": 320, "window_pos": (100, 500)}},
 
             recursive=False
         )
@@ -151,6 +164,7 @@ class Mode(Enum):
         Any: ModeOverrides(
             kwargs={"use_cache": True, "melty_window": False, "closable": True, "layer_offset":1,
                     "auto_resize": True, "draggable": True, "window_pos":(0,0), "swoosh": False,
+                    "inline": True,
                     "initial": {"width": 400, "height": 320, "window_pos": (0, 0)}},
 
             recursive=False
@@ -230,22 +244,16 @@ class Mode(Enum):
         types.FunctionType: ModeOverrides(
             recursive=True,
             route={function_to_address: "jump_to"},
-            func=(function_to_address,
-                  *draw_text_funcs,
-                  address_to_function),
+            func=(function_to_address,*draw_text_funcs,address_to_function),
         ),
         types.ModuleType: ModeOverrides(
             recursive=True,
             route={module_to_address : "jump_to"},
-            func=(module_to_address,
-                  *draw_text_funcs,
-                  address_to_module),
+            func=(module_to_address,*draw_text_funcs, address_to_module),
         ),
         type: ModeOverrides(
             route={class_to_address: "jump_to"},
-            func=(class_to_address,
-                  *draw_text_funcs,
-                  address_to_class),
+            func=(class_to_address,*draw_text_funcs, address_to_class),
             recursive=True
         ),
     }

@@ -439,7 +439,7 @@ def render_func(*args, **o_kwargs):
 
         window_key = tile_id
         draw_state.persistent = kwargs.get("persistent", True)
-        if draw_state.kwargs is not None and draw_state.kwargs.temp:
+        if kwargs.get("temp", False):
             draw_state.dlt_count = 0
 
         computed_unique = unique
@@ -611,11 +611,12 @@ def render_func(*args, **o_kwargs):
             if Melty.frame_count > 2 and draw_state.frame_count > 2:
                 if isinstance(input_value, (type(None), int, float, str, bool, tuple, set)):
                     if draw_state._raw_input_value != input_value:
-                        Melty.cache.invalidate_up(draw_state._tile_id, max_depth=7)
                         if kwargs.get("collection", None) is not None:
                             Melty.cache.invalidate_up_by_obj(collection, name=name, max_depth=5)
                             Melty.last_attr = draw_state.name
                             request_render()
+                        else:
+                            Melty.cache.invalidate_up(draw_state._tile_id, max_depth=4)
 
         kwargs['return_extras'] = False
 
@@ -1275,7 +1276,8 @@ def render_func(*args, **o_kwargs):
                 hits = Melty.bvh_query(mouse_x, mouse_y)
                 my_depth = draw_state.shadow_depth
                 for ds in hits:
-                    if ds.closable and ds is not draw_state and ds.shadow_depth > my_depth:
+                    parent_window = draw_state.parent_window if draw_state.parent_window is not None else None
+                    if ds.closable and ds is not draw_state and ds is not parent_window and ds.shadow_depth > my_depth:
                         new_bounding_hovered = False
                         break
 
@@ -1283,7 +1285,7 @@ def render_func(*args, **o_kwargs):
             draw_state._bounding_hovered = new_bounding_hovered
             if (draw_state.width is None or draw_state.height is None or hover_changed or
                     draw_state._bounding_hovered or draw_state._imgui_popover_open):
-                if (not Melty.on_drag and not imgui.is_mouse_down(2) and not imgui.is_mouse_down(1)):
+                if (not Melty.on_drag and not imgui.is_mouse_dragging(2) and not imgui.is_mouse_dragging(1)):
                     if not draw_state.just_shadow:
                         Melty.cache.invalidate(tile_id, do_store=False, force=True)
 
@@ -1390,14 +1392,10 @@ def render_func(*args, **o_kwargs):
 
             # Push search term to stack so child views can apply search converters
 
-            content_rect = (0, 0)
             draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer)
             _pushed_search = False
 
             if Melty.cache.mark_start_offscreen(draw_state=draw_state):
-
-                # imgui.get_overlay_draw_list().channels_set_current(draw_state.window_index + 1)
-
                 if style_manager is not None:
                     draw_state.current_tint = style_manager.get_tint()
 
@@ -2012,8 +2010,8 @@ def render_func(*args, **o_kwargs):
                                                                    alpha=1.0)
                         returned_val = draw_context_menu(input_value=draw_state, mode=Mode.WINDOW_NO_HEADER, func=func,
                                                          tint=mixed_color, show_tint=False, show_add_delete=False,
-                                                         min_width=100, min_height=100, disable_scroll=True,
-                                                         persistent=False, anchor=Anchor.TOP_LEFT,
+                                                         min_width=100, min_height=100, disable_scroll=True, pin_to_clip=Pin.PARENT,
+                                                         persistent=False, anchor=Anchor.TOP_LEFT, parent_anchor=Anchor.TOP_RIGHT,
                                                          bg_offset=Tint.context_menu_bg_offset,
                                                          with_footer=None, use_cache=True,
                                                          name=f"{name}##context_menu_{unique}", auto_resize=False,
@@ -2214,7 +2212,7 @@ def render_func(*args, **o_kwargs):
                 if hover_eligible:
                     if closable:
                         Melty.any_window_hovered_pending = True
-                    max_layer_depth = Melty.max_depth * Melty.max_layer + Melty.max_depth
+                    max_layer_depth = Melty.max_depth * Melty.max_depth + Melty.max_depth
                     priority = max_layer_depth - draw_state.z_pos
                     event_names = copy(wanted_params)
 
@@ -2565,34 +2563,6 @@ def render_func(*args, **o_kwargs):
             if use_cache:
                 Melty.cache.mark_end_offscreen()
 
-
-
-
-
-            # if draw_state._save_pending_obj is not None and draw_state._save_pending_obj.originated in auto_apply:
-            #     # draw_state._apply_save = draw_state._save_pending_obj.originated
-            #     # Melty.cache.invalidate_up(draw_state._parent._tile_id, force=True)
-            #     # Melty.cache.invalidate_up_by_obj(draw_state._raw_input_value, force=True)
-            #
-            #     request_render()
-            #
-            # if draw_state._internal_pending is not None and draw_state._internal_pending.originated in auto_apply:
-            #     # draw_state._apply_load = draw_state._internal_pending.originated
-            #     # Melty.cache.invalidate_up(draw_state._parent._tile_id, force=True)
-            #     # Melty.cache.invalidate_up_by_obj(draw_state._raw_input_value, force=True)
-            #
-            #     request_render()
-
-            #
-            # if draw_state._apply_save is not None:
-            #     Melty.cache.invalidate(draw_state._parent._tile_id, force=True)
-            #     Melty.cache.invalidate(draw_state._tile_id, force=True)
-            #     request_render()
-            #
-            # if draw_state._apply_load is not None:
-            #     Melty.cache.invalidate(draw_state._parent._tile_id, force=True)
-            #     Melty.cache.invalidate(draw_state._tile_id, force=True)
-            #     request_render()
 
             if _has_imgui:
                 if closable:
@@ -2946,7 +2916,6 @@ def render_func(*args, **o_kwargs):
                                          start_cursor[1] - scroll_offset[1]))
 
         # If we are using the new callback header, gate rendering behind expanded
-        Melty.silence_invalidate = False
         if draw_state.expanded:
             is_primitive = input_value is None or isinstance(input_value,
                                                              (int, float, str, bool, tuple)) and not hasattr(
@@ -2983,7 +2952,12 @@ def render_func(*args, **o_kwargs):
                         return_value.originated = wrapper
                         return_value = False, return_value
                 else:
+
+                    Melty.silence_invalidate = False
+
                     return_value = func(**clean_args)
+
+                    Melty.silence_invalidate = True
 
                 ################################################################################################
                 imgui.set_item_allow_overlap()
