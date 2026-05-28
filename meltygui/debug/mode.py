@@ -177,7 +177,7 @@ class Mode(Enum):
                     "melty_window":True, "closable":True,
                     "auto_resize":True, "is_tree":False, "show_tint":False, "show_header":True,
                     "disable_scroll":False, "searchable": True,
-                    "initial": {"width": 400, "height": 320}},
+                    "initial": {"width": 400}},
             recursive=False
         )
     }

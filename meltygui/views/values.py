@@ -2067,9 +2067,9 @@ def draw_float_ctx(input_value):
 
 
 
-@render_func(is_default_for=float, use_cache=False, shadow=False,
-             is_tree=False, show_bg=False, wrap=False, min_width=60,
-             with_header=draw_header, with_header_end=draw_header_end, temp=True)
+@render_func(is_default_for=float, use_cache=True, shadow=False,
+             is_tree=False, show_bg=False, min_width=60,
+             with_header=draw_header, temp=True)
 def draw_float(input_value: float, 
                draw_state,
                min_value=-100.0, 
@@ -2208,9 +2208,6 @@ def draw_function(input_value, name, draw_state, unique):
         imgui.text(f"Error inspecting function parameters: {e}")
         draw_state.params = {}
 
-    # push_style_var(imgui.STYLE_ITEM_SPACING, (4, 0))
-    # push_style_var(imgui.STYLE_FRAME_PADDING, (6, 6))
-    # push_style_var(imgui.STYLE_FRAME_ROUNDING, 4)
 
     if imgui.button(f"{input_value.__name__}##{unique}"):
         try:
@@ -2571,7 +2568,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
             if tab_names[static_tab] == info_icon_fa:
                 
                 changed, watch = draw_text(draw_state.watch, tint=(0.1, 0.01, 0.4),
-                                          name="Watch", column=t_idx, immediate_return=True, editable=True, show_bg=True)
+                                          name="Watch##{unique}", column=t_idx, immediate_return=True, editable=True, show_bg=True)
                 if changed:
                     draw_state.watch = watch
                 if draw_state.watch in input_value._kwargs:
@@ -2581,7 +2578,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
                 else:
                     item_value = 'Not found'
 
-                text(str(item_value), show_bg=False, tint=(0.1, 0.01, 0.4), wrap=False, name=f"{draw_state.watch}",
+                text(str(item_value), show_bg=False, tint=(0.1, 0.01, 0.4), wrap=False, name=f"{draw_state.watch}##it",
                      column=t_idx, editable=False)
 
 

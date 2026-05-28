@@ -288,6 +288,25 @@ class DrawState(DictConversion):
         # inline render will capture the call site anyway (lazy, one-shot).
         self._call_site_requested = False
 
+        # Per-frame caches for the position/clip chain. abs_left/abs_top/abs_clip_rect/
+        # pin_rect/clip_anchor_base are pure functions of the draw_state tree but were
+        # recomputed many times per frame (the left property is hit by parent walks,
+        # pin clamping, clip checks, and BVH lookups), with each computation re-walking
+        # the parent chain. With pin_clamp the recursion compounded - ~600K _abs_left
+        # calls per ~25 draw_tint_context frames in practice. Cache by frame_count;
+        # the recursive internal walks all go through the cached property so an
+        # ancestor's value is computed at most once per frame.
+        self._abs_left_frame = -1
+        self._abs_left_cache = 0
+        self._abs_top_frame = -1
+        self._abs_top_cache = 0
+        self._abs_clip_rect_frame = -1
+        self._abs_clip_rect_cache = None
+        self._pin_rect_frame = -1
+        self._pin_rect_cache = None
+        self._clip_anchor_base_frame = -1
+        self._clip_anchor_base_cache = None
+
         self.relative_pos = None
 
         self._first_draw_state = None
@@ -730,6 +749,13 @@ class DrawState(DictConversion):
         window's rect so each edge clamps to the parent's visible bound and
         stays inside the window box.
         """
+        f = DecorationManager.melty.frame_count
+        if self._pin_rect_frame == f:
+            return self._pin_rect_cache
+        # Mark BEFORE recursion so a re-entrant pin_rect (via abs_clip_rect →
+        # pin_rect → ... cycle on a self-referential pin chain) returns the prior
+        # frame's value rather than recursing forever.
+        self._pin_rect_frame = f
         if self.pin_target is not None:
             rect = self.pin_target.abs_clip_rect
         elif self.pin_clip_rect is not None:
@@ -737,6 +763,7 @@ class DrawState(DictConversion):
         elif self.parent_window is not None and self.parent_window is not self:
             rect = self.parent_window.abs_clip_rect
         else:
+            self._pin_rect_cache = None
             return None
 
         if self.pin_clamp:
@@ -760,6 +787,7 @@ class DrawState(DictConversion):
             for c in clamps:
                 rect = (max(rect[0], c[0]), max(rect[1], c[1]),
                         min(rect[2], c[2]), min(rect[3], c[3]))
+        self._pin_rect_cache = rect
         return rect
 
     @property
@@ -774,8 +802,13 @@ class DrawState(DictConversion):
         With both at the TOP_LEFT default the window's top-left sits on the
         target's top-left. Tracks the target regardless of how it scrolls.
         """
+        f = DecorationManager.melty.frame_count
+        if self._clip_anchor_base_frame == f:
+            return self._clip_anchor_base_cache
+        self._clip_anchor_base_frame = f
         clip = self.pin_rect
         if clip is None:
+            self._clip_anchor_base_cache = None
             return None
         clip_left, clip_top, clip_right, clip_bottom = clip
 
@@ -793,20 +826,23 @@ class DrawState(DictConversion):
         else:  # vertically centered
             base_y = (clip_top + clip_bottom) / 2
 
-        return (base_x, base_y)
+        result = (base_x, base_y)
+        self._clip_anchor_base_cache = result
+        return result
 
-    def _abs_left(self, depth=0):
+    def _abs_left(self):
+        # Recursive parent walks go through `parent_window.abs_left` (a cached
+        # property), so once an ancestor's abs_left is cached for this frame, the
+        # walk short-circuits, collapsing the O(depth * widgets) recompute back
+        # to O(widgets). The previous `depth>10` print_stack_trace safety is no
+        # longer needed: pin_rect/clip_anchor_base/abs_left/abs_top all mark
+        # their frame BEFORE computing, so any cycle hits the cached value (prior
+        # frame's) and returns rather than recursing.
         parent_left = 0
-        if depth > 10:
-            print_stack_trace()
-        else:
-            if self.parent_window is not None and self.parent_window is not self:
-                parent_left = self.parent_window._abs_left(depth=depth + 1)
-            elif not self.closable:
-                parent_left = 0
+        if self.parent_window is not None and self.parent_window is not self:
+            parent_left = self.parent_window.abs_left
 
         window_pos_x = self.window_pos[0] if self.window_pos is not None else 0
-        # this_left_offset = self.left_offset if not self.melty_window else window_pos_x
         anchor = self.anchor_offset
 
         base = self.clip_anchor_base if self.pin_to_clip else None
@@ -822,7 +858,7 @@ class DrawState(DictConversion):
                 # inside the window horizontally (favoring the left edge if the
                 # box is wider than the window).
                 win = self.parent_window
-                win_left = win._abs_left(depth=depth + 1)
+                win_left = win.abs_left
                 this_left = min(this_left, win_left + win.width - self.width)
                 this_left = max(this_left, win_left)
         else:
@@ -830,15 +866,10 @@ class DrawState(DictConversion):
                          + self.parent_anchor_offset[0] + anchor[0])
         return int(this_left)
 
-    def _abs_top(self, depth=0):
+    def _abs_top(self):
         parent_top = 0
-        if depth > 10:
-            print_stack_trace()
-        else:
-            if self.parent_window is not None and self.parent_window is not self:
-                parent_top = self.parent_window._abs_top(depth=depth + 1)
-            elif not self.closable:
-                parent_top = 0
+        if self.parent_window is not None and self.parent_window is not self:
+            parent_top = self.parent_window.abs_top
 
         anchor = self.anchor_offset
         window_pos_y = self.window_pos[1] if self.window_pos is not None else 0
@@ -854,7 +885,7 @@ class DrawState(DictConversion):
                 # hanging below the window (favoring the top edge if the box
                 # is taller than the window).
                 win = self.parent_window
-                win_top = win._abs_top(depth=depth + 1)
+                win_top = win.abs_top
                 this_top = min(this_top, win_top + win.height - self.height)
                 this_top = max(this_top, win_top)
         else:
@@ -864,16 +895,22 @@ class DrawState(DictConversion):
 
     @property
     def abs_clip_rect(self):
+        f = DecorationManager.melty.frame_count
+        if self._abs_clip_rect_frame == f:
+            return self._abs_clip_rect_cache
+        self._abs_clip_rect_frame = f
         abs_left = self.abs_left
         abs_top = self.abs_top
         clipped_by = self.clipped_by_rect
         if clipped_by is None:
-            return (abs_left, abs_top, abs_left + self.width, abs_top + self.height)
-
-        return (abs_left + clipped_by[0],
-                abs_top + clipped_by[1],
-                abs_left + self.width - clipped_by[2],
-                abs_top + self.height - clipped_by[3])
+            result = (abs_left, abs_top, abs_left + self.width, abs_top + self.height)
+        else:
+            result = (abs_left + clipped_by[0],
+                      abs_top + clipped_by[1],
+                      abs_left + self.width - clipped_by[2],
+                      abs_top + self.height - clipped_by[3])
+        self._abs_clip_rect_cache = result
+        return result
 
     @property
     def size_change(self):

@@ -629,7 +629,7 @@ def render_func(*args, **o_kwargs):
                 overlay_list: _DrawList = imgui.get_overlay_draw_list()
                 overlay_list.add_text(*imgui.get_cursor_screen_pos(),
                                       imgui.get_color_u32_rgba(1.0, 0.0, 0.0, 1.0),
-                                      f"ID")
+                                      f"ID {draw_state.name}")
                 kwargs['use_cache'] = False
                 # return False, None
 
@@ -1090,7 +1090,7 @@ def render_func(*args, **o_kwargs):
 
             if (fixed_size and auto_resize and closable and draw_state.multi_line
                     and not Melty.is_wrapped() and kwargs.get("fill_height", None) is None):
-                draw_state.width = 400
+                draw_state.width = 100
 
             header_width = draw_state.header_width + draw_state.header_end_width
             if len(Melty.fixed_size_stack) > 0:

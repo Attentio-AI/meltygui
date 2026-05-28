@@ -68,7 +68,7 @@ def render_search(search_ds, draw_state, unique=None, ):
     search_change, new_search = draw_text(search_ds.search_text, searchable=False,
                                           shadow=False,
                                           name=search_icon + str(unique), with_header=None,
-                                          with_header_end=None, width=draw_state.content_width-45,
+                                          with_header_end=None, width=draw_state.content_width-60,
                                           with_footer=None, header_same_line=True, tint=search_ds.tint,
                                           show_name=False, show_header=False, single_line=True,
                                           request_focus=focus_search)
@@ -90,7 +90,8 @@ def render_search(search_ds, draw_state, unique=None, ):
     from src.lsd.gl_gui.view.core_views.new_core_view import button
     fa_x_icon = ""
     # imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0], imgui.get_cursor_screen_pos()[1] + 2))
-    if button(fa_x_icon, show_bg=True, use_cache=True, height=25, shadow=True, z_offset=10,
+    if button(fa_x_icon, name=f"{unique}##fa_x_icon", show_bg=False,
+              use_cache=True, height=25, shadow=True, z_offset=3,
               tile_mode=TileMode.MAX, color=(9, 1, 1, 0))[0]:
         search_ds.search_active = False
         search_ds._search_was_active = False
