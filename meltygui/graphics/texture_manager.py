@@ -37,11 +37,6 @@ from OpenGL.GL import (
 @dataclass
 class PendingTexture:
     """Decoded image data awaiting GL upload on main thread."""
-    name: str
-    tex_width: int
-    tex_height: int
-    gl_format: int
-    data: bytes
     tint: tuple[float, float, float] = (1.0, 1.0, 1.0)
     texture_id: numpy.uint32 | None = None  # Filled after upload
 

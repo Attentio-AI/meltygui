@@ -61,7 +61,7 @@ class Toggles:
     slow_down_threads = False
     render_depth = False
     ds_invalidate_stack = False
-    profile_mode = ProfileMode.ON
+    profile_mode = ProfileMode.LIGHT
     debug_stale_tint = False
     show_line_break = True
     # Filter SettingS

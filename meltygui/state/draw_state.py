@@ -51,6 +51,20 @@ class Anchor(Enum):
 # Anchor classification used for both anchor_offset (window placement) and
 # clip-rect pinning. Anything not in left/right is horizontally centered;
 # anything not in top/bottom is vertically centered.
+class Pin(Enum):
+    """Symbolic pin targets for ``pin_to_clip`` when the caller doesn't have a
+    draw_state reference handy. Resolved to the declaring view's relatives at
+    render time: PARENT -> ``_parent`` (immediate render-tree parent), WINDOW ->
+    ``parent_window`` (enclosing Melty window)."""
+    PARENT = 'parent'
+    WINDOW = 'window'
+    # The active clip rect (scissor test) rather than a view's box. Clamped to
+    # the parent window so corners track the visible edge - e.g. bottom becomes
+    # min(parent_bottom, clip_bottom). Useful for overlays that must fit inside
+    # a scrolled/clipped region.
+    CLIP = 'clip'
+
+
 LEFT_ANCHORS = (Anchor.TOP_LEFT, Anchor.CENTER_LEFT, Anchor.BOTTOM_LEFT)
 RIGHT_ANCHORS = (Anchor.TOP_RIGHT, Anchor.CENTER_RIGHT, Anchor.BOTTOM_RIGHT)
 TOP_ANCHORS = (Anchor.TOP_LEFT, Anchor.TOP_CENTER, Anchor.TOP_RIGHT)
@@ -191,7 +205,7 @@ class TileMode(Enum):
                   "parent_window", "pressed", "bbox", "final_max_column",
                  'hover_rects', 'nested_window', 'use_cache', "header_top", "header_left", "left_offset",
                  "top_offset", 'kwargs', "just_shadow", "header_width", "header_end_width",
-                 "header_natural_width", "max_header_width",
+                 "header_natural_width", "max_header_width", "pin_to_clip", "pin_clip_rect", "pin_clamp",
                  "header_left_delta", "header_top_delta", "last_seen", "persistent", "shadow_margin", "bg_depth",
                  "anchor_pos", "parent_anchor_pos", "pin_to_clip", "pin_clip_rect", "just_shadow", 'hover_reported', 'explain_convert',
                  'channel', 'next', 'previous', 'index_in_parent', 'relative_pos',
@@ -422,12 +436,20 @@ class DrawState(DictConversion):
         # anchor_pos (the child's own origin). Defaults to TOP_LEFT so parent
         # anchoring is opt-in and legacy top-left layout is preserved.
         self.parent_anchor_pos = Anchor.TOP_LEFT
-        # When True, a child view anchors to a fixed clip rect corner instead
-        # of following the declaring view's scroll position. pin_clip_rect is a
-        # snapshot (left, top, right, bottom) of the active clip rect captured at
-        # declaration time, since the live clip stack is only valid then.
+        # When True, a popup window anchors to a fixed visible_rect corner
+        # instead of following the declaring view's scroll position.
+        # pin_target, when set, is the draw_state to pin to - its clip_rect is
+        # read live each frame so the window tracks that arbitrary view. With no
+        # target, pin_clip_rect (a snapshot of the active clip rect captured at
+        # declaration time, since the live clip stack is only valid then) is
+        # used, falling back to the parent window's bounds. See pin_rect.
         self.pin_to_clip = False
+        self.pin_target = None
         self.pin_clip_rect = None
+        # When True (Pin.CLIP), pin_rect is intersected with the parent window
+        # so each corner clamps to the parent edge - e.g. the bottom becomes
+        # min(parent_bottom, clip_bottom) rather than running past the clip.
+        self.pin_clamp = False
         self._kwargs = {}
         self.kwargs = AttrDict({})
         self.hover_reported = True
@@ -684,35 +706,67 @@ class DrawState(DictConversion):
         return (offset_x, offset_y)
 
     @property
-    def clip_anchor_base(self):
-        """Anchor reference point on the pinned clip rect.
+    def pin_rect(self):
+        """Reference rect ``(left, top, right, bottom)`` the pin anchors to, in
+        absolute coords.
 
-        When ``pin_to_clip`` is set, a child window anchors to the corner of the
-        active clip rect (snapshotted into ``pin_clip_rect`` at declaration time)
-        selected by ``anchor_pos`` instead of the scrolled position of the view
-        that declared it. ``anchor_offset`` then shifts the window so its own
-        anchor corner aligns to this point, so e.g. TOP_RIGHT keeps the window
-        glued to the clip rect's top-right corner regardless of how the
-        declaring view scrolls. Falls back to the parent window's bounds if no
-        clip rect was captured.
+        An explicit ``pin_target`` draw_state pins live to that view's clip rect
+        so the window tracks it as the target scrolls/moves/resizes. With no
+        target, falls back to the clip rect snapshotted at declaration time
+        (``pin_clip_rect``, set when ``pin_to_clip=True``), then to the parent
+        window's bounds. Returns None when nothing is available to pin to.
+
+        When ``pin_clamp`` is set (Pin.CLIP), the resulting rect is intersected
+        with the immediate parent view (``_parent``) so each edge clamps to the
+        parent's visible bound, not the whole window.
         """
-        clip = self.pin_clip_rect
+        if self.pin_target is not None:
+            rect = self.pin_target.abs_clip_rect
+        elif self.pin_clip_rect is not None:
+            rect = self.pin_clip_rect
+        elif self.parent_window is not None and self.parent_window is not self:
+            rect = self.parent_window.abs_clip_rect
+        else:
+            return None
+
+        if self.pin_clamp and self._parent is not None and self._parent is not self:
+            # Pin.CLIP: clamp each edge to the immediate parent view's bounds so
+            # each corner tracks the visible edge, e.g. min(parent_bottom,
+            # window_bottom). Clamping the (window-level) clip snapshot against the
+            # parent view is what pins the pin in to the parent clip rather than
+            # the whole window. Live each frame even though the clip is a snapshot.
+            p = self._parent.abs_clip_rect
+            rect = (max(rect[0], p[0]), max(rect[1], p[1]),
+                    min(rect[2], p[2]), min(rect[3], p[3]))
+        return rect
+
+    @property
+    def clip_anchor_base(self):
+        """Anchor reference point on the pinned rect (see ``pin_rect``).
+
+        Picks the corner of the pin rect selected by ``parent_anchor_pos`` — the
+        point *on the target* the window attaches to. ``anchor_offset`` (driven
+        by ``anchor_pos``) then shifts the window so its own corner lands there,
+        so the two are independent: e.g. parent_anchor=BOTTOM_RIGHT /
+        anchor=TOP_RIGHT hangs the window off the target's bottom-right corner.
+        With both at the TOP_LEFT default the window's top-left sits on the
+        target's top-left. Tracks the target regardless of how it scrolls.
+        """
+        clip = self.pin_rect
         if clip is None:
-            if self.parent_window is None:
-                return None
-            clip = self.parent_window.abs_clip_rect
+            return None
         clip_left, clip_top, clip_right, clip_bottom = clip
 
-        if self.anchor_pos in LEFT_ANCHORS:
+        if self.parent_anchor_pos in LEFT_ANCHORS:
             base_x = clip_left
-        elif self.anchor_pos in RIGHT_ANCHORS:
+        elif self.parent_anchor_pos in RIGHT_ANCHORS:
             base_x = clip_right
         else:  # horizontally centered
             base_x = (clip_left + clip_right) / 2
 
-        if self.anchor_pos in TOP_ANCHORS:
+        if self.parent_anchor_pos in TOP_ANCHORS:
             base_y = clip_top
-        elif self.anchor_pos in BOTTOM_ANCHORS:
+        elif self.parent_anchor_pos in BOTTOM_ANCHORS:
             base_y = clip_bottom
         else:  # vertically centered
             base_y = (clip_top + clip_bottom) / 2

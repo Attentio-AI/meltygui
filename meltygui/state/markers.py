@@ -1,8 +1,6 @@
-from enum import Enum
-from typing import Any
 
-from src.lsd.gl_gui.melty import Melty
 
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import DecorationManager
 
 
 def _is_field_candidate(v) -> bool:
@@ -96,9 +94,9 @@ class FieldMeta(type):
         # @defaults and type defaults use, keyed by (class, attribute).
         for key, (view_function, ov_kwargs) in pending_overrides.items():
             if view_function is not None:
-                Melty.default_funcs_by_name_type[cls][key] = view_function
+                DecorationManager.melty.default_funcs_by_name_type[cls][key] = view_function
             for ov_key, ov_val in ov_kwargs.items():
-                Melty.default_kwargs_by_attrib_type[cls][key][ov_key] = ov_val
+                DecorationManager.melty.default_kwargs_by_attrib_type[cls][key][ov_key] = ov_val
 
         return cls
 

@@ -1,5 +1,4 @@
 import inspect
-import json
 import sys
 import threading
 import types
@@ -17,22 +16,18 @@ import numpy
 import torch
 from imgui.core import _DrawList
 
-from src.lsd.gl_gui import toggles
 from src.lsd.gl_gui.global_style import GlobalStyle
 from src.lsd.gl_gui.melty import Melty, CollectionAction, ManagedWindow, SearchTerm
-from src.lsd.gl_gui.model.core_model.draw_state import ZoomState, TileMode, DrawState, TabState, Anchor, DropDownState
+from src.lsd.gl_gui.model.core_model.draw_state import ZoomState, TileMode, DrawState, TabState, DropDownState
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.toggles import Toggles, WindowManager
+from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_style_var, \
-    push_style_color, pop_style_color, pop_style_var, end, begin
-from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
-from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE, CacheTree
-from src.lsd.gl_gui.view.core_conversion.chain_converters import class_to_address, \
-    address_to_class, general_parse_to_address, module_to_address, address_to_module, address_to_general_parse, \
-    function_to_address
+    pop_style_var, end, begin
+from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace, request_render
+from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment, GeneralParse, UsageRef
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
-from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line, new_line
+from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
 from src.lsd.gl_gui.view.core_views.blit_offscreen_debug_renderers import draw_blit_debug
 from src.lsd.gl_gui.view.core_views.codec_register import registry as FILE_CODECS
@@ -43,7 +38,6 @@ from src.lsd.gl_gui.view.core_views.decoration.invalidation_decoration import li
 from src.lsd.gl_gui.view.core_views.folders_proxy import FolderProxy
 from src.lsd.gl_gui.view.core_views.headers import draw_header, draw_footer, draw_header_end, render_search
 from src.lsd.gl_gui.view.core_views.inspect_utils import set_fn_defaults
-from src.lsd.gl_gui.view.core_views.monitor import Monitor
 from src.lsd.gl_gui.view.core_views.tensor_views import draw_tensor
 from src.lsd.gl_gui.view.core_views.text_editor import draw_text, _scroll_into_view
 from src.shader_library.shader_manager.texture_manager import PendingTexture
@@ -545,7 +539,7 @@ def draw_draw_state(input_value, **kwargs):
 
 
 @render_func(use_cache=False, shadow=False, show_bg=False, disable_scroll=True, selectable=False)
-def run_chain(input_value, chain=None, draw_state=None, disable_scroll=True,
+def run_chain(input_value, chain=None, draw_state=None, disable_scroll=True, route=None,
               s_key_pressed=False, enter_key_pressed=False, unique=None, debug=False, **kwargs):
     """Debug render function: executes a chain step by step with imgui output.
 
@@ -567,17 +561,17 @@ def run_chain(input_value, chain=None, draw_state=None, disable_scroll=True,
     cache_tree = draw_state._chain_stack
     cache_tree.begin()
 
-    mode_cache = True
+    mode_cache = chain[0][1].get("mode_cache", False) if isinstance(chain[0], dict) else False
+    if mode_cache:
+        value = cache_tree.step(changed, value)
+
+    to_route = {}
 
     for i, func in enumerate(chain):
         if isinstance(func, tuple):
             func, func_kwargs = func
         else:
             func_kwargs = {}
-
-        mode_cache = func_kwargs.get('mode_cache', True)
-        if mode_cache:
-            value = cache_tree.step(changed, value)
 
         if debug:
             if not changed:
@@ -592,18 +586,25 @@ def run_chain(input_value, chain=None, draw_state=None, disable_scroll=True,
         func_kwargs['enter_key_pressed'] = enter_key_pressed
         func_kwargs['draw'] = True
         func_kwargs['real_type'] = type(input_value)
-    
+        for arg_name, arg_val in to_route.values():
+            func_kwargs[arg_name] = arg_val
+
         next_cached = cache_tree.peek()
         if isinstance(value, str):
             imgui.text(f"  [{i}] {func.__name__} — str: '{value[:30]}'")
         changed, value = func(input_value=value, reference=next_cached, **func_kwargs)
-
         if isinstance(value, Pending):
             changed=False
             value=None
 
-    if mode_cache:
-        value = cache_tree.step(changed, value)
+        mode_cache = func_kwargs.get('mode_cache', True)
+        if mode_cache:
+            value = cache_tree.step(changed, value)
+
+        if route is not None:
+            if func in route:
+                arg_name = route[func]
+                to_route[arg_name] = arg_name, value
 
     cache_tree.end()
 
@@ -2750,7 +2751,7 @@ def draw_pending(input_value, draw_state=None):
     return False, None
 
 
-from src.lsd.gl_gui.model.core_model.core_enums import PendingAction, ProfileMode
+from src.lsd.gl_gui.model.core_model.core_enums import PendingAction
 
 
 @render_func(use_cache=True, show_header=False, shadow=True)
@@ -2874,6 +2875,7 @@ def draw_any(input_value:any=None, view_func=None, mode:any=None, chain=None, **
         elif mode_config is not None and mode_config.func is not None:
             if isinstance(mode_config.func, tuple):
                 kwargs['chain'] = mode_config.func
+                kwargs['route'] = mode_config.route
                 view_func = run_chain
             else:
                 view_func = mode_config.func

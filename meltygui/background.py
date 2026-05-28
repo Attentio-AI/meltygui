@@ -22,7 +22,7 @@ class Background:
     _hash_times = {}        # type_name -> [total_time_sec, count]
     _dict_key_times = {}    # dict key name -> [total_time_sec, count]
     _task_times = {}        # func_name -> [total_time_sec, count]
-
+    did_shutdown = False
     @classmethod
     def _record_dict_key_time(cls, key: str, elapsed: float):
         # No lock here - called from simple_hash which may recurse deeply;
@@ -89,6 +89,7 @@ class Background:
 
         cls._pool.shutdown(wait=True)
         print("Background thread pool shut down successfully.")
+        cls.did_shutdown = True
 
     @classmethod
     def run(cls, func, user_id, func_kwargs=None, *,
@@ -146,6 +147,7 @@ class Background:
                 cls._user_cache[user_id].popitem(last=False)
 
             return result
+
 
         from src.lsd.gl_gui.melty import Melty
         if Melty.frame_count < 2:
@@ -228,6 +230,12 @@ class Background:
         cls._active.add(h)
 
         def _task():
+            # Check for shutdown
+            if cls.did_shutdown:
+                print("Background system is shut down; cannot run new tasks.")
+                print_stack_trace()
+                return Pending(originated=cls, status="shutdown", state=PendingState.ERROR)
+
             import time
             func_name = getattr(func, "__qualname__", None) or getattr(func, "__name__", repr(func))
             sig = func_name

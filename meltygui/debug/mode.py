@@ -5,7 +5,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional, Any
 
-from src.lsd.gl_gui.model.core_model.draw_state import Anchor
+from src.lsd.gl_gui.model.core_model.draw_state import Anchor, Pin
 from src.lsd.gl_gui.model.model_enums import RelaxedEnum
 from src.lsd.gl_gui.toggles import WindowManager
 from src.lsd.gl_gui.view.core_conversion.chain_converters import module_to_address, address_to_general_parse, \
@@ -41,6 +41,8 @@ class ModeOverrides:
     kwargs: Optional[dict] = None
     func: Optional[callable] = None
     recursive:Optional[bool] = True
+    route: Optional[dict]  = None
+
 
 @window
 class Mode(Enum):
@@ -145,6 +147,16 @@ class Mode(Enum):
         )
     }
 
+    FLOATING = {
+        Any: ModeOverrides(
+            kwargs={"use_cache": True, "melty_window": False, "closable": True, "pin_to_clip": Pin.CLIP,
+                    "auto_resize": True, "draggable": True, "window_pos":(0,0), "anchor":Anchor.BOTTOM_RIGHT, "parent_anchor": Anchor.TOP_RIGHT,
+                    "initial": {"width": 400, "height": 320, "window_pos": (0, 0)}},
+
+            recursive=False
+        )
+    }
+
     WINDOW_CLEAN = {
         Any: ModeOverrides(
             kwargs={"show_bg":True, "selectable":False, "use_cache":True, "shadow":True,
@@ -201,38 +213,38 @@ class Mode(Enum):
 
     }
 
+
+
     code_plain_text_auto_load = True
     code_plain_text_params = {'save': True,
                               'recompile': False}
-    CODE_PLAIN_TEXT = {
+    draw_text_funcs = ((address_to_general_parse,
+                            {'load': code_plain_text_auto_load}),
+                        general_parse_to_str,
+                        draw_text,
+                        str_to_general_parse,
+                        (general_parse_to_address,
+                            code_plain_text_params))
 
+    CODE_PLAIN_TEXT = {
         types.FunctionType: ModeOverrides(
             recursive=True,
+            route={function_to_address: "jump_to"},
             func=(function_to_address,
-                  (address_to_general_parse, {'load': code_plain_text_auto_load}),
-                  general_parse_to_str,
-                  draw_text,
-                  str_to_general_parse,
-                  (general_parse_to_address, code_plain_text_params),
+                  *draw_text_funcs,
                   address_to_function),
         ),
         types.ModuleType: ModeOverrides(
             recursive=True,
+            route={module_to_address : "jump_to"},
             func=(module_to_address,
-                  (address_to_general_parse, {'load': code_plain_text_auto_load}),
-                  general_parse_to_str,
-                  draw_text,
-                  str_to_general_parse,
-                  (general_parse_to_address, code_plain_text_params),
+                  *draw_text_funcs,
                   address_to_module),
         ),
         type: ModeOverrides(
+            route={class_to_address: "jump_to"},
             func=(class_to_address,
-                  (address_to_general_parse, {'load': code_plain_text_auto_load}),
-                  general_parse_to_str,
-                  draw_text,
-                  str_to_general_parse,
-                  (general_parse_to_address, code_plain_text_params),
+                  *draw_text_funcs,
                   address_to_class),
             recursive=True
         ),

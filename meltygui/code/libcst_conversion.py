@@ -1250,6 +1250,25 @@ def dict_to_cst_classdef(value: dict) -> cst.ClassDef:
     if edits:
         result = result.visit(_ClassPatcher(edits))
 
+    # _ClassPatcher only REWRITES existing assignments - it has no add or delete
+    # path. Reconcile the edited field set against the class body. class_var lens
+    # (and the generic lens) support Add/Delete, not just Update.
+    #   - a key with no existing field  → NEW class var: synthesize `name = value`
+    #     (body-level, so it takes effect for live instances via class-attr
+    #     fallback - unlike a self.X buried in __init__)
+    #   - an existing field absent from the edits → DELETED: remove its assignment
+    #     (body-level and/or __init__ self.X).
+    # Run outside the `if edits` predicate above: deleting the last field empties
+    # `edits`, but the removal still has to happen.
+    existing = _existing_class_field_names(old_node)
+    new_fields = {k: v for k, v in edits.items()
+                  if k not in existing and not isinstance(v, dict)}
+    if new_fields:
+        result = _inject_class_fields(result, new_fields)
+    deleted = existing - set(edits.keys())
+    if deleted:
+        result = result.visit(_ClassFieldRemover(deleted))
+
     # Patch comments in class body
     comment_text_map = _collect_comment_edits(value)
     if comment_text_map:
@@ -1261,6 +1280,116 @@ def dict_to_cst_classdef(value: dict) -> cst.ClassDef:
     result = _ensure_override_comment(result, value)
     result = _apply_field_overrides(result, value.get("__overrides__"))
     return result
+
+
+def _assign_field_name(node, in_init: bool):
+    """Field name an Assign/AnnAssign node defines, or None. In __init__ scope a
+    field is `self.X`; at class-body scope it's a bare `Name`."""
+    if isinstance(node, cst.Assign) and len(node.targets) == 1:
+        tgt = node.targets[0].target
+    elif isinstance(node, cst.AnnAssign):
+        tgt = node.target
+    else:
+        return None
+    if in_init:
+        if (isinstance(tgt, cst.Attribute) and isinstance(tgt.value, cst.Name)
+                and tgt.value.value == "self"):
+            return tgt.attr.value
+        return None
+    return tgt.value if isinstance(tgt, cst.Name) else None
+
+
+def _existing_class_field_names(classdef: cst.ClassDef) -> set:
+    """Names cst_classdef_to_dict would surface as fields — body-level
+    Assign/AnnAssign targets plus __init__ `self.X` assignments. Used to tell a
+    NEW class-var edit (needs synthesizing) from an edit of an existing field."""
+    names = set()
+    for stmt in classdef.body.body:
+        if isinstance(stmt, cst.SimpleStatementLine):
+            for node in stmt.body:
+                nm = _assign_field_name(node, in_init=False)
+                if nm is not None:
+                    names.add(nm)
+    init_fn = _find_init(classdef)
+    if init_fn is not None:
+        for stmt in init_fn.body.body:
+            if isinstance(stmt, cst.SimpleStatementLine):
+                for node in stmt.body:
+                    nm = _assign_field_name(node, in_init=True)
+                    if nm is not None:
+                        names.add(nm)
+    return names
+
+
+class _ClassFieldRemover(cst.CSTTransformer):
+    """Drop class fields named in `names` — body-level `name = …` (class body,
+    depth 1) and `self.name = …` in __init__ (depth 2). Mirrors _ClassPatcher's
+    depth/_in_init bookkeeping so it never touches assignments in other methods."""
+
+    def __init__(self, names):
+        super().__init__()
+        self.names = set(names)
+        self._in_init = False
+        self._depth = 0
+
+    def visit_IndentedBlock(self, node):
+        self._depth += 1
+        return True
+
+    def leave_IndentedBlock(self, original_node, updated_node):
+        self._depth -= 1
+        return updated_node
+
+    def visit_FunctionDef(self, node):
+        if node.name.value == "__init__":
+            self._in_init = True
+        return True
+
+    def leave_FunctionDef(self, original_node, updated_node):
+        if original_node.name.value == "__init__":
+            self._in_init = False
+        return updated_node
+
+    def leave_SimpleStatementLine(self, original_node, updated_node):
+        body_scope = (not self._in_init and self._depth == 1)
+        init_scope = (self._in_init and self._depth == 2)
+        if not (body_scope or init_scope):
+            return updated_node
+        kept = [n for n in updated_node.body
+                if _assign_field_name(n, init_scope) not in self.names]
+        if not kept:
+            return cst.RemovalSentinel.REMOVE
+        if len(kept) != len(updated_node.body):
+            return updated_node.with_changes(body=kept)
+        return updated_node
+
+
+def _inject_class_fields(classdef: cst.ClassDef, fields: dict) -> cst.ClassDef:
+    """Prepend `name = value` class-body assignments for new class variables.
+
+    Inserted at the top of the class body (after a leading docstring, if any) so
+    they read as plain class variables regardless of whether the class otherwise
+    stores state body-level or in __init__."""
+    new_lines = []
+    for name, value in fields.items():
+        expr = _python_to_cst_expr(value, None)
+        if expr is None:
+            continue
+        new_lines.append(cst.SimpleStatementLine(
+            body=[cst.Assign(targets=[cst.AssignTarget(target=cst.Name(name))],
+                             value=expr)]))
+    if not new_lines:
+        return classdef
+
+    block = classdef.body
+    body = list(block.body)
+    insert_at = 0
+    if (body and isinstance(body[0], cst.SimpleStatementLine) and len(body[0].body) == 1
+            and isinstance(body[0].body[0], cst.Expr)
+            and isinstance(body[0].body[0].value, cst.SimpleString)):
+        insert_at = 1  # keep the docstring first
+    body[insert_at:insert_at] = new_lines
+    return classdef.with_changes(body=block.with_changes(body=tuple(body)))
 
 
 def _find_init(classdef):

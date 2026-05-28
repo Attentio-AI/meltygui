@@ -21,6 +21,7 @@ import libcst as cst
 
 from src.lsd.gl_gui.melty import FileWatch, Melty
 from src.lsd.gl_gui.background import Background
+from src.lsd.gl_gui.model.core_model.draw_state import Pin
 from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
 from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
@@ -38,6 +39,7 @@ from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
 )
 from src.lsd.gl_gui.view.core_views.headers import draw_header
 from src.lsd.gl_gui.view.core_views.text_editor import draw_text
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -481,7 +483,8 @@ def run_button(input_value: any, with_kwargs=None, draw_state=None, clicked=Fals
     fa_run_arrow = ""
     from src.lsd.gl_gui.view.core_views.new_core_view import button
     if clicked or running or button(f"{fa_run_arrow} {input_value.__name__}##{draw_state.unique}",
-     height=30, draw=True, value=0.4, saturation=1.5, name=f"{input_value.__name__}{draw_state.unique}_run")[0]:
+                                    height=30, draw=True, value=0.4, saturation=1.5,
+                                    name=f"{input_value.__name__}{draw_state.unique}_run")[0]:
         with_kwargs['changed'] = True
         changed, value = input_value(**with_kwargs)
         if isinstance(value, Pending):
@@ -596,6 +599,7 @@ def general_parse_to_address(input_value: GeneralParse=None, pending=False, draw
     code_str = back_to_cst.code
     if show_recompile:
         if source is not None:
+            from src.lsd.gl_gui.view.mode import Mode
             recompiled, _ = run_button(do_recompile, clicked=recompile and pending, name=f"do_recompile{unique}",
                         with_kwargs={"input_value": address.source,
                                  "code_str": code_str,
@@ -806,9 +810,14 @@ def caller_site(frames):
         base = filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
         if base in _DISPATCH_SKIP:
             continue
-        # if base == "melty.py" and func_name == "draw":   # Melty.draw re-dispatch
-        #     continue
-
+        # Skip the re-dispatch machinery so the site is the user's draw_xxx(...)
+        # call, not the dispatch's `draw_state._wrapper(**kwargs)`. These are
+        # func-name-specific (NOT whole-file): new_core_view.py also holds real
+        # user render code, so only its `draw_any` dispatch frame is skipped.
+        if base == "melty.py" and func_name == "draw":            # Melty.draw re-dispatch
+            continue
+        if base == "new_core_view.py" and func_name == "draw_any":  # draw_any dispatch
+            continue
 
         return filename, lineno
     return None
@@ -915,7 +924,7 @@ def _resolve_call_address(input_value):
     try:
         tree = ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
         best_key = None
-        span = None
+        best_node = None
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -925,10 +934,17 @@ def _resolve_call_address(input_value):
                 key = (start, -end)  # outermost wins
                 if best_key is None or key < best_key:
                     best_key = key
-                    span = (start, end)
-        if span is not None:
-            s, e = span
+                    best_node = node
+        if best_node is not None:
+            s = best_node.lineno
+            e = best_node.end_lineno or s
             address = Address(path, s - 1, e)
+            # Column span (UTF-8 byte offsets, per ast) of the call WITHIN its
+            # line span. Lets address_to_call_parse extract just the call
+            # expression even when it's embedded in a larger statement
+            # (e.g. `if ... or button(...):`) and splice the edit back without
+            # disturbing the surrounding prefix/suffix.
+            address._call_cols = (best_node.col_offset, best_node.end_col_offset)
     except Exception as ex:
         print(f"_resolve_call_address: could not resolve call span in {filename}:{lineno}: {ex}")
 
@@ -984,6 +1000,24 @@ def caller_to_address(input_value, draw_state, changed=False):
     return changed, result
 
 
+def _split_span_at_call(span_lines, sc, ec, newline):
+    """Split a call's line span into (prefix, call_text, suffix) at the call's
+    column offsets. `sc`/`ec` are UTF-8 byte offsets (ast convention) into the
+    first/last line, so slice in bytes and decode — correct even when the line
+    has multi-byte chars before/inside the call (e.g. font-icon literals)."""
+    first = span_lines[0].encode("utf-8")
+    last = span_lines[-1].encode("utf-8")
+    prefix = first[:sc].decode("utf-8")
+    suffix = last[ec:].decode("utf-8")
+    if len(span_lines) == 1:
+        call_text = first[sc:ec].decode("utf-8")
+    else:
+        middle = span_lines[1:-1]
+        call_text = newline.join(
+            [first[sc:].decode("utf-8")] + middle + [last[:ec].decode("utf-8")])
+    return prefix, call_text, suffix
+
+
 @render_func(use_cache=True)
 def address_to_call_parse(input_value, draw_state=None, changed=False, load=False):
     """Address(call statement) -> dict of the call's kwargs via cst_call_to_dict.
@@ -1003,16 +1037,30 @@ def address_to_call_parse(input_value, draw_state=None, changed=False, load=Fals
     if cached is not None and cached[0] == address._hash and cached[1] == mtime:
         return False, cached[2]
     try:
-        # The call statement is usually indented (inside a function), but
-        # parse_module rejects leading indentation - dedent first, and remember
-        # the removed prefix so the save node can re-indent on write-back.
-        import textwrap
-        raw = _load_span(address)
-        dedented = textwrap.dedent(raw)
-        first_raw = raw.split("\n", 1)[0]
-        first_ded = dedented.split("\n", 1)[0]
-        indent = first_raw[:len(first_raw) - len(first_ded)]
-        span_module = cst.parse_module(dedented)
+        # Extract JUST the call expression from its line span using the column
+        # offsets resolved by _resolve_call_address. parse_module rejects a span
+        # that's indented or only part of a statement (e.g. `if c or button(...):`
+        # gets "expected INDENT"); slicing out the bare call sidesteps both. The
+        # prefix/suffix around the call on its first/last line are kept so the
+        # save node can splice the edit back without disturbing them.
+        data = address.path.read_bytes()
+        newline = _detect_newline(data)
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            text = data.decode("latin-1")
+        span_lines = text.split(newline)[address.start:address.end]
+        cols = getattr(address, "_call_cols", None)
+        if cols is not None and span_lines:
+            call_prefix, call_text, call_suffix = _split_span_at_call(
+                span_lines, cols[0], cols[1], newline)
+        else:
+            # No column info (ast found no embedded call, line fallback). Treat
+            # the dedented span as the call; nothing to slice around it.
+            import textwrap
+            call_text = textwrap.dedent(newline.join(span_lines))
+            call_prefix = call_suffix = ""
+        span_module = cst.parse_module(call_text)
     except Exception as ex:
         print(f"address_to_call_parse: parse failed for {address.path}: {ex}")
         return False, cached[2] if cached else None
@@ -1023,7 +1071,8 @@ def address_to_call_parse(input_value, draw_state=None, changed=False, load=Fals
     d = converter(call_node)
     d["__call_module__"] = span_module
     d["__address__"] = address
-    d["__indent__"] = indent
+    d["__call_prefix__"] = call_prefix
+    d["__call_suffix__"] = call_suffix
 
     # Human label for the picker/buttons: called-name @ file:line (enclosing fn).
     func_node = call_node.func
@@ -1044,24 +1093,28 @@ def address_to_call_parse(input_value, draw_state=None, changed=False, load=Fals
 
 
 def _build_call_code(d):
-    """Edited call-kwargs dict -> reindented call-statement source string.
+    """Edited call-kwargs dict -> the full line-span source, with the rebuilt call
+    spliced back between its original prefix/suffix.
 
     Plain + synchronous: rebuilding one call statement (dict_to_cst_call +
-    deep_replace of a tiny span module + reindent) is microseconds, unlike the
-    class chain's whole-module reconstruction. It is NOT a background node — that
-    was the bug: as a background node it returned Pending on the edit frame, so
-    the save branch was skipped and the edit lost; and Background.run deep-hashed
-    the CST-laden dict on the UI thread every frame."""
+    deep_replace of a tiny span module) is microseconds, unlike the class chain's
+    whole-module reconstruction. It is NOT a background node — that was the bug:
+    as a background node it returned Pending on the edit frame, so the save branch
+    was skipped and the edit lost; and Background.run deep-hashed the CST-laden
+    dict on the UI thread every frame.
+
+    The call was parsed in isolation (just the expression), so new_module.code is
+    the bare call. We re-attach the prefix (indentation + any leading `if … or `)
+    and suffix (`[0]:`, etc.) captured at parse time, so an embedded call splices
+    back into its statement untouched. Continuation lines keep their original
+    absolute indentation (preserved through the round-trip)."""
     span_module = d.get("__call_module__")
     old_call = d.get("__cst__")
     converter = Melty._converters.get((dict, cst.Call))
     new_call = converter(d)
     new_module = span_module.deep_replace(old_call, new_call)
-    indent = d.get("__indent__", "")
-    code = new_module.code
-    if indent:
-        code = "\n".join((indent + ln if ln.strip() else ln) for ln in code.split("\n"))
-    return code
+    code = new_module.code.rstrip("\r\n")
+    return d.get("__call_prefix__", "") + code + d.get("__call_suffix__", "")
 
 
 @render_func(background=True)

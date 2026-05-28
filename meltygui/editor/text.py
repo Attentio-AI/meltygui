@@ -8,6 +8,7 @@ from src.lsd.gl_gui.view.core_views.headers import draw_header, draw_footer
 from src.lsd.gl_gui.melty import Melty, SearchTerm
 from src.lsd.gl_gui.fonts import Font
 from src.lsd.gl_gui.utils.glfw_utils import request_render
+from src.lsd.gl_gui.view.jump_to import draw_jump_to
 
 
 def _hex(h):
@@ -552,7 +553,8 @@ def draw_text(input_value: str,
               left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
               horizontal_scroll_drag=False, search_text="",
               single_line=False,
-              draw_state=None, request_focus=False, line_height=1.2, font: Font=Font.JETBRAINS_MONO_19):
+              draw_state=None, request_focus=False, 
+              line_height=1.2, font: Font=Font.JETBRAINS_MONO_19, jump_to=None):
     ds = draw_state
 
     _font_pushed = False
@@ -1133,6 +1135,11 @@ def draw_text(input_value: str,
 
     if _font_pushed:
         imgui.pop_font()
+    
+    if jump_to is not None:
+        from src.lsd.gl_gui.view.mode import Mode
+        draw_jump_to(jump_to, mode=Mode.FLOATING)
+    
 
     if changed:
         rebuilt_text = text + '\n'.join(original_input.split('\n')[max_lines:])

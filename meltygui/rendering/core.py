@@ -21,7 +21,7 @@ from src.lsd.gl_gui.toggles import Counters, Toggles, Tint
 from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
 from src.lsd.gl_gui.view.core_conversion.address import to_address, Address
 from src.lsd.gl_gui.view.core_conversion.path_finder import PendingState
-from src.lsd.gl_gui.model.core_model.draw_state import DrawState, Hotkey, DragMode, Anchor, TileMode, AttrDict
+from src.lsd.gl_gui.model.core_model.draw_state import DrawState, Hotkey, DragMode, Anchor, Pin, TileMode, AttrDict
 from src.lsd.gl_gui.model.core_model.core_enums import PendingAction
 from src.lsd.gl_gui.utils.custom_views import push_style_var, pop_style_var
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace, trace_group, get_live_frames
@@ -1005,12 +1005,43 @@ def render_func(*args, **o_kwargs):
                 anchor_pos = kwargs.get("anchor", Anchor.TOP_LEFT)
                 draw_state.anchor_pos = anchor_pos
                 draw_state.parent_anchor_pos = kwargs.get("parent_anchor", Anchor.TOP_LEFT)
-                draw_state.pin_to_clip = kwargs.get("pin_to_clip", False)
-                if draw_state.pin_to_clip:
-                    # Snapshot the active clip rect now - the live clip stack is
-                    # only valid at declaration time, but abs_left/abs_top are
-                    # recomputed throughout the frame.
+                pin = kwargs.get("pin_to_clip", False)
+                # Reset pin state each frame; the matching branch below sets it.
+                draw_state.pin_target = None
+                draw_state.pin_clip_rect = None
+                draw_state.pin_clamp = False
+                if pin == Pin.CLIP:
+                    # Pin to the active clip rect, clamped to the parent window's
+                    # corners for the visible edge (bottom = min(parent_bottom,
+                    # clip_bottom)). The live clip stack is only valid now, so
+                    # snapshot it; pin_rect intersects it with the live parent.
+                    draw_state.pin_to_clip = True
+                    draw_state.pin_clamp = True
                     draw_state.pin_clip_rect = Melty.get_clip_rect()
+                elif isinstance(pin, Pin):
+                    # Symbolic view targets resolve to the window and their
+                    # relatives. _parent defaults to self and parent_window may
+                    # be None; a self/None resolution falls back to a clip
+                    # snapshot pin (same as bool True).
+                    resolved = draw_state._parent if pin == Pin.PARENT else draw_state.parent_window
+                    draw_state.pin_to_clip = True
+                    if resolved is not None and resolved is not draw_state:
+                        draw_state.pin_target = resolved
+                    else:
+                        draw_state.pin_clip_rect = Melty.get_clip_rect()
+                elif isinstance(pin, DrawState):
+                    # Pin to an arbitrary view; read its clip rect live each
+                    # frame so the window tracks that target as it scrolls.
+                    draw_state.pin_target = pin
+                    draw_state.pin_to_clip = True
+                else:
+                    # Boolean: pin to the enclosing clip / parent window (default
+                    # target). Snapshot the active clip rect now - the live clip
+                    # stack is only valid at declaration time, but abs_left/
+                    # abs_top are recomputed throughout the frame.
+                    draw_state.pin_to_clip = bool(pin)
+                    if draw_state.pin_to_clip:
+                        draw_state.pin_clip_rect = Melty.get_clip_rect()
                 imgui.set_cursor_screen_pos((snap_int(draw_state.abs_left), snap_int(draw_state.abs_top)))
 
             kwargs['melty_window'] = False
@@ -1169,7 +1200,7 @@ def render_func(*args, **o_kwargs):
             # Auto expand (go multi-line) when the content can't fit on a
             # single line at its min_width. Falls back to 150 when no
             # min_width is set so widgets without one keep prior behavior.
-            single_line_trigger = kwargs.get("min_width", draw_state.min_width) or 150
+            single_line_trigger = kwargs.get("min_width", draw_state.min_width) or 30
             header_same_line = kwargs.get("header_same_line", False)
             if ((single_line_avail < single_line_trigger or (
                     draw_state.height is not None and draw_state.height - draw_state.footer_height > 50))
@@ -1406,15 +1437,19 @@ def render_func(*args, **o_kwargs):
                             swoosh=False,
                             tint=draw_state.tint,
                             mode=Mode.WINDOW_CLEAN,
-                            pin_to_clip=True,
-                            window_pos=(0, -draw_state.clip_size[1]),
+                            # Pin live to this view so the bar's bottom-left rides
+                            # the view's top-left corner (parent_anchor defaults
+                            # to TOP_LEFT), floating just above it as it scrolls.
+                            pin_to_clip=Pin.PARENT,
+                            window_pos=(0, 0),
+                            min_width=200,
                             initial={"height": 30},
                             anchor=Anchor.BOTTOM_LEFT,
                             name=f"Find{unique}",
                             return_extras=True)
                     search_ds = extras[2]
                     if search_ds.last_seen is None:
-                        search_ds.window_pos = (0,-draw_state.clip_size[1])
+                        search_ds.window_pos = (0, 0)
 
                     # Build this frame's cross-view aggregation session. A new
                     # term resets the global selection to the first match; nav
@@ -2002,7 +2037,7 @@ def render_func(*args, **o_kwargs):
                         if Melty.frame_count > 2:
                             if ctx_ds.last_seen is None:
                                 ctx_ds.closed = False
-                                ctx_ds.window_pos = (snap_int(draw_state.width) + 20, 0)
+                                # ctx_ds.window_pos = (snap_int(draw_state.width) - 20, 0)
 
                         if ctx_ds.closed:
                             draw_state.context_menu_open = False
@@ -2609,11 +2644,6 @@ def render_func(*args, **o_kwargs):
             Melty.input_value_stack.pop()
             Melty.wrap_stack.pop()
 
-            # if column is not None and column_parent is not None and draw_state.parent_window is not None:
-            #     column_parent._columns_bottom = max(column_parent._columns_bottom,
-            #                                         draw_state.abs_top + draw_state.height)
-            #     imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0], column_parent._columns_bottom))
-            # else:
 
             if melty_window and draw_state.width < 30:
                 draw_state.width = 30
@@ -2622,28 +2652,20 @@ def render_func(*args, **o_kwargs):
                 draw_state._source["height"] = "min 30"
 
             if auto_resize and kwargs.get("fill_height", None) is None:
-                if kwargs.get("wrap", False):
+
+                if kwargs.get("wrap", False) or closable:
                     if passed_width is None:
                         max_width = kwargs.get("max_width", 1e9)
-                        draw_state.width = snap_int(min(item_rect[0], max_width))
+                        min_width = kwargs.get("min_width", 20)
+                        draw_state.width = snap_int(max(min(item_rect[0], max_width), min_width))
 
                 if passed_height is None:
                     max_height = kwargs.get("max_height", 1e9)
-                    # if column is not None and column_parent is not None:
-                    #     max_height = column_parent.content_size[1] - column_parent._columns_top
-
                     if not closable:
                         draw_state.height = snap_int(min(item_rect[1], max_height))
                         draw_state._source["height"] = "not closable, item_rect[1]"
                     else:
                         display_height = imgui.get_io().display_size[1]
-                        if draw_state.expanded:
-                            min_height = min(max_height, content_rect[1] + draw_state.footer_height + draw_state.header_height)
-                        else:
-                            min_height = 0
-
-                        new_height = snap_int(max(min_height, min(item_rect[1], min(display_height, max_height))))
-
                         draw_state.height = snap_int(min(item_rect[1], min(display_height, max_height)))
                         draw_state._source["height"] = "closable, item_rect[1]"
 
@@ -2722,9 +2744,9 @@ def render_func(*args, **o_kwargs):
                 previous_exception = draw_state._stack_trace
                 if type(e) == type(previous_exception):
                     is_same_exception = True
+                    draw_state._stack_trace = e
 
             if not is_same_exception:
-                draw_state._stack_trace = e
                 with trace_group(f"Drawing {func.__name__} {draw_state.name}", hash=draw_state.unique) as g:
                     watch = ["draw_state.name", "input_value", "convert_path", "clean_args.input_value", "func.__name__",
                              "mode"]

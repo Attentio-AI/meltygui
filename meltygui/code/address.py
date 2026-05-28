@@ -25,6 +25,7 @@ from typing import Any, Callable
 import inspect
 
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -46,7 +47,6 @@ class FileMeta:
         return self.mtime == other.mtime and self.size == other.size
 
 class Address:
-    __slots__ = ("path", "start", "end", "source", "_hash", "_watcher_ds")
 
     def __init__(self, path, start=None, end=None, source=None, watcher_ds=None):
         self.path = Path(path).resolve()
