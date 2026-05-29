@@ -144,7 +144,9 @@ def draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height):
 
     # Interaction: hit-test the grab rect, support hover + left-drag on it. A
     # large priority_delta lets the narrow grab win the cursor over the content
-    # views nested beneath it.
+    # views nested beneath it. The drag is latched by the event handler's drag
+    # capture (set on mousedown in the view), so on_action keeps feeding it
+    # even after the cursor leaves the grab/view - no hover bookkeeping here.
     grab_rect = (track_x1, grab_y1, track_x2, grab_y2)
     hovered = draw_state.on_action("cursor_hover", view_id="scrollbar_grab",
                                    rect=grab_rect, priority_delta=15) is not None
@@ -162,6 +164,16 @@ def draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height):
         t = max(0.0, min(1.0, new_y / max_scroll_y))
         grab_y1 = track_y1 + travel * t
         grab_y2 = grab_y1 + grab_h
+
+    if active:
+        # The latched drag is delivered even off-view, but the latch only runs
+        # while the scroll node re-renders - and the node otherwise only redraws
+        # when hovered or when the scroll changes. Moving the cursor off-view
+        # (or holding it still past the track end) stops both, so the node goes
+        # idle and stops consuming the drag. Keep it re-rendering while the drag
+        # is held so the latch is read every frame regardless of cursor pos.
+        Melty.cache.invalidate(draw_state._tile_id)
+        request_render()
 
     # Paint to the overlay list so the bar floats above clipped content.
     tint = draw_state.current_tint
@@ -2951,8 +2963,12 @@ def render_func(*args, **o_kwargs):
 
         if do_scroll:
             header_height = draw_state.header_height
+            # Reserve room at the right edge for the overlay scrollbar (its grab
+            # spans 8px in from the edge - see draw_overlay_scrollbar) so the
+            # content wraps/clips against the bar instead of rendering under it.
+            scrollbar_reserve = 10
             Melty.push_clip((draw_state.abs_left, draw_state.abs_top + header_height,
-                             draw_state.abs_left + draw_state.width,
+                             draw_state.abs_left + draw_state.width - scrollbar_reserve,
                              draw_state.abs_top + header_height + draw_state.height + 2))
             start_cursor = imgui.get_cursor_screen_pos()
             imgui.set_cursor_screen_pos((start_cursor[0],
