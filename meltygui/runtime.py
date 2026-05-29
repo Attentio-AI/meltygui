@@ -516,9 +516,10 @@ class Melty:
     # and every delete uses _bvh_bbox (not the live, possibly-changed bbox).
     @classmethod
     def bvh_register(cls, draw_state):
-        bbox = draw_state.bbox
-        if bbox is None:
-            return None
+        bbox = (draw_state.abs_left, draw_state.abs_top,
+                draw_state.abs_left + draw_state.width,
+                draw_state.abs_top + draw_state.height)
+
         rid = cls._bvh_next_id
         cls._bvh_next_id += 1
         draw_state._bvh_id = rid
@@ -543,24 +544,20 @@ class Melty:
         draw_state._bvh_bbox = None
 
     @classmethod
-    def bvh_update(cls, draw_state):
+    def bvh_update(cls, draw_state, new_bbox=None):
+
         rid = draw_state._bvh_id
-        if rid is None:
-            return
         old_bbox = draw_state._bvh_bbox
         if old_bbox is not None:
             try:
                 cls._bvh.delete(rid, old_bbox)
             except Exception:
                 pass
-        new_bbox = draw_state.bbox
-        if new_bbox is not None:
-            cls._bvh.insert(rid, new_bbox)
-            draw_state._bvh_bbox = new_bbox
-        else:
-            cls._bvh_id_to_ds.pop(rid, None)
-            draw_state._bvh_id = None
-            draw_state._bvh_bbox = None
+        draw_state._bvh_bbox = (draw_state.abs_left, draw_state.abs_top,
+                                draw_state.abs_left + draw_state.width,
+                                draw_state.abs_top + draw_state.height)
+        cls._bvh.insert(rid, draw_state._bvh_bbox)
+
 
     @classmethod
     def prune_bvh(cls, stale_after=2):
@@ -766,11 +763,10 @@ class Melty:
 
         cls.event_handler.begin_frame()
 
-        # if ("right_mouse_drag" in cls.events_by_type):
-        #     right_mouse_drag_events = cls.events_by_type["right_mouse_drag"]
-        #     for event in right_mouse_drag_events:
-        #         note = Note(name=event, reason="right_mouse_drag", tint=(0,1,1))
-        #         Melty.cache.invalidate(event, note=note)
+        if ("right_mouse_drag" in cls.events_by_type):
+            right_mouse_drag_events = cls.events_by_type["right_mouse_drag"]
+            for event in right_mouse_drag_events:
+                Melty.cache.invalidate(event)
         #
         if ("middle_mouse_drag" in cls.events_by_type):
             right_mouse_drag_events = cls.events_by_type["middle_mouse_drag"]
@@ -821,7 +817,8 @@ class Melty:
             if first_event.tile_id != "hovered":
                 if (first_event.tile_id is not None and not imgui.is_mouse_down(0) and not imgui.is_mouse_down(1)
                         and not imgui.is_mouse_down(2) and not cls.on_scroll):
-                        Melty.cache.invalidate_up(first_event.tile_id, max_depth=3, force=True)
+                        print(first_event)
+                        Melty.cache.invalidate_up(first_event.tile_id, max_depth=10, force=True)
 
         Melty.all_uniques = set()
 
@@ -1453,6 +1450,24 @@ class Melty:
                 overlay.add_rect(invalidation_rect[0], invalidation_rect[1], invalidation_rect[2], invalidation_rect[3],
                                     imgui.get_color_u32_rgba(*color, alpha_from_frame_past), thickness=1.0)
 
+        if Toggles.InvalidateTracker.draw_bvh:
+            for key, note in InvalidateTracker.invalidations.items():
+                if note.rect is not None:
+                    ds = note.draw_state
+                    color = note.tint
+
+                    frames_past = Melty.frame_count - note.frame
+                    alpha_from_frame_past = max(0, 1.0 - (frames_past / Toggles.InvalidateTracker.keep_for_frames))
+
+                    invalidation_rect = note.rect
+
+                    overlay.add_text(invalidation_rect[0], invalidation_rect[1] - 15, imgui.get_color_u32_rgba(*color,
+                                                                                                               alpha_from_frame_past),
+                                     f"{note.name} |{note.reason}")
+
+                    overlay.add_rect(invalidation_rect[0], invalidation_rect[1], invalidation_rect[2], invalidation_rect[3],
+                                     imgui.get_color_u32_rgba(*color, alpha_from_frame_past), thickness=1.0)
+
         if Toggles.show_filled_tiles:
             # Mirror the InvalidateTracker overlay loop, but for tiles whose
             # filled_bbox now covers their full area - a transparent green
@@ -1460,16 +1475,24 @@ class Melty:
             # invalidation has stopped touching.
             fill_col = imgui.get_color_u32_rgba(0.0, 1.0, 0.2, 0.18)
             edge_col = imgui.get_color_u32_rgba(0.0, 1.0, 0.2, 0.55)
+
+            fill_col_fill = imgui.get_color_u32_rgba(1.0, 1.0, 0.2, 0.18)
+            edge_col_fill = imgui.get_color_u32_rgba(1.0, 1.0, 0.2, 0.55)
             for tile in cls.cache._tiles.values():
-                if tile is None or not cls.cache._tile_fully_filled(tile):
-                    continue
                 ds = tile.draw_state
                 if ds is None or ds.width is None or ds.height is None:
                     continue
-                x0, y0 = ds.abs_left, ds.abs_top
-                x1, y1 = x0 + ds.width, y0 + ds.height
-                overlay.add_rect_filled(x0, y0, x1, y1, fill_col)
-                overlay.add_rect(x0, y0, x1, y1, edge_col, thickness=1.0)
+                if tile is None or not cls.cache._tile_fully_filled(tile):
+                    x0, y0 = ds.abs_left, ds.abs_top
+                    x1, y1 = x0 + ds.width, y0 + ds.height
+                    overlay.add_rect_filled(x0, y0, x1, y1, fill_col_fill)
+                    overlay.add_rect(x0, y0, x1, y1, edge_col_fill, thickness=1.0)
+                else:
+
+                    x0, y0 = ds.abs_left, ds.abs_top
+                    x1, y1 = x0 + ds.width, y0 + ds.height
+                    overlay.add_rect_filled(x0, y0, x1, y1, fill_col)
+                    overlay.add_rect(x0, y0, x1, y1, edge_col, thickness=1.0)
 
         Collisions.handle_collisions()
 
@@ -1831,11 +1854,11 @@ class Melty:
         y = draw_state.top
         left, top = self.apply_clip((x, y))
         width, height = draw_state.width, draw_state.height
-        right, bottom = draw_state.left + width, draw_state.top + height
+        right, bottom = draw_state.abs_left + width, draw_state.abs_top + height
         right, bottom = self.apply_clip((right, bottom))
         width, height = right - x, bottom - y
 
-        return (draw_state.left, draw_state.top, width, draw_state.height)
+        return (draw_state.abs_left, draw_state.abs_top, width, draw_state.height)
 
     @classmethod
     def apply_clip(cls, point, fixed_size_ds=None):
@@ -1872,9 +1895,9 @@ class Melty:
         fix_sized_ds = cls.fixed_size_stack[-1] if len(cls.fixed_size_stack) > 0 else None
         if fix_sized_ds is not None and fix_sized_ds.width is not None:
 
-            x = draw_state.left + draw_state.width
+            x = draw_state.abs_left + draw_state.width
             x, y = cls.apply_clip((x, 0))
-            width = x - draw_state.left
+            width = x - draw_state.abs_left
         return width
 
 

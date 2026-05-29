@@ -603,6 +603,12 @@ class TileCacheMasked:
         # changes the cached subtree masks (Tile.mask_tex) of this tile and its
         # ancestors are wrong, so we invalidate them once interaction has settled.
         self._last_mark_clip: Dict[str, tuple] = {}
+        # Frame number of the most recent scroll-delta per scroll container.
+        # The BVH-driven scroll-in sweep runs one extra frame after that so a
+        # view that registers its updated bbox during its own rendering (i.e.
+        # after the scroller's mark_end already ran this frame) still gets
+        # caught next frame, when the BVH is current.
+        self._last_scroll_change_frame: Dict[str, int] = {}
         self.all_keys = set()
 
         self._fb_size: Tuple[int, int] = (0, 0)
@@ -898,7 +904,7 @@ class TileCacheMasked:
         return all_keys
 
     def invalidate_up(self, k: str, max_depth=4, force=False, frame_delta=0, note=None, skip_self=False,
-                      stop_at_filled: bool = False) -> None:
+                      stop_at_filled: bool = False, bypass_clip=False) -> None:
         draw_state = self.key_to_draw_state.get(k, None)
         if note is None:
             note = Note(name="Unnamed invalidate_up", reason="", tint=(1, 0, 0),
@@ -926,7 +932,7 @@ class TileCacheMasked:
             inside_clip, below, above = parent_draw_state.is_inside_clip(child_draw_state)
             if child_draw_state is not None and child_draw_state._print_last_invalid:
                 print_stack_trace()
-            if child_draw_state.inside_clip and inside_clip:
+            if (child_draw_state.inside_clip and inside_clip) or bypass_clip:
                 if child != k:
                     pt = self._tiles.get(child)
                     if pt is not None:
@@ -979,8 +985,8 @@ class TileCacheMasked:
                    stop_at_filled: bool = False) -> None:
         draw_state = self.key_to_draw_state.get(k, None)
 
-        if draw_state is not None and not draw_state.inside_clip:
-            return
+        # if draw_state is not None and not draw_state.inside_clip:
+        #     return
 
         if note is None:
             note = Note(name="Unnamed invalidate", reason="", tint=(1, 0, 0),
@@ -1044,6 +1050,55 @@ class TileCacheMasked:
                 t.force_invalidate = True
                 # self.force_invalid.append(t)
         request_render()
+
+    def invalidate_scrolled_in(self, draw_state, on_change: bool = False) -> None:
+        """Query the BVH for views currently overlapping the given scroll
+        view's clip rect and invalidate any whose tile isn't fully filled at
+        the live draw_state size. Catches views scrolled into view with stale
+        tiles (the chicken-and-egg) without per-view bookkeeping.
+
+        ``on_change=True`` records the current frame for use by a follow-up
+        catchup sweep one frame later — a child that just entered the clip
+        rect may register its updated bbox during its own render after this
+        method already ran for the current frame, so the second sweep catches
+        what the BVH didn't have yet. Call with ``on_change=False`` for that
+        follow-up so the timestamp isn't kept moving forward.
+        """
+        if draw_state is None:
+            return
+        clip = draw_state.abs_clip_rect
+        if clip is None:
+            return
+
+        # Walk the live child tree instead of querying the BVH. The BVH boxes
+        # only catch up when a child re-renders, so a child that just scrolled
+        # in still carries its previous box and a clip query misses it - the
+        # very views this needs to find. children_in_clip binary searches the
+        # ordered child dict using live abs_top, so it sees the current layout.
+        children_in_clip = draw_state.children_in_clip(clip, max_depth=9)
+        for ds in children_in_clip:
+            if Toggles.InvalidateTracker.draw_bvh:
+                InvalidateTracker.invalidations[f"{ds.name} in {draw_state.name} ds"] = Note(name="ds rect",
+                                                                                             reason="bvh",
+                                                                                             tint=(0, 1, 1),
+                                                                                             frame=Melty.frame_count,
+                                                                                             draw_state=ds,
+                                                                                             rect=(ds.abs_left,
+                                                                                                   ds.abs_top,
+                                                                                                   ds.abs_left + ds.width,
+                                                                                                   ds.abs_top + ds.height))
+
+            tile_id = getattr(ds, "_tile_id", None)
+            if tile_id is  None:
+                continue
+            # Only stale tiles need re-rendering; a fully-filled tile just
+            # translates, so leave the cache alone (its bbox was refreshed above).
+            if not self._tile_fully_filled(self._tiles.get(tile_id)):
+                self.invalidate(tile_id, frame_delta=0,
+                                   stop_at_filled=True,
+                                   note=Note(name="Scrolled in",
+                                             reason="bvh", tint=(0.3, 1, 0.5)))
+
 
     def _detect_occluder_changes(self, mask_rects):
         """Invalidate root windows whose occluder set changed (reveals stale cached pixels).
@@ -1443,8 +1498,8 @@ class TileCacheMasked:
                 )
 
         if use_image:
-            a = draw_state.left, draw_state.top
-            b = draw_state.left + size[0], draw_state.top + size[1]
+            a = draw_state.abs_left, draw_state.abs_top
+            b = draw_state.abs_left + size[0], draw_state.abs_top + size[1]
             uv_a = (0.0, 1.0)
             uv_b = (1.0, 0.0)
 
@@ -1554,10 +1609,10 @@ class TileCacheMasked:
                          and (not draw_state.size_change))
 
             if use_image:
-                imgui.set_cursor_screen_pos((draw_state.left, draw_state.top))
+                imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
 
-                a = draw_state.left, draw_state.top
-                b = draw_state.left + size[0], draw_state.top + size[1]
+                a = draw_state.abs_left, draw_state.abs_top
+                b = draw_state.abs_left + size[0], draw_state.abs_top + size[1]
                 uv_a = (0.0, 1.0)
                 uv_b = (1.0, 0.0)
 
@@ -1577,7 +1632,7 @@ class TileCacheMasked:
                 #     uv1=(1.0, 0.0),
                 # )
                 # imgui.set_item_allowOverlap()
-                imgui.set_cursor_screen_pos((draw_state.left, draw_state.top + draw_state.content_height))
+                imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top + draw_state.content_height))
                 self._stack.append(
                     _Ctx(
                         draw_state=draw_state,
@@ -1623,7 +1678,7 @@ class TileCacheMasked:
         imgui.end_group()
         Melty.tile_id_stack.pop()
 
-        minx, miny = ctx.draw_state.left, ctx.draw_state.top
+        minx, miny = int(ctx.draw_state.abs_left), int(ctx.draw_state.abs_top)
 
         ctx.pos = (float(minx), float(miny))
         ctx.size = (ctx.draw_state.width, ctx.draw_state.height)
@@ -1676,53 +1731,30 @@ class TileCacheMasked:
                 # tiles fill in.
                 self_tile = self._tiles.get(ctx.key)
                 self_unfilled = not self._tile_fully_filled(self_tile)
+                #
+                # if ctx.draw_state.scroll_visible:
+                #     rect = ctx.draw_state.scroll_offset
+                #     new_mark_state = (tuple(int(v) for v in rect))
+                #     prev_mark_state = self._last_mark_clip.get(ctx.key)
+                #     if (prev_mark_state is not None and prev_mark_state != new_mark_state
+                #             and self_unfilled):
+                #         self.invalidate(ctx.draw_state._tile_id, frame_delta=0,
+                #                         note=Note(name="Clip change", reason="",
+                #                                   tint=(1, 0.5, 1)))
+                #     self._last_mark_clip[ctx.key] = new_mark_state
+                #
+                # if (ctx.draw_state._parent.scroll_visible
+                #         and not ctx.draw_state.scroll_visible):
+                #     rect = ctx.draw_state._parent.scroll_offset
+                #     new_mark_state = (tuple(int(v) for v in rect))
+                #     prev_mark_state = self._last_mark_clip.get(ctx.key)
+                #     if (prev_mark_state is not None and prev_mark_state != new_mark_state
+                #             and self_unfilled):
+                #         self.invalidate_up(ctx.draw_state._tile_id, max_depth=8, frame_delta=2,
+                #                            stop_at_filled=True,
+                #                            note=Note(name="Clip change",reason="",tint=(1, 0.5, 1)))
 
-                if ctx.draw_state.scroll_visible:
-                    rect = ctx.draw_state.scroll_offset
-                    new_mark_state = (tuple(int(v) for v in rect))
-                    prev_mark_state = self._last_mark_clip.get(ctx.key)
-                    if prev_mark_state is not None and prev_mark_state != new_mark_state:
-                        if self_unfilled:
-                            self.invalidate(ctx.draw_state._tile_id, frame_delta=0,
-                                            note=Note(name="Clip change", reason="",
-                                                      tint=(1, 0.5, 1)))
-
-                        # Query the BVH for everything currently inside this
-                        # scrolling container's clip rect and invalidate any
-                        # tile that isn't fully filled at the live draw_state
-                        # size. This catches views that just scrolled in with
-                        # stale tiles (the chicken-and-egg case) without us
-                        # having to rely on each child's own mark_end to spot
-                        # it - _tile_fully_filled does the size-mismatch self-
-                        # clear, so already-current tiles are skipped.
-                        clip = ctx.draw_state.abs_clip_rect
-                        if clip is not None:
-                            for rid in Melty._bvh.intersection(clip):
-                                ds = Melty._bvh_id_to_ds.get(rid)
-                                if ds is None or ds is ctx.draw_state:
-                                    continue
-                                tile_id = getattr(ds, "_tile_id", None)
-                                if tile_id is None:
-                                    continue
-                                if not self._tile_fully_filled(self._tiles.get(tile_id)):
-                                    self.invalidate(tile_id, frame_delta=0,
-                                                    stop_at_filled=True,
-                                                    note=Note(name="Scrolled in",
-                                                              reason="bvh", tint=(0.3, 1, 0.5)))
-                    self._last_mark_clip[ctx.key] = new_mark_state
-
-                if (ctx.draw_state._parent.scroll_visible
-                        and not ctx.draw_state.scroll_visible):
-                    rect = ctx.draw_state._parent.scroll_offset
-                    new_mark_state = (tuple(int(v) for v in rect))
-                    prev_mark_state = self._last_mark_clip.get(ctx.key)
-                    if (prev_mark_state is not None and prev_mark_state != new_mark_state
-                            and self_unfilled):
-                        self.invalidate_up(ctx.draw_state._tile_id, max_depth=8, frame_delta=2,
-                                           stop_at_filled=True,
-                                           note=Note(name="Clip change",reason="",tint=(1, 0.5, 1)))
-
-                    self._last_mark_clip[ctx.key] = new_mark_state
+                    # self._last_mark_clip[ctx.key] = new_mark_state
 
 
         if not self.enabled or ctx.drew_cached or ctx.draw_state.frame_count < 1:

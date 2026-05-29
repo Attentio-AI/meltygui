@@ -326,6 +326,8 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta,
             if isinstance(input_value, (list, tuple)) or horizontal:
                 item_kwargs['align_header'] = False
 
+            item_kwargs['return_extras'] = True
+
             # On a counting frame, force the rows we DO render (visible, not the
             # off-screen current path and cache-misses that fell through above) to
             # actually run so they claim, and snapshot the session offset so we
@@ -2201,7 +2203,7 @@ def draw_function(input_value, name, draw_state, unique):
 
             draw_state.params = param_dict
         if len(draw_state.params) > 0:
-            changed, new_val = draw_collection(draw_state.params, name="Parameters", 
+            changed, new_val = draw_collection(draw_state.params, name="Parameters", indent_size=0,
             show_add_delete=False,parent_show_add_delete=False, horizontal=True, child_kwargs={"wrap":True, "show_bg":True, "use_cache":True, "z_offset":2.0})
             if changed:
                 draw_state.params = new_val
@@ -2567,7 +2569,8 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
                     pass
 
             if tab_names[static_tab] == info_icon_fa:
-                
+
+
                 changed, watch = draw_text(draw_state.watch, tint=(0.1, 0.01, 0.4),
                                           name="Watch##{unique}", column=t_idx, immediate_return=True, editable=True, show_bg=True)
                 if changed:
@@ -2582,8 +2585,17 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
                 text(str(item_value), show_bg=False, tint=(0.1, 0.01, 0.4), wrap=False, name=f"{draw_state.watch}##it",
                      column=t_idx, editable=False)
 
-
                 imgui.new_line()
+
+                draw_str(str(len(input_value._view_children)),
+                     show_bg=True, tint=(0.1, 0.01, 0.4), show_header=True, wrap=False, show_name=True, name=f"._view_children##{unique}",
+                     column=t_idx, editable=False)
+                draw_str(str(input_value.scroll_visible),
+                     show_bg=True, tint=(0.1, 0.01, 0.4), show_header=True, wrap=False, show_name=True,
+                     name=f"scroll_enabled##{unique}",
+                     column=t_idx, editable=False)
+
+                
 
                 text(f"{input_value._view_func.__name__}", show_bg=True, show_name=True, show_header=True, wrap=True, name="Rendered by", column=t_idx,
                      editable=False, tint=(0.84, 0.68, 0.639))

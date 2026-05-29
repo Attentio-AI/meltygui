@@ -56,8 +56,9 @@ class Toggles:
 
     @defaults(tint=(0.9767442,0.9383082,0.5))
     class InvalidateTracker:
-        keep_for_frames = 2
+        keep_for_frames = 1
         enable = False
+        draw_bvh = False
 
     @defaults(tint=(0.1059816,0.2410416603088379,0.32093024253845215))
     class Debug:

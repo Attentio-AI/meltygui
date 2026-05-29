@@ -11,6 +11,7 @@ class Note:
     reason: str = ""
     draw_state: any = None
     frame: int = 0
+    rect: any=None
 
 
 @defaults(attrib="keep_for_frames", tint=(0.22271497547626495,0.674418568611145,0.2395225167274475))
@@ -19,7 +20,7 @@ class InvalidateTracker:
 
     @classmethod
     def on_frame_end(cls):
-        if not Toggles.InvalidateTracker.enable:
+        if not Toggles.InvalidateTracker.enable and not Toggles.InvalidateTracker.draw_bvh:
             cls.invalidations = {}
             return
 

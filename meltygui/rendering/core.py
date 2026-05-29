@@ -390,9 +390,15 @@ def render_func(*args, **o_kwargs):
 
         if _has_imgui and len(Melty.melty_window_stack) > 0:
             draw_state.parent_window = kwargs.get("parent_window", Melty.melty_window_stack[-1])
+            # Store left/top_offset as the UNSCROLLED position relative to
+            # parent_window's content (cursor pos already reflects ancestor
+            # scroll, so add it back). _abs_left subtracts the live ancestor
+            # scroll, making abs_left react to mid-frame scroll deltas instead
+            # of waiting for this view to re-render with a new cursor pos.
+            anc_sx, anc_sy = draw_state._ancestor_scroll()
             draw_state.left_offset, draw_state.top_offset = (
-                imgui.get_cursor_screen_pos()[0] - draw_state.parent_window.abs_left,
-                imgui.get_cursor_screen_pos()[1] - draw_state.parent_window.abs_top)
+                imgui.get_cursor_screen_pos()[0] - draw_state.parent_window.abs_left + anc_sx,
+                imgui.get_cursor_screen_pos()[1] - draw_state.parent_window.abs_top + anc_sy)
 
         if closable:
             # Only perform this check on floating windows
@@ -474,7 +480,22 @@ def render_func(*args, **o_kwargs):
         #             Melty.move_draw_state_pending = {}
 
         if len(Melty.draw_state_stack) > 0:
-            draw_state._parent = Melty.draw_state_stack[-1]
+            parent = Melty.draw_state_stack[-1]
+            draw_state._parent = parent
+
+            # Self-register into the parent's child index. draw_collection used
+            # to be the only view with children (keyed by collection idx),
+            # so every other container had an empty _children and
+            # children_in_clip found nothing. Doing it here - at the one place
+            # the render-tree parent is assigned - populates it for every view.
+            # Keyed by id(): draw_states are reused from the registry, so a
+            # view's id is stable across frames, and a re-render always overwrites
+            # its own entry. Stale _parented entries are removed at read time
+            # (children_in_clip drops any whose _parent is no longer this DS).
+        if draw_state._parent is not None:
+            if draw_state._parent.id != draw_state.id:
+                if id(draw_state) not in draw_state._parent._view_children:
+                    draw_state._parent._view_children[id(draw_state)] = draw_state
 
         original_width_b = draw_state.width
         original_height_b = draw_state.height
@@ -573,7 +594,7 @@ def render_func(*args, **o_kwargs):
                                 return_value = (False, None)
                                 if return_extras:
                                     if len(return_value) == 3:
-                                        return return_value
+                                        return *return_value[:2], draw_state
                                     else:
                                         return *return_value, draw_state
                                 return return_value
@@ -606,7 +627,7 @@ def render_func(*args, **o_kwargs):
 
                 if return_extras:
                     if len(return_value) == 3:
-                        return return_value
+                        return *return_value[:2], draw_state
                     else:
                         return *return_value, draw_state
                 return return_value
@@ -1154,12 +1175,12 @@ def render_func(*args, **o_kwargs):
 
             if column is not None and column_parent is not None:
                 column_parent._current_max_column = max(column_parent._current_max_column, column)
-                parent_wrap_width = column_parent.content_width / (column_parent.final_max_column + 1)
+                parent_wrap_width = int(column_parent.content_width / (column_parent.final_max_column + 1))
                 column_parent._column_width = parent_wrap_width
 
 
                 parent_wrap_left = draw_state.abs_left + snap_int(parent_wrap_width * column)
-                available_width = parent_wrap_width - indent_x
+                available_width = int(parent_wrap_width - indent_x)
             else:
                 available_width = (parent_wrap_width - x_offset - content_margin)
 
@@ -1238,9 +1259,13 @@ def render_func(*args, **o_kwargs):
                 imgui.set_cursor_screen_pos((snap_int(parent_wrap_left + indent_x),
                                              snap_int(parent_wrap_top + column_cursor_y)))
 
+                # See the main-entry capture at :393 - store unscrolled position
+                # in parent_window's content so _abs_left can react to mid-frame
+                # ancestor-scrolls without waiting for re-render.
+                anc_sx, anc_sy = draw_state._ancestor_scroll()
                 draw_state.left_offset, draw_state.top_offset = (
-                    imgui.get_cursor_screen_pos()[0] - draw_state.parent_window.abs_left,
-                    imgui.get_cursor_screen_pos()[1] - draw_state.parent_window.abs_top)
+                    imgui.get_cursor_screen_pos()[0] - draw_state.parent_window.abs_left + anc_sx,
+                    imgui.get_cursor_screen_pos()[1] - draw_state.parent_window.abs_top + anc_sy)
 
                 draw_state.left = draw_state.abs_left
                 draw_state.top = draw_state.abs_top
@@ -1292,9 +1317,9 @@ def render_func(*args, **o_kwargs):
             draw_state._bounding_hovered = new_bounding_hovered
             if (draw_state.width is None or draw_state.height is None or hover_changed or
                     draw_state._bounding_hovered or draw_state._imgui_popover_open):
-                someone_elses_scroll = Melty.on_scroll and not draw_state.scroll_visible and draw_state._one_full_draw
+                someone_elses_scroll = Melty.on_scroll and not draw_state.scroll_visible
 
-                if (not Melty.on_drag and not imgui.is_mouse_dragging(2) and not imgui.is_mouse_dragging(1) and not someone_elses_scroll):
+                if (not Melty.on_drag and not imgui.is_mouse_dragging(2) and not imgui.is_mouse_dragging(1)) and not someone_elses_scroll:
                     if not draw_state.just_shadow:
                         Melty.cache.invalidate(tile_id, force=True, note=Note(name="hover change",
                                                                                               tint=(1,1,0),
@@ -1891,7 +1916,7 @@ def render_func(*args, **o_kwargs):
                     bg_color = (0, 0, 0, 0)
                     if draw_state.width > 5 and draw_state.height > 5:
                         nested_bg = not closable and kwargs.get("bg_offset", 0) >= 0
-                        bg_return = draw_bg(bypass=True, left=draw_state.left, top=draw_state.top,
+                        bg_return = draw_bg(bypass=True, left=draw_state.abs_left, top=draw_state.abs_top,
                                             width=draw_state.width, height=draw_state.height,
                                             rounding=draw_state.corner_radius, bg_offset=kwargs.get("bg_offset", 0),
                                             depth=Melty.shadow_depth, selected=False,
@@ -2065,7 +2090,7 @@ def render_func(*args, **o_kwargs):
                 if "with_footer" in kwargs and kwargs.get("with_footer", None) is not None:
                     if closable and draw_state.expanded:
                         imgui.set_cursor_screen_pos(
-                            (draw_state.left, draw_state.top + draw_state.height - draw_state.footer_height))
+                            (draw_state.abs_left, draw_state.abs_top + draw_state.height - draw_state.footer_height))
                         from src.lsd.gl_gui.view.core_views.new_core_view import empty
                         empty(name=f"footer_shadow{unique}", z_offset=0,
                               tile_mode=TileMode.MAX, width=draw_state.width - 2,
@@ -2575,10 +2600,6 @@ def render_func(*args, **o_kwargs):
                 # if isinstance(report_value, Pending):
                 #     raise Exception("Pending needs to be handled before saving to cache")
                 return_value = (report_changed, report_value, *return_value[2:])
-                if draw_state.fully_clipped:
-                    draw_state._one_full_draw = True
-
-
 
             draw_state.content_height = draw_state._content_rect[1]
             draw_state._source["content_height"] = "content rect height"
@@ -2615,8 +2636,8 @@ def render_func(*args, **o_kwargs):
                 if draw_state._has_popup:
                     is_popup_open = Melty.imgui_popup_open
 
-                    # if is_popup_open != draw_state._imgui_popover_open and not is_popup_open:
-                    #     Melty.cache.invalidate_up_by_obj(input_value, max_depth=4)
+                    if is_popup_open != draw_state._imgui_popover_open and not is_popup_open:
+                        Melty.cache.invalidate_up_by_obj(input_value, max_depth=4)
                     if is_popup_open:
                         Melty.report_imgui_active()
                     draw_state._imgui_popover_open = Melty.imgui_popup_open
@@ -2793,7 +2814,7 @@ def render_func(*args, **o_kwargs):
             if return_value is None:
                 child_changed, new_value = False, None
             elif isinstance(return_value, tuple) and len(return_value) == 3:
-                child_changed, new_value, return_draw_state = return_value
+                child_changed, new_value, _ = return_value
             elif isinstance(return_value, tuple) and len(return_value) == 2:
                 child_changed, new_value = return_value
             elif isinstance(return_value, bool):
@@ -2829,7 +2850,7 @@ def render_func(*args, **o_kwargs):
             # Normal return path
             if kwargs.get("convert_out", None) is not None or kwargs.get("convert_in", None) is not None:
                 if return_extras:
-                    return child_changed, new_value, return_draw_state
+                    return child_changed, new_value, draw_state
                 return child_changed, new_value
 
             if isinstance(new_value, Pending):
@@ -2838,7 +2859,7 @@ def render_func(*args, **o_kwargs):
                 draw_state._loading = False
 
             if return_extras:
-                return child_changed, new_value, return_draw_state
+                return child_changed, new_value, draw_state
             return child_changed, new_value
 
     def draw_pending_status(draw_state, pending_obj):
@@ -2891,18 +2912,15 @@ def render_func(*args, **o_kwargs):
         draw_state.scroll_visible = needs_scroll
         if not needs_scroll:
             draw_state.scroll_offset = (0, 0)
-
-
-
+        scroll_y_changed = None
         if needs_scroll:
             scroll_y_changed = draw_state.on_action("scroll_y_changed", view_id="view_scroll", priority_delta=10)
             scroll_delta = 0
+
             if scroll_y_changed is not None:
                 scroll_delta = scroll_y_changed.value
                 Melty.selected = set()
                 Melty.selected.add(draw_state)
-                # Melty.cache.invalidate_up(draw_state._tile_id, frame_delta=0, max_depth=4, force=True,
-                #                           note=Note(name="scroll_change", draw_state=draw_state, color=(1,1,0)))
 
             scroll_offset = draw_state.scroll_offset
             current_x = scroll_offset[0]
@@ -2920,9 +2938,12 @@ def render_func(*args, **o_kwargs):
                     draw_state.scroll_offset = (current_x,
                                                 max(min_scroll_y, min(new_offset_y, max_scroll_y)))
 
+            if scroll_y_changed is not None:
+                Melty.cache.invalidate_up(draw_state._tile_id, skip_self=True, max_depth=2)
+                Melty.cache.invalidate_scrolled_in(draw_state, on_change=False)
+
             if not draw_state.closed:
                 draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height - draw_state.footer_height)
-
 
         do_scroll = needs_scroll
         scroll_offset = draw_state.scroll_offset if do_scroll else (0, 0)
@@ -2995,6 +3016,27 @@ def render_func(*args, **o_kwargs):
                 imgui.set_item_allow_overlap()
                 if not is_primitive:
                     Melty.seen_values.pop()
+
+
+        # if scroll_y_changed is not None:
+        #     scroll_delta = scroll_y_changed.value
+        #     Melty.selected = set()
+        #     Melty.selected.add(draw_state)
+        #     Melty.cache.invalidate_scrolled_in(draw_state, on_change=False)
+
+            # Melty.cache._last_scroll_change_frame[draw_state._tile_id] = Melty.frame_count
+            # BVH sweep: any view inside this scroll view's clip rect with a
+            # dirty bbox gets invalidated. Runs at the scroll-event site so
+            # each scroll view manages its own descendants, not per-child.
+            # Melty.cache.invalidate_scrolled_in(draw_state, on_change=True)
+        # else:
+        #     # Catchup one frame later: views that registered their updated
+        #     # bbox during their own render (after the scroll-event sweep
+        #     # already ran last frame) weren't visible to the BVH yet, so
+        #     # repeat the sweep once with the now-current index.
+        #     last_change = Melty.cache._last_scroll_change_frame.get(draw_state._tile_id, -10)
+        #     if Melty.cache._frame_id - last_change < 2:
+        #         Melty.cache.invalidate_scrolled_in(draw_state, on_change=False)
 
 
         if do_scroll:

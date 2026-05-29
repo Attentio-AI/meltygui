@@ -209,7 +209,7 @@ class TileMode(Enum):
                  "header_natural_width", "max_header_width", "pin_to_clip", "pin_clip_rect", "pin_clamp",
                  "header_left_delta", "header_top_delta", "last_seen", "persistent", "shadow_margin", "bg_depth",
                  "anchor_pos", "parent_anchor_pos", "pin_to_clip", "pin_clip_rect", "just_shadow", 'hover_reported', 'explain_convert',
-                 'channel', 'next', 'previous', 'index_in_parent', 'relative_pos',
+                 'channel', 'next', 'previous', 'index_in_parent',
                     '_hover_eligible', 'just_shadow')
 @deep_refresh('scroll_offset', 'closed', 'search_text', 'search_active')
 class DrawState(DictConversion):
@@ -231,6 +231,7 @@ class DrawState(DictConversion):
         self._chain_stack = CacheTree()
 
         self._children = {}
+        self._view_children = {}
         self._wrapper = None
         self._parent_ctx = None
         self._bg_depth = 0
@@ -597,7 +598,7 @@ class DrawState(DictConversion):
 
     @property
     def bbox(self):
-        l, t, w, h = self.left, self.top, self.width, self.height
+        l, t, w, h = self.abs_left, self.abs_top, self.width, self.height
         if l is None or t is None or not w or not h:
             return None
         return (l, t, l + w, t + h)
@@ -844,6 +845,31 @@ class DrawState(DictConversion):
         self._clip_anchor_base_cache = result
         return result
 
+    def _ancestor_scroll(self):
+        """Sum the scroll_offsets of intermediate ancestors between self and
+        ``parent_window`` (exclusive at both ends) by walking the ``_parent``
+        chain. Used so abs_left/abs_top respond to ancestor scroll deltas
+        without waiting for the descendant to re-render — left_offset is
+        stored as the *unscrolled* content position and this delta subtracted
+        on demand. Returns (sx, sy)."""
+        sx = sy = 0
+        node = self._parent
+        stop = self.parent_window
+        # Cycle guard mirroring the abs_left guard: bail if we revisit self
+        # or walk longer than the deepest realistic chain.
+        for _ in range(64):
+            if node is None or node is self or node is stop:
+                break
+            so = node.scroll_offset
+            if so is not None:
+                sx += so[0]
+                sy += so[1]
+            nxt = node._parent
+            if nxt is node:
+                break
+            node = nxt
+        return sx, sy
+
     def _abs_left(self):
         # Recursive parent walks go through the cached `parent_window.abs_left`
         # property - once an ancestor's value is cached for the current key, the
@@ -875,7 +901,13 @@ class DrawState(DictConversion):
                 this_left = min(this_left, win_left + win.width - self.width)
                 this_left = max(this_left, win_left)
         else:
-            this_left = (window_pos_x + parent_left + self.left_offset
+            # left_offset is stored as the *unscrolled* position in parent_window's
+            # content (capture sites add the ancestor scroll). Subtracting the
+            # live ancestor scroll here makes abs_left immediately reflect any
+            # mid-frame scroll change on an ancestor - what previously had to
+            # wait for the descendant to re-render with a new cursor pos.
+            sx, _ = self._ancestor_scroll()
+            this_left = (window_pos_x + parent_left + self.left_offset - sx
                          + self.parent_anchor_offset[0] + anchor[0])
         return int(this_left)
 
@@ -902,7 +934,9 @@ class DrawState(DictConversion):
                 this_top = min(this_top, win_top + win.height - self.height)
                 this_top = max(this_top, win_top)
         else:
-            this_top = (window_pos_y + parent_top + self.top_offset
+            # See _abs_left for why this subtracts the live ancestor scroll.
+            _, sy = self._ancestor_scroll()
+            this_top = (window_pos_y + parent_top + self.top_offset - sy
                         + self.parent_anchor_offset[1] + anchor[1])
         return int(this_top)
 
@@ -914,10 +948,83 @@ class DrawState(DictConversion):
         if clipped_by is None:
             return (abs_left, abs_top, abs_left + self.width, abs_top + self.height)
 
-        return (abs_left + clipped_by[0],
-                abs_top + clipped_by[1],
-                abs_left + self.width - clipped_by[2],
-                abs_top + self.height - clipped_by[3])
+        return (int(abs_left + clipped_by[0]),
+                int(abs_top + clipped_by[1]),
+                int(abs_left + self.width - clipped_by[2]),
+                int(abs_top + self.height - clipped_by[3]))
+
+
+    def children_in_clip(self, clip=None, max_depth=1):
+        """Descendants whose vertical span overlaps `clip` (default: this view's
+        abs_clip_rect), top-to-bottom.
+
+        `max_depth` bounds the recursion: 1 (default) returns only direct
+        children; higher values also descend into them, including any descendant
+        that overlaps `clip`, down at most `max_depth` levels. Pass
+        `max_depth=None` for the whole subtree. The same `clip` is carried down
+        — positions are absolute (screen space), so a grandchild is kept iff it
+        overlaps the original viewport, not its immediate parent's box.
+
+        Results are pre-order (each child immediately followed by its own
+        in-clip subtree) and deduped by identity across the whole walk."""
+        if clip is None:
+            clip = self.abs_clip_rect
+        if clip is None:
+            return []
+
+        direct = self._direct_children_in_clip(clip)
+        if max_depth is not None and max_depth <= 1:
+            return direct
+
+        next_depth = None if max_depth is None else max_depth - 1
+        seen = set()
+        result = []
+        for c in direct:
+            if id(c) not in seen:
+                seen.add(id(c))
+                result.append(c)
+            for gc in c.children_in_clip(clip, next_depth):
+                if id(gc) not in seen:
+                    seen.add(id(gc))
+                    result.append(gc)
+        return result
+
+    def _direct_children_in_clip(self, clip):
+        """Direct children overlapping `clip`, ordered top-to-bottom by live
+        abs_top.
+
+        Children self-register into _view_children (core_render, where _parent
+        is set) keyed by id. abs_left/abs_top are read live, so this reflects
+        the current scroll immediately — unlike a BVH clip query, whose boxes
+        only catch up when each child re-renders, so it would miss exactly the
+        children that just scrolled in.
+
+        A plain 1-D overlap filter, NOT a binary search: rows can have different
+        heights, so ordering by abs_top does not order by bottom edge
+        (abs_top + height), and a binary search keyed on either edge skips a
+        band of visible rows. We filter (so dict iteration order is irrelevant),
+        then sort the survivors top-to-bottom. A child can appear under more
+        than one key, and one that has since re-rendered elsewhere leaves a
+        stale entry behind — so we dedupe by identity and drop any whose _parent
+        is no longer this view."""
+        children = self._view_children
+        if not children:
+            return []
+        clip_top, clip_bottom = clip[1], clip[3]
+
+        seen = set()
+        result = []
+        for c in children.values():
+            if c is None or c is self or c._parent is not self:
+                continue
+            if id(c) in seen:
+                continue
+            seen.add(id(c))
+            top = c.abs_top
+            if top < clip_bottom and top + (c.height or 0) > clip_top:
+                result.append(c)
+        result.sort(key=lambda c: c.abs_top)
+        return result
 
     @property
     def size_change(self):
@@ -962,9 +1069,13 @@ class DrawState(DictConversion):
         # Parent-side changes propagate via the abs parent.abs_left (which
         # has its own key); we don't need to mirror them here.
         f = DecorationManager.melty.frame_count
+        # Include _ancestor_scroll in the key so that-frame scroll deltas on an
+        # ancestor invalidate the cache and we recompute with the current
+        # scroll position (the non-pinned path subtracts this in _abs_left).
+        ancestor_sx, _ = self._ancestor_scroll()
         key = (f, self.left_offset, self.window_pos, self.pin_to_clip,
                self.anchor_pos, self.parent_anchor_pos, self.pin_target,
-               self.pin_clip_rect, self.pin_clamp, self.width)
+               self.pin_clip_rect, self.pin_clamp, self.width, ancestor_sx)
         if self._abs_left_key == key:
             return self._abs_left_cache
         # Set BEFORE computing so a self-referential cycle (e.g. pin_target →
@@ -977,9 +1088,10 @@ class DrawState(DictConversion):
     @property
     def abs_top(self):
         f = DecorationManager.melty.frame_count
+        _, ancestor_sy = self._ancestor_scroll()
         key = (f, self.top_offset, self.window_pos, self.pin_to_clip,
                self.anchor_pos, self.parent_anchor_pos, self.pin_target,
-               self.pin_clip_rect, self.pin_clamp, self.height)
+               self.pin_clip_rect, self.pin_clamp, self.height, ancestor_sy)
         if self._abs_top_key == key:
             return self._abs_top_cache
         self._abs_top_key = key
@@ -1114,8 +1226,8 @@ class DrawState(DictConversion):
         clip_left, clip_top, clip_right, clip_bottom = clip_rect
 
         if child_draw_state is not None:
-            left = child_draw_state.left
-            top = child_draw_state.top
+            left = child_draw_state.abs_left
+            top = child_draw_state.abs_top
             width = child_draw_state.width
             height = child_draw_state.height
 

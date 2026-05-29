@@ -101,7 +101,7 @@ class Mode(Enum):
                     'shadow': True, "return_item": True,
                     "show_tint": False, "show_header": False, 'indent_size': 5,
                     "disable_scroll": False, "searchable": True, "wrap":True,
-                    "child_kwargs": {"force_initial":True, "initial": {"window_pos": (-20, 0), "closed":False},
+                    "child_kwargs": {"force_initial":True, "initial": {"window_pos": (-20, -1), "closed":False},
                                      "bg_offset":2, "swoosh":False, "auto_resize":True, "closed":False,
                                      "return_item": True,
                                      "inline":True, "anchor": Anchor.TOP_LEFT, "parent_anchor": Anchor.TOP_LEFT},

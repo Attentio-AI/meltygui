@@ -1092,7 +1092,7 @@ def draw_text(input_value: str,
     rect_max_x = left + draw_state.content_width
     rect_max_y = draw_state.abs_clip_rect[3]
 
-    draw_list.push_clip_rect(rect_min_x, rect_min_y, rect_max_x, rect_max_y, True)
+    # draw_list.push_clip_rect(rect_min_x, rect_min_y, rect_max_x, rect_max_y, False)
 
     # Selection
     if _has_selection(ds):
@@ -1184,7 +1184,7 @@ def draw_text(input_value: str,
             cursor_color = 0xFFFFFFFF  # white
             draw_list.add_line(cx, cy, cx, cy + line_px, cursor_color, 1.0)
 
-    draw_list.pop_clip_rect()
+    # draw_list.pop_clip_rect()
 
     if changed:
         text_height = (text.count('\n') + 1) * line_px + 2
