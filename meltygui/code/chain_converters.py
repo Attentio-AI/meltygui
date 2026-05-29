@@ -604,7 +604,7 @@ def general_parse_to_address(input_value: GeneralParse=None, pending=False, draw
                                  "code_str": code_str,
                                  "file_path": address.path}, mode=Mode.FLOATING, pin_to_clip=Pin.PARENT,
                                        parent_anchor=Anchor.BOTTOM_LEFT,
-                                       tint=(0.3, 0.5, 0.8))
+                                       tint=(0.3, 0.4, 0.6))
             if recompiled:
                 record_compile(address)
                 # Refresh the cached file path node so its compiled indicator updates.

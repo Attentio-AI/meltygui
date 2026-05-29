@@ -62,6 +62,11 @@ class Tile:
     last_invalidated_frame: int = 3
     force_invalidate: bool = False
     mask_layer: int = 0  # Layer at which mask_tex was built (for relative depth offset)
+    # Cumulative union (in tile-local coords) of regions blitted from the main
+    # framebuffer during the tile's lifetime. None until the first partial blit;
+    # once it covers (0,0,size) the tile is fully filled and scroll-driven
+    # invalidations can be skipped. Reset implicitly on tile recreation/resize.
+    filled_bbox: Optional[Tuple[int, int, int, int]] = None
 
 
 @dataclass
@@ -169,6 +174,14 @@ def _create_fbo_with_tex(tex: int, depth_stencil: bool, w, h) -> Tuple[int, Opti
 
 def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, draw_state=None, tile_id=None) -> \
         Optional[Tile]:
+    # Layout occasionally hands us fractional or negative dims (e.g. a
+    # midline is 0.333... width). glTexImage2D coerces those to int and lands on
+    # 0, producing an incomplete FBO attachment (0x8CD6). Snap to integer
+    # coords up front and bail before any GL work if it reduces to zero.
+    w = int(w) if w and w > 0 else 0
+    h = int(h) if h and h > 0 else 0
+    if w <= 0 or h <= 0:
+        return None
     if existing and existing.size == (w, h):
         return existing
 
@@ -201,18 +214,29 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
             gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, new_fbo)
             gl.glClearColor(0, 0, 0, 0.0)
             gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT | gl.GL_STENCIL_BUFFER_BIT)
-            gl.glBlitFramebuffer(
-                0,
-                0,
-                snap_int(existing.size[0]),
-                snap_int(existing.size[1]),
-                0,
-                0,
-                snap_int(w),
-                snap_int(h),
-                gl.GL_COLOR_BUFFER_BIT,
-                gl.GL_LINEAR,
-            )
+            # Crop, don't stretch. The previous stretch-blit produced ugly
+            # squished/streched content until the partial blits caught up. We
+            # copy 1:1 from the old surface's screen-top-left corner into the
+            # new surface's screen-top-left corner; the uncovered remainder
+            # stays transparent until Stage 3 fills it.
+            #
+            # Y is flipped relative to screen coords here - draw_tile samples
+            # with uv_a=(0,1), uv_b=(1,0), so screen-top maps to FBO-y = H.
+            # The cropping region in FBO coords therefore runs from H - crop_h to
+            # H on both surfaces.
+            ow = snap_int(existing.size[0])
+            oh = snap_int(existing.size[1])
+            nw = snap_int(w)
+            nh = snap_int(h)
+            cw = max(0, min(ow, nw))
+            ch = max(0, min(oh, nh))
+            if cw > 0 and ch > 0:
+                gl.glBlitFramebuffer(
+                    0, oh - ch, cw, oh,           # src (old FBO, top-left in screen)
+                    0, nh - ch, cw, nh,           # dst (new FBO, same screen corner)
+                    gl.GL_COLOR_BUFFER_BIT,
+                    gl.GL_NEAREST,                # no scaling -> NEAREST is exact and cheap
+                )
         finally:
             st.restore()
 
@@ -235,6 +259,19 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
 
     t = Tile(draw_state=draw_state, fbo=new_fbo, tex=new_tex, mask_tex=new_mask_tex, rbo=new_rbo, size=(w, h),
              dirty=True)
+    # Seed filled_bbox to what the crop-copy above covered (in tile-local
+    # top-left coords). On a shrink it's the whole tile -> tile reads are fully
+    # covered and the scroll-invalidate gate stops early; on a grow it's
+    # the old corner, so only the newly-revealed border still needs to fill in.
+    # A new tile -> None (untouched, scroll-invalidate proceeds).
+    if existing is not None:
+        ow = snap_int(existing.size[0])
+        oh = snap_int(existing.size[1])
+        cw = max(0, min(ow, w))
+        ch = max(0, min(oh, h))
+        t.filled_bbox = (0, 0, cw, ch) if cw > 0 and ch > 0 else None
+    else:
+        t.filled_bbox = None
     t.last_invalidated_frame = frame_id + 1
     request_render()
     return t
@@ -659,6 +696,52 @@ class TileCacheMasked:
             return True
         return t.last_clean_frame < t.last_invalidated_frame
 
+    def _tile_fully_filled(self, t: Optional[Tile]) -> bool:
+        """True when every pixel of the tile has been blitted from the main
+        framebuffer at least once. Partial blits accumulate into ``filled_bbox``
+        in PASS 3; this is the test that lets scroll-driven invalidation stop
+        once the tile is complete (the original purpose of that invalidation
+        is just to keep scrolling tiles filling in)."""
+        if t is None or t.filled_bbox is None:
+            return False
+        w, h = t.size
+        # Chicken-and-egg: draw_state.width/height update before the tile gets
+        # re-ensured at the new size, so the tile can be on screen with stale
+        # contents we'd otherwise treat as "filled". Check against the live
+        # draw_state and drop the cached fill if they diverge - the scroll
+        # path then re-engages until _ensure_tile catches up next frame.
+        ds = t.draw_state
+        if ds is not None and ds.width is not None and ds.height is not None:
+            if int(ds.width) != w or int(ds.height) != h:
+                t.filled_bbox = None
+                return False
+        l, top, r, b = t.filled_bbox
+        # And defense against any in-place tile-size mutation (unlikely today, but
+        # cheap insurance for future code paths).
+        if r > w or b > h:
+            t.filled_bbox = None
+            return False
+        return l <= 0 and top <= 0 and r >= w and b >= h
+
+    def _accumulate_filled(self, t: Tile, draw_state) -> None:
+        """Union the current frame's visible-portion (tile size minus
+        ``clipped_by_rect`` insets) into the tile's cumulative ``filled_bbox``."""
+        if t is None or draw_state is None:
+            return
+        cb = draw_state.clipped_by_rect or (0, 0, 0, 0)
+        w, h = t.size
+        bl = max(0, int(cb[0]))
+        bt = max(0, int(cb[1]))
+        br = max(bl, w - max(0, int(cb[2])))
+        bb = max(bt, h - max(0, int(cb[3])))
+        if br <= bl or bb <= bt:
+            return  # nothing actually written this frame
+        if t.filled_bbox is None:
+            t.filled_bbox = (bl, bt, br, bb)
+        else:
+            pl, pt, pr, pbottom = t.filled_bbox
+            t.filled_bbox = (min(pl, bl), min(pt, bt), max(pr, br), max(pbottom, bb))
+
     @staticmethod
     def _oversized(size: Optional[Tuple[int, int]]) -> bool:
         """True if a view this size is too large to back with an offscreen tile."""
@@ -788,16 +871,34 @@ class TileCacheMasked:
             all_keys.extend(self.get_parent_keys(parent_key))
         return all_keys
 
-    def get_child_keys(self, key, depth=0, max_depth=4):
+    def get_child_keys(self, key, depth=0, max_depth=4, stop_at_filled: bool = False):
         if depth >= max_depth:
-            return set()
+            return {}
         child_keys = self.parent_key_to_child_keys.get(key, {})
-        all_keys = child_keys.copy()
-        for ck in child_keys.values():
-            all_keys.update(self.get_child_keys(ck[1], depth + 1, max_depth=max_depth))
+        if not stop_at_filled:
+            all_keys = child_keys.copy()
+            for ck in child_keys.values():
+                all_keys.update(self.get_child_keys(ck[1], depth + 1, max_depth=max_depth))
+            return all_keys
+
+        # stop_at_filled: include the boundary child (so it still gets
+        # invalidated and recomposes) but don't recurse into its subtree -
+        # the descendants below a filled tile already have their contents
+        # composed into it and don't need re-invalidation. Without the "one
+        # past" case, the last unfilled child above a filled boundary gets
+        # stranded with stale composition.
+        all_keys = {}
+        for k_inner, ck in child_keys.items():
+            child_key = ck[1]
+            all_keys[k_inner] = ck
+            if self._tile_fully_filled(self._tiles.get(child_key)):
+                continue  # one past: included above, but don't walk the subtree
+            all_keys.update(self.get_child_keys(child_key, depth + 1, max_depth=max_depth,
+                                                stop_at_filled=stop_at_filled))
         return all_keys
 
-    def invalidate_up(self, k: str, max_depth=4, force=False, frame_delta=0, note=None, skip_self=False) -> None:
+    def invalidate_up(self, k: str, max_depth=4, force=False, frame_delta=0, note=None, skip_self=False,
+                      stop_at_filled: bool = False) -> None:
         draw_state = self.key_to_draw_state.get(k, None)
         if note is None:
             note = Note(name="Unnamed invalidate_up", reason="", tint=(1, 0, 0),
@@ -811,8 +912,9 @@ class TileCacheMasked:
         if k not in self._tiles:
             k = self.key_to_parent_key.get(k, None)
 
-        self.invalidate(k, force=force, note=note)
-        child_keys = self.get_child_keys(k, max_depth=max_depth).values()
+        self.invalidate(k, force=force, note=note, stop_at_filled=stop_at_filled)
+        child_keys = self.get_child_keys(k, max_depth=max_depth,
+                                          stop_at_filled=stop_at_filled).values()
         child_keys_list = list(child_keys)
         child_keys_list.sort(key=lambda x: x[0] if x[0] is not None else 0)
 
@@ -873,7 +975,8 @@ class TileCacheMasked:
             input_val_hash,
         )
 
-    def invalidate(self, k: str, force=False, do_store=True, frame_delta=0, note=None) -> None:
+    def invalidate(self, k: str, force=False, do_store=True, frame_delta=0, note=None,
+                   stop_at_filled: bool = False) -> None:
         draw_state = self.key_to_draw_state.get(k, None)
 
         if draw_state is not None and not draw_state.inside_clip:
@@ -918,6 +1021,11 @@ class TileCacheMasked:
             if parent and parent != k:
                 pt = self._tiles.get(parent)
                 if pt is not None:
+                    # Stop climbing once an ancestor's tile is fully filled -
+                    # but invalidate that boundary ancestor first, then stop.
+                    # Without the "one more" step, the boundary tile is the
+                    # one that has to recompose to cover the just-invalidated
+                    # descendant, and it gets stranded with stale composition.
                     parent_draw_state = self.key_to_draw_state.get(parent, None)
                     if parent_draw_state is not None and parent_draw_state._print_last_invalid:
                         print_stack_trace()
@@ -926,6 +1034,8 @@ class TileCacheMasked:
                     pt.dirty = self._is_dirty(pt)
                     if Toggles.InvalidateTracker.enable:
                         InvalidateTracker.invalidations[k] = note
+                    if stop_at_filled and self._tile_fully_filled(pt):
+                        break
 
     def invalidate_all(self) -> None:
         for t in self._tiles.values():
@@ -1556,26 +1666,61 @@ class TileCacheMasked:
                        and not imgui.is_mouse_down(2) and not Melty.on_drag)
             if settled:
 
-                #
+                # Stop invalidating once the tile is fully filled. Each partial
+                # blit (PASS_3) adds its written region into the tile's
+                # frame_bbox; once that covers the whole tile, every pixel has
+                # been blitted at least once and subsequent frame deltas don't
+                # need another pass - they just shift where the cached
+                # tile is sampled. This kills the per-frame revalidation storm
+                # during sustained scrolls while still letting newly-revealed
+                # tiles fill in.
+                self_tile = self._tiles.get(ctx.key)
+                self_unfilled = not self._tile_fully_filled(self_tile)
+
                 if ctx.draw_state.scroll_visible:
                     rect = ctx.draw_state.scroll_offset
                     new_mark_state = (tuple(int(v) for v in rect))
                     prev_mark_state = self._last_mark_clip.get(ctx.key)
                     if prev_mark_state is not None and prev_mark_state != new_mark_state:
-                        self.invalidate(ctx.draw_state._tile_id, frame_delta=0, note=Note(name="Clip change",
-                                                                       reason="",
-                                                                       tint=(1, 0.5, 1)))
+                        if self_unfilled:
+                            self.invalidate(ctx.draw_state._tile_id, frame_delta=0,
+                                            note=Note(name="Clip change", reason="",
+                                                      tint=(1, 0.5, 1)))
+
+                        # Query the BVH for everything currently inside this
+                        # scrolling container's clip rect and invalidate any
+                        # tile that isn't fully filled at the live draw_state
+                        # size. This catches views that just scrolled in with
+                        # stale tiles (the chicken-and-egg case) without us
+                        # having to rely on each child's own mark_end to spot
+                        # it - _tile_fully_filled does the size-mismatch self-
+                        # clear, so already-current tiles are skipped.
+                        clip = ctx.draw_state.abs_clip_rect
+                        if clip is not None:
+                            for rid in Melty._bvh.intersection(clip):
+                                ds = Melty._bvh_id_to_ds.get(rid)
+                                if ds is None or ds is ctx.draw_state:
+                                    continue
+                                tile_id = getattr(ds, "_tile_id", None)
+                                if tile_id is None:
+                                    continue
+                                if not self._tile_fully_filled(self._tiles.get(tile_id)):
+                                    self.invalidate(tile_id, frame_delta=0,
+                                                    stop_at_filled=True,
+                                                    note=Note(name="Scrolled in",
+                                                              reason="bvh", tint=(0.3, 1, 0.5)))
                     self._last_mark_clip[ctx.key] = new_mark_state
 
-                if (ctx.draw_state._parent.scroll_visible and ctx.draw_state.inside_clip
+                if (ctx.draw_state._parent.scroll_visible
                         and not ctx.draw_state.scroll_visible):
                     rect = ctx.draw_state._parent.scroll_offset
                     new_mark_state = (tuple(int(v) for v in rect))
                     prev_mark_state = self._last_mark_clip.get(ctx.key)
-                    if prev_mark_state is not None and prev_mark_state != new_mark_state:
-                        self.invalidate_up(ctx.draw_state._tile_id, max_depth=7, frame_delta=1, note=Note(name="Clip change",
-                                                                                          reason="",
-                                                                                          tint=(1, 0.5, 1)))
+                    if (prev_mark_state is not None and prev_mark_state != new_mark_state
+                            and self_unfilled):
+                        self.invalidate_up(ctx.draw_state._tile_id, max_depth=8, frame_delta=2,
+                                           stop_at_filled=True,
+                                           note=Note(name="Clip change",reason="",tint=(1, 0.5, 1)))
 
                     self._last_mark_clip[ctx.key] = new_mark_state
 
@@ -1599,10 +1744,13 @@ class TileCacheMasked:
             gl.glBindVertexArray(self._dummy_vao)
             old_size = t.size if t else None
 
-            if (((t is None) or (t.size != (ctx.size[0], ctx.size[1]))) and not imgui.is_mouse_down(0)
+            if (((t is None) or ((int(t.size[0]), int(t.size[1])) != (int(ctx.size[0]), int(ctx.size[1])))) and not imgui.is_mouse_down(0)
                     and not imgui.is_mouse_down(1) and not imgui.is_mouse_down(2)):
                 t = _ensure_tile(t, ctx.size[0], ctx.size[1], frame_id=self._frame_id, draw_state=ctx.draw_state)
-                self.invalidate(ctx.key)
+                reason = f"New size old_size{old_size} new_size{ctx.size}" if old_size else "New tile"
+                reason = "t None" if t is None else reason
+
+                self.invalidate(ctx.key, note=Note(name="New Tile", reason=reason, tint=(1, 0.5, 0)))
                 self._tiles[ctx.key] = t
 
             if self._is_dirty(t) and (ctx.key not in self._enq_copy_keys):
@@ -1957,6 +2105,10 @@ class TileCacheMasked:
 
                         p.tile.last_clean_frame = self._frame_id
                         p.tile.dirty = self._is_dirty(p.tile)
+                        # Track which portion of the tile got pixels this frame
+                        # so scroll frame invalidations can stop once the union
+                        # covers the whole tile (see _tile_fully_filled).
+                        self._accumulate_filled(p.tile, p.draw_state)
                     except Exception as e:
                         print(
                             f"Error copying to tile {p.key}: {e} {p.tile.draw_state.to_dict()} input_value={p.tile.draw_state._input_value}")

@@ -936,6 +936,19 @@ class DrawState(DictConversion):
         if t is None:
             return False
         return t.size != (int(self.width), int(self.height))
+
+    @property
+    def tile_fully_filled(self) -> bool:
+        """Debug helper: True when this view's blit tile has had every pixel
+        written from the main framebuffer at least once. Used by the filled-
+        tile overlay (Toggles.show_filled_tiles)."""
+        if self._tile_id is None:
+            return False
+        cache = DecorationManager.melty.cache
+        if cache is None:
+            return False
+        return cache._tile_fully_filled(cache._tiles.get(self._tile_id))
+
     @property
     def abs_left(self):
         # The key covers everything the wrapper writes per-draw_state mid-frame

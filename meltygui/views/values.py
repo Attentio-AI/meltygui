@@ -870,7 +870,7 @@ def draw_pending_texture(input_value: PendingTexture, draw_state):
         return False, None
 
     return_val = draw_texture(input_value.texture_id, name=f"{draw_state.id}_inner", auto_resize=False,
-                              show_header=False, use_cache=True, wrap=False, tint=(0.1, 0.1, 0.52))
+                              show_header=False, use_cache=True, wrap=False, tint=(0.2, 0.2, 0.3))
 
     return return_val
 
@@ -1633,13 +1633,13 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
     border_inset_half = 1.5
     stroke_width      = 4.0
     # How depth maps to color intensity
-    intensity_factor  = 0.042
+    intensity_factor  = 0.021
     intensity_offset  = -0.336
 
     some_var = [32,18,19]
     # Outline color tuning
-    outline_base      = 1.773
-    outline_depth_mul = 0.891
+    outline_base      = 1.765
+    outline_depth_mul = 0.786
     outline_sat       = {'default': 1.1, 'nested': 1.473}
     
 
@@ -1674,6 +1674,8 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
     wrapped_depth = min(max_depth, (Melty.bg_depth % depth_wrap) + bg_offset)
     scaled_depth = wrapped_depth * depth_scale
     depth_intensity = (scaled_depth + intensity_offset) * intensity_factor
+    max_depth_intensity = 0.652
+    depth_intensity = min(depth_intensity, max_depth_intensity)
 
     # ── Geometry ───────────────────────────────────────────────
     right = left + width

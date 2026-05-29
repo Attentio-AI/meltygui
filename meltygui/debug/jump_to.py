@@ -14,7 +14,7 @@ def draw_jump_to(input_value: Address, unique, draw_state=None):
     line_number = input_value.start + 1 if input_value.start is not None else None
     # Unicode escape (not a literal string) for the Font Awesome folder icon - a
     # pasted PUA char gets stripped to empty on save, which is why it vanished.
-    folder_icon = "\uf07b"  # FA folder
+    folder_icon = ""  # FA folder
 
     # Label with the enclosing function name + line number. Prefer the function
     # already attached to the address (.source); otherwise retrieve it from the
@@ -49,7 +49,7 @@ def draw_jump_to(input_value: Address, unique, draw_state=None):
     imgui.align_text_to_frame_padding()
     imgui.text(label)
     imgui.same_line()
-    if button(f"{folder_icon} Jump##jump_to{unique}", name=f"{unique}_jump")[0]:
+    if button(f"{folder_icon} Op##jump_to{unique}", name=f"{unique}_jump")[0]:
         from src.lsd.gl_gui.utils.jump_to_code import open_in_intellij
 
         threading.Thread(

@@ -821,8 +821,7 @@ class Melty:
             if first_event.tile_id != "hovered":
                 if (first_event.tile_id is not None and not imgui.is_mouse_down(0) and not imgui.is_mouse_down(1)
                         and not imgui.is_mouse_down(2) and not cls.on_scroll):
-                        print(first_event)
-                        Melty.cache.invalidate_up(first_event.tile_id, max_depth=4, force=True)
+                        Melty.cache.invalidate_up(first_event.tile_id, max_depth=3, force=True)
 
         Melty.all_uniques = set()
 
@@ -1453,6 +1452,24 @@ class Melty:
 
                 overlay.add_rect(invalidation_rect[0], invalidation_rect[1], invalidation_rect[2], invalidation_rect[3],
                                     imgui.get_color_u32_rgba(*color, alpha_from_frame_past), thickness=1.0)
+
+        if Toggles.show_filled_tiles:
+            # Mirror the InvalidateTracker overlay loop, but for tiles whose
+            # filled_bbox now covers their full area - a transparent green
+            # wash so you can see at a glance which views the scroll-driven
+            # invalidation has stopped touching.
+            fill_col = imgui.get_color_u32_rgba(0.0, 1.0, 0.2, 0.18)
+            edge_col = imgui.get_color_u32_rgba(0.0, 1.0, 0.2, 0.55)
+            for tile in cls.cache._tiles.values():
+                if tile is None or not cls.cache._tile_fully_filled(tile):
+                    continue
+                ds = tile.draw_state
+                if ds is None or ds.width is None or ds.height is None:
+                    continue
+                x0, y0 = ds.abs_left, ds.abs_top
+                x1, y1 = x0 + ds.width, y0 + ds.height
+                overlay.add_rect_filled(x0, y0, x1, y1, fill_col)
+                overlay.add_rect(x0, y0, x1, y1, edge_col, thickness=1.0)
 
         Collisions.handle_collisions()
 

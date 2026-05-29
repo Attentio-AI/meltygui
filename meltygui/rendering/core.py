@@ -2050,7 +2050,7 @@ def render_func(*args, **o_kwargs):
                             draw_state.context_menu_open = False
 
                 if kwargs.get("show_bg", False):
-                    outline_margin = 0
+                    outline_margin = 3
                 else:
                     outline_margin = 0
 

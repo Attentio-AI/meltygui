@@ -51,7 +51,7 @@ class Swoosh:
     some_dict = [1,1,1,1]
 
 
-@window(tint=(0.8, 0.5, 0.1))
+@window(tint=(0.9, 0.3, 0.0))
 class Toggles:
 
     @defaults(tint=(0.9767442,0.9383082,0.5))
@@ -59,10 +59,15 @@ class Toggles:
         keep_for_frames = 2
         enable = False
 
-    @defaults(tint=(0.6195782,0.6659455299377441,0.7441860437393188))
+    @defaults(tint=(0.1059816,0.2410416603088379,0.32093024253845215))
     class Debug:
         slow_frame_rate = False
         other = False
+
+    # Overlay a transparent green square on any draw_state whose blit tile is
+    # fully filled (filled_bbox covers full size). Used to verify the scroll-
+    # invalidation stop-at-filled gate is actually marking tiles complete.
+    show_filled_tiles = False
 
     # Invalidation settings
     invalidate_stack_trace = False
