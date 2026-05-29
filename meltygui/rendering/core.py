@@ -390,6 +390,9 @@ def render_func(*args, **o_kwargs):
 
         if _has_imgui and len(Melty.melty_window_stack) > 0:
             draw_state.parent_window = kwargs.get("parent_window", Melty.melty_window_stack[-1])
+            if draw_state.parent_window is None:
+                draw_state.parent_window = Melty.melty_window_stack[-1]
+
             # Store left/top_offset as the UNSCROLLED position relative to
             # parent_window's content (cursor pos already reflects ancestor
             # scroll, so add it back). _abs_left subtracts the live ancestor
@@ -594,7 +597,7 @@ def render_func(*args, **o_kwargs):
                                 return_value = (False, None)
                                 if return_extras:
                                     if len(return_value) == 3:
-                                        return *return_value[:2], draw_state
+                                        return return_value
                                     else:
                                         return *return_value, draw_state
                                 return return_value
@@ -627,7 +630,7 @@ def render_func(*args, **o_kwargs):
 
                 if return_extras:
                     if len(return_value) == 3:
-                        return *return_value[:2], draw_state
+                        return return_value
                     else:
                         return *return_value, draw_state
                 return return_value
@@ -1022,50 +1025,13 @@ def render_func(*args, **o_kwargs):
                 anchor_pos = kwargs.get("anchor", Anchor.TOP_LEFT)
                 draw_state.anchor_pos = anchor_pos
                 draw_state.parent_anchor_pos = kwargs.get("parent_anchor", Anchor.TOP_LEFT)
-                pin = kwargs.get("pin_to_clip", False)
-                # Reset pin state each frame; the matching branch below sets it.
-                draw_state.pin_target = None
-                draw_state.pin_clip_rect = None
-                draw_state.pin_clamp = False
-                if pin == Pin.CLIP:
-                    # Pin to the active clip rect, clamped to the parent window's
-                    # corners for the visible edge (bottom = min(parent_bottom,
-                    # clip_bottom)). The live clip stack is only valid now, so
-                    # snapshot it; pin_rect intersects it with the live parent.
-                    draw_state.pin_to_clip = True
-                    draw_state.pin_clamp = True
-                    draw_state.pin_clip_rect = Melty.get_clip_rect()
-                elif isinstance(pin, Pin):
-                    # Symbolic view targets resolve to the window and their
-                    # relatives. _parent defaults to self and parent_window may
-                    # be None; a self/None resolution falls back to a clip
-                    # snapshot instead (same as bool True). GRANDPARENT walks
-                    # _parent twice and degrades to PARENT if no grandparent.
-                    if pin == Pin.PARENT:
-                        resolved = draw_state._parent
-                    elif pin == Pin.GRANDPARENT:
-                        p = draw_state._parent
-                        resolved = p._parent if p is not None and p is not draw_state else None
-                    else:  # Pin.WINDOW
-                        resolved = draw_state.parent_window
-                    draw_state.pin_to_clip = True
-                    if resolved is not None and resolved is not draw_state:
-                        draw_state.pin_target = resolved
-                    else:
-                        draw_state.pin_clip_rect = Melty.get_clip_rect()
-                elif isinstance(pin, DrawState):
-                    # Pin to an arbitrary view; read its clip rect live each
-                    # frame so the window tracks that target as it scrolls.
-                    draw_state.pin_target = pin
-                    draw_state.pin_to_clip = True
-                else:
-                    # Boolean: pin to the enclosing clip / parent window (default
-                    # target). Snapshot the active clip rect now - the live clip
-                    # stack is only valid at declaration time, but abs_left/
-                    # abs_top are recomputed throughout the frame.
-                    draw_state.pin_to_clip = bool(pin)
-                    if draw_state.pin_to_clip:
-                        draw_state.pin_clip_rect = Melty.get_clip_rect()
+                # Only the Pin enum is supported. Store the mode; the actual
+                # view (parent / grandparent / root, or clip) is resolved up
+                # from the tree at compute time (see draw_state.pin_rect), so
+                # nothing is snapshotted here and the float tracks its target as
+                # it scrolls. Anything else means "not pinned".
+                pin = kwargs.get("pin_to_clip", None)
+                draw_state.pin_to_clip = pin if isinstance(pin, Pin) else None
                 imgui.set_cursor_screen_pos((snap_int(draw_state.abs_left), snap_int(draw_state.abs_top)))
 
             kwargs['melty_window'] = False
@@ -1369,6 +1335,15 @@ def render_func(*args, **o_kwargs):
             clip_rect = Melty.get_clip_rect()
             if clip_rect is not None:
                 draw_state.clip_rect = clip_rect
+                # Anchor the captured (absolute) clip to the parent window's
+                # position now, so abs_clip_rect can shift it by the window's
+                # later movement (a window drag) and stay current without a
+                # re-render. None when this view has no enclosing window.
+                _pw = draw_state.parent_window
+                if _pw is not None and _pw is not draw_state:
+                    draw_state._clip_win_anchor = (_pw._abs_left(), _pw._abs_top())
+                else:
+                    draw_state._clip_win_anchor = None
                 left_clipped_by = max(0, clip_rect[0] - draw_state.abs_left)
                 top_clipped_by = max(0, clip_rect[1] - draw_state.abs_top)
                 right_clipped_by = max(0, (draw_state.abs_left + draw_state.width) - (clip_rect[2]))
@@ -2814,7 +2789,7 @@ def render_func(*args, **o_kwargs):
             if return_value is None:
                 child_changed, new_value = False, None
             elif isinstance(return_value, tuple) and len(return_value) == 3:
-                child_changed, new_value, _ = return_value
+                child_changed, new_value, return_draw_state = return_value
             elif isinstance(return_value, tuple) and len(return_value) == 2:
                 child_changed, new_value = return_value
             elif isinstance(return_value, bool):
@@ -2850,7 +2825,7 @@ def render_func(*args, **o_kwargs):
             # Normal return path
             if kwargs.get("convert_out", None) is not None or kwargs.get("convert_in", None) is not None:
                 if return_extras:
-                    return child_changed, new_value, draw_state
+                    return child_changed, new_value, return_draw_state
                 return child_changed, new_value
 
             if isinstance(new_value, Pending):
@@ -2859,7 +2834,7 @@ def render_func(*args, **o_kwargs):
                 draw_state._loading = False
 
             if return_extras:
-                return child_changed, new_value, draw_state
+                return child_changed, new_value, return_draw_state
             return child_changed, new_value
 
     def draw_pending_status(draw_state, pending_obj):
@@ -2931,15 +2906,31 @@ def render_func(*args, **o_kwargs):
             min_scroll_y = 0
             max_scroll_y = max(0,
                                draw_state.content_height - clip_height + 5 + draw_state.footer_height + draw_state.header_height)
+            # Publish the authoritative max for descendants (text editor's
+            # drag-auto-scroll). Recomputing the value there captured
+            # content_height at a different time, so the two clamps disagreed by
+            # a few px and fought each frame - a flicker at the bottom.
+            draw_state._max_scroll_y = max_scroll_y
 
             # Give views time to settle
             if Melty.frame_count > 2:
+                # Apply the wheel delta only when not dragging/panning (those set
+                # scroll_offset directly), but ALWAYS clamp to range - even
+                # on-drag. The text editor's drag-auto-scroll writes
+                # scroll_offset during content render (after this runs), pushing
+                # it past EOF; this captured value is then used just below to
+                # offset the content cursor. A clamping here that overshoot
+                # positions the content over-scrolled, leaving the cursor in an
+                # inconsistent spot for the next view - the bottom flicker.
                 if not Melty.on_drag and not imgui.is_mouse_down(1) and not imgui.is_mouse_down(2):
-                    draw_state.scroll_offset = (current_x,
-                                                max(min_scroll_y, min(new_offset_y, max_scroll_y)))
+                    target_y = new_offset_y
+                else:
+                    target_y = current_y
+                draw_state.scroll_offset = (current_x,
+                                            max(min_scroll_y, min(target_y, max_scroll_y)))
 
             if scroll_y_changed is not None:
-                Melty.cache.invalidate_up(draw_state._tile_id, skip_self=True, max_depth=2)
+                Melty.cache.invalidate_up(draw_state._tile_id, max_depth=3)
                 Melty.cache.invalidate_scrolled_in(draw_state, on_change=False)
 
             if not draw_state.closed:

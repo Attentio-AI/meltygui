@@ -41,6 +41,7 @@ from src.lsd.gl_gui.view.core_views.inspect_utils import set_fn_defaults
 from src.lsd.gl_gui.view.core_views.tensor_views import draw_tensor
 from src.lsd.gl_gui.view.core_views.text_editor import draw_text, _scroll_into_view
 from src.shader_library.shader_manager.texture_manager import PendingTexture
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
 
 
 @render_func(use_cache=True, show_bg=True, width=20, height=22, tile_mode=TileMode.MAX,
@@ -326,8 +327,6 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta,
             if isinstance(input_value, (list, tuple)) or horizontal:
                 item_kwargs['align_header'] = False
 
-            item_kwargs['return_extras'] = True
-
             # On a counting frame, force the rows we DO render (visible, not the
             # off-screen current path and cache-misses that fell through above) to
             # actually run so they claim, and snapshot the session offset so we
@@ -596,7 +595,12 @@ def run_chain(input_value, chain=None, draw_state=None, route=None,
         next_cached = cache_tree.peek()
         if isinstance(value, str):
             imgui.text(f"  [{i}] {func.__name__} — str: '{value[:30]}'")
+
+        imgui.begin_group()
         changed, value = func(input_value=value, reference=next_cached, **func_kwargs)
+        imgui.end_group()
+
+
         if isinstance(value, Pending):
             changed=False
             value=None
@@ -2204,7 +2208,7 @@ def draw_function(input_value, name, draw_state, unique):
             draw_state.params = param_dict
         if len(draw_state.params) > 0:
             changed, new_val = draw_collection(draw_state.params, name="Parameters", indent_size=0,
-            show_add_delete=False,parent_show_add_delete=False, horizontal=True, child_kwargs={"wrap":True, "show_bg":True, "use_cache":True, "z_offset":2.0})
+            show_add_delete=False,parent_show_add_delete=False, horizontal=True, child_kwargs={"wrap":True, "widtgh":200, "show_bg":True, "use_cache":True, "z_offset":2.0})
             if changed:
                 draw_state.params = new_val
     except Exception as e:

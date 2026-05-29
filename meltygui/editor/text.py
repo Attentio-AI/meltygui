@@ -21,17 +21,18 @@ def _hex(h):
     # ImGui uses ABGR packing for color u32
     return (a << 24) | (b << 16) | (g << 8) | r
 
+
 COLORS = {
-    'default':       _hex('#a9b7c6'),  # Token (from Darcula)
-    'keyword':       _hex('#cc7832'),  # Keyword
+    'default': _hex('#a9b7c6'),  # Token (from Darcula)
+    'keyword': _hex('#cc7832'),  # Keyword
     'keyword_const': _hex('#cc7832'),  # Keyword.Constant (True/False/None)
     'operator_word': _hex('#cc7832'),  # Operator.Word (and, or, not, in, is)
-    'builtin_pseudo': _hex('#94558d'), # Name.Builtin.Pseudo (self, cls)
-    'decorator':     _hex('#bbb529'),  # Name.Decorator
-    'string':        _hex('#6a8759'),  # String
-    'string_doc':    _hex('#629755'),  # String.Doc (docstrings)
-    'comment':       _hex('#808080'),  # Comment
-    'number':        _hex('#6897bb'),  # Number
+    'builtin_pseudo': _hex('#94558d'),  # Name.Builtin.Pseudo (self, cls)
+    'decorator': _hex('#bbb529'),  # Name.Decorator
+    'string': _hex('#6a8759'),  # String
+    'string_doc': _hex('#629755'),  # String.Doc (docstrings)
+    'comment': _hex('#808080'),  # Comment
+    'number': _hex('#6897bb'),  # Number
 }
 
 KEYWORDS = {'def', 'class', 'if', 'else', 'elif', 'for', 'while',
@@ -88,6 +89,7 @@ _REPEATABLE_KEYS = set(_KEY_CHAR_MAP) | {
     glfw.KEY_TAB, glfw.KEY_LEFT, glfw.KEY_RIGHT, glfw.KEY_UP, glfw.KEY_DOWN,
     glfw.KEY_HOME, glfw.KEY_END,
 }
+
 
 def tokenize(text):
     """Yields (text, color_key) tuples with Darcula-style token categories."""
@@ -534,14 +536,24 @@ def _scroll_into_view(ds, top_abs, bottom_abs, margin=40.0):
     while node is not None and id(node) not in seen:
         seen.add(id(node))
         if getattr(node, 'scroll_visible', False):
-            view_top = node.abs_top + (node.header_height or 0)
-            view_bottom = node.abs_top + (node.height or 0) - (node.footer_height or 0)
+            view_top = node.abs_top
+            view_bottom = node.abs_top + (node.height or 0)
             sx, sy = node.scroll_offset
+            # No clamping here - _ancestor_scroll enforces the scroll bound at
+            # the source, so overshoot past the content ends doesn't accumulate.
             if top_abs < view_top + margin:
-                node.scroll_offset = (sx, sy - (view_top + margin - top_abs))
+                current_x = node.scroll_offset[0]
+                new_offset = sy - (view_top + margin - top_abs)
+                node.scroll_offset = (current_x,
+                                            max(0, min(new_offset, node._max_scroll_y)))
+
                 request_render()
             elif bottom_abs > view_bottom - margin:
-                node.scroll_offset = (sx, sy + (bottom_abs - (view_bottom - margin)))
+                current_x = node.scroll_offset[0]
+                new_offset = sy + (bottom_abs - (view_bottom - margin))
+                node.scroll_offset = (current_x,
+                                      max(0, min(new_offset, node._max_scroll_y)))
+
                 request_render()
             return
         nxt = node._parent
@@ -586,7 +598,7 @@ def draw_text(input_value: str,
               horizontal_scroll_drag=False, search_text="",
               single_line=False,
               draw_state=None, request_focus=False,
-              line_height=1.2, font: Font=Font.JETBRAINS_MONO_19, jump_to=None,
+              line_height=1.2, font: Font = Font.JETBRAINS_MONO_19, jump_to=None,
               code_tree=None):
     ds = draw_state
 
@@ -628,6 +640,17 @@ def draw_text(input_value: str,
 
     left = imgui.get_cursor_screen_pos()[0]
     top = imgui.get_cursor_screen_pos()[1]
+
+    # Snapshot the clip rect in the same scroll frame as `left`/`top`. Those
+    # come from the imgui cursor the wrapper positioned at abs_top *before* this
+    # func ran; the drag handlers just below then mutate scroll_offset (here and
+    # in _scroll_into_view, which is an ancestor) mid-render. abs_clip_rect
+    # is computed live from abs_top, so reading it after those mutations makes
+    # the clip lead the content - which imgui already placed at the pre-mutation
+    # scroll - by one frame's drag delta, showing as a clip that lags the text.
+    # Capturing it here keeps content and clip in the same frame; the scroll
+    # delta lands next frame, when the wrapper re-positions the content too.
+    clip_rect_snapshot = draw_state.abs_clip_rect
 
     # Right-click drag pans both axes. Vertical uses the framework's
     # scroll_offset (the framework skips writing it while button 2 is down,
@@ -685,7 +708,7 @@ def draw_text(input_value: str,
         is_focused = True
         ds.text_cursor_blink_time = time.time()
         click_pos = _xy_to_char_index(text, io.mouse_pos.x, io.mouse_pos.y,
-                                       origin_x, origin_y, line_px)
+                                      origin_x, origin_y, line_px)
 
         now = time.time()
         within_window = (now - ds.text_double_click_time < 0.3
@@ -735,7 +758,7 @@ def draw_text(input_value: str,
         # cursor is comfortably inside.
         _scroll_into_view(ds, my, my)
         drag_pos = _xy_to_char_index(text, mx, my,
-                                      origin_x, origin_y, line_px)
+                                     origin_x, origin_y, line_px)
         anchor_lo = ds.text_drag_anchor_lo
         anchor_hi = ds.text_drag_anchor_hi
         if ds.text_drag_mode in ('word', 'line') and (anchor_lo != anchor_hi):
@@ -1047,8 +1070,8 @@ def draw_text(input_value: str,
         line, _col = _index_to_line_col(text, ms)
         # Vertical: scroll the editor (or its scroll parent) so the match
         # line is on screen. origin_y is the content top at the current scroll.
-        match_top_abs = origin_y + line * line_px
-        _scroll_into_view(ds, match_top_abs, match_top_abs + line_px)
+        match_top_abs = ds.abs_top + line * line_px
+        _scroll_into_view(ds, ds.abs_left, match_top_abs)
 
         # Horizontal: default back to the line start (h_scroll 0) while paging
         # through results, scrolling to only when the match wouldn't fit.
@@ -1092,7 +1115,7 @@ def draw_text(input_value: str,
     rect_max_x = left + draw_state.content_width
     rect_max_y = draw_state.abs_clip_rect[3]
 
-    # draw_list.push_clip_rect(rect_min_x, rect_min_y, rect_max_x, rect_max_y, False)
+    draw_list.push_clip_rect(rect_min_x, rect_min_y, rect_max_x, rect_max_y, True)
 
     # Selection
     if _has_selection(ds):
@@ -1117,8 +1140,8 @@ def draw_text(input_value: str,
     # Search match highlights (drawn behind the text so glyphs stay readable).
     # The active match gets a stronger fill plus an outline; the others are faint.
     if search_matches:
-        match_bg = (89 << 24) | (80 << 16) | (200 << 8) | 230   # faint yellow
-        cur_bg = (150 << 24) | (60 << 16) | (170 << 8) | 240    # active fill
+        match_bg = (89 << 24) | (80 << 16) | (200 << 8) | 230  # faint yellow
+        cur_bg = (150 << 24) | (60 << 16) | (170 << 8) | 240  # active fill
         cur_border = (255 << 24) | (90 << 16) | (200 << 8) | 255  # active outline
         for m_idx, (ms, me) in enumerate(search_matches):
             m_line, _ = _index_to_line_col(text, ms)
@@ -1184,7 +1207,7 @@ def draw_text(input_value: str,
             cursor_color = 0xFFFFFFFF  # white
             draw_list.add_line(cx, cy, cx, cy + line_px, cursor_color, 1.0)
 
-    # draw_list.pop_clip_rect()
+    draw_list.pop_clip_rect()
 
     if changed:
         text_height = (text.count('\n') + 1) * line_px + 2

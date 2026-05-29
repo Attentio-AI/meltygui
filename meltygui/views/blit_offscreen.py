@@ -1095,7 +1095,7 @@ class TileCacheMasked:
             # translates, so leave the cache alone (its bbox was refreshed above).
             if not self._tile_fully_filled(self._tiles.get(tile_id)):
                 self.invalidate(tile_id, frame_delta=0,
-                                   stop_at_filled=True,
+                                   stop_at_filled=False,
                                    note=Note(name="Scrolled in",
                                              reason="bvh", tint=(0.3, 1, 0.5)))
 
@@ -1429,7 +1429,7 @@ class TileCacheMasked:
         if parent_key is not None:
             if parent_key not in self.parent_key_to_child_keys:
                 self.parent_key_to_child_keys[parent_key] = {}
-            self.parent_key_to_child_keys[parent_key][rkey] = (draw_state.top, rkey, draw_state)
+            self.parent_key_to_child_keys[parent_key][rkey] = (draw_state.abs_top, rkey, draw_state)
 
         if name is not None:
             name_key = f"{id(collection)}.{name}"
@@ -1465,7 +1465,7 @@ class TileCacheMasked:
 
         if has_area and not draw_state.closed and use_image:
             corner_radius = getattr(draw_state, "corner_radius", 5.0) or 5.0
-            x, y = draw_state.left, draw_state.top
+            x, y = draw_state.abs_left, draw_state.abs_top
             w, h = draw_state.width, draw_state.height
             cb = draw_state.clipped_by_rect
             clip = draw_state.abs_clip_rect if (cb is not None and any(cb)) else None
@@ -1552,7 +1552,7 @@ class TileCacheMasked:
         if parent_key is not None:
             if parent_key not in self.parent_key_to_child_keys:
                 self.parent_key_to_child_keys[parent_key] = {}
-            top = draw_state.top if draw_state.top is not None else 0
+            top = draw_state.abs_top
             self.parent_key_to_child_keys[parent_key][rkey] = (top, rkey, draw_state)
 
         if name is not None:
@@ -1717,9 +1717,9 @@ class TileCacheMasked:
             # them when interaction has settled so we don't thrash during
             # scroll/resize (mid-drag the size update path already regenerates
             # from fresh rects).
-            settled = (not imgui.is_mouse_down(0) and not imgui.is_mouse_down(1)
-                       and not imgui.is_mouse_down(2) and not Melty.on_drag)
-            if settled:
+            # settled = (not imgui.is_mouse_down(0) and not imgui.is_mouse_down(1)
+            #            and not imgui.is_mouse_down(2) and not Melty.on_drag)
+            # if settled:
 
                 # Stop invalidating once the tile is fully filled. Each partial
                 # blit (PASS_3) adds its written region into the tile's
@@ -1729,8 +1729,8 @@ class TileCacheMasked:
                 # tile is sampled. This kills the per-frame revalidation storm
                 # during sustained scrolls while still letting newly-revealed
                 # tiles fill in.
-                self_tile = self._tiles.get(ctx.key)
-                self_unfilled = not self._tile_fully_filled(self_tile)
+                # self_tile = self._tiles.get(ctx.key)
+                # self_unfilled = not self._tile_fully_filled(self_tile)
                 #
                 # if ctx.draw_state.scroll_visible:
                 #     rect = ctx.draw_state.scroll_offset
@@ -2340,7 +2340,7 @@ class TileCacheMasked:
                     tile_ctx = self._key_to_ctx.get(r.key)
 
                     if (can_use_cached or size_change) and tile_ctx and not draw_state is None:
-                        tx, ty = draw_state.left, draw_state.top
+                        tx, ty = draw_state.abs_left, draw_state.abs_top
                         # if can_use_cached and t is not None:
                         #     tw, th = t.size
                         # else:

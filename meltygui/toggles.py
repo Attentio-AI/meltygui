@@ -51,7 +51,7 @@ class Swoosh:
     some_dict = [1,1,1,1]
 
 
-@window(tint=(0.9, 0.3, 0.0))
+@window(tint=(0.8, 0.6, 0.1))
 class Toggles:
 
     @defaults(tint=(0.9767442,0.9383082,0.5))

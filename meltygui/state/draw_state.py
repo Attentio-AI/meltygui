@@ -333,6 +333,10 @@ class DrawState(DictConversion):
         self.is_active = False
         self.is_focused = False
         self.scroll_offset = (0, 0)
+        # Authoritative max scroll_offset.y, published by core_render's scroll
+        # handler each frame. Descendants (text editor drag-auto-scroll) read it
+        # so their clamp matches exactly & the two don't fight (bottom flicker).
+        self._max_scroll_y = None
         self._imgui_is_active = False
         self._imgui_is_activated = False
         self._imgui_is_focused = False
@@ -441,6 +445,10 @@ class DrawState(DictConversion):
         # running max accumulated as children render, committed at window push.
         self.max_header_width = 0
         self.clip_rect = None
+        # Parent window's abs_pos when clip_rect was captured. abs_clip_rect
+        # shifts the (absolute, not-based) clip_rect by the window's movement
+        # since then, so the clip tracks a window drag without a re-render.
+        self._clip_win_anchor = None
         self.dlt_count = DecorationManager.melty.save_draw_state_for
         self.premature_break = False
         self.header_left_delta = 0
@@ -473,20 +481,12 @@ class DrawState(DictConversion):
         # anchor_pos (the child's own origin). Defaults to TOP_LEFT so parent
         # anchoring is opt-in and legacy top-left layout is preserved.
         self.parent_anchor_pos = Anchor.TOP_LEFT
-        # When True, a popup window anchors to a fixed visible_rect corner
-        # instead of following the declaring view's scroll position.
-        # pin_target, when set, is the draw_state to pin to - its clip_rect is
-        # read live each frame so the window tracks that arbitrary view. With no
-        # target, pin_clip_rect (a snapshot of the active clip rect captured at
-        # declaration time, since the live clip stack is only valid then) is
-        # used, falling back to the parent window's bounds. See pin_rect.
-        self.pin_to_clip = False
-        self.pin_target = None
-        self.pin_clip_rect = None
-        # When True (Pin.CLIP), pin_rect is intersected with the parent window
-        # so each corner clamps to the parent edge - e.g. the bottom becomes
-        # min(parent_bottom, clip_bottom) rather than running past the clip.
-        self.pin_clamp = False
+        # Floating views pin to a clip - resolved live from this Pin enum
+        # (PARENT / GRANDPARENT / WINDOW / CLIP) off .parent/parent_window at
+        # compute time, so the float tracks the target as it scrolls/moves
+        # without snapshotting anything. None = not pinned. Truthy when pinned.
+        # See pin_rect / _pin_rect.
+        self.pin_to_clip = None
         self._kwargs = {}
         self.kwargs = AttrDict({})
         self.hover_reported = True
@@ -746,61 +746,72 @@ class DrawState(DictConversion):
         return (offset_x, offset_y)
 
     @property
+    def _pin_target(self):
+        """The view this pins to, resolved live from the Pin mode off
+        _parent/parent_window at call time, so the float tracks it as it
+        scrolls/moves. None when not pinned or the relative is missing.
+
+        Pinning only ever targets an ancestor (parent / grandparent / window),
+        and ancestors never depend on a descendant's position — so reading the
+        target's abs_clip_rect from here can't cycle, and needs no cache."""
+        mode = self.pin_to_clip
+        if mode is Pin.WINDOW:
+            t = self.parent_window
+        elif mode is Pin.GRANDPARENT:
+            p = self._parent
+            t = p._parent if (p is not None and p is not self) else None
+        elif mode is Pin.PARENT or mode is Pin.CLIP:
+            t = self._parent
+        else:
+            return None
+        return t if (t is not None and t is not self) else None
+
+    @property
     def pin_rect(self):
         """Reference rect ``(left, top, right, bottom)`` the pin anchors to, in
-        absolute coords.
+        absolute coords — the live clip rect of the resolved relative
+        (``_pin_target``). None when there's nothing to pin to.
 
-        An explicit ``pin_target`` draw_state pins live to that view's clip rect
-        so the window tracks it as the target scrolls/moves/resizes. With no
-        target, falls back to the clip rect snapshotted at declaration time
-        (``pin_clip_rect``, set when ``pin_to_clip=True``), then to the parent
-        window's bounds. Returns None when nothing is available to pin to.
+        For ``Pin.CLIP`` the rect is intersected with the parent window's box so
+        each corner clamps to the visible edge (e.g. bottom = min(parent_bottom,
+        clip_bottom)) instead of running past it.
 
-        When ``pin_clamp`` is set (Pin.CLIP), the resulting rect is intersected
-        with the immediate parent view's clip (``_parent``) and the parent
-        window's rect so each edge clamps to the parent's visible bound and
-        stays inside the window box.
-        """
-        f = DecorationManager.melty.frame_count
-        key = (f, self.pin_target, self.pin_clip_rect, self.pin_clamp)
-        if self._pin_rect_key == key:
-            return self._pin_rect_cache
-        # Mark BEFORE recursion so a re-entrant pin_rect (via abs_clip_rect →
-        # pin_rect → ... cycle on a self-referential pin chain) returns the prior
-        # frame's value rather than recursing forever.
-        self._pin_rect_key = key
-        if self.pin_target is not None:
-            rect = self.pin_target.abs_clip_rect
-        elif self.pin_clip_rect is not None:
-            rect = self.pin_clip_rect
-        elif self.parent_window is not None and self.parent_window is not self:
-            rect = self.parent_window.abs_clip_rect
-        else:
-            self._pin_rect_cache = None
+        The target's box is read from its LIVE abs (``_abs_left``/``_abs_top``),
+        not its per-frame-cached ``abs_left``/``abs_top``. A pinned float needs
+        the target's current position on frames the target itself isn't
+        re-rendering — e.g. while its window is dragged: the window moves (its
+        own abs cache invalidates on window_pos), but the target's cache key
+        doesn't change, so cached ``target.abs_left`` would return last frame's
+        anchor. Computing live re-reads the moved window through the parent
+        chain, so the anchor tracks the drag instead of lagging a frame."""
+        target = self._pin_target
+        if target is None:
             return None
-
-        if self.pin_clamp:
-            # Pin.CLIP: clamp each edge to the parent bound so the corner tracks
-            # it: e.g. min(parent_bottom, clip_bottom). Clamping the clip snapshot
-            # against the parent view's clip pulls the pin in to the parent clip
-            # rather than the whole screen. Also clamp against the parent window's
-            # rect (its box, not its clip - the window clip can be the whole
-            # screen) to keep the pin inside the window if the parent clip extends
-            # further. Live each time even though the clip is a snapshot.
-            clamps = []
-            if self._parent is not None and self._parent is not self:
-                clamps.append(self._parent.abs_clip_rect)
+        # Anchor to the target's RAW box (live abs), so the float tracks the
+        # target's actual position. PARENT/WINDOW/GRANDPARENT do NOT clamp here:
+        # intersecting with the target's clip rect makes the anchor corner snap
+        # to the clip edge whenever the target is clipped, so the window tracks
+        # the *clip* instead of the target (the "only moves when the clamp moves
+        # it" bug). Clamping is Pin.CLIP's job - see below.
+        tl, tt = target._abs_left(), target._abs_top()
+        rect = (tl, tt, tl + target.width, tt + target.height)
+        if self.pin_to_clip is Pin.CLIP:
+            # Pin.CLIP clamps the float to the parent window's visible box so
+            # corners track the visible edge. Use the window's LIVE box
+            # (win._abs_left()/_abs_top()), not its cached abs_left or the
+            # target's captured clip_rect: both are fixed in screen space and so
+            # are stale when the window itself is dragged, which left Pin.CLIP
+            # floats clamped to the old position. The live window box is correct
+            # in both cases - it's constant while content scrolls and moves with
+            # a window window.
             win = self.parent_window
+            if win is None and len(DecorationManager.melty.melty_windows) > 0:
+                win = DecorationManager.melty.melty_windows[-1]
             if win is not None and win is not self:
-                clamps.append((win.abs_left, win.abs_top,
-                               win.abs_left + win.width, win.abs_top + win.height))
-            else:
-                print("Warning: pin_clamp is set but no parent window found; pinning to clip without clamping.")
-
-            for c in clamps:
+                wl, wt = win._abs_left(), win._abs_top()
+                c = (wl, wt, wl + win.width, wt + win.height)
                 rect = (max(rect[0], c[0]), max(rect[1], c[1]),
                         min(rect[2], c[2]), min(rect[3], c[3]))
-        self._pin_rect_cache = rect
         return rect
 
     @property
@@ -813,17 +824,11 @@ class DrawState(DictConversion):
         so the two are independent: e.g. parent_anchor=BOTTOM_RIGHT /
         anchor=TOP_RIGHT hangs the window off the target's bottom-right corner.
         With both at the TOP_LEFT default the window's top-left sits on the
-        target's top-left. Tracks the target regardless of how it scrolls.
+        target's top-left. Computed live (pin_rect already is), so it tracks the
+        target regardless of how it scrolls.
         """
-        f = DecorationManager.melty.frame_count
-        key = (f, self.parent_anchor_pos, self.pin_target, self.pin_clip_rect,
-               self.pin_clamp)
-        if self._clip_anchor_base_key == key:
-            return self._clip_anchor_base_cache
-        self._clip_anchor_base_key = key
         clip = self.pin_rect
         if clip is None:
-            self._clip_anchor_base_cache = None
             return None
         clip_left, clip_top, clip_right, clip_bottom = clip
 
@@ -841,9 +846,7 @@ class DrawState(DictConversion):
         else:  # vertically centered
             base_y = (clip_top + clip_bottom) / 2
 
-        result = (base_x, base_y)
-        self._clip_anchor_base_cache = result
-        return result
+        return (base_x, base_y)
 
     def _ancestor_scroll(self):
         """Sum the scroll_offsets of intermediate ancestors between self and
@@ -862,8 +865,24 @@ class DrawState(DictConversion):
                 break
             so = node.scroll_offset
             if so is not None:
+                ny = so[1]
+                # Enforce the scroll bound here, at the source, so writers (a
+                # text editor's drag-auto-scroll, pans) don't each have to clamp.
+                # node._max_scroll_y is the authoritative max core_render
+                # published this frame. Clamp any contribution AND write it back
+                # so the stored offset can't run past the content ends - that
+                # runaway is what made auto-scroll overshoot EOF and lag on the
+                # way back. None = the node hasn't published a max yet.
+                mx = node._max_scroll_y
+                if mx is not None:
+                    if ny < 0:
+                        ny = 0.0
+                    elif ny > mx:
+                        ny = mx
+                    if ny != so[1]:
+                        node.scroll_offset = (so[0], ny)
                 sx += so[0]
-                sy += so[1]
+                sy += ny
             nxt = node._parent
             if nxt is node:
                 break
@@ -889,7 +908,7 @@ class DrawState(DictConversion):
             # Pin to the clip rect corner rather than the scrolled position of
             # the declaring view (which left_offset tracks).
             this_left = window_pos_x + base[0] + anchor[0]
-            if (self.pin_clamp and self.width is not None
+            if (self.pin_to_clip is Pin.CLIP and self.width is not None
                     and self.parent_window is not None and self.parent_window is not self):
                 # Box-level clamp: the rect clamp only repositions the anchor
                 # point, so if anchor_offset shifts the box its far edge can
@@ -924,7 +943,7 @@ class DrawState(DictConversion):
             # Pin to the clip rect corner rather than the scrolled position of
             # the declaring view (which top_offset tracks).
             this_top = window_pos_y + base[1] + anchor[1]
-            if (self.pin_clamp and self.height is not None
+            if (self.pin_to_clip is Pin.CLIP and self.height is not None
                     and self.parent_window is not None and self.parent_window is not self):
                 # Box-level clamp: see _abs_left. Keeps the bottom edge from
                 # hanging below the window (favoring the top edge if the box
@@ -944,14 +963,31 @@ class DrawState(DictConversion):
     def abs_clip_rect(self):
         abs_left = self.abs_left
         abs_top = self.abs_top
-        clipped_by = self.clipped_by_rect
-        if clipped_by is None:
-            return (abs_left, abs_top, abs_left + self.width, abs_top + self.height)
+        box_right = abs_left + self.width
+        box_bottom = abs_top + self.height
+        clip = self.clip_rect
+        if clip is None:
+            return (abs_left, abs_top, box_right, box_bottom)
 
-        return (int(abs_left + clipped_by[0]),
-                int(abs_top + clipped_by[1]),
-                int(abs_left + self.width - clipped_by[2]),
-                int(abs_top + self.height - clipped_by[3]))
+        # clip_rect is stored in absolute screen coords, so it's correct while
+        # content scrolls (the clip region is fixed in screen space) but stale
+        # when the parent window moves. Shift it by however far the parent window
+        # has moved since capture - zero during scroll, the mouse delta during a
+        # window drag - so the clamp tracks the window without a re-render. The
+        # clip region moves rigidly with the window, so a uniform shift is exact.
+        pw = self.parent_window
+        anchor = self._clip_win_anchor
+        if pw is not None and pw is not self and anchor is not None:
+            dx = pw._abs_left() - anchor[0]
+            dy = pw._abs_top() - anchor[1]
+            clip = (clip[0] + dx, clip[1] + dy, clip[2] + dx, clip[3] + dy)
+
+        # Intersect the LIVE box with the (shifted) clip rect. Both move with the
+        # window now, so the clamped edges stay pinned to the unclamped corner.
+        return (int(max(abs_left, clip[0])),
+                int(max(abs_top, clip[1])),
+                int(min(box_right, clip[2])),
+                int(min(box_bottom, clip[3])))
 
 
     def children_in_clip(self, clip=None, max_depth=1):
@@ -1058,28 +1094,24 @@ class DrawState(DictConversion):
 
     @property
     def abs_left(self):
+        # Pinned floats resolve their target (parent/grandparent/window) live
+        # from the tree each call so they track it as it scrolls - compute live,
+        # no cache. The target's own abs_left is cached, so the walk stays cheap.
+        if self.pin_to_clip:
+            return self._abs_left()
         # The key covers everything the wrapper writes per-draw_state mid-frame
-        # that abs_left's value depends on:
-        #   - left_offset / window_pos: columns branch (:1235) and the wrapper
-        #     (:393) re-set these; a frame-only key broke column rendering.
-        #   - pin/anchor attrs: the wrapper sets pin_to_clip / pin_target /
-        #     pin_clip_rect / pin_clamp / anchor_pos / parent_anchor_pos at
-        #     :995–1041, AFTER hover/clip checks may have already cached. A
-        #     frame-only key made nested-window anchors take a frame to settle.
-        # Parent-side changes propagate via the abs parent.abs_left (which
-        # has its own key); we don't need to mirror them here.
+        # that abs_left's value depends on: left_offset / window_pos (the
+        # columns branch and the wrapper re-set these), and anchor_pos /
+        # parent_anchor_pos. _ancestor_scroll is in the key so mid-frame scroll
+        # deltas to an ancestor invalidate the cache (the non-pinned path
+        # subtracts it in _abs_left). Parent-side changes propagate via the
+        # cached parent.abs_left.
         f = DecorationManager.melty.frame_count
-        # Include _ancestor_scroll in the key so that-frame scroll deltas on an
-        # ancestor invalidate the cache and we recompute with the current
-        # scroll position (the non-pinned path subtracts this in _abs_left).
         ancestor_sx, _ = self._ancestor_scroll()
-        key = (f, self.left_offset, self.window_pos, self.pin_to_clip,
-               self.anchor_pos, self.parent_anchor_pos, self.pin_target,
-               self.pin_clip_rect, self.pin_clamp, self.width, ancestor_sx)
+        key = (f, self.left_offset, self.window_pos,
+               self.anchor_pos, self.parent_anchor_pos, self.width, ancestor_sx)
         if self._abs_left_key == key:
             return self._abs_left_cache
-        # Set BEFORE computing so a self-referential cycle (e.g. pin_target →
-        # us) returns the prior frame's cached value instead of recursing.
         self._abs_left_key = key
         val = self._abs_left()
         self._abs_left_cache = val
@@ -1087,11 +1119,12 @@ class DrawState(DictConversion):
 
     @property
     def abs_top(self):
+        if self.pin_to_clip:
+            return self._abs_top()
         f = DecorationManager.melty.frame_count
         _, ancestor_sy = self._ancestor_scroll()
-        key = (f, self.top_offset, self.window_pos, self.pin_to_clip,
-               self.anchor_pos, self.parent_anchor_pos, self.pin_target,
-               self.pin_clip_rect, self.pin_clamp, self.height, ancestor_sy)
+        key = (f, self.top_offset, self.window_pos,
+               self.anchor_pos, self.parent_anchor_pos, self.height, ancestor_sy)
         if self._abs_top_key == key:
             return self._abs_top_cache
         self._abs_top_key = key

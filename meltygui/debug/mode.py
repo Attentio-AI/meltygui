@@ -89,7 +89,7 @@ class Mode(Enum):
 
     DROPDOWN_WINDOW = {
         (Any): ModeOverrides(
-            kwargs={"show_bg": False, "selectable": False, "min_width": 10, "min_height":20, "wrap":True, "z_offset":0,
+            kwargs={"show_bg": False, "selectable": False, "min_width": -2, "min_height":18, "wrap":True, "z_offset":0,
                     "shadow":False, "is_tree": False, "use_cache": True, "layer_offset": 1},
             recursive=False,
             func=draw_drop_down_item
