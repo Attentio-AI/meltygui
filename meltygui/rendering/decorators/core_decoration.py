@@ -265,14 +265,18 @@ class auto_eval:
             if visible and not self.name.startswith('_') \
                     and self.name != "driver" and DecorationManager.melty.frame_count > 3:
                 DecorationManager.melty.last_attr = self.name
+                from src.lsd.gl_gui.view.invalidation_tracker import Note
                 if do_deep_refresh:
-                    DecorationManager.melty.cache.invalidate_up_by_obj(obj=obj, name=self.name, max_depth=3, force=True)
+                    note = Note(name="Core decoration", reason="invalidate_up_by_obj", tint=(0, 0, 1))
+                    DecorationManager.melty.cache.invalidate_up_by_obj(obj=obj, name=self.name, max_depth=3, force=True, note=note)
                     request_render()
 
                     if hasattr(self, "context_menu_ds"):
                         print(f"Context menu ds found, invalidating {self.name}")
                 else:
-                    DecorationManager.melty.cache.invalidate_up_by_obj(obj, self.name, max_depth=3)
+                    note = Note(name="Core decoration", reason="invalidate_up_by_obj", tint=(0, 0, 1))
+
+                    DecorationManager.melty.cache.invalidate_up_by_obj(obj, self.name, max_depth=3, note=note)
                     request_render()
 
 

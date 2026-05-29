@@ -1839,7 +1839,7 @@ def draw_none(input_value: NoneType):
 
 
 @render_func(is_default_for=(bool), use_cache=True, is_tree=False, wrap=True,
-header_same_=True, min_width=20, align_header=True, shadow=False, with_header=draw_header, temp=True)
+header_same_line=True, min_width=20, align_header=True, shadow=False, with_header=draw_header, temp=True)
 def draw_bool(input_value: bool):
     changed, is_checked = imgui.checkbox("##bool", input_value)
     if changed:
@@ -1848,8 +1848,8 @@ def draw_bool(input_value: bool):
     return False, None
 
 @render_func(is_default_for=(str), shadow=False, wrap_text=False, show_bg=False, is_tree=False, wrap=False, show_header=False,
-             show_add_delete=False, use_cache=False, show_name=False,
-             disable_scroll=True, min_width=30, with_header=draw_header)
+             show_add_delete=False, show_name=False, use_cache=True,
+             disable_scroll=True, min_width=30, with_header=draw_header, temp=True)
 def text(input_value: str, wrap, wrap_text, draw_state):
 
     text_size = imgui.calc_text_size(str(input_value), wrap_width=draw_state.content_width)
@@ -1910,7 +1910,8 @@ def draw_str(input_value: str, draw_state, editable=True, immediate_return=False
     else:
         imgui.set_cursor_screen_pos((snap_int(draw_state.abs_left), snap_int(draw_state.abs_top)))
         # disable scrolling
-        changed, value = draw_text(str(input_value), editable=True, with_header=draw_header, show_name=False, is_tree=False)
+        changed, value = draw_text(str(input_value), editable=True, with_header=draw_header,
+                                   show_name=False, is_tree=False, temp=True)
         imgui.dummy(draw_state.content_width, text_height - height + 10)
 
 
@@ -1921,8 +1922,7 @@ def draw_str(input_value: str, draw_state, editable=True, immediate_return=False
         return True, value
     return changed, value
 
-@render_func()
-def sort_dict_alphabetically(input_value):
+def sort_dict_alphabetically(input_value, **kwargs):
     changed = False
     attr_name = "name"
     first_item = next(iter(input_value.items()), None)[1]

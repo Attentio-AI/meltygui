@@ -335,6 +335,8 @@ class DrawState(DictConversion):
         self.imgui_is_item_activated = False
         self.inside_clip = True
         self.fully_clipped = True
+
+        self._one_full_draw = False
         self.scroll_visible = False
         self._unmanaged_window = False
         self.live = False
@@ -830,19 +832,18 @@ class DrawState(DictConversion):
         self._clip_anchor_base_cache = result
         return result
 
-    def _abs_left(self):
-        # Recursive parent walks go through `parent_window.abs_left` (a cached
-        # property), so once an ancestor's abs_left is cached for this frame, the
-        # walk short-circuits, collapsing the O(depth * widgets) recompute back
-        # to O(widgets). The previous `depth>10` print_stack_trace safety is no
-        # longer needed: pin_rect/clip_anchor_base/abs_left/abs_top all mark
-        # their frame BEFORE computing, so any cycle hits the cached value (prior
-        # frame's) and returns rather than recursing.
+    def _abs_left(self, depth=0):
         parent_left = 0
-        if self.parent_window is not None and self.parent_window is not self:
-            parent_left = self.parent_window.abs_left
+        if depth > 10:
+            print_stack_trace()
+        else:
+            if self.parent_window is not None and self.parent_window is not self:
+                parent_left = self.parent_window._abs_left(depth=depth + 1)
+            elif not self.closable:
+                parent_left = 0
 
         window_pos_x = self.window_pos[0] if self.window_pos is not None else 0
+        # this_left_offset = self.left_offset if not self.melty_window else window_pos_x
         anchor = self.anchor_offset
 
         base = self.clip_anchor_base if self.pin_to_clip else None
@@ -858,7 +859,7 @@ class DrawState(DictConversion):
                 # inside the window horizontally (favoring the left edge if the
                 # box is wider than the window).
                 win = self.parent_window
-                win_left = win.abs_left
+                win_left = win._abs_left(depth=depth + 1)
                 this_left = min(this_left, win_left + win.width - self.width)
                 this_left = max(this_left, win_left)
         else:
@@ -866,10 +867,15 @@ class DrawState(DictConversion):
                          + self.parent_anchor_offset[0] + anchor[0])
         return int(this_left)
 
-    def _abs_top(self):
+    def _abs_top(self, depth=0):
         parent_top = 0
-        if self.parent_window is not None and self.parent_window is not self:
-            parent_top = self.parent_window.abs_top
+        if depth > 10:
+            print_stack_trace()
+        else:
+            if self.parent_window is not None and self.parent_window is not self:
+                parent_top = self.parent_window._abs_top(depth=depth + 1)
+            elif not self.closable:
+                parent_top = 0
 
         anchor = self.anchor_offset
         window_pos_y = self.window_pos[1] if self.window_pos is not None else 0
@@ -885,7 +891,7 @@ class DrawState(DictConversion):
                 # hanging below the window (favoring the top edge if the box
                 # is taller than the window).
                 win = self.parent_window
-                win_top = win.abs_top
+                win_top = win._abs_top(depth=depth + 1)
                 this_top = min(this_top, win_top + win.height - self.height)
                 this_top = max(this_top, win_top)
         else:
@@ -895,22 +901,16 @@ class DrawState(DictConversion):
 
     @property
     def abs_clip_rect(self):
-        f = DecorationManager.melty.frame_count
-        if self._abs_clip_rect_frame == f:
-            return self._abs_clip_rect_cache
-        self._abs_clip_rect_frame = f
         abs_left = self.abs_left
         abs_top = self.abs_top
         clipped_by = self.clipped_by_rect
         if clipped_by is None:
-            result = (abs_left, abs_top, abs_left + self.width, abs_top + self.height)
-        else:
-            result = (abs_left + clipped_by[0],
-                      abs_top + clipped_by[1],
-                      abs_left + self.width - clipped_by[2],
-                      abs_top + self.height - clipped_by[3])
-        self._abs_clip_rect_cache = result
-        return result
+            return (abs_left, abs_top, abs_left + self.width, abs_top + self.height)
+
+        return (abs_left + clipped_by[0],
+                abs_top + clipped_by[1],
+                abs_left + self.width - clipped_by[2],
+                abs_top + self.height - clipped_by[3])
 
     @property
     def size_change(self):
@@ -1064,8 +1064,8 @@ class DrawState(DictConversion):
         clip_left, clip_top, clip_right, clip_bottom = clip_rect
 
         if child_draw_state is not None:
-            left = child_draw_state.abs_left
-            top = child_draw_state.abs_top
+            left = child_draw_state.left
+            top = child_draw_state.top
             width = child_draw_state.width
             height = child_draw_state.height
 

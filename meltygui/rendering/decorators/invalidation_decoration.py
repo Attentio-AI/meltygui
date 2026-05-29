@@ -5,6 +5,7 @@ from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.utils.custom_views import print_stack_trace
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import auto_eval
+from src.lsd.gl_gui.view.invalidation_tracker import Note
 
 
 def live(cls):
@@ -34,7 +35,7 @@ def live(cls):
         else:
             original_setattr(self, name, value)
 
-        if Melty.silence_invalidate:
+        if Melty.silence_invalidate or Melty.frame_count < 2:
             return
 
         # Check if we're initializing
@@ -73,9 +74,11 @@ def live(cls):
                     from src.lsd.gl_gui.view.attribute_churn import AttributeChurnMonitor
                     AttributeChurnMonitor.record(type(self).__name__, name)
                     if do_deep_refresh:
-                        Melty.cache.invalidate_up_by_obj(obj=self, max_depth=2, force=True)
+                        note = Note(name=name, reason="(deep) invalidate_up_by_obj", tint=(0, 0, 1))
+                        Melty.cache.invalidate_up_by_obj(obj=self, max_depth=2, force=True, note=note)
                     else:
-                        Melty.cache.invalidate_by_obj(self, name)
+                        note = Note(name=name, reason="invalidate_by_obj", tint=(0, 0, 1))
+                        Melty.cache.invalidate_by_obj(self, name, note=note)
 
                     from src.lsd.gl_gui.toggles import Toggles
                     if Toggles.attrib_change_stack_trace:

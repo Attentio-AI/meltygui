@@ -53,7 +53,7 @@ class Mode(Enum):
         config = self.unwrapped.get(the_type, None)
         if config is not None:
             return config
-
+        
         for super_type in type(input_value).__mro__:
             config = self.unwrapped.get(super_type, None)
             if config is not None:

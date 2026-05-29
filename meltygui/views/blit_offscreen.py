@@ -18,7 +18,7 @@ from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace, get_live_frames
 from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
-from src.lsd.gl_gui.view.invalidation_tracker import InvalidateTracker
+from src.lsd.gl_gui.view.invalidation_tracker import InvalidateTracker, Note
 
 """
 Per-view tile caching with a post-frame mask.
@@ -691,40 +691,40 @@ class TileCacheMasked:
     def _resolve_key(self, key: str) -> str:
         return key
 
-    def invalidate_current(self, force=False):
+    def invalidate_current(self, force=False, note=None):
         if len(self._stack) == 0:
             return
-        self.invalidate(self._stack[-1].key, force=force)
+        self.invalidate(self._stack[-1].key, force=force, note=note)
 
-    def invalidate_up_current(self, max_depth=4, force=False):
+    def invalidate_up_current(self, max_depth=4, force=False, note=None):
         if len(self._stack) == 0:
             return
-        self.invalidate_up(self._stack[-1].key, max_depth=max_depth, force=force)
+        self.invalidate_up(self._stack[-1].key, max_depth=max_depth, force=force, note=note)
 
-    def invalidate_up_by_obj(self, obj, name=None, max_depth=4, force=False, frame_delta=0):
+    def invalidate_up_by_obj(self, obj, name=None, max_depth=4, force=False, frame_delta=0, note=None):
 
         if name is not None:
             keys = self.py_id_to_keys.get(f"{id(obj)}.{name}", None)
             if keys is not None:
                 for k in keys:
-                    self.invalidate_up(k, max_depth=max_depth, force=force, frame_delta=frame_delta)
+                    self.invalidate_up(k, max_depth=max_depth, force=force, frame_delta=frame_delta, note=note)
         else:
             keys = self.py_id_to_keys.get(f"{id(obj)}", None)
             if keys is not None:
                 for k in keys:
-                    self.invalidate_up(k, max_depth=max_depth, force=force, frame_delta=frame_delta)
+                    self.invalidate_up(k, max_depth=max_depth, force=force, frame_delta=frame_delta, note=note)
 
-    def invalidate_by_obj(self, obj, name=None, frame_delta=0):
+    def invalidate_by_obj(self, obj, name=None, frame_delta=0, note=None):
         if name is not None:
             keys = self.py_id_to_keys.get(f"{id(obj)}.{name}", None)
             if keys is not None:
                 for k in keys:
-                    self.invalidate(k, frame_delta=frame_delta)
+                    self.invalidate(k, frame_delta=frame_delta, note=note)
         else:
             keys = self.py_id_to_keys.get(f"{id(obj)}", None)
             if keys is not None:
                 for k in keys:
-                    self.invalidate(k, frame_delta=frame_delta)
+                    self.invalidate(k, frame_delta=frame_delta, note=note)
 
     @staticmethod
     def _func_ids(func) -> set:
@@ -764,16 +764,16 @@ class TileCacheMasked:
             keys |= self.func_id_to_keys.get(fid, set())
         return keys
 
-    def invalidate_by_func(self, func, frame_delta=0):
+    def invalidate_by_func(self, func, frame_delta=0, note=None):
         """Invalidate every view drawn by the given @render_func, e.g.
         invalidate_by_func(draw_text) rerenders all text views."""
         for k in self._keys_for_func(func):
-            self.invalidate(k, frame_delta=frame_delta)
+            self.invalidate(k, frame_delta=frame_delta, note=note)
 
-    def invalidate_up_by_func(self, func, max_depth=4, force=False, frame_delta=0):
+    def invalidate_up_by_func(self, func, max_depth=4, force=False, frame_delta=0, note=None):
         """Like invalidate_by_func, but also cascades up to parents/children."""
         for k in self._keys_for_func(func):
-            self.invalidate_up(k, max_depth=max_depth, force=force, frame_delta=frame_delta)
+            self.invalidate_up(k, max_depth=max_depth, force=force, frame_delta=frame_delta, note=note)
 
     # def apply_invalid(self):
         # for t in self.pending_invalid:
@@ -797,11 +797,21 @@ class TileCacheMasked:
             all_keys.update(self.get_child_keys(ck[1], depth + 1, max_depth=max_depth))
         return all_keys
 
-    def invalidate_up(self, k: str, max_depth=4, force=False, frame_delta=0) -> None:
+    def invalidate_up(self, k: str, max_depth=4, force=False, frame_delta=0, note=None, skip_self=False) -> None:
+        draw_state = self.key_to_draw_state.get(k, None)
+        if note is None:
+            note = Note(name="Unnamed invalidate_up", reason="", tint=(1, 0, 0),
+                        frame=Melty.frame_count, draw_state=draw_state)
+            if Melty.frame_count > 100 and Melty.frame_count % 30 == 0:
+                if Toggles.InvalidateTracker.enable:
+                    print_stack_trace()
+
+        note.draw_state = draw_state
+
         if k not in self._tiles:
             k = self.key_to_parent_key.get(k, None)
 
-        self.invalidate(k, force=force)
+        self.invalidate(k, force=force, note=note)
         child_keys = self.get_child_keys(k, max_depth=max_depth).values()
         child_keys_list = list(child_keys)
         child_keys_list.sort(key=lambda x: x[0] if x[0] is not None else 0)
@@ -810,6 +820,7 @@ class TileCacheMasked:
         if parent_draw_state is not None and parent_draw_state._print_last_invalid:
             print_stack_trace()
         for top, child, child_draw_state in child_keys_list:
+
             inside_clip, below, above = parent_draw_state.is_inside_clip(child_draw_state)
             if child_draw_state is not None and child_draw_state._print_last_invalid:
                 print_stack_trace()
@@ -862,8 +873,24 @@ class TileCacheMasked:
             input_val_hash,
         )
 
-    def invalidate(self, k: str, force=False, do_store=True, frame_delta=0) -> None:
+    def invalidate(self, k: str, force=False, do_store=True, frame_delta=0, note=None) -> None:
         draw_state = self.key_to_draw_state.get(k, None)
+
+        if draw_state is not None and not draw_state.inside_clip:
+            return
+
+        if note is None:
+            note = Note(name="Unnamed invalidate", reason="", tint=(1, 0, 0),
+                        frame=Melty.frame_count, draw_state=draw_state)
+            if Melty.frame_count > 100 and Melty.frame_count % 30 == 0:
+                if Toggles.InvalidateTracker.enable:
+                    print_stack_trace()
+
+        note.draw_state = draw_state
+
+        if note.frame == 0:
+            note.frame = Melty.frame_count
+
         if Melty.frame_count > 100 and Melty.frame_count % 30 == 0:
             if draw_state is not None and draw_state._print_last_invalid:
                 print_stack_trace()
@@ -879,7 +906,9 @@ class TileCacheMasked:
             target_frame = self._frame_id + 1
             t.last_invalidated_frame = max(t.last_invalidated_frame, target_frame)
             t.dirty = self._is_dirty(t)
-            InvalidateTracker.invalidations[k] = (draw_state, Melty.frame_count)
+
+            if Toggles.InvalidateTracker.enable:
+                InvalidateTracker.invalidations[k] = note
 
             if force:
                 t.force_invalidate = True
@@ -895,7 +924,8 @@ class TileCacheMasked:
                     pt.force_invalidate = True
                     pt.last_invalidated_frame = max(pt.last_invalidated_frame, self._frame_id + 1) + frame_delta
                     pt.dirty = self._is_dirty(pt)
-                    InvalidateTracker.invalidations[k] = (draw_state, Melty.frame_count)
+                    if Toggles.InvalidateTracker.enable:
+                        InvalidateTracker.invalidations[k] = note
 
     def invalidate_all(self) -> None:
         for t in self._tiles.values():
@@ -972,7 +1002,9 @@ class TileCacheMasked:
         for key in needs_invalidate:
             draw_state = self.key_to_draw_state.get(key, None)
 
-            self.invalidate_up(key, force=True, max_depth=20)
+            note = Note(name="Occlude change", reason="",
+                        tint=(1, 0.5, 0), frame=Melty.frame_count, draw_state=draw_state)
+            self.invalidate_up(key, force=True, max_depth=20, note=note)
 
         if needs_invalidate:
             request_render()
@@ -1317,6 +1349,9 @@ class TileCacheMasked:
         draw_state.last_seen = Melty.frame_count
 
     def mark_start_offscreen(self, draw_state) -> bool:
+
+
+
         draw_state._input_value_cache = draw_state._input_value
 
         if not self.enabled:
@@ -1501,7 +1536,6 @@ class TileCacheMasked:
         self._key_to_ctx[ctx.key] = ctx
 
         corner_radius = getattr(ctx.draw_state, "corner_radius", 5.0) or 5.0
-
         if ctx.size:
             if clipped:
                 cx, cy, cw, ch = clipped
@@ -1521,16 +1555,30 @@ class TileCacheMasked:
             settled = (not imgui.is_mouse_down(0) and not imgui.is_mouse_down(1)
                        and not imgui.is_mouse_down(2) and not Melty.on_drag)
             if settled:
-                rect = clipped if clipped else (x, y, w, h)
-                new_mark_state = (tuple(int(v) for v in rect), ctx.layer)
-                prev_mark_state = self._last_mark_clip.get(ctx.key)
-                if prev_mark_state is not None and prev_mark_state != new_mark_state:
-                    for pk in self.get_parent_keys(ctx.key):
-                        self.invalidate(pk)
-                        pds = self.key_to_draw_state.get(pk)
-                        if pds is not None and pds.closable:
-                            break
-                self._last_mark_clip[ctx.key] = new_mark_state
+
+                #
+                # if ctx.draw_state._parent.scroll_visible or ctx.draw_state.closable:
+                #     rect = ctx.draw_state._parent.scroll_offset
+                #     new_mark_state = (tuple(int(v) for v in rect), ctx.layer)
+                #     prev_mark_state = self._last_mark_clip.get(ctx.key)
+                #     if prev_mark_state is not None and prev_mark_state != new_mark_state:
+                #         self.invalidate_up(ctx.draw_state._tile_id, max_depth=1,frame_delta=0, note=Note(name="Clip change",
+                #                                                        reason="",
+                #                                                        tint=(1, 0.5, 1)))
+                #     self._last_mark_clip[ctx.key] = new_mark_state
+
+                if (ctx.draw_state._parent.scroll_visible and ctx.draw_state.inside_clip
+                        and not ctx.draw_state.scroll_visible):
+                    rect = ctx.draw_state._parent.scroll_offset
+                    new_mark_state = (tuple(int(v) for v in rect))
+                    prev_mark_state = self._last_mark_clip.get(ctx.key)
+                    if prev_mark_state is not None and prev_mark_state != new_mark_state:
+                        self.invalidate_up(ctx.draw_state._tile_id, max_depth=7, frame_delta=2, note=Note(name="Clip change",
+                                                                                          reason="",
+                                                                                          tint=(1, 0.5, 1)))
+
+                    self._last_mark_clip[ctx.key] = new_mark_state
+
 
         if not self.enabled or ctx.drew_cached or ctx.draw_state.frame_count < 1:
             return
@@ -1549,6 +1597,7 @@ class TileCacheMasked:
                 self._dummy_vao = int(vao)
 
             gl.glBindVertexArray(self._dummy_vao)
+            old_size = t.size if t else None
 
             if (((t is None) or (t.size != (ctx.size[0], ctx.size[1]))) and not imgui.is_mouse_down(0)
                     and not imgui.is_mouse_down(1) and not imgui.is_mouse_down(2)):

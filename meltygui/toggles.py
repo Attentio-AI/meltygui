@@ -53,6 +53,12 @@ class Swoosh:
 
 @window(tint=(0.5, 0.3, 0.0))
 class Toggles:
+
+    @defaults(tint=(0.9767442,0.9383082,0.5))
+    class InvalidateTracker:
+        keep_for_frames = 2
+        enable = False
+
     # Invalidation settings
     invalidate_stack_trace = False
     text_focus_stack_trace = False

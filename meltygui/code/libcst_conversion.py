@@ -143,8 +143,6 @@ class Loop(dict):
 
 
 
-# [tint=(0.0, 4.4898104079038603e-07, 1e-06)]
-@defaults(tint=(0.485, 0.61, 0.76))
 class GeneralParse(dict):
     def __init__(self, *args, source="", file_path=None, line_offset=0, **kwargs):
         super().__init__(*args, **kwargs)

@@ -1,7 +1,6 @@
 import uuid
 
 from src.lsd.gl_gui.model.model_enums import RelaxedEnum
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
 
 
 class OffscreenDebugMode(RelaxedEnum):

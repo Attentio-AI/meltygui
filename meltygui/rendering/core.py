@@ -26,6 +26,7 @@ from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
 from src.lsd.gl_gui.view.core_views.core_meta import AnnotationOverride
 from src.lsd.gl_gui.view.core_views.core_undo import handle_undo
+from src.lsd.gl_gui.view.invalidation_tracker import Note
 
 melty_state_registry = {}
 static_melty = MeltyState()
@@ -616,7 +617,7 @@ def render_func(*args, **o_kwargs):
                             Melty.last_attr = draw_state.name
                             request_render()
                         else:
-                            Melty.cache.invalidate_up(draw_state._tile_id, max_depth=4)
+                            Melty.cache.invalidate(draw_state._tile_id)
 
         kwargs['return_extras'] = False
 
@@ -1260,7 +1261,7 @@ def render_func(*args, **o_kwargs):
                 draw_list.add_text(draw_state.left + 5, draw_state.top - 20,
                                    imgui.get_color_u32_rgba(1.0, 0.0,
                                                             0.0, 1.0), fa_live_icon)
-                Melty.cache.invalidate_up(tile_id, max_depth=1)
+                Melty.cache.invalidate(tile_id, note=Note(name="Live view", reason="live=True", tint=(1, 0.5, 0.5)))
             kwargs.pop("live", None)
             if not kwargs.get('visible_in_ui', True):
                 if return_extras:
@@ -1285,9 +1286,15 @@ def render_func(*args, **o_kwargs):
             draw_state._bounding_hovered = new_bounding_hovered
             if (draw_state.width is None or draw_state.height is None or hover_changed or
                     draw_state._bounding_hovered or draw_state._imgui_popover_open):
-                if (not Melty.on_drag and not imgui.is_mouse_dragging(2) and not imgui.is_mouse_dragging(1)):
+                someone_elses_scroll = Melty.on_scroll and not draw_state.scroll_visible and draw_state._one_full_draw
+
+                if (not Melty.on_drag and not imgui.is_mouse_dragging(2) and not imgui.is_mouse_dragging(1) and not someone_elses_scroll):
                     if not draw_state.just_shadow:
-                        Melty.cache.invalidate(tile_id, do_store=False, force=True)
+                        Melty.cache.invalidate(tile_id, force=True, note=Note(name="hover change",
+                                                                                              tint=(1,1,0),
+                                                                                              reason="unhovered" if not draw_state._bounding_hovered else "hovered",
+                                                                                              frame=Melty.frame_count,
+                                                                                              draw_state=draw_state))
 
             if draw_state.width > 0 and draw_state.height > 0:
                 inside_clip = Melty.fully_inside_clip(rect=(draw_state.abs_left, draw_state.abs_left,
@@ -1303,9 +1310,14 @@ def render_func(*args, **o_kwargs):
                     needs_invalidate = True
                 draw_state.inside_clip = inside_clip
 
-                if needs_invalidate and not Melty.window_drag and not imgui.is_mouse_dragging(
-                        1) and not imgui.is_mouse_dragging(2):
-                    Melty.cache.invalidate(tile_id, force=True)
+                # if not draw_state._one_full_draw:
+                #     if needs_invalidate and not Melty.window_drag and not imgui.is_mouse_dragging(
+                #             1) and not imgui.is_mouse_dragging(2):
+                #
+                #         Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=5, force=True, note=Note(name="Clip change",
+                #                                                       draw_state=draw_state,
+                #                                                       reason="",
+                #                                                       tint=(0.5, 0.5, 1)))
 
             if kwargs.get("shadow", False):
                 Melty.shadow_depth = Melty.shadow_depth + 1 + total_z_offset
@@ -2495,9 +2507,9 @@ def render_func(*args, **o_kwargs):
                                             draw_state._input_cache["external_state"] = (
                                                 report_value, Melty.frame_count,
                                                 Background.simple_hash(report_value))
-                                            if Melty.cache is not None:
-                                                Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=4,
-                                                                          force=True)
+                                            # if Melty.cache is not None:
+                                            #     Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=4,
+                                            #                               force=True)
                                             request_render()
                                     except Exception as e:
                                         draw_state._all_pending['save_pending'] = Pending(
@@ -2518,9 +2530,9 @@ def render_func(*args, **o_kwargs):
                                         status=diff)
                                     draw_state._all_pending['save_pending'] = save_pending
                                     draw_state._save_pending_obj = save_pending
-                                    if not draw_state._show_save:
-                                        Melty.cache.invalidate_up(draw_state._parent._tile_id, force=True)
-                                        request_render()
+                                    # if not draw_state._show_save:
+                                    #     Melty.cache.invalidate_up(draw_state._parent._tile_id, force=True)
+                                    #     request_render()
                                     draw_state._show_save = True
                                     report_changed = False
                                 else:
@@ -2556,12 +2568,20 @@ def render_func(*args, **o_kwargs):
                 # if isinstance(report_value, Pending):
                 #     raise Exception("Pending needs to be handled before saving to cache")
                 return_value = (report_changed, report_value, *return_value[2:])
+                if draw_state.fully_clipped:
+                    draw_state._one_full_draw = True
+
+
 
             draw_state.content_height = draw_state._content_rect[1]
             draw_state._source["content_height"] = "content rect height"
 
+
+
             if use_cache:
                 Melty.cache.mark_end_offscreen()
+
+
 
 
             if _has_imgui:
@@ -2588,8 +2608,8 @@ def render_func(*args, **o_kwargs):
                 if draw_state._has_popup:
                     is_popup_open = Melty.imgui_popup_open
 
-                    if is_popup_open != draw_state._imgui_popover_open and not is_popup_open:
-                        Melty.cache.invalidate_up_by_obj(input_value, max_depth=4)
+                    # if is_popup_open != draw_state._imgui_popover_open and not is_popup_open:
+                    #     Melty.cache.invalidate_up_by_obj(input_value, max_depth=4)
                     if is_popup_open:
                         Melty.report_imgui_active()
                     draw_state._imgui_popover_open = Melty.imgui_popup_open
@@ -2865,6 +2885,8 @@ def render_func(*args, **o_kwargs):
         if not needs_scroll:
             draw_state.scroll_offset = (0, 0)
 
+
+
         if needs_scroll:
             scroll_y_changed = draw_state.on_action("scroll_y_changed", view_id="view_scroll", priority_delta=10)
             scroll_delta = 0
@@ -2872,6 +2894,8 @@ def render_func(*args, **o_kwargs):
                 scroll_delta = scroll_y_changed.value
                 Melty.selected = set()
                 Melty.selected.add(draw_state)
+                # Melty.cache.invalidate_up(draw_state._tile_id, frame_delta=0, max_depth=4, force=True,
+                #                           note=Note(name="scroll_change", draw_state=draw_state, color=(1,1,0)))
 
             scroll_offset = draw_state.scroll_offset
             current_x = scroll_offset[0]
@@ -2892,6 +2916,7 @@ def render_func(*args, **o_kwargs):
 
             if not draw_state.closed:
                 draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height - draw_state.footer_height)
+
 
         do_scroll = needs_scroll
         scroll_offset = draw_state.scroll_offset if do_scroll else (0, 0)
@@ -2916,6 +2941,7 @@ def render_func(*args, **o_kwargs):
                                          start_cursor[1] - scroll_offset[1]))
 
         # If we are using the new callback header, gate rendering behind expanded
+        Melty.silence_invalidate = False
         if draw_state.expanded:
             is_primitive = input_value is None or isinstance(input_value,
                                                              (int, float, str, bool, tuple)) and not hasattr(

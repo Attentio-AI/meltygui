@@ -15,7 +15,7 @@ from rtree import index as rtree_index
 
 from src.lsd.gl_gui.view.attribute_churn import AttributeChurnMonitor
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import DecorationManager
-from src.lsd.gl_gui.view.invalidation_tracker import InvalidateTracker
+from src.lsd.gl_gui.view.invalidation_tracker import InvalidateTracker, Note
 
 from src.lsd.gl_gui.background import Background
 from src.lsd.gl_gui.collection_action import CollectionAction
@@ -226,9 +226,10 @@ class FileWatch:
 
     @classmethod
     def dispatch_event_for(cls, draw_state):
-        Melty.cache.invalidate_up(draw_state._tile_id, max_depth=10, force=True)
         if draw_state.parent_window is not None:
             Melty.cache.invalidate_up(draw_state.parent_window._tile_id, max_depth=10, force=True)
+        else:
+            Melty.cache.invalidate_up(draw_state._tile_id, max_depth=10, force=True)
 
         draw_state._external_change = True
         request_render()
@@ -765,15 +766,18 @@ class Melty:
 
         cls.event_handler.begin_frame()
 
-        if ("right_mouse_drag" in cls.events_by_type):
-            right_mouse_drag_events = cls.events_by_type["right_mouse_drag"]
-            for event in right_mouse_drag_events:
-                Melty.cache.invalidate(event)
+        # if ("right_mouse_drag" in cls.events_by_type):
+        #     right_mouse_drag_events = cls.events_by_type["right_mouse_drag"]
+        #     for event in right_mouse_drag_events:
+        #         note = Note(name=event, reason="right_mouse_drag", tint=(0,1,1))
+        #         Melty.cache.invalidate(event, note=note)
         #
         if ("middle_mouse_drag" in cls.events_by_type):
             right_mouse_drag_events = cls.events_by_type["middle_mouse_drag"]
             for event in right_mouse_drag_events:
-                Melty.cache.invalidate(event)
+                note = Note(name=event, reason="middle_mouse_drag", tint=(0, 1, 1))
+
+                Melty.cache.invalidate(event, note=note)
 
         event_keys = list(cls.events.keys())
         # To string
@@ -818,7 +822,7 @@ class Melty:
                 if (first_event.tile_id is not None and not imgui.is_mouse_down(0) and not imgui.is_mouse_down(1)
                         and not imgui.is_mouse_down(2) and not cls.on_scroll):
                         print(first_event)
-                        Melty.cache.invalidate_up(first_event.tile_id, max_depth=6, force=True)
+                        Melty.cache.invalidate_up(first_event.tile_id, max_depth=4, force=True)
 
         Melty.all_uniques = set()
 
@@ -1088,9 +1092,12 @@ class Melty:
         if return_val is not None:
             cls.pending_return_values[draw_state._tile_id] = return_val
             if return_val[0]:
-                Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=7, force=True, frame_delta=2)
+                note=Note(name="delayed return", reason=f"{draw_state.name}", tint=(0, 1, 1))
                 if draw_state.parent_window is not None:
-                    Melty.cache.invalidate_up(draw_state.parent_window._tile_id,max_depth=4, frame_delta=2)
+                    Melty.cache.invalidate_up(draw_state.parent_window._tile_id,max_depth=2, frame_delta=2, note=note)
+                else:
+                    Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=2, force=True, frame_delta=2, note=note)
+
                 request_render()
 
         Melty.bg_stack = original_bg_stack
@@ -1131,8 +1138,9 @@ class Melty:
         for ds_id, discard_ds in to_discard:
             cls.root_draw_states[ds_id].remove(discard_ds)
 
+        note = Note(name="refresh_nested_windows", reason="refresh_nested_windows", tint=(1, 0, 1))
         Melty.cache.invalidate_up(parent_window._tile_id,
-                                  max_depth=10, force=True)
+                                  max_depth=10, force=True, note=note)
 
 
     @classmethod
@@ -1424,7 +1432,27 @@ class Melty:
 
         # Restore the global top channel for any later overlay draws.
         if cls._overlay_channels_active:
-            overlay.channels_set_current(cls.max_depth - 1)
+            overlay.channels_set_current(cls.max_layer - 1)
+
+
+        if Toggles.InvalidateTracker.enable:
+            for key, note in InvalidateTracker.invalidations.items():
+                ds = note.draw_state
+                color = note.tint
+
+                frames_past = Melty.frame_count - note.frame
+                alpha_from_frame_past = max(0, 1.0 - (frames_past / Toggles.InvalidateTracker.keep_for_frames))
+
+                invalidation_rect = (ds.abs_left, ds.abs_top,
+                                     ds.abs_left + (ds.width or 0),
+                                     ds.abs_top + (ds.height or 0))
+
+                overlay.add_text(invalidation_rect[0], invalidation_rect[1] - 15, imgui.get_color_u32_rgba(*color,
+                                                                                                           alpha_from_frame_past),
+                                    f"{note.name} |{note.reason}")
+
+                overlay.add_rect(invalidation_rect[0], invalidation_rect[1], invalidation_rect[2], invalidation_rect[3],
+                                    imgui.get_color_u32_rgba(*color, alpha_from_frame_past), thickness=1.0)
 
         Collisions.handle_collisions()
 
@@ -1678,31 +1706,33 @@ class Melty:
 
             window_key = cls.pending_move_to_front[0]
             window_z_pos = len(Melty.registered_windows) + Melty.top_layer_boost
-            cls.pending_move_to_front[1].layer = window_z_pos
-            draw_state = cls.pending_move_to_front[1]
-            draw_state.active_layer = window_z_pos
+            if window_z_pos != cls.pending_move_to_front[1].layer:
+                cls.pending_move_to_front[1].layer = window_z_pos
+                draw_state = cls.pending_move_to_front[1]
+                draw_state.active_layer = window_z_pos
 
-            # if cls.pending_move_to_front[1]._is_nested:
-            #     draw_state.layer += Melty.nested_layer_boost + 3
-                # draw_state.z_pos = (draw_state.layer * Melty.max_depth) + draw_state.depth
+                # if cls.pending_move_to_front[1]._is_nested:
+                #     draw_state.layer += Melty.nested_layer_boost + 3
+                    # draw_state.z_pos = (draw_state.layer * Melty.max_depth) + draw_state.depth
 
-            if cls.text_focused_ds is not None and cls.text_focused_ds.parent_window is not draw_state:
-                cls.text_focused_ds = None
-                if Toggles.text_focus_stack_trace:
-                    print_stack_trace()
+                if cls.text_focused_ds is not None and cls.text_focused_ds.parent_window is not draw_state:
+                    cls.text_focused_ds = None
+                    if Toggles.text_focus_stack_trace:
+                        print_stack_trace()
 
-            if window_key in Melty.registered_windows:
-                # Remove and re-insert to move to end (top)
-                window = Melty.registered_windows.pop(window_key)
-                Melty.registered_windows[window_key] = window
-            else:
-                print(f"Warning: Tried to move window to front but {window_key} not found in registered_windows")
-                print(f"Registered windows: {list(Melty.registered_windows.keys())}")
+                if window_key in Melty.registered_windows:
+                    # Remove and re-insert to move to end (top)
+                    window = Melty.registered_windows.pop(window_key)
+                    Melty.registered_windows[window_key] = window
+                else:
+                    print(f"Warning: Tried to move window to front but {window_key} not found in registered_windows")
+                    print(f"Registered windows: {list(Melty.registered_windows.keys())}")
 
-        if not cls.window_drag:
-            Melty.cache.invalidate_by_obj(Melty.registered_windows)
-            Melty.cache.invalidate_up(cls.pending_move_to_front[1]._tile_id, max_depth=4, force=True)
-            cls.pending_move_to_front = None
+                if not cls.window_drag:
+                    Melty.cache.invalidate_by_obj(Melty.registered_windows)
+                    note = Note(name="", reason="move_to_front", draw_state=draw_state, tint=(0.5, 1.0, 0.5))
+                    Melty.cache.invalidate_up(cls.pending_move_to_front[1]._tile_id, max_depth=4, force=True, note=note)
+                    cls.pending_move_to_front = None
 
     @classmethod
     def draw_blockers_to(cls):

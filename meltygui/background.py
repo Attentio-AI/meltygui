@@ -8,6 +8,7 @@ import torch
 from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace, get_live_frames, _print_lock, trace_group, request_render
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending, PendingState
+from src.lsd.gl_gui.view.invalidation_tracker import Note
 
 
 class Background:
@@ -277,7 +278,8 @@ class Background:
                 from src.lsd.gl_gui.melty import Melty
                 from src.lsd.gl_gui.utils.glfw_utils import request_render
                 if on_frame is None or abs(Melty.frame_count - on_frame) >= 1:
-                    Melty.cache.invalidate_up(invalidate_id, max_depth=5)
+                    note = Note(name=f"Background Invalidate {invalidate_id}", reason=f"func={func_name}", tint=(0,0,1))
+                    Melty.cache.invalidate_up(invalidate_id, max_depth=5, note=note)
                     request_render()
 
         cls._pool.submit(_task)
