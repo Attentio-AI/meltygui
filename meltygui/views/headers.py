@@ -66,6 +66,7 @@ def render_search(search_ds, draw_state, unique=None, ):
     imgui.text(search_icon)
     imgui.same_line()
     search_change, new_search = draw_text(search_ds.search_text, searchable=False,
+                                          is_search_box=True,
                                           shadow=False,
                                           name=search_icon + str(unique), with_header=None,
                                           with_header_end=None, width=draw_state.content_width-60,
@@ -110,15 +111,42 @@ def render_search(search_ds, draw_state, unique=None, ):
         imgui.same_line(spacing=2)
         if imgui.small_button(f"##search_next{unique}"):
             nav = 1
-        # Enter = find next, Shift+Enter = find prev — but only while the search
-        # box (not the underlying editor) holds text focus, so Enter still inserts
-        # newlines when you click into the editor. Drained from the GLFW-callback
-        # key queue (not imgui.is_key_pressed) so it isn't dropped on slow frames.
+        # Enter = find next, Shift+Enter = find prev, Ctrl+Enter = "click" the
+        # selected result. Active only while the search box (not the containing
+        # editor) holds text focus, so Enter still inserts newlines when you click
+        # into the editor. Obtained from the GLFW-callback key queue (not
+        # imgui.is_key_pressed) so it isn't dropped on slow frames.
         if Melty.focused_ds is search_ds and Melty.text_focused_ds is not search_ds:
             _enter = [m for k, m in Melty.frame_key_events
                       if k in (glfw.KEY_ENTER, glfw.KEY_KP_ENTER)]
             if _enter:
-                nav = -1 if (_enter[-1] & glfw.MOD_SHIFT) else 1
+                if _enter[-1] & glfw.MOD_CONTROL:
+                    # "Click" the selected result: hit-test the BVH at the center
+                    # of the selected match's rect and send a mouse-down to the
+                    # front-most view there (the actual clickable, e.g. a managed
+                    # view's name button) - exactly what a real click resolves
+                    # to. The view's own click handling does the rest (toggle a
+                    # window, focus an input, etc.) Queued + the tile ID so
+                    # it re-renders and reads the input next frame (the find UI
+                    # renders too late to inject for this frame).
+                    from src.lsd.gl_gui.view.core_views.new_core_view import search_activate_target
+                    from src.lsd.gl_gui.events.input_handler import InputEvent
+                    _target = search_activate_target(Melty.search_current_node)
+                    if _target is not None and _target.width and _target.height:
+                        _cx = _target.abs_left + _target.width / 2.0
+                        _cy = _target.abs_top + _target.height / 2.0
+                        _hits = [h for h in Melty.bvh_query(_cx, _cy)
+                                 if h._tile_id is not None and not h.just_shadow]
+                        _top = _hits[0] if _hits else _target
+                        Melty.search_click_pending = (
+                            _top._tile_id,
+                            InputEvent("left_mouse", "down", tile_id=_top._tile_id, x=_cx, y=_cy))
+                        # Re-render the owner's subtree next frame (same as nav) so
+                        # the target view actually re-runs and reads the click.
+                        Melty.cache.invalidate_up(search_ds._tile_id, force=True, max_depth=12)
+                        request_render()
+                else:
+                    nav = -1 if (_enter[-1] & glfw.MOD_SHIFT) else 1
 
         if nav != 0:
             # total is the combined count across all views; stepping wraps over
@@ -439,7 +467,7 @@ def draw_header_end(input_value=None, name="", key=None, melty=None, parent_show
     if closable and not input_value == Melty.registered_windows:
         close_icon = ""
         from src.lsd.gl_gui.view.core_views.new_core_view import button
-        if button(f"{close_icon}##{unique}", show_bg=True, shadow=True, z_offset=10, tile_mode=TileMode.MAX, color=(9, 1, 1, 0))[0]:
+        if button(f"{close_icon}##{unique}", show_bg=True, shadow=True, z_offset=20, tile_mode=TileMode.MAX, color=(9, 1, 1, 0))[0]:
             draw_state.closed = not draw_state.closed
             Melty.cache.invalidate_up_by_obj(Melty.registered_windows)
             # if draw_state.parent_window is not None:

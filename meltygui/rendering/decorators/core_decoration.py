@@ -118,7 +118,7 @@ class MockMelty:
         return applied, skipped
 
 
-class DecorationManager:
+class Core:
     melty = MockMelty()
 
 
@@ -148,17 +148,17 @@ def defaults(*args, **kwargs):
         if attr is None:
             # DecorationManager.melty.type_defaults[cls] = Meta(**kwargs)
             for key in kwargs:
-                DecorationManager.melty.default_kwargs_by_type[cls][key] = kwargs[key]
+                Core.melty.default_kwargs_by_type[cls][key] = kwargs[key]
 
         else:
             names = [attr] if isinstance(attr, str) else list(attr)
             for name in names:
                 for key in kwargs:
-                    DecorationManager.melty.default_kwargs_by_attrib_type[cls][name][key] = kwargs[key]
+                    Core.melty.default_kwargs_by_attrib_type[cls][name][key] = kwargs[key]
                     print(f"Registered default for {cls.__name__}.{name}: {key}={kwargs[key]}")
 
                     if key == "view_function" or key == "func":
-                        DecorationManager.melty.default_funcs_by_name_type[cls][name] = kwargs[key]
+                        Core.melty.default_funcs_by_name_type[cls][name] = kwargs[key]
 
                 # child_meta = Meta(**kwargs)
                 # child_meta.name = name
@@ -195,10 +195,10 @@ class auto_eval:
             return self
 
         # Register on first access if not already registered
-        if obj not in DecorationManager.melty.live_attributes:
-            DecorationManager.melty.live_attributes[obj] = set()
-        if self.name not in DecorationManager.melty.live_attributes[obj]:
-            DecorationManager.melty.live_attributes[obj].add(self.name)
+        if obj not in Core.melty.live_attributes:
+            Core.melty.live_attributes[obj] = set()
+        if self.name not in Core.melty.live_attributes[obj]:
+            Core.melty.live_attributes[obj].add(self.name)
 
         if self.fget is None:
             new_val = obj.__dict__.get(self.private_name)
@@ -213,10 +213,10 @@ class auto_eval:
 
     def __set__(self, obj, value):
         # Register on first set if not already registered
-        if obj not in DecorationManager.melty.live_attributes:
-            DecorationManager.melty.live_attributes[obj] = set()
-        if self.name not in DecorationManager.melty.live_attributes[obj]:
-            DecorationManager.melty.live_attributes[obj].add(self.name)
+        if obj not in Core.melty.live_attributes:
+            Core.melty.live_attributes[obj] = set()
+        if self.name not in Core.melty.live_attributes[obj]:
+            Core.melty.live_attributes[obj].add(self.name)
 
         old_value = obj.__dict__.get(self.private_name)
 
@@ -244,31 +244,31 @@ class auto_eval:
     def _on_change(self, obj, old_value, new_value):
         from src.lsd.gl_gui.utils.glfw_utils import request_render
 
-        if DecorationManager.melty.silence_invalidate:
+        if Core.melty.silence_invalidate:
             return
 
         excluded = getattr(obj, '__excluded_attrs__', set())
         deep_refresh_names = getattr(self, '__deep_refresh__', set())
         invalidate_all_flag = getattr(self, '__invalidate_all__', set())
 
-        do_deep_refresh = self.name in deep_refresh_names and not DecorationManager.melty.window_drag
+        do_deep_refresh = self.name in deep_refresh_names and not Core.melty.window_drag
         visible = self.name not in excluded
         visible = visible or do_deep_refresh
 
         if self.name in invalidate_all_flag:
-            DecorationManager.melty.cache.invalidate_all()
+            Core.melty.cache.invalidate_all()
             print(f"Invalidate all called due to change in {self.name}")
             request_render()
             return
 
         if old_value != new_value:
             if visible and not self.name.startswith('_') \
-                    and self.name != "driver" and DecorationManager.melty.frame_count > 3:
-                DecorationManager.melty.last_attr = self.name
+                    and self.name != "driver" and Core.melty.frame_count > 3:
+                Core.melty.last_attr = self.name
                 from src.lsd.gl_gui.view.invalidation_tracker import Note
                 if do_deep_refresh:
                     note = Note(name="Core decoration", reason="invalidate_up_by_obj", tint=(0, 0, 1))
-                    DecorationManager.melty.cache.invalidate_up_by_obj(obj=obj, name=self.name, max_depth=3, force=True, note=note)
+                    Core.melty.cache.invalidate_up_by_obj(obj=obj, name=self.name, max_depth=3, force=True, note=note)
                     request_render()
 
                     if hasattr(self, "context_menu_ds"):
@@ -276,7 +276,7 @@ class auto_eval:
                 else:
                     note = Note(name="Core decoration", reason="invalidate_up_by_obj", tint=(0, 0, 1))
 
-                    DecorationManager.melty.cache.invalidate_up_by_obj(obj, self.name, max_depth=3, note=note)
+                    Core.melty.cache.invalidate_up_by_obj(obj, self.name, max_depth=3, note=note)
                     request_render()
 
 
@@ -415,8 +415,8 @@ def hotkey(key):
                 kwargs.pop(name)
 
             for wanted_name, param in params.items():
-                if wanted_name in DecorationManager.melty.global_attrs and wanted_name not in kwargs:
-                    kwargs[wanted_name] = DecorationManager.melty.global_attrs[wanted_name]
+                if wanted_name in Core.melty.global_attrs and wanted_name not in kwargs:
+                    kwargs[wanted_name] = Core.melty.global_attrs[wanted_name]
 
             result = func(*args, **kwargs)  # Call the original function
             return result

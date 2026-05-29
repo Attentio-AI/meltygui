@@ -21,12 +21,27 @@ from src.lsd.gl_gui.model.core_model.draw_state import DrawState, Hotkey, DragMo
 from src.lsd.gl_gui.model.core_model.core_enums import PendingAction
 from src.lsd.gl_gui.utils.custom_views import push_style_var, pop_style_var
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace, trace_group, get_live_frames
-from src.lsd.gl_gui.melty import Melty, apply_collection_action, MeltyState, SearchTerm
+from src.lsd.gl_gui.melty import Melty, apply_collection_action, MeltyState, SearchTerm, search_walk
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
 from src.lsd.gl_gui.view.core_views.core_meta import AnnotationOverride
-from src.lsd.gl_gui.view.core_views.core_undo import handle_undo
 from src.lsd.gl_gui.view.invalidation_tracker import Note
+
+
+# Resolved lazily: core_undo imports new_core_view (via its view_func), which
+# calls render_func from this module - importing core_undo at top level would
+# close that cycle. handle_undo is only ever called at render time, by which
+# point every module is fully loaded, so we bind it on first use and cache it.
+_handle_undo_impl = None
+
+
+def handle_undo(*args, **kwargs):
+    global _handle_undo_impl
+    if _handle_undo_impl is None:
+        from src.lsd.gl_gui.view.core_views.core_undo import handle_undo as impl
+        _handle_undo_impl = impl
+    return _handle_undo_impl(*args, **kwargs)
+
 
 melty_state_registry = {}
 static_melty = MeltyState()
@@ -1490,6 +1505,37 @@ def render_func(*args, **o_kwargs):
                     Melty.search_stack.append(session)
                     _pushed_search = True
 
+                    # Single source of truth for the find UI. BEFORE the body
+                    # renders, walk the full draw_state tree to (1) count each
+                    # match via each view's _search_matcher and (2) mark which
+                    # match is current, stashing its local index on the owning
+                    # node (_search_active_local). Each view reads that mark
+                    # while drawing and highlights/scrolls to it, so the count
+                    # and the selection always come from this one walk - no
+                    # render-time claims, and off-screen rows can't join.
+                    # Only on a new-search frame (term change / nav); otherwise
+                    # the marks from the last such frame stand.
+                    if session.scroll_to:
+                        _q = str(session)
+                        _tally = SearchTerm(_q)
+                        search_walk(draw_state, _q, _tally)
+                        _total = _tally.total
+                        draw_state.text_search_count = _total
+                        _cur = (draw_state.text_search_current % _total) if _total > 0 else 0
+                        draw_state.text_search_current = _cur
+                        _current_node = search_walk(
+                            draw_state, _q, SearchTerm(_q, current=_cur))
+                        # Remember the current match's node so Ctrl+Enter in the
+                        # find UI can fake a mouse-down on it (or its current
+                        # child) to "click" the selected result.
+                        Melty.search_current_node = _current_node
+                        # Force the current match's view (and ancestors) to
+                        # re-render so an off-screen match scrolls into view.
+                        if (_current_node is not None and _current_node is not draw_state
+                                and _current_node._tile_id is not None):
+                            Melty.cache.invalidate_up(_current_node._tile_id,
+                                                      force=True, max_depth=12)
+
                 # Pre-discover load_data for revert actions
                 _chain_load_data_early = None
                 _convert_in_early = o_kwargs.get("convert_in", None) or kwargs.get("convert_in", None)
@@ -2764,21 +2810,10 @@ def render_func(*args, **o_kwargs):
             if mode_stacked:
                 Melty.mode_stack.pop()
             if _pushed_search:
+                # Count + current-match selection were computed by the pre-body
+                # search_walk (the single source for truth); nothing to read back
+                # here, just unwind the stack.
                 Melty.search_stack.pop()
-
-                # Read the combined match count back from the session so the find
-                # UI shows results across every child view. Only commit it on a
-                # full re-render of the subtree (term:, nav, i.e. when
-                # scroll_to is set) - on incidental repaints some children may be
-                # served from cache and wouldn't have re-registered, which would
-                # otherwise confuse results. Always keep the global index in range.
-                session = draw_state._search_session
-                if session is not None:
-                    if session.scroll_to:
-                        draw_state.text_search_count = session.total
-                    total = draw_state.text_search_count
-                    draw_state.text_search_current = (
-                        draw_state.text_search_current % total if total > 0 else 0)
 
             draw_state.frame_count += 1
             if Melty.imgui_crashed:
@@ -2832,7 +2867,8 @@ def render_func(*args, **o_kwargs):
                 draw_state._pending = False
 
 
-            handle_undo(child_changed, return_value, draw_state)
+            if _has_imgui:
+                handle_undo(child_changed, input_value, new_value, draw_state)
 
             # Normal return path
             if kwargs.get("convert_out", None) is not None or kwargs.get("convert_in", None) is not None:
@@ -2890,8 +2926,7 @@ def render_func(*args, **o_kwargs):
         draw_state.use_cache = use_cache
         kwargs.pop("use_cache", None)
 
-        clip_height = draw_state.height
-        needs_scroll = draw_state.content_height > clip_height and draw_state.multi_line
+        needs_scroll = draw_state.content_height > draw_state.height + 1 and draw_state.multi_line
 
         if draw_state.just_shadow or kwargs.get("disable_scroll", False):
             needs_scroll = False
@@ -2917,7 +2952,7 @@ def render_func(*args, **o_kwargs):
 
             min_scroll_y = 0
             max_scroll_y = max(0,
-                               draw_state.content_height - clip_height + 5 + draw_state.footer_height + draw_state.header_height)
+                               draw_state.content_height - draw_state.height + 5 + draw_state.footer_height + draw_state.header_height)
             # Publish the authoritative max for descendants (text editor's
             # drag-auto-scroll). Recomputing the value there captured
             # content_height at a different time, so the two clamps disagreed by
@@ -2946,7 +2981,7 @@ def render_func(*args, **o_kwargs):
                 Melty.cache.invalidate_scrolled_in(draw_state, on_change=False)
 
             if not draw_state.closed:
-                draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height - draw_state.footer_height)
+                draw_overlay_scrollbar(draw_state, max_scroll_y, draw_state.height - draw_state.footer_height)
 
         do_scroll = needs_scroll
         scroll_offset = draw_state.scroll_offset if do_scroll else (0, 0)
@@ -3145,6 +3180,10 @@ def render_func(*args, **o_kwargs):
 
     wrapper.__render_func__ = True
     wrapper.__header_defaults__ = header_defaults
+
+    # Auto-register by name so RenderFuncs.<name> can resolve this lazily
+    # without anyone importing the module that defines it (avoids import cycles).
+    Melty.render_funcs_by_name[wrapper.__name__] = wrapper
 
     return wrapper
 

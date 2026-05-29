@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import Any
 
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import DecorationManager
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
 
 
 class AnnotationOverride:

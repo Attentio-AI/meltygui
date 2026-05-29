@@ -596,7 +596,7 @@ def _describe_code_tree(code_tree):
 def draw_text(input_value: str,
               left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
               horizontal_scroll_drag=False, search_text="",
-              single_line=False,
+              single_line=False, is_search_box=False,
               draw_state=None, request_focus=False,
               line_height=1.2, font: Font = Font.JETBRAINS_MONO_19, jump_to=None,
               code_tree=None):
@@ -1038,10 +1038,11 @@ def draw_text(input_value: str,
     search_term = search_text or (ds.search_text if ds.search_active else "")
     search_matches = _find_matches(text, search_term)
 
-    # Register this view's results into the shared session during render. On a
-    # full-search frame (scroll_to) all views claim in order and offsets are
-    # synchronized - pick the global-current local match and latch it; on
-    # subsequent repaints reuse the latch so the highlight doesn't jump.
+    # Which local match (if any) is the global-current one is decided by a
+    # search owner's pre-body tree walk (search_walk), not by claiming here:
+    # the walk is the single source for both the count and the selection, so
+    # off-screen views the render skips can't shift the indices. We just read
+    # the local index the walk stashed on us and highlight/scroll to it.
     if isinstance(search_term, SearchTerm):
         session = search_term
     elif ds.search_active and ds._search_session is not None:
@@ -1051,27 +1052,35 @@ def draw_text(input_value: str,
 
     local_count = len(search_matches)
     if session is not None:
-        if session.scroll_to:
-            _base, current_local = session.claim(local_count)
-            ds._search_active_local = current_local
-            should_scroll = current_local is not None
-        else:
-            session.claim(local_count)
-            current_local = ds._search_active_local
-            if current_local is not None and current_local >= local_count:
-                current_local = None
-            should_scroll = False
+        current_local = ds._search_active_local
+        if current_local is not None and current_local >= local_count:
+            current_local = None
+        # Scroll to it on a full-search frame (term change or nav).
+        should_scroll = current_local is not None and session.scroll_to
     else:
         current_local = None
         should_scroll = False
+
+    # Stash a matcher so a search owner can recount this editor's matches by
+    # walking the live draw_state tree (DrawState.descendants / search_walk)
+    # without re-rendering it - the key to counting off-screen editors. Set
+    # every render (capturing the current text) so an editor that has since
+    # changed out still contributes a count. The find UI's own input box
+    # (is_search_box) must never self-count, because it sets the term.
+    if not is_search_box:
+        _match_text = text
+        ds._search_matcher = (
+            lambda term, sess, _t=_match_text: sess.claim(len(_find_matches(_t, term))))
 
     if should_scroll:
         ms, me = search_matches[current_local]
         line, _col = _index_to_line_col(text, ms)
         # Vertical: scroll the editor (or its scroll parent) so the match
-        # line is on screen. origin_y is the content top at the current scroll.
+        # is fully on screen. Pass the line's full vertical band [top, bottom] in
+        # screen space - _scroll_into_view takes (top_abs, bottom_abs), so a
+        # match ABOVE the viewport scrolls up and one BELOW scrolls down.
         match_top_abs = ds.abs_top + line * line_px
-        _scroll_into_view(ds, ds.abs_left, match_top_abs)
+        _scroll_into_view(ds, match_top_abs, match_top_abs + line_px)
 
         # Horizontal: default back to the line start (h_scroll 0) while paging
         # through results, scrolling to only when the match wouldn't fit.

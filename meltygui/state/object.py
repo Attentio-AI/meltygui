@@ -348,13 +348,13 @@ class DictConversion(metaclass=FieldMeta):
         os.makedirs(path_dir, exist_ok=True)
         with open(save_file, "w") as f:
             f.write(str(view_dict["objects"]))
-
-    def __eq__(self, other):
-        class_name = self.__class__.__name__
-        other_class_name = other.__class__.__name__
-        if class_name == other_class_name:
-            return True
-        return super().__eq__(other)
+    #
+    # def __eq__(self, other):
+    #     class_name = self.__class__.__name__
+    #     other_class_name = other.__class__.__name__
+    #     if class_name == other_class_name:
+    #         return True
+    #     return super().__eq__(other)
 
     # Make hashable
     def __hash__(self):

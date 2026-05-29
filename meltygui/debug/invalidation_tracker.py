@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from typing import Dict, Any
 
 from src.lsd.gl_gui.toggles import Toggles
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults, DecorationManager
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults, Core
 
 @dataclass
 class Note:
@@ -30,7 +30,7 @@ class InvalidateTracker:
             inv = cls.invalidations[key]
             on_frame = inv.frame
 
-            if on_frame + Toggles.InvalidateTracker.keep_for_frames < DecorationManager.melty.frame_count:
+            if on_frame + Toggles.InvalidateTracker.keep_for_frames < Core.melty.frame_count:
                 to_delete.append(key)
 
         for key in to_delete:

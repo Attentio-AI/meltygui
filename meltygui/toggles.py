@@ -1,5 +1,5 @@
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import tint, DecorationManager, defaults
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import tint, Core, defaults
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 
 
@@ -123,8 +123,8 @@ def shadow_depth_at(depth, active_layer):
 
     divisor = max(cap, depth - scaling)
 
-    depth_and_layer = active_layer * DecorationManager.melty.max_depth + (depth * (scaling / (divisor)))
-    depth_and_layer *= DecorationManager.melty.layer_inc
+    depth_and_layer = active_layer * Core.melty.max_depth + (depth * (scaling / (divisor)))
+    depth_and_layer *= Core.melty.layer_inc
     return depth_and_layer
 
 

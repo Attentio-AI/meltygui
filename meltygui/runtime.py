@@ -14,7 +14,7 @@ from imgui.core import _DrawList
 from rtree import index as rtree_index
 
 from src.lsd.gl_gui.view.attribute_churn import AttributeChurnMonitor
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import DecorationManager
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
 from src.lsd.gl_gui.view.invalidation_tracker import InvalidateTracker, Note
 
 from src.lsd.gl_gui.background import Background
@@ -74,26 +74,37 @@ class SearchTerm(str):
         return base, None
 
 
-def search_walk(ds, term, session):
-    """Count a subtree's search matches into `session` without rendering.
+def search_walk(ds, term, session, max_depth=12):
+    """Count a subtree's matches into `session` AND mark the current one — the
+    single source of truth for both the find UI count and the selection.
 
     Each searchable view stashes a `_search_matcher(term, session)` closure on
-    its draw_state during render (capturing its content, term-independently).
-    The closure claims its own matches and recurses into children via this
-    function, so the whole tree — including off-screen rows the render skips —
-    contributes to the combined count. Containers without a matcher just
-    recurse into their children in order.
+    its draw_state during render (capturing its content). Here we walk the live
+    draw_state tree (`ds` plus its descendants, via DrawState.descendants) and
+    invoke each matcher, so the whole subtree — including off-screen rows the
+    render skips, whose matcher persists from when they last drew — contributes.
+    Each matcher claims only its own direct matches; the walk supplies the
+    recursion, so siblings and nested views sum without double-counting.
+
+    As it goes it records, on each node, the local index of `session.current`
+    when that global match lands in this node (_search_active_local, else None),
+    and returns the node holding it. Views read that while drawing to highlight
+    the right match, so the count and the selection can never disagree.
     """
-    matcher = getattr(ds, '_search_matcher', None)
-    if matcher is not None:
+    current_node = None
+    for node in (ds, *ds.descendants(max_depth=max_depth)):
+        matcher = getattr(node, '_search_matcher', None)
+        if matcher is None:
+            continue
+        base = session.offset
         matcher(term, session)
-        return
-    children = getattr(ds, '_children', None)
-    if children:
-        for key in sorted(children.keys(), key=lambda k: (isinstance(k, str), k)):
-            child = children[key]
-            if child is not None and child is not ds:
-                search_walk(child, term, session)
+        count = session.offset - base
+        if count and base <= session.current < base + count:
+            node._search_active_local = session.current - base
+            current_node = node
+        else:
+            node._search_active_local = None
+    return current_node
 
 import hashlib
 import difflib
@@ -298,6 +309,15 @@ class Melty:
 
     mode_stack = []
     search_stack = []
+    # The draw_state holding the current search match (set by the search owner's
+    # pre-body walk). The find UI resolves this to a click target on Ctrl+Enter
+    # (see new_core_view.search_activate_target) and injects a mouse-down there.
+    search_current_node = None
+    # (tile_id, InputEvent) queued by Ctrl+Enter to "click" the selected search
+    # result. Applied in begin_frame, right after events are rebuilt and before
+    # target renders, so the target reliably reads it (the find UI renders too
+    # late in the frame to inject directly). One-shot.
+    search_click_pending = None
 
     _converters = {}
     _converter_to_type = {}
@@ -397,6 +417,12 @@ class Melty:
     default_funcs_by_type = defaultdict(lambda: None)
     default_funcs_by_name_type = defaultdict(lambda: defaultdict(lambda: list()))
     default_funcs_by_name = defaultdict(lambda: None)
+
+    # Every @render_func wrapper, keyed by its own name (e.g. "draw_type").
+    # Auto-populated by the decorator; the RenderFuncs accessor below resolves
+    # against it lazily so modules can reference render_funcs by symbol without
+    # importing the (often cycle-prone) module that defines them.
+    render_funcs_by_name = {}
 
     silence_invalidate = False
     unique_stack = []
@@ -743,6 +769,16 @@ class Melty:
 
         cls.events, cls.events_by_type = cls.event_handler.process_frame()
 
+        # Apply a Ctrl+Enter "click the selected search result" injection queued
+        # last frame - now, before any view renders, so the view reads it via
+        # the per-view event merge. Add two names so it reaches whichever the
+        # target view reads (button: left_mouse_down; managed window: mouse_down).
+        if cls.search_click_pending is not None:
+            _click_tid, _click_ev = cls.search_click_pending
+            cls.search_click_pending = None
+            _click_slot = cls.events.setdefault(_click_tid, {})
+            _click_slot["left_mouse_down"] = _click_ev
+            _click_slot["mouse_down"] = _click_ev
 
         cls.window_drag = ((("left_mouse_drag" in cls.events_by_type) or ("left_mouse_held" in cls.events_by_type)) or
                            (("right_mouse_drag" in cls.events_by_type) or ("right_mouse_held" in cls.events_by_type)))
@@ -2162,6 +2198,11 @@ set_window_registrar(
 )
 
 
+# The RenderFuncs accessor + CodeGenerator live in render_funcs.py (its own file
+# so the generator only ever rewrites that small module). Melty just owns the
+# render_funcs_by_name registry the @render_func decorator populates.
+
+
 class Action:
 
     def __init__(self, trigger_condition, clear_condition, re_arm_condition=None):
@@ -2718,8 +2759,8 @@ def apply_collection_action(action: CollectionAction):
     return None
 
 
-applied, skipped = DecorationManager.melty.replay(Melty)
-DecorationManager.melty = Melty
+applied, skipped = Core.melty.replay(Melty)
+Core.melty = Melty
 
 class DepthState:
     def __init__(self):

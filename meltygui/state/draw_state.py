@@ -11,7 +11,7 @@ from src.lsd.gl_gui.toggles import shadow_depth_at
 from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace
 from src.lsd.gl_gui.view.core_conversion.cache_tree import CacheTree, UNSET_VALUE
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import no_save, exclude, deep_refresh, no_save_exclude, \
-    DecorationManager, defaults
+    Core, defaults
 
 
 class SynthColors(DictConversion):
@@ -211,7 +211,7 @@ class TileMode(Enum):
                  "anchor_pos", "parent_anchor_pos", "pin_to_clip", "pin_clip_rect", "just_shadow", 'hover_reported', 'explain_convert',
                  'channel', 'next', 'previous', 'index_in_parent',
                     '_hover_eligible', 'just_shadow')
-@deep_refresh('scroll_offset', 'closed', 'search_text', 'search_active')
+@deep_refresh( 'closed', 'search_text', 'search_active')
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
 
@@ -449,7 +449,7 @@ class DrawState(DictConversion):
         # shifts the (absolute, not-based) clip_rect by the window's movement
         # since then, so the clip tracks a window drag without a re-render.
         self._clip_win_anchor = None
-        self.dlt_count = DecorationManager.melty.save_draw_state_for
+        self.dlt_count = Core.melty.save_draw_state_for
         self.premature_break = False
         self.header_left_delta = 0
         self.header_top_delta = 0
@@ -547,27 +547,21 @@ class DrawState(DictConversion):
         self._text_search_scroll_to = False
 
         # Cross-view aggregation (search owner side). _search_session is a
-        # SearchTerm pushed onto Melty.search_stack each frame; after the
-        # owner's subtree renders, its .total is read back into text_search_count
-        # so the find UI shows the combined result count across all child views.
+        # SearchTerm pushed onto Melty.search_stack each frame; the owner's
+        # pre-body search_walk pushes its term here and writes the combined
+        # result count into text_search_count for the find UI.
         self._search_session = None
         self._search_last_term = None
         self._search_nav_pending = False
-        # Which local key (if any) is the global-current one for this view,
-        # latched on full search sub-renders so incidental repaints don't reset
-        # the highlight when sibling views are served from cache.
+        # Set by the owner's search_walk to the local index of the global-current
+        # match when it lands in THIS view (else None). The view reads it while
+        # drawing to highlight/scroll to that match - so the count and the
+        # selection come from one source and can't disagree.
         self._search_active_local = None
-        # draw_collection latches the index of its global-current matching key,
-        # and of the child whose subtree holds the global-current match (each
-        # render force-draws that one child even if clipped, so it scrolls in).
+        # draw_collection's copy of the key holding the global-current match.
         self._search_current_key = None
-        self._search_current_child = None
-        # (term, claimed_count) cached when this view rendered+claimed, so an
-        # off-screen row can re-claim its match count without rendering while the
-        # term is unchanged (e.g. stepping through results).
-        self._search_count_cache = None
-        # Closure set each frame: (term, session) -> claims this view's matches
-        # into the session without imgui. Used by Melty.search_walk.
+        # Closure set each render: (term, session) => claims this view's own
+        # matches into the session from imgui. Driven by melty.search_walk.
         self._search_matcher = None
 
         self._print_last_invalid = False
@@ -633,11 +627,11 @@ class DrawState(DictConversion):
 
         if self._bvh_id is None:
             if new_bbox is not None and self.inside_clip:
-                DecorationManager.melty.bvh_register(self)
+                Core.melty.bvh_register(self)
         elif not self.inside_clip:
-            DecorationManager.melty.bvh_unregister(self)
+            Core.melty.bvh_unregister(self)
         else:
-            DecorationManager.melty.bvh_update(self)
+            Core.melty.bvh_update(self)
 
     # @property
     # def inner_cursor(self):
@@ -805,8 +799,8 @@ class DrawState(DictConversion):
             # in both cases - it's constant while content scrolls and moves with
             # a window window.
             win = self.parent_window
-            if win is None and len(DecorationManager.melty.melty_windows) > 0:
-                win = DecorationManager.melty.melty_windows[-1]
+            if win is None and len(Core.melty.melty_windows) > 0:
+                win = Core.melty.melty_windows[-1]
             if win is not None and win is not self:
                 wl, wt = win._abs_left(), win._abs_top()
                 c = (wl, wt, wl + win.width, wt + win.height)
@@ -1062,6 +1056,35 @@ class DrawState(DictConversion):
         result.sort(key=lambda c: c.abs_top)
         return result
 
+    def descendants(self, max_depth=None):
+        """Every descendant draw_state via _view_children, pre-order and deduped
+        by identity, bounded by `max_depth` (None = whole subtree).
+
+        The un-clipped sibling of children_in_clip: no viewport filter, so it
+        returns rows that have scrolled off-screen too — as long as they
+        rendered at least once and are still parented here. Used to walk the
+        whole tree without drawing, e.g. to recount search matches by invoking
+        each view's _search_matcher (melty.search_walk), instead of force-
+        rendering off-screen rows just so they re-register their counts."""
+        seen = set()
+        result = []
+
+        def _walk(node, depth):
+            if depth is not None and depth <= 0:
+                return
+            children = node._view_children
+            if not children:
+                return
+            for c in list(children.values()):
+                if c is None or c is node or c._parent is not node or id(c) in seen:
+                    continue
+                seen.add(id(c))
+                result.append(c)
+                _walk(c, None if depth is None else depth - 1)
+
+        _walk(self, max_depth)
+        return result
+
     @property
     def size_change(self):
         if self._tile_id is None or self.width is None or self.height is None:
@@ -1072,7 +1095,7 @@ class DrawState(DictConversion):
         #         and not imgui.is_mouse_down(2)):
         #     return True
 
-        cache = DecorationManager.melty.cache
+        cache = Core.melty.cache
         if cache is None:
             return False
         t = cache._tiles.get(self._tile_id)
@@ -1087,7 +1110,7 @@ class DrawState(DictConversion):
         tile overlay (Toggles.show_filled_tiles)."""
         if self._tile_id is None:
             return False
-        cache = DecorationManager.melty.cache
+        cache = Core.melty.cache
         if cache is None:
             return False
         return cache._tile_fully_filled(cache._tiles.get(self._tile_id))
@@ -1096,9 +1119,9 @@ class DrawState(DictConversion):
     def abs_left(self):
         # Pinned floats resolve their target (parent/grandparent/window) live
         # from the tree each call so they track it as it scrolls - compute live,
-        # no cache. The target's own abs_left is cached, so the walk stays cheap.
-        if self.pin_to_clip:
-            return self._abs_left()
+        # # no cache. The target's own abs_left is cached, so the walk stays cheap.
+        # if self.pin_to_clip:
+        #     return self._abs_left()
         # The key covers everything the wrapper writes per-draw_state mid-frame
         # that abs_left's value depends on: left_offset / window_pos (the
         # columns branch and the wrapper re-set these), and anchor_pos /
@@ -1106,7 +1129,7 @@ class DrawState(DictConversion):
         # deltas to an ancestor invalidate the cache (the non-pinned path
         # subtracts it in _abs_left). Parent-side changes propagate via the
         # cached parent.abs_left.
-        f = DecorationManager.melty.frame_count
+        f = Core.melty.frame_count
         ancestor_sx, _ = self._ancestor_scroll()
         key = (f, self.left_offset, self.window_pos,
                self.anchor_pos, self.parent_anchor_pos, self.width, ancestor_sx)
@@ -1119,9 +1142,9 @@ class DrawState(DictConversion):
 
     @property
     def abs_top(self):
-        if self.pin_to_clip:
-            return self._abs_top()
-        f = DecorationManager.melty.frame_count
+        # if self.pin_to_clip:
+        #     return self._abs_top()
+        f = Core.melty.frame_count
         _, ancestor_sy = self._ancestor_scroll()
         key = (f, self.top_offset, self.window_pos,
                self.anchor_pos, self.parent_anchor_pos, self.height, ancestor_sy)
@@ -1137,8 +1160,8 @@ class DrawState(DictConversion):
 
     def shadow_depth_at(self, depth, active_layer):
         divisor = max(0.5, depth - 20.0)
-        depth_and_layer = active_layer * DecorationManager.melty.max_depth + (depth * (20.0 / (divisor)))
-        depth_and_layer *= DecorationManager.melty.layer_inc
+        depth_and_layer = active_layer * Core.melty.max_depth + (depth * (20.0 / (divisor)))
+        depth_and_layer *= Core.melty.layer_inc
         return depth_and_layer
 
     @property
@@ -1150,7 +1173,7 @@ class DrawState(DictConversion):
     @property
     def seen(self):
         debounce = 1
-        return self.last_seen is not None and DecorationManager.melty.frame_count - self.last_seen < debounce
+        return self.last_seen is not None and Core.melty.frame_count - self.last_seen < debounce
 
     @property
     def window_index(self):
@@ -1168,9 +1191,9 @@ class DrawState(DictConversion):
 
     def init_cst_state(self, node, module_id: str):
         self.cst = None
-        self.cst.path_key = DecorationManager.melty.current_path()
+        self.cst.path_key = Core.melty.current_path()
         self.cst.module_id = module_id
-        self.cst.root_gen = DecorationManager.melty.current_gen(module_id)
+        self.cst.root_gen = Core.melty.current_gen(module_id)
         # super light anchor for re-attachment later (customize as you like)
         if isinstance(node, cst.Name):
             self.cst.anchor = ("Name", node.value)
@@ -1206,7 +1229,7 @@ class DrawState(DictConversion):
 
     def is_glfw_mouse_hovering_rect(self, x1, y1, x2, y2):
 
-        global_mouse = glfw.get_cursor_pos(DecorationManager.melty.glfw_window)
+        global_mouse = glfw.get_cursor_pos(Core.melty.glfw_window)
         mx, my = global_mouse
         # basic collision check
         if x1 <= mx <= x2 and y1 <= my <= y2:
@@ -1230,9 +1253,9 @@ class DrawState(DictConversion):
         return (left, top, right - 1, bottom - 1)
 
     def draw_rect(self, rounding=0, tint=None, rect=None):
-        if DecorationManager.melty.channels_split:
+        if Core.melty.channels_split:
             draw_list = imgui.get_window_draw_list()
-            draw_list.channels_set_current(DecorationManager.melty.get_channel() + 1)
+            draw_list.channels_set_current(Core.melty.get_channel() + 1)
 
         if tint is None:
             tint = getattr(self._input_value, 'tint', None)
@@ -1243,9 +1266,9 @@ class DrawState(DictConversion):
                            imgui.get_color_u32_rgba(1, 1, 1, 1),
                            rounding=rounding, thickness=1)
 
-        if DecorationManager.melty.channels_split:
+        if Core.melty.channels_split:
             draw_list = imgui.get_window_draw_list()
-            draw_list.channels_set_current(DecorationManager.melty.get_channel())
+            draw_list.channels_set_current(Core.melty.get_channel())
 
     def is_inside_clip(self, child_draw_state=None):
         clip_rect = self.abs_clip_rect
@@ -1281,7 +1304,7 @@ class DrawState(DictConversion):
         if self.just_shadow:
             return False
 
-        if self.closed or not DecorationManager.melty.imgui_main_window_hovered:
+        if self.closed or not Core.melty.imgui_main_window_hovered:
             return False
 
         if not self.inside_clip:
@@ -1291,7 +1314,7 @@ class DrawState(DictConversion):
             # Lean on the BVH: begin_frame already point-tested each view against
             # the cursor (Melty.bvh_hover_ids), O(1) membership replaces
             # imgui.is_mouse_hovering_rect on this view's own bbox.
-            if id(self) not in DecorationManager.melty.bvh_hover_ids:
+            if id(self) not in Core.melty.bvh_hover_ids:
                 return False
             # The BVH stores raw bboxes, not clipped ones, so still check the
             # cursor inside the active clip (scrolled-away views aren't hovered).
@@ -1316,14 +1339,14 @@ class DrawState(DictConversion):
 
     @property
     def priority(self):
-        max_layer_depth = (DecorationManager.melty.max_depth *
-                           DecorationManager.melty.max_layer + DecorationManager.melty.max_depth)
-        layer_and_depth = (DecorationManager.melty.active_layer *
-                           DecorationManager.melty.max_depth + DecorationManager.melty.depth)
+        max_layer_depth = (Core.melty.max_depth *
+                           Core.melty.max_layer + Core.melty.max_depth)
+        layer_and_depth = (Core.melty.active_layer *
+                           Core.melty.max_depth + Core.melty.depth)
         return max_layer_depth - layer_and_depth
 
     def on_action(self, event_names, view_id=None, priority=None, priority_delta=0, rect=None):
-        if not DecorationManager.melty.inside_clip(draw_state=self):
+        if not Core.melty.inside_clip(draw_state=self):
             return None
         if self.just_shadow:
             return None
@@ -1339,24 +1362,24 @@ class DrawState(DictConversion):
 
         if self.hover_eligible(rect):
             if priority is None:
-                max_layer_depth = DecorationManager.melty.max_depth * DecorationManager.melty.max_depth + DecorationManager.melty.max_depth
-                layer_and_depth = DecorationManager.melty.active_layer * DecorationManager.melty.max_depth + DecorationManager.melty.depth
+                max_layer_depth = Core.melty.max_depth * Core.melty.max_depth + Core.melty.max_depth
+                layer_and_depth = Core.melty.active_layer * Core.melty.max_depth + Core.melty.depth
                 priority = max_layer_depth - layer_and_depth
 
-            DecorationManager.melty.event_handler.register_hovered(view_id, event_names,
-                                                 priority=priority - priority_delta,
-                                                 tile_id=self._tile_id,
-                                                 )
+            Core.melty.event_handler.register_hovered(view_id, event_names,
+                                                      priority=priority - priority_delta,
+                                                      tile_id=self._tile_id,
+                                                      )
 
         if single_event:
-            if view_id in DecorationManager.melty.events:
-                return DecorationManager.melty.events.get(view_id, None).get(event_names[0], None)
+            if view_id in Core.melty.events:
+                return Core.melty.events.get(view_id, None).get(event_names[0], None)
             return None
 
         return_events = {}
-        if view_id in DecorationManager.melty.events:
-            for event_name in DecorationManager.melty.events[view_id]:
-                return_events[event_name] = DecorationManager.melty.events[view_id][event_name]
+        if view_id in Core.melty.events:
+            for event_name in Core.melty.events[view_id]:
+                return_events[event_name] = Core.melty.events[view_id][event_name]
         return return_events
 
     def is_bounding_hovered(self):
@@ -1367,14 +1390,14 @@ class DrawState(DictConversion):
             return False
 
         mouse_x, mouse_y = imgui.get_mouse_pos()
-        if not DecorationManager.melty.inside_clip(rect=(mouse_x, mouse_y, 1, 1)):
+        if not Core.melty.inside_clip(rect=(mouse_x, mouse_y, 1, 1)):
             return False
 
-        if not (DecorationManager.melty.imgui_main_window_hovered or DecorationManager.melty.imgui_popup_open):
+        if not (Core.melty.imgui_main_window_hovered or Core.melty.imgui_popup_open):
             return False
 
         # Cursor-over-this-view comes from the BVH hit test, not is_mouse_hovering_rect.
-        return id(self) in DecorationManager.melty.bvh_hover_ids
+        return id(self) in Core.melty.bvh_hover_ids
 
 
 class KeyMod(Enum):
