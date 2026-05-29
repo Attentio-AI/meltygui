@@ -434,6 +434,11 @@ class InputHandler:
         self._hovered.sort(key=lambda x: x[1])
 
         # --- Blocker: drop views below the topmost blocker ---
+        # A blocker (closable window) stops events reaching anything stacked
+        # below it. Exception: non_blocking subscriptions survive - they're
+        # pass-through global handlers (e.g. an app-wide shortcut on the root),
+        # which shouldn't be swallowed just because a window is in front. Such a
+        # non-blocker view is kept, but only its non_blocking subs.
         if self._blocker_views:
             blocker_priority = None
             blocker_tile = None
@@ -443,11 +448,18 @@ class InputHandler:
                     blocker_tile = _view_id_to_tile_id.get(view_id)
                     break  # list is sorted asc, first match is topmost
             if blocker_priority is not None:
-                self._hovered = [
-                    (v, p, s) for v, p, s in self._hovered
-                    if p <= blocker_priority
-                    or _view_id_to_tile_id.get(v) == blocker_tile
-                ]
+                flags_get = _view_id_flags_cache.get
+                kept = []
+                for v, p, s in self._hovered:
+                    if p <= blocker_priority or _view_id_to_tile_id.get(v) == blocker_tile:
+                        kept.append((v, p, s))
+                        continue
+                    vf = flags_get(v)
+                    if vf:
+                        passthrough = frozenset(sub for sub in s if vf.get(sub, (False, False))[1])
+                        if passthrough:
+                            kept.append((v, p, passthrough))
+                self._hovered = kept
 
         # --- Precompute key → [(view_id, priority)] index (sorted by priority asc) ---
         key_index: dict[tuple[str, str], list[tuple[Any, int]]] = {}

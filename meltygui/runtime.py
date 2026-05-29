@@ -1742,6 +1742,24 @@ class Melty:
         return ds
 
     @classmethod
+    def summon_window(cls, draw_state, x, y):
+        """Move a window so its top-left lands at screen (x, y) AND raise it —
+        the "summon" the Dock's target button does, so a launched window comes
+        to where you are instead of staying put (maybe off-screen). window_pos
+        is the unanchored origin, so offset by the window's anchor delta
+        (abs - window_pos), same as the Dock summon."""
+        if draw_state is None:
+            return
+        wp = draw_state.window_pos or (0, 0)
+        from_zero_x = (draw_state.abs_left or 0) - wp[0]
+        from_zero_y = (draw_state.abs_top or 0) - wp[1]
+        draw_state.window_pos = (x - from_zero_x, y - from_zero_y)
+        cls.move_window_to_front(draw_state)
+        if cls.cache is not None and draw_state._tile_id is not None:
+            cls.cache.invalidate_up(draw_state._tile_id, force=True, max_depth=4)
+        request_render()
+
+    @classmethod
     def move_window_to_front(cls, draw_state):
             if draw_state is None:
                 return

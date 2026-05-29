@@ -49,7 +49,7 @@ def draw_jump_to(input_value: Address, unique, draw_state=None):
     imgui.align_text_to_frame_padding()
     imgui.text(label)
     imgui.same_line()
-    if button(f"{folder_icon} Op##jump_to{unique}", name=f"{unique}_jump")[0]:
+    if button(f"{folder_icon} Open##jump_to{unique}", height=22, name=f"{unique}_jump")[0]:
         from src.lsd.gl_gui.utils.jump_to_code import open_in_intellij
 
         threading.Thread(

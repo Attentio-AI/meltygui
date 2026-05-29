@@ -177,8 +177,17 @@ def go_to_search_result(ds, win=None):
     target = Melty.find_window(name) if name else None
     if target is not None and target is not win:
         target.closed = False
-        Melty.move_window_to_front(target)
+        # Summon it (move + raise) to where the search is, so it comes to you
+        # instead of staying at its old, maybe off-screen, spot.
+        gs = Melty.find_window("GlobalSearch")
+        if gs is not None and gs.abs_left is not None:
+            Melty.summon_window(target, gs.abs_left, gs.abs_top)
+        else:
+            Melty.move_window_to_front(target)
         Melty.focused_ds = target
+        # Sole-select it so it shows Melty's selection outline.
+        Melty.selected = {target}
+        Melty.last_selected = target
         request_render()
         return
 
@@ -186,8 +195,25 @@ def go_to_search_result(ds, win=None):
         win.closed = False
         Melty.move_window_to_front(win)
     Melty.focused_ds = ds
+    Melty.selected = {ds}
+    Melty.last_selected = ds
     if ds.abs_top is not None and ds.height is not None:
         _scroll_into_view(ds, ds.abs_top, ds.abs_top + ds.height)
+    request_render()
+
+
+def _dismiss_global_search():
+    """Close the GlobalSearch window and release the box's text focus — called
+    after a result is activated (clicked or Enter), so picking a result also
+    dismisses the search. Also clears the query, so the next open starts fresh
+    (Esc, which doesn't call this, leaves the query for resuming)."""
+    win = Melty.find_window("GlobalSearch")
+    if win is not None:
+        win.closed = True
+    GlobalSearch.query = ""
+    GlobalSearch._last_query = None
+    GlobalSearch.selected = 0
+    Melty.text_focused_ds = None
     request_render()
 
 
@@ -637,7 +663,7 @@ def draw_type(input_value:type, **kwargs):
                 imgui.text(f"Error setting attribute {k} on class {input_value.__name__}: {e}")
 
 
-@render_func(show_bg=True, use_cache=True, selectable=False, with_header=draw_header, auto_resize=True)
+@render_func(show_bg=True, use_cache=True, selectable=False, with_header=draw_header, tint=(1,1,1), bg_offset=3, auto_resize=True)
 def draw_global_search(input_value, draw_state=None, **kwargs):
     """Renders the GlobalSearch window: the search box plus the matching nodes
     from the draw_state tree draw_main registered on us. Results are recomputed
@@ -648,9 +674,12 @@ def draw_global_search(input_value, draw_state=None, **kwargs):
     _focus = input_value._focus_requested
     input_value._focus_requested = False
 
-    changed, new_query = draw_text(input_value.query, name="Search",
-                                   searchable=False, font=Font.JETBRAINS_MONO_40,
-                                   request_focus=_focus)
+    # return_extras gives the box's draw_state so we can tell when it holds text
+    # focus (that is when our arrow/enter result-navigation should be live).
+    _box = draw_text(input_value.query, name="Search", searchable=False, single_line=True,
+                     font=Font.JETBRAINS_MONO_40, request_focus=_focus, return_extras=True)
+    changed, new_query = _box[0], _box[1]
+    box_ds = _box[2] if len(_box) > 2 else None
     if changed:
         input_value.query = new_query
 
@@ -659,20 +688,64 @@ def draw_global_search(input_value, draw_state=None, **kwargs):
         input_value._last_query = q
         input_value.results = (global_search_results(input_value.root, q, exclude=draw_state)
                                if input_value.root is not None and len(q) >= 2 else [])
+        input_value.selected = 0  # reset highlight to the top result on a new query
+
+    # Flatten the grouped results to their on-screen order, what the highlight
+    # moves through and what each index value refers to.
+    groups = group_results_by_window(input_value.results, input_value.root)
+    flat = [(label, ds, win) for win, items in groups.items() for (label, ds) in items]
+    n = len(flat)
+    input_value.selected = (input_value.selected % n) if n else 0
+
+    # While the box holds text focus (single-line, so Up/Down/Enter don't touch
+    # it): Up/Down move the highlight by result, Ctrl+Up/Down jump between window
+    # sections (group starts), and Enter launches the highlighted result.
+    if n and box_ds is not None and Melty.text_focused_ds is box_ds:
+        # Flat indices where each window group begins (for Ctrl jumps).
+        starts = [i for i in range(n) if i == 0 or flat[i][2] is not flat[i - 1][2]]
+
+        def _group_idx():  # index into `starts` of the group holding `selected`
+            gi = 0
+            for j, s in enumerate(starts):
+                if s <= input_value.selected:
+                    gi = j
+            return gi
+
+        downs = [m for k, m in Melty.frame_key_events if k == glfw.KEY_DOWN]
+        ups = [m for k, m in Melty.frame_key_events if k == glfw.KEY_UP]
+        enters = [k for k, _ in Melty.frame_key_events if k in (glfw.KEY_ENTER, glfw.KEY_KP_ENTER)]
+        if downs:
+            if any(m & glfw.MOD_CONTROL for m in downs):
+                input_value.selected = starts[(_group_idx() + 1) % len(starts)]
+            else:
+                input_value.selected = (input_value.selected + 1) % n
+            request_render()
+        elif ups:
+            if any(m & glfw.MOD_CONTROL for m in ups):
+                input_value.selected = starts[(_group_idx() - 1) % len(starts)]
+            else:
+                input_value.selected = (input_value.selected - 1) % n
+            request_render()
+        if enters:
+            _, _ds, _win = flat[input_value.selected]
+            go_to_search_result(_ds, _win)
+            _dismiss_global_search()
 
     w = (draw_state.content_width - 10) if draw_state and draw_state.content_width else 200
     # Group by owning window, with a tinted header per group; each row is
-    # coloured by its own draw_state's tint so results read at a glance.
-    i = 0
-    for win, items in group_results_by_window(input_value.results, input_value.root).items():
+    # coloured by its own draw_state's tint, and the highlighted one stands out.
+    idx = 0
+    for win, items in groups.items():
         win_label = str(getattr(win, 'name', '') or '').split("##")[0] or "?"
         text(win_label, show_bg=True, tint=_draw_state_tint(win), wrap=False,
-             name=f"gsg_{i}", width=w)
+             name=f"gsg_{idx}", width=w)
         for label, ds in items:
-            if button(label, name=f"gsr_{i}", width=w, height=24,
-                      color=_draw_state_tint(ds))[0]:
+            sel = (idx == input_value.selected)
+            if button(label, name=f"gsr_{idx}", width=w, height=24,
+                      color=_draw_state_tint(ds), search_match=sel, search_current=sel)[0]:
                 go_to_search_result(ds, win)
-            i += 1
+                _dismiss_global_search()
+            idx += 1
     return False, None
 
 
@@ -684,6 +757,7 @@ class GlobalSearch:
     _focus_requested = False
     _last_query = None
     results = []         # cached [(label, draw_state)] for the current query
+    selected = 0         # index (in on-screen order) of the arrow-key highlight
 
 
 @render_func()
@@ -867,21 +941,27 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     # Register the root draw_state so GlobalSearch can walk the whole UI tree.
     GlobalSearch.root = draw_state
 
-    # Ctrl+Shift+F: reveal the GlobalSearch window and focus search box. Its own
-    # modifier-qualified action (dedicated action bucket, no contention with
-    # plain-f / ctrl-f subscribers) and inverted so it resolves to the root
-    # first rather than a focused child for window.
-    if draw_state.on_action("ctrl_shift_f_down", priority=0):
-        Melty.open_window("GlobalSearch")
+    # Ctrl+Shift+F: reveal the GlobalSearch window and focus its box. A
+    # non_blocking action handler - so it survives a window blocker stacked in
+    # front (instead of needing an extreme priority that would consume events
+    # from everything else) and doesn't eat the key from other views.
+    if draw_state.on_action("non_blocking_ctrl_shift_f_down"):
+        gs = Melty.open_window("GlobalSearch")
+        if gs is not None:
+            # Summon the box to just above the cursor so it pops up where you're
+            # looking and is ready to type into.
+            mx, my = imgui.get_mouse_pos()
+            Melty.summon_window(gs, mx, my - 65)
         GlobalSearch._focus_requested = True
         request_render()
 
     # Esc dismisses the GlobalSearch window while it's open. Handled here on the
     # root (always hover-eligible) rather than on the window itself, so it works
-    # no matter where the cursor is. Only subscribes while open, so it doesn't
-    # swallow Esc from a per-view search otherwise.
+    # no matter where the cursor is. non_blocking so the front window's blocker
+    # doesn't eat Esc; only subscribes while open, so it doesn't swallow Esc from
+    # a per-view search otherwise.
     _gs = Melty.find_window("GlobalSearch")
-    if _gs is not None and not _gs.closed and draw_state.on_action("escape_key_down_inverted"):
+    if _gs is not None and not _gs.closed and draw_state.on_action("non_blocking_escape_key_down_inverted"):
         _gs.closed = True
         Melty.text_focused_ds = None
         Melty.focused_ds = None
@@ -1883,7 +1963,7 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
         style_manager=None, tint=None, outline_tint=None, selected=False,
         hovered=False, pressed=False, nested_bg=False, **kwargs):
     # -- Constants ---------------------------------
-    depth_wrap        = 30
+    depth_wrap        = 34
     depth_scale       = 1.629
     # [tint=(1,1,1)]
     corner_radius     = rounding
