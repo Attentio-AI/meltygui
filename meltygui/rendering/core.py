@@ -396,10 +396,16 @@ def render_func(*args, **o_kwargs):
 
         if closable:
             # Only perform this check on floating windows
-            if draw_state._parent is not None and not draw_state.inside_clip:
-                if return_extras:
-                    return False, None, draw_state
-                return False, None
+# windows            if draw_state._is_nested:
+#                 if not draw_state.inside_clip:
+#                     if return_extras:
+#                         return False, None, draw_state
+#                     return False, None
+#             else:
+#                 if draw_state._parent is not None and not draw_state._parent.inside_clip:
+#                     if return_extras:
+#                         return False, None, draw_state
+#                     return False, None
 
             if draw_state.parent_window is None:
                 Melty.registered_windows[tile_id].input_value = input_value
@@ -1442,7 +1448,8 @@ def render_func(*args, **o_kwargs):
                             # to TOP_LEFT), floating just above it as it scrolls.
                             pin_to_clip=Pin.PARENT,
                             window_pos=(0, 0),
-                            min_width=200,
+                            width=300,
+
                             initial={"height": 30},
                             anchor=Anchor.BOTTOM_LEFT,
                             name=f"Find{unique}",
@@ -2043,7 +2050,7 @@ def render_func(*args, **o_kwargs):
                             draw_state.context_menu_open = False
 
                 if kwargs.get("show_bg", False):
-                    outline_margin = 3
+                    outline_margin = 0
                 else:
                     outline_margin = 0
 
@@ -2901,8 +2908,7 @@ def render_func(*args, **o_kwargs):
             current_x = scroll_offset[0]
             current_y = scroll_offset[1]
             direction = -1
-            scroll_speed = 250.0
-            new_offset_y = current_y + scroll_delta * direction * scroll_speed
+            new_offset_y = current_y + scroll_delta * direction * Toggles.scroll_speed
 
             min_scroll_y = 0
             max_scroll_y = max(0,

@@ -324,6 +324,20 @@ class InputHandler:
         self._emit("cursor", Action.MOVED, x, y, dx, dy, t=t)
 
     def feed_change(self, input_id: str, value: float, t: float = None):
+        # Coalesce repeated CHANGED events for the same input within a frame by
+        # summing their values. Scroll-wheel notches arrive as separate
+        # callbacks; when the framerate drops, many come between two
+        # process_frame() calls. Dispatch keys events by name and overwrites
+        # (add_event: vdict[event_name] = event), so without coalescing only the
+        # last notch's delta would persist and the rest of the scroll distance
+        # would be lost. Summing carries the accumulated scroll delta intact, the
+        # same way Melty.frame_key_events preserves every keystroke under load.
+        for e in self._pending:
+            if e.input_id == input_id and e.action == Action.CHANGED:
+                e.value += value
+                if t is not None:
+                    e.timestamp = t
+                return
         self._emit(input_id, Action.CHANGED, self._cursor_x, self._cursor_y, value=value, t=t)
 
     @staticmethod

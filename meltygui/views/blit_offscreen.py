@@ -1557,15 +1557,15 @@ class TileCacheMasked:
             if settled:
 
                 #
-                # if ctx.draw_state._parent.scroll_visible or ctx.draw_state.closable:
-                #     rect = ctx.draw_state._parent.scroll_offset
-                #     new_mark_state = (tuple(int(v) for v in rect), ctx.layer)
-                #     prev_mark_state = self._last_mark_clip.get(ctx.key)
-                #     if prev_mark_state is not None and prev_mark_state != new_mark_state:
-                #         self.invalidate_up(ctx.draw_state._tile_id, max_depth=1,frame_delta=0, note=Note(name="Clip change",
-                #                                                        reason="",
-                #                                                        tint=(1, 0.5, 1)))
-                #     self._last_mark_clip[ctx.key] = new_mark_state
+                if ctx.draw_state.scroll_visible:
+                    rect = ctx.draw_state.scroll_offset
+                    new_mark_state = (tuple(int(v) for v in rect))
+                    prev_mark_state = self._last_mark_clip.get(ctx.key)
+                    if prev_mark_state is not None and prev_mark_state != new_mark_state:
+                        self.invalidate(ctx.draw_state._tile_id, frame_delta=0, note=Note(name="Clip change",
+                                                                       reason="",
+                                                                       tint=(1, 0.5, 1)))
+                    self._last_mark_clip[ctx.key] = new_mark_state
 
                 if (ctx.draw_state._parent.scroll_visible and ctx.draw_state.inside_clip
                         and not ctx.draw_state.scroll_visible):
@@ -1573,7 +1573,7 @@ class TileCacheMasked:
                     new_mark_state = (tuple(int(v) for v in rect))
                     prev_mark_state = self._last_mark_clip.get(ctx.key)
                     if prev_mark_state is not None and prev_mark_state != new_mark_state:
-                        self.invalidate_up(ctx.draw_state._tile_id, max_depth=7, frame_delta=2, note=Note(name="Clip change",
+                        self.invalidate_up(ctx.draw_state._tile_id, max_depth=7, frame_delta=1, note=Note(name="Clip change",
                                                                                           reason="",
                                                                                           tint=(1, 0.5, 1)))
 

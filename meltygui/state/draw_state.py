@@ -296,15 +296,24 @@ class DrawState(DictConversion):
         # calls per ~25 draw_tint_context frames in practice. Cache by frame_count;
         # the recursive internal walks all go through the cached property so an
         # ancestor's value is computed at most once per frame.
-        self._abs_left_frame = -1
+        # abs_left/abs_top are keyed by (frame_count, left_offset, top_offset,
+        # window_pos) - NOT frame alone. The wrapper sets left_offset/top_offset
+        # mid-frame (core_render.py:393, again in the columns branch :1235) to
+        # position the widget at the current imgui cursor; a frame-only key
+        # cached the first set_offset value and the column re-set never landed,
+        # which is what broke column rendering with the earlier cache.
+        self._abs_left_key = None
         self._abs_left_cache = 0
-        self._abs_top_frame = -1
+        self._abs_top_key = None
         self._abs_top_cache = 0
-        self._abs_clip_rect_frame = -1
-        self._abs_clip_rect_cache = None
-        self._pin_rect_frame = -1
+        # pin_rect/clip_anchor_base keys widen over frame_count too: the wrapper
+        # writes pin_target/pin_clip_rect/pin_clamp/parent_anchor_pos mid-frame
+        # (core_render.py:995–1041), AFTER earlier hover/clip code may have already
+        # cached a pre-anchor value. Frame-only caching made nested-window anchors
+        # take a frame to settle.
+        self._pin_rect_key = None
         self._pin_rect_cache = None
-        self._clip_anchor_base_frame = -1
+        self._clip_anchor_base_key = None
         self._clip_anchor_base_cache = None
 
         self.relative_pos = None
@@ -752,12 +761,13 @@ class DrawState(DictConversion):
         stays inside the window box.
         """
         f = DecorationManager.melty.frame_count
-        if self._pin_rect_frame == f:
+        key = (f, self.pin_target, self.pin_clip_rect, self.pin_clamp)
+        if self._pin_rect_key == key:
             return self._pin_rect_cache
         # Mark BEFORE recursion so a re-entrant pin_rect (via abs_clip_rect →
         # pin_rect → ... cycle on a self-referential pin chain) returns the prior
         # frame's value rather than recursing forever.
-        self._pin_rect_frame = f
+        self._pin_rect_key = key
         if self.pin_target is not None:
             rect = self.pin_target.abs_clip_rect
         elif self.pin_clip_rect is not None:
@@ -805,9 +815,11 @@ class DrawState(DictConversion):
         target's top-left. Tracks the target regardless of how it scrolls.
         """
         f = DecorationManager.melty.frame_count
-        if self._clip_anchor_base_frame == f:
+        key = (f, self.parent_anchor_pos, self.pin_target, self.pin_clip_rect,
+               self.pin_clamp)
+        if self._clip_anchor_base_key == key:
             return self._clip_anchor_base_cache
-        self._clip_anchor_base_frame = f
+        self._clip_anchor_base_key = key
         clip = self.pin_rect
         if clip is None:
             self._clip_anchor_base_cache = None
@@ -832,18 +844,18 @@ class DrawState(DictConversion):
         self._clip_anchor_base_cache = result
         return result
 
-    def _abs_left(self, depth=0):
+    def _abs_left(self):
+        # Recursive parent walks go through the cached `parent_window.abs_left`
+        # property - once an ancestor's value is cached for the current key, the
+        # walk short-circuits, reducing what was O(depth * widgets) per frame
+        # back to O(widgets). The if `depth > 10` print_stack_trace guard is no
+        # longer needed: abs_left marks its key BEFORE recursing, so any cycle
+        # returns the cached (last-set) value instead of recursing forever.
         parent_left = 0
-        if depth > 10:
-            print_stack_trace()
-        else:
-            if self.parent_window is not None and self.parent_window is not self:
-                parent_left = self.parent_window._abs_left(depth=depth + 1)
-            elif not self.closable:
-                parent_left = 0
+        if self.parent_window is not None and self.parent_window is not self:
+            parent_left = self.parent_window.abs_left
 
         window_pos_x = self.window_pos[0] if self.window_pos is not None else 0
-        # this_left_offset = self.left_offset if not self.melty_window else window_pos_x
         anchor = self.anchor_offset
 
         base = self.clip_anchor_base if self.pin_to_clip else None
@@ -859,7 +871,7 @@ class DrawState(DictConversion):
                 # inside the window horizontally (favoring the left edge if the
                 # box is wider than the window).
                 win = self.parent_window
-                win_left = win._abs_left(depth=depth + 1)
+                win_left = win.abs_left
                 this_left = min(this_left, win_left + win.width - self.width)
                 this_left = max(this_left, win_left)
         else:
@@ -867,15 +879,10 @@ class DrawState(DictConversion):
                          + self.parent_anchor_offset[0] + anchor[0])
         return int(this_left)
 
-    def _abs_top(self, depth=0):
+    def _abs_top(self):
         parent_top = 0
-        if depth > 10:
-            print_stack_trace()
-        else:
-            if self.parent_window is not None and self.parent_window is not self:
-                parent_top = self.parent_window._abs_top(depth=depth + 1)
-            elif not self.closable:
-                parent_top = 0
+        if self.parent_window is not None and self.parent_window is not self:
+            parent_top = self.parent_window.abs_top
 
         anchor = self.anchor_offset
         window_pos_y = self.window_pos[1] if self.window_pos is not None else 0
@@ -891,7 +898,7 @@ class DrawState(DictConversion):
                 # hanging below the window (favoring the top edge if the box
                 # is taller than the window).
                 win = self.parent_window
-                win_top = win._abs_top(depth=depth + 1)
+                win_top = win.abs_top
                 this_top = min(this_top, win_top + win.height - self.height)
                 this_top = max(this_top, win_top)
         else:
@@ -931,11 +938,41 @@ class DrawState(DictConversion):
         return t.size != (int(self.width), int(self.height))
     @property
     def abs_left(self):
-        return self._abs_left()
+        # The key covers everything the wrapper writes per-draw_state mid-frame
+        # that abs_left's value depends on:
+        #   - left_offset / window_pos: columns branch (:1235) and the wrapper
+        #     (:393) re-set these; a frame-only key broke column rendering.
+        #   - pin/anchor attrs: the wrapper sets pin_to_clip / pin_target /
+        #     pin_clip_rect / pin_clamp / anchor_pos / parent_anchor_pos at
+        #     :995–1041, AFTER hover/clip checks may have already cached. A
+        #     frame-only key made nested-window anchors take a frame to settle.
+        # Parent-side changes propagate via the abs parent.abs_left (which
+        # has its own key); we don't need to mirror them here.
+        f = DecorationManager.melty.frame_count
+        key = (f, self.left_offset, self.window_pos, self.pin_to_clip,
+               self.anchor_pos, self.parent_anchor_pos, self.pin_target,
+               self.pin_clip_rect, self.pin_clamp, self.width)
+        if self._abs_left_key == key:
+            return self._abs_left_cache
+        # Set BEFORE computing so a self-referential cycle (e.g. pin_target →
+        # us) returns the prior frame's cached value instead of recursing.
+        self._abs_left_key = key
+        val = self._abs_left()
+        self._abs_left_cache = val
+        return val
 
     @property
     def abs_top(self):
-        return self._abs_top()
+        f = DecorationManager.melty.frame_count
+        key = (f, self.top_offset, self.window_pos, self.pin_to_clip,
+               self.anchor_pos, self.parent_anchor_pos, self.pin_target,
+               self.pin_clip_rect, self.pin_clamp, self.height)
+        if self._abs_top_key == key:
+            return self._abs_top_cache
+        self._abs_top_key = key
+        val = self._abs_top()
+        self._abs_top_cache = val
+        return val
 
     def mark_column(self, column):
         self.max_column = max(self.max_column, column)

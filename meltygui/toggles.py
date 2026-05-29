@@ -51,13 +51,18 @@ class Swoosh:
     some_dict = [1,1,1,1]
 
 
-@window(tint=(0.5, 0.3, 0.0))
+@window(tint=(0.8, 0.5, 0.1))
 class Toggles:
 
     @defaults(tint=(0.9767442,0.9383082,0.5))
     class InvalidateTracker:
         keep_for_frames = 2
         enable = False
+
+    @defaults(tint=(0.6195782,0.6659455299377441,0.7441860437393188))
+    class Debug:
+        slow_frame_rate = False
+        other = False
 
     # Invalidation settings
     invalidate_stack_trace = False
@@ -70,7 +75,7 @@ class Toggles:
     ds_invalidate_stack = False
     profile_mode = ProfileMode.LIGHT
     debug_stale_tint = False
-    show_line_break = True
+    show_line_break = False
     # Filter SettingS
     brightness = 0.317
     contrast = 1.574
@@ -88,11 +93,14 @@ class Toggles:
     # Shadow Settings
     shadow_downscale = 2
     shadow_edge_sharpness = 50.0
-    
+    draw_legacy = False
+    shadow_edge_sharpness = 50.0
     draw_legacy = False
     
-    class Debug:
-        slow_frame_rate = False
+    # Scroll settings 
+    scroll_speed = 280.0
+
+
 @window
 class LegacyToggles:
     # All the padding settings from imgui style

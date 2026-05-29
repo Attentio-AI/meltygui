@@ -101,7 +101,7 @@ class Mode(Enum):
                     'shadow': True, "return_item": True,
                     "show_tint": False, "show_header": False, 'indent_size': 5,
                     "disable_scroll": False, "searchable": True, "wrap":True,
-                    "child_kwargs": {"force_initial":True, "initial": {"window_pos": (0, 0), "closed":False},
+                    "child_kwargs": {"force_initial":True, "initial": {"window_pos": (-20, 0), "closed":False},
                                      "bg_offset":2, "swoosh":False, "auto_resize":True, "closed":False,
                                      "return_item": True,
                                      "inline":True, "anchor": Anchor.TOP_LEFT, "parent_anchor": Anchor.TOP_LEFT},
@@ -243,16 +243,16 @@ class Mode(Enum):
     CODE_PLAIN_TEXT = {
         types.FunctionType: ModeOverrides(
             recursive=True,
-            route={function_to_address: "jump_to"},
+            route={function_to_address: "jump_to", address_to_general_parse: "code_tree"},
             func=(function_to_address,*draw_text_funcs,address_to_function),
         ),
         types.ModuleType: ModeOverrides(
             recursive=True,
-            route={module_to_address : "jump_to"},
+            route={module_to_address : "jump_to", address_to_general_parse: "code_tree"},
             func=(module_to_address,*draw_text_funcs, address_to_module),
         ),
         type: ModeOverrides(
-            route={class_to_address: "jump_to"},
+            route={class_to_address: "jump_to", address_to_general_parse: "code_tree"},
             func=(class_to_address,*draw_text_funcs, address_to_class),
             recursive=True
         ),

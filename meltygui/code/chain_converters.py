@@ -511,15 +511,15 @@ def address_to_general_parse(input_value: Address, pending=False, unique=None, c
     from src.lsd.gl_gui.view.core_views.new_core_view import button
     file_name = input_value.path.name if input_value.path is not None else "Unknown file"
     folder_icon = ""
-    if button(f"{folder_icon} {file_name}", height=30, value=0.4, saturation=1.5)[0]:
-        from src.lsd.gl_gui.utils.jump_to_code import open_in_intellij
-        line_number = input_value.start + 1 if input_value.start is not None else None
-        threading.Thread(
-            target=open_in_intellij,
-            args=(str(input_value.path),),
-            kwargs={"line_number": line_number},
-            daemon=True,
-        ).start()
+    # if button(f"{folder_icon} {file_name}", height=30, value=0.4, saturation=1.5)[0]:
+    #     from src.lsd.gl_gui.utils.jump_to_editor import open_in_intellij
+    #     line_number = input_value.start + 1 if input_value.start is not None else None
+    #     threading.Thread(
+    #         target=open_in_intellij,
+    #         args=(str(input_value.path),),
+    #         kwargs={"line_number": line_number},
+    #         daemon=True,
+    #     ).start()
 
     # Last-compiled indicator: shows the wall-clock time of the most recent
     # recompile for this file (Ctrl+Enter or the do_recompile button).
@@ -861,6 +861,12 @@ def _module_for_file(target_path):
     return None
 
 
+# (filename, lineno, mtime) -> resolved function object (or None). Keyed on mtime
+# so a hotswap/edit of the file invalidates the entry; the sys.modules walk +
+# co_firstlineno scan is otherwise repeated every time the caller row is shown.
+_ENCLOSING_FN_CACHE = {}
+
+
 def _enclosing_function(filename, lineno):
     """The live function object whose `def` encloses (filename, lineno) — the
     nearest def at or above the line, walking module + class scopes. Lets the
@@ -870,8 +876,16 @@ def _enclosing_function(filename, lineno):
         target = Path(filename).resolve()
     except (OSError, ValueError):
         return None
+    try:
+        mtime = target.stat().st_mtime
+    except OSError:
+        mtime = None
+    cache_key = (str(target), lineno, mtime)
+    if cache_key in _ENCLOSING_FN_CACHE:
+        return _ENCLOSING_FN_CACHE[cache_key]
     module = _module_for_file(target)
     if module is None:
+        _ENCLOSING_FN_CACHE[cache_key] = None
         return None
     best = {"fn": None, "line": -1}
 
@@ -900,6 +914,7 @@ def _enclosing_function(filename, lineno):
                 walk(val)
 
     walk(module)
+    _ENCLOSING_FN_CACHE[cache_key] = best["fn"]
     return best["fn"]
 
 

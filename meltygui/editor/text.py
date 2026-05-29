@@ -548,15 +548,62 @@ def _scroll_into_view(ds, top_abs, bottom_abs, margin=40.0):
         node = nxt if nxt is not node else None
 
 
+def _code_tree_errors(code_tree):
+    """(line, message) parse-error markers carried by the routed code_tree, if
+    any. code_tree is the GeneralParse round-tripped in via the chain; a failed
+    parse may surface as a ParseError (a dict subclass) exposing .line/.error or
+    __line__/__error__ keys. Duck-typed to dodge an import cycle with
+    libcst_conversion."""
+    if code_tree is None:
+        return []
+    line = getattr(code_tree, 'line', None)
+    err = getattr(code_tree, 'error', None)
+    if line and err:
+        return [(int(line), str(err))]
+    if isinstance(code_tree, dict) and code_tree.get('__error__'):
+        return [(int(code_tree.get('__line__') or 1), str(code_tree['__error__']))]
+    return []
+
+
+def _describe_code_tree(code_tree):
+    """One-line readout of what round-tripped into draw_text as code_tree, for
+    the debug indicator."""
+    if code_tree is None:
+        return "None"
+    errs = _code_tree_errors(code_tree)
+    if errs:
+        return f"ParseError @ line {errs[0][0]}: {errs[0][1][:40]}"
+    name = type(code_tree).__name__
+    if isinstance(code_tree, dict):
+        return f"{name} ({len(code_tree)} keys)"
+    return name
+
+
 @render_func(show_bg=True, wrap=False, use_cache=True, with_header=draw_header, shadow=True, with_footer=draw_footer,
              selectable=False, searchable=True, bg_offset=-100)
 def draw_text(input_value: str,
               left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
               horizontal_scroll_drag=False, search_text="",
               single_line=False,
-              draw_state=None, request_focus=False, 
-              line_height=1.2, font: Font=Font.JETBRAINS_MONO_19, jump_to=None):
+              draw_state=None, request_focus=False,
+              line_height=1.2, font: Font=Font.JETBRAINS_MONO_19, jump_to=None,
+              code_tree=None):
     ds = draw_state
+
+    # Jump-to-source button drawn inline at the top (before the monospace font
+    # push, so it has the normal UI font), above the text body.
+    if jump_to is not None:
+        draw_jump_to(jump_to)
+
+    # Debug indicator for the routed code_tree: makes the str→cst→str round trip
+    # visible - shows the type/size that arrived, or a red ParseError + line.
+    _ct_errors = None
+    if code_tree is not None:
+        _ct_errors = _code_tree_errors(code_tree)
+        if _ct_errors:
+            imgui.text_colored(f"code_tree: {_describe_code_tree(code_tree)}", 0.9, 0.3, 0.3, 1.0)
+        else:
+            imgui.text_colored(f"code_tree: {_describe_code_tree(code_tree)}", 0.55, 0.55, 0.62, 1.0)
 
     _font_pushed = False
     if font is not None and Melty.font_mgr is not None:
@@ -1088,6 +1135,18 @@ def draw_text(input_value: str,
             else:
                 draw_list.add_rect_filled(sx, sy, ex, ey, match_bg)
 
+    # Parse-error line highlight from the routed code tree (debugging the
+    # str→cstr→str round trip): a translucent red wash spanning the offending
+    # line, drawn behind the glyphs so the code stays readable.
+    if _ct_errors:
+        err_bg = (110 << 24) | (40 << 16) | (40 << 8) | 210  # translucent red (ABGR)
+        for err_line, _msg in _ct_errors:
+            ey0 = origin_y + (err_line - 1) * line_px
+            ey1 = ey0 + line_px
+            if ey1 < rect_min_y or ey0 > rect_max_y:
+                continue
+            draw_list.add_rect_filled(origin_x - 4, ey0, origin_x + visible_width, ey1, err_bg)
+
     # Syntax highlighting text. Tokens are cached by text value, so unchanged
     # content (scrolling, cursor blink, hover repaints) skip re-tokenizing and
     # only pay a C-level str compare. Each token is drawn one line-segment at a
@@ -1136,12 +1195,6 @@ def draw_text(input_value: str,
 
     if _font_pushed:
         imgui.pop_font()
-    
-    if jump_to is not None:
-        from src.lsd.gl_gui.view.mode import Mode
-        draw_jump_to(jump_to, mode=Mode.FLOATING, anchor= Anchor.BOTTOM_RIGHT, parent_anchor= Anchor.TOP_RIGHT,
-                     pin_to_clip = Pin.CLIP)
-    
 
     if changed:
         rebuilt_text = text + '\n'.join(original_input.split('\n')[max_lines:])

@@ -1728,11 +1728,11 @@ class Melty:
                     print(f"Warning: Tried to move window to front but {window_key} not found in registered_windows")
                     print(f"Registered windows: {list(Melty.registered_windows.keys())}")
 
-                if not cls.window_drag:
-                    Melty.cache.invalidate_by_obj(Melty.registered_windows)
-                    note = Note(name="", reason="move_to_front", draw_state=draw_state, tint=(0.5, 1.0, 0.5))
-                    Melty.cache.invalidate_up(cls.pending_move_to_front[1]._tile_id, max_depth=4, force=True, note=note)
-                    cls.pending_move_to_front = None
+                # if not cls.window_drag and not imgui.is_mouse_down(0):
+                #     Melty.cache.invalidate_by_obj(Melty.registered_windows)
+                #     note = Note(name="", reason="move_to_front", draw_state=draw_state, tint=(0.5, 1.0, 0.5))
+                #     Melty.cache.invalidate_up(cls.pending_move_to_front[1]._tile_id, max_depth=4, force=True, note=note)
+                cls.pending_move_to_front = None
 
     @classmethod
     def draw_blockers_to(cls):

@@ -83,7 +83,6 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta,
         imgui.dummy(1,1)
 
 
-
     # --- Setup per collection type ---
     collection = input_value
     # When the value *is* a class (e.g. an @window-registered class drawn
@@ -519,8 +518,8 @@ def draw_with_modes(input_value, modes, tab_state: TabState = None, search_text=
     tint_value=0.0
     tint_saturation=0.688
     tab_changed, new_tabs = draw_tab_bar(input_value=tab_state.selected_tabs,
-                                                tab_height=22, show_bg=True, bg_offset=1, 
-                                                 z_offset=1, name=f"tab_bar{unique}", wrap=True,
+                                                tab_height=30, show_bg=False, bg_offset=1, 
+                                                  name=f"tab_bar{unique}", wrap=True,
                                          collection=modes, as_toggles=False)
     if tab_changed:
         tab_state.selected_tabs = new_tabs
@@ -1636,7 +1635,7 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
     # How depth maps to color intensity
     intensity_factor  = 0.042
     intensity_offset  = -0.336
-    
+
     some_var = [32,18,19]
     # Outline color tuning
     outline_base      = 1.773
@@ -1901,7 +1900,7 @@ def draw_str(input_value: str, draw_state, editable=True, immediate_return=False
 
     if line_count == 1:
         if immediate_return:
-            imgui.set_next_item_width(draw_state.content_width)
+            imgui.set_next_item_width(draw_state.content_width - 1)
             changed, value = imgui.input_text("##str", str(input_value))
         else:
             imgui.set_next_item_width(draw_state.content_width)
@@ -2329,7 +2328,7 @@ def draw_tab_bar(input_value: list, tab_height=20, names=None, tint_value=0.202,
                              color=tab_color, factor=tab_factor, draw=True)[0]
         else:
             saturation = 1.0 if tinted else 0.3
-            clicked = button(label, indent_size=0, height=tab_height, draw=True,
+            clicked = button(label, indent_size=0, height=tab_height, draw=True, z_offset=0.0,
                              alpha=0.0 if tinted else 0.0, value=value if not tinted else 0.1, saturation=saturation,
                              name=f"tab_{i}_{unique}_deactivated", color=tab_color, factor=tab_factor, text_value=1.0 if not tinted else 0.9,
                             shadow=False)[0]
@@ -2520,7 +2519,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
 
 
     # Static tint colors for the fixed Config / Info tabs; other tabs use the neutral grey.
-    config_tint = (0., 0.2, 0.967)  # steel blue
+    config_tint = (0., 0.2, 0.5)  # steel blue
     info_tint = (1.0, 0.64, 0.113)    # teal
 
     tab_names = []
@@ -2552,7 +2551,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     tab_changed, new_tabs = draw_tab_bar(tab_state.selected_tabs, names=tab_names, wrap=True, tab_height=30, tint_value=0.7,
                                          width=max(50, draw_state.content_width - 100),
                                          show_bg=True, name=f"tab_bar#{view_func_name}{unique}",
-                                         z_offset=-3, bg_offset=-3, draw=True,
+                                         z_offset=-2, bg_offset=-1, draw=True, 
                                          collection=indices, tints=tab_tints, as_toggles=False)
     if tab_changed:
         tab_state.selected_tabs = new_tabs
@@ -2663,7 +2662,16 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
                 _site = getattr(input_value, '_call_site', None)
                 if _site is not None:
                     _caller_file, _caller_line = _site
-                    if button(f" Caller: {Path(_caller_file).name}:{_caller_line}",
+                    # Resolve the enclosing caller function name from the line --
+                    # same approach the Convert tab uses (chain_converters).
+                    from src.lsd.gl_gui.view.core_conversion.chain_converters import _enclosing_function
+                    _caller_fn = _enclosing_function(_caller_file, _caller_line)
+                    _caller_label = f"{Path(_caller_file).name}:{_caller_line}"
+                    if _caller_fn is not None:
+                        _caller_label = f"{_caller_fn.__name__}  ({_caller_label})"
+                    imgui.text("Called from")
+                    imgui.same_line()
+                    if button(_caller_label,
                               height=30, value=0.4, saturation=1.5,
                               column=t_idx, name="jump_to_caller")[0]:
                         from src.lsd.gl_gui.utils.jump_to_code import open_in_intellij
