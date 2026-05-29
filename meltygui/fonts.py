@@ -43,6 +43,7 @@ class Font(RelaxedEnum):
 
     JETBRAINS_MONO_20 = FontSpec(str(_RESOURCES / "JetBrainsMono-Regular.ttf"), 20.0)
     JETBRAINS_MONO_22 = FontSpec(str(_RESOURCES / "JetBrainsMono-Regular.ttf"), 22.0)
+    JETBRAINS_MONO_40 = FontSpec(str(_RESOURCES / "JetBrainsMono-Regular.ttf"), 40.0)
 
 
 class FontManager:

@@ -2548,18 +2548,19 @@ def _patch_decorators(func_node, dec_edits):
             if not kw_pairs:
                 # No kwargs in the edited dict. "Empties → delete" only holds for a
                 # decorator the UI actually modeled: a KEYWORD-arg decorator like
-                # @defaults(tint=...). A decorator with positional args (e.g.
-                # @deep_save("a","b"), @deep_refresh("x")) has no kwargs to begin with
-                # - cst_call_to_dict surfaces none - so an empty kw_pairs is NOT a
-                # delete; dropping it here silently ate all decorators on any
-                # round-trip. Preserve such decorators untouched; only drop a truly
-                # keyword-only decorator whose kwargs were all removed.
-                has_positional = isinstance(dec.decorator, cst.Call) and any(
-                    a.keyword is None for a in dec.decorator.args)
-                if has_positional:
+                # @defaults(tint=...) whose kwargs the user cleared. Decide by what
+                # the SOURCE decorator had, not by the empty edits:
+                #   - no kwargs in source - a bare @window() or a positional-only
+                #     @no_save("key") - empty kw_pairs just mirrors the source, NOT a
+                #     deletion. Dropping it here ate those decorators on every
+                #     round-trip (and only surfaced on first-load, the one time the
+                #     chain auto-reed). Keep them untouched.
+                #   - had kwargs in source, now all gone → a real delete.
+                orig_has_kwargs = isinstance(dec.decorator, cst.Call) and any(
+                    a.keyword is not None for a in dec.decorator.args)
+                if not orig_has_kwargs:
                     new_decorators.append(dec)
                     continue
-                # Keyword-only decorator, everything removed → real delete.
                 changed = True
                 continue
             edit_sub["__cst__"] = dec.decorator
@@ -3185,6 +3186,26 @@ def _python_to_cst_expr(py_value, old_node=None):
     the grafting.  For everything else, builds nodes directly, preserving
     formatting from old_node via with_changes() when types match.
     """
+    # Already-made CST expression - pass it straight through. Lets the caller place
+    # an exact node into the edits (e.g. a Call like `f("x")`) and have it used
+    # verbatim, instead of being coerced from a Python value.
+    if isinstance(py_value, cst.BaseExpression):
+        return py_value
+
+    # Value unchanged from what old_node already encodes - keep old_node verbatim.
+    # _cst_to_python resolves a reference like `RenderFuncs.draw_type` to the live
+    # callable (or `Some.ENUM` to the member); without this, write-back rebuilds
+    # it from the bare object and drops the qualifier (RenderFuncs.draw_type →
+    # draw_type) or the whole node. Mirrors the str branch's "py_value == old_code"
+    # guard for non-string values. Identity compare - resolved callables and enum
+    # members may be singletons, and `==` on arbitrary objects can be unsafe.
+    if old_node is not None and not isinstance(py_value, (str, bool, int, float)):
+        try:
+            if _cst_to_python(old_node) is py_value:
+                return old_node
+        except Exception:
+            pass
+
     # Strings - behavior depends on what old_node was:
     #   old_node is SimpleString → just/ literal (preserve quotes)
     #   old_node is something else → code expression, compare/parse

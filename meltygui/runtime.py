@@ -2193,9 +2193,22 @@ class Melty:
                 return True
         return False
 
-set_window_registrar(
-    lambda cls, kwargs: Melty.annotated_window_classes.__setitem__(cls.__name__, (cls, kwargs))
-)
+def _register_annotated_window(cls, kwargs):
+    # @window(view_func=RenderFuncs.draw_blank) hands us a _LazyRenderFunc - a
+    # name placeholder, since the target isn't importable at decoration time
+    # (cycles). By the time the window registers, the render func is registered,
+    # so turn the placeholder into the real function now: downstream (draw_main's
+    # window loop) then sees a plain function reference, resolved once, not a
+    # proxy re-resolved every call. Name check avoids importing render_funcs.
+    vf = kwargs.get("view_func")
+    if type(vf).__name__ == "_LazyRenderFunc":
+        real = Melty.render_funcs_by_name.get(vf.__name__)
+        if real is not None:
+            kwargs["view_func"] = real
+    Melty.annotated_window_classes[cls.__name__] = (cls, kwargs)
+
+
+set_window_registrar(_register_annotated_window)
 
 
 # The RenderFuncs accessor + CodeGenerator live in render_funcs.py (its own file

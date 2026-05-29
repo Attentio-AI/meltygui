@@ -30,7 +30,7 @@ class UndoManager:
     # oldest Change is dropped from here and from its per-node list above.
     history = collections.deque()
 
-    MAX_HISTORY = 512
+    MAX_HISTORY = 514
 
     settle_for = 100 # 2 frame after start
 

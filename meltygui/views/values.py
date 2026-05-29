@@ -16,6 +16,7 @@ import numpy
 import torch
 from imgui.core import _DrawList
 
+from src.lsd.gl_gui.fonts import Font
 from src.lsd.gl_gui.global_style import GlobalStyle
 from src.lsd.gl_gui.melty import Melty, CollectionAction, ManagedWindow, SearchTerm
 from src.lsd.gl_gui.model.core_model.draw_state import ZoomState, TileMode, DrawState, TabState, DropDownState
@@ -34,6 +35,7 @@ from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import hotkey, tint
 from src.lsd.gl_gui.view.core_views.decoration.invalidation_decoration import live
+from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.core_views.folders_proxy import FolderProxy
 from src.lsd.gl_gui.view.core_views.headers import draw_header, draw_footer, render_search
 from src.lsd.gl_gui.view.core_views.inspect_utils import set_fn_defaults
@@ -79,6 +81,96 @@ def _collection_match_keys(input_value, keys, excluded, show_excluded):
             continue
         out.append((idx, key_str.lower()))
     return out
+
+
+def _fuzzy_substring_distance(q, k):
+    """Min edit distance between `q` and any substring of `k` (the k-differences
+    DP: row 0 is all zeros so the match may start anywhere in k). Damerau/OSA, so
+    an adjacent transposition — the most common typo — costs 1, not 2. Both
+    lowercase."""
+    m, n = len(q), len(k)
+    if m == 0:
+        return 0
+    prev2 = None
+    prev = [0] * (n + 1)
+    for i in range(1, m + 1):
+        qi = q[i - 1]
+        cur = [i] + [0] * n
+        for j in range(1, n + 1):
+            cost = 0 if qi == k[j - 1] else 1
+            v = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+            if (prev2 is not None and j > 1
+                    and qi == k[j - 2] and q[i - 2] == k[j - 1]):
+                v = min(v, prev2[j - 2] + 1)
+            cur[j] = v
+        prev2 = prev
+        prev = cur
+    return min(prev)
+
+
+def _fuzzy_key_match(q, k):
+    """Does query `q` match candidate `k` (both lowercase), tolerating a few
+    typos? Exact substring first (fast, also covers short queries); for longer
+    queries fall back to approximate substring matching with a small edit budget
+    that scales with length (~1 typo per 4 chars). The single predicate the key
+    match's count, current index and highlight all share, so they stay in sync."""
+    if not q:
+        return False
+    if q in k:
+        return True
+    if len(q) < 4:
+        return False
+    return _fuzzy_substring_distance(q, k) <= max(1, len(q) // 4)
+
+
+def global_search_results(root, q, exclude=None, max_depth=30, limit=60):
+    """Walk the live draw_state tree under `root` (draw_main's, via the same
+    DrawState.descendants used elsewhere) and return the nodes whose display
+    name matches `q`, best-first — the global-search result list.
+
+    Exact substring hits rank ahead of fuzzy (typo) ones, and within a tier
+    shorter names first, so the limit trims the long fuzzy tail rather than good
+    matches. Skips shadow/blank nodes, dedupes by label, and skips the `exclude`
+    subtree (the search window itself, so it doesn't match its own query)."""
+    exclude_ids = set()
+    if exclude is not None:
+        exclude_ids = {id(exclude)} | {id(d) for d in exclude.descendants(max_depth=max_depth)}
+    tol = max(1, len(q) // 4)
+    scored = []
+    seen = set()
+    for ds in root.descendants(max_depth=max_depth):
+        if getattr(ds, 'just_shadow', False) or id(ds) in exclude_ids:
+            continue
+        name = getattr(ds, 'name', None)
+        if not name:
+            continue
+        label = str(name).split("##")[0].strip()
+        if not label or not any(c.isalnum() for c in label):
+            continue
+        low = label.lower()
+        if low in seen:
+            continue
+        if q in low:
+            dist = 0
+        elif len(q) >= 4:
+            dist = _fuzzy_substring_distance(q, low)
+            if dist > tol:
+                continue
+        else:
+            continue
+        seen.add(low)
+        scored.append((dist, len(label), label, ds))
+    scored.sort(key=lambda t: (t[0], t[1]))
+    return [(label, ds) for _, _, label, ds in scored[:limit]]
+
+
+def go_to_search_result(ds):
+    """Focus a global-search result and scroll it into view (its scroll
+    container, via the editor's _scroll_into_view)."""
+    Melty.focused_ds = ds
+    if ds.abs_top is not None and ds.height is not None:
+        _scroll_into_view(ds, ds.abs_top, ds.abs_top + ds.height)
+    request_render()
 
 
 def search_activate_target(node):
@@ -201,7 +293,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta,
         if not q:
             return
         mk = _collection_match_keys(_iv, _keys, _excl, _se)
-        session.claim(sum(1 for _, k in mk if q in k))
+        session.claim(sum(1 for _, k in mk if _fuzzy_key_match(q, k)))
 
     draw_state._search_matcher = _search_matcher
 
@@ -215,7 +307,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta,
     if search_q and draw_state._search_active_local is not None:
         _matching = [i for (i, k) in
                      _collection_match_keys(input_value, keys, excluded, show_excluded)
-                     if search_q in k]
+                     if _fuzzy_key_match(search_q, k)]
         if 0 <= draw_state._search_active_local < len(_matching):
             _current_key_idx = _matching[draw_state._search_active_local]
 
@@ -316,7 +408,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta,
         # Whether this key is the search-current match was decided by the
         # owner's pre-loop walk (resolved to _current_key_idx above); we just
         # flag it and record its row Y so the post-loop block scrolls to it.
-        key_is_match = bool(search_q) and search_q in key_str.lower()
+        key_is_match = bool(search_q) and _fuzzy_key_match(search_q, key_str.lower())
         key_is_current = key_is_match and idx == _current_key_idx
         if key_is_current:
             search_current_y = imgui.get_cursor_screen_pos()[1]
@@ -497,6 +589,37 @@ def draw_type(input_value:type, **kwargs):
                 imgui.text(f"Error setting attribute {k} on class {input_value.__name__}: {e}")
 
 
+@render_func(show_bg=True, use_cache=True, selectable=False, with_header=draw_header, auto_resize=True)
+def draw_global_search(input_value, draw_state=None, **kwargs):
+    """Renders the GlobalSearch window: the search box plus the matching nodes
+    from the draw_state tree draw_main registered on us. Results are recomputed
+    only when the query changes (the walk is the expensive part)."""
+    changed, new_query = draw_text(input_value.query, name="Search",
+                                   searchable=False, font=Font.JETBRAINS_MONO_40)
+    if changed:
+        input_value.query = new_query
+
+    q = (input_value.query or "").strip().lower()
+    if q != input_value._last_query:
+        input_value._last_query = q
+        input_value.results = (global_search_results(input_value.root, q, exclude=draw_state)
+                               if input_value.root is not None and len(q) >= 2 else [])
+
+    w = (draw_state.content_width - 10) if draw_state and draw_state.content_width else 200
+    for i, (label, ds) in enumerate(input_value.results):
+        if button(label, name=f"gsr_{i}", width=w, height=24)[0]:
+            go_to_search_result(ds)
+    return False, None
+
+
+@window(view_func=draw_global_search)
+class GlobalSearch:
+    query = ""
+    root = None          # draw_main's draw_state, registered each frame
+    _last_query = None
+    results = []         # cached [(label, draw_state)] for the current query
+
+
 @render_func()
 def class_to_var_dict(input_value: type, changed, draw_state, **kwargs):
     class_vars = {**{k: getattr(input_value, k) for k in vars(input_value)}}
@@ -667,23 +790,33 @@ dropdown_demo_data = {
 drop_down_selection = None
 
 
-@render_func(use_cache=False, show_bg=True, searchable=True, selectable=False, show_tint=True, bg_offset=-1, with_header=draw_header)
-def draw_main(input_value, vis, search_text="", **kwargs):
+@render_func(use_cache=False, show_bg=True, searchable=True, selectable=False,
+             show_tint=True, bg_offset=-1, with_header=draw_header)
+def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     global test_obj
     global cst_dict
     global test_code
     from src.lsd.gl_gui.view.mode import Mode
 
+    # Register the root draw_state so GlobalSearch can walk the whole UI tree.
+    GlobalSearch.root = draw_state
+
     draw_any(Melty.registered_windows, name="Dock", with_header=draw_header,
              mode=(Mode.WINDOW_MANAGER_SORTED, Mode.WINDOW))
 
-    for window_cls, kwargs in Melty.annotated_window_classes.values():
+    for window_cls, stored_kwargs in Melty.annotated_window_classes.values():
+        # Copy: the stored dict is the @window decorator kwargs and persists
+        # across frames. Popping view_func out of it would consume the override
+        # after the first frame, so later frames fall back to draw_with_modes.
+        kwargs = dict(stored_kwargs)
         kwargs.setdefault('mode', Mode.MODE_WINDOW)
         kwargs.setdefault('show_bg', True)
         kwargs['disable_scroll'] = True
         kwargs.setdefault('modes', (Mode.CODE_UI, Mode.CODE_PLAIN_TEXT, Mode.RUNNING))
         kwargs.setdefault('name', f"{window_cls.__name__}##@window")
-        draw_with_modes(window_cls, **kwargs)
+
+        window_func = kwargs.pop("view_func", draw_with_modes)
+        window_func(window_cls, **kwargs)
 
     changed, value = draw_with_modes(draw_header, name="draw_header", show_bg=True, mode=(Mode.WINDOW), modes=(Mode.CODE_UI,
                                                                                                                Mode.CODE_PLAIN_TEXT))

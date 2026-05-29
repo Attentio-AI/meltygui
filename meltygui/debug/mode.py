@@ -11,13 +11,10 @@ from src.lsd.gl_gui.toggles import WindowManager
 from src.lsd.gl_gui.view.core_conversion.chain_converters import module_to_address, address_to_general_parse, \
     general_parse_to_address, address_to_module, class_to_address, address_to_class, function_to_address, \
     address_to_function, general_parse_to_str, str_to_general_parse, focus, \
-    caller_to_address, address_to_call_parse, call_dict_to_save, caller_site, \
+    caller_to_address, address_to_call_parse, call_dict_to_save, \
     class_to_address_incl_overrides
-from src.lsd.gl_gui.view.core_conversion.file_converters import path_to_dict, bytes_to_str, load_text, recompile_module, \
-    recompile, fn_to_cst, cst_to_fn, recompile_fn, \
-    mod_to_cst, cst_to_mod, recompile_mod_fn, \
-    cls_to_cst, cst_to_cls, recompile_cls_fn, \
-    rf_dict_to_path, rf_str_to_bytes, rf_dict_to_str, load_file_bytes
+from src.lsd.gl_gui.view.core_conversion.file_converters import path_to_dict, bytes_to_str, \
+    rf_dict_to_path, rf_str_to_bytes
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import GeneralParse, Conditional, Comment, \
     cst_to_dict, dict_to_cst, cst_module_to_str, str_to_cst_module
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
@@ -133,6 +130,18 @@ class Mode(Enum):
             recursive=False
         )
     }
+    WINDOW_AUTO_FIT = {
+        Any: ModeOverrides(
+            kwargs={"show_bg": True, "selectable": False, "use_cache": True, "melty_window": False, "closable": True,
+                    "with_header_end": draw_header_end, "auto_resize": True, "draggable": True, 'shadow': True,
+                    "show_tint": True, "show_header": True, "with_footer": draw_footer, 'indent_size': 5,
+                    "searchable": True, "disable_scroll": False,
+                    "show_add_delete": False, "with_header": draw_header, "min_width": 200, "min_height": 60,
+                    "initial": {"width": 400, "height": 320, "window_pos": (100, 500)}},
+
+            recursive=False
+        )
+    }
 
     WINDOW = {
         Any: ModeOverrides(
@@ -224,9 +233,7 @@ class Mode(Enum):
             recursive=True,
             func=draw_collection
         ),
-
     }
-
 
 
     code_plain_text_auto_load = True
