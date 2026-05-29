@@ -132,12 +132,10 @@ class Mode(Enum):
     }
     WINDOW_AUTO_FIT = {
         Any: ModeOverrides(
-            kwargs={"show_bg": True, "selectable": False, "use_cache": True, "melty_window": False, "closable": True,
-                    "with_header_end": draw_header_end, "auto_resize": True, "draggable": True, 'shadow': True,
-                    "show_tint": True, "show_header": True, "with_footer": draw_footer, 'indent_size': 5,
-                    "searchable": True, "disable_scroll": False,
-                    "show_add_delete": False, "with_header": draw_header, "min_width": 200, "min_height": 60,
-                    "initial": {"width": 400, "height": 320, "window_pos": (100, 500)}},
+            kwargs={"use_cache": True, "melty_window": False, "closable": True, "layer_offset": 4,
+                    "auto_resize": True, "draggable": True, 'min_width':600, "swoosh": False,
+                    "inline": True, "show_header":False,
+                    "initial": {"width": 400, "height": 320}},
 
             recursive=False
         )

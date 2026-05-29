@@ -1,16 +1,20 @@
 """Symbol access to @render_func renderers without importing their module.
 
-`RenderFuncs.draw_type` returns a lazy handle that resolves at call time from
-Melty.render_funcs_by_name (auto-populated by the @render_func decorator). This
+`RenderFuncs.draw_type` returns a lazy handle that resolves at call time from the
+render-func registry (auto-populated by the @render_func decorator). This
 sidesteps import cycles: referencing a render func here never triggers an import
 of whatever heavy module defines it.
+
+This module never imports Melty — the dependency runs the other way. Melty owns
+and manages the registry; we reach it through the lightweight Core.melty handle
+so that referencing render funcs stays a low-level concern, not one that reaches
+back up into the Melty hub.
 
 CodeGenerator regenerates the _RenderFuncs class in THIS file so every registered
 render func shows up as a real, IDE-visible member — kept in its own file so the
 generator only ever rewrites this small module, never melty.py.
 """
-
-from src.lsd.gl_gui.melty import Melty
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
 
 
 class _LazyRenderFunc:
@@ -19,8 +23,8 @@ class _LazyRenderFunc:
     Behaves like the render func itself: callable with the same signature and
     carrying the right __name__ (the view system reads that). Resolution is
     deferred to call time, by which point every module has imported and
-    self-registered into Melty.render_funcs_by_name — so referencing one of
-    these never triggers an import and never participates in an import cycle.
+    self-registered into the registry (reached via Core.melty) — so referencing
+    one of these never triggers an import and never participates in an import cycle.
     """
 
     __slots__ = ("__name__", "_fn")
@@ -31,7 +35,7 @@ class _LazyRenderFunc:
 
     def _resolve(self):
         if self._fn is None:
-            fn = Melty.render_funcs_by_name.get(self.__name__)
+            fn = Core.melty.render_funcs_by_name.get(self.__name__)
             if fn is None:
                 raise AttributeError(
                     f"No @render_func named {self.__name__!r} is registered")
@@ -183,18 +187,24 @@ class CodeGenerator:
         source span → cst.ClassDef → cst_classdef_to_dict → (add a key per name)
                     → dict_to_cst_classdef → source span
 
-    Each member is a real assignment `name = _LazyRenderFunc("name")`, so it is a
-    genuine class attribute the IDE can see; __getattr__ stays as the fallback
-    for any render func added since the last regeneration. Nothing to recompile
-    or hotswap — runtime behaviour is unchanged.
+    Each member is a real assignment (`name = _LazyRenderFunc("name")` /
+    `name = _LazyMode("name")`), so it is a genuine class attribute the IDE can
+    see; __getattr__ stays as the fallback for anything added since the last
+    regeneration. Nothing to recompile or hotswap — runtime behaviour is unchanged.
     """
 
     @staticmethod
-    def update_render_funcs():
-        """Regenerate the _RenderFuncs class body in this file from the live
-        registry, via the cst↔dict round-trip. Returns the written Address."""
+    def _regenerate(target_cls, names, expr_for):
+        """Rewrite `target_cls`'s body in this file so it has one assignment per
+        name, via the same cst↔dict round-trip the in-app editor uses:
+
+            source span → cst.ClassDef → cst_classdef_to_dict → (add a key per
+                        name) → dict_to_cst_classdef → source span
+
+        Existing class vars are stripped first so only the Add path runs (clean +
+        idempotent). `expr_for(name)` returns the assignment's RHS source.
+        Returns the written Address."""
         import libcst as cst
-        from src.lsd.gl_gui.melty import Melty
         from src.lsd.gl_gui.view.core_conversion.address import to_address
         from src.lsd.gl_gui.view.core_conversion.file_converters import (
             load_text, save_span_fn)
@@ -202,28 +212,24 @@ class CodeGenerator:
             cst_classdef_to_dict, dict_to_cst_classdef)
 
         class _StripClassVars(cst.CSTTransformer):
-            """Drop body-level class-var assignments, keeping the docstring and
-            methods (e.g. __getattr__) — so the round-trip's Add path is the only
-            thing that runs (clean + idempotent, no stale members)."""
-
             def leave_SimpleStatementLine(self, original, updated):
                 if len(updated.body) == 1 and isinstance(
                         updated.body[0], (cst.Assign, cst.AnnAssign)):
                     return cst.RemoveFromParent()
                 return updated
 
-        ref = to_address(_RenderFuncs)
+        ref = to_address(target_cls)
         if ref is None:
-            raise RuntimeError("Could not resolve the source location of _RenderFuncs")
+            raise RuntimeError(
+                f"Could not resolve the source location of {target_cls.__name__}")
 
         module = cst.parse_module(load_text(ref))
         classdef = next(s for s in module.body if isinstance(s, cst.ClassDef))
         classdef = classdef.visit(_StripClassVars())
 
-        # cst → dict, add one member per registered render func, dict → cst.
         members = cst_classdef_to_dict(classdef)
-        for name in sorted(n for n in Melty.render_funcs_by_name if n.isidentifier()):
-            members[name] = cst.parse_expression(f'_LazyRenderFunc("{name}")')
+        for name in names:
+            members[name] = cst.parse_expression(expr_for(name))
         new_classdef = dict_to_cst_classdef(members)
 
         new_module = module.with_changes(body=[
@@ -234,3 +240,19 @@ class CodeGenerator:
         # in-app editor saves through.
         save_span_fn.__wrapped__(new_module.code, ref=ref)
         return ref
+
+    @staticmethod
+    def update_render_funcs():
+        """Regenerate _RenderFuncs from the live @render_func registry."""
+        names = sorted(n for n in Core.melty.render_funcs_by_name if n.isidentifier())
+        return CodeGenerator._regenerate(
+            _RenderFuncs, names, lambda n: f'_LazyRenderFunc("{n}")')
+
+    @staticmethod
+    def update_modes():
+        """Regenerate _Modes (in modes.py) from the live Mode enum."""
+        from src.lsd.gl_gui.view.mode import Mode
+        from src.lsd.gl_gui.modes import _Modes
+        names = sorted(n for n in Mode.__members__ if n.isidentifier())
+        return CodeGenerator._regenerate(
+            _Modes, names, lambda n: f'_LazyMode("{n}")')

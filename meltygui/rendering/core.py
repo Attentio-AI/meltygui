@@ -1401,24 +1401,26 @@ def render_func(*args, **o_kwargs):
                     request_render()
 
             if o_kwargs.get("searchable", False) or kwargs.get("searchable", False):
-                search_requested = draw_state.on_action("inverted_f_key_down")
+                # Ctrl+F opens this view's search. It's a modifier-qualified
+                # action, so Ctrl+Shift+F (draw_main's global search) lands in a
+                # different bucket and never reaches here.
+                search_requested = draw_state.on_action("inverted_ctrl_f_down")
 
                 if len(Melty.search_stack) > 0:
                     kwargs["search_text"] = Melty.search_stack[-1]
 
                 if search_requested:
-                    if search_requested.ctrl:
-                        if Melty.focused_ds is not None:
-                            Melty.focused_ds.search_active = False
-                            Melty.cache.invalidate(Melty.focused_ds._tile_id, force=True)
-                            request_render()
-                        draw_state.search_active = True
-                        # Reset so render_search re-requests focus, and release
-                        # the view's own text focus, so the search box takes
-                        # focus even if this view is already focused.
-                        draw_state._search_was_active = False
-                        Melty.text_focused_ds = None
-                        Melty.focused_ds = draw_state
+                    if Melty.focused_ds is not None:
+                        Melty.focused_ds.search_active = False
+                        Melty.cache.invalidate(Melty.focused_ds._tile_id, force=True)
+                        request_render()
+                    draw_state.search_active = True
+                    # Reset so render_search re-requests focus, and release
+                    # the view's own text focus, so the search box takes
+                    # priority even when the view was already focused.
+                    draw_state._search_was_active = False
+                    Melty.text_focused_ds = None
+                    Melty.focused_ds = draw_state
 
                 if draw_state.search_active:
                     # Stay live while searching so the find UI (inline or the

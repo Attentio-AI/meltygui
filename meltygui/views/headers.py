@@ -69,7 +69,7 @@ def render_search(search_ds, draw_state, unique=None, ):
                                           is_search_box=True,
                                           shadow=False,
                                           name=search_icon + str(unique), with_header=None,
-                                          with_header_end=None, width=draw_state.content_width-60,
+                                          with_header_end=None, width=draw_state.content_width-50,
                                           with_footer=None, header_same_line=True, tint=search_ds.tint,
                                           show_name=False, show_header=False, single_line=True,
                                           request_focus=focus_search)

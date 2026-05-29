@@ -121,10 +121,36 @@ def _strip_flag(name: str, flag: str) -> tuple[str, bool]:
     return name, False
 
 
+# Keyboard-modifier words and their bit (matching InputHandler.set_modifiers:
+# shift=1, ctrl=2, alt=4, meta=8). Emitted/parsed in a fixed order so
+# "ctrl_shift_f" and "shift_ctrl_f" canonicalise to the same input_id.
+_MOD_WORDS = (("ctrl", 2), ("shift", 1), ("alt", 4), ("meta", 8))
+
+
+def _strip_mods(name: str) -> tuple[str, int]:
+    """Strip modifier words (ctrl/shift/alt/meta) from `name`, returning the
+    remainder and the combined modifier mask."""
+    mask = 0
+    for word, bit in _MOD_WORDS:
+        name, found = _strip_flag(name, word)
+        if found:
+            mask |= bit
+    return name, mask
+
+
+def mod_prefix(mods: int) -> str:
+    """The canonical "ctrl_shift_…" prefix for a modifier mask (fixed order)."""
+    return "".join(f"{word}_" for word, bit in _MOD_WORDS if mods & bit)
+
+
 def parse_event_name(name: str) -> tuple[str, str, bool, bool]:
     """Parse "left_mouse_up" → ("left_mouse", "up", False, False)
     Parse "inverted_left_mouse_clicked" → ("left_mouse", "clicked", True, False)
     Parse "non_blocking_left_mouse_clicked" → ("left_mouse", "clicked", False, True)
+    Parse "ctrl_shift_f_key_down" → ("ctrl_shift_f", "down", False, False) — the
+    modifier words are folded (canonically ordered) into the input_id, so a
+    modified shortcut dispatches in its own bucket instead of sharing the plain
+    key's and being contended/blocked by other subscribers.
     """
     if name in _parse_cache:
         return _parse_cache[name]
@@ -133,17 +159,20 @@ def parse_event_name(name: str) -> tuple[str, str, bool, bool]:
     if name.startswith("on_"):
         name = name[3:]
 
-    # Strip modifier flags
+    # Strip flags, then modifier words (folded back into input_id prefix).
     name, inverted = _strip_flag(name, "inverted")
     name, non_blocking = _strip_flag(name, "non_blocking")
     if not non_blocking:
         name, non_blocking = _strip_flag(name, "nonblocking")
+    name, mods = _strip_mods(name)
+    pfx = mod_prefix(mods)
 
     # Check if the name itself is an action (e.g., "hovered", "clicked")
     if name in ALL_ACTIONS:
         canonical = ACTION_ALIASES.get(name, name)
-        _parse_cache[original] = ("cursor", canonical, inverted, non_blocking)
-        return ("cursor", canonical, inverted, non_blocking)
+        result = (pfx + "cursor", canonical, inverted, non_blocking)
+        _parse_cache[original] = result
+        return result
 
     # Check for action suffix
     for action in _SORTED_ACTIONS:
@@ -152,11 +181,13 @@ def parse_event_name(name: str) -> tuple[str, str, bool, bool]:
             if input_id.endswith("_key"):
                 input_id = input_id[:-4]
             canonical = ACTION_ALIASES.get(action, action)
-            _parse_cache[original] = (input_id, canonical, inverted, non_blocking)
-            return (input_id, canonical, inverted, non_blocking)
+            result = (pfx + input_id, canonical, inverted, non_blocking)
+            _parse_cache[original] = result
+            return result
 
-    _parse_cache[original] = (name, "", inverted, non_blocking)
-    return (name, "", inverted, non_blocking)
+    result = (pfx + name, "", inverted, non_blocking)
+    _parse_cache[original] = result
+    return result
 
 
 class InputHandler:
@@ -564,6 +595,17 @@ class InputHandler:
 
             for v in resolve(key, key_index):
                 add_event(v, key, event)
+
+            # Modifier-qualified subscribers (e.g. "ctrl_shift_f_down") live in
+            # their own bucket keyed by a "ctrl_shift_..."-prefixed input ID, so
+            # resolve that too when modifiers are held. The plain bucket above
+            # still fires (legacy "fire on any mods" behaviour), so a view can
+            # subscribe either way.
+            if event.modifiers:
+                mkey = (mod_prefix(event.modifiers) + event.input_id, event.action)
+                if mkey != key:
+                    for v in resolve(mkey, key_index):
+                        add_event(v, mkey, event)
 
         # --- Continuous held events (only to views hovered at DOWN time) ---
         for input_id, state in states.items():

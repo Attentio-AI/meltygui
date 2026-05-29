@@ -1195,9 +1195,9 @@ class Melty:
 
         Melty.mode_stack = []
 
-        from src.lsd.gl_gui.view.mode import Mode
+        from src.lsd.gl_gui.modes import Modes
         from src.lsd.gl_gui.view.core_views.new_core_view import draw_with_modes
-        draw_with_modes(Counters, name="counters", modes=(Mode.CODE_UI, Mode.CODE_PLAIN_TEXT), mode=Mode.WINDOW)
+        draw_with_modes(Counters, name="counters", modes=(Modes.CODE_UI, Modes.CODE_PLAIN_TEXT), mode=Modes.WINDOW)
 
         if Toggles.debug_z_depth:
             draw_state = list(cls.selected)[-1] if len(cls.selected) > 0 else None
@@ -1713,6 +1713,33 @@ class Melty:
             return
         window_key = draw_state._tile_id
         cls.pending_delete_window = (window_key, draw_state)
+
+    @classmethod
+    def find_window(cls, name):
+        """The draw_state of a registered top-level window matching `name` — the
+        full registered name ("Foo##@window") or just the display name ("Foo").
+        Returns None if no such window is registered. Works for closed windows:
+        a window's ManagedWindow stays registered (with its draw_state and
+        position) while hidden, which is what makes launching one from elsewhere
+        — e.g. search — possible without it being open first."""
+        target = str(name)
+        clean = target.split("##")[0]
+        for w in cls.registered_windows.values():
+            wn = getattr(w, 'name', None)
+            if wn and (wn == target or wn.split("##")[0] == clean):
+                return getattr(w, 'draw_state', None)
+        return None
+
+    @classmethod
+    def open_window(cls, name):
+        """Open (un-hide) and raise a registered window by `name`, returning its
+        draw_state (or None). Use to launch a closed/"lost" window from anywhere
+        — e.g. a search result jumping to its window."""
+        ds = cls.find_window(name)
+        if ds is not None:
+            ds.closed = False
+            cls.move_window_to_front(ds)
+        return ds
 
     @classmethod
     def move_window_to_front(cls, draw_state):
