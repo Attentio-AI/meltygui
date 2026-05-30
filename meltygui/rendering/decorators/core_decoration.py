@@ -243,12 +243,12 @@ class auto_eval:
 
     def _on_change(self, obj, old_value, new_value):
         from src.lsd.gl_gui.utils.glfw_utils import request_render
+        deep_refresh_names = getattr(self, '__deep_refresh__', set())
 
         if Core.melty.silence_invalidate:
             return
 
         excluded = getattr(obj, '__excluded_attrs__', set())
-        deep_refresh_names = getattr(self, '__deep_refresh__', set())
         invalidate_all_flag = getattr(self, '__invalidate_all__', set())
 
         do_deep_refresh = self.name in deep_refresh_names and not Core.melty.window_drag

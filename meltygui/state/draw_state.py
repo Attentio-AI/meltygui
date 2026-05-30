@@ -203,7 +203,7 @@ class TileMode(Enum):
  "scrolled", "is_hovered_last", "frame_count", "z_pos", "corner_radius",
          "text_search_current", "text_search_count")
 @no_save_exclude('render_time',  "total_z_offset", 'closable', 'has_full_tile', 'invalid_content_height',
-                  "parent_window", "pressed", "bbox", "final_max_column",
+                  "parent_window", "pressed", "bbox", "final_max_column", "child_selected",
                  'hover_rects', 'nested_window', 'use_cache', "header_top", "header_left", "left_offset",
                  "top_offset", 'kwargs', "just_shadow", "header_width", "header_end_width",
                  "header_natural_width", "max_header_width", "pin_to_clip", "pin_clip_rect", "pin_clamp",
@@ -241,6 +241,7 @@ class DrawState(DictConversion):
         self._is_header = False
         self._view_func = None
         self._cursor_pos = (0, 0)
+        self._cursor_screen_pos = (0, 0)
         self._source = defaultdict(dict)
         self.next = None
         self.previous = None
@@ -322,7 +323,7 @@ class DrawState(DictConversion):
         self._first_draw_state = None
         self.melty_window = False
         self.persistent = True
-        self.selected = False
+        self.child_selected = None
         self.just_shadow = False
 
         self._queued_windows = []
@@ -583,6 +584,17 @@ class DrawState(DictConversion):
         self._stack_trace = None
         self._nested_index = 0
 
+        self.selected = False
+        self._cache = None
+        self._return_value = None
+
+    def invalidate_up(self, max_depth=4):
+        Core.melty.cache.invalidate_up(self._tile_id, max_depth=max_depth)
+
+    def invalidate(self):
+        Core.melty.cache.invalidate(self._tile_id)
+
+
     @property
     def clip_size(self):
         # if self.clip_rect is None:
@@ -676,8 +688,6 @@ class DrawState(DictConversion):
 
         if self.parent_window is not None:
             return self.parent_window.abs_closed
-
-
 
         return False
 
@@ -1300,6 +1310,21 @@ class DrawState(DictConversion):
                     return False, False, False
         return True, False, False
 
+    @property
+    def abs_clamped_rect(self):
+        clip_rect = self.abs_clip_rect
+        if clip_rect is None:
+            return (self.abs_left, self.abs_top, self.abs_left + self.width, self.abs_top + self.height)
+
+        clip_left, clip_top, clip_right, clip_bottom = clip_rect
+
+        left = max(self.abs_left, clip_left)
+        top = max(self.abs_top, clip_top)
+        right = min(self.abs_left + self.width, clip_right)
+        bottom = min(self.abs_top + self.height, clip_bottom)
+
+        return (left, top, right, bottom)
+
     def hover_eligible(self, rect=None, ignore_reports=True):
         if self.just_shadow:
             return False
@@ -1318,14 +1343,14 @@ class DrawState(DictConversion):
                 return False
             # The BVH stores raw bboxes, not clipped ones, so still check the
             # cursor inside the active clip (scrolled-away views aren't hovered).
-            clip_rect = self.abs_clip_rect
+            clip_rect = self.abs_clamped_rect
             if clip_rect is not None:
                 mx, my = imgui.get_mouse_pos()
                 if not (clip_rect[0] <= mx <= clip_rect[2] and clip_rect[1] <= my <= clip_rect[3]):
                     return False
         else:
             # Custom sub-region: clip it and point-test the cursor directly.
-            clip_rect = self.abs_clip_rect
+            clip_rect = (self.abs_left, self.abs_top, self.abs_left + self.width, self.abs_top + self.height)
             if clip_rect is not None:
                 rect = (max(rect[0], clip_rect[0]), max(rect[1], clip_rect[1]),
                         min(rect[2], clip_rect[2]), min(rect[3], clip_rect[3]))
@@ -1344,6 +1369,12 @@ class DrawState(DictConversion):
         layer_and_depth = (Core.melty.active_layer *
                            Core.melty.max_depth + Core.melty.depth)
         return max_layer_depth - layer_and_depth
+
+    def get_content_rect(self):
+        return (self.abs_left, self.abs_top + self.header_height, self.abs_left + self.width, self.abs_top + self.height - self.footer_height)
+
+    def get_header_rect(self):
+        return ( self.abs_left, self.abs_top, self.abs_left + self.width, self.abs_top + self.header_height)
 
     def on_action(self, event_names, view_id=None, priority=None, priority_delta=0, rect=None):
         if not Core.melty.inside_clip(draw_state=self):

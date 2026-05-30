@@ -36,6 +36,8 @@ class Font(RelaxedEnum):
         extra_spacing=2.0,
     )
     DEJAVU_SANS_50 = FontSpec(_DEJAVU_SANS, 50.0)
+    DEJAVU_SANS_22 = FontSpec(_DEJAVU_SANS, 22.0)
+
     JETBRAINS_MONO_14 = FontSpec(str(_RESOURCES / "JetBrainsMono-Regular.ttf"), 14.0)
     JETBRAINS_MONO_16 = FontSpec(str(_RESOURCES / "JetBrainsMono-Regular.ttf"), 16.0)
     JETBRAINS_MONO_18 = FontSpec(str(_RESOURCES / "JetBrainsMono-Regular.ttf"), 18.0)

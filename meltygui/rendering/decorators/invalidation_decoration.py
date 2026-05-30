@@ -26,7 +26,7 @@ def live(cls):
 
     @functools.wraps(original_setattr)
     def new_setattr(self, name: str, value: Any) -> None:
-
+        deep_refresh_names = getattr(self, '__deep_refresh__', set())
 
         # Set the attribute using the original __setattr__
         original_value = getattr(self, name, None)

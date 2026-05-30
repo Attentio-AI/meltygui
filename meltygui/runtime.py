@@ -13,6 +13,7 @@ from imgui.core import _DrawList
 
 from rtree import index as rtree_index
 
+from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.view.attribute_churn import AttributeChurnMonitor
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
 from src.lsd.gl_gui.view.invalidation_tracker import InvalidateTracker, Note
@@ -30,12 +31,12 @@ from src.lsd.gl_gui.events.event_backends import ImGuiBackend, GlfwQueueBackend
 from src.lsd.gl_gui.model.core_model.core_enums import generate_id
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
 
+
 import OpenGL.GL as gl
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
 
 _MOUSE_INPUTS = frozenset({'left_mouse', 'right_mouse', 'middle_mouse',
                            'cursor', 'scroll_y', 'scroll_x'})
-
 
 
 class SearchTerm(str):
@@ -542,10 +543,9 @@ class Melty:
     # and every delete uses _bvh_bbox (not the live, possibly-changed bbox).
     @classmethod
     def bvh_register(cls, draw_state):
-        bbox = (draw_state.abs_left, draw_state.abs_top,
-                draw_state.abs_left + draw_state.width,
-                draw_state.abs_top + draw_state.height)
-
+        bbox = draw_state.bbox
+        if bbox is None:
+            return None
         rid = cls._bvh_next_id
         cls._bvh_next_id += 1
         draw_state._bvh_id = rid
@@ -570,36 +570,24 @@ class Melty:
         draw_state._bvh_bbox = None
 
     @classmethod
-    def bvh_update(cls, draw_state, new_bbox=None):
-
+    def bvh_update(cls, draw_state):
         rid = draw_state._bvh_id
+        if rid is None:
+            return
         old_bbox = draw_state._bvh_bbox
         if old_bbox is not None:
             try:
                 cls._bvh.delete(rid, old_bbox)
             except Exception:
                 pass
-        draw_state._bvh_bbox = (draw_state.abs_left, draw_state.abs_top,
-                                draw_state.abs_left + draw_state.width,
-                                draw_state.abs_top + draw_state.height)
-        cls._bvh.insert(rid, draw_state._bvh_bbox)
-
-
-    @classmethod
-    def prune_bvh(cls, stale_after=2):
-        """Drop draw_states that haven't rendered in `stale_after` frames — closed
-        windows, removed collection items, or objects replaced when their `unique`
-        changed. pos_changed only runs while a view renders, so without this they
-        linger in the index forever, producing duplicate hits and a wrong topmost."""
-        fc = cls.frame_count
-        stale = [rid for rid, ds in cls._bvh_id_to_ds.items()
-                 if ds is None or ds.last_seen is None or (fc - ds.last_seen) > stale_after]
-        for rid in stale:
-            ds = cls._bvh_id_to_ds.get(rid)
-            if ds is not None:
-                cls.bvh_unregister(ds)
-            else:
-                cls._bvh_id_to_ds.pop(rid, None)
+        new_bbox = draw_state.bbox
+        if new_bbox is not None:
+            cls._bvh.insert(rid, new_bbox)
+            draw_state._bvh_bbox = new_bbox
+        else:
+            cls._bvh_id_to_ds.pop(rid, None)
+            draw_state._bvh_id = None
+            draw_state._bvh_bbox = None
 
     @classmethod
     def _resolve_channel_command_ranges(cls, overlay, idx_boundaries):
@@ -631,18 +619,21 @@ class Melty:
 
     @classmethod
     def bvh_query(cls, x, y):
-        """Hit test — returns DrawStates under the point, front-most first.
-
-        rtree yields hits in tree order, not stacking order, so callers taking
-        [0] as 'the topmost view under the cursor' would get an arbitrary one.
-        Sort by shadow_depth — the same front-ness key the occlusion test uses."""
+        """Hit test — returns all DrawStates under the point."""
         hits = [
             cls._bvh_id_to_ds[rid]
             for rid in cls._bvh.intersection((x, y, x, y))
             if rid in cls._bvh_id_to_ds and (not cls._bvh_id_to_ds[rid].closed or not cls._bvh_id_to_ds[rid].closable)
         ]
-        hits.sort(key=lambda ds: ds.z_pos or 0, reverse=True)
-        return hits
+        unique_hits = []
+        for ds in hits:
+            if ds in unique_hits:
+                continue
+            unique_hits.append(ds)
+
+        unique_hits.sort(key=lambda ds: ds.z_pos or 0, reverse=True)
+
+        return unique_hits
 
     @classmethod
     def begin_frame(cls):
@@ -731,10 +722,6 @@ class Melty:
                         cls.cache.invalidate(focused._tile_id, force=True)
                         request_render()
                         break
-
-        # Evict draw_states that stopped rendering (closed/removed/created) so
-        # the index doesn't keep stale, duplicate hits with wrong layering.
-        cls.prune_bvh()
 
         mouse_pos = imgui.get_mouse_pos()
         ds_under_mouse = Melty.bvh_query(mouse_pos[0], mouse_pos[1])
@@ -1131,6 +1118,8 @@ class Melty:
                     Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=2, force=True, frame_delta=2, note=note)
 
                 request_render()
+        else:
+            print(f"{draw_state.name}")
 
         Melty.bg_stack = original_bg_stack
 
@@ -1742,6 +1731,22 @@ class Melty:
         return ds
 
     @classmethod
+    def window_tint(cls, name):
+        """The display tint of a registered window by name. It lives on the
+        ManagedWindow's input_value (the window's own object), NOT its draw_state
+        — the draw_state keeps the generic default — so this is the colour to use
+        when tinting things by window (e.g. search results). None if unknown or
+        the window has no tint."""
+        if name is None:
+            return None
+        clean = str(name).split("##")[0]
+        for w in cls.registered_windows.values():
+            wn = getattr(w, 'name', None)
+            if wn and str(wn).split("##")[0] == clean:
+                return getattr(getattr(w, 'input_value', None), 'tint', getattr(w, 'tint', None))
+        return None
+
+    @classmethod
     def summon_window(cls, draw_state, x, y):
         """Move a window so its top-left lands at screen (x, y) AND raise it —
         the "summon" the Dock's target button does, so a launched window comes
@@ -2210,6 +2215,13 @@ class Melty:
         cls.global_attrs["style_manager"] = getattr(cls, "style_manager", None)
 
         cls.annotation_mode = False
+        #
+        # for func in RenderFuncs.all_funcs():
+        #     if type(func).__name__ == "_LazyRenderFunc":
+        #         real = Melty.render_funcs_by_name.get(func.__name__)
+        #         if real is not None:
+        #             kwargs["view_func"] = real
+        #         setattr(RenderFuncs, func.__name__, real)
 
     @classmethod
     def init_ui(cls, **kwargs):

@@ -24,6 +24,7 @@ from src.lsd.gl_gui.view.core_views.new_core_view import draw_collection, draw_c
     sort_dict_alphabetically, unsort_dict_alphabetically, draw_with_modes, draw_type, \
     class_to_var_dict, var_dict_to_class, draw_dropdown, draw_blank, draw_drop_down_item
 from src.lsd.gl_gui.view.core_views.text_editor import draw_text
+from src.lsd.gl_gui.view.core_conversion.new_converters import code_file_io
 
 
 def compute_height(draw_state):
@@ -169,7 +170,7 @@ class Mode(Enum):
 
     FLOATING = {
         Any: ModeOverrides(
-            kwargs={"use_cache": True, "melty_window": False, "closable": True, "layer_offset":1,
+            kwargs={"use_cache": True, "melty_window": False, "closable": True, "layer_offset":0,
                     "auto_resize": True, "draggable": True, "window_pos":(0,0), "swoosh": False,
                     "inline": True,
                     "initial": {"width": 400, "height": 320, "window_pos": (0, 0)}},
@@ -442,13 +443,14 @@ class Lens:
     default: Any = None   # value the "+ Add" affordance stamps in
     chain: Any = None     # code kinds: root -> generated chain tuple; None = in-place
     kind: str = ""        # short, clean display label (no attr name; no internal prefix)
+    tint: Optional[tuple] = None  # optional override tint for this source
 
 
 # ── Lens kinds (generic over `name`) ──────────────────────────────────────────
 
 def draw_state_attr(name, default=None):
     return Lens(f"Draw state · {name}", name, root=lambda ds: ds, path=(name,),
-                default=default, kind="Draw state")
+                default=default, kind="Draw state", tint=(0.1, 0.1, 0.3))
 
 
 def instance_attr(name, default=None):

@@ -168,6 +168,8 @@ def draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height):
     drag = draw_state.on_action("left_mouse_drag", view_id="scrollbar_grab",
                                 rect=grab_rect, priority_delta=15)
 
+
+
     active = drag is not None
     if active and travel > 0.0 and Melty.frame_count > 2:
         # Map grab pixel motion back into scroll-offset motion.
@@ -649,6 +651,8 @@ def render_func(*args, **o_kwargs):
                 if draw_state._tile_id in Melty.returned_values:
                     return_value = Melty.returned_values.pop(draw_state._tile_id)
 
+
+
                 Melty.cache.mark_uncached(name, input_value, collection, tile_id, draw_state)
 
                 if Toggles.layer_stack_trace:
@@ -874,7 +878,7 @@ def render_func(*args, **o_kwargs):
 
             draw_state.total_z_offset
             Melty.depth = Melty.depth + 1
-
+            draw_state._cursor_screen_pos = imgui.get_cursor_screen_pos()
             draw_state.depth = Melty.depth
             draw_state.layer = Melty.active_layer
 
@@ -1074,6 +1078,7 @@ def render_func(*args, **o_kwargs):
             ######################## ERROR HANDLING FOR TYPES ########################
             cursor_pos = imgui.get_cursor_pos()
             imgui.set_cursor_pos((snap_int(cursor_pos[0]), snap_int(cursor_pos[1])))
+
 
             if "changed" in wanted_params:
                 draw_state._external_change |= kwargs.get("changed", False)
@@ -2281,10 +2286,38 @@ def render_func(*args, **o_kwargs):
 
                 imgui.begin_group()
 
-                is_hovered = draw_state.on_action("cursor_hover", view_id="test", priority_delta=-1) is not None
+                is_hovered = draw_state.on_action("cursor_hover", view_id="hover", priority_delta=-1) is not None
+
+                if draw_state._bounding_hovered:
+                    draw_state._parent.child_selected = draw_state
+
+                if draw_state.child_selected is not None:
+                    if kwargs.get("show_mouse_over", False):
+                        selected = draw_state.child_selected
+                        draw_list: _DrawList = imgui.get_overlay_draw_list()
+
+                        if selected.parent_window is None or selected.parent_window._bounding_hovered:
+                            if Melty.channels_split:
+                                draw_list.channels_set_current(draw_state.window_index + 10)
+                            parent_tint = draw_state.current_tint or (draw_state._kwargs.get("tint", (1, 1, 1))[:3], 1.0)
+                            highlight_rgb = (1, 0, 0)
+                            bg_col = imgui.get_color_u32_rgba(*highlight_rgb, Tint.highlight_bg_alpha)
+
+                            # Parent view: faint fill + matching tint outline,
+                            # clipped to the parent's own clip rect so the highlight
+                            # doesn't bleed past where the parent is scrolled/clipped.
+
+                            clip_rect = selected.abs_clip_rect
+                            draw_list.push_clip_rect(*clip_rect)
+                            draw_list.add_rect_filled(selected.abs_left, selected.abs_top,
+                                                      selected.abs_left + selected.width,
+                                                      selected.abs_top + selected.height,
+                                                      bg_col, rounding=selected.corner_radius)
+                            draw_list.pop_clip_rect()
+
 
                 if Melty.inside_clip(draw_state=draw_state):
-                    hover_eligible = draw_state.hover_eligible() and draw_state.hover_reported
+                    hover_eligible = draw_state.hover_eligible(rect=draw_state.get_content_rect()) and draw_state.hover_reported
                 else:
                     hover_eligible = False
 
@@ -2834,6 +2867,9 @@ def render_func(*args, **o_kwargs):
             if not use_cache and Melty.cache is not None:
                 Melty.cache.mark_uncached(draw_state.name, input_value, collection, tile_id, draw_state)
 
+            if return_value is None:
+                return_value = draw_state._return_value
+
             return_draw_state = draw_state
             if return_value is None:
                 child_changed, new_value = False, None
@@ -2875,6 +2911,7 @@ def render_func(*args, **o_kwargs):
             # Normal return path
             if kwargs.get("convert_out", None) is not None or kwargs.get("convert_in", None) is not None:
                 if return_extras:
+
                     return child_changed, new_value, return_draw_state
                 return child_changed, new_value
 
@@ -3053,6 +3090,7 @@ def render_func(*args, **o_kwargs):
                     Melty.silence_invalidate = False
 
                     return_value = func(**clean_args)
+                    draw_state._return_value = return_value
 
                     Melty.silence_invalidate = True
 

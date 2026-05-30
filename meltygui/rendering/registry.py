@@ -37,6 +37,7 @@ class _LazyRenderFunc:
         if self._fn is None:
             fn = Core.melty.render_funcs_by_name.get(self.__name__)
             if fn is None:
+                print(f"Registered render funcs: {list(Core.melty.render_funcs_by_name)}")
                 raise AttributeError(
                     f"No @render_func named {self.__name__!r} is registered")
             self._fn = fn

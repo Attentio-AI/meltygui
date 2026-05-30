@@ -602,7 +602,7 @@ def general_parse_to_address(input_value: GeneralParse=None, pending=False, draw
             recompiled, _ = run_button(do_recompile, clicked=recompile and pending, name=f"do_recompile{unique}",
                         with_kwargs={"input_value": address.source,
                                  "code_str": code_str,
-                                 "file_path": address.path}, mode=Mode.FLOATING, pin_to_clip=Pin.CLIP,
+                                 "file_path": address.path}, mode=Mode.FLOATING, layer_offset=1, pin_to_clip=Pin.CLIP,
                                        parent_anchor=Anchor.BOTTOM_LEFT,
                                        tint=(0.3, 0.4, 0.6))
             if recompiled:

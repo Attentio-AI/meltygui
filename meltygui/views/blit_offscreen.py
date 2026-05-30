@@ -1508,7 +1508,7 @@ class TileCacheMasked:
                                                            b=b,
                                                            uv_a=uv_a,
                                                            uv_b=uv_b,
-                                                           rounding=max(5.0, draw_state.corner_radius))
+                                                           rounding=max(0.0, draw_state.corner_radius))
 
         imgui.pop_id()
         draw_state.last_seen = Melty.frame_count

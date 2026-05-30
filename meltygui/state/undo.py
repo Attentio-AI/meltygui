@@ -52,6 +52,13 @@ class UndoManager:
     change_history = {}
     MAX_HISTORY = 20
 
+    # Only record a change when both old and new are one of these immutable
+    # primitives. Snapshotting a mutable object by reference is unsound - it
+    # could be aliased and mutated after the fact, so undo would restore the
+    # wrong value. Start with types that are safe to keep by reference; widen
+    # as snapshotting for richer types is implemented.
+    APPROVED_TYPES = (float, int, str, bool, tuple)
+
     # Global timeline of every Change in the order it happened. This is the
     # companion that bounds total size: when this grows past MAX_HISTORY the
     # oldest Change is dropped from here and from its per-node list above.
@@ -63,6 +70,9 @@ class UndoManager:
     @classmethod
     def record(cls, draw_state, old, new):
         if Core.melty.frame_count < cls.settle_for:
+            return
+        if not (isinstance(old, cls.APPROVED_TYPES)
+                and isinstance(new, cls.APPROVED_TYPES)):
             return
         change = Change(draw_state, old, new)
         # cls.change_history.setdefault(draw_state, []).append(change)
