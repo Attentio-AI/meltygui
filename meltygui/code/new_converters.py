@@ -196,8 +196,8 @@ class CodeState(DictConversion):
         self.address = None
         self.file_mtime = None
         self.file_size = None
-
         self.auto_load = False
+        self.pending_save = False
 
     def is_file_stale(self):
         if self.address is None:
@@ -230,7 +230,7 @@ class CodeState(DictConversion):
 
 
 class TestClass:
-    some_val = 123
+    some_val = 1
     new_bool = False
     a_dict = {"x": 1, "y": 2}
 
@@ -258,6 +258,8 @@ class LoadingState:
         self.run_next = None
         self.pending_change = False
         self.error = None
+
+
 
 def load_file(ref: Address) -> str:
     """Read the line span from disk."""
@@ -316,8 +318,8 @@ def run_in_background(input_value, loading_state: LoadingState, draw_state, chil
 # ║  editable_source - the whole round-trip, one function                        ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 @render_func(use_cache=True, selectable=False, searchable=True, disable_scroll=False, temp=True)
-def code_file_io(input_value, code_state: CodeState, view_func=RenderFuncs.draw_text, auto_load=True,
-                 child_kwargs=None, draw_state=None, save=True, load=False, recompile=False, ensure_import=None,
+def code_file_io(input_value, code_state: CodeState, view_func=RenderFuncs.draw_text, auto_load=False,
+                 child_kwargs=None, draw_state=None, auto_save=False, save=False, load=False, recompile=False, ensure_import=None,
                     s_key_pressed=None, enter_key_pressed=None, unique=None, **kwargs):
 
     try:
@@ -336,13 +338,21 @@ def code_file_io(input_value, code_state: CodeState, view_func=RenderFuncs.draw_
                 load = True
                 code_state.text_cache = None
 
-        elif code_state.is_file_stale():
-            imgui.text_colored(" file changed on disk", 1.0, 0.8, 0.3)
+        recompile_clicked = \
+            RenderFuncs.button("Recompile", tint=(0, 0.4, 0.1), width=100, height=24, name="recompile_btn")[0]
+
+        if code_state.is_file_stale():
+            imgui.same_line()
             if RenderFuncs.button("Load", width=100, height=24, name=f"reload")[0]:
                 load = True
             imgui.same_line()
             if RenderFuncs.button("Keep mine", width=100, height=24, name=f"keepmine")[0]:
-                code_state.mark_file_current()
+                save = True
+
+        if not auto_save and code_state.pending_save:
+            imgui.same_line()
+            if RenderFuncs.button("Save", width=100, height=24, name=f"save")[0]:
+                save = True
 
         changed, new_text = run_in_background(load_file,
                                               child_kwargs={"ref": address},
@@ -354,30 +364,50 @@ def code_file_io(input_value, code_state: CodeState, view_func=RenderFuncs.draw_
             draw_state.invalidate_up(max_depth=10)
             request_render()
 
+
         # ── 3. Edit - the actual call ─────────────────────────────────────────────
-        changed, value = view_func(input_value=code_state.text_cache,
-                                   jump_to=address, **(child_kwargs or {}))
-        if changed:
+        edited, value = view_func(input_value=code_state.text_cache,
+                                  jump_to=address, **(child_kwargs or {}))
+        if edited:
             code_state.text_cache = value
             code_state.parse_cst()
-            code_state.mark_file_stale()
+            code_state.mark_file_current()
+            code_state.pending_save = True
 
-        # ── 4. Save / recompile - synchronous, only on a real edit ────────────────
+        # ── 4. Save / recompile - on background threads ───────────────────────────
+        # Both route through run_in_background, the same one-shot runner load uses.
+        # Each call site has a different name=, so each gets its OWN injected
+        # loading_state - save and recompile can't clobber each other (or load).
+        # We call them unconditionally every frame so the runner can spawn the
+        # thread and surface completion; `start=` is just the trigger edge.
         save_hotkey = bool(s_key_pressed and s_key_pressed.ctrl)
         recompile_hotkey = bool(enter_key_pressed and enter_key_pressed.ctrl)
 
-        if (save and changed) or save_hotkey:
-            _write_span(address, code_state.text_cache, ensure_import)
-            Melty.cache.invalidate_up(draw_state._tile_id, max_depth=10)
+        # Save: write the edited span back to disk off the main thread. The text is
+        # snapshotted into child_kwargs at trigger time, so a later edit can't race
+        # the disk disk write.
+        save_start = (auto_save and edited) or save_hotkey or save
+        saved, _ = run_in_background(_write_span,
+                                     child_kwargs={"address": address,
+                                                   "code_str": code_state.text_cache,
+                                                   "ensure_import": ensure_import},
+                                     name="save", start=save_start)
+        if saved:
+            # Our own write bumped mtime; clear the stale flag set on edit so the
+            # next frame doesn't read the disk as an external change.
             code_state.mark_file_current()
+            code_state.pending_save = False
+            Melty.cache.invalidate_up(draw_state._tile_id, max_depth=10)
 
-        if RenderFuncs.button("Recompile", height=24, name=f"recompile")[0]:
-            recompile = True
-            changed = True
-
-        if (recompile and changed) or recompile_hotkey:
-            print(f"Recompiling... {code_state.text_cache}")
-            recompile_source(input_value, code_state.text_cache, address.path)
+        # Recompile (hot reload, no disk write): button, Ctrl+Enter, or recompile=True
+        # on edit. Same runner, its own loading_state.
+        recompile_start = (recompile and edited) or recompile_hotkey or recompile_clicked
+        recompiled, _ = run_in_background(recompile_source,
+                                          child_kwargs={"source": input_value,
+                                                        "code_str": code_state.text_cache,
+                                                        "file_path": address.path},
+                                          name="recompile", start=recompile_start)
+        if recompiled:
             record_compile(address)
             Melty.cache.invalidate_up(draw_state._tile_id, max_depth=10)
     except Exception as e:

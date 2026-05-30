@@ -2183,7 +2183,7 @@ def button(input_value="", draw_state=None, alpha=1.0, left_mouse_held=False, sh
         draw_list.add_rect(bx0, by0, bx1, by1, (200 << 24) | (255 << 16) | (255 << 8) | 255,
                            rounding=rnd, thickness=1.5)
 
-    imgui.dummy(1,10)
+    imgui.dummy(1,1)
 
     if left_mouse_down:
         request_render()
