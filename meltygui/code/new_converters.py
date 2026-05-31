@@ -187,6 +187,117 @@ def recompile_source(source, code_str, file_path):
         _recompile_module(source, code_str, str(file_path))
 
 
+
+
+class TestClass:
+    some_val = 1
+    new_bool = False
+
+
+    a_dict = {"x": 1, "y": 2}
+
+def slow_task(**kwargs):
+    import time
+    print("Starting slow task...")
+    time.sleep(1)
+    print("Slow task completed.")
+    return {"result": "This is the result of the slow task", "kwargs": kwargs}
+
+
+@window()
+@render_func(use_cache=True)
+def editor_window():
+
+    code_file_io(TestClass, auto_save=False)
+    return False, None
+
+
+@window()
+@render_func(use_cache=True)
+def editor_window_2():
+    code_file_io(TestClass, auto_load_edits=True)
+    return False, None
+
+
+@window()
+@render_func(use_cache=True)
+def editor_window_3():
+    code_file_io(TestClass, auto_load_edits=False, auto_load=False)
+    return False, None
+
+class LoadingState:
+    def __init__(self):
+        self._loading = False
+        self.cached_result = UNSET
+        self.run_next = None
+        self.pending_change = False
+        self.error = None
+        self._loading_start_frame = None
+
+
+
+def load_file(ref: Address) -> str:
+    """Read the line span from disk."""
+    data = ref.path.read_bytes()
+    newline = _detect_newline(data)
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        text = data.decode("latin-1")
+    lines = text.split(newline)
+    return newline.join(lines[ref.start:ref.end])
+
+UNSET = object()
+LOADING = object()
+
+@render_func(use_cache=True, selectable=False, temp=True)
+def run_in_background(input_value, loading_state: LoadingState,
+                      draw_state, child_kwargs, start=False, timeout=20, **kwargs):
+    if start:
+        loading_state.run_next = input_value, child_kwargs
+        draw_state.invalidate()
+        request_render()
+
+    if loading_state.run_next is not None:
+        def run(run_next):
+            loading_state._loading = True
+            value, background_kwargs = run_next
+            try:
+                loading_state.cached_result = value(**background_kwargs)
+            except Exception as exc:
+                loading_state.error = exc
+            finally:
+                loading_state._loading = False
+                loading_state.pending_change = True
+                Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=10)
+                request_render()
+
+        if Melty.frame_count < 1:
+            run(run_next=loading_state.run_next)
+        else:
+            run_next = loading_state.run_next
+            if not loading_state._loading:
+                loading_state.run_next = None
+                threading.Thread(target=run, kwargs={"run_next": run_next}).start()
+                loading_state._loading_start_frame = Melty.frame_count
+                if loading_state.run_next is run_next:
+                    loading_state.run_next = None
+
+
+    if loading_state._loading:
+        loading_for = Melty.frame_count - loading_state._loading_start_frame
+        imgui.text(f"Loading for {loading_for}")
+        return False, LOADING
+
+    if loading_state.pending_change and loading_state.run_next is None:
+        loading_state.pending_change = False
+        draw_state.invalidate_up(max_depth=20)
+        request_render()
+        return True, loading_state.cached_result
+    else:
+        return False, loading_state.cached_result
+
+
 @no_save_exclude()
 class CodeState(DictConversion):
     def __init__(self):
@@ -198,6 +309,7 @@ class CodeState(DictConversion):
         self.file_size = None
         self.auto_load = False
         self.pending_save = False
+        self.recompiled_on_frame = None
 
     def is_file_stale(self):
         if self.address is None:
@@ -223,109 +335,26 @@ class CodeState(DictConversion):
         self.file_mtime = None
         self.file_size = None
 
-
     def parse_cst(self):
-        cst_tree = cst.parse_module(self.text_cache)
-        self.code_tree_cache = cst_module_to_dict(cst_tree)
-
-
-class TestClass:
-    some_val = 1
-    new_bool = False
-    a_dict = {"x": 1, "y": 2}
-
-
-def slow_task(**kwargs):
-    import time
-    print("Starting slow task...")
-    time.sleep(1)
-    print("Slow task completed.")
-    return {"result": "This is the result of the slow task", "kwargs": kwargs}
-
-
-@window()
-@render_func(use_cache=True)
-def editor_window():
-
-    code_file_io(TestClass)
-    return False, None
-
-
-class LoadingState:
-    def __init__(self):
-        self._loading = False
-        self.cached_result = UNSET
-        self.run_next = None
-        self.pending_change = False
-        self.error = None
-
-
-
-def load_file(ref: Address) -> str:
-    """Read the line span from disk."""
-    data = ref.path.read_bytes()
-    newline = _detect_newline(data)
-    try:
-        text = data.decode("utf-8")
-    except UnicodeDecodeError:
-        text = data.decode("latin-1")
-    lines = text.split(newline)
-    return newline.join(lines[ref.start:ref.end])
-
-UNSET = object()
-
-@render_func(use_cache=True, selectable=False, temp=True)
-def run_in_background(input_value, loading_state: LoadingState, draw_state, child_kwargs, start=False, **kwargs):
-    if start:
-        loading_state.run_next = input_value, child_kwargs
-        draw_state.invalidate()
-        request_render()
-
-    if loading_state.run_next is not None:
-        if not loading_state._loading:
-            def run(run_next):
-                value, background_kwargs = run_next
-                try:
-                    loading_state.cached_result = value(**background_kwargs)
-                except Exception as exc:
-                    loading_state.error = exc
-                finally:
-                    loading_state._loading = False
-                    loading_state.pending_change = True
-                    request_render()
-
-            if Melty.frame_count < 4:
-                run(run_next=loading_state.run_next)
-            else:
-                threading.Thread(target=run, kwargs={"run_next":loading_state.run_next}).start()
-                loading_state.run_next = None
-                loading_state._loading = True
-
-
-    if loading_state._loading:
-        return False, loading_state.cached_result
-
-    if loading_state.pending_change:
-        loading_state.pending_change = False
-        draw_state.invalidate_up(max_depth=20)
-        request_render()
-        return True, loading_state.cached_result
-    else:
-        return False, loading_state.cached_result
+        if isinstance(self.text_cache, str):
+            cst_tree = cst.parse_module(self.text_cache)
+            self.code_tree_cache = cst_module_to_dict(cst_tree)
+        else:
+            self.code_tree_cache = None
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  editable_source - the whole round-trip, one function                        ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 @render_func(use_cache=True, selectable=False, searchable=True, disable_scroll=False, temp=True)
-def code_file_io(input_value, code_state: CodeState, view_func=RenderFuncs.draw_text, auto_load=False,
-                 child_kwargs=None, draw_state=None, auto_save=False, save=False, load=False, recompile=False, ensure_import=None,
-                    s_key_pressed=None, enter_key_pressed=None, unique=None, **kwargs):
-
+def code_file_io(input_value, code_state: CodeState, view_func=RenderFuncs.draw_text, auto_load=True, auto_load_edits=False,
+                 child_kwargs=None, draw_state=None, auto_save=True, auto_recompile_edits=False, save=False, load=False, recompile=False,
+                 ensure_import=None, s_key_pressed=None, enter_key_pressed=None, unique=None, **kwargs):
     try:
         # ── 1. Resolve the source's line span ─────────────────────────────────────
         address = _resolve_address(input_value, draw_state)
         code_state.address = address
+        top_line_height = 24
 
         if address is None:
             imgui.text_colored(
@@ -334,45 +363,75 @@ def code_file_io(input_value, code_state: CodeState, view_func=RenderFuncs.draw_
             return False, None
 
         if auto_load:
-            if code_state.text_cache is UNSET:
+            if draw_state.frame_count < 1:
                 load = True
                 code_state.text_cache = None
+                code_state.mark_file_current()
 
-        recompile_clicked = \
-            RenderFuncs.button("Recompile", tint=(0, 0.4, 0.1), width=100, height=24, name="recompile_btn")[0]
+        if not auto_recompile_edits:
+            recompile = RenderFuncs.button("Recompile", tint=(0, 0.4, 0.1),
+                                                   width=100, height=top_line_height, name="recompile_btn")[0]
+            imgui.same_line()
+
+        if code_state.recompiled_on_frame is not None:
+            duration = 10
+            recompiled_on = Melty.frame_count - code_state.recompiled_on_frame
+            fade_out = min(1.0, max(0.0, 2.0 - (max(0, recompiled_on) / duration)))
+            if fade_out >= 0:
+                imgui.same_line()
+                imgui.text_colored("Recompiled", 0.0, 1.0, 0.0, fade_out)
+                draw_state.invalidate()
+                request_render()
 
         if code_state.is_file_stale():
             imgui.same_line()
-            if RenderFuncs.button("Load", width=100, height=24, name=f"reload")[0]:
+            if auto_load_edits:
                 load = True
-            imgui.same_line()
-            if RenderFuncs.button("Keep mine", width=100, height=24, name=f"keepmine")[0]:
-                save = True
+                code_state.mark_file_current()
+            else:
+                imgui.same_line()
+                if RenderFuncs.button("Load", width=100, height=top_line_height, name=f"reload")[0]:
+                    load = True
+
+                if not code_state.pending_save:
+                    imgui.same_line()
+                    if RenderFuncs.button("Keep mine", width=100, height=top_line_height, name=f"keepmine")[0]:
+                        save = True
 
         if not auto_save and code_state.pending_save:
             imgui.same_line()
-            if RenderFuncs.button("Save", width=100, height=24, name=f"save")[0]:
+            if RenderFuncs.button("Save", width=100, height=top_line_height, name=f"save")[0]:
                 save = True
 
         changed, new_text = run_in_background(load_file,
                                               child_kwargs={"ref": address},
                                               name=f"load", start=load)
-        if changed:
+        if new_text is LOADING:
+            code_state.mark_file_current()
+
+        elif changed:
             code_state.text_cache = new_text
             code_state.parse_cst()
             code_state.mark_file_current()
-            draw_state.invalidate_up(max_depth=10)
+            draw_state.invalidate_up(max_depth=3)
+            code_state.pending_save = False
             request_render()
 
-
         # ── 3. Edit - the actual call ─────────────────────────────────────────────
-        edited, value = view_func(input_value=code_state.text_cache,
-                                  jump_to=address, **(child_kwargs or {}))
-        if edited:
-            code_state.text_cache = value
-            code_state.parse_cst()
-            code_state.mark_file_current()
-            code_state.pending_save = True
+        if code_state.text_cache is not UNSET and code_state.text_cache is not None:
+            imgui.set_cursor_screen_pos((draw_state.abs_left,
+                                         draw_state.abs_top +
+                                         draw_state.header_height +
+                                         top_line_height))
+            edited, value = view_func(input_value=code_state.text_cache,
+                                      jump_to=address, **(child_kwargs or {}))
+            if edited:
+                code_state.text_cache = value
+                code_state.parse_cst()
+                code_state.mark_file_stale()
+                code_state.pending_save = True
+        else:
+            edited = False
 
         # ── 4. Save / recompile - on background threads ───────────────────────────
         # Both route through run_in_background, the same one-shot runner load uses.
@@ -387,12 +446,14 @@ def code_file_io(input_value, code_state: CodeState, view_func=RenderFuncs.draw_
         # snapshotted into child_kwargs at trigger time, so a later edit can't race
         # the disk disk write.
         save_start = (auto_save and edited) or save_hotkey or save
-        saved, _ = run_in_background(_write_span,
+        saved, result = run_in_background(_write_span,
                                      child_kwargs={"address": address,
                                                    "code_str": code_state.text_cache,
                                                    "ensure_import": ensure_import},
                                      name="save", start=save_start)
-        if saved:
+        if result == LOADING:
+            code_state.mark_file_current()
+        elif saved:
             # Our own write bumped mtime; clear the stale flag set on edit so the
             # next frame doesn't read the disk as an external change.
             code_state.mark_file_current()
@@ -401,15 +462,21 @@ def code_file_io(input_value, code_state: CodeState, view_func=RenderFuncs.draw_
 
         # Recompile (hot reload, no disk write): button, Ctrl+Enter, or recompile=True
         # on edit. Same runner, its own loading_state.
-        recompile_start = (recompile and edited) or recompile_hotkey or recompile_clicked
-        recompiled, _ = run_in_background(recompile_source,
+        recompile_start = (recompile) or recompile_hotkey
+        recompiled, result = run_in_background(recompile_source,
                                           child_kwargs={"source": input_value,
                                                         "code_str": code_state.text_cache,
                                                         "file_path": address.path},
                                           name="recompile", start=recompile_start)
-        if recompiled:
+        if result == LOADING:
+            print("Starting recompile...")
+            code_state.recompiled_on_frame = None
+        elif recompiled:
+            print("Recompile complete")
+            code_state.recompiled_on_frame = Melty.frame_count
             record_compile(address)
             Melty.cache.invalidate_up(draw_state._tile_id, max_depth=10)
+            request_render()
     except Exception as e:
         imgui.text_colored(f"editable_source error: {e}", 1.0, 0.4, 0.0)
 
