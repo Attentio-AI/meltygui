@@ -463,6 +463,7 @@ def _recompile(func: types.FunctionType, source: str,
 
     if not callable(new_func):
         print_stack_trace()
+        return TypeError(f"Recompiled object '{unwrapped.__name__}' is not callable")
 
     new_func = inspect.unwrap(new_func)
 
@@ -483,6 +484,7 @@ def _recompile(func: types.FunctionType, source: str,
         )
     except Exception as e:
         print_stack_trace(exception=e)
+        return e
 
     Melty.cache.invalidate_up_by_func(func, max_depth=10)
 
@@ -513,25 +515,30 @@ def _recompile_class(cls: type, source: str, filename: str) -> None:
     mod = sys.modules.get(cls.__module__)
     namespace = dict(vars(mod)) if mod is not None else {}
 
-    code = compile(dedented, filename, "exec")
+    try:
+        code = compile(dedented, filename, "exec")
+    except SyntaxError as syntax_e:
+        return syntax_e
+
     try:
         exec(code, namespace)
     except NameError:
-        # A just-inserted import (e.g. the @defaults decorator) isn't in the live
-        # module globals yet. Pull in the file's imports and retry once.
-        _exec_file_imports(filename, namespace)
-        exec(code, namespace)
+        try:
+            # A just-inserted import (e.g. the @defaults decorator) isn't in the live
+            # module globals yet. Pull in the file's imports and retry once.
+            _exec_file_imports(filename, namespace)
+            exec(code, namespace)
+        except Exception as e:
+            return e
 
     new_cls = namespace.get(cls.__name__)
     if new_cls is None:
-        raise RuntimeError(f"Recompilation produced no class named '{cls.__name__}'")
-    if not isinstance(new_cls, type):
-        raise RuntimeError(f"'{cls.__name__}' is {type(new_cls).__name__}, not a class")
+        return NameError(f"Class '{cls.__name__}' not found in recompiled code")
 
     _hotswap_class(cls, new_cls)
     _redirect_class_registrations(cls, new_cls)
-
     Melty.cache.invalidate_up_by_obj(cls, max_depth=10)
+    return None
 
 
 def _recompile_module(module: types.ModuleType, source: str,

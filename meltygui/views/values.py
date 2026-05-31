@@ -271,7 +271,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta,
                     mode=None, keys=None, get_attr=None, set_attr=None, show_excluded=False,
                     child_kwargs=None, show_bg=True, show_search=True, align_header=False,
                     on_collapse=False, search_text="", return_item=False,
-                    on_expand=False, show_add_delete=True, item_spacing_y=1,
+                    on_expand=False, show_add_delete=True, item_spacing_y=1, show_system=False,
                     horizontal=False, show_indices=False, excluded=None, **kwargs):
     """
     Universal collection renderer
@@ -476,7 +476,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta,
         else:
             key_str = str(key)
 
-        if not show_excluded and (key_str.startswith("_") or key_str.endswith("_")):
+        if not show_excluded and (not show_system and (key_str.startswith("_") or key_str.endswith("_"))):
             continue
 
         # ----- SEARCH (key match) -----
@@ -625,9 +625,6 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta,
         draw_state.invalid_content_height = False
 
     draw_state.premature_break = premature_break
-
-
-
     if return_item:
         if changed:
             return changed, item_to_return
@@ -2802,7 +2799,7 @@ def draw_lens(lens, draw_state):
     root = lens.root(draw_state)
     if root is None:
         imgui.text_colored(f"{lens.kind or lens.label}: n/a here", 0.5, 0.5, 0.5)
-        return False, input_value
+        return False, root
     if lens.chain is None:
         return focus(root, path=lens.path, default=lens.default, kind=lens.kind, name=lens.label + lens.name)
     return draw_any(root, chain=lens.chain(root), name=lens.label)
@@ -2973,7 +2970,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
             if tab_names[static_tab] == info_icon_fa:
 
 
-                changed, watch = draw_text(draw_state.watch, tint=(0.1, 0.01, 0.4),
+                changed, watch = draw_text(draw_state.watch, tint=(0.1, 0.01, 0.4), width=200,
                                           name="Watch##{unique}", column=t_idx, immediate_return=True, editable=True, show_bg=True)
                 if changed:
                     draw_state.watch = watch

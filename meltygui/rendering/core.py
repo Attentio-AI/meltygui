@@ -1917,7 +1917,10 @@ def render_func(*args, **o_kwargs):
                             style_manager.set_imgui_tint(*decorator_value["tint"])
                 elif "tint" in kwargs and kwargs.get("tint", None) is not None:
                     previous_tint = style_manager.get_tint()
-                    style_manager.set_imgui_tint(*kwargs.get("tint"))
+                    new_tint = kwargs.get("tint")
+                    if isinstance(new_tint, (tuple, list)):
+                        if len(new_tint) == 3:
+                            style_manager.set_imgui_tint(*kwargs.get("tint"))
 
                 elif hasattr(input_value, "tint") and input_value.tint is not None and isinstance(input_value.tint,
                                                                                                   (tuple, list)):
@@ -2672,13 +2675,8 @@ def render_func(*args, **o_kwargs):
             draw_state.content_height = draw_state._content_rect[1]
             draw_state._source["content_height"] = "content rect height"
 
-
-
             if use_cache:
                 Melty.cache.mark_end_offscreen()
-
-
-
 
             if _has_imgui:
                 if closable:

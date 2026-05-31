@@ -1672,7 +1672,9 @@ class TileCacheMasked:
         if draw_state is not None and (draw_state._external_change):
             return
 
-        ctx = self._stack.pop()
+        if len(self._stack) > 0:
+            ctx = self._stack.pop()
+
         imgui.pop_id()
 
         imgui.end_group()

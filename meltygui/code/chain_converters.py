@@ -151,8 +151,6 @@ def function_to_address(input_value: types.FunctionType, draw_state, changed=Fal
     except (OSError, TypeError, tokenize.TokenError, SyntaxError) as e:
         print(f"Could not get source lines for {input_value.__name__} in {source_file}: {e}")
         return changed, None
-    
-    print(f"[function_to_address] Resolved address for {input_value.__name__} in {source_file}: lines {start_lineno}-{start_lineno + len(source_lines) - 1}")
 
     address = Address(Path(source_file), start_lineno - 1,
                       start_lineno - 1 + len(source_lines), source=input_value,
@@ -271,7 +269,6 @@ def load_cst_module(input_value: Address):
     general_parse = cst_module_to_dict(converted_cst) 
     general_parse.address = input_value
     general_parse.file_path = input_value.path
-    print(f"Loaded {input_value.path} lines {input_value.start}-{input_value.end}")
 
     if Toggles.slow_down_threads:
         for i in range(5):

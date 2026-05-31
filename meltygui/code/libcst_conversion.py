@@ -740,16 +740,19 @@ def cst_module_to_str(value: cst.Module) -> str:
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
 @register
-def cst_module_to_dict(value: cst.Module) -> dict:
+def cst_module_to_dict(input_value: cst.Module) -> dict:
     """Top-level statements become readable dict keys.
 
     Handles: assignments, annotated assignments, class definitions,
     function definitions (default args), and decorator kwargs.
     """
-    readable = GeneralParse(source=value.code)
+    if not isinstance(input_value, cst.Module):
+        print("Expected cst.Module, got", type(input_value).__name__, file=sys.stderr)
+        return input_value
+    readable = GeneralParse(source=input_value.code)
 
     # Module header comments (top-of-file, before first statement)
-    for ll in value.header:
+    for ll in input_value.header:
         if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
             c = Comment(ll.comment.value)
             readable[c] = c
@@ -758,7 +761,7 @@ def cst_module_to_dict(value: cst.Module) -> dict:
     _classdef_to_dict = Melty._converters.get((cst.ClassDef, dict))
     _funcdef_to_dict = Melty._converters.get((cst.FunctionDef, dict))
 
-    for stmt in value.body:
+    for stmt in input_value.body:
         if isinstance(stmt, cst.SimpleStatementLine):
             # Leading comments (override comments go to the field below)
             _extract_leading_comments(stmt, readable, skip_overrides=True)
@@ -805,25 +808,26 @@ def cst_module_to_dict(value: cst.Module) -> dict:
                 except (TypeError, ValueError):
                     pass
 
-    readable["__cst__"] = value
-    readable.usages = _collect_usages(value, top_scope="<module>")
+    readable["__cst__"] = input_value
+    readable.usages = _collect_usages(input_value, top_scope="<module>")
+    print("Collected usages for module:", len(readable))
     return readable
 
 
 @register
-def dict_to_cst_module(value: dict) -> cst.Module:
+def dict_to_cst_module(input_value: dict) -> cst.Module:
     """Rebuild from __cst__, patching in any edited values.
 
     Handles assignments, ClassDef __init__ self-assignments, and
     decorator keyword arguments.
     """
-    tree = value.get("__cst__")
+    tree = input_value.get("__cst__")
     if tree is None:
         raise ValueError("Dict has no __cst__ key")
     if not isinstance(tree, cst.Module):
         raise TypeError(f"Expected cst.Module in __cst__, got {type(tree).__name__}")
 
-    edits = {k: v for k, v in value.items()
+    edits = {k: v for k, v in input_value.items()
              if not (_is_dunder(k))
              and not isinstance(k, Comment)}
 
@@ -833,12 +837,12 @@ def dict_to_cst_module(value: dict) -> cst.Module:
             result = result.visit(_ModulePatcher(edits))
 
         # Patch comments (module header & body)
-        all_comment_edits = _collect_comment_edits(value)
+        all_comment_edits = _collect_comment_edits(input_value)
         if all_comment_edits:
-            result = _patch_module_comments(result, value)
+            result = _patch_module_comments(result, input_value)
 
-        result = _ensure_override_comment(result, value)
-        result = _apply_field_overrides(result, value.get("__overrides__"))
+        result = _ensure_override_comment(result, input_value)
+        result = _apply_field_overrides(result, input_value.get("__overrides__"))
         return result
     except cst.ParserSyntaxError as e:
         return Pending(wrapped=ParseError(

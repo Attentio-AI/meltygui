@@ -320,7 +320,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         if show_add_delete:
             if imgui.small_button(f"\uf067##add{unique}"):
                 hinted_type = NoneType
-                if meta.field_type is not None and hasattr(meta.field_type, "__args__"):
+                if meta is not None and meta.field_type is not None and hasattr(meta.field_type, "__args__"):
                     if len(meta.field_type.__args__) == 2:
                         hinted_type = meta.field_type.__args__[1]
                 add_to_collection(input_value, hinted_type())
