@@ -2650,7 +2650,7 @@ def draw_debug_label(input_value: str):
     imgui.text(input_value)
 
 
-@render_func(is_default_for=Enum, is_tree=False, shadow=False, header_same_line=True,
+@render_func(is_default_for=Enum, is_tree=False, shadow=False, selectable=False, header_same_line=True,
              parent_show_add_delete=False, with_header=draw_header, temp=True)
 def draw_enum(input_value: Enum, style_manager=None, enum_tint=(0.3, 0.3, 0.3)):
     # Delegate to draw_tab_bar so enums get its wrapping and styling for free.

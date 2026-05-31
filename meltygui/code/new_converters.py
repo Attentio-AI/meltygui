@@ -46,6 +46,7 @@ import libcst as cst
 
 from src.lsd.gl_gui.melty import FileWatch, Melty
 from src.lsd.gl_gui.model.app_model import AppModel, TensorView
+from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.model.model_enums import RelaxedEnum
 from src.lsd.gl_gui.render_funcs import RenderFuncs
@@ -198,22 +199,23 @@ def recompile_source(source, code_str, file_path):
 
 
 class TestClass:
-    some_val = 57
-    some_other_val = 22
+    some_val = 66
+    some_other_val = 49
     some = []
     # [tint=(0,0.2,1)]
-    some_line = 18
-    myfloat =  0.0
-    some_tuple = (9,1,1)
-    class MyEnum(Enum):
+    some_line = 2
+    myfloat =  3.822
+    some_tuple = (-15,1,1)
+    class MyEnum(RelaxedEnum):
         SOME_VAL = 19
     
+    aval = ProfileMode.OVERHEAD
     some_other = 0
     # [tint=(0.9069767594337463, 0.5192674398422241, 0.029529478400945663)]
     class NestedClass:
         so=0
-    my_enum = MyEnum.SOME_VAL
-    some_val = 57
+    enum2 = MyEnum.SOME_VAL
+    some_val = 66
     new_bool = True
     a_dict = {"x": -52, "y": 53}
 
