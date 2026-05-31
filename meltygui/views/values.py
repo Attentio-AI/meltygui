@@ -265,7 +265,7 @@ def search_activate_target(node):
 
 @render_func(is_default_for=(dict, MutableMapping, defaultdict, tuple, list, GeneralParse), use_cache=True,
             header_same_line=False, show_bg=True, show_instance_vars=False, align_header=False,
-            manual_content_height=True, disable_scroll=True, shadow=True,
+            manual_content_height=True, disable_scroll=True, shadow=True, selectable=False,
             wrap=False, with_header=draw_header, indent_size=5, searchable=True)
 def draw_collection(input_value, draw_state, depth, style_manager, meta,
                     mode=None, keys=None, get_attr=None, set_attr=None, show_excluded=False,
@@ -994,8 +994,8 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
 
         is_render_func = hasattr(window_cls, "__render_func__")
         if is_render_func:
-            kwargs.setdefault('mode', Mode.WINDOW)
-            kwargs['disable_scroll'] = False
+            kwargs.setdefault('mode', Mode.MODE_WINDOW)
+            kwargs['disable_scroll'] = True
             window_cls(None, **kwargs)
         else:
             kwargs['disable_scroll'] = True
@@ -2970,7 +2970,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
             if tab_names[static_tab] == info_icon_fa:
 
 
-                changed, watch = draw_text(draw_state.watch, tint=(0.1, 0.01, 0.4), width=200,
+                changed, watch = draw_text(draw_state.watch, width=draw_state.content_width,
                                           name="Watch##{unique}", column=t_idx, immediate_return=True, editable=True, show_bg=True)
                 if changed:
                     draw_state.watch = watch

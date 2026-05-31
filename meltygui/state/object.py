@@ -137,6 +137,11 @@ class DictConversion(metaclass=FieldMeta):
                     return new_value
                 return unset_value
 
+            # Function references: (name_or_qualname, module, "Function")
+            if (isinstance(new_value, tuple) and len(new_value) >= 3
+                    and new_value[2] == DictConv.FUNCTION_TAG):
+                return DictConv.resolve_callable(new_value)
+
             # Tuple passthrough (non-ref)
             if isinstance(unset_value, tuple):
                 # if tuple was a latent ref, it was handled above
@@ -1344,6 +1349,55 @@ class DictConversion(metaclass=FieldMeta):
     def has_valid_attr(self, obj, attr_name: str) -> bool:
         return True
 
+    # ── Function-reference (de)serialization ──────────────────────────────────
+    # Functions can't be stored directly (they're not primitives, so parse_value
+    # would drop them to None). We store a reference - module path + qualified
+    # name - and resolve it back at load time, mirroring the Enum marker tuple so
+    # the load side matches on a "Function" tag.
+
+    FUNCTION_TAG = "Function"
+    RENDER_FUNC_MODULE = "__render_func__"
+
+    @staticmethod
+    def serialize_callable(value):
+        """A function/callable -> a resolvable marker tuple, or None if it can't
+        be referenced.
+
+        (qualname, module, "Function") for a normally-importable function (incl.
+        @render_func wrappers, which carry the original module/qualname via
+        @wraps). (name, "__render_func__", "Function") for handles only reachable
+        through the render-func registry — e.g. a _LazyRenderFunc, which exposes
+        __name__ but no __module__/__qualname__."""
+        module = getattr(value, "__module__", None)
+        qualname = getattr(value, "__qualname__", None)
+        if module and qualname and "<locals>" not in qualname:
+            return (qualname, module, DictConversion.FUNCTION_TAG)
+        name = getattr(value, "__name__", None)
+        if name:
+            return (name, DictConversion.RENDER_FUNC_MODULE, DictConversion.FUNCTION_TAG)
+        return None
+
+    @staticmethod
+    def resolve_callable(ref):
+        """Inverse of serialize_callable: marker tuple -> the live callable (or
+        None if it can't be resolved)."""
+        name, module = ref[0], ref[1]
+        if module == DictConversion.RENDER_FUNC_MODULE:
+            # Registry handle - rely on RenderFuncs giving back a lazy handle
+            # that resolves against the live @render_func registry at call time.
+            from src.lsd.gl_gui.render_funcs import RenderFuncs
+            return getattr(RenderFuncs, name)
+        try:
+            obj = importlib.import_module(module)
+        except Exception as e:
+            print(f"resolve_callable: cannot import {module!r}: {e}")
+            return None
+        for part in name.split("."):
+            obj = getattr(obj, part, None)
+            if obj is None:
+                print(f"resolve_callable: {module}.{name} not found")
+                return None
+        return obj
 
     def on_load(self, vis, root):
         """
@@ -1476,6 +1530,10 @@ class DictConversion(metaclass=FieldMeta):
                 else:
                     results = None
             return results
+        # Serialize function references (e.g. TabState.selected_tabs holding view
+        # funcs). Not primitives, so without this they'd serialize to None.
+        elif callable(value) and not isinstance(value, type):
+            return DictConversion.serialize_callable(value)
         # Handle basic types
         # elif not isinstance(value, DictConversion):
         #     return

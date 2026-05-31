@@ -54,7 +54,9 @@ class Swoosh:
 @window(tint=(0.8, 0.6, 0.1))
 class Toggles:
 
-    @defaults(tint=(0.9767442,0.9383082,0.5))
+    test_float = 5.007
+
+    @defaults(tint=(0.2,0.3,0.6))
     class InvalidateTracker:
         keep_for_frames = 1
         enable = False
@@ -87,7 +89,7 @@ class Toggles:
     contrast = 1.574
     saturation = -0.4
     prefered_header_width = 160
-    max_preferred_header_width = 20
+    max_preferred_header_width = 120
     
     debug_z_depth = False
     filters = True
@@ -105,7 +107,6 @@ class Toggles:
     
     # Scroll settings 
     scroll_speed = 280.0
-
 
 @window
 class LegacyToggles:

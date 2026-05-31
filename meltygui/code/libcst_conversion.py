@@ -810,7 +810,6 @@ def cst_module_to_dict(input_value: cst.Module) -> dict:
 
     readable["__cst__"] = input_value
     readable.usages = _collect_usages(input_value, top_scope="<module>")
-    print("Collected usages for module:", len(readable))
     return readable
 
 

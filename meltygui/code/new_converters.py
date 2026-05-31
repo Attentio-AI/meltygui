@@ -47,6 +47,7 @@ import libcst as cst
 from src.lsd.gl_gui.melty import FileWatch, Melty
 from src.lsd.gl_gui.model.app_model import AppModel, TensorView
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
+from src.lsd.gl_gui.model.core_model.draw_state import TabState
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.model.model_enums import RelaxedEnum
 from src.lsd.gl_gui.render_funcs import RenderFuncs
@@ -154,7 +155,7 @@ def _write_span(address, code_str, ensure_import=None):
     new_lines = code_str.split(newline)
 
     old_start, old_end = address.start, address.end
-    if old_start is None:                     # whole-file (module) address
+    if old_start is None:  # whole-file (module) address
         lines = new_lines
     else:
         lines[old_start:old_end] = new_lines
@@ -174,7 +175,7 @@ def _write_span(address, code_str, ensure_import=None):
         new_end = old_start + len(new_lines)
         delta = new_end - resolved_old_end
         address.end = new_end
-        if inserted:                          # import added above our span
+        if inserted:  # import landed above our span
             address.start = old_start + inserted
             address.end = new_end + inserted
         address._hash = address._compute_hash()
@@ -190,35 +191,31 @@ def recompile_source(source, code_str, file_path):
     if isinstance(source, type):
         result = _recompile_class(source, code_str, str(file_path))
     elif isinstance(source, types.FunctionType):
-        result =_recompile(source, code_str, str(file_path))
+        result = _recompile(source, code_str, str(file_path))
     elif isinstance(source, types.ModuleType):
         result = _recompile_module(source, code_str, str(file_path))
 
     return result
 
 
-
 class TestClass:
-    some_val = 66
-    some_other_val = 49
+    some_val = 64
+    some_other_val = -12
     some = []
     # [tint=(0,0.2,1)]
-    some_line = 2
-    myfloat =  3.822
-    some_tuple = (-15,1,1)
-    class MyEnum(RelaxedEnum):
-        SOME_VAL = 19
     
-    aval = ProfileMode.OVERHEAD
-    some_other = 0
+    some_line = 30
+    myflot = 13
+    tint = (0.20906436443328857, 0.7023256, 0.5167863368988037)
+    some_tuple = (46, 16, -3)
+
     # [tint=(0.9069767594337463, 0.5192674398422241, 0.029529478400945663)]
     class NestedClass:
-        so=0
-    enum2 = MyEnum.SOME_VAL
-    some_val = 66
+        so = 1
+
+    some_val = 64
     new_bool = True
     a_dict = {"x": -52, "y": 53}
-
 def slow_task(**kwargs):
     import time
     print("Starting slow task...")
@@ -244,11 +241,30 @@ def editor_window_2():
 
 
 @window()
-@render_func(use_cache=True)
+@render_func(use_cache=True, disable_scroll=True)
 def editor_window_4():
-    imgui.text("auto_load_edits=True")
-    code_file_io(TestClass, auto_load_edits=True)
+    # view_func=draw_modes: text | dict tabs over one shared file-IO layer.
+    imgui.text("view_func=draw_modes (text | dict tabs)")
+    code_file_io(
+        TestClass,
+        view_func=draw_modes,
+        auto_load_edits=True,
+        auto_load=True,
+        auto_save=False,
+        child_kwargs={
+            "modes": [RenderFuncs.draw_text, RenderFuncs.draw_collection],
+            "chain_in": [string_to_cst_module, cst_module_to_dict],
+            "chain_out": [dict_to_cst_module, cst_module_to_string],
+            # cst_module_to_dict's output is named "code_dict"; draw_collection
+            # consumes it. draw_text has no entry, so it gets the raw string.
+            "route": {
+                cst_module_to_dict: "code_dict",
+                RenderFuncs.draw_collection: "code_dict",
+            },
+        },
+    )
     return False, None
+
 
 @window()
 @render_func(use_cache=True)
@@ -256,6 +272,30 @@ def editor_window_3():
     imgui.text("auto_load_edits=False")
     imgui.text("auto_load=False")
     code_file_io(TestClass, auto_load_edits=False, auto_load=False)
+    return False, None
+
+
+@window()
+@render_func(use_cache=True, selectable=False,disable_scroll=True)
+def test_toggles():
+    code_file_io(
+        Toggles,
+        view_func=draw_modes,
+        auto_load_edits=True,
+        auto_load=True,
+        auto_save=True,
+        child_kwargs={
+            "modes": [RenderFuncs.draw_text, RenderFuncs.draw_collection],
+            "chain_in": [string_to_cst_module, cst_module_to_dict],
+            "chain_out": [dict_to_cst_module, cst_module_to_string],
+            # cst_module_to_dict's output is named "code_dict"; draw_collection
+            # consumes it. draw_text has no entry, so it gets the raw string.
+            "route": {
+                cst_module_to_dict: "code_dict",
+                RenderFuncs.draw_collection: "code_dict",
+            },
+        },
+    )
     return False, None
 
 class LoadingState:
@@ -266,7 +306,12 @@ class LoadingState:
         self.pending_change = False
         self.error = None
         self._loading_start_frame = None
-
+        # Wall-clock deadline (time.time()) the queued task must wait until before
+        # it launches. None = no debounce. Each fresh `start` pushes it out.
+        self.debounce_deadline = None
+        # One-shot timer that wakes the render loop once at the deadline, so we
+        # don't busy-spin request_render every frame during the quiet window.
+        self._debounce_timer = None
 
 
 def load_file(input_value: Address, **kwargs) -> str:
@@ -280,48 +325,82 @@ def load_file(input_value: Address, **kwargs) -> str:
     lines = text.split(newline)
     return newline.join(lines[input_value.start:input_value.end])
 
+
 UNSET = object()
 LOADING = object()
 
+
 @render_func(use_cache=True, selectable=False, temp=True)
 def run_in_background(input_value, loading_state: LoadingState,
-                      draw_state, child_kwargs, start=False, timeout=20, **kwargs):
+                      draw_state, child_kwargs, start=False, timeout=20,
+                      debounce_ms=0, **kwargs):
     if start:
         loading_state.run_next = input_value, child_kwargs
-        draw_state.invalidate()
-        request_render()
+        if debounce_ms:
+            # Debounce: defer the launch until the input goes quiet. Re-start on
+            # every start (a burst of typing keeps pushing it out), and wake the
+            # loop ONCE at the deadline via a one-shot timer - never busy-spin
+            # request_render per frame, or we peg the whole render thread. The
+            # run_next field above always holds the LATEST value, so the
+            # eventual single run uses the final value.
+            loading_state.debounce_deadline = time.time() + debounce_ms / 1000.0
+            if loading_state._debounce_timer is not None:
+                loading_state._debounce_timer.cancel()
+            timer = threading.Timer(debounce_ms / 1000.0, request_render)
+            timer.daemon = True
+            loading_state._debounce_timer = timer
+            timer.start()
+            draw_state.invalidate()
+        else:
+            loading_state.debounce_deadline = None
+            draw_state.invalidate()
+            request_render()
 
     if loading_state.run_next is not None:
-        def run(run_next_inner):
-            loading_state._loading = True
-            value, background_kwargs = run_next_inner
-            # Never run a @render_func WRAPPER on this background thread - the wrapper
-            # mutates process-global Melty stacks (depth, unique_stack, ...) on
-            # entry/exit, causing races the main render loop. Grab the bare inner
-            # function; plain functions pass through unchanged.
-            value = getattr(value, '__wrapped__', value)
-            try:
-                loading_state.cached_result = value(**background_kwargs)
-            except Exception as exc:
-                loading_state.error = exc
-                print_stack_trace(exception=exc)
-            finally:
-                loading_state._loading = False
-                loading_state.pending_change = True
-                Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=10)
-                request_render()
-
-        if Melty.frame_count < 1:
-            run(run_next_inner=loading_state.run_next)
+        deadline = loading_state.debounce_deadline
+        if deadline is not None and time.time() < deadline:
+            # Inside the quiet window - keep this draw_state dirty so the deadline
+            # render re-runs this frame, but DON'T request_render: the one-shot
+            # timer above wakes the loop exactly once when the deadline lands.
+            draw_state.invalidate()
         else:
-            run_next = loading_state.run_next
-            if not loading_state._loading:
-                loading_state.run_next = None
-                threading.Thread(target=run, kwargs={"run_next_inner": run_next}).start()
-                loading_state._loading_start_frame = Melty.frame_count
-                if loading_state.run_next is run_next:
-                    loading_state.run_next = None
+            loading_state.debounce_deadline = None
+            if loading_state._debounce_timer is not None:
+                loading_state._debounce_timer.cancel()
+                loading_state._debounce_timer = None
 
+            def run(run_next_inner):
+                loading_state._loading = True
+                value, background_kwargs = run_next_inner
+                # Never run a @render_func WRAPPER on this worker thread - the wrapper
+                # mutates process-global Melty state (depth, unique_id, ...) on
+                # entry/exit, which races the main render thread. Grab the bare inner
+                # function: plain functions pass through unchanged.
+                value = getattr(value, '__wrapped__', value)
+                try:
+                    loading_state.cached_result = value(**background_kwargs)
+                    if debounce_ms > 0:
+                        print(f"run_in_background: debounce_ms={debounce_ms} start={start} input_value={input_value}")
+
+                except Exception as exc:
+                    loading_state.error = exc
+                    print_stack_trace(exception=exc)
+                finally:
+                    loading_state._loading = False
+                    loading_state.pending_change = True
+                    Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=10)
+                    request_render()
+
+            if Melty.frame_count < 1:
+                run(run_next_inner=loading_state.run_next)
+            else:
+                run_next = loading_state.run_next
+                if not loading_state._loading:
+                    loading_state.run_next = None
+                    threading.Thread(target=run, kwargs={"run_next_inner": run_next}).start()
+                    loading_state._loading_start_frame = Melty.frame_count
+                    if loading_state.run_next is run_next:
+                        loading_state.run_next = None
 
     if loading_state._loading:
         loading_for = Melty.frame_count - loading_state._loading_start_frame
@@ -386,20 +465,22 @@ class ConverterState:
     def __init__(self):
         self.output_value = None
 
+
 @render_func()
 def string_to_cst_module(input_value, **kwargs):
     cst_tree = cst.parse_module(input_value)
     return True, cst_tree
+
 
 @render_func()
 def cst_module_to_string(input_value, **kwargs):
     code_str = input_value.code
     return True, code_str
 
+
 @window()
 @render_func(use_cache=True)
 def test_new_run_chain(input_value, **kwargs):
-
     chain = [
         class_to_address,
         load_file,
@@ -408,6 +489,7 @@ def test_new_run_chain(input_value, **kwargs):
     changed, value = run_chain(TestClass, chain=chain)
 
     return False, None
+
 
 def synchronous_run_chain(input_value, chain, route, chain_unique="", **kwargs):
     """Run the chain on run_in_background's worker thread.
@@ -471,11 +553,12 @@ def synchronous_run_chain(input_value, chain, route, chain_unique="", **kwargs):
 
     return value
 
-@render_func(use_cache=False, selectable=False, temp=True)
-def run_chain(input_value,  chain, unique, changed=False, draw_state=None, converter_state: ConverterState=None,
+
+@render_func(use_cache=False, selectable=False, disable_scroll=True,  temp=True)
+def run_chain(input_value, chain, unique, changed=False, draw_state=None, converter_state: ConverterState = None,
               route=None, **kwargs):
     if converter_state.output_value == UNSET or converter_state.output_value is LOADING:
-         converter_state.output_value = None
+        converter_state.output_value = None
     start = changed
 
     child_kwargs = {}
@@ -496,67 +579,223 @@ def run_chain(input_value,  chain, unique, changed=False, draw_state=None, conve
         converter_state.output_value = result
         return True, converter_state.output_value
 
-
     return False, converter_state.output_value
 
 
-@render_func(use_cache=True, fill_height=True, selectable=False, temp=True)
-def code_file_io_wrapped(input_value, view_func=None, changed=False, **kwargs):
+@render_func(use_cache=True, fill_height=True, disable_scroll=True, selectable=False, temp=True)
+def code_file_io_wrapped(input_value, view_func=RenderFuncs.draw_text, changed=False,
+                         child_kwargs=None, **kwargs):
+    """The injectable inner view. `code_file_io` owns every stateful concern
+    (load / save / recompile / file-watch) and hands this function the loaded
+    text plus whatever it routed in (`jump_to` address, ...). This stays a pure
+    pass-through: it just calls `view_func` on the text and returns its
+    (changed, value). `view_func` decides everything downstream —
 
-    chain = [
-        string_to_cst_module,
-        cst_module_to_dict,
-    ]
+      * `draw_text`  edits the raw string (works exactly like the old hardcoded
+        draw_text path),
+      * `draw_modes` runs the cst<->dict chains and fans the result out to
+        draw_text / draw_collection tabs.
 
-    chain_out = [
-        dict_to_cst_module,
-        cst_module_to_string
-    ]
-
-
-    # if view_func is not None:
-    #     _, converted_value = run_chain(input_value, changed=changed, name="code_convert_in", chain=chain)
-    #     if isinstance(converted_value, Exception):
-    #         imgui.text(f"Error: {str(converted_value)}")
-    #         return changed, input_value
-    #     dict_changed, new_dict = view_func(converted_value, draw=changed)
-    #     _, to_str_value = run_chain(new_dict, changed=dict_changed, name="code_convert_out", chain=chain_out)
-    #     if isinstance(to_str_value, Exception):
-    #         imgui.text(f"Error: {str(to_str_value)}")
-    #         return changed, input_value
-
-    text_changed, value = RenderFuncs.draw_text(input_value=input_value, column=0)
+    The convert chains that used to be hardcoded here now live inside
+    `draw_modes` (and travel in via child_kwargs), so this layer is agnostic to
+    them."""
+    if child_kwargs is None:
+        child_kwargs = {}
+    return view_func(input_value=input_value, changed=changed, **child_kwargs)
 
 
-    result, dict_val = run_chain(value, changed=text_changed or changed, name="code_convert_in", chain=chain)
-    if dict_val is None:
-        return False, None
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  draw_modes - the general version of the old hardcoded code_file_io_wrapped   ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
 
-    if isinstance(result, Exception):
-        imgui.text_colored(f"Error: {str(result)}", 1.0, 0.4, 0.0)
-        # return text_changed, value
+def _run_convert(chain, value, route=None, routed=None, **extra):
+    """Run a stateless converter chain inline — no run_chain, no threads.
 
-    dict_changed, new_dict = RenderFuncs.draw_collection(dict_val, column=1, draw=changed)
+    Each node is called as a BARE function: render_func nodes via `__wrapped__`
+    (so we skip the wrapper's global-stack mutation and don't spawn draw_states),
+    plain @register converters directly. A node returns either (changed, value)
+    or a bare value; we keep only the value.
 
-    result, to_str_value = run_chain(new_dict, changed=dict_changed, name="code_convert_out", chain=chain_out)
-    if isinstance(changed, Exception):
-        imgui.text_colored(f"Error: {str(changed)}", 1.0, 0.4, 0.0)
-        # return False, to_str_value
+    `route` mirrors run_chain's routing: it maps a node to a name, and that
+    node's output is stashed under the name in `routed` so downstream nodes — and
+    the view functions in draw_modes — can pull it by name.
 
-    if dict_changed:
-        return True, to_str_value
+    EXCEPTIONS ARE VALUES. A cst parse over half-typed source raises — that is a
+    normal editor state, not a bug in our code — so we CATCH it and return the
+    exception itself in the value slot, stopping the chain, rather than letting it
+    propagate. The caller renders it as UI and falls back to the last good
+    conversion. `routed` only ever holds clean values: the failing node returns
+    before its route entry is written, so an Exception never lands in `routed`."""
+    if routed is None:
+        routed = {}
+    for node in chain:
+        if isinstance(node, tuple):
+            node, node_kwargs = node
+        else:
+            node_kwargs = {}
+        inner = getattr(node, '__wrapped__', node)
+        sig = inspect.signature(inner)
+        accepts_var_kw = any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values())
+        call = {'input_value': value, **routed, **extra, **node_kwargs}
+        if not accepts_var_kw:
+            call = {k: v for k, v in call.items() if k in sig.parameters}
+        try:
+            result = inner(**call)
+        except Exception as e:
+            return e, routed
+        if isinstance(result, tuple) and len(result) == 2:
+            _, value = result
+        else:
+            value = result
+        if route and node in route:
+            routed[route[node]] = value
+    return value, routed
 
-    elif text_changed:
-        return True, value
 
-    return False, value
+class ModesState:
+    """Per-window scratch for draw_modes: the last conversion that SUCCEEDED for
+    each routed name. When chain_in throws on half-typed source we keep rendering
+    the structured views off this snapshot instead of blanking them out — same as
+    the old run_chain holding its `output_value` across a failed parse."""
+
+    def __init__(self):
+        self.last_good = {}
+
+
+@render_func(use_cache=True, show_bg=False, selectable=False, disable_scroll=True,
+             shadow=False, fill_height=True, indent_size=0)
+def draw_modes(input_value, modes=None, chain_in=None, chain_out=None, route=None,
+               tab_state: TabState = None, modes_state: ModesState = None,
+               changed=False, child_kwargs=None,
+               draw_state=None, unique=0, **kwargs):
+    """General form of the round-trip that used to be hardcoded in
+    code_file_io_wrapped. Takes the loaded text and:
+
+      * runs `chain_in` ONCE (e.g. string -> cst -> dict), stashing every output
+        named in `route` so it can be handed to whichever view wants it;
+      * shows a tab per entry in `modes` (each a view render_func, or a
+        `(view_func, kwargs)` tuple) and renders the selected ones side by side;
+      * feeds each view the routed value `route[view_func]` as its input_value
+        (e.g. draw_collection <- the dict). A view with NO route entry gets the
+        raw text instead (draw_text <- the string). Every routed value also rides
+        in as a kwarg, so a view picks up extras it wants (draw_text <- jump_to /
+        code_tree);
+      * when a view edits a routed (converted) value, the edit is run back
+        through `chain_out` to canonical text. A view editing the raw text
+        returns it directly — no chain_out needed.
+
+    NOTE: the params are `chain_in` / `chain_out`, NOT convert_in / convert_out —
+    the latter are reserved kwargs the render_func wrapper still interprets as the
+    old deprecated convert path."""
+    if child_kwargs is None:
+        child_kwargs = {}
+    if modes is None:
+        modes = [RenderFuncs.draw_text]
+
+    def view_of(m):
+        return m[0] if isinstance(m, tuple) else m
+
+    # Pr out entries that didn't survive (de)serialization - e.g. a saved
+    # state from before function refs round-tripped, which would leave None here.
+    tab_state.selected_tabs = [t for t in tab_state.selected_tabs if view_of(t) is not None]
+    if not tab_state.selected_tabs:
+        tab_state.selected_tabs = [modes[0]]
+
+    names = [getattr(view_of(m), '__name__', str(m)) for m in modes]
+    tab_changed, new_tabs = RenderFuncs.draw_tab_bar(
+        input_value=tab_state.selected_tabs, collection=modes, names=names,
+        tab_height=26, show_bg=False, name=f"mode_tabs{unique}", as_toggles=False)
+    if tab_changed:
+        tab_state.selected_tabs = new_tabs
+
+    # chain_in once - its outputs are shared across every selected tab.
+    # The file-IO layer routes the resolved address in as 'jump_to`; seed it so
+    # views that want it (draw_text) pick it up alongside the chain_in.
+    routed = {}
+    if 'jump_to' in kwargs:
+        routed['jump_to'] = kwargs['jump_to']
+
+    # chain_in can fail on half-typed source. That's not our bug - the exception
+    # comes back AS a value (see _run_convert). Show it as UI and keep editing
+    # alive: structured views fall back to the last conversion that parsed.
+    chain_in_error = None
+    if chain_in:
+        result, routed = _run_convert(chain_in, input_value, route=route, routed=routed,
+                                      **child_kwargs)
+        if isinstance(result, Exception):
+            chain_in_error = result
+        for name, val in routed.items():
+            modes_state.last_good[name] = val
+
+    if chain_in_error is not None:
+        imgui.text_colored(f" {type(chain_in_error).__name__}: {chain_in_error}",
+                           1.0, 0.5, 0.0)
+
+    out_changed, out_value = False, input_value
+    for idx, mode in enumerate(tab_state.selected_tabs):
+        view_func = view_of(mode)
+        mode_kwargs = mode[1] if isinstance(mode, tuple) else {}
+
+        arg_name = route.get(view_func) if route else None
+        if arg_name is None:
+            # No routed input - this view gets the raw text (e.g. draw_text). It
+            # is unaffected by a chain_in failure; it sees what the user typed.
+            uses_converted = False
+            view_input = input_value
+        else:
+            uses_converted = True
+            fresh = routed.get(arg_name)
+            if fresh is not None:
+                view_input = fresh
+            elif arg_name in modes_state.last_good:
+                # chain_in failed since producing this value - keep the last one
+                # that worked so the structured view doesn't blank out.
+                view_input = modes_state.last_good[arg_name]
+            else:
+                # Never had a good conversion (invalid on first load): render the
+                # error in place of this view rather than crash.
+                imgui.text_colored(
+                    f" {getattr(view_func, '__name__', 'view')}: {chain_in_error}",
+                    1.0, 0.5, 0.0)
+                continue
+
+        call_kwargs = {**child_kwargs, **routed, **mode_kwargs}
+
+        # Pass external change as `draw=`, NOT `changed=`: `draw` just bypasses
+        # the view's cache for a redraw; `changed` would set the view's sticky
+        # _external_change / _pending edit flags, so a forced redraw would come
+        # back reported AS an edit - with auto_save that becomes a
+        # save -> reload -> redraw -> save feedback spin. (Matches the ol
+        # hardcoded `draw_collection(..., draw=changed)`.)
+        m_changed, m_out = view_func(input_value=view_input, draw=changed, disable_scroll=False,
+                                     column=idx, show_add_delete=False, name=f"{modes[idx].__name__}##{unique}",
+                                     selectable=False,
+                                     **call_kwargs)
+        if not m_changed:
+            continue
+        else:
+            draw_state.invalidate_up(max_depth=3)
+
+        if uses_converted and chain_out:
+            result, _ = _run_convert(chain_out, m_out)
+            if isinstance(result, Exception):
+                imgui.text_colored(f" chain_out: {result}", 1.0, 0.5, 0.0)
+            else:
+                out_value, out_changed = result, True
+        else:
+            out_value, out_changed = m_out, True
+
+    return out_changed, out_value
+
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  editable_source - the whole round-trip, one function                        ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
-@render_func(use_cache=True, selectable=False, searchable=True, disable_scroll=False, temp=True)
-def code_file_io(input_value, code_state: CodeState, view_func=RenderFuncs.draw_text, auto_load=True, auto_load_edits=False,
-                 child_kwargs=None, draw_state=None, auto_save=True, auto_recompile_edits=False, save=False, load=False, recompile=False,
+@render_func(use_cache=True, selectable=False, searchable=True, disable_scroll=True, temp=True)
+def code_file_io(input_value, code_state: CodeState, view_func=RenderFuncs.draw_text, auto_load=True,
+                 auto_load_edits=False,
+                 child_kwargs=None, draw_state=None, auto_save=True, auto_recompile_edits=False, save=False, load=False,
+                 recompile=False, save_debounce_ms=600,
                  ensure_import=None, s_key_pressed=None, enter_key_pressed=None, unique=None, **kwargs):
     try:
         if child_kwargs is None:
@@ -581,7 +820,8 @@ def code_file_io(input_value, code_state: CodeState, view_func=RenderFuncs.draw_
 
         if not auto_recompile_edits and code_state.text_cache is not UNSET and code_state.text_cache is not None:
             play_icon = "\uf04b"
-            recompile = RenderFuncs.button(f"{play_icon} Run", tint=(0, 0.4, 0.1), height=top_line_height, name="recompile_btn")[0]
+            recompile = \
+            RenderFuncs.button(f"{play_icon} Run", tint=(0, 0.4, 0.1), height=top_line_height, name="recompile_btn")[0]
             imgui.same_line()
 
         if code_state.recompiled_on_frame is not None:
@@ -598,7 +838,6 @@ def code_file_io(input_value, code_state: CodeState, view_func=RenderFuncs.draw_
             if code_state.recompile_result is not None:
                 imgui.same_line()
                 imgui.text_colored(f"{str(code_state.recompile_result)}", 1.0, 0.4, 0.0)
-
 
         if code_state.is_file_stale() and not code_state.pending_save:
             imgui.same_line()
@@ -629,7 +868,7 @@ def code_file_io(input_value, code_state: CodeState, view_func=RenderFuncs.draw_
         elif changed:
             code_state.text_cache = new_text
             code_state.mark_file_current()
-            draw_state.invalidate_up(max_depth=3)
+            draw_state.invalidate_up(max_depth=6)
             code_state.pending_save = False
             external_change = True
             request_render()
@@ -642,10 +881,10 @@ def code_file_io(input_value, code_state: CodeState, view_func=RenderFuncs.draw_
                                          top_line_height))
 
             child_kwargs['jump_to'] = address
-            edited, value = code_file_io_wrapped(input_value=code_state.text_cache, changed=external_change, **child_kwargs)
-            #
-            # edited, value = code_file_io_wrapped(input_value=code_state.text_cache,
-            #                                      changed=external_change, **child_kwargs)
+            edited, value = code_file_io_wrapped(input_value=code_state.text_cache,
+                                                 view_func=view_func,
+                                                 child_kwargs=child_kwargs,
+                                                 changed=external_change)
 
             if edited:
                 code_state.text_cache = value
@@ -665,13 +904,18 @@ def code_file_io(input_value, code_state: CodeState, view_func=RenderFuncs.draw_
 
         # Save: write the edited span back to disk off the main thread. The text is
         # snapshotted into child_kwargs at trigger time, so a later edit can't race
-        # the disk disk write.
-        save_start = (auto_save and edited) or save_hotkey or save
+        # the in-flight write. Auto-save-on-edit is debounced so a burst of
+        # keystrokes collapses into one write after typing pauses; the explicit
+        # save button / Ctrl+S fires immediately (debounce 0).
+        explicit_save = save_hotkey or save
+        save_start = (auto_save and edited) or explicit_save
+        save_debounce = 0 if explicit_save else save_debounce_ms
         saved, result = run_in_background(_write_span,
-                                     child_kwargs={"address": address,
-                                                   "code_str": code_state.text_cache,
-                                                   "ensure_import": ensure_import},
-                                     name="save", start=save_start)
+                                          child_kwargs={"address": address,
+                                                        "code_str": code_state.text_cache,
+                                                        "ensure_import": ensure_import},
+                                          name="save", start=save_start,
+                                          debounce_ms=save_debounce)
         if result == LOADING:
             code_state.mark_file_current()
         elif saved:
@@ -685,10 +929,10 @@ def code_file_io(input_value, code_state: CodeState, view_func=RenderFuncs.draw_
         # on edit. Same runner, its own loading_state.
         recompile_start = (recompile) or recompile_hotkey
         changed, result = run_in_background(recompile_source,
-                                          child_kwargs={"source": input_value,
-                                                        "code_str": code_state.text_cache,
-                                                        "file_path": address.path},
-                                          name="recompile", start=recompile_start)
+                                            child_kwargs={"source": input_value,
+                                                          "code_str": code_state.text_cache,
+                                                          "file_path": address.path},
+                                            name="recompile", start=recompile_start)
         if result == LOADING:
             print("Starting recompile...")
             code_state.recompiled_on_frame = None

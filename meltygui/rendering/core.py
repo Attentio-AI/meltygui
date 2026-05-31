@@ -1173,7 +1173,7 @@ def render_func(*args, **o_kwargs):
 
             if column is not None and column_parent is not None:
                 column_parent._current_max_column = max(column_parent._current_max_column, column)
-                parent_wrap_width = int(column_parent.content_width / (column_parent.final_max_column + 1))
+                parent_wrap_width = int((column_parent.content_width - 10) / (column_parent.final_max_column + 1))
                 column_parent._column_width = parent_wrap_width
 
 
@@ -1273,7 +1273,7 @@ def render_func(*args, **o_kwargs):
 
 
             if draw_state.final_max_column > 0:
-                column_width = snap_int(draw_state.content_width / (draw_state.final_max_column + 1))
+                column_width = snap_int((draw_state.content_width - 10) / (draw_state.final_max_column + 1))
                 draw_list: _DrawList = imgui.get_window_draw_list()
                 for c in range(1, draw_state.final_max_column + 1):
                     # Draw divider lines, we are the parent now
