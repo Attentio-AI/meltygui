@@ -545,7 +545,7 @@ def _scroll_into_view(ds, top_abs, bottom_abs, margin=40.0):
                 current_x = node.scroll_offset[0]
                 new_offset = sy - (view_top + margin - top_abs)
                 node.scroll_offset = (current_x,
-                                            max(0, min(new_offset, node._max_scroll_y)))
+                                      max(0, min(new_offset, node._max_scroll_y)))
 
                 request_render()
             elif bottom_abs > view_bottom - margin:
@@ -1250,7 +1250,7 @@ def draw_text(input_value: str,
     else:
         text_height = (input_value.count('\n') + 1) * line_px + 2
 
-    imgui.dummy(draw_state.width, text_height)
+    imgui.dummy(draw_state.width, text_height + 10)
 
     if _font_pushed:
         imgui.pop_font()

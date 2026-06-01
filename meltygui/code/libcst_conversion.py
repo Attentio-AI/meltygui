@@ -1309,11 +1309,21 @@ def _assign_field_name(node, in_init: bool):
 def _existing_class_field_names(classdef: cst.ClassDef) -> set:
     """Names cst_classdef_to_dict would surface as fields — body-level
     Assign/AnnAssign targets plus __init__ `self.X` assignments. Used to tell a
-    NEW class-var edit (needs synthesizing) from an edit of an existing field."""
+    NEW class-var edit (needs synthesizing) from an edit of an existing field.
+
+    MUST stay symmetric with cst_classdef_to_dict, which only emits a dict entry
+    for an AnnAssign that HAS a value (`x: int = 0`). A bare annotation
+    (`value: str`, no `=`) carries no editable value, so the forward pass skips
+    it and the dict never contains it — if we counted it here it would look
+    DELETED on the way back and get stripped, silently mutating the source (this
+    is what once deleted libcst's `Comment.value` field). So skip bare
+    annotations: they pass through untouched via __cst__."""
     names = set()
     for stmt in classdef.body.body:
         if isinstance(stmt, cst.SimpleStatementLine):
             for node in stmt.body:
+                if isinstance(node, cst.AnnAssign) and node.value is None:
+                    continue  # bare annotation - not a dict entry; leave it be
                 nm = _assign_field_name(node, in_init=False)
                 if nm is not None:
                     names.add(nm)

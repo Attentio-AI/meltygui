@@ -29,6 +29,39 @@ from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  Library write guard                                                         ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+# The editor resolves a class/function/module to its source FILE and edits a line
+# span in place. Nothing stops `type(value)` from being a class that lives in a
+# third-party package - and a wrong resolve once silently deleted a field from
+# libcst's own whitespace.py, breaking the parser. We are an editor for THIS
+# project's code, never for installed libraries, so every resolve/write checks
+# this gate. Returning False makes resolve_address return None (editor displays
+# "can't resolve") and makes the save functions skip the write - fail closed.
+
+# Project root: this file is .../src/lsd/gl_gui/view/core_conversion/address.py
+# → parents[5] is the repo root (the dir that contains `src/`).
+_PROJECT_ROOT = Path(__file__).resolve().parents[5]
+
+
+def is_editable_source(source_file) -> bool:
+    """True only for source inside the project tree. Library code (site-packages
+    / dist-packages / the venv / the stdlib) is read-only to the editor, so we
+    never resolve or write to it."""
+    try:
+        p = Path(source_file).resolve()
+    except (OSError, ValueError):
+        return False
+    if {"site-packages", "dist-packages"} & set(p.parts):
+        return False
+    try:
+        p.relative_to(_PROJECT_ROOT)
+    except ValueError:
+        return False
+    return True
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  Address                                                                     ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 ORIGINAL = object()  # sentinel for "no original value found"

@@ -34,9 +34,13 @@ edit but is debounced (`save_debounce_ms`) so a burst of keystrokes collapses
 into one write — a one-shot timer wakes the loop at the deadline instead of
 spinning `request_render`. An explicit Save / Ctrl+S bypasses the debounce.
 
-Recompile (hotswap, no disk write) returns a SyntaxError on failure; that error
-is routed into the editor for the red highlight and cleared the moment the source
-parses again (`cst.parse_module` as the "valid yet?" check).
+Syntax-error feedback belongs to the editor, not this file. chain_in parses the
+buffer on its background thread every time the text changes; the route hands that
+result to draw_text — `code_tree` on success, the parse exception on failure —
+which highlights the offending line. code_file_io does no parsing of its own and
+displays no error, so the highlight clears as soon as a fresh background parse
+succeeds. Recompile (hotswap, no disk write) is a separate concern: it just
+hotswaps the live object and flashes a checkmark.
 """
 
 import inspect
@@ -76,8 +80,6 @@ from src.lsd.gl_gui.view.core_conversion.new_codecs import Codec, type_to_codec,
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import no_save_exclude
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
-from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -103,30 +105,34 @@ def recompile_source(source, code_str, file_path):
 
     return result
 
+
 class TestClass:
     some_val = 10
     some_other_val = -3
     some = []
     # [tint=(0,0.2,1)]
-    
+
     some_line = 30
     myflot = 5
     tint = (0.08707411, 0.1469433, 0.1627907156944275)
     some_tuple = (46, 1)
-    
 
     # [tint=(0.9069767594337463, 0.5192674398422241, 0.029529478400945663)]
     class NestedClass:
         so = 1
-        
+
     some_val = 10
     new_bool = True
     a_dict = {"x": -52, "y": 53}
     a_dict = {"x": -52, "y": 53}
+
+
 def slow_task(**kwargs):
     import time
     print("Starting slow task...")
     time.sleep(1)
+
+
     print("Slow task completed.")
     return {"result": "This is the result of the slow task", "kwargs": kwargs}
 
@@ -134,16 +140,54 @@ def slow_task(**kwargs):
 @window()
 @render_func(use_cache=True)
 def editor_window():
-    imgui.text("auto_save=False")
-    code_file_io(TestClass, auto_save=True, auto_load=True, auto_load_edits=True)
+    code_file_io(
+        toggles,
+        view_func=draw_modes,
+        auto_load_edits=True,
+        auto_load=True,
+        auto_save=True,
+        child_kwargs={
+            "modes": [RenderFuncs.draw_text, RenderFuncs.draw_collection],
+            "chain_in": [string_to_cst_module, cst_module_to_dict],
+            "chain_out": [dict_to_cst_module, cst_module_to_string],
+            # string_to_cst_module's output is named "code_tree" - draw_text reads
+            # it to highlight parse errors (a failed parse arrives as the exception
+            # value). cst_module_to_dict's output is "code_dict" - draw_collection
+            # consumes it. draw_text still gets the raw string as its input_value.
+            "route": {
+                string_to_cst_module: "code_tree",
+                cst_module_to_dict: "code_dict",
+                RenderFuncs.draw_collection: "code_dict",
+            },
+        },
+    )
     return False, None
 
 
 @window()
 @render_func(use_cache=True)
 def editor_window_2():
-    imgui.text("auto_load_edits=True")
-    code_file_io(TestClass, auto_load_edits=True)
+    code_file_io(
+        toggles,
+        view_func=draw_modes,
+        auto_load_edits=False,
+        auto_load=False,
+        auto_save=False,
+        child_kwargs={
+            "modes": [RenderFuncs.draw_text, RenderFuncs.draw_collection],
+            "chain_in": [string_to_cst_module, cst_module_to_dict],
+            "chain_out": [dict_to_cst_module, cst_module_to_string],
+            # string_to_cst_module's output is named "code_tree" - draw_text reads
+            # it to highlight parse errors (a failed parse arrives as the exception
+            # value). cst_module_to_dict's output is "code_dict" - draw_collection
+            # consumes it. draw_text still gets the raw string as its input_value.
+            "route": {
+                string_to_cst_module: "code_tree",
+                cst_module_to_dict: "code_dict",
+                RenderFuncs.draw_collection: "code_dict",
+            },
+        },
+    )
     return False, None
 
 
@@ -151,7 +195,6 @@ def editor_window_2():
 @render_func(use_cache=True, disable_scroll=True)
 def editor_window_4():
     # view_func=draw_modes: text | dict tabs over one shared file-IO layer.
-    imgui.text("view_func=draw_modes (text | dict tabs)")
     code_file_io(
         toggles,
         view_func=draw_modes,
@@ -162,9 +205,12 @@ def editor_window_4():
             "modes": [RenderFuncs.draw_text, RenderFuncs.draw_collection],
             "chain_in": [string_to_cst_module, cst_module_to_dict],
             "chain_out": [dict_to_cst_module, cst_module_to_string],
-            # cst_module_to_dict's output is named "code_dict"; draw_collection
-            # consumes it. draw_text has no entry, so it gets the raw string.
+            # string_to_cst_module's output is named "code_tree" - draw_text reads
+            # it to highlight parse errors (a failed parse arrives as the exception
+            # value). cst_module_to_dict's output is "code_dict" - draw_collection
+            # consumes it. draw_text still gets the raw string as its input_value.
             "route": {
+                string_to_cst_module: "code_tree",
                 cst_module_to_dict: "code_dict",
                 RenderFuncs.draw_collection: "code_dict",
             },
@@ -176,14 +222,12 @@ def editor_window_4():
 @window()
 @render_func(use_cache=True)
 def editor_window_3():
-    imgui.text("auto_load_edits=False")
-    imgui.text("auto_load=False")
     code_file_io(slow_task, auto_load_edits=False, auto_load=False)
     return False, None
 
 
 @window()
-@render_func(use_cache=True, selectable=False,disable_scroll=True)
+@render_func(use_cache=True, selectable=False, disable_scroll=True)
 def test_toggles():
     code_file_io(
         Toggles,
@@ -195,9 +239,12 @@ def test_toggles():
             "modes": [RenderFuncs.draw_text, RenderFuncs.draw_collection],
             "chain_in": [string_to_cst_module, cst_module_to_dict],
             "chain_out": [dict_to_cst_module, cst_module_to_string],
-            # cst_module_to_dict's output is named "code_dict"; draw_collection
-            # consumes it. draw_text has no entry, so it gets the raw string.
+            # string_to_cst_module's output is named "code_tree" - draw_text reads
+            # it to highlight parse errors (a failed parse arrives as the exception
+            # value). cst_module_to_dict's output is "code_dict" - draw_collection
+            # consumes it. draw_text still gets the raw string as its input_value.
             "route": {
+                string_to_cst_module: "code_tree",
                 cst_module_to_dict: "code_dict",
                 RenderFuncs.draw_collection: "code_dict",
             },
@@ -281,12 +328,8 @@ def run_in_background(input_value, loading_state: LoadingState,
                 value = getattr(value, '__wrapped__', value)
                 try:
                     loading_state.cached_result = value(**background_kwargs)
-                    if debounce_ms > 0:
-                        print(f"run_in_background: debounce_ms={debounce_ms} start={start} input_value={input_value}")
-
                 except Exception as exc:
                     loading_state.error = exc
-                    print_stack_trace(exception=exc)
                 finally:
                     loading_state._loading = False
                     loading_state.pending_change = True
@@ -375,13 +418,13 @@ def cst_module_to_string(input_value, **kwargs):
     return True, code_str
 
 
-@render_func(use_cache=True, fill_height=True, disable_scroll=True, selectable=False, temp=True)
+@render_func(use_cache=True, disable_scroll=True, selectable=False, temp=True)
 def code_file_io_wrapped(input_value, view_func=RenderFuncs.draw_text, changed=False,
-                         child_kwargs=None, routed=None, **kwargs):
+                         child_kwargs=None, **kwargs):
     """The injectable inner view. `code_file_io` owns every stateful concern
     (load / save / recompile / file-watch) and hands this function the loaded
-    text plus whatever it routed in (`jump_to` address, `error`, ...). This stays
-    a pure pass-through: it just calls `view_func` on the text and returns its
+    text plus whatever it routed in (`jump_to` address, ...). This stays a pure
+    pass-through: it just calls `view_func` on the text and returns its
     (changed, value). `view_func` decides everything downstream —
 
       * `draw_text`  edits the raw string (works exactly like the old hardcoded
@@ -389,20 +432,12 @@ def code_file_io_wrapped(input_value, view_func=RenderFuncs.draw_text, changed=F
       * `draw_modes` runs the cst<->dict chains and fans the result out to
         draw_text / draw_collection tabs.
 
-    Two kwarg channels reach the view:
-      * child_kwargs — the view's STATIC config (modes / chains / route);
-      * routed — PER-FRAME values delivered by name (the routing mechanism). We
-        spread it so draw_text picks them up as named params (jump_to / error)
-        and draw_modes picks them up into its own `routed` distribution.
-
     The convert chains that used to be hardcoded here now live inside
     `draw_modes` (and travel in via child_kwargs), so this layer is agnostic to
     them."""
     if child_kwargs is None:
         child_kwargs = {}
-    if routed is None:
-        routed = {}
-    return view_func(input_value=input_value, changed=changed, **routed, **child_kwargs)
+    return view_func(input_value=input_value, changed=changed, **child_kwargs)
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -453,21 +488,45 @@ def _run_convert(chain, value, route=None, routed=None, **extra):
     return value, routed
 
 
+def _run_chain_in(input_value, chain=None, route=None, seed=None, **extra):
+    """Background entry point for the forward (chain_in) conversion.
+
+    A plain module-level function (NOT a @render_func) so run_in_background can
+    call it directly on its worker thread without touching any imgui/Melty global
+    state. Runs the whole chain via _run_convert and returns the full `routed`
+    dict — every column's input in one shared payload. The result/exception is
+    folded back into ModesState on the main thread when the worker completes."""
+    routed = dict(seed) if seed else {}
+    result, routed = _run_convert(chain, input_value, route=route, routed=routed, **extra)
+    return {"routed": routed, "error": result if isinstance(result, Exception) else None}
+
+
 class ModesState:
-    """Per-window scratch for draw_modes: the last conversion that SUCCEEDED for
-    each routed name. When chain_in throws on half-typed source we keep rendering
-    the structured views off this snapshot instead of blanking them out — same as
-    the old run_chain holding its `output_value` across a failed parse."""
+    """Per-window scratch for draw_modes.
+
+    chain_in (str → cst → dict, ...) is O(buffer) and runs on a BACKGROUND thread
+    via run_in_background, so it can't block the render loop. This holds the
+    cross-frame state that makes that work while keeping every column in sync:
+
+    last_good — the routed outputs of the last conversion that SUCCEEDED. Every
+      selected column reads the SAME last_good, so they never drift apart. While a
+      fresh conversion is in flight (or one throws on half-typed source) the views
+      keep rendering off this snapshot instead of blanking out.
+    last_input — the source text the last background run was started from. A new
+      run is triggered only when the input actually changes (the editor
+      re-renders every frame with identical text otherwise)."""
 
     def __init__(self):
         self.last_good = {}
+        self.last_input = UNSET
+        self.last_error = None
 
 
 @render_func(use_cache=True, show_bg=False, selectable=False, disable_scroll=True,
-             shadow=False, fill_height=True, indent_size=0)
+             shadow=False, indent_size=0, with_footer=None, fill_height=True)
 def draw_modes(input_value, modes=None, chain_in=None, chain_out=None, route=None,
                tab_state: TabState = None, modes_state: ModesState = None,
-               changed=False, child_kwargs=None, routed=None,
+               changed=False, child_kwargs=None,
                draw_state=None, unique=0, **kwargs):
     """General form of the round-trip that used to be hardcoded in
     code_file_io_wrapped. Takes the loaded text and:
@@ -503,35 +562,56 @@ def draw_modes(input_value, modes=None, chain_in=None, chain_out=None, route=Non
         tab_state.selected_tabs = [modes[0]]
 
     names = [getattr(view_of(m), '__name__', str(m)) for m in modes]
-    tab_changed, new_tabs = RenderFuncs.draw_tab_bar(
+    tab_changed, new_tabs = RenderFuncs.draw_tab_bar(indent_size=0,
         input_value=tab_state.selected_tabs, collection=modes, names=names,
         tab_height=26, show_bg=False, name=f"mode_tabs{unique}", as_toggles=False)
     if tab_changed:
         tab_state.selected_tabs = new_tabs
 
-    # chain_in once - its outputs are routed across each selected tab. Seed the
-    # distribution with whatever the file-IO layer routed in (jump_to address,
-    # recompile error, ...) so views that want those pick them up alongside the
-    # conversion outputs.
-    routed = dict(routed) if routed else {}
+    # chain_in runs ONCE on a background thread (it's O(buffer): cst parse + dict
+    # transform) and its outputs are SHARED across every selected tab - that's what
+    # keeps the columns in sync. We trigger a fresh run only when the input text
+    # changes; in between, and while a run is in flight, every column reads the
+    # same modes_state.last_good snapshot.
+    #
+    # The current address rides in as `jump_to`; views that want it (draw_text)
+    # pick it up alongside the other outputs, so seed the shared `routed` with it.
+    routed = dict(modes_state.last_good)
+    if 'jump_to' in kwargs:
+        routed['jump_to'] = kwargs['jump_to']
 
-    # chain_in can fail on half-typed source. That's not our bug - the exception
-    # comes back AS a value (see _run_convert). Show it as UI and keep editing
-    # alive: structured views fall back to the last conversion that parsed.
-    chain_in_error = None
+    chain_in_error = modes_state.last_error
     if chain_in:
-        result, routed = _run_convert(chain_in, input_value, route=route, routed=routed,
-                                      **child_kwargs)
-        if isinstance(result, Exception):
-            chain_in_error = result
-        for name, val in routed.items():
-            modes_state.last_good[name] = val
+        input_changed = input_value != modes_state.last_input
+        if input_changed:
+            modes_state.last_input = input_value
+        # One worker per draw_modes instance (distinct name=). It snapshots the
+        # input at trigger time, runs _run_chain_in off-thread, and re-renders on
+        # completion. `start` only on a real input change so we don't respawn the
+        # parse every frame.
+        finished, payload = run_in_background(
+            _run_chain_in,
+            child_kwargs={"input_value": input_value, "chain": chain_in,
+                          "route": route, "seed": child_kwargs},
+            name=f"chain_in{unique}", start=input_changed)
+        if finished and isinstance(payload, dict):
+            # Fold the fresh outputs into the shared snapshot. last_good
+            # only ever holds clean values; a parse failure leaves the last
+            # good values in place so columns keep rendering.
+            # good values in place so columns keep rendering.
+            modes_state.last_error = payload.get("error")
+            for name, val in payload["routed"].items():
+                modes_state.last_good[name] = val
+                if name != 'jump_to':
+                    routed[name] = val
+            chain_in_error = modes_state.last_error
 
-    # The editor's error highlight reads `error`: prefer an actual recompile error
-    # (Python's compiler pins a better line than libcst's parse error) over a
-    # chain_in error; fall back to chain_in. None when everything's clean, which
-    # clears any error highlight.
-    routed['error'] = routed.get('error') or chain_in_error
+    # Route any background parse failure to the views: draw_text reads `error` to
+    # lights up the offending source line in red. None when the latest parse
+    # succeeded, or retains any prior failure. (code_tree carries the parsed
+    # tree on success but not the failure - _run_convert stops before writing a
+    # failing node's route entry - so the exception comes via `error`.)
+    routed['error'] = chain_in_error
 
     out_changed, out_value = False, input_value
     for idx, mode in enumerate(tab_state.selected_tabs):
@@ -556,14 +636,9 @@ def draw_modes(input_value, modes=None, chain_in=None, chain_out=None, route=Non
             else:
                 # Never had a good conversion (invalid on first load): render the
                 # error in place of this view rather than crash.
-                RenderFuncs.draw_text(
-                    f" {getattr(view_func, '__name__', 'view')}: {chain_in_error}", mode=Modes.WINDOW)
-
-
-                # imgui.text_colored(
-                #     f" {getattr(view_func, '__name__', 'view')}: {chain_in_error}",
-                #     1.0, 0.5, 0.0)
-                # print_stack_trace(exception=chain_in_error)
+                imgui.text_colored(
+                    f" {getattr(view_func, '__name__', 'view')}: {chain_in_error}",
+                    1.0, 0.5, 0.0)
                 continue
 
         call_kwargs = {**child_kwargs, **routed, **mode_kwargs}
@@ -574,7 +649,7 @@ def draw_modes(input_value, modes=None, chain_in=None, chain_out=None, route=Non
         # back reported AS an edit - with auto_save that becomes a
         # save -> reload -> redraw -> save feedback spin. (Matches the ol
         # hardcoded `draw_collection(..., draw=changed)`.)
-        m_changed, m_out = view_func(input_value=view_input, draw=changed, disable_scroll=False,
+        m_changed, m_out = view_func(input_value=view_input, draw=changed, disable_scroll=False, show_header=False,
                                      column=idx, show_add_delete=False, name=f"{modes[idx].__name__}##{unique}",
                                      selectable=False,
                                      **call_kwargs)
@@ -582,6 +657,7 @@ def draw_modes(input_value, modes=None, chain_in=None, chain_out=None, route=Non
             continue
         else:
             draw_state.invalidate_up(max_depth=3)
+
 
         if uses_converted and chain_out:
             result, _ = _run_convert(chain_out, m_out)
@@ -591,6 +667,7 @@ def draw_modes(input_value, modes=None, chain_in=None, chain_out=None, route=Non
                 out_value, out_changed = result, True
         else:
             out_value, out_changed = m_out, True
+
 
     return out_changed, out_value
 
@@ -605,6 +682,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                  recompile=False, save_debounce_ms=600,
                  ensure_import=None, s_key_pressed=None, enter_key_pressed=None, unique=None, **kwargs):
     try:
+
         if child_kwargs is None:
             child_kwargs = {}
         # ── 1. Resolve the source's line span ─────────────────────────────────────
@@ -616,16 +694,18 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
 
         address = codec.resolve_address(input_value, draw_state)
         code_state.address = address
-        top_line_height = 24
+        top_line_height = 22
         external_change = False
 
         if address is None:
             RenderFuncs.draw_text(
-                f"editable_source: can't resolve source for {type(input_value).__name__}", name=f"resolve_error{unique}",
+                f"editable_source: can't resolve source for {type(input_value).__name__}",
+                name=f"resolve_error{unique}",
                 mode=Modes.WINDOW)
 
-
             return False, None
+
+
 
         if auto_load:
             if draw_state.frame_count < 1:
@@ -633,11 +713,12 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                 code_state.text_cache = None
                 code_state.mark_file_current()
 
+
         if not auto_recompile_edits and code_state.text_cache is not UNSET and code_state.text_cache is not None:
             play_icon = "\uf04b"
             recompile = \
-            RenderFuncs.button(f"{play_icon} Run", tint=(0, 0.4, 0.1), height=top_line_height, name="recompile_btn")[0]
-            imgui.same_line()
+                RenderFuncs.button(f"{play_icon} Run{unique}", tint=(0, 0.4, 0.1), height=top_line_height,
+                                   name="recompile_btn")[0]
 
         if code_state.recompiled_on_frame is not None:
             duration = 10
@@ -647,12 +728,9 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                 imgui.same_line()
                 checkmark_icon_fa = "\uf00c"
                 imgui.text_colored(f"{checkmark_icon_fa}", 0.0, 1.0, 0.0, fade_out)
+            if fade_out > 0.01:
                 draw_state.invalidate()
                 request_render()
-
-            if code_state.recompile_result is not None:
-                imgui.same_line()
-                imgui.text_colored(f"{str(code_state.recompile_result)}", 1.0, 0.4, 0.0)
 
         if code_state.is_file_stale() and not code_state.pending_save:
             imgui.same_line()
@@ -690,39 +768,15 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
 
         # ── 3. Edit - the actual call ─────────────────────────────────────────────
         if code_state.text_cache is not UNSET and code_state.text_cache is not None:
-            imgui.set_cursor_screen_pos((draw_state.abs_left,
-                                         draw_state.abs_top +
-                                         draw_state.header_height +
-                                         top_line_height))
 
-            # A Syntax *syntax* error is stale once the source parses again - use
-            # libcst as the "is it valid yet?" check and clear it the moment the
-            # fix lands (clears both the red highlight and the message below). Only
-            # SyntaxError - a valid parse says nothing about a NameError etc. raised
-            # at exec time, so those stay until the next Run. The parse only runs
-            # while a syntax error is outstanding, so it's free in the common case.
-            if isinstance(code_state.recompile_result, SyntaxError) and code_state.text_cache:
-                try:
-                    code_state.recompile_result = None
-                except Exception:
-                    pass
-            # Per-frame routed values (the routing mechanism, NOT static config):
-            #   jump_to - the source address, for the view's jump-to-source.
-            #   error   - the latest recompile failure, for the red line highlight.
-            #             Python's compiler pins a different line than libcst's parse
-            #             error, so the view prefers it over the built_in error;
-            #             cleared above once the source parses again.
-            routed = {
-                'jump_to': address,
-                'error': (code_state.recompile_result
-                          if isinstance(code_state.recompile_result, BaseException)
-                          else None),
-            }
-            edited, value = code_file_io_wrapped(input_value=code_state.text_cache,
-                                                 view_func=view_func,
-                                                 child_kwargs=child_kwargs,
-                                                 routed=routed,
-                                                 changed=external_change)
+            child_kwargs['jump_to'] = address
+            # Syntax-error feedback is the editor's job, not ours. chain_in_background
+            # parses the input on its background thread, and the parent delivers
+            # that result to draw_text - `ast_tree` on success, the parse exception
+            # on failure - which highlights the offending line. So code_file_io
+            # does no parse of its own and routes the error; the error clears the
+            # moment a fresh background parse succeeds.
+            edited, value = view_func(input_value=code_state.text_cache, changed=external_change, **child_kwargs)
 
             if edited:
                 code_state.text_cache = value

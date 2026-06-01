@@ -5,7 +5,9 @@ from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 
 class Counters:
     # Nested window
-    nested_window_count = 16
+    nested_window_count = 13
+    some_dict = [1,1,1]
+    some_dict2 = {1:1}
 
 
 @window
@@ -51,14 +53,15 @@ class Swoosh:
     some_dict = [1,1,1,1]
 
 
-@window(tint=(0.8, 0.6, 0.1))
+@window(tint=(0.8, 0.8, 0.5))
 class Toggles:
-    test_float = 2.581
-    @defaults(tint=(0.2,0.3,0.6))
+    test_float = 3.303
+    @defaults(tint=(0.3,0.2,0.2))
     class InvalidateTracker:
-        keep_for_frames = 1
+        keep_for_frames = 2
         enable = False
         draw_bvh = False
+
     @defaults(tint=(0.10598, 0.2410416603088379,0.320930242538452))
     class Debug:
         slow_frame_rate = False
@@ -68,14 +71,14 @@ class Toggles:
     show_filled_tiles = False
     # Invalidation settings
     invalidate_stack_trace = False
-    text_focus_stack_trace = False
+    text_focus_stack_trace = True
     attrib_change_stack_trace = False
     attrib_churn_log = False
     debug_threads = False
     slow_down_threads = False
     render_depth = False
     ds_invalidate_stack = False
-    profile_mode = ProfileMode.LIGHT
+    profile_mode = ProfileMode.OVERHEAD
     debug_stale_tint = False
     show_line_break = False
     # Filter SettingS
@@ -84,10 +87,7 @@ class Toggles:
     saturation = -0.4
     prefered_header_width = 120
     max_preferred_header_width = 120
-        
     debug_z_depth = False
-    filters = True
-    show_excluded = True
     filters = True
     show_excluded = True
     layer_stack_trace = False
@@ -96,9 +96,7 @@ class Toggles:
     shadow_downscale = 2
     shadow_edge_sharpness = 50.0
     draw_legacy = False
-    shadow_edge_sharpness = 50.0
-    draw_legacy = False
-    
+
     # Scroll settings 
     scroll_speed = 280.0
 

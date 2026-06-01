@@ -465,11 +465,11 @@ class Melty:
     returned_values = {}
     pending_return_values = {}
 
-    # Undoable draw_state -> the Change to restore. UndoManager.undo() registers an
-    # entry here on ctrl+z; core_render's render_func tail intercepts the matching
-    # draw_state's return, reports (True, change.old) instead of the live value,
-    # restores change.ui (caret/selection/scroll), then pops the entry so it fires
-    # for exactly one frame.
+    # Undo/redo: draw_state -> (value, ui) to restore. UndoManager.undo()/redo()
+    # register an entry here on ctrl+z / ctrl+shift+z; core_render's render_func
+    # tail intercepts the relevant draw_state's return, reports (True, value)
+    # instead of the live value, restores UI (caret/selection/scroll), then pops
+    # the entry so it fires for exactly one view.
     undo_requests = {}
 
     empty_event = InputEvent(input_id="", action="")
@@ -1088,7 +1088,10 @@ class Melty:
 
         original_bg_stack = copy(Melty.bg_stack)
         if draw_state._bg_stack is not None:
-            Melty.bg_stack = draw_state._bg_stack
+            if len(draw_state._bg_stack) > 1:
+                Melty.bg_stack = draw_state._bg_stack[-2:]
+            else:
+                Melty.bg_stack = draw_state._bg_stack[-1]
 
 
         view_func = draw_state._wrapper

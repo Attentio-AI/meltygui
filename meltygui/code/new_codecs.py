@@ -3,7 +3,7 @@ import tokenize
 import types
 from pathlib import Path
 
-from src.lsd.gl_gui.view.core_conversion.address import Address, _evict_linecache, shift_sibling_linenos
+from src.lsd.gl_gui.view.core_conversion.address import Address, _evict_linecache, shift_sibling_linenos, is_editable_source
 from src.lsd.gl_gui.view.core_conversion.chain_converters import _ensure_import_lines
 from src.lsd.gl_gui.view.core_conversion.file_converters import _detect_newline
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
@@ -27,6 +27,10 @@ NO_DATA = object()
 
 extension_to_codec = {}
 type_to_codec = {}
+
+# Library-source guard is in address.py (is_editable_source) so the codec and
+# the older file_converters save paths share one gate. Local alias for brevity.
+_is_editable_source = is_editable_source
 
 def register_codec(cls=None, **kwargs):
     def wrap(cls):
@@ -67,6 +71,10 @@ class TypeCodec(Codec):
             try:
                 source_file = inspect.getfile(unwrapped)
             except TypeError:
+                return None
+
+            # Refuse library source - we only ever edit this project's own code.
+            if not _is_editable_source(source_file):
                 return None
 
             if draw_state is not None:
@@ -120,6 +128,12 @@ class TypeCodec(Codec):
             synthesized decorator (e.g. @defaults) resolves. Updates the Address span in
             place and shifts siblings so this frame's Address stays valid; siblings heal
             on the next mtime-driven re-resolve."""
+        # Defense in depth: never write to library source even if an Address
+        # somehow points outside the project (resolve_address should already have
+        # refused it). A bad span splice bug once corrupted libcst's own source.
+        if not _is_editable_source(address.path):
+            print(f"[codec.save] refusing to write library source: {address.path}")
+            return False
         full = address.path.read_bytes()
         newline = _detect_newline(full)
         try:
@@ -173,6 +187,10 @@ class FunctionCodec(TypeCodec):
             except TypeError:
                 return None
 
+            # Refuse library source - we only ever edit this project's own code.
+            if not _is_editable_source(source_file):
+                return None
+
             if draw_state is not None:
                 FileWatch.register_draw_state(draw_state, Path(source_file))
         else:
@@ -212,6 +230,9 @@ class ModuleCodec(TypeCodec):
         if not isinstance(input_value, types.ModuleType):
             return None
         source_file = Path(input_value.__file__)
+        # Refuse library source - we only ever edit this project's own code.
+        if not _is_editable_source(source_file):
+            return None
         if draw_state is not None:
             FileWatch.register_draw_state(draw_state, source_file)
         return Address(source_file, source=input_value, watcher_ds=draw_state)

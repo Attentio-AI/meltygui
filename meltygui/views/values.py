@@ -28,6 +28,7 @@ from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_styl
 from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace, request_render
 from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment, GeneralParse, UsageRef
+from src.lsd.gl_gui.view.core_conversion.new_converters import code_file_io
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
@@ -971,6 +972,11 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
 
     if draw_state.on_action("non_blocking_ctrl_z_down"):
         UndoManager.undo()
+
+    # Redo: Ctrl+Shift+Z (mac/linux convention) or Ctrl+Y (Windows convention).
+    if (draw_state.on_action("non_blocking_ctrl_shift_z_down")
+            or draw_state.on_action("non_blocking_ctrl_y_down")):
+        UndoManager.redo()
 
     # Esc dismisses the GlobalSearch window while it's open. Handled here on the
     # root (always hover-eligible) rather than on the window itself, so it works
@@ -2108,7 +2114,7 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
 
     return False, bg_color
 
-@render_func(use_cache=True, selectable=False, disable_scroll=True,show_bg=False, min_width=10, min_height=10, wrap=True)
+@render_func(use_cache=True, selectable=False, disable_scroll=True, indent_size=0, show_bg=False, min_width=10, min_height=10, wrap=True)
 def button(input_value="", draw_state=None, alpha=1.0, left_mouse_held=False, shadow=True, left_mouse_down=False,
            color=(0.5, 0.5, 0.5), hovered=False, width=None, height=None, style_manager=None,
            factor=1.0, tint_value=0.32, text_value=1.023, saturation=0.8, unique=0, text_align="center",
@@ -2139,7 +2145,6 @@ def button(input_value="", draw_state=None, alpha=1.0, left_mouse_held=False, sh
 
     width = max(min_size[0] + 15, width or 10)
     height = max(min_size[1], height or 10)
-    imgui.dummy(width, height)
     draw_list: _DrawList = imgui.get_window_draw_list()
 
     bx0, by0 = draw_state.abs_left, draw_state.abs_top
@@ -2183,6 +2188,10 @@ def button(input_value="", draw_state=None, alpha=1.0, left_mouse_held=False, sh
     if search_match and search_current:
         draw_list.add_rect(bx0, by0, bx1, by1, (200 << 24) | (255 << 16) | (255 << 8) | 255,
                            rounding=rnd, thickness=1.5)
+
+
+    imgui.dummy(width, height)
+
 
     if left_mouse_down:
         request_render()
@@ -2284,6 +2293,8 @@ def draw_str(input_value: str, draw_state, editable=True, immediate_return=False
         imgui.text_wrapped(str(input_value))
         imgui.pop_text_wrap_pos()
 
+
+
         imgui.pop_style_var(1)
         return False, input_value
 
@@ -2361,27 +2372,17 @@ def draw_usage(input_value: UsageRef):
 def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=False):
     changed, value = False, input_value
 
-
-    # if cursor_hover:
-    #     popup_max_width = 300
-    #     text_size = imgui.calc_text_size(str(input_value), wrap_width=popup_max_width)
-    #     popup_width = popup_max_width
-    #
-    #     imgui.set_cursor_screen_pos((draw_state.abs_left + radius * 2 + 5, draw_state.abs_top))
-    #     draw_window(str(input_value), editable=False, window_pos=(0,0), width=popup_width, height=text_size[1] + 5,
-    #                 with_header_end=None, with_header=None, with_footer=None)
     imgui.dummy(10,10)
-    alpha = 0.495
     depth = max(0.0, Melty.bg_depth)
     depth_scale = 0.039
-    depth_offset = -30.0
     name_style = {
-        'value': -0.45, 'saturation': 1.172,
+        'value': -0.479, 'saturation': 1.172,
         'alpha': 0.014, 'max_value': 3.921,
         'depth_factor': 0.741
     }
     depth_intensity = float(depth) * depth_scale
     name_style['value'] = depth_intensity * name_style['depth_factor'] + name_style['value']
+    alpha = 0.4
     sat_depth_factor = 0.0
     sat_depth_offset = 0.188
     sat_shift = float(depth + sat_depth_offset) * sat_depth_factor
@@ -2390,7 +2391,7 @@ def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=F
     name_color = style_manager.make_color_style_value(input=name_style)
 
     imgui.push_text_wrap_pos(draw_state.abs_left + draw_state.width)
-    imgui.push_style_color(imgui.COLOR_TEXT, *name_color)
+    imgui.push_style_color(imgui.COLOR_TEXT, *name_color[:3], alpha)
     imgui.text_wrapped(str(input_value[2:]))
     imgui.pop_style_color()
     imgui.pop_text_wrap_pos()
@@ -2695,9 +2696,9 @@ def draw_tab_bar(input_value: list, tab_height=20, names=None, tint_value=0.202,
         input_value = list(input_value.values())
         names = list(input_value.keys())
 
-    imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0] - 6, imgui.get_cursor_screen_pos()[1]))
+    imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0] - 10, imgui.get_cursor_screen_pos()[1]))
 
-    push_style_var(imgui.STYLE_ITEM_SPACING, (2, 0))
+    # push_style_var(imgui.STYLE_ITEM_SPACING, (2, 0))
 
     # Mirror button()'s sizing: width = calc_text_size(label_text).x + 15.
     # spacing matches STYLE_ITEM_SPACING.x set above.
@@ -2768,7 +2769,7 @@ def draw_tab_bar(input_value: list, tab_height=20, names=None, tint_value=0.202,
 
     imgui.dummy(0,0)
 
-    pop_style_var(1)
+    # pop_style_var(1)
 
     if changed:
         Melty.refresh_nested_windows(draw_state)
@@ -2977,8 +2978,8 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
             if tab_names[static_tab] == info_icon_fa:
 
 
-                changed, watch = draw_text(draw_state.watch, width=draw_state.content_width,
-                                          name="Watch##{unique}", column=t_idx, immediate_return=True, editable=True, show_bg=True)
+                changed, watch = imgui.input_text(value=draw_state.watch,
+                                          label=f"Watch##{unique}")
                 if changed:
                     draw_state.watch = watch
                 if draw_state.watch in input_value._kwargs:
@@ -3105,7 +3106,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
                 # Draw view function
                 if view_func is not None:
                     view_func_name = view_func.__name__ if hasattr(view_func, '__name__') else str(view_func)
-                    change, new_view_func = draw_with_modes(view_func, column=t_idx, modes=(Mode.CODE_PLAIN_TEXT, Mode.CODE_UI), name=view_func_name)
+                    change, new_view_func = draw_any(view_func, column=t_idx, mode=Mode.NEW_CODE, name=view_func_name)
                     if change:
                         print(f"Changing view function from {view_func.__name__} to {new_view_func.__name__}")
                         input_value._view_func = new_view_func
@@ -3120,8 +3121,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
                 if class_is_parent:
                     text(f"Parent type of {class_name}", name="Source", column=t_idx,
                          editable=False, tint=info_tint)
-                cls_change, new_cls = draw_with_modes(class_to_show, column=t_idx,
-                                                      modes=(Mode.CODE_PLAIN_TEXT, Mode.CODE_UI),
+                cls_change, new_cls = draw_any(class_to_show, column=t_idx, mode=Mode.NEW_CODE,
                                                name=class_to_show.__name__)
 
             if tab_names[static_tab] == mode_tab:
@@ -3135,6 +3135,35 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     return False, input_value
 
 
+from src.lsd.gl_gui.view.core_views.core_render import render_func
+
+
+@render_func(show_bg=True, use_cache=True, shadow=False, with_header=draw_header)
+def draw_undo_manager(input_value, **kwargs):
+    """Render the undo history grouped by undo step (one user action), newest
+    first. Changes from the same action share a group_id and undo together, so we
+    draw a separator between groups and indent the changes within each. input_value
+    is the UndoManager class (handed in by @window), read its `history` deque."""
+    history = list(getattr(input_value, "history", ()))
+    # Count distinct groups for the summary line.
+    group_count = len({c.group_id for c in history})
+    imgui.text(f"{group_count} undo step(s), {len(history)} change(s)")
+
+    prev_gid = None
+    shown = 0
+    for change in reversed(history):
+        if change.group_id != prev_gid:
+            imgui.separator()
+            prev_gid = change.group_id
+        name = getattr(change.draw_state, "name", None) or "?"
+        from_val = str(change.old)[:20]  # truncate long values for readability
+        to_val = str(change.new)[:20]
+        imgui.text(f"  {name}: {from_val} -> {to_val}")
+        shown += 1
+        if shown >= 12:
+            imgui.text(f"... and {len(history) - shown} more")
+            break
+    return False, input_value
 @render_func(use_cache=True)
 def draw_drop_down_item(input_value, name="", unique=0, shadow=False, **kwargs):
     if button(name, name=f"{unique}{name}_dd_item", show_bg=True, height=25, shadow=False)[0]:

@@ -7,6 +7,7 @@ from typing import Optional, Any
 
 from src.lsd.gl_gui.model.core_model.draw_state import Anchor, Pin
 from src.lsd.gl_gui.model.model_enums import RelaxedEnum
+from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.toggles import WindowManager
 from src.lsd.gl_gui.view.core_conversion.chain_converters import module_to_address, address_to_general_parse, \
     general_parse_to_address, address_to_module, class_to_address, address_to_class, function_to_address, \
@@ -16,7 +17,7 @@ from src.lsd.gl_gui.view.core_conversion.chain_converters import module_to_addre
 from src.lsd.gl_gui.view.core_conversion.file_converters import path_to_dict, bytes_to_str, \
     rf_dict_to_path, rf_str_to_bytes
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import GeneralParse, Conditional, Comment, \
-    cst_to_dict, dict_to_cst, cst_module_to_str, str_to_cst_module
+    cst_to_dict, dict_to_cst, cst_module_to_str, str_to_cst_module, cst_module_to_dict, dict_to_cst_module
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.core_views.headers import draw_footer, draw_header_end, draw_header
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
@@ -24,7 +25,8 @@ from src.lsd.gl_gui.view.core_views.new_core_view import draw_collection, draw_c
     sort_dict_alphabetically, unsort_dict_alphabetically, draw_with_modes, draw_type, \
     class_to_var_dict, var_dict_to_class, draw_dropdown, draw_blank, draw_drop_down_item
 from src.lsd.gl_gui.view.core_views.text_editor import draw_text
-from src.lsd.gl_gui.view.core_conversion.new_converters import code_file_io
+from src.lsd.gl_gui.view.core_conversion.new_converters import code_file_io, draw_modes, string_to_cst_module, \
+    cst_module_to_string
 
 
 def compute_height(draw_state):
@@ -72,6 +74,26 @@ class Mode(Enum):
                     unwrapped[key] = value
             self.unwrapped = unwrapped
 
+    NEW_CODE = {
+        (type, types.FunctionType, types.ModuleType): ModeOverrides(
+            kwargs={"auto_load_edits": True,
+                    "auto_load": True,
+                    "auto_save": False,
+                    'view_func': draw_modes,
+                    "child_kwargs" : {
+                        "modes": [RenderFuncs.draw_text, RenderFuncs.draw_collection],
+                        "chain_in": [string_to_cst_module, cst_module_to_dict],
+                        "chain_out": [dict_to_cst_module, cst_module_to_string],
+                        "route": {
+                            cst_module_to_dict: "code_dict",
+                            RenderFuncs.draw_collection: "code_dict",
+                        },
+                    },
+            },
+            recursive=False,
+            func=code_file_io
+        )
+    }
 
     # [tint=(0.2,0.1,0.1)]
     SORT = {
@@ -124,7 +146,7 @@ class Mode(Enum):
             kwargs={"show_bg": True, "selectable": False, "use_cache": True, "melty_window": False, "closable": True,
                     "with_header_end": draw_header_end, "auto_resize": False, "draggable": True, 'shadow': True,
                     "show_tint": False, "show_header": True, "with_footer": draw_footer, 'indent_size': 5,
-                    "disable_scroll": False, "search_text": "", "searchable": True,
+                    "disable_scroll": True, "search_text": "", "searchable": True,
                     "show_add_delete": False, "with_header": draw_header, "min_width": 200, "min_height": 60,
                     "initial": {"width": 400, "height": 420, "window_pos": (100, 500)}},
 

@@ -25,6 +25,8 @@ from src.lsd.gl_gui.melty import Melty, apply_collection_action, MeltyState, Sea
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
 from src.lsd.gl_gui.view.core_views.core_meta import AnnotationOverride
+from src.lsd.gl_gui.view.core_views.core_undo import UndoManager, handle_undo
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
 from src.lsd.gl_gui.view.invalidation_tracker import Note
 
 
@@ -32,16 +34,6 @@ from src.lsd.gl_gui.view.invalidation_tracker import Note
 # calls render_func from this module - importing core_undo at top level would
 # close that cycle. handle_undo is only ever called at render time, by which
 # point every module is fully loaded, so we bind it on first use and cache it.
-_handle_undo_impl = None
-
-
-def handle_undo(*args, **kwargs):
-    global _handle_undo_impl
-    if _handle_undo_impl is None:
-        from src.lsd.gl_gui.view.core_views.core_undo import handle_undo as impl
-        _handle_undo_impl = impl
-    return _handle_undo_impl(*args, **kwargs)
-
 
 melty_state_registry = {}
 static_melty = MeltyState()
@@ -1063,7 +1055,8 @@ def render_func(*args, **o_kwargs):
                 # it scrolls. Anything else means "not pinned".
                 pin = kwargs.get("pin_to_clip", None)
                 draw_state.pin_to_clip = pin if isinstance(pin, Pin) else None
-                imgui.set_cursor_screen_pos((snap_int(draw_state.abs_left), snap_int(draw_state.abs_top)))
+
+            imgui.set_cursor_screen_pos((snap_int(draw_state.abs_left), snap_int(draw_state.abs_top)))
 
             kwargs['melty_window'] = False
             Melty.size_stack.append((draw_state.width, draw_state.height))
@@ -1173,12 +1166,12 @@ def render_func(*args, **o_kwargs):
 
             if column is not None and column_parent is not None:
                 column_parent._current_max_column = max(column_parent._current_max_column, column)
-                parent_wrap_width = int((column_parent.content_width - 10) / (column_parent.final_max_column + 1))
+                parent_wrap_width = int((column_parent.content_width) / (column_parent.final_max_column + 1))
                 column_parent._column_width = parent_wrap_width
 
 
                 parent_wrap_left = draw_state.abs_left + snap_int(parent_wrap_width * column)
-                available_width = int(parent_wrap_width - indent_x)
+                available_width = int(parent_wrap_width - indent_x - 5)
             else:
                 available_width = (parent_wrap_width - x_offset - content_margin)
 
@@ -1188,7 +1181,7 @@ def render_func(*args, **o_kwargs):
                     draw_state.width = available_width
 
             if column is not None and column_parent is not None:
-                max_height = column_parent.clip_size[1] - column_parent._columns_top
+                max_height = column_parent.clip_size[1] - column_parent._columns_top + 10
                 if not closable:
                     draw_state.height = snap_int(min(draw_state.height, max_height))
                     draw_state._source["height"] = "column not closable, item_rect[1]"
@@ -1273,15 +1266,22 @@ def render_func(*args, **o_kwargs):
 
 
             if draw_state.final_max_column > 0:
-                column_width = snap_int((draw_state.content_width - 10) / (draw_state.final_max_column + 1))
+                column_width = snap_int((draw_state.content_width ) / (draw_state.final_max_column + 1))
                 draw_list: _DrawList = imgui.get_window_draw_list()
+                table_top = 0
+                for i in range(column_parent.final_max_column + 1):
+                    column_height = column_parent._column_cursor[i][1]
+                    if column_height > table_top:
+                        table_top = column_height + 2
                 for c in range(1, draw_state.final_max_column + 1):
                     # Draw divider lines, we are the parent now
                     columns_top = draw_state._columns_top if draw_state._columns_top is not None else draw_state.header_height
-                    draw_list.add_line(draw_state.left + snap_int(column_width * c), draw_state.top + snap_int(columns_top),
+                    draw_list.add_line(draw_state.left + snap_int(column_width * c), draw_state.abs_top  + snap_int(columns_top) + 30,
                                        draw_state.left + snap_int(column_width * c),
-                                       draw_state.top + snap_int(draw_state.height),
+                                       draw_state.abs_top + snap_int(draw_state.height),
                                        imgui.get_color_u32_rgba(0.0, 0.0, 0.0, 0.3), 1)
+
+
             ##########################
             if kwargs.get("live", False):
                 draw_state.live = True
@@ -2680,6 +2680,7 @@ def render_func(*args, **o_kwargs):
                 return_value = (report_changed, report_value, *return_value[2:])
 
             draw_state.content_height = draw_state._content_rect[1]
+
             draw_state._source["content_height"] = "content rect height"
 
             if use_cache:
@@ -2697,14 +2698,14 @@ def render_func(*args, **o_kwargs):
                     fixed_sized_bottom = fixed_sized_ds.top + fixed_sized_ds.height if fixed_sized_ds is not None else 0
                     Melty.fixed_size_stack.pop()
                     #
-                    # max_height = 0
-                    # for i in range(column_parent.final_max_column + 1):
-                    #     column_height = column_parent._column_cursor[i][1]
-                    #     if column_height > max_height:
-                    #         max_height = column_height
+                    max_height = 0
+                    for i in range(column_parent.final_max_column + 1):
+                        column_height = column_parent._column_cursor[i][1]
+                        if column_height > max_height:
+                            max_height = column_height + 2
 
                     column_top = column_parent._columns_top if column_parent._columns_top is not None else 0
-                    # imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0], column_parent.abs_top + column_top + max_height))
+                    imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0], column_parent.abs_top +draw_state.header_height + column_top + max_height))
 
                 if draw_state._has_popup:
                     is_popup_open = Melty.imgui_popup_open
@@ -2743,7 +2744,7 @@ def render_func(*args, **o_kwargs):
                 if passed_height is None:
                     max_height = kwargs.get("max_height", 1e9)
                     if not closable:
-                        draw_state.height = snap_int(min(item_rect[1], max_height))
+                        draw_state.height = snap_int(item_rect[1])
                         draw_state._source["height"] = "not closable, item_rect[1]"
                     else:
                         display_height = imgui.get_io().display_size[1]
@@ -2909,21 +2910,20 @@ def render_func(*args, **o_kwargs):
             if child_changed:
                 draw_state._pending = False
 
-            # Undo interception: if ctrl+z registered an undo request for this
-            # draw_state, override its return with the recorded old value so
-            # the parent writes the old value back into the model. Skip recording
-            # this restore as a new change - otherwise undo would toggle.
+            # Undo/redo interception: if ctrl+z / ctrl+shift+z registered a request
+            # for this draw state, override its output with the requested value so
+            # the parent writes it back into the model, and restore the caret that
+            # rode along. Skip recording this restore as a new change - otherwise
+            # undo/redo would itself be logged and the timeline would toggle.
             is_undo = draw_state in Melty.undo_requests
             if is_undo:
-                change = Melty.undo_requests.pop(draw_state)
-                new_value = change.old
+                new_value, target_ui = Melty.undo_requests.pop(draw_state)
                 child_changed = True
-                # Restore caret/selection/scroll to before the edit, so the
-                # undo drops you where you were instead of at the pre-edit caret.
-                draw_state.apply_undo_state(getattr(change, "ui", None))
+                draw_state.apply_undo_state(target_ui)
 
             if _has_imgui and not is_undo:
                 handle_undo(child_changed, input_value, new_value, draw_state)
+
 
             # Normal return path
             if kwargs.get("convert_out", None) is not None or kwargs.get("convert_in", None) is not None:

@@ -24,7 +24,7 @@ from src.lsd.gl_gui.melty import Melty
 import libcst as cst
 
 from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace
-from src.lsd.gl_gui.view.core_conversion.address import Address, invalidate_address_cache, update_address_cache
+from src.lsd.gl_gui.view.core_conversion.address import Address, invalidate_address_cache, update_address_cache, is_editable_source
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import invalidate_usage_cache
 
 
@@ -136,6 +136,9 @@ path_to_dict = rf_path_to_dict
 @render_func()
 def save_file_fn(input_value, ref=None):
     """Save handler: write bytes back to disk."""
+    if not is_editable_source(ref.path):
+        print(f"[save_file_fn] refusing to write library source: {ref.path}")
+        return None, ref
     ref.path.parent.mkdir(parents=True, exist_ok=True)
     if isinstance(input_value, str):
         ref.path.write_text(input_value, encoding="utf-8")
@@ -184,6 +187,9 @@ def fn_to_cst(input_value, data=None) -> cst.Module:
 def recompile_fn(input_value, ref=None, function_ref=None):
     """Save handler: hotswap function + write source to disk."""
     from src.lsd.gl_gui.view.core_conversion.path_finder import Pending, PendingState
+    if not is_editable_source(ref.path):
+        print(f"[recompile_fn] refusing to write library source: {ref.path}")
+        return None, ref
     if function_ref is not None:
         try:
             _recompile(function_ref, input_value, str(ref.path))
@@ -231,6 +237,9 @@ def mod_to_cst(input_value, data=None) -> cst.Module:
 def recompile_mod_fn(input_value, ref=None, module_ref=None):
     """Save handler: hotswap module + write source to disk."""
     from src.lsd.gl_gui.view.core_conversion.path_finder import Pending, PendingState
+    if not is_editable_source(ref.path):
+        print(f"[recompile_mod_fn] refusing to write library source: {ref.path}")
+        return None, ref
     if module_ref is not None:
         try:
             _recompile_module(module_ref, input_value, str(ref.path))
@@ -265,6 +274,9 @@ def recompile_cls_fn(input_value, ref=None, class_ref=None,
                      hotswap_instances=True):
     """Save handler: hotswap class + write source to disk."""
     from src.lsd.gl_gui.view.core_conversion.path_finder import Pending, PendingState
+    if not is_editable_source(ref.path):
+        print(f"[recompile_cls_fn] refusing to write library source: {ref.path}")
+        return None, ref
     if class_ref is not None:
         try:
             _recompile_class(class_ref, input_value, str(ref.path))
@@ -312,6 +324,9 @@ def ref_to_cst(input_value, data=None) -> cst.Module:
 @render_func()
 def save_span_fn(input_value, ref=None):
     """Save handler: write source string back to file span."""
+    if not is_editable_source(ref.path):
+        print(f"[save_span_fn] refusing to write library source: {ref.path}")
+        return None, ref
     full_data = ref.path.read_bytes()
     newline = _detect_newline(full_data)
     try:
