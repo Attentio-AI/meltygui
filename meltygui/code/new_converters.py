@@ -131,7 +131,10 @@ def slow_task(**kwargs):
     import time
     print("Starting slow task...")
     time.sleep(1)
-
+    print("Slow task completed.")
+    return {"result": "This is the result of the slow task", "kwargs": kwargs}
+    print("Slow task completed.")
+    return {"result": "This is the result of the slow task", "kwargs": kwargs}
 
     print("Slow task completed.")
     return {"result": "This is the result of the slow task", "kwargs": kwargs}
@@ -222,6 +225,8 @@ def editor_window_4():
 @window()
 @render_func(use_cache=True)
 def editor_window_3():
+
+
     code_file_io(slow_task, auto_load_edits=False, auto_load=False)
     return False, None
 
@@ -694,7 +699,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
 
         address = codec.resolve_address(input_value, draw_state)
         code_state.address = address
-        top_line_height = 22
+        top_line_height = 30
         external_change = False
 
         if address is None:
@@ -702,10 +707,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                 f"editable_source: can't resolve source for {type(input_value).__name__}",
                 name=f"resolve_error{unique}",
                 mode=Modes.WINDOW)
-
             return False, None
-
-
 
         if auto_load:
             if draw_state.frame_count < 1:
@@ -713,12 +715,12 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                 code_state.text_cache = None
                 code_state.mark_file_current()
 
-
         if not auto_recompile_edits and code_state.text_cache is not UNSET and code_state.text_cache is not None:
             play_icon = "\uf04b"
             recompile = \
-                RenderFuncs.button(f"{play_icon} Run{unique}", tint=(0, 0.4, 0.1), height=top_line_height,
+                RenderFuncs.button(f"{play_icon} Run", tint=(0, 0.4, 0.1), height=top_line_height,
                                    name="recompile_btn")[0]
+
 
         if code_state.recompiled_on_frame is not None:
             duration = 10
@@ -732,13 +734,13 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                 draw_state.invalidate()
                 request_render()
 
+
         if code_state.is_file_stale() and not code_state.pending_save:
-            imgui.same_line()
             if auto_load_edits:
                 load = True
                 code_state.mark_file_current()
             else:
-                imgui.same_line()
+                imgui.same_line(spacing=0)
                 if RenderFuncs.button("Load", width=100, height=top_line_height, name=f"reload")[0]:
                     load = True
 
@@ -748,7 +750,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                         save = True
 
         if not auto_save and code_state.pending_save:
-            imgui.same_line()
+            imgui.same_line(spacing=0)
             if RenderFuncs.button("Save", width=100, height=top_line_height, name=f"save")[0]:
                 save = True
 
@@ -765,6 +767,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             code_state.pending_save = False
             external_change = True
             request_render()
+
 
         # ── 3. Edit - the actual call ─────────────────────────────────────────────
         if code_state.text_cache is not UNSET and code_state.text_cache is not None:

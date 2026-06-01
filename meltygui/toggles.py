@@ -2,13 +2,11 @@ from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import tint, Core, defaults
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 
-
 class Counters:
     # Nested window
-    nested_window_count = 13
+    nested_window_count = 18
     some_dict = [1,1,1]
     some_dict2 = {1:1}
-
 
 @window
 class Tint:
@@ -71,7 +69,7 @@ class Toggles:
     show_filled_tiles = False
     # Invalidation settings
     invalidate_stack_trace = False
-    text_focus_stack_trace = True
+    text_focus_stack_trace = False
     attrib_change_stack_trace = False
     attrib_churn_log = False
     debug_threads = False
