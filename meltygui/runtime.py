@@ -465,6 +465,13 @@ class Melty:
     returned_values = {}
     pending_return_values = {}
 
+    # Undoable draw_state -> the Change to restore. UndoManager.undo() registers an
+    # entry here on ctrl+z; core_render's render_func tail intercepts the matching
+    # draw_state's return, reports (True, change.old) instead of the live value,
+    # restores change.ui (caret/selection/scroll), then pops the entry so it fires
+    # for exactly one frame.
+    undo_requests = {}
+
     empty_event = InputEvent(input_id="", action="")
     events_by_type = {}
     pending_blockers = [None] * max_layer

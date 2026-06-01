@@ -577,6 +577,27 @@ def _code_tree_errors(code_tree):
     return []
 
 
+def _exception_errors(error):
+    """(line, message) markers from an exception routed into the editor — a
+    parse/compile failure over the buffer's own source, delivered via the mode
+    route (see draw_modes). Lines are 1-based and align with the rendered text:
+    the failed chain parsed this same source, so the editor_line/lineno maps
+    straight onto a rendered line. Handles libcst ParserSyntaxError (editor_line)
+    and builtin SyntaxError (lineno); other exceptions carry no source line, so
+    they produce no highlight."""
+    if error is None or not isinstance(error, BaseException):
+        return []
+    line = getattr(error, 'editor_line', None) or getattr(error, 'lineno', None)
+    if line is None:
+        return []
+    try:
+        line = int(line)
+    except (TypeError, ValueError):
+        return []
+    msg = getattr(error, 'message', None) or str(error)
+    return [(line, msg)]
+
+
 def _describe_code_tree(code_tree):
     """One-line readout of what round-tripped into draw_text as code_tree, for
     the debug indicator."""
@@ -599,7 +620,7 @@ def draw_text(input_value: str,
               single_line=False, is_search_box=False,
               draw_state=None, request_focus=False,
               line_height=1.2, font: Font = Font.JETBRAINS_MONO_19, jump_to=None,
-              code_tree=None):
+              code_tree=None, error=None):
     ds = draw_state
 
     # Jump-to-source button drawn inline at the top (before the monospace font
@@ -616,6 +637,12 @@ def draw_text(input_value: str,
             imgui.text_colored(f"code_tree: {_describe_code_tree(code_tree)}", 0.9, 0.3, 0.3, 1.0)
         else:
             imgui.text_colored(f"code_tree: {_describe_code_tree(code_tree)}", 0.55, 0.55, 0.62, 1.0)
+
+    # Error markers to highlight in red: the routed code_tree's parse errors plus
+    # any exception routed in via the mode route (e.g. draw_modes hands us the
+    # chain_in failure so the offending source line lights up here).
+    _err_markers = list(_ct_errors) if _ct_errors else []
+    _err_markers += _exception_errors(error)
 
     _font_pushed = False
     if font is not None and Melty.font_mgr is not None:
@@ -1167,12 +1194,12 @@ def draw_text(input_value: str,
             else:
                 draw_list.add_rect_filled(sx, sy, ex, ey, match_bg)
 
-    # Parse-error line highlight from the routed code tree (debugging the
-    # str→cstr→str round trip): a translucent red wash spanning the offending
-    # line, drawn behind the glyphs so the code stays readable.
-    if _ct_errors:
+    # Parse/compile error line highlight from the routed ast_tree or a routed
+    # exception: a translucent red wash spanning the offending line, drawn under
+    # the glyphs so the code stays readable.
+    if _err_markers:
         err_bg = (110 << 24) | (40 << 16) | (40 << 8) | 210  # translucent red (ABGR)
-        for err_line, _msg in _ct_errors:
+        for err_line, _msg in _err_markers:
             ey0 = origin_y + (err_line - 1) * line_px
             ey1 = ey0 + line_px
             if ey1 < rect_min_y or ey0 > rect_max_y:

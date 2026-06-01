@@ -2,6 +2,7 @@ import collections
 
 import imgui
 
+from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
@@ -9,12 +10,15 @@ from src.lsd.gl_gui.view.core_views.headers import draw_header
 
 
 class Change:
-    """One recorded edit: a draw_state's value moving from `old` to `new`."""
+    """One recorded edit: a draw_state's value moving from `old` to `new`. `ui`
+    is a snapshot of the draw_state's transient UI state (caret/selection/scroll)
+    captured before the edit, restored alongside `old` on undo."""
 
-    def __init__(self, draw_state, old, new):
+    def __init__(self, draw_state, old, new, ui=None):
         self.draw_state = draw_state
         self.old = old
         self.new = new
+        self.ui = ui
     #
     # def __repr__(self):
     #     name = getattr(self.draw_state, "name", "?")
@@ -64,8 +68,29 @@ class UndoManager:
     # oldest Change is dropped from here and from its per-node list above.
     history = collections.deque(maxlen=MAX_HISTORY)
 
-
     settle_for = 100 # 2 frame after start
+
+    @classmethod
+    def undo(cls):
+        # Pop the newest recorded change and register a request with Melty for its
+        # draw_state. core_render intercepts that draw_state's return next frame and
+        # reports (True, old_value), which the parent collection writes back into its
+        # model - exactly as if the user had typed the previous value.
+        if not cls.history:
+            return
+        change = cls.history.pop()
+        ds = change.draw_state
+        Core.melty.undo_requests[ds] = change
+
+        # Force the target and its parent wrapper to re-render this frame so the
+        # restored data actually propagates: a blitted parent would otherwise never
+        # call the child wrapper that performs the interception.
+        cache = getattr(Core.melty, "cache", None)
+        if cache is not None:
+            cache.invalidate_up(ds._tile_id, force=True)
+            if ds._parent is not None:
+                cache.invalidate_up(ds._parent._tile_id, force=True)
+        request_render()
 
     @classmethod
     def record(cls, draw_state, old, new):
@@ -74,7 +99,18 @@ class UndoManager:
         if not (isinstance(old, cls.APPROVED_TYPES)
                 and isinstance(new, cls.APPROVED_TYPES)):
             return
-        change = Change(draw_state, old, new)
+        # Skip no- change. Several renderers (draw_text, draw_collection, the
+        # @window source views) report changed=True every frame with old == new.
+        # Logging those floods the bounded history deque and evicts the real
+        # edits, so undo ends up restoring an identical value (a visible no-op).
+        # An undo entry where nothing changed is pointless by definition.
+        try:
+            if old == new:
+                return
+        except Exception:
+            pass
+
+        change = Change(draw_state, old, new, ui=getattr(draw_state, "_undo_pre", None))
         # cls.change_history.setdefault(draw_state, []).append(change)
         cls.history.append(change)
 
@@ -89,5 +125,17 @@ class UndoManager:
 
 def handle_undo(changed, old_value, new_value, draw_state):
     if not changed:
+        return
+    # Only the widget the user directly interacted with may record an undo entry.
+    # A single edit bubbles up through every render_func chain - the focused text
+    # editor (draw_text) and its converter/wrapper ancestors (code_to_io_wrapped,
+    # collections) all report the same string change, often on different frames
+    # because conversion runs async. Those pass-through draw_states must never
+    # become undo-stack elements; only the original origin counts. That origin
+    # is the focused text editor or the imgui-active widget, skip; a
+    # container/converter is neither.
+    is_origin = (draw_state is Core.melty.text_focused_ds
+                 or getattr(draw_state, "_imgui_is_edited", False))
+    if not is_origin:
         return
     UndoManager.record(draw_state, old_value, new_value)

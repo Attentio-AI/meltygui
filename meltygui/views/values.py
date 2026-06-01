@@ -33,6 +33,7 @@ from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
 from src.lsd.gl_gui.view.core_views.codec_register import registry as FILE_CODECS
 from src.lsd.gl_gui.view.core_views.core_render import render_func
+from src.lsd.gl_gui.view.core_views.core_undo import UndoManager
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import hotkey, tint
 from src.lsd.gl_gui.view.core_views.decoration.invalidation_decoration import live
@@ -967,6 +968,9 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
             Melty.summon_window(gs, mx, my - 65)
         GlobalSearch._focus_requested = True
         request_render()
+
+    if draw_state.on_action("non_blocking_ctrl_z_down"):
+        UndoManager.undo()
 
     # Esc dismisses the GlobalSearch window while it's open. Handled here on the
     # root (always hover-eligible) rather than on the window itself, so it works
@@ -2352,27 +2356,11 @@ def draw_usage(input_value: UsageRef):
 
     return False, input_value
 
-@render_func(is_default_for=(Comment), shadow=True, selectable=False, use_cache=True,
+@render_func(is_default_for=(Comment), shadow=False, indent_size=5, selectable=False, use_cache=True,
              show_bg=False, with_header=None, is_tree=True, temp=True)
-def draw_comment(input_value: Comment, draw_state, cursor_hover=False):
-    margin = 10
-    imgui.dummy(0, margin)
-    line_height = imgui.get_text_line_height()
+def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=False):
     changed, value = False, input_value
-    help_yellow_tint = (9.9999e-07, 9.999989e-07, 1e-06)
-    help_icon = ""
-    draw_list: _DrawList = imgui.get_window_draw_list()
-    character_width = imgui.calc_text_size(help_icon)[0]
-    # Draw circle background for comment
-    radius = 6
-    center_x = draw_state.abs_left + radius
-    center_y = draw_state.abs_top + radius + margin + 3
-    color = imgui.get_color_u32_rgba(*help_yellow_tint, 0.3)
-    # imgui.dummy(radius * 2 + 2, radius * 2)
-    cursor_hover = imgui.is_item_hovered()
-    # draw_list.add_circle_filled(center_x, center_y, radius, imgui.get_color_u32_rgba(0.8, 0.8, 0.7, 1.0))
-    draw_list.add_text(center_x - character_width / 2, center_y - line_height / 2,
-                       imgui.get_color_u32_rgba(0.8, 0.8, 0.7, 1.0), help_icon)
+
 
     # if cursor_hover:
     #     popup_max_width = 300
@@ -2382,11 +2370,30 @@ def draw_comment(input_value: Comment, draw_state, cursor_hover=False):
     #     imgui.set_cursor_screen_pos((draw_state.abs_left + radius * 2 + 5, draw_state.abs_top))
     #     draw_window(str(input_value), editable=False, window_pos=(0,0), width=popup_width, height=text_size[1] + 5,
     #                 with_header_end=None, with_header=None, with_footer=None)
-    imgui.same_line(spacing=0)
-    alpha = 0.572
-    text(str(input_value[1:]), alpha=0, bg_offset=-2, height=20, indent_size=5, selectable=False, editable=False,
-             is_tree=False, wrap=True, use_cache=True, show_bg=True, z_offset=-2, shadow=True, with_header=None, show_name=False)
+    imgui.dummy(10,10)
+    alpha = 0.495
+    depth = max(0.0, Melty.bg_depth)
+    depth_scale = 0.039
+    depth_offset = -30.0
+    name_style = {
+        'value': -0.45, 'saturation': 1.172,
+        'alpha': 0.014, 'max_value': 3.921,
+        'depth_factor': 0.741
+    }
+    depth_intensity = float(depth) * depth_scale
+    name_style['value'] = depth_intensity * name_style['depth_factor'] + name_style['value']
+    sat_depth_factor = 0.0
+    sat_depth_offset = 0.188
+    sat_shift = float(depth + sat_depth_offset) * sat_depth_factor
+    name_style['saturation'] = name_style['saturation'] + sat_shift
 
+    name_color = style_manager.make_color_style_value(input=name_style)
+
+    imgui.push_text_wrap_pos(draw_state.abs_left + draw_state.width)
+    imgui.push_style_color(imgui.COLOR_TEXT, *name_color)
+    imgui.text_wrapped(str(input_value[2:]))
+    imgui.pop_style_color()
+    imgui.pop_text_wrap_pos()
 
     if changed:
         return True, value

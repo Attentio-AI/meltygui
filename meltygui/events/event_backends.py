@@ -20,6 +20,8 @@ import time
 
 import glfw
 
+from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace
+
 try:
     from pynput import mouse, keyboard
     from pynput.keyboard import Key, KeyCode
@@ -49,6 +51,8 @@ def _key_to_id(key) -> str:
         # Virtual key code fallback
         if key.vk:
             return f"vk_{key.vk}"
+
+        print_stack_trace()
         return "unknown"
     
     # Special keys

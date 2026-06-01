@@ -2407,6 +2407,13 @@ def render_func(*args, **o_kwargs):
                 if not closable and show_bg:
                     imgui.dummy(outline_margin / 2, outline_margin / 2)
 
+                # Snapshot the focused input's caret/selection BEFORE the body
+                # runs, so an edit this frame records the pre-edit UI state. Only
+                # the focused text draw_state can produce a text edit, so this is
+                # one cheap copy per frame rather than one per draw_state.
+                if Melty.text_focused_ds is draw_state:
+                    draw_state._undo_pre = draw_state.capture_undo_state()
+
                 return_value = draw_inner_main(clean_args, draw_state,
                                                input_value, unique, kwargs)
 
@@ -2902,8 +2909,20 @@ def render_func(*args, **o_kwargs):
             if child_changed:
                 draw_state._pending = False
 
+            # Undo interception: if ctrl+z registered an undo request for this
+            # draw_state, override its return with the recorded old value so
+            # the parent writes the old value back into the model. Skip recording
+            # this restore as a new change - otherwise undo would toggle.
+            is_undo = draw_state in Melty.undo_requests
+            if is_undo:
+                change = Melty.undo_requests.pop(draw_state)
+                new_value = change.old
+                child_changed = True
+                # Restore caret/selection/scroll to before the edit, so the
+                # undo drops you where you were instead of at the pre-edit caret.
+                draw_state.apply_undo_state(getattr(change, "ui", None))
 
-            if _has_imgui:
+            if _has_imgui and not is_undo:
                 handle_undo(child_changed, input_value, new_value, draw_state)
 
             # Normal return path

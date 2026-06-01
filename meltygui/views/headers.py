@@ -242,6 +242,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
     name_color = style_manager.make_color_style_value(input=name_style)
     arrow_color = style_manager.make_color_style_value(input=arrow_style)
+    draw_state._name_color = arrow_color
 
     # ── Tree button ─────────────────────────────────────────────
     imgui.align_text_to_frame_padding()

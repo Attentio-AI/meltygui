@@ -53,25 +53,19 @@ class Swoosh:
 
 @window(tint=(0.8, 0.6, 0.1))
 class Toggles:
-
-    test_float = 5.007
-
+    test_float = 2.581
     @defaults(tint=(0.2,0.3,0.6))
     class InvalidateTracker:
         keep_for_frames = 1
         enable = False
         draw_bvh = False
-
-    @defaults(tint=(0.1059816,0.2410416603088379,0.32093024253845215))
+    @defaults(tint=(0.10598, 0.2410416603088379,0.320930242538452))
     class Debug:
         slow_frame_rate = False
-        other = False
-
     # Overlay a transparent green square on any draw_state whose blit tile is
     # fully filled (filled_bbox covers full size). Used to verify the scroll-
     # invalidation stop-at-filled gate is actually marking tiles complete.
     show_filled_tiles = False
-
     # Invalidation settings
     invalidate_stack_trace = False
     text_focus_stack_trace = False
@@ -88,9 +82,9 @@ class Toggles:
     brightness = 0.317
     contrast = 1.574
     saturation = -0.4
-    prefered_header_width = 160
+    prefered_header_width = 120
     max_preferred_header_width = 120
-    
+        
     debug_z_depth = False
     filters = True
     show_excluded = True

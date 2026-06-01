@@ -185,7 +185,11 @@ def parse_event_name(name: str) -> tuple[str, str, bool, bool]:
             _parse_cache[original] = result
             return result
 
-    result = (pfx + name, "", inverted, non_blocking)
+    # No action suffix (e.g., "ctrl_z", "left_mouse"): default to DOWN. Emitted
+    # events always carry a concrete action, so an empty action would never match
+    # and the subscription would silently never fire - a footgun. A bare key or
+    # mouse name means "this went down".
+    result = (pfx + name, Action.DOWN, inverted, non_blocking)
     _parse_cache[original] = result
     return result
 

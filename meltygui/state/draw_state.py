@@ -531,6 +531,7 @@ class DrawState(DictConversion):
         self.text_click_count = 0
         self.text_h_scroll = 0.0
         self.text_prev_cursor_pos = 0
+        self._name_color = (1,1,1)
         # Drag granularity latched on mouse-down ('char' | 'word' | 'line') plus
         # the anchor pos of the anchor word/line, so a double/triple-click drag
         # extends by whole words/lines and keeps the anchor selected (IntelliJ
@@ -1375,6 +1376,27 @@ class DrawState(DictConversion):
 
     def get_header_rect(self):
         return ( self.abs_left, self.abs_top, self.abs_left + self.width, self.abs_top + self.header_height)
+
+    # Transient per-draw_state UI state that should travel with a value undo, so
+    # undoing a text edit also restores the caret/selection/scroll to where they
+    # were before the edit. Snapshotting is generic (just attribute names): a
+    # widget that wants more state restored on undo adds its field names, with no
+    # changes to core_render or the renderer itself.
+    UNDO_STATE_FIELDS = (
+        "text_cursor_pos", "text_prev_cursor_pos",
+        "text_selection_start", "text_selection_end", "text_h_scroll",
+    )
+
+    def capture_undo_state(self):
+        """Snapshot the undo-tracked transient fields as a name->value dict."""
+        return {f: getattr(self, f) for f in self.UNDO_STATE_FIELDS}
+
+    def apply_undo_state(self, snapshot):
+        """Restore a snapshot produced by capture_undo_state()."""
+        if not snapshot:
+            return
+        for f, v in snapshot.items():
+            setattr(self, f, v)
 
     def on_action(self, event_names, view_id=None, priority=None, priority_delta=0, rect=None):
         if not Core.melty.inside_clip(draw_state=self):
