@@ -44,10 +44,13 @@ hotswaps the live object and flashes a checkmark.
 """
 
 import inspect
+import linecache
 import threading
 import time
 import tokenize
+import traceback
 import types
+from collections import defaultdict
 from enum import Enum
 from pathlib import Path
 
@@ -63,7 +66,7 @@ from src.lsd.gl_gui.model.model_enums import RelaxedEnum
 from src.lsd.gl_gui.modes import Modes
 from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.toggles import Toggles
-from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
+from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace, get_exception_frames
 from src.lsd.gl_gui.view.core_conversion.address import (
     Address,
 )
@@ -106,21 +109,26 @@ def recompile_source(source, code_str, file_path):
 
 
 class TestClass:
-    some_val = 10
-    some_other_val = -3
+    some_val = 76
+    some_other_val = 40
     some = []
-    # [tint=(0,0.2,1)]
+   
+     # [tint=(0,0.2,1)]
+    def some_func(a=1, b=2):
+        print(a, b)
+        
+    some_func(1,2)
 
-    some_line = 30
+    some_line = 87
     myflot = 5
     tint = (0.08707411, 0.1469433, 0.1627907156944275)
-    some_tuple = (46, 1)
+    some_tuple = (68, 1)
 
     # [tint=(0.9069767594337463, 0.5192674398422241, 0.029529478400945663)]
     class NestedClass:
         so = 1
 
-    some_val = 10
+    some_val = 76
     new_bool = True
     a_dict = {"x": -52, "y": 53}
 
@@ -143,24 +151,7 @@ def slow_task(**kwargs):
 def editor_window():
     code_file_io(
         TestClass,
-        view_func=draw_modes,
-        auto_load_edits=True,
-        auto_load=True,
-        auto_save=True,
-        child_kwargs={
-            "modes": [RenderFuncs.draw_text, RenderFuncs.draw_collection],
-            "chain_in": [string_to_cst_module, cst_module_to_dict],
-            "chain_out": [dict_to_cst_module, cst_module_to_string],
-            # string_to_cst_module's output is named "code_tree" - draw_text reads
-            # it to highlight parse errors (a failed parse arrives as the exception
-            # value). cst_module_to_dict's output is "code_dict" - draw_collection
-            # consumes it. draw_text still gets the raw string as its input_value.
-            "route": {
-                string_to_cst_module: "code_tree",
-                cst_module_to_dict: "code_dict",
-                RenderFuncs.draw_collection: "code_dict",
-            },
-        },
+        mode=Modes.NEW_CODE
     )
     return False, None
 
@@ -192,28 +183,11 @@ def editor_window_2():
 
 @window()
 @render_func(use_cache=True, disable_scroll=True)
-def editor_window_4():
+def draw_collection_code():
     # view_func=draw_modes: text | dict tabs over one shared file-IO layer.
     code_file_io(
-        TestClass,
-        view_func=draw_modes,
-        auto_load_edits=True,
-        auto_load=True,
-        auto_save=False,
-        child_kwargs={
-            "modes": [RenderFuncs.draw_text, RenderFuncs.draw_collection],
-            "chain_in": [string_to_cst_module, cst_module_to_dict],
-            "chain_out": [dict_to_cst_module, cst_module_to_string],
-            # string_to_cst_module's output is named "code_tree" - draw_text reads
-            # it to highlight parse errors (a failed parse arrives as the exception
-            # value). cst_module_to_dict's output is "code_dict" - draw_collection
-            # consumes it. draw_text still gets the raw string as its input_value.
-            "route": {
-                string_to_cst_module: "code_tree",
-                cst_module_to_dict: "code_dict",
-                RenderFuncs.draw_collection: "code_dict",
-            },
-        },
+        RenderFuncs.draw_collection,
+           mode=Modes.NEW_CODE
     )
     return False, None
 
@@ -228,27 +202,7 @@ def editor_window_3():
 @window()
 @render_func(use_cache=True, selectable=False, disable_scroll=True)
 def test_toggles():
-    code_file_io(
-        Toggles,
-        view_func=draw_modes,
-        auto_load_edits=True,
-        auto_load=True,
-        auto_save=True,
-        child_kwargs={
-            "modes": [RenderFuncs.draw_text, RenderFuncs.draw_collection],
-            "chain_in": [string_to_cst_module, cst_module_to_dict],
-            "chain_out": [dict_to_cst_module, cst_module_to_string],
-            # string_to_cst_module's output is named "code_tree" - draw_text reads
-            # it to highlight parse errors (a failed parse arrives as the exception
-            # value). cst_module_to_dict's output is "code_dict" - draw_collection
-            # consumes it. draw_text still gets the raw string as its input_value.
-            "route": {
-                string_to_cst_module: "code_tree",
-                cst_module_to_dict: "code_dict",
-                RenderFuncs.draw_collection: "code_dict",
-            },
-        },
-    )
+    code_file_io(Toggles, mode=Modes.NEW_CODE)
     return False, None
 
 
@@ -417,28 +371,6 @@ def cst_module_to_string(input_value, **kwargs):
     return True, code_str
 
 
-@render_func(use_cache=True, disable_scroll=True, selectable=False, temp=True)
-def code_file_io_wrapped(input_value, view_func=RenderFuncs.draw_text, changed=False,
-                         child_kwargs=None, **kwargs):
-    """The injectable inner view. `code_file_io` owns every stateful concern
-    (load / save / recompile / file-watch) and hands this function the loaded
-    text plus whatever it routed in (`jump_to` address, ...). This stays a pure
-    pass-through: it just calls `view_func` on the text and returns its
-    (changed, value). `view_func` decides everything downstream —
-
-      * `draw_text`  edits the raw string (works exactly like the old hardcoded
-        draw_text path),
-      * `draw_modes` runs the cst<->dict chains and fans the result out to
-        draw_text / draw_collection tabs.
-
-    The convert chains that used to be hardcoded here now live inside
-    `draw_modes` (and travel in via child_kwargs), so this layer is agnostic to
-    them."""
-    if child_kwargs is None:
-        child_kwargs = {}
-    return view_func(input_value=input_value, changed=changed, **child_kwargs)
-
-
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  draw_modes - the general version of the old hardcoded code_file_io_wrapped   ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
@@ -530,7 +462,7 @@ def compute_height(draw_state):
              shadow=False, indent_size=0, with_footer=None, fill_height=True)
 def draw_modes(input_value, modes=None, chain_in=None, chain_out=None, route=None,
                tab_state: TabState = None, modes_state: ModesState = None,
-               changed=False, child_kwargs=None,
+               changed=False, child_kwargs=None, column_widths=None,
                draw_state=None, unique=0, **kwargs):
     """General form of the round-trip that used to be hardcoded in
     code_file_io_wrapped. Takes the loaded text and:
@@ -584,6 +516,7 @@ def draw_modes(input_value, modes=None, chain_in=None, chain_out=None, route=Non
     if 'jump_to' in kwargs:
         routed['jump_to'] = kwargs['jump_to']
 
+
     chain_in_error = modes_state.last_error
     if chain_in:
         input_changed = input_value != modes_state.last_input
@@ -610,12 +543,22 @@ def draw_modes(input_value, modes=None, chain_in=None, chain_out=None, route=Non
                     routed[name] = val
             chain_in_error = modes_state.last_error
 
-    # Route any background parse failure to the views: draw_text reads `error` to
-    # lights up the offending source line in red. None when the latest parse
-    # succeeded, or retains any prior failure. (code_tree carries the parsed
-    # tree on success but not the failure - _run_convert stops before writing a
-    # failing node's route entry - so the exception comes via `error`.)
-    routed['error'] = chain_in_error
+    # Route the error to the views: draw_text reads `error` and lights up the
+    # offending source line in red. Two sources merge here:
+    #   - recompile_error - passed down by code_file_io (the last hotswap failure).
+    #     Python's compiler pins a better line than libcst, so it WINS when present
+    #     - UNLESS it's a stale SyntaxError: once chain_in parses the buffer clean
+    #     (chain_in_error is None) the error was fixed, so we ignore it. A recompile
+    #     *runtime* error (not a SyntaxError) parses fine, so it survives until the
+    #     next Run.
+    #   - chain_in_error - the background parse failure (live, per-keystroke).
+    # None when everything is clean, which clears any prior error. (code_tree
+    # carries the parsed tree on success but not the failure - _run_convert stops
+    # before writing a failing node's route entry - so the exception travels up.)
+    recompile_error = kwargs.get('error')
+    if isinstance(recompile_error, SyntaxError) and chain_in_error is None:
+        recompile_error = None  # buffer parses again → the recompile syntax error is fixe
+    routed['error'] = recompile_error or chain_in_error
 
     out_changed, out_value = False, input_value
     for idx, mode in enumerate(tab_state.selected_tabs):
@@ -653,8 +596,14 @@ def draw_modes(input_value, modes=None, chain_in=None, chain_out=None, route=Non
         # back reported AS an edit - with auto_save that becomes a
         # save -> reload -> redraw -> save feedback spin. (Matches the ol
         # hardcoded `draw_collection(..., draw=changed)`.)
+        if column_widths is not None and len(column_widths) > idx:
+            column_width = column_widths[idx]
+        else:
+            column_width = None
+
+
         m_changed, m_out = view_func(input_value=view_input, draw=changed, disable_scroll=False, show_header=False,
-                                     column=idx, show_add_delete=False, name=f"{modes[idx].__name__}##{unique}",
+                                     column=idx, column_width=column_width, show_add_delete=False, name=f"{modes[idx].__name__}##{unique}",
                                      selectable=False,
                                      **call_kwargs)
         if not m_changed:
@@ -676,19 +625,23 @@ def draw_modes(input_value, modes=None, chain_in=None, chain_out=None, route=Non
 
 
 def code_file_footer(input_value, code_state, **kwargs):
-    imgui.text(str(code_state.address.path))
+    if code_state.address is not None:
+        imgui.text(str(code_state.address.path))
+    else:
+        imgui.text(f"Address not resolved for {input_value.__class__.__name__}")
     return False, None
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  editable_source - the whole round-trip, one function                        ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
-@render_func(use_cache=True, selectable=False, searchable=True, with_footer=code_file_footer, disable_scroll=True, temp=True)
+@render_func(use_cache=True, selectable=False, searchable=True, with_footer=code_file_footer, disable_scroll=True)
 def code_file_io(input_value, code_state: CodeState, codec=None, view_func=RenderFuncs.draw_text, auto_load=True,
                  auto_load_edits=False,
                  child_kwargs=None, draw_state=None, auto_save=True, auto_recompile_edits=False, save=False, load=False,
                  recompile=False, save_debounce_ms=600,
                  ensure_import=None, s_key_pressed=None, enter_key_pressed=None, unique=None, **kwargs):
     try:
+        imgui.dummy(0,0)
 
         if child_kwargs is None:
             child_kwargs = {}
@@ -699,7 +652,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             elif isinstance(input_value, (str, Path)):
                 codec = extension_to_codec.get(Path(str(input_value)).suffix)
 
-        address = codec.resolve_address(input_value, draw_state)
+        address = codec.resolve_address(input_value, draw_state, code_state=code_state)
         code_state.address = address
         top_line_height = 30
         external_change = False
@@ -778,12 +731,20 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
         if code_state.text_cache is not UNSET and code_state.text_cache is not None:
 
             child_kwargs['jump_to'] = address
-            # Syntax-error feedback is the editor's job, not ours. chain_in_background
-            # parses the input on its background thread, and the parent delivers
-            # that result to draw_text - `ast_tree` on success, the parse exception
-            # on failure - which highlights the offending line. So code_file_io
-            # does no parse of its own and routes the error; the error clears the
-            # moment a fresh background parse succeeds.
+            # Two error signals reach the editor's red-line highlight, both via the
+            # route - code_file_io does NO parse of its own:
+            #   - SYNTAX errors: chain_in parses the buffer on its first thread
+            #     and routes the result to draw_modes (`code_tree` on success, a
+            #     parse exception on failure). Clears the instant a fresh parse OKs.
+            #   - RECOMPILE errors: the hotswap can fail on a SyntaxError (Python's
+            #     compiler pins a better line than libcst) OR a runtime error
+            #     (NameError, etc. - parses fine, so chain_in won't catch it). We
+            #     route the raw recompile failure down as `error`; draw_modes
+            #     merges it with the parse result (prefers the better recompile
+            #     line, drops a stale recompile SyntaxError once the buffer parses).
+            child_kwargs['error'] = (code_state.recompile_result
+                                     if isinstance(code_state.recompile_result, BaseException)
+                                     else None)
             edited, value = view_func(input_value=code_state.text_cache, changed=external_change, **child_kwargs)
 
             if edited:
@@ -850,6 +811,29 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
 
     except Exception as e:
         imgui.text_colored(f"editable_source error: {e}", 1.0, 0.4, 0.0)
+
+        if not hasattr(code_state, "_resolve_stack"):
+            def get_frames(an_e):
+                """Extract live frames from a caught exception's traceback."""
+                tb = an_e.__traceback__
+                if tb is None:
+                    return []
+                results = []
+                max_depth = 10
+                while tb is not None or len(results) >= max_depth:
+                    frame_obj = tb.tb_frame
+                    results.append(frame_obj)
+                    tb = tb.tb_next
+
+                return results
+
+            frames = get_frames(e)
+            setattr(code_state, "_resolve_stack", frames)
+
+        from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
+        call_stack = getattr(code_state, "_resolve_stack", [])
+        RenderFuncs.draw_collection(call_stack, name=f"resolve_stack{unique}{id(call_stack)}",
+                                    mode=Modes.WINDOW, tint=(0.9, 0.4, 0.1))
 
     # This is the root function, end of the line.
     return False, None

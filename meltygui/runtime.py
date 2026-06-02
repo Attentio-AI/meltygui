@@ -16,6 +16,7 @@ from rtree import index as rtree_index
 from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.view.attribute_churn import AttributeChurnMonitor
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
+from src.lsd.gl_gui.view.driver_playground import DriverPlayground
 from src.lsd.gl_gui.view.invalidation_tracker import InvalidateTracker, Note
 
 from src.lsd.gl_gui.background import Background
@@ -2225,13 +2226,12 @@ class Melty:
         cls.global_attrs["style_manager"] = getattr(cls, "style_manager", None)
 
         cls.annotation_mode = False
-        #
-        # for func in RenderFuncs.all_funcs():
-        #     if type(func).__name__ == "_LazyRenderFunc":
-        #         real = Melty.render_funcs_by_name.get(func.__name__)
-        #         if real is not None:
-        #             kwargs["view_func"] = real
-        #         setattr(RenderFuncs, func.__name__, real)
+        class_vars = {**{k: getattr(RenderFuncs, k) for k in dir(RenderFuncs) if k[0] != "_"}}
+
+        for name, func in class_vars.items():
+
+            setattr(RenderFuncs, name, func._resolve())
+
 
     @classmethod
     def init_ui(cls, **kwargs):

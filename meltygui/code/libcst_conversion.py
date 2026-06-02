@@ -89,6 +89,7 @@ class Comment(str):
         return hash(("__comment__", str(self), self.inline))
 
 
+@defaults(tint=(0.8, 0.7651617, 0.11906976997852325))
 class Conditional(dict):
     """An if/elif/else block's contents, as a dict subclass.
 
@@ -112,6 +113,7 @@ class Conditional(dict):
         keys = ",".join(sorted(str(k) for k in self.keys() if not str(k).startswith("_")))
         return f"Conditional:{self.condition}:{keys}"
 
+@defaults(tint=(0.10176312923431396, 0.4465116262435913, 0.1819370836019516))
 class Loop(dict):
     """A for-loop block's contents, as a dict subclass.
 
@@ -160,6 +162,31 @@ class GeneralParse(dict):
     #         # hash() on a str uses a fast SipHash - O(n) once, then O(1)
     #         self._bg_hash_cache = str(hash(self.source))
     #     return self._bg_hash_cache
+
+
+@defaults(tint=(0.01944834366440773, 0.08173015, 0.1348837))
+class CallParse(GeneralParse):
+    """A function call's arguments, as a GeneralParse subclass.
+
+    isinstance(c, dict) → True, so iteration/access works normally.
+    isinstance(c, GeneralParse) → True, so it renders through draw_collection
+        like any other parse (no extra Mode wiring needed).
+    isinstance(c, CallParse) → True, so the UI can recognise it as a call.
+
+    The dict is a key/value store of the call's ARGUMENTS keyed by the
+    PARAMETER name each binds to. Keyword args key on their keyword; positional
+    args are mapped to the parameter name they bind to, resolved from the
+    callee's signature (see _call_positional_param_names). When the callee can't
+    be resolved, positional args stay in __cst__ and pass through untouched.
+
+    The .func_name attribute holds the called function's name
+    (e.g. "my_func", "obj.method") for display.
+    """
+
+    def __init__(self, *args, func_name=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.func_name = func_name
+
 
 class ParseError(dict):
     """A dict representing code that failed to parse.
@@ -2632,16 +2659,34 @@ def _patch_params(params, edits):
 
 @register
 def cst_call_to_dict(value: cst.Call) -> dict:
-    """Extract keyword arguments from a Call as readable keys.
+    """Extract a Call's arguments into a CallParse keyed by PARAMETER name.
 
-    my_func(param=42, flag=True)
-    → {"param": 42, "flag": True, "__cst__": <Call>}
+    Returns a CallParse (a dict subclass); the annotation stays `dict` so
+    @register keys it under the canonical (cst.Call, dict) registry slot that
+    _cst_to_python and _extract_decorators look up.
 
-    Positional args and kwargs with unresolvable values (variable
-    references, complex expressions) are left in __cst__ and pass
-    through untouched on reconstruction.
+    my_func(42, flag=True)   # def my_func(count, flag=False)
+    → CallParse({"count": 42, "flag": True, "__cst__": <Call>})
+
+    Keyword args key on their keyword name. Positional args are mapped to the
+    parameter name they bind to, resolved from the callee's signature
+    (_call_positional_param_names) — that's what makes the dict a key/value
+    store over the *parameters*, not just the explicitly-named kwargs. When the
+    callee can't be resolved (variable reference, complex expression, builtin
+    with no signature) the positional args stay in __cst__ and pass through
+    untouched on reconstruction.
+
+    kwargs with unresolvable values (variable references, complex expressions)
+    are surfaced as their raw source string and round-trip via __cst__.
     """
-    readable = {}
+    readable = CallParse(source=_cst_node_to_code(value),
+                         func_name=_call_func_name(value))
+
+    # Resolving the callee's signature scans sys.modules; only pay for it when
+    # there's an actual positional arg to bind to a parameter name.
+    has_positional = any(a.keyword is None and a.star == "" for a in value.args)
+    pos_names = _call_positional_param_names(value) if has_positional else None
+    pos_idx = 0
 
     for arg in value.args:
         if arg.keyword is not None:
@@ -2659,6 +2704,15 @@ def cst_call_to_dict(value: cst.Call) -> dict:
                         continue
                     if isinstance(key, str):
                         readable[key] = _cst_to_python_or_raw(el.value)
+        elif arg.star == "":
+            # Plain positional arg → surface under the parameter name it binds
+            # to, if we could resolve the signature. Advance the positional
+            # cursor either way so an unsurfaced arg (e.g. past *args, or
+            # an unresolved callee) won't shift later bindings.
+            if pos_names is not None and pos_idx < len(pos_names):
+                readable[pos_names[pos_idx]] = _cst_to_python_or_raw(arg.value)
+            pos_idx += 1
+        # else: `*args` splat - passes through via __cst__
 
     readable["__cst__"] = value
     return readable
@@ -2724,15 +2778,23 @@ def dict_to_cst_call(value: dict) -> cst.Call:
     edits = {k: v for k, v in value.items()
              if not (_is_dunder(k))}
 
-    # `not edits` can mean "no changes" OR "every kwarg was deleted". Only short-
-    # circuit when the call actually has no readable kwargs to delete - otherwise a
-    # delete of the last kwarg would be silently ignored.
+    # Re-derive the SAME positional→name binding cst_call_to_dict used (resolution
+    # is deterministic), so a positional arg surfaced under a parameter name is
+    # matched back to its slot - same room for a new keyword arg. Skip the
+    # sys.modules scan when there are no plain positional args to bind.
+    n_positional = sum(1 for a in old_node.args if a.keyword is None and a.star == "")
+    pos_names = _call_positional_param_names(old_node) if n_positional else None
+    has_readable_positional = bool(pos_names) and n_positional > 0
+
+    # `not edits` can mean "no changes" OR "every arg was deleted". Only short-
+    # circuit when the call actually has no readable args to drop - otherwise a
+    # delete of the last kwarg/positional would be silently ignored.
     has_readable_kwargs = any(a.keyword is not None for a in old_node.args) or any(
         a.star == "**" and isinstance(a.value, cst.Dict)
         and any(isinstance(e, cst.DictElement) and isinstance(e.key, cst.SimpleString)
                 for e in a.value.elements)
         for a in old_node.args)
-    if not edits and not has_readable_kwargs:
+    if not edits and not has_readable_kwargs and not has_readable_positional:
         return old_node
 
     # Grab formatting template from existing kwargs
@@ -2753,17 +2815,40 @@ def dict_to_cst_call(value: dict) -> cst.Call:
     elif len(real_args) == 1:
         last_comma = real_args[0].comma
 
-    # Pass 1: keep positional args, edit/drop kwargs. A `**{...}` dict arg gets
-    # its string-keyed entries updated/dropped too; note its index for Pass 2.
+    # Pass 1: edit/drop kwargs AND positional args surfaced under a parameter
+    # name. A `**{...}` dict arg gets its string-keyed entries updated/dropped
+    # too; note its index for Pass 2.
     surviving = []
     starstar_idx = None
+    pos_idx = 0
     for arg in old_node.args:
         if arg.keyword is None:
             if arg.star == "**":
                 if isinstance(arg.value, cst.Dict):
                     arg = _patch_starstar_dict(arg, edits)
                 starstar_idx = len(surviving)
-            surviving.append(arg)  # positional / splat - pass through
+                surviving.append(arg)
+                continue
+            if arg.star == "*":
+                surviving.append(arg)  # `*args` splat - leave untouch
+                continue
+            # Plain positional arg. If it was surfaced under a parameter name,
+            # patch it in place (key present) or drop it (key deleted). An
+            # unsurfaced position (unresolved callee, or past the named params)
+            # passes through untouched. Advance the cursor for every plain
+            # arg so the binding stays aligned with the forward pass.
+            surfaced_key = pos_names[pos_idx] if (pos_names and pos_idx < len(pos_names)) else None
+            pos_idx += 1
+            if surfaced_key is None:
+                surviving.append(arg)
+            elif surfaced_key in edits:
+                new_val = edits.pop(surfaced_key)
+                new_cst_val = _python_to_cst_expr(new_val, arg.value)
+                if new_cst_val is not None and new_cst_val is not arg.value:
+                    surviving.append(arg.with_changes(value=new_cst_val))
+                else:
+                    surviving.append(arg)
+            # else: surfaced but absent from edits → deleted → drop it
             continue
         kw_name = arg.keyword.value
         if kw_name in edits:
@@ -2829,6 +2914,47 @@ def _call_func_name(call_node):
     if isinstance(func, cst.Attribute):
         return func.attr.value
     return None
+
+
+def _call_positional_param_names(call_node):
+    """Resolve the callee and return the ordered names of its positional
+    parameters (positional-only + positional-or-keyword), so a positional
+    argument at the call site can be surfaced under the parameter name it
+    binds to.
+
+    Returns None when the callee can't be resolved or inspected — callers then
+    leave positional args untouched in __cst__. A leading ``self``/``cls`` is
+    dropped so ``obj.method(x)`` binds ``x`` to the first *real* parameter.
+    Stops at ``*args`` — positions past it can't be named.
+
+    Used by BOTH cst_call_to_dict and dict_to_cst_call so the forward and
+    reverse positional→name bindings are identical (same resolution machinery,
+    same result, regardless of which value happens to be edited).
+    """
+    func = call_node.func
+    obj = _UNREADABLE
+    if isinstance(func, cst.Name):
+        obj = _resolve_callable_by_name(func.value)
+    elif isinstance(func, cst.Attribute):
+        parts = _collect_attribute_parts(func)
+        if parts is not None:
+            obj = _resolve_callable_by_parts(parts)
+    if obj is _UNREADABLE or not callable(obj):
+        return None
+    try:
+        sig = inspect.signature(obj)
+    except (TypeError, ValueError):
+        return None  # builtins, C functions with no introspectable signature
+
+    names = []
+    for p in sig.parameters.values():
+        if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD):
+            if not names and p.name in _SKIP_PARAMS:
+                continue  # unbound or called via attr - drop self/cls
+            names.append(p.name)
+        elif p.kind == p.VAR_POSITIONAL:
+            break
+    return names
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗

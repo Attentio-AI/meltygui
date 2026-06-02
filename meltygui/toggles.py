@@ -81,11 +81,12 @@ class Toggles:
     debug_stale_tint = False
     show_line_break = False
     # Filter SettingS
+
     brightness = 0.317
     contrast = 1.574
     saturation = -0.4
-    prefered_header_width = 120
-    max_preferred_header_width = 120
+    prefered_header_width = 204
+    max_preferred_header_width = 196
     debug_z_depth = False
     filters = True
     show_excluded = True

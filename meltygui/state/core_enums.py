@@ -29,7 +29,7 @@ class ProfileMode(RelaxedEnum):
     OFF = "Off"
     LIGHT = "Light"
     ON = "On"
-    OVERHEAD = "Overhead"
+    
 
 
 class PendingAction(RelaxedEnum):

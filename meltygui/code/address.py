@@ -198,7 +198,8 @@ def _evict_linecache(filename: str) -> None:
     linecache.cache.pop(filename, None)
 
 
-def shift_sibling_linenos(saved_source, file_path, after_lineno: int, delta: int) -> None:
+def shift_sibling_linenos(saved_source, file_path, after_lineno: int, delta: int,
+                          include_saved: bool = False) -> None:
     """Shift co_firstlineno of every code object in the same file
     whose first line is > after_lineno, by `delta` lines.
 
@@ -208,6 +209,11 @@ def shift_sibling_linenos(saved_source, file_path, after_lineno: int, delta: int
     inside the expanded body — findsource then walks back and returns
     the wrong function's source. Patching co_firstlineno keeps every
     other function's line numbers truthful without touching their code.
+
+    include_saved=True also shifts the saved source itself. Use this for an
+    edit ABOVE the saved span (e.g. an inserted import): the saved function's
+    own def moved down too, so its co_firstlineno must move with it — otherwise
+    the next resolve walks findsource back past the moved def to line 0.
     """
     if delta == 0 or saved_source is None:
         return
@@ -231,18 +237,29 @@ def shift_sibling_linenos(saved_source, file_path, after_lineno: int, delta: int
         except (OSError, ValueError):
             return code.co_filename == str(target)
 
+    # Compare/shift the UNWRAPPED function. A decorated function (@core_func,
+    # @window, ...) stored in module/class vars is the WRAPPER: its __code__ lives
+    # in the decorator's file (core_render.py), so _same_file(wrapper) is False
+    # and it would be skipped - leaving the real function's co_firstlineno stale.
+    # function_to_address resolves via inspect.getsourcelines(inspect.unwrap(func)),
+    # which keys on the unwrapped co_firstlineno; that's the one that must shift so
+    # the next resolve doesn't walk findsource back to the wrong def (or line 0).
+    saved_inner = (saved_source if isinstance(saved_source, types.ModuleType)
+                   else inspect.unwrap(saved_source))
+
     def _maybe_shift(func):
-        if func is saved_source:
+        inner = inspect.unwrap(func)
+        if inner is saved_inner and not include_saved:
             return
-        code = func.__code__
+        code = inner.__code__
         if not _same_file(code):
             return
         if code.co_firstlineno > after_lineno:
-            func.__code__ = code.replace(
+            inner.__code__ = code.replace(
                 co_firstlineno=code.co_firstlineno + delta)
 
     def _walk_class(cls):
-        if cls is saved_source:
+        if cls is saved_source and not include_saved:
             return
         for val in list(vars(cls).values()):
             if isinstance(val, types.FunctionType):

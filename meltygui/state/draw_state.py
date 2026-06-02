@@ -470,6 +470,10 @@ class DrawState(DictConversion):
         ### Columns
         self.final_max_column = 0
         self._current_max_column = 0
+        # Per-divider pixel nudges applied left-to-right on top of the basic
+        # content_width/#columns split. offsets[c-1] shifts interior boundary
+        # c; values are never clamped (see column_boundary in core_render).
+        self._column_offsets = []
         self._column_cursor = defaultdict(lambda: [0, 0])
         self._melty_cursor = (0,0)
         self._melty_content_height = 0

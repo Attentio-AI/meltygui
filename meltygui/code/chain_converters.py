@@ -329,7 +329,10 @@ def _import_stmt_end(lines, i):
 
 def _ensure_import_lines(lines, module, name):
     """If `name` isn't already imported in `lines`, insert `from module import
-    name` after the file's leading import block. Returns (lines, inserted_count).
+    name` after the file's leading import block. Returns
+    (lines, inserted_count, insert_idx) — insert_idx is the 0-indexed line the
+    import landed on (None when nothing was inserted), so the caller can shift
+    co_firstlineno of every code object below it.
 
     Best-effort textual scan (no parse — this runs inside the save write). Treats
     the run of leading import/comment/blank/docstring lines as the import block
@@ -345,7 +348,7 @@ def _ensure_import_lines(lines, module, name):
             for ch in "(),\\\n":
                 syms = syms.replace(ch, " ")
             if name in [t.split(".")[0] for t in syms.split()]:
-                return lines, 0
+                return lines, 0, None
             i = end + 1
             continue
         i += 1
@@ -383,7 +386,7 @@ def _ensure_import_lines(lines, module, name):
         break  # first real code - stop scanning the import block
     new_lines = list(lines)
     new_lines.insert(insert_idx, f"from {module} import {name}")
-    return new_lines, 1
+    return new_lines, 1, insert_idx
 
 
 @render_func(background=True)
@@ -409,8 +412,9 @@ def _do_save(input_value, code_str, ensure_import=None):
     lines[old_start:old_end] = new_lines
 
     inserted = 0
+    insert_idx = None
     if ensure_import is not None:
-        lines, inserted = _ensure_import_lines(lines, ensure_import[0], ensure_import[1])
+        lines, inserted, insert_idx = _ensure_import_lines(lines, ensure_import[0], ensure_import[1])
 
     final_text = newline.join(lines)
     FileWatch.set_hash_from_content(input_value.path, final_text, draw_state=input_value._watcher_ds)
@@ -433,6 +437,13 @@ def _do_save(input_value, code_str, ensure_import=None):
 
             shift_sibling_linenos(input_value.source, input_value.path,
                                   after_lineno=resolved_old_end, delta=delta)
+            # An inserted import moved our own def down too; shift the saved
+            # source (include_saved) so its co_firstlineno doesn't go stale and
+            # send the next resolve jumping back to line 0.
+            if inserted and insert_idx is not None:
+                shift_sibling_linenos(input_value.source, input_value.path,
+                                      after_lineno=insert_idx, delta=inserted,
+                                      include_saved=True)
         else:
             input_value._hash = input_value._compute_hash()
 

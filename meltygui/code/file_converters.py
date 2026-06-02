@@ -446,6 +446,7 @@ def _validate_local_names(code) -> None:
 def _recompile(func: types.FunctionType, source: str,
                filename: str) -> None:
     dedented = textwrap.dedent(source)
+    dedented = "\n" * (func.__code__.co_firstlineno - 1) + dedented
     unwrapped = inspect.unwrap(func)
     namespace = dict(unwrapped.__globals__)
 
@@ -480,6 +481,14 @@ def _recompile(func: types.FunctionType, source: str,
         print_stack_trace()
         return TypeError(f"Recompiled object '{unwrapped.__name__}' is not callable")
 
+    # Keep the freshly-DECORATED wrapper: exec re-ran @default_func/@window/etc.,
+    # which registered THIS object in Melty's registries (default_funcs_by_type,
+    # ...). We hotswap the old function in place (below) to keep `from x import fn`
+    # references valid, then redirect those new registrations back onto it -
+    # otherwise the registry serves this orphaned object, which never enters
+    # vars(module) so shift_sibling_linenos can't keep its co_firstlineno honest,
+    # and resolve_address eventually returns start=0 (wiping the file head).
+    new_wrapper = new_func
     new_func = inspect.unwrap(new_func)
 
     try:
@@ -497,6 +506,9 @@ def _recompile(func: types.FunctionType, source: str,
         unwrapped.__code__ = unwrapped.__code__.replace(
             co_firstlineno=original_firstlineno
         )
+
+        _redirect_function_registrations(func, new_wrapper)
+
     except Exception as e:
         print_stack_trace(exception=e)
         return e
@@ -679,3 +691,41 @@ def _redirect_class_registrations(old_cls: type, new_cls: type) -> None:
         reg = getattr(Melty, reg_name, None)
         if isinstance(reg, dict) and new_cls in reg:
             reg[old_cls] = reg.pop(new_cls)
+
+
+def _redirect_function_registrations(old_func, new_wrapper) -> None:
+    """Repoint decorator-driven registries from `new_wrapper` back to `old_func`.
+
+    The function analog of `_redirect_class_registrations`. `_recompile` re-execs
+    a function's source, which RE-RUNS its decorators (`@render_func`,
+    `@window`, converter registration, `interrupt_source_for`). Those register
+    the FRESH wrapper in Melty's value-keyed registries, while the app keeps the
+    old function (hotswapped in place so `from x import fn` stays valid). The
+    fresh wrapper is doubly wrong: it serves stale renders, and — never being in
+    vars(module) — it's invisible to shift_sibling_linenos, so its co_firstlineno
+    rots and resolve_address eventually returns start=0, wiping the file head.
+
+    Mirror the class path: wherever a registry now holds `new_wrapper`, restore
+    `old_func`. These are VALUE-keyed maps (type/name/tuple → wrapper), so sweep
+    by identity. annotated_window_classes is name-keyed to a (target, kwargs)
+    tuple — keep the freshly-parsed kwargs but rebind to old_func.
+    """
+    if new_wrapper is None or new_wrapper is old_func:
+        return
+
+    # Value-keyed sweeps: type → wrapper, name → wrapper, (from, to) → wrapper.
+    for reg_name in ("default_funcs_by_type", "default_funcs_by_name",
+                     "type_interrupts", "_converters"):
+        reg = getattr(Melty, reg_name, None)
+        if isinstance(reg, dict):
+            for key, val in list(reg.items()):
+                if val is new_wrapper:
+                    reg[key] = old_func
+
+    # @window - name-keyed (target, kwargs); keep fresh kwargs, restore identity.
+    name = getattr(old_func, "__name__", None)
+    wins = getattr(Melty, "annotated_window_classes", None)
+    if isinstance(wins, dict) and name is not None:
+        entry = wins.get(name)
+        if entry is not None and entry[0] is new_wrapper:
+            wins[name] = (old_func, entry[1])

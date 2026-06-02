@@ -86,7 +86,6 @@ class _RenderFuncs:
     do_recompile = _LazyRenderFunc("do_recompile")
     draw_app_model = _LazyRenderFunc("draw_app_model")
     draw_blank = _LazyRenderFunc("draw_blank")
-    draw_blit_debug = _LazyRenderFunc("draw_blit_debug")
     draw_bool = _LazyRenderFunc("draw_bool")
     draw_collection = _LazyRenderFunc("draw_collection")
     draw_comment = _LazyRenderFunc("draw_comment")

@@ -105,6 +105,41 @@ def _run_convert_chain(value=None, chain=None, **extra_kwargs):
 SCROLLBAR_RESERVE = 10.0
 
 
+def column_boundary(content_width, n_cols, offsets, c):
+    """Left-edge x of column ``c`` relative to the content origin.
+
+    Columns start out evenly sized (``content_width / n_cols``). Each boundary
+    ``c`` (1..n_cols) is then nudged by ``offsets[c-1]`` pixels when that offset
+    exists, applied left-to-right. Offsets are never clamped, so a boundary may
+    cross its neighbour or push past ``content_width``. Only the left edge
+    (c == 0) is fixed; the right edge (c == n_cols) can move, which is what lets
+    the last column take an explicit width. A column's width is the gap between
+    its own boundary and the next one.
+    """
+    base = snap_int(content_width / n_cols * c)
+    if offsets and 1 <= c <= n_cols and c - 1 < len(offsets):
+        base += offsets[c - 1]
+    return base
+
+
+def set_column_width(column_parent, n_cols, column, column_width):
+    """Pin ``column`` to ``column_width`` px on its parent by nudging the
+    column's right divider, writing into ``column_parent._column_offsets``.
+
+    The column's left edge is read as-is (so widths set left-to-right compose
+    predictably) and the right divider's offset is solved for the requested
+    width. The list is padded with zeros as needed and never length-capped; the
+    last writer in a frame wins.
+    """
+    content_width = column_parent.content_width
+    offsets = column_parent._column_offsets
+    left_boundary = column_boundary(content_width, n_cols, offsets, column)
+    base_right = snap_int(content_width / n_cols * (column + 1))
+    if len(offsets) <= column:
+        offsets.extend([0] * (column + 1 - len(offsets)))
+    offsets[column] = left_boundary + column_width - base_right
+
+
 def draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height):
     """Draw an interactive vertical scrollbar onto the overlay draw list.
 
@@ -550,7 +585,8 @@ def render_func(*args, **o_kwargs):
             draw_state._parent_ctx = Melty.cache.get_current_parent()
 
         # Set default values from initial on the first frame (before any potential mutation)
-        if draw_state.frame_count < 2:
+        if draw_state.frame_count < 3:
+            approved_kwargs = ['expanded', 'closed']
             for item_name, initial_value in initial_values.items():
                 if isinstance(getattr(draw_state, item_name, None), int):
                     if getattr(draw_state, item_name) == 0 or kwargs.get("force_initial", False):
@@ -559,6 +595,9 @@ def render_func(*args, **o_kwargs):
                     if hasattr(draw_state, item_name) and (getattr(draw_state, item_name) is None or kwargs.get(
                             "force_initial", False)):
                         setattr(draw_state, item_name, initial_value)
+
+                if item_name in approved_kwargs:
+                    kwargs[item_name] = initial_value
 
         if active_layer is None and _has_imgui:
             # Call-site capture for the caller-arg lens / jump-to-caller. This is
@@ -1171,11 +1210,28 @@ def render_func(*args, **o_kwargs):
 
             if column is not None and column_parent is not None:
                 column_parent._current_max_column = max(column_parent._current_max_column, column)
-                parent_wrap_width = int((column_parent.content_width) / (column_parent.final_max_column + 1))
+                n_cols = column_parent.final_max_column + 1
+                # A child may pin its column's width: column_text(column=1,
+                # column_width=100) writes the matching divider offset on the
+                # parent. Last setter in the frame wins.
+                column_width_override = kwargs.get("column_width", None)
+                if column_width_override is not None:
+                    set_column_width(column_parent, n_cols, column, column_width_override)
+                offsets = column_parent._column_offsets
+                if n_cols > 1:
+                    left_boundary = column_boundary(column_parent.content_width, n_cols, offsets, column)
+                    right_boundary = column_boundary(column_parent.content_width, n_cols, offsets, column + 1)
+                else:
+                    # Only one column this frame: span the full content width,
+                    # ignoring any pinned divider offsets left over from a
+                    # previous multi-column frame.
+                    left_boundary = 0
+                    right_boundary = column_parent.content_width
+                parent_wrap_width = right_boundary - left_boundary
                 column_parent._column_width = parent_wrap_width
 
 
-                parent_wrap_left = draw_state.abs_left + snap_int(parent_wrap_width * column)
+                parent_wrap_left = draw_state.abs_left + snap_int(left_boundary)
                 available_width = int(parent_wrap_width - indent_x - 5)
             else:
                 available_width = (parent_wrap_width - x_offset - content_margin)
@@ -1294,24 +1350,26 @@ def render_func(*args, **o_kwargs):
 
                 Melty.fixed_size_stack.append(draw_state)
 
-
-            if draw_state.final_max_column > 0:
-                column_width = snap_int((draw_state.content_width ) / (draw_state.final_max_column + 1))
-                draw_list: _DrawList = imgui.get_window_draw_list()
-                table_top = 0
-
-
-                for i in range(column_parent.final_max_column + 1):
-                    column_height = column_parent._column_cursor[i][1]
-                    if column_height > table_top:
-                        table_top = column_height + 2
-                for c in range(1, draw_state.final_max_column + 1):
-                    # Draw divider lines, we are the parent now
-                    columns_top = draw_state._columns_top if draw_state._columns_top is not None else draw_state.header_height
-                    draw_list.add_line(draw_state.left + snap_int(column_width * c), draw_state.abs_top  + snap_int(columns_top) + 30,
-                                       draw_state.left + snap_int(column_width * c),
-                                       draw_state.abs_top + snap_int(draw_state.height),
-                                       imgui.get_color_u32_rgba(0.0, 0.0, 0.0, 0.3), 1)
+            #
+            # if draw_state.final_max_column > 0:
+            #     n_cols = draw_state.final_max_column + 1
+            #     offsets = draw_state._column_offsets
+            #     draw_list: _DrawList = imgui.get_window_draw_list()
+            #     table_top = 0
+            #
+            #
+            #     for i in range(column_parent.final_max_column + 1):
+            #         column_height = column_parent._column_cursor[c][1]
+            #         if column_height > table_top:
+            #             table_top = column_height + 2
+            #     for c in range(1, draw_state.final_max_column + 1):
+            #         # Draw divider lines, we are the parent now
+            #         boundary_x = column_boundary(draw_state.content_width, n_cols, offsets, c)
+            #         columns_top = draw_state._columns_top if draw_state._columns_top is not None else draw_state.footer_t
+            #         draw_list.add_line(draw_state.left + snap_int(boundary_x), draw_state.abs_top  + snap_int(columns_top) + 30,
+            #                            draw_state.left + snap_int(boundary_x),
+            #                            draw_state.abs_top + snap_int(draw_state.height),
+            #                            imgui.get_color_u32_rgba(0.0, 0.0, 0.0, 0.3), 1)
 
 
             ##########################

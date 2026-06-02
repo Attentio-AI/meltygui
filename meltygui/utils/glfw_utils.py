@@ -477,7 +477,8 @@ def _resolve_watch(expr, filename, lineno, local_vars,
 def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
                       max_str_len=200, max_items=5, max_depth=2, max_output=200,
                       exception=None, section=None, group=None, file=None,
-                      print_args=True):
+                      print_args=True,
+                      ignore_functions=("wrapper", "draw_any", "draw_inner_main")):
     """
     Print a stack trace with optional variable watching.
 
@@ -496,6 +497,9 @@ def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
         group:       TraceGroup instance — buffers output into the group.
         file:        Output stream override.
         print_args:  Auto-add function arguments to watches (default True).
+        ignore_functions: Frame function names to drop from the trace (repetitive
+                     plumbing). The error frame is never dropped, even if its name
+                     matches. Pass None/[] to keep all frames.
     """
     buf = io.StringIO()
 
@@ -545,6 +549,18 @@ def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
             if _is_user_code(frames[j][0]):
                 error_frame_idx = j
                 break
+
+    # Drop repetitive plumbing frames, but never the error frame itself.
+    if ignore_functions:
+        error_frame = frames[error_frame_idx] if error_frame_idx is not None else None
+        frames = [
+            frame for k, frame in enumerate(frames)
+            if k == error_frame_idx or frame[2] not in ignore_functions
+        ]
+        error_frame_idx = (
+            next((k for k, frame in enumerate(frames) if frame is error_frame), None)
+            if error_frame is not None else None
+        )
 
     for i, (filename, lineno, funcname, line_text, local_vars) in enumerate(frames):
         rel = filename

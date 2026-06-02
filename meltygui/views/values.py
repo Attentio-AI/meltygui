@@ -1,6 +1,7 @@
 import inspect
 import sys
 import threading
+import traceback
 import types
 from collections import deque, defaultdict
 from collections.abc import MutableMapping
@@ -27,7 +28,7 @@ from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_styl
     pop_style_var, end, begin
 from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace, request_render
 from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
-from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment, GeneralParse, UsageRef
+from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment, GeneralParse, UsageRef, CallParse
 from src.lsd.gl_gui.view.core_conversion.new_converters import code_file_io
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
@@ -54,10 +55,44 @@ def empty(input_val):
     pass
 
 
+@render_func(is_default_for=(types.FrameType), use_cache=True, tint=(0.9, 0.6485209, 0.5),
+             header_same_line=False, show_bg=True, align_header=False, closed=False,
+             shadow=True, selectable=False, wrap=False, with_header=draw_header, indent_size=5, searchable=True)
+def draw_frame(input_value: types.FrameType, draw_state, **kwargs):
+
+    file_name_truncated = Path(input_value.f_code.co_filename).name
+    imgui.text(f"{file_name_truncated}:{input_value.f_lineno} in {input_value.f_code.co_name}")
+
+    # Jump-to button: open this frame's source file at the failing line. Same
+    # threaded open_in_intellij pattern the jump-to-caller button uses.
+    if button(f"{file_name_truncated}:{input_value.f_lineno}",
+              height=30, value=0.4, saturation=1.5, name="jump_to_frame")[0]:
+        from src.lsd.gl_gui.utils.jump_to_code import open_in_intellij
+        threading.Thread(
+            target=open_in_intellij,
+            args=(str(input_value.f_code.co_filename),),
+            kwargs={"line_number": input_value.f_lineno},
+            daemon=True).start()
+    # Loop over the frame's local variables, which are the most relevant to debugging.
+
+    draw_text("Locals", name="Locals", show_header=False, searchable=False, single_line=True,
+                     font=Font.JETBRAINS_MONO_40, return_extras=True)
+
+    for var_name, var_value in input_value.f_locals.items():
+        # Display the variable name and its value.
+        draw_any(var_value, with_header=draw_header, show_header=True, name=var_name, mode=Modes.READ_ONLY)
+
+
 @render_func(is_default_for=types.ModuleType, use_cache=True,
              show_bg=True, with_header=draw_header, with_footer=draw_footer)
 def draw_module(input_value: types.ModuleType, draw_state, **kwargs):
     imgui.text(f"Module: {input_value.__name__}")
+
+
+@render_func(is_default_for=types.ModuleType, use_cache=True, header_single_line=True, show_name=True, temp=True,
+             show_bg=True, with_header=draw_header)
+def draw_type_name(input_value, **kwargs):
+    imgui.text(f"Type: {type(input_value).__name__}")
 
 
 def _collection_match_keys(input_value, keys, excluded, show_excluded):
@@ -265,7 +300,8 @@ def search_activate_target(node):
     return node
 
 
-@render_func(is_default_for=(dict, MutableMapping, defaultdict, tuple, list, GeneralParse), use_cache=True,
+
+@render_func(is_default_for=(dict, MutableMapping, defaultdict, tuple, list, GeneralParse, CallParse), use_cache=True,
             header_same_line=False, show_bg=True, show_instance_vars=False, align_header=False,
             manual_content_height=True, shadow=True, selectable=False,
             wrap=False, with_header=draw_header, indent_size=5, searchable=True)
@@ -446,8 +482,8 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta,
                 imgui.text("Key not found: " + str(key))
                 continue
 
-            if hasattr(input_value, "__dict__") and hasattr(input_value, key):
-                item = getattr(input_value, key, None)
+            if hasattr(input_value, "__dict__") and hasattr(input_value, str(key)):
+                item = getattr(input_value, str(key), None)
             else:
                 item = collection[key]
         else:
@@ -646,26 +682,33 @@ def draw_property(input_value:property, draw_state, **kwargs):
     # value = input_value.fget(input_value)
     # draw_any(value, name="value", show_bg=True, draw_state=draw_state)
 
+
+
 @render_func(is_default_for=(type), show_bg=True, align_header=False, use_cache=True, shadow=False,
              with_header=draw_header)
 def draw_type(input_value:type, **kwargs):
-    class_vars = {**{k: getattr(input_value, k) for k in vars(input_value)}}
+    try:
+        class_vars = {**{k: getattr(input_value, k) for k in vars(input_value)}}
 
-    changed, new_dict = draw_collection(class_vars, real_type=input_value, disable_scroll=True,
-                                        name=f"Class: {input_value.__name__}")
+        changed, new_dict = draw_collection(class_vars, real_type=input_value, disable_scroll=True,
+                                            name=f"Class: {input_value.__name__}")
 
-    if changed:
-        for k, v in new_dict.items():
-            if k.startswith("_"):
-                continue
-            try:
-                imgui.text(f"Setting attribute {k} to value {v} on class {input_value.__name__}")
-                setattr(input_value, k, v)
-            except Exception as e:
-                imgui.text(f"Error setting attribute {k} on class {input_value.__name__}: {e}")
+        if changed:
+            for k, v in new_dict.items():
+                if k.startswith("_"):
+                    continue
+                try:
+                    imgui.text(f"Setting attribute {k} to value {v} on class {input_value.__name__}")
+                    setattr(input_value, k, v)
+                except Exception as e:
+                    imgui.text(f"Error setting attribute {k} on class {input_value.__name__}: {e}")
+    except Exception as e:
+        imgui.text(f"Error rendering type {input_value}: {e}")
+        imgui.text(str(input_value))
 
 
-@render_func(show_bg=True, use_cache=True, selectable=False, with_header=draw_header, bg_offset=3, auto_resize=True)
+@render_func(show_bg=True, use_cache=True, selectable=False, header_single_line=False, align_header=False,
+             with_header=None, bg_offset=3, auto_resize=True)
 def draw_global_search(input_value, draw_state=None, **kwargs):
     """Renders the GlobalSearch window: the search box plus the matching nodes
     from the draw_state tree draw_main registered on us. Results are recomputed
@@ -675,13 +718,13 @@ def draw_global_search(input_value, draw_state=None, **kwargs):
     input_value.window_ds = draw_state
     _focus = input_value._focus_requested
     input_value._focus_requested = False
-
     # return_extras gives the box's draw_state so we can tell when it holds text
     # focus (that is when our arrow/enter result-navigation should be live).
-    _box = draw_text(input_value.query, name="Search", searchable=False, single_line=True,
-                     font=Font.JETBRAINS_MONO_40, request_focus=_focus, return_extras=True)
-    changed, new_query = _box[0], _box[1]
-    box_ds = _box[2] if len(_box) > 2 else None
+    box = draw_text(input_value.query, name="Search", show_name=False, searchable=False, header_same_line=False,
+                     font=Font.JETBRAINS_MONO_50, request_focus=_focus, is_tree=False, align_header=False,
+                      return_extras=True, tint=(1,1,1))
+    changed, new_query = box[0], box[1]
+    box_ds = box[2] if len(box) > 2 else None
     if changed:
         input_value.query = new_query
 
@@ -1009,9 +1052,8 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
             window_cls(None, **kwargs)
         else:
             kwargs['disable_scroll'] = True
-            kwargs.setdefault('mode', Mode.MODE_WINDOW)
-            kwargs.setdefault('modes', (Mode.CODE_UI, Mode.CODE_PLAIN_TEXT, Mode.RUNNING))
-            window_func = kwargs.pop("view_func", draw_with_modes)
+            kwargs.setdefault('mode', (Mode.NEW_CODE, Mode.WINDOW))
+            window_func = kwargs.pop("view_func", draw_any)
             window_func(window_cls, **kwargs)
 
     changed, value = draw_with_modes(draw_header, name="draw_header", show_bg=True, mode=(Mode.WINDOW), modes=(Mode.CODE_UI,
@@ -2367,6 +2409,7 @@ def draw_usage(input_value: UsageRef):
 
     return False, input_value
 
+
 @render_func(is_default_for=(Comment), shadow=False, indent_size=5, selectable=False, use_cache=True,
              show_bg=False, with_header=None, is_tree=True, temp=True)
 def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=False):
@@ -2584,7 +2627,7 @@ def draw_app_model(input_val):
 
 @render_func(is_default_for=(types.FunctionType, types.MethodType), show_add_delete=False, show_bg=False, 
         parent_show_add_delete=False, is_tree=False, show_name=False, with_header=draw_header)
-def draw_function(input_value, name, draw_state, unique):
+def draw_function(input_value, name, draw_state, unique, **kwargs):
     if not callable(input_value):
         imgui.text("Not a callable function")
         return False, input_value
@@ -2610,8 +2653,10 @@ def draw_function(input_value, name, draw_state, unique):
 
             draw_state.params = param_dict
         if len(draw_state.params) > 0:
-            changed, new_val = draw_collection(draw_state.params, name="Parameters", indent_size=0,
-            show_add_delete=False,parent_show_add_delete=False, horizontal=True, child_kwargs={"wrap":True, "widtgh":200, "show_bg":True, "use_cache":True, "z_offset":2.0})
+            changed, new_val = draw_collection(draw_state.params, name="Parameters",
+            show_add_delete=False, parent_show_add_delete=False, horizontal=True, header_same_line=False,
+                                               child_kwargs={"wrap":True, "width":200,
+                                                             "show_bg":True, "use_cache":True, "z_offset":2.0})
             if changed:
                 draw_state.params = new_val
     except Exception as e:
@@ -2658,7 +2703,7 @@ def draw_debug_label(input_value: str):
     imgui.text(input_value)
 
 
-@render_func(is_default_for=Enum, is_tree=False, shadow=False, selectable=False, header_same_line=True,
+@render_func(is_default_for=Enum, is_tree=False, shadow=False, align_header=False, selectable=False, header_same_line=True,
              parent_show_add_delete=False, with_header=draw_header, temp=True)
 def draw_enum(input_value: Enum, style_manager=None, enum_tint=(0.3, 0.3, 0.3)):
     # Delegate to draw_tab_bar so enums get its wrapping and styling for free.

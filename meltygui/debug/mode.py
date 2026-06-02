@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional, Any
 
 from src.lsd.gl_gui.model.core_model.draw_state import Anchor, Pin
+from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.model.model_enums import RelaxedEnum
 from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.toggles import WindowManager
@@ -23,7 +24,7 @@ from src.lsd.gl_gui.view.core_views.headers import draw_footer, draw_header_end,
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
 from src.lsd.gl_gui.view.core_views.new_core_view import draw_collection, draw_comment, \
     sort_dict_alphabetically, unsort_dict_alphabetically, draw_with_modes, draw_type, \
-    class_to_var_dict, var_dict_to_class, draw_dropdown, draw_blank, draw_drop_down_item
+    class_to_var_dict, var_dict_to_class, draw_dropdown, draw_blank, draw_drop_down_item, draw_type_name
 from src.lsd.gl_gui.view.core_views.text_editor import draw_text
 from src.lsd.gl_gui.view.core_conversion.new_converters import code_file_io, draw_modes, string_to_cst_module, \
     cst_module_to_string
@@ -81,6 +82,7 @@ class Mode(Enum):
                     "auto_save": True,
                     'view_func': draw_modes,
                     "child_kwargs" : {
+                        'column_widths': [350],
                         "modes": [RenderFuncs.draw_text, RenderFuncs.draw_collection],
                         "chain_in": [string_to_cst_module, cst_module_to_dict],
                         "chain_out": [dict_to_cst_module, cst_module_to_string],
@@ -91,8 +93,28 @@ class Mode(Enum):
                     },
             },
             recursive=False,
+
             func=code_file_io
         )
+    }
+
+    READ_ONLY = {
+        (Any): ModeOverrides(
+            kwargs={"show_bg": True, "selectable": False, "header_same_line":True, "show_header": True,
+                    "tint":(1,1,1), "show_add_delete": False, "shadow":True,
+                    "use_cache": True, "initial": {"expanded": False, "closed":False}},
+            recursive=True,
+        ),
+        (str, float, int, bool, types.NoneType): ModeOverrides(
+        kwargs={"show_bg": True, "selectable": False,"show_add_delete":False, "show_header": True,
+                "expanded": True, "use_cache": True},
+        ),
+        (type): ModeOverrides(
+            func=draw_type_name,
+            kwargs={"show_bg": True, "selectable": False, "show_add_delete": False, "show_header": True,
+                    'is_tree':False, "use_cache": True, 'tint':(0.2, 0.2, 0.1)},
+        ),
+
     }
 
     # [tint=(0.2,0.1,0.1)]
@@ -147,7 +169,7 @@ class Mode(Enum):
                     "with_header_end": draw_header_end, "auto_resize": False, "draggable": True, 'shadow': True,
                     "show_tint": False, "show_header": True, "with_footer": draw_footer, 'indent_size': 5, "search_text": "", "searchable": True,
                     "show_add_delete": False, "with_header": draw_header, "min_width": 200, "min_height": 60,
-                    "initial": {"width": 400, "height": 420, "window_pos": (100, 500)}},
+                    "initial": {"width": 600, "height": 420, "window_pos": (100, 500)}},
 
             recursive=False
         )

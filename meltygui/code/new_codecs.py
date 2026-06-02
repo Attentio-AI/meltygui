@@ -1,8 +1,10 @@
 import inspect
 import tokenize
 import types
+from enum import EnumType
 from pathlib import Path
 
+from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace
 from src.lsd.gl_gui.view.core_conversion.address import Address, _evict_linecache, shift_sibling_linenos, is_editable_source
 from src.lsd.gl_gui.view.core_conversion.chain_converters import _ensure_import_lines
 from src.lsd.gl_gui.view.core_conversion.file_converters import _detect_newline
@@ -39,7 +41,11 @@ def register_codec(cls=None, **kwargs):
                 extension_to_codec[ext] = cls
 
         if "for_type" in kwargs:
-            type_to_codec[kwargs["for_type"]] = cls
+            if isinstance(kwargs["for_type"], tuple):
+                for t in kwargs["for_type"]:
+                    type_to_codec[t] = cls
+            else:
+                type_to_codec[kwargs["for_type"]] = cls
         return cls
 
     if cls is None:
@@ -62,7 +68,7 @@ class Codec:
         return False
 
 
-@register_codec(for_type=type)
+@register_codec(for_type=(type, EnumType))
 class TypeCodec(Codec):
     @staticmethod
     def resolve_address(input_value, draw_state=None, **kwargs):
@@ -150,8 +156,9 @@ class TypeCodec(Codec):
             lines[old_start:old_end] = new_lines
 
         inserted = 0
+        insert_idx = None
         if ensure_import is not None:
-            lines, inserted = _ensure_import_lines(lines, ensure_import[0], ensure_import[1])
+            lines, inserted, insert_idx = _ensure_import_lines(lines, ensure_import[0], ensure_import[1])
 
         final_text = newline.join(lines)
         # Stamp a watch hash BEFORE writing so our own write isn't read back as a
@@ -168,8 +175,16 @@ class TypeCodec(Codec):
                 address.start = old_start + inserted
                 address.end = new_end + inserted
             address._hash = address._compute_hash()
+            # Shift siblings below for the body span change (original coords)...
             shift_sibling_linenos(address.source, address.path,
                                   after_lineno=resolved_old_end, delta=delta)
+            # ...then the import insert moved our def AND everything below it down,
+            # so shift the saved source too (include_saved) - else its own
+            # co_firstlineno goes stale and the next resolve walks back to line 0.
+            if inserted and insert_idx is not None:
+                shift_sibling_linenos(address.source, address.path,
+                                      after_lineno=insert_idx, delta=inserted,
+                                      include_saved=True)
         else:
             address._hash = address._compute_hash()
         return False
@@ -181,6 +196,12 @@ class FunctionCodec(TypeCodec):
     @staticmethod
     def resolve_address(input_value, draw_state=None, **kwargs):
         if isinstance(input_value, types.FunctionType):
+            old_address = None
+            if "code_state" in kwargs:
+                code_state = kwargs["code_state"]
+                if code_state.address is not None:
+                    old_address = code_state.address
+
             unwrapped = inspect.unwrap(input_value)
             try:
                 source_file = inspect.getfile(unwrapped)
@@ -207,11 +228,22 @@ class FunctionCodec(TypeCodec):
         _evict_linecache(source_file)
         try:
             source_lines, start_lineno = inspect.getsourcelines(unwrapped)
+
         except (OSError, TypeError, tokenize.TokenError, SyntaxError) as e:
             if draw_state._addr_cache is not None:
                 return draw_state._addr_cache[2]
 
             print(f"[editable_source] could not resolve {getattr(input_value, '__name__', input_value)}: {e}")
+            return None
+
+        if old_address is not None and start_lineno - 1 != old_address.start:
+            print_stack_trace()
+
+            red = "\033[31m"
+            reset = "\033[0m"
+            bold = "\033[1m"
+            print(f"{red}{bold}[editable_source] warning: function {getattr(input_value, '__name__', input_value)}\n"
+                  f"Old start: {old_address.start} New start: {start_lineno}{reset}")
             return None
 
         address = Address(Path(source_file), start_lineno - 1,
