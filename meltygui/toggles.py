@@ -7,7 +7,7 @@ class Counters:
     nested_window_count = 18
     some_dict = [1,1,1]
     some_dict2 = {1:1}
-
+    
 @window
 class Tint:
     # Context menu tints
@@ -15,7 +15,7 @@ class Tint:
     context_select_outline_alpha = -0.015
     context_select_bg_alpha = 0.592
     context_select_rounding = 4.988
-
+    
     # Background constants
     context_menu_bg_offset = 4.0
 
@@ -51,15 +51,16 @@ class Swoosh:
     some_dict = [1,1,1,1]
 
 
-@window(tint=(0.8, 0.8, 0.5))
+@window(tint=(0.5, 0.6, 0.7))
 class Toggles:
     test_float = 3.303
+    debug_scroll = False
     @defaults(tint=(0.3,0.2,0.2))
     class InvalidateTracker:
         keep_for_frames = 2
         enable = False
         draw_bvh = False
-
+        
     @defaults(tint=(0.10598, 0.2410416603088379,0.320930242538452))
     class Debug:
         slow_frame_rate = False
@@ -76,7 +77,7 @@ class Toggles:
     slow_down_threads = False
     render_depth = False
     ds_invalidate_stack = False
-    profile_mode = ProfileMode.OVERHEAD
+    profile_mode = ProfileMode.LIGHT
     debug_stale_tint = False
     show_line_break = False
     # Filter SettingS

@@ -267,7 +267,7 @@ def search_activate_target(node):
 
 @render_func(is_default_for=(dict, MutableMapping, defaultdict, tuple, list, GeneralParse), use_cache=True,
             header_same_line=False, show_bg=True, show_instance_vars=False, align_header=False,
-            manual_content_height=True, disable_scroll=True, shadow=True, selectable=False,
+            manual_content_height=True, shadow=True, selectable=False,
             wrap=False, with_header=draw_header, indent_size=5, searchable=True)
 def draw_collection(input_value, draw_state, depth, style_manager, meta,
                     mode=None, keys=None, get_attr=None, set_attr=None, show_excluded=False,
@@ -620,7 +620,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta,
 
     end_pos = imgui.get_cursor_pos()[1]
     content_height = (end_pos - start_cursor)
-    imgui.dummy(1, 1)
+    imgui.dummy(1, 0)
 
     if not imgui.is_mouse_down(0) and not imgui.is_mouse_down(1) and not imgui.is_mouse_down(2) and not premature_break:
         draw_state.content_height = snap_int(content_height)
@@ -945,7 +945,7 @@ dropdown_demo_data = {
 drop_down_selection = None
 
 
-@render_func(use_cache=False, show_bg=True, searchable=True, selectable=False,
+@render_func(use_cache=False, show_bg=True, selectable=False,
              show_tint=True, bg_offset=-1, with_header=draw_header)
 def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     global test_obj
@@ -1096,7 +1096,7 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
 
     # draw_window(test_obj, name="Layer 1")
 
-    draw_any(filesystem_proxy, name="Filesystem", mode=Mode.WINDOW)
+    draw_any(filesystem_proxy, name="Filesystem", disable_scroll=False, mode=Mode.WINDOW)
 
     draw_any(input_value=proxy, name="CST Proxy", mode=Mode.WINDOW)
 
@@ -2637,7 +2637,7 @@ def draw_function(input_value, name, draw_state, unique):
 
 @render_func(is_default_for=(int), shadow=False, use_cache=True, min_width=60, wrap=False,
              is_tree=False, with_header=draw_header, align_header=True, temp=True)
-def draw_int(input_value: int, draw_state=None, min_value=-1000.0, max_value=1000.0, speed=0.05, unique=0):
+def draw_int(input_value: int, draw_state=None, min_value=-1000.0, max_value=1000.0, speed=0.1, unique=0):
     imgui.set_next_item_width(draw_state.content_width)
 
     max_int = 2147483647
@@ -2828,18 +2828,18 @@ def draw_tint_context(input_value: DrawState, tab_state: TabState = None, **kwar
         imgui.separator()
     return changed, None
 
-@render_func(use_cache=True, disable_scroll=True, show_header=False,
+@render_func(use_cache=True, disable_scroll=True, show_header=False, searchable=True,
              header_same_line=False, show_tint=False, show_name=False, is_tree=False)
-def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, unique=None, up_key_pressed=None,
+def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, unique=None, search_text='', search_active=False, up_key_pressed=None,
                       down_key_pressed=None, tab_state: TabState = None, **kwargs):
 
     context_menu_offset = input_value.context_menu_offset
-    info_items = ["name", "scroll_disabled", "_default_view_func", "column", "closable", "current_mode", "mode",
+    info_items = ["name", "searchable", "scroll_disabled", "_default_view_func", "column", "closable", "current_mode", "mode",
                   "show_add_delete", "_source", "window_pos", "left", "top", "width", "height", "content_height", "scroll_offset",
                   "final_max_column", "_column_cursor", "_content_rect", "_max_column_index", "_outside_column_height", "disable_scroll" ]
 
     # imgui.text(type(input_value._input_value).__name__)
-    imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0] - 3, imgui.get_cursor_screen_pos()[1] - 20))
+    # imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0] - 3, imgui.get_cursor_screen_pos()[1] - 20))
     if up_key_pressed:
         print("Up key pressed")
 
@@ -2958,7 +2958,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
         tab_names.append(mode_tab)
 
     # Tab list
-
+    
     tab_changed, new_tabs = draw_tab_bar(tab_state.selected_tabs, names=tab_names, wrap=True, tab_height=30, tint_value=0.7,
                                          width=max(50, draw_state.content_width - 100),
                                          show_bg=True, name=f"tab_bar#{view_func_name}{unique}",
@@ -2966,6 +2966,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
                                          collection=indices, tints=tab_tints, as_toggles=False)
     if tab_changed:
         tab_state.selected_tabs = new_tabs
+
 
     for t_idx, static_tab in enumerate(tab_state.selected_tabs):
         from src.lsd.gl_gui.view.mode import Mode
@@ -2977,22 +2978,22 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
 
             if tab_names[static_tab] == info_icon_fa:
 
+                if search_text == "":
+                    search_text = draw_state.search_text
 
-                changed, watch = imgui.input_text(value=draw_state.watch,
-                                          label=f"Watch##{unique}")
-                if changed:
-                    draw_state.watch = watch
-                if draw_state.watch in input_value._kwargs:
-                    item_value = input_value._kwargs.get(draw_state.watch, 'Not found')
-                elif draw_state.watch in input_value.__dict__:
-                    item_value = getattr(input_value, draw_state.watch, 'Not found')
+                if search_text is None or search_text == "":
+                    item_value = ""
+                elif search_text in input_value._kwargs:
+                    item_value = input_value._kwargs.get(search_text, 'Not found')
+                elif search_text in input_value.__dict__:
+                    item_value = getattr(input_value, search_text, 'Not found')
                 else:
-                    item_value = 'Not found'
+                    item_value = f'Not found'
 
-                text(str(item_value), show_bg=False, tint=(0.1, 0.01, 0.4), wrap=False, name=f"{draw_state.watch}##it",
+                imgui.spacing()
+                text(str(item_value), show_bg=False, tint=(0.5, 0.5, 0.0), show_header=True, show_name=True,
+                     wrap=False, name=f"{search_text}##it",
                      column=t_idx, editable=False)
-
-                imgui.new_line()
 
                 draw_str(str(len(input_value._view_children)),
                      show_bg=True, tint=(0.1, 0.01, 0.4), show_header=True, wrap=False, show_name=True, name=f"._view_children##{unique}",
@@ -3002,22 +3003,34 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
                      name=f"scroll_enabled##{unique}",
                      column=t_idx, editable=False)
 
-                
+                draw_str(str(input_value.abs_clipped_height),
+                         show_bg=True, tint=(0.1, 0.01, 0.4), show_header=True, wrap=False, show_name=True,
+                         name=f"abs_clip_height##{unique}",
+                         column=t_idx, editable=False)
+                draw_str(str(input_value._observed_content_height),
+                         show_bg=True, tint=(0.1, 0.01, 0.4), show_header=True, wrap=False, show_name=True,
+                         name=f"_observed_content_height##{unique}",
+                         column=t_idx, editable=False)
 
+                draw_str(str(input_value.abs_content_height),
+                         show_bg=True, tint=(0.1, 0.01, 0.4), show_header=True, wrap=False, show_name=True,
+                         name=f"abs_content_height##{unique}",
+                         column=t_idx, editable=False)
                 text(f"{input_value._view_func.__name__}", show_bg=True, show_name=True, show_header=True, wrap=True, name="Rendered by", column=t_idx,
                      editable=False, tint=(0.84, 0.68, 0.639))
-                text(f"{type(input_value._raw_input_value).__name__}", name="input_value type", column=t_idx, editable=False)
+                text(f"{type(input_value._raw_input_value).__name__}", show_name=True,
+                     show_header=True, name="input_value type", column=t_idx, editable=False)
 
-                text(f"{input_value.window_index}", name="window_index", column=t_idx,
+                text(f"{input_value.window_index}", show_name=True, show_header=True, name="window_index", column=t_idx,
                      editable=False, tint=(0.8, 0.8, 0.2))
 
-                text(f"{input_value._default_view_func}", name="default_view_func", column=t_idx,
+                text(f"{input_value._default_view_func}", show_name=True, name="default_view_func", column=t_idx,
                      editable=False)
 
-                text(f"{input_value._kwargs.get('real_type', None)}", name="kwargs type", column=t_idx,
+                text(f"{input_value._kwargs.get('real_type', None)}",show_name=True, name="kwargs type", column=t_idx,
                      editable=False)
 
-                text(f"{input_value._kwargs.get('type_collection', None)}", name="kwargs collection type", column=t_idx,
+                text(f"{input_value._kwargs.get('type_collection', None)}", show_name=True, name="kwargs collection type", column=t_idx,
                      editable=False)
 
                 for info_item in info_items:
@@ -3090,8 +3103,6 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
                     _caller_label = f"{Path(_caller_file).name}:{_caller_line}"
                     if _caller_fn is not None:
                         _caller_label = f"{_caller_fn.__name__}  ({_caller_label})"
-                    imgui.text("Called from")
-                    imgui.same_line()
                     if button(_caller_label,
                               height=30, value=0.4, saturation=1.5,
                               column=t_idx, name="jump_to_caller")[0]:

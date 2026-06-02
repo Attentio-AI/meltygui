@@ -186,7 +186,7 @@ class TileMode(Enum):
          "shadow", "size_change", "drag_released", "clicked", "dragged", "clipped_by_rect",
          "dragged", "expanded_height", "clipped", "fully_clipped",  "header_height", "inside_clip", "layer",
          "overhead_time", "scroll_visible", "depth_and_layer", "imgui_is_toggled_open", "top", "left",
-         "hotkey_receiver", "use_child", "cst", "search_text", "bg_color", "depth", "z_pos",
+         "hotkey_receiver", "use_child", "cst", "bg_color", "depth", "z_pos",
          "is_active", "clip_rect", "wrapped_top", "current_tint", "wrapped_left", "multi_line", "content_height",
          "min_width", "min_height", "is_focused", "drag_window_pos_x", "drag_window_pos_y", "corner_radius",
          "drag_mode", "is_hovered_last", "bg_shown", "draw_window_pos_x", "z_offset", "content_width", "melty_window",
@@ -308,6 +308,8 @@ class DrawState(DictConversion):
         self._abs_left_cache = 0
         self._abs_top_key = None
         self._abs_top_cache = 0
+        self._abs_content_height_cache = 0
+        self._abs_content_height_key = None
         # pin_rect/clip_anchor_base keys widen over frame_count too: the wrapper
         # writes pin_target/pin_clip_rect/pin_clamp/parent_anchor_pos mid-frame
         # (core_render.py:995–1041), AFTER earlier hover/clip code may have already
@@ -469,6 +471,11 @@ class DrawState(DictConversion):
         self.final_max_column = 0
         self._current_max_column = 0
         self._column_cursor = defaultdict(lambda: [0, 0])
+        self._melty_cursor = (0,0)
+        self._melty_content_height = 0
+
+
+
         self._outside_column_height = 0
         self._inner_cursor = 0 # column -> (x, y)
         self._columns_top = None
@@ -512,6 +519,7 @@ class DrawState(DictConversion):
         self._all_pending = {"save_pending":None, "load_pending":None}
         self._load_pending_for = 0
         self._content_rect = (100,30)
+        self._observed_content_height = 0
         self._last_expanded = None
         self.expanded_rect = (0, 0, 0, 0)
         self._collapsed_rect = (0, 0, 0, 0)
@@ -595,6 +603,11 @@ class DrawState(DictConversion):
     def invalidate(self):
         Core.melty.cache.invalidate(self._tile_id)
 
+    @property
+    def cursor_screen_pos(self):
+        cursor_x = self.abs_left + self._melty_cursor[0]
+        cursor_y = self.abs_top + self._melty_cursor[1]
+        return cursor_x, cursor_y
 
     @property
     def clip_size(self):
@@ -668,6 +681,55 @@ class DrawState(DictConversion):
     #         self._args[name[3:]] = value
     #     else:
     #         super().__setattr__(name, value)
+
+    @property
+    def abs_clipped_height(self):
+        clip_rect = (self._parent.abs_left,
+                     self._parent.abs_top,
+                     self._parent.abs_left + self._parent.width,
+                     self._parent.abs_top + self._parent.height)
+
+        clipped_bottom = min(clip_rect[3], self.abs_top + self.height)
+        clipped_top = max(clip_rect[1], self.abs_top)
+        clipped_height = clipped_bottom - clipped_top
+        return max(0, clipped_height)
+
+    @property
+    def abs_content_height(self):
+
+        content_height = 0
+        f = Core.melty.frame_count
+        key = (f, self.height, self._parent.abs_clip_rect, self._observed_content_height)
+        is_scroll_view = not self._kwargs.get("disable_scroll", True)
+        if self._abs_content_height_key == key:
+            return self._abs_content_height_cache
+        for child in self._view_children.values():
+            if child._kwargs.get("column", 0) != 0:
+                continue
+
+            if child.closable:
+                continue
+            if is_scroll_view:
+                clipped_bottom = child.abs_top + child.height
+                clipped_top = child.abs_top
+            else:
+                clip_rect = self._parent.abs_clip_rect
+                clipped_bottom = min(clip_rect[3], child.abs_top + child.height)
+                clipped_top = max(clip_rect[1], child.abs_top)
+
+            clipped_height = clipped_bottom - clipped_top
+            content_height += max(0, clipped_height)
+
+        # Special case where view wants to scroll but has no children for which to determine content height
+        if "determines_height" in self._kwargs:
+            content_height = self._content_rect[1]
+        self._abs_content_height_cache = content_height
+
+        # if is_scroll_view:
+        #     content_height = max(content_height, self.height)
+
+        return int(content_height)
+
     @property
     def abs_layer(self):
 
@@ -993,6 +1055,41 @@ class DrawState(DictConversion):
                 int(max(abs_top, clip[1])),
                 int(min(box_right, clip[2])),
                 int(min(box_bottom, clip[3])))
+
+    @property
+    def abs_clip_rect_local(self):
+        abs_left = self.abs_left
+        abs_top = self.abs_top
+        clipped_by = self.clipped_by_rect
+        if clipped_by is None:
+            clip =  (abs_left, abs_top, abs_left + self.width, abs_top + self.height)
+        else:
+            clip = (abs_left + clipped_by[0],
+                    abs_top + clipped_by[1],
+                    abs_left + self.width - clipped_by[2],
+                    abs_top + self.height - clipped_by[3])
+        box_right = abs_left + self.width
+        box_bottom = abs_top + self.height
+        # clip_rect is captured in absolute screen coords, so it's correct while
+        # content scrolls (the clip region is fixed in screen space) but stale
+        # when the whole window moves. Shift it by however far the parent window
+        # has moved since capture - zero during scroll, the drag delta during a
+        # window drag - so the clamp tracks the window without a re-render. The
+        # clip region moves rigidly with the window, so a uniform shift is exact.
+        pw = self.parent_window
+        anchor = self._clip_win_anchor
+        if pw is not None and pw is not self and anchor is not None:
+            dx = pw._abs_left() - anchor[0]
+            dy = pw._abs_top() - anchor[1]
+            clip = (clip[0] + dx, clip[1] + dy, clip[2] + dx, clip[3] + dy)
+
+        # Intersect the LIVE box with the (shifted) clip rect. Both move with the
+        # window now, so the clamped edges stay locked to the unclamped corner.
+        return (int(max(abs_left, clip[0])),
+                int(max(abs_top, clip[1])),
+                int(min(box_right, clip[2])),
+                int(min(box_bottom, clip[3])))
+
 
 
     def children_in_clip(self, clip=None, max_depth=1):

@@ -78,7 +78,7 @@ class Mode(Enum):
         (type, types.FunctionType, types.ModuleType): ModeOverrides(
             kwargs={"auto_load_edits": True,
                     "auto_load": True,
-                    "auto_save": False,
+                    "auto_save": True,
                     'view_func': draw_modes,
                     "child_kwargs" : {
                         "modes": [RenderFuncs.draw_text, RenderFuncs.draw_collection],
@@ -145,8 +145,7 @@ class Mode(Enum):
         Any: ModeOverrides(
             kwargs={"show_bg": True, "selectable": False, "use_cache": True, "melty_window": False, "closable": True,
                     "with_header_end": draw_header_end, "auto_resize": False, "draggable": True, 'shadow': True,
-                    "show_tint": False, "show_header": True, "with_footer": draw_footer, 'indent_size': 5,
-                    "disable_scroll": True, "search_text": "", "searchable": True,
+                    "show_tint": False, "show_header": True, "with_footer": draw_footer, 'indent_size': 5, "search_text": "", "searchable": True,
                     "show_add_delete": False, "with_header": draw_header, "min_width": 200, "min_height": 60,
                     "initial": {"width": 400, "height": 420, "window_pos": (100, 500)}},
 

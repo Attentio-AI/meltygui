@@ -102,7 +102,6 @@ def recompile_source(source, code_str, file_path):
         result = _recompile(source, code_str, str(file_path))
     elif isinstance(source, types.ModuleType):
         result = _recompile_module(source, code_str, str(file_path))
-
     return result
 
 
@@ -124,18 +123,17 @@ class TestClass:
     some_val = 10
     new_bool = True
     a_dict = {"x": -52, "y": 53}
-    a_dict = {"x": -52, "y": 53}
 
 
 def slow_task(**kwargs):
     import time
     print("Starting slow task...")
     time.sleep(1)
-    print("Slow task completed.")
-    return {"result": "This is the result of the slow task", "kwargs": kwargs}
-    print("Slow task completed.")
-    return {"result": "This is the result of the slow task", "kwargs": kwargs}
 
+    print("Slow task completed.")
+    return {"result": "This is the result of the slow task", "kwargs": kwargs}
+    print("Slow task completed.")
+    return {"result": "This is the result of the slow task", "kwargs": kwargs}
     print("Slow task completed.")
     return {"result": "This is the result of the slow task", "kwargs": kwargs}
 
@@ -144,7 +142,7 @@ def slow_task(**kwargs):
 @render_func(use_cache=True)
 def editor_window():
     code_file_io(
-        toggles,
+        TestClass,
         view_func=draw_modes,
         auto_load_edits=True,
         auto_load=True,
@@ -166,12 +164,11 @@ def editor_window():
     )
     return False, None
 
-
 @window()
 @render_func(use_cache=True)
 def editor_window_2():
     code_file_io(
-        toggles,
+        TestClass,
         view_func=draw_modes,
         auto_load_edits=False,
         auto_load=False,
@@ -193,13 +190,12 @@ def editor_window_2():
     )
     return False, None
 
-
 @window()
 @render_func(use_cache=True, disable_scroll=True)
 def editor_window_4():
     # view_func=draw_modes: text | dict tabs over one shared file-IO layer.
     code_file_io(
-        toggles,
+        TestClass,
         view_func=draw_modes,
         auto_load_edits=True,
         auto_load=True,
@@ -225,8 +221,6 @@ def editor_window_4():
 @window()
 @render_func(use_cache=True)
 def editor_window_3():
-
-
     code_file_io(slow_task, auto_load_edits=False, auto_load=False)
     return False, None
 
@@ -526,6 +520,11 @@ class ModesState:
         self.last_input = UNSET
         self.last_error = None
 
+def compute_height(draw_state):
+    view_top = draw_state.abs_top
+    delta_from_top = view_top - draw_state.parent_window.abs_top
+    fill_height = draw_state.parent_window.height - delta_from_top - 15
+    return fill_height
 
 @render_func(use_cache=True, show_bg=False, selectable=False, disable_scroll=True,
              shadow=False, indent_size=0, with_footer=None, fill_height=True)
@@ -567,9 +566,9 @@ def draw_modes(input_value, modes=None, chain_in=None, chain_out=None, route=Non
         tab_state.selected_tabs = [modes[0]]
 
     names = [getattr(view_of(m), '__name__', str(m)) for m in modes]
-    tab_changed, new_tabs = RenderFuncs.draw_tab_bar(indent_size=0,
-        input_value=tab_state.selected_tabs, collection=modes, names=names,
-        tab_height=26, show_bg=False, name=f"mode_tabs{unique}", as_toggles=False)
+    tab_changed, new_tabs = RenderFuncs.draw_tab_bar(indent_size=0, z_offset=-1,
+        input_value=tab_state.selected_tabs, collection=modes, names=names, bg_offset=2, wrap=True,
+        tab_height=26, show_bg=True, name=f"mode_tabs{unique}", as_toggles=False)
     if tab_changed:
         tab_state.selected_tabs = new_tabs
 
@@ -673,14 +672,17 @@ def draw_modes(input_value, modes=None, chain_in=None, chain_out=None, route=Non
         else:
             out_value, out_changed = m_out, True
 
-
     return out_changed, out_value
 
+
+def code_file_footer(input_value, code_state, **kwargs):
+    imgui.text(str(code_state.address.path))
+    return False, None
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  editable_source - the whole round-trip, one function                        ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
-@render_func(use_cache=True, selectable=False, searchable=True, disable_scroll=True, temp=True)
+@render_func(use_cache=True, selectable=False, searchable=True, with_footer=code_file_footer, disable_scroll=True, temp=True)
 def code_file_io(input_value, code_state: CodeState, codec=None, view_func=RenderFuncs.draw_text, auto_load=True,
                  auto_load_edits=False,
                  child_kwargs=None, draw_state=None, auto_save=True, auto_recompile_edits=False, save=False, load=False,
@@ -701,6 +703,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
         code_state.address = address
         top_line_height = 30
         external_change = False
+        imgui.same_line(spacing=0)
 
         if address is None:
             RenderFuncs.draw_text(
@@ -721,7 +724,6 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                 RenderFuncs.button(f"{play_icon} Run", tint=(0, 0.4, 0.1), height=top_line_height,
                                    name="recompile_btn")[0]
 
-
         if code_state.recompiled_on_frame is not None:
             duration = 10
             recompiled_on = Melty.frame_count - code_state.recompiled_on_frame
@@ -733,7 +735,6 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             if fade_out > 0.01:
                 draw_state.invalidate()
                 request_render()
-
 
         if code_state.is_file_stale() and not code_state.pending_save:
             if auto_load_edits:
@@ -753,6 +754,10 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             imgui.same_line(spacing=0)
             if RenderFuncs.button("Save", width=100, height=top_line_height, name=f"save")[0]:
                 save = True
+
+        if auto_save:
+            imgui.same_line(spacing=0)
+            imgui.text(f"Auto-save")
 
         changed, new_text = run_in_background(load_file,
                                               child_kwargs={"input_value": address, 'codec': codec},

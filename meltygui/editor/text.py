@@ -612,7 +612,8 @@ def _describe_code_tree(code_tree):
     return name
 
 
-@render_func(show_bg=True, wrap=False, use_cache=True, with_header=draw_header, shadow=True, with_footer=draw_footer,
+@render_func(show_bg=True, wrap=False, use_cache=True, disable_scroll=False,
+             with_header=draw_header, shadow=True, with_footer=draw_footer, determines_height=True,
              selectable=False, searchable=True, bg_offset=-100)
 def draw_text(input_value: str,
               left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
@@ -1250,7 +1251,7 @@ def draw_text(input_value: str,
     else:
         text_height = (input_value.count('\n') + 1) * line_px + 2
 
-    imgui.dummy(draw_state.width, text_height + 10)
+    imgui.dummy(draw_state.width, text_height)
 
     if _font_pushed:
         imgui.pop_font()
