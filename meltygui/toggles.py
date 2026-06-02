@@ -145,6 +145,12 @@ class Toggles:
     # invalidation stop-at-filled gate is actually marking tiles complete.
     show_filled_tiles = False
     
+    # When False, PyOpenGL's per-call glGetError round-trip is disabled (a
+    # main-thread hotspot - ~10% of active CPU). Flip to True to restore
+    # checking for debugging GL state. Honored externally via
+    # MeltyCore.set_gl_error_checking, called each begin_frame.
+    gl_check_error = False
+
     # Invalidation settings
     invalidate_stack_trace = False
     text_focus_stack_trace = False
@@ -154,7 +160,7 @@ class Toggles:
     slow_down_threads = False
     render_depth = False
     ds_invalidate_stack = False
-    profile_mode = ProfileMode.LIGHT
+    profile_mode = ProfileMode.ON
     debug_stale_tint = False
     show_line_break = False
   

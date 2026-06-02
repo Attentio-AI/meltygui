@@ -510,6 +510,20 @@ class Melty:
     _bvh = rtree_index.Index()
     _bvh_next_id = 0
     _bvh_id_to_ds = {}
+    # Bumped on every insert/delete that mutates the index. bvh_query memoizes
+    # results by (x, y) and discards the memo whenever this changes. The index
+    # mutates mid-frame (views call pos_changed as they render), so this keeps
+    # the cached HIT SET exact - a memo only survives between two queries with
+    # no intervening index change. The sort key (z_pos/closed) can shift without
+    # an index mutation, so a reused result may carry a one-frame-stale ordering,
+    # which is within Melty's existing frame-lag tolerance for hover/z-order.
+    _bvh_gen = 0
+    _bvh_query_cache = {}
+    _bvh_query_cache_gen = -1
+
+    # GL error-checking gate state (see _sync_gl_error_checking).
+    _gl_check_applied = None       # Last-applied Toggles.gl_check_error value
+    _gl_checker_default = None     # initial _registered value, captured once
     # id(ds) for every draw_state whose bbox is under the cursor this frame - a
     # begin_frame snapshot of bvh_query. hover_eligible / is_bounding_hovered do
     # O(1) membership against this instead of imgui.is_mouse_hovering_rect.
@@ -577,6 +591,7 @@ class Melty:
         draw_state._bvh_id = rid
         cls._bvh_id_to_ds[rid] = draw_state
         cls._bvh.insert(rid, bbox)
+        cls._bvh_gen += 1
         draw_state._bvh_bbox = bbox
         return rid
 
@@ -589,6 +604,7 @@ class Melty:
         if bbox is not None:
             try:
                 cls._bvh.delete(rid, bbox)
+                cls._bvh_gen += 1
             except Exception:
                 pass
         cls._bvh_id_to_ds.pop(rid, None)
@@ -604,11 +620,13 @@ class Melty:
         if old_bbox is not None:
             try:
                 cls._bvh.delete(rid, old_bbox)
+                cls._bvh_gen += 1
             except Exception:
                 pass
         new_bbox = draw_state.bbox
         if new_bbox is not None:
             cls._bvh.insert(rid, new_bbox)
+            cls._bvh_gen += 1
             draw_state._bvh_bbox = new_bbox
         else:
             cls._bvh_id_to_ds.pop(rid, None)
@@ -645,7 +663,21 @@ class Melty:
 
     @classmethod
     def bvh_query(cls, x, y):
-        """Hit test — returns all DrawStates under the point."""
+        """Hit test — returns all DrawStates under the point.
+
+        Memoized per (x, y) and invalidated whenever the index mutates (via
+        _bvh_gen), so the many identical cursor queries issued across a single
+        frame — hover-suppression fires one per bounding-hovered view — collapse
+        onto a single rtree.intersection call. Callers must treat the returned
+        list as read-only (it is shared across cache hits); all current callers
+        only iterate or index it."""
+        if cls._bvh_query_cache_gen != cls._bvh_gen:
+            cls._bvh_query_cache = {}
+            cls._bvh_query_cache_gen = cls._bvh_gen
+        key = (x, y)
+        if key in cls._bvh_query_cache:
+            return cls._bvh_query_cache[key]
+
         hits = [
             cls._bvh_id_to_ds[rid]
             for rid in cls._bvh.intersection((x, y, x, y))
@@ -659,10 +691,45 @@ class Melty:
 
         unique_hits.sort(key=lambda ds: ds.z_pos or 0, reverse=True)
 
+        cls._bvh_query_cache[key] = unique_hits
         return unique_hits
 
     @classmethod
+    def _sync_gl_error_checking(cls):
+        """Honor Toggles.gl_check_error, disabling PyOpenGL's per-call
+        glGetError round-trip when off (a render-thread hotspot).
+
+        Every GL wrapper shares one _ErrorChecker and calls its _currentChecker
+        after each GL call. Swapping that to nullGetError suppresses the driver
+        round-trip across all built and future functions at once — live and
+        independent of import order, unlike the build-time OpenGL.ERROR_CHECKING
+        flag. Re-checked each frame (a bool compare + early return) so the
+        toggle takes effect at runtime. Best-effort: any failure leaves GL
+        checking in its current state."""
+        want = bool(Toggles.gl_check_error)
+        if want == cls._gl_check_applied:
+            return
+        try:
+            from OpenGL.raw.GL import _errors
+            ec = _errors._error_checker
+            if ec is None:
+                return
+            # Capture the default checker once, before the first swap, so enabling
+            # restores the exact original (safeGetError or _getErrors).
+            if cls._gl_checker_default is None:
+                cls._gl_checker_default = ec._registeredChecker
+            ec._registeredChecker = cls._gl_checker_default if want else ec.nullGetError
+            ec._currentChecker = ec._registeredChecker
+            # Keep newly-built wrappers consistent with the live state.
+            import OpenGL
+            OpenGL.ERROR_CHECKING = want
+            cls._gl_check_applied = want
+        except Exception:
+            pass
+
+    @classmethod
     def begin_frame(cls):
+        cls._sync_gl_error_checking()
         cls.unique_stack = []
         cls.draw_state_stack = []
         cls.flow_spacing = 0.0

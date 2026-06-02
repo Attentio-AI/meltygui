@@ -1068,86 +1068,10 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
             window_func = kwargs.pop("view_func", draw_any)
             window_func(window_cls, **kwargs)
 
-    changed, value = draw_any(input_value=draw_bg, name="draw_bg_new_mode",
-                                     show_bg=True, mode=(Mode.CODE, Mode.WINDOW))
-    if changed:
-        test_code = value
-
-    changed, value = draw_with_modes(input_value=draw_bg, name="draw_bg",
-                              show_bg=True, modes=(Mode.CODE_UI,
-                                                   Mode.CODE_PLAIN_TEXT,
-                                                   Mode.RUNNING), mode=(Mode.WINDOW))
-    if changed:
-        test_code = value
-
-
-    draw_with_modes(input_value=test_func, name="demo test",
-                                     show_bg=True, mode=(Mode.WINDOW), modes=[Mode.CODE_PLAIN_TEXT, Mode.CODE_UI])
-
-    draw_tensor(some_test_tensor, name="Tensor", mode=Mode.WINDOW)
-
-    # some_path = Path("/home/lukas/test_folder/test_list.txt")
-    # changed, value = draw_any(some_path, name="test_path_render", mode=(Mode.FILE_META, Mode.WINDOW))
-    # if changed:
-    #     path = value
-
     from src.lsd.gl_gui.model.app_model import TensorView
     draw_any(TensorView, name="Tensorview", mode=(Mode.WINDOW))
 
-    # draw_any(global_toggles, name="Toggles", auto_resize=True, wrap=True, use_cache=True, show_bg=True, mode=Mode.WINDOW)
-    # changed, new_val = draw_any(Melty.cache.enabled, name="Offscreen Rendering", wrap=True, show_bg=True, use_cache=True)
-    # if changed:
-    #     if new_val:
-    #         Melty.cache.set_enabled(True)
-    #     else:
-    #         Melty.cache.set_enabled(False)
-    #     Melty.cache.invalidate_all()
-    #     request_render()
-
-    # changed, new_val = draw_any(Melty.cache.copy_debug_mode, name="Offscreen Debug", wrap=True, use_cache=True)
-    # if changed:
-    #     # Melty.cache.offscreen_debug_mode = new_val
-    #     Melty.cache.copy_debug_mode = new_val
-    #     Melty.cache.invalidate_all()
-    #     request_render()
-
-    # changed, new_val = draw_any(Melty.cache.offscreen_scale, name="Debug Scale",
-    #                             min_value=0.0, max_value=255.0, wrap=True, use_cache=True)
-    # if changed:
-    #     Melty.cache.offscreen_scale = new_val
-    #     Melty.cache.invalidate_all()
-    #     request_render()
-    #
-    # global some_float
-    # changed, new_float = draw_window(some_float[0], name="Conversion Test", view_func=draw_collection, convert=dict)
-    # if changed:
-    #     print("New float value:", new_float)
-    #     some_float[0] = new_float
-
-    # global selected_tabs
-    # changed, new_tabs = draw_tab_bar(selected_tabs, collection=["Alpha", "Beta", "Gamma", "Delta"],
-    #                                  name="Tab Bar Demo", mode=Mode.WINDOW)
-    # if changed:
-    #     selected_tabs = new_tabs
-
-
-    # draw_enum_tabs(ProfileType, name="Enum Tab Bar Demo", mode=Mode.WINDOW)
-
-    # draw_window(monitor, name="Monitor")
-
-    # draw_window(threading.enumerate(), name="Threads")
-
-    # draw_window(core_model, name="Module test")
-
-    # test_columns(input_value="Nksjlkjne", mode=Mode.WINDOW, name="Test Columns")
-
-    # draw_window(draw_main, name="Draw Main Function")
-
-    # draw_window(test_obj, name="Layer 1")
-
     draw_any(filesystem_proxy, name="Filesystem", disable_scroll=False, mode=Mode.WINDOW)
-
-    draw_any(input_value=proxy, name="CST Proxy", mode=Mode.WINDOW)
 
     global drop_down_selection
     changed, selection = draw_dropdown(drop_down_selection, collection=dropdown_demo_data,
@@ -1156,19 +1080,11 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
         drop_down_selection = selection
         print("Drop down change", str(selection))
 
-    draw_collection(vis.root.lora_collection, name="Test Window 1", mode=Mode.WINDOW)
-    draw_any(vis.root.lora_collection, name="Test Window 2", mode=Mode.WINDOW)
-    draw_any(vis.root.lora_collection.loras, name="Test Window 3", child_kwargs={
+    draw_collection(vis.root.lora_collection, name="Loras", mode=Mode.WINDOW)
+    draw_any(vis.root.lora_collection, name="Loras Alt View", mode=Mode.WINDOW)
+    draw_any(vis.root.lora_collection.loras, name="Loras View Three", child_kwargs={
        'is_tree':True, 'expanded':False, 'show_add_delete': False}, mode=Mode.WINDOW)
 
-
-    # draw_window("test", name="Test Widget Window")
-
-    # changed, new_val = draw_window(0.0, layer=31, name="Test return")
-    # if changed:
-    #     print("Value changed:", new_val)
-
-    # changed, new_val = draw_window([1, 2, 3, 4, 5], name="Test List", horizontal=True, tint=(1, 0, 0))
 
     normalized_sub_mask, _, _ = Melty.filter.normalize(Melty.cache._mask_tex)
     draw_texture(normalized_sub_mask, show_bg=True, max_contrast=30, jet=True,
@@ -1178,28 +1094,12 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     normalized_sub_mask, _, _ = Melty.filter.normalize(Melty.cache._full_mask_tex)
     draw_any(normalized_sub_mask, show_bg=True, max_contrast=30, jet=True,
                 max_brightness=30, name="full_mask_tex", live=True, mode=Mode.WINDOW)
-    #
-    # draw_window("input_val", name="Outer live", view_func=test_widget, live=True)
-    # draw_window("input_val", name="Outer no live", view_func=test_widget, live=False)
-
-    # draw_window(Melty.last_request_render, show_bg=True, name="Last Invalid")
 
     mouse_pos = imgui.get_mouse_pos()
     ds_under_mouse = Melty.bvh_query(mouse_pos[0], mouse_pos[1])
     ds_names = [ds.name for ds in ds_under_mouse]
     draw_any(ds_names, name="Draw State under mouse", show_bg=True, wrap=True, use_cache=True, mode=Mode.WINDOW, live=True)
-    #
-    last_ds_under_mouse = list(Melty.selected)[-1] if len(Melty.selected) > 0 else None
-    # if last_ds_under_mouse is not None:
-    #     Melty.active_layer = last_ds_under_mouse.layer
-    #     last_ds_under_mouse.layer = Melty.active_layer
-    #     last_ds_under_mouse.z_pos = Melty.z_pos
-    #     last_ds_under_mouse.depth_and_layer = (Melty.shadow_depth, Melty.active_layer)
-    #     last_ds_under_mouse._kwargs['active_layer'] = Melty.active_layer
-    #
-    #     if Melty.channels_split:
-    #         imgui.get_window_draw_list().channels_set_current(min(Melty.active_layer, Melty.max_depth - 1))
-    #     Melty.draw(last_ds_under_mouse, detached=True)
+
 
 
 @render_func
