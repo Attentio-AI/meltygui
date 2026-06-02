@@ -94,7 +94,7 @@ def get_texture_min_max(texture_id: int) -> tuple[float, float]:
     height = glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT)
 
     # Calculate workgroup dimensions
-    workgroup_size = 16
+    workgroup_size = 4
     num_workgroups_x = (width + workgroup_size - 1) // workgroup_size
     num_workgroups_y = (height + workgroup_size - 1) // workgroup_size
     total_workgroups = num_workgroups_x * num_workgroups_y
