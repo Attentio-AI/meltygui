@@ -353,6 +353,24 @@ def _select_unit_right(text, pos):
     return end
 
 
+def _unit_left_of(text, pos):
+    """Start of the click-selection unit ending just LEFT of the caret at `pos`
+    — the span a ctrl-backspace removes. Anchors on text[pos-1] (the char left of
+    the caret), unlike _select_unit_left, which anchors on the char UNDER the
+    caret for double-click selection. Anchoring on the right char there made
+    ctrl-backspace a no-op whenever the caret sat just before a bracket/operator
+    or newline (the common case in code)."""
+    if pos <= 0:
+        return 0
+    cls = _char_class(text[pos - 1])
+    if cls in ('nl', 'solo'):
+        return pos - 1  # a single bracket or newline is its own unit
+    start = pos - 1
+    while start > 0 and _char_class(text[start - 1]) == cls:
+        start -= 1
+    return start
+
+
 def _get_indent(text, index):
     ls = _get_line_start(text, index)
     indent = 0
@@ -641,9 +659,25 @@ def draw_text(input_value: str,
     # Jump-to-source button drawn inline at the top (before the monospace font
     # push, so it uses the normal UI font), before the text body. The first error
     # message (if any) rides into the header, beside the filename, in red.
+    bar_height = 0.0
     if jump_to is not None:
         _err_msg = _err_markers[0][1] if _err_markers else None
+        # Float the jump-to/error bar at the top of the visible viewport instead
+        # of letting it scroll away with the code. When the body has scrolled up
+        # above its clip rect, shift the bar down by that overflow so it stays
+        # pinned to the clip top; at scroll 0 the content top equals the clip top
+        # so float_dy is 0 and the bar is in its natural place. Drawing it at the
+        # shifted (on-screen) position also keeps draw_jump_to's own clip rect from
+        # collapsing once the content top passes above the viewport.
+        _bx, _by = imgui.get_cursor_screen_pos()
+        float_dy = max(0.0, draw_state.abs_clip_rect[1] - _by)
+        imgui.set_cursor_screen_pos((_bx, _by + float_dy))
         draw_jump_to(jump_to, error_msg=_err_msg)
+        bar_height = imgui.get_cursor_screen_pos()[1] - (_by + float_dy)
+        # Resume body layout at the real (unscrolled) content position so the code
+        # lines keep their normal positions; only the bar was floated. The text
+        # clip below is raised by bar_height so glyphs never paint over the bar.
+        imgui.set_cursor_screen_pos((_bx, _by + bar_height))
 
     _font_pushed = False
     if font is not None and Melty.font_mgr is not None:
@@ -908,8 +942,10 @@ def draw_text(input_value: str,
                 if ctrl:
                     # Same granular behaviour as ctrl-click selection so a
                     # ctrl-backspace stops at a bracket/operator instead of
-                    # eating a whole run of '{(' etc.
-                    new_pos = _select_unit_left(text, ds.text_cursor_pos)
+                    # eating a whole run of '{(' etc. Anchored on the char LEFT of
+                    # the caret so it deletes the unit behind the caret (not the
+                    # one under it, which left it a no-op before a bracket).
+                    new_pos = _unit_left_of(text, ds.text_cursor_pos)
                     text = text[:new_pos] + text[ds.text_cursor_pos:]
                     ds.text_cursor_pos = new_pos
                 elif (ds.text_cursor_pos >= 4
@@ -1178,7 +1214,9 @@ def draw_text(input_value: str,
     # Text content is clipped to start after the gutter, so highlights never
     # bleed under the line numbers when scrolled horizontally.
     rect_min_x = left + gutter_w
-    rect_min_y = draw_state.abs_clip_rect[1]
+    # Clip the text body to start below the floating jump-to bar so scrolled code
+    # never appears over it (the bar is drawn above, before the body).
+    rect_min_y = draw_state.abs_clip_rect[1] + bar_height
     rect_max_x = left + draw_state.content_width
     rect_max_y = draw_state.abs_clip_rect[3]
 

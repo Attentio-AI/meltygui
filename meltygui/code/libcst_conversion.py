@@ -131,7 +131,7 @@ class Conditional(dict):
         keys = ",".join(sorted(str(k) for k in self.keys() if not str(k).startswith("_")))
         return f"Conditional:{self.condition}:{keys}"
 
-@defaults(tint=(0.10176312923431396, 0.4465116262435913, 0.1819370836019516))
+@defaults(tint=(0.10816656798124313, 0.4651162624359131, 0.3904058337211609))
 class Loop(dict):
     """A for-loop block's contents, as a dict subclass.
 

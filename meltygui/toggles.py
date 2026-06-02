@@ -125,7 +125,7 @@ class Swoosh:
     some_dict = [1,1,1,1]
 
 
-@window(tint=(0.6, 0.8, 0.9))
+@window(tint=(0.7, 0.78, 0.9))
 class Toggles:
     test_float = 3.303
     debug_scroll = False
@@ -139,10 +139,12 @@ class Toggles:
     @defaults(tint=(0.08177394419908524, 0.1272051,0.195348858833313))
     class Debug:
         slow_frame_rate = False
-    # Overlay a transparent green square on any draw_state whose blit tile is
+   
+     # Overlay a small green rect on every draw_state whose blit tile is
     # fully filled (filled_bbox covers full size). Used to verify the scroll-
     # invalidation stop-at-filled gate is actually marking tiles complete.
     show_filled_tiles = False
+    
     # Invalidation settings
     invalidate_stack_trace = False
     text_focus_stack_trace = False
@@ -155,18 +157,20 @@ class Toggles:
     profile_mode = ProfileMode.LIGHT
     debug_stale_tint = False
     show_line_break = False
+  
     # Filter SettingS
     brightness = 0.317
     contrast = 1.574
     saturation = -0.4
-    prefered_header_width = 204
+    prefered_header_width = 115
     max_preferred_header_width = 196
     debug_z_depth = False
     filters = True
     show_excluded = True
     layer_stack_trace = False
     show_line_breaks = False
-    # Shadow Settings
+   
+     # Shadow Settings
     shadow_downscale = 2
     shadow_edge_sharpness = 50.0
     draw_legacy = False

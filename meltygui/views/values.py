@@ -99,7 +99,10 @@ def draw_module(input_value: types.ModuleType, draw_state, **kwargs):
              header_single_line=True, show_name=True, temp=True,
              show_bg=True, with_header=draw_header)
 def draw_type_name(input_value, **kwargs):
-    imgui.text(f"{input_value.__name__}")
+    try:
+        imgui.text(f"{input_value.__name__}")
+    except Exception as e:
+        imgui.text(f"Error displaying type: {e}")
 
 
 def _collection_match_keys(input_value, keys, excluded, show_excluded):
@@ -589,9 +592,8 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
                
                 if child_draw_state.height > 50:
                     imgui.dummy(0, 0)
-                    imgui.new_line()
                     
-                if space_left < 0:
+                elif space_left < 0:
                     imgui.new_line()
                     imgui.dummy(0, item_spacing_y)
 
@@ -2717,6 +2719,7 @@ def draw_enum(input_value: Enum, style_manager=None, enum_tint=(0.3, 0.3, 0.3)):
     options = list(input_value.__class__)
     names = [opt.name.replace("_", " ").capitalize() for opt in options]
     changed, selected = draw_tab_bar([input_value], collection=options, names=names,
+                                    min_width=300,
                                      unique="enum", as_toggles=False)
     if changed and selected:
         return True, selected[0]
