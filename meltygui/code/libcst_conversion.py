@@ -175,6 +175,7 @@ class GeneralParse(dict):
         self._bg_hash_cache: str | None = None
         # this would be the address used to load, if available
         self.source_ref = Any | None
+        self.symbol_usage = [None]
 
     # def __bg_hash__(self) -> str:
     #     if self._bg_hash_cache is None:
@@ -298,6 +299,29 @@ class UsageRef:
         return hash((self.path, self.line, self.column))
 
 
+class SymbolUsage:
+    """Complete usage data for a single symbol referenced in a view's source.
+
+    - definition: where the symbol is defined (jedi goto) — drives "jump to def".
+    - callers:    every reference to it across the project (jedi get_references),
+                  each a UsageRef carrying the caller's file/line/col and the
+                  enclosing function/class name in `scope`.
+    - sites:      (line, col) of each occurrence of the symbol IN this view's
+                  source (file-absolute), so a click can be mapped to the symbol.
+    """
+    __slots__ = ("name", "definition", "callers", "sites")
+
+    def __init__(self, name, definition=None, callers=None, sites=None):
+        self.name = name
+        self.definition: 'UsageRef | None' = definition
+        self.callers: list['UsageRef'] = callers if callers is not None else []
+        self.sites: list[tuple[int, int]] = sites if sites is not None else []
+
+    def __repr__(self):
+        d = f"{self.definition.path.name}:{self.definition.line}" if self.definition and self.definition.path else "?"
+        return f"SymbolUsage({self.name!r}, def={d}, callers={len(self.callers)})"
+
+
 # ── Intra-module collector (libcst, fast) ─────────────────────
 
 class _UsageCollector(cst.CSTVisitor):
@@ -406,12 +430,39 @@ _jedi_pool: _PPE | None = None
 
 def _get_jedi_pool() -> _PPE:
     global _jedi_pool
-    # Recreate if never made or if a prior shutdown (e.g. a studio restart in
-    # place) left the executor unusable - otherwise submit() would fail and the
-    # off-GIL path would silently fall back anyway.
-    if _jedi_pool is None or getattr(_jedi_pool, "_shutdown_thread", False):
-        _jedi_pool = _PPE(max_workers=1)
+    # A studio restart-in-place ends the session, which fires concurrent.futures'
+    # atexit (_python_exit) even though THIS process keeps running. That sets the
+    # module-level _global_shutdown flag and kills the worker processes, so EVERY
+    # ProcessPoolExecutor.submit() raises "after global shutdown" forever -
+    # silently disabling jedi + every off-GIL task. Clear that stale signal (the
+    # process is not actually exiting) and rebuild the pool.
+    import concurrent.futures.process as _cfp
+    stale = getattr(_cfp, "_global_shutdown", False)
+    if stale:
+        _cfp._global_shutdown = False
+    if _jedi_pool is None or stale or getattr(_jedi_pool, "_shutdown_thread", False):
+        _jedi_pool = _PPE(max_workers=4)
     return _jedi_pool
+
+
+def _jedi_project():
+    """A jedi Project scoped to latent-descent src.
+
+    Scoping the project PATH to the src dir (rather than the old `path="."`,
+    which resolved to the subprocess CWD and walked a huge tree) keeps jedi's
+    reference search inside our code — ~13x faster get_references, same results.
+    The repo root is on added_sys_path so `from src.lsd... import X` still
+    resolves during inference."""
+    import jedi
+    src = _SRC_PREFIX.rstrip("/lsd")          # .../latent-descent/src
+    repo = str(_Path(src).parent)          # .../latent-descent
+    return jedi.Project(path=src, added_sys_path=[repo, src])
+
+
+def _jedi_script(file_path):
+    """jedi.Script on the src-scoped project."""
+    import jedi
+    return jedi.Script(path=str(file_path), project=_jedi_project())
 
 
 def shutdown_jedi_pool():
@@ -435,8 +486,7 @@ def _jedi_worker(file_path_str: str, names: set[str]) -> dict[str, list[tuple]]:
     Tuples instead of UsageRef because it must be picklable.
     """
     import jedi
-    project = jedi.Project(path=".", added_sys_path=["src", "."])
-    script = jedi.Script(path=file_path_str, project=project)
+    script = _jedi_script(file_path_str)
     resolved = _Path(file_path_str).resolve()
 
     # Find name positions in the file
@@ -522,13 +572,170 @@ def _intra_usage_worker(source: str, is_class: bool) -> dict[str, list[str]]:
     return {name: sorted(scopes) for name, scopes in collector.usages.items()}
 
 
+# ── Per-symbol caller index (jedi, on save) ───────────────────
+# For each src symbol referenced in a view's source, resolve its definition
+# (goto) and every caller (get_references), so the editor can offer caller
+# shortcuts. Project-wide reference search is expensive, so it runs in the
+# child-process pool and is cached per file mtime - effectively once per save.
+
+_symbol_usage_cache: dict = {}  # (resolved_path, start, end) -> (mtime, {sym: SymbolUsage})
+
+# File suffixes to drop from jedi search - a symbol DEFINED in one of these is
+# skipped entirely, and any callers in them are filtered out. jedi only
+# searches .py/.pyi to begin with (no per-extension search hook), so this is how
+# you exclude by extension. str.endswith takes the tuple directly.
+_JEDI_EXCLUDE_SUFFIXES: tuple = (".pyi",)
+
+
+def _symbol_refs_worker(file_path: str, start_line: int, end_line: int) -> dict:
+    """Child-process worker: for each distinct symbol occurring in
+    [start_line, end_line], resolve its definition + project references.
+
+    Returns {symbol: {"sites": [(l,c)], "definition": (path,l,c,mod),
+                      "callers": [(path,l,c,enclosing,mod), ...]}}.
+    Only symbols DEFINED under src are kept (no callers of len/print/etc.)."""
+    import jedi
+    script = _jedi_script(file_path)
+    try:
+        names = script.get_names(all_scopes=True, references=True, definitions=True)
+    except Exception:
+        return {}
+
+    sites: dict = {}
+    rep: dict = {}
+    for n in names:
+        ln = n.line
+        if ln is None or ln < start_line or ln > end_line:
+            continue
+        sites.setdefault(n.name, []).append((ln, n.column))
+        rep.setdefault(n.name, (ln, n.column))
+
+    out = {}
+    for sym, (line, col) in rep.items():
+        try:
+            defs = script.goto(line, col, follow_imports=True)
+        except Exception:
+            defs = []
+        if not defs:
+            continue
+        d = defs[0]
+        dp = str(d.module_path) if d.module_path else None
+        if dp is None or not dp.startswith(_SRC_PREFIX) or dp.endswith(_JEDI_EXCLUDE_SUFFIXES):
+            continue  # out-of-src or excluded-extension symbol
+        callers = []
+        try:
+            refs = script.get_references(line, col, include_builtins=False)
+        except Exception:
+            refs = []
+        for r in refs:
+            rp = str(r.module_path) if r.module_path else None
+            if rp and rp.endswith(_JEDI_EXCLUDE_SUFFIXES):
+                continue  # drop callers in excluded-extension files
+            try:
+                ctx = r.get_context()
+                enclosing = ctx.name if ctx is not None else ""
+            except Exception:
+                enclosing = ""
+            callers.append((rp, r.line, r.column, enclosing, r.module_name or ""))
+        out[sym] = {
+            "sites": sites[sym],
+            "definition": (dp, d.line, d.column, d.module_name or ""),
+            "callers": callers,
+        }
+    return out
+
+
+def _rebuild_symbol_usages(raw: dict) -> dict:
+    """Rebuild {symbol: SymbolUsage} from the worker's plain-tuple output."""
+    result = {}
+    for sym, e in raw.items():
+        dp, dl, dc, dm = e["definition"]
+        definition = UsageRef(path=_Path(dp) if dp else None, line=dl, column=dc, module_name=dm)
+        callers = [UsageRef(path=_Path(c[0]) if c[0] else None, line=c[1], column=c[2],
+                            scope=c[3], module_name=c[4]) for c in e["callers"]]
+        result[sym] = SymbolUsage(name=sym, definition=definition, callers=callers,
+                                  sites=[tuple(s) for s in e["sites"]])
+    return result
+
+
+def _symbol_refs_local(file_path: str, start_line: int, end_line: int) -> dict:
+    """Run the symbol-refs worker IN-PROCESS (main process). Call me on a
+    BACKGROUND thread — jedi is CPU-bound and holds the GIL (~1s), briefly
+    slowing the render thread. Much faster than the pool here (~1s vs ~20s)."""
+    return _rebuild_symbol_usages(_symbol_refs_worker(file_path, start_line, end_line))
+
+
+def compute_symbol_usages_for_address(address) -> dict:
+    """Build {symbol: SymbolUsage} (callers + definition) for an address's source
+    span, via in-process jedi. The entry point for the editor's manual trigger;
+    run it on a background thread. Cached per file mtime, so a re-trigger on an
+    unchanged file is free. Works for a module, class, or function span."""
+    if DISABLE_JEDI or address is None or getattr(address, "path", None) is None:
+        return {}
+    resolved = _Path(address.path).resolve()
+    start = (getattr(address, "start", 0) or 0) + 1     # address.start is a 0-indexed lower bound
+    end = getattr(address, "end", None)
+    if end is None:                                     # whole-file span
+        try:
+            end = resolved.read_text().count("\n") + 1
+        except OSError:
+            return {}
+    key = (resolved, start, end)
+    try:
+        mtime = resolved.stat().st_mtime
+    except OSError:
+        mtime = None
+    cached = _symbol_usage_cache.get(key)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    try:
+        usages = _symbol_refs_local(str(resolved), start, end)
+    except Exception:
+        usages = {}
+    _symbol_usage_cache[key] = (mtime, usages)
+    return usages
+
+
+def populate_symbol_usages(gp: GeneralParse) -> None:
+    """Fill gp['__symbol_usages__'] for the src symbols in this view's source,
+    via in-process jedi (run me on a background thread). Cached per file mtime."""
+    file_path = getattr(gp, "file_path", None)
+    if file_path is None or DISABLE_JEDI:
+        return
+    resolved = _Path(file_path).resolve()
+    source = getattr(gp, "source", "") or ""
+    start = (getattr(gp, "line_offset", 0) or 0) + 1   # jedi lines are 1-indexed
+    end = start + source.count("\n")
+    key = (resolved, start, end)
+    try:
+        mtime = resolved.stat().st_mtime
+    except OSError:
+        mtime = None
+    cached = _symbol_usage_cache.get(key)
+    if cached is not None and cached[0] == mtime:
+        gp["__symbol_usages__"] = cached[1]
+        gp.symbol_usage = cached
+        return
+    try:
+        usages = _symbol_refs_local(str(resolved), start, end)
+    except Exception:
+        usages = {}
+    _symbol_usage_cache[key] = (mtime, usages)
+    gp["__symbol_usages__"] = usages
+    gp.symbol_usage = usages
+
+
 def invalidate_usage_cache(path: _Path | str | None = None) -> None:
     """Drop cached cross-file references for a path, or all if None."""
     print("Invalidating usage cache for", path if path else "ALL PATHS")
     if path is None:
         _xref_cache.clear()
+        _symbol_usage_cache.clear()
     else:
-        _xref_cache.pop(_Path(path).resolve(), None)
+        resolved = _Path(path).resolve()
+        _xref_cache.pop(resolved, None)
+        for k in [k for k in _symbol_usage_cache if k[0] == resolved]:
+            _symbol_usage_cache.pop(k, None)
 
 
 def _get_cross_file_usages(
@@ -639,6 +846,9 @@ def populate_usages(gp: GeneralParse) -> None:
     file_path = gp.file_path
     if file_path is not None:
         _populate_xrefs(gp, file_path)
+    # Per-symbol usage/definition index for the symbols referenced in this view
+    # (the data behind caller shortcuts). Cached per file mtime → reset per save.
+    populate_symbol_usages(gp)
 
 
 # Keep old name as alias
@@ -851,7 +1061,7 @@ def cst_module_to_str(value: cst.Module) -> str:
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
 @register
-def cst_module_to_dict(input_value: cst.Module) -> dict:
+def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dict:
     """Top-level statements become readable dict keys.
 
     Handles: assignments, annotated assignments, class definitions,
@@ -935,7 +1145,28 @@ def cst_module_to_dict(input_value: cst.Module) -> dict:
                         pass
 
         readable["__cst__"] = input_value
-        readable.usages = _collect_usages(input_value, top_scope="<module>")
+        # readable.usages = _collect_usages(input_value, top_scope="<module>")
+
+    # The "Jump" button rides its bool in as run_jedi (the chain passes **extra
+    # through). When set, run jedi here - on the editor's main thread - and
+    # hang the caller/definition index straight onto the gp. `jump_to` is the
+    # resolved source address (file + line span) jedi needs; it rides in the chain
+    # **extra. Because this gp IS what the editor draws, nothing downstream wires.
+    if run_jedi:
+        address = kwargs.get("jump_to")
+        if address is not None:
+            try:
+                su = compute_symbol_usages_for_address(address)
+                # Store under the dunder key __symbol_usages__ (like __cst__) - a
+                # dict entry, not a custom property, so it survives dict copies and
+                # round-trips. Attach to the VIEWED unit's gp, not the module
+                # wrapper: a class/function span parses to a shallow dict whose
+                # single nested GeneralParse IS the thing being edited, so put the
+                # index there. The root only owns it for a whole-module view.
+                readable["__symbol_usages__"] = su
+                readable.symbol_usage = su
+            except Exception:
+                pass
     return readable
 
 
@@ -996,12 +1227,14 @@ def cst_to_dict(value, ref=None) -> GeneralParse:
     collection via Background.run.
     """
     result = cst_module_to_dict(value)
-    if ref is not None:
-        result.file_path = ref.path
-        result.line_offset = ref.start or 0
-        # Deferred: cross-file usages run on a background thread
-        # after the stateful convert_in completes.
-        result._deferred = lambda gp=result: populate_usages(gp)
+
+    # if ref is not None:
+    #     result.file_path = ref.path
+    #     result.line_offset = ref.line or 0
+    #     # Deferred: cross-file usages run on a background thread
+    #     # after the stateful convert-in completes.
+    # populate_usages(result)
+
     return None, result
 
 

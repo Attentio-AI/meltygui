@@ -130,6 +130,7 @@ class Toggles:
     test_float = 3.303
     debug_scroll = False
     
+    
     @defaults(tint=(0.3,0.0,0.0))
     class InvalidateTracker:
         keep_for_frames = 2
@@ -139,7 +140,7 @@ class Toggles:
     @defaults(tint=(0.08177394419908524, 0.1272051,0.195348858833313))
     class Debug:
         slow_frame_rate = False
-   
+
      # Overlay a small green rect on every draw_state whose blit tile is
     # fully filled (filled_bbox covers full size). Used to verify the scroll-
     # invalidation stop-at-filled gate is actually marking tiles complete.
@@ -150,6 +151,11 @@ class Toggles:
     # checking for debugging GL state. Honored externally via
     # MeltyCore.set_gl_error_checking, called each begin_frame.
     gl_check_error = False
+
+    # When True, the code editor shows an "Index" button that runs jedi (main
+    # process, background thread) to fill gp['__symbol_usages__'] - the caller/
+    # definition index behind the shortcuts. False by default: jedi is expensive.
+    enable_jedi = True
 
     # Invalidation settings
     invalidate_stack_trace = False
@@ -165,7 +171,7 @@ class Toggles:
     show_line_break = False
   
     # Filter SettingS
-    brightness = 0.317
+    brightness = 0.338
     contrast = 1.574
     saturation = -0.4
     prefered_header_width = 115

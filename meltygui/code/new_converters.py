@@ -244,6 +244,8 @@ LOADING = object()
 def run_in_background(input_value, loading_state: LoadingState,
                       draw_state, child_kwargs, start=False, timeout=20,
                       debounce_ms=40, **kwargs):
+    if Melty.frame_count < 2:
+        debounce_ms = 0
     if start:
         loading_state.run_next = input_value, child_kwargs
         if debounce_ms:
@@ -359,13 +361,6 @@ class CodeState(DictConversion):
         self.file_mtime = None
         self.file_size = None
 
-    def parse_cst(self):
-        if isinstance(self.text_cache, str):
-            cst_tree = cst.parse_module(self.text_cache)
-            self.code_tree_cache = cst_module_to_dict(cst_tree)
-        else:
-            self.code_tree_cache = None
-
 
 @render_func()
 def string_to_cst_module(input_value, **kwargs):
@@ -465,6 +460,7 @@ def _run_chain_in(input_value, chain=None, route=None, seed=None, **extra):
     dict — every column's input in one shared payload. The result/exception is
     folded back into ModesState on the main thread when the worker completes."""
     routed = dict(seed) if seed else {}
+    print(str(extra))
     result, routed = _run_convert(chain, input_value, route=route, routed=routed, **extra)
     error = result if isinstance(result, Exception) else None
     # cst parsed clean - run the compiler check, to surface the syntax errors libcst
@@ -585,11 +581,16 @@ def draw_modes(input_value, modes=None, chain_in=None, chain_out=None, route=Non
         # input at trigger time, runs _run_chain_in off-thread, and re-renders on
         # completion. `start` only on a real input change so we don't respawn the
         # parse every frame.
+        # The Go button's click rides in as run_jedi; force a chain re-run on
+        # it (the text didn't change) and pass it + the address (jump_to) through
+        # as **extra so cst_module_to_dict can attach the jedi index to the gp.
+        _run_jedi = bool(kwargs.get('run_jedi'))
         finished, payload = run_in_background(
             _run_chain_in,
             child_kwargs={"input_value": input_value, "chain": chain_in,
-                          "route": route, "seed": child_kwargs},
-            name=f"chain_in{unique}", start=input_changed)
+                          "route": route, "seed": child_kwargs,
+                          "run_jedi": _run_jedi, "jump_to": kwargs.get('jump_to')},
+            name=f"chain_in{unique}", start=input_changed or _run_jedi)
         if finished and isinstance(payload, dict):
             # Fold the fresh outputs into the shared snapshot. last_good
             # only ever holds clean values; a parse failure leaves the last
@@ -665,7 +666,7 @@ def draw_modes(input_value, modes=None, chain_in=None, chain_out=None, route=Non
             column_width = None
 
 
-        m_changed, m_out = view_func(input_value=view_input, draw=changed, disable_scroll=False, show_header=False,
+        m_changed, m_out = view_func(input_value=view_input, excluded=["__cst__"], show_system=True, draw=changed, disable_scroll=False, show_header=False,
                                      column=idx, column_width=column_width, show_add_delete=False, name=f"{modes[idx].__name__}##{unique}",
                                      selectable=False,
                                      **call_kwargs)
@@ -732,7 +733,7 @@ def code_file_footer(input_value, code_state, **kwargs):
 def code_file_io(input_value, code_state: CodeState, codec=None, view_func=RenderFuncs.draw_text, auto_load=True,
                  auto_load_edits=False,
                  child_kwargs=None, draw_state=None, auto_save=True, auto_recompile_edits=False, save=False, load=False,
-                 recompile=False, save_debounce_ms=600,
+                 recompile=False, run_jedi=False, save_debounce_ms=600,
                  ensure_import=None, s_key_pressed=None, enter_key_pressed=None, unique=None, **kwargs):
     try:
         imgui.dummy(0,0)
@@ -770,6 +771,13 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             recompile = \
                 RenderFuncs.button(f"{play_icon} Run", tint=(0, 0.4, 0.1), height=top_line_height,
                                    name="recompile_btn")[0]
+
+        if Toggles.enable_jedi:
+            imgui.same_line(spacing=0)
+            search_icon = "\uf002"
+            external_change = True
+            run_jedi = RenderFuncs.button(f"{search_icon} Index", tint=(0.1, 0.2, 0.45),
+                                          height=top_line_height, name="jedi_index_btn")[0] or run_jedi
 
         if code_state._recompiled_on_frame is not None:
             duration = 10.0
@@ -828,6 +836,9 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
         if code_state.text_cache is not UNSET and code_state.text_cache is not None:
 
             child_kwargs['jump_to'] = address
+            # The Index button's click rides through to the chain: code_module_to_gp
+            # runs jedi and attaches the index straight to the gp it builds.
+            child_kwargs['run_jedi'] = run_jedi
             # Error signals reach the editor's red-line highlight by this route -
             # code_text_io does NO parse of its own:
             #   • SYNTAX errors: chain_in parses the buffer on its background thread

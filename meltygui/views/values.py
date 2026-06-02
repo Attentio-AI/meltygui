@@ -29,7 +29,8 @@ from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_styl
     pop_style_var, end, begin
 from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace, request_render
 from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
-from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment, GeneralParse, UsageRef, CallParse
+from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment, GeneralParse, UsageRef, CallParse, \
+    SymbolUsage
 from src.lsd.gl_gui.view.core_conversion.new_converters import code_file_io
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
@@ -309,6 +310,10 @@ def search_activate_target(node):
             return child
     return node
 
+
+@render_func(use_cache=True, is_default_for=SymbolUsage)
+def draw_symbol_usage(input_value):
+    imgui.text(str(input_value))
 
 
 @render_func(is_default_for=(dict, MutableMapping, defaultdict, tuple, list, GeneralParse, CallParse), use_cache=True,
