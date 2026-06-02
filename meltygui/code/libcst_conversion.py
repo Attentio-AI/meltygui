@@ -89,6 +89,24 @@ class Comment(str):
         return hash(("__comment__", str(self), self.inline))
 
 
+class CodeLine(str):
+    """A raw line/expression of code that couldn't be reduced to a Python value,
+    as a str subclass for differentiated dispatch.
+
+    isinstance(c, str) → True, so it works everywhere a string does (equality,
+    dict membership, the reverse converter's existing str handling).
+    isinstance(c, CodeLine) → True, so it's distinguishable from a genuine
+    string literal: the UI can render it as code (monospace / syntax highlight)
+    instead of a quoted string, and the reverse path splices it back as an
+    expression rather than quoting it.
+
+    The string value IS the source text (e.g. "some_func() + offset"). The text
+    alone round-trips — the reverse re-parses it (or preserves the original node
+    when it's unchanged), so no CST node needs to be carried here.
+    """
+    __slots__ = ()
+
+
 @defaults(tint=(0.8, 0.7651617, 0.11906976997852325))
 class Conditional(dict):
     """An if/elif/else block's contents, as a dict subclass.
@@ -144,7 +162,6 @@ class Loop(dict):
             return self._bg_hash_cache
 
 
-
 class GeneralParse(dict):
     def __init__(self, *args, source="", file_path=None, line_offset=0, **kwargs):
         super().__init__(*args, **kwargs)
@@ -164,7 +181,7 @@ class GeneralParse(dict):
     #     return self._bg_hash_cache
 
 
-@defaults(tint=(0.01944834366440773, 0.08173015, 0.1348837))
+@defaults(tint=(0.6954678, 0.7870253, 0.8744186))
 class CallParse(GeneralParse):
     """A function call's arguments, as a GeneralParse subclass.
 
@@ -186,6 +203,22 @@ class CallParse(GeneralParse):
     def __init__(self, *args, func_name=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.func_name = func_name
+
+
+@defaults(tint=(0.6232558488845825, 0.5391884, 0.0), icon="@", horizontal=True, disable_scroll=True)
+class DecorationParse(CallParse):
+    """A decorator application (`@name(...)`), as a CallParse subclass.
+
+    A decoration IS a call — same `cst.Call` underneath, same args-keyed-by-
+    parameter-name structure — so it reuses every bit of CallParse's extraction
+    and round-trip. The distinct type is purely for differentiation: the UI can
+    route a DecorationParse to its own renderer (e.g. an `@`-prefixed widget)
+    while a plain CallParse renders as an ordinary call.
+
+    isinstance(d, CallParse) → True (it is a call), so any call-handling code
+    still applies; add a DecorationParse entry ahead of CallParse/GeneralParse
+    in the Mode map (MRO resolves most-derived first) to give it its own look.
+    """
 
 
 class ParseError(dict):
@@ -788,6 +821,11 @@ def cst_module_to_dict(input_value: cst.Module) -> dict:
     _classdef_to_dict = Melty._converters.get((cst.ClassDef, dict))
     _funcdef_to_dict = Melty._converters.get((cst.FunctionDef, dict))
 
+    # Sigs defs help a bare top-level caller bind its positional args to
+    # parameter names; call_seen keys repeat calls (func()#1, ...).
+    local_sigs = _collect_local_signatures(input_value.body)
+    call_seen: dict[str, int] = {}
+
     for stmt in input_value.body:
         if isinstance(stmt, cst.SimpleStatementLine):
             # Leading comments (override comments go to the field below)
@@ -810,6 +848,11 @@ def cst_module_to_dict(input_value: cst.Module) -> dict:
                         if py_value is not _UNREADABLE:
                             readable[node.target.value] = py_value
                             last_key = node.target.value
+                else:
+                    # Bare call statement, e.g. func(debug=True)
+                    ck = _extract_call_statement(node, readable, call_seen, local_sigs)
+                    if ck is not None:
+                        last_key = ck
 
             # Trailing inline comment
             _extract_trailing_comment(stmt, last_key, readable)
@@ -1194,6 +1237,12 @@ def cst_classdef_to_dict(value: cst.ClassDef) -> dict:
     # cst_classdef_to_dict is itself the (ClassDef, Dict) converter - reusing
     # it here gives nested classes the same recursive treatment.
     _classdef_to_dict = Melty._converters.get((cst.ClassDef, dict))
+    _funcdef_to_dict = Melty._converters.get((cst.FunctionDef, dict))
+
+    # Sibling defs let a bare caller (some_func(1, 2)) bind its positional args to
+    # parameter names; call_seen keys repeat calls (func()#1, …).
+    local_sigs = _collect_local_signatures(value.body.body)
+    call_seen: dict[str, int] = {}
 
     # Body-level assignments, nested classes, and comments
     for stmt in value.body.body:
@@ -1213,6 +1262,11 @@ def cst_classdef_to_dict(value: cst.ClassDef) -> dict:
                     if node.value is not None:
                         readable[node.target.value] = _cst_to_python_or_raw(node.value)
                         last_key = node.target.value
+                else:
+                    # Bare call statement, e.g. some_func(1, 2)
+                    ck = _extract_call_statement(node, readable, call_seen, local_sigs)
+                    if ck is not None:
+                        last_key = ck
 
             _extract_trailing_comment(stmt, last_key, readable)
             _attach_field_override(stmt, last_key, readable)
@@ -1223,6 +1277,20 @@ def cst_classdef_to_dict(value: cst.ClassDef) -> dict:
             _extract_leading_comments(stmt, readable, skip_overrides=True)
             try:
                 child = _classdef_to_dict(stmt)
+                _attach_leading_override(stmt, child)
+                readable[stmt.name.value] = child
+            except (TypeError, ValueError):
+                pass
+
+        # Method / nested def: recurse via the (FunctionDef, dict) converter, the
+        # same way the module converter handles top-level functions. __init__ is
+        # skipped - its `self.X` assignments are surfaced as class fields below,
+        # and surfacing it here too would double them up.
+        elif (isinstance(stmt, cst.FunctionDef) and _funcdef_to_dict is not None
+              and stmt.name.value != "__init__"):
+            _extract_leading_comments(stmt, readable, skip_overrides=True)
+            try:
+                child = _funcdef_to_dict(stmt)
                 _attach_leading_override(stmt, child)
                 readable[stmt.name.value] = child
             except (TypeError, ValueError):
@@ -1460,6 +1528,18 @@ class _ClassPatcher(cst.CSTTransformer):
         self._in_init = False
         self._depth = 0  # class body = 1, __init__ body = 2, nested = 3+
         self._classdef_fn = Melty._converters.get((dict, cst.ClassDef))
+        self._funcdef_fn = Melty._converters.get((dict, cst.FunctionDef))
+        self._call_fn = Melty._converters.get((dict, cst.Call))
+        # Bare-call edits (keyed `func()` / `func()#N`) grouped by callee name in
+        # edit order, so leave_Expr can patch each `foo()` statement to its
+        # matching edit. Assignment-valued calls (`x = foo()`, keyed `x`) are
+        # excluded by the key check - they round-trip via leave_Assign.
+        self._call_edits: dict[str, list] = {}
+        for k, v in self.edits.items():
+            if (_is_bare_call_key(k) and isinstance(v, dict)
+                    and isinstance(v.get("__cst__"), cst.Call)):
+                self._call_edits.setdefault(_call_func_name(v["__cst__"]), []).append(v)
+        self._call_consumed: dict[str, int] = {}
 
     def leave_ClassDef(self, original_node, updated_node):
         # Nested class: name maps to a sub-dict whose __cst__ is a ClassDef.
@@ -1493,9 +1573,48 @@ class _ClassPatcher(cst.CSTTransformer):
         return True
 
     def leave_FunctionDef(self, original_node, updated_node):
-        if original_node.name.value == "__init__":
+        name = original_node.name.value
+        if name == "__init__":
             self._in_init = False
+            return updated_node  # __init__ patched via its self.X assignments, not whole-method
+        # A directly-nested method whose dict was edited → re-convert via
+        # (dict, FunctionDef), mirroring leave_ClassDef for nested classes. The
+        # depth==1 guard keeps a method nested inside a method from being
+        # mistaken for a class member of the same name.
+        if self._depth == 1 and self._funcdef_fn is not None:
+            edit_dict = self.edits.get(name)
+            if isinstance(edit_dict, dict) and isinstance(edit_dict.get("__cst__"), cst.FunctionDef):
+                ed = dict(edit_dict)
+                ed["__cst__"] = updated_node
+                try:
+                    return self._funcdef_fn(ed)
+                except (TypeError, ValueError):
+                    pass
         return updated_node
+
+    def leave_Expr(self, original_node, updated_node):
+        # Bare class-level call statement (some_func(1, 2)). Patch it to the next
+        # matching bare-call edit for this callee. Guard on depth/scope so calls
+        # inside method bodies (not exposed as class members) are left alone.
+        if self._depth != 1 or self._in_init:
+            return updated_node
+        call = updated_node.value
+        if not isinstance(call, cst.Call) or self._call_fn is None:
+            return updated_node
+        fn_name = _call_func_name(call)
+        queue = self._call_edits.get(fn_name)
+        if not queue:
+            return updated_node
+        idx = self._call_consumed.get(fn_name, 0)
+        if idx >= len(queue):
+            return updated_node
+        self._call_consumed[fn_name] = idx + 1
+        ed = dict(queue[idx])
+        ed["__cst__"] = call
+        try:
+            return updated_node.with_changes(value=self._call_fn(ed))
+        except (TypeError, ValueError):
+            return updated_node
 
     def leave_AnnAssign(self, original_node, updated_node):
         # Body-level: debug: bool = False (depth 1 = class body)
@@ -2175,7 +2294,7 @@ def _assign_value_node(node):
 def _extract_decorators(decorators):
     """Extract decorator kwargs as a dict.
 
-    Call decorators → kwargs dict via cst_call_to_dict
+    Call decorators → DecorationParse (a CallParse subclass) via cst_call_to_dict
     Bare decorators → raw code string
     """
     result = {}
@@ -2186,7 +2305,7 @@ def _extract_decorators(decorators):
                 fn = Melty._converters.get((cst.Call, dict))
                 if fn is not None:
                     try:
-                        result[func_name] = fn(dec.decorator)
+                        result[func_name] = fn(dec.decorator, result_cls=DecorationParse)
                     except (TypeError, ValueError):
                         result[func_name] = _cst_node_to_code(dec.decorator)
         else:
@@ -2658,8 +2777,11 @@ def _patch_params(params, edits):
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
 @register
-def cst_call_to_dict(value: cst.Call) -> dict:
+def cst_call_to_dict(value: cst.Call, pos_names_override=None, result_cls=CallParse) -> dict:
     """Extract a Call's arguments into a CallParse keyed by PARAMETER name.
+
+    `result_cls` lets a caller mint a CallParse subclass instead (e.g.
+    _extract_decorators passes DecorationParse) — same extraction, distinct type.
 
     Returns a CallParse (a dict subclass); the annotation stays `dict` so
     @register keys it under the canonical (cst.Call, dict) registry slot that
@@ -2669,23 +2791,32 @@ def cst_call_to_dict(value: cst.Call) -> dict:
     → CallParse({"count": 42, "flag": True, "__cst__": <Call>})
 
     Keyword args key on their keyword name. Positional args are mapped to the
-    parameter name they bind to, resolved from the callee's signature
-    (_call_positional_param_names) — that's what makes the dict a key/value
-    store over the *parameters*, not just the explicitly-named kwargs. When the
-    callee can't be resolved (variable reference, complex expression, builtin
-    with no signature) the positional args stay in __cst__ and pass through
-    untouched on reconstruction.
+    parameter name they bind to — that's what makes the dict a key/value store
+    over the *parameters*, not just the explicitly-named kwargs. The binding
+    comes from `pos_names_override` when given (used for same-source callers,
+    where the callee is a local def not importable at runtime — see
+    _extract_call_statement) otherwise from resolving the callee's runtime
+    signature (_call_positional_param_names). When neither yields a binding the
+    positional args stay in __cst__ and pass through untouched.
+
+    The binding actually used is stored under "__pos_names__" so dict_to_cst_call
+    can map the same positions back without re-resolving — the round-trip stays
+    self-contained on the object, even for a callee that isn't runtime-resolvable.
 
     kwargs with unresolvable values (variable references, complex expressions)
     are surfaced as their raw source string and round-trip via __cst__.
     """
-    readable = CallParse(source=_cst_node_to_code(value),
-                         func_name=_call_func_name(value))
+    readable = result_cls(source=_cst_node_to_code(value),
+                          func_name=_call_func_name(value))
 
-    # Resolving the callee's signature scans sys.modules; only pay for it when
-    # there's an actual positional arg to bind to a parameter name.
+    # An explicit override (same-source caller's params) wins. Otherwise resolve the
+    # callee's runtime signature - but that scans sys.modules, so only pay for it
+    # when there's an actual positional arg to bind to a parameter name.
     has_positional = any(a.keyword is None and a.star == "" for a in value.args)
-    pos_names = _call_positional_param_names(value) if has_positional else None
+    if pos_names_override is not None:
+        pos_names = pos_names_override
+    else:
+        pos_names = _call_positional_param_names(value) if has_positional else None
     pos_idx = 0
 
     for arg in value.args:
@@ -2714,6 +2845,10 @@ def cst_call_to_dict(value: cst.Call) -> dict:
             pos_idx += 1
         # else: `*args` splat - passes through via __cst__
 
+    if pos_names:
+        # Remember the binding so the reverse maps these positions back without
+        # re-resolving (and so a same-source / non-importable callee round-trips).
+        readable["__pos_names__"] = list(pos_names)
     readable["__cst__"] = value
     return readable
 
@@ -2778,12 +2913,16 @@ def dict_to_cst_call(value: dict) -> cst.Call:
     edits = {k: v for k, v in value.items()
              if not (_is_dunder(k))}
 
-    # Re-derive the SAME positional→name binding cst_call_to_dict used (resolution
-    # is deterministic), so a positional arg surfaced under a parameter name is
-    # matched back to its slot - same room for a new keyword arg. Skip the
-    # sys.modules scan when there are no plain positional args to bind.
+    # Re-apply the SAME positional→name binding cst_call_to_dict used so a
+    # positional arg surfaced under a parameter name gets written back to its slot
+    # - not mistaken for a new keyword arg. Prefer the binding stamped into the
+    # dict (handles a same-source / non-importable callee); else resolve the
+    # runtime signature, but skip that sys.modules scan when there are no plain
+    # positional args to bind.
     n_positional = sum(1 for a in old_node.args if a.keyword is None and a.star == "")
-    pos_names = _call_positional_param_names(old_node) if n_positional else None
+    pos_names = value.get("__pos_names__")
+    if pos_names is None and n_positional:
+        pos_names = _call_positional_param_names(old_node)
     has_readable_positional = bool(pos_names) and n_positional > 0
 
     # `not edits` can mean "no changes" OR "every arg was deleted". Only short-
@@ -2914,6 +3053,66 @@ def _call_func_name(call_node):
     if isinstance(func, cst.Attribute):
         return func.attr.value
     return None
+
+
+def _funcdef_param_names(funcdef):
+    """Ordered positional parameter names of a FunctionDef node (positional-only
+    then positional-or-keyword), dropping a leading self/cls. Lets a same-source
+    caller bind its positional args to parameter names WITHOUT importing the
+    callee at runtime — the def is right there in the tree being parsed."""
+    params = funcdef.params
+    names = []
+    for p in (list(params.posonly_params) + list(params.params)):
+        if not names and p.name.value in _SKIP_PARAMS:
+            continue
+        names.append(p.name.value)
+    return names
+
+
+def _collect_local_signatures(stmts):
+    """Map {func_name: [param_names]} for FunctionDefs directly in `stmts` (a
+    module/class body). Used to map a bare caller's positional args to the
+    parameters of a sibling def — see _extract_call_statement."""
+    sigs = {}
+    for stmt in stmts:
+        if isinstance(stmt, cst.FunctionDef):
+            sigs[stmt.name.value] = _funcdef_param_names(stmt)
+    return sigs
+
+
+def _extract_call_statement(node, readable, call_seen, local_sigs):
+    """If `node` is a bare expression-statement call (e.g. `some_func(1, 2)`),
+    surface it as a CallParse keyed `func()` — distinct from a `func` def key in
+    the same scope — and return that key. Repeat calls to the same func get
+    `func()#1`, `func()#2`, … (occurrence order, mirroring the assignment keying).
+
+    Positional args bind to the sibling def's parameter names when `local_sigs`
+    has them, so an in-file caller shows `a=1, b=2` even though the callee can't
+    be imported. Returns None when `node` isn't a bare call."""
+    if not (isinstance(node, cst.Expr) and isinstance(node.value, cst.Call)):
+        return None
+    call_fn = Melty._converters.get((cst.Call, dict))
+    if call_fn is None:
+        return None
+    fname = _call_func_name(node.value) or "call"
+    occ = call_seen.get(fname, 0)
+    call_seen[fname] = occ + 1
+    key = f"{fname}()" if occ == 0 else f"{fname}()#{occ}"
+    try:
+        readable[key] = call_fn(node.value, pos_names_override=local_sigs.get(fname))
+    except (TypeError, ValueError):
+        return None
+    return key
+
+
+def _is_bare_call_key(key):
+    """True for a key minted by _extract_call_statement (`func()` / `func()#N`).
+    Distinguishes a bare-call edit from an assignment whose value happens to be a
+    call (`x = foo()`, keyed `x`) so the reverse patches each via the right slot."""
+    if not isinstance(key, str):
+        return False
+    base = key.rsplit("#", 1)[0] if "#" in key else key
+    return base.endswith("()")
 
 
 def _call_positional_param_names(call_node):
@@ -3068,11 +3267,11 @@ def _cst_to_python_or_raw(node):
     """
     val = _cst_to_python(node)
     if val is _UNREADABLE:
-        return _cst_node_to_code(node)
+        return CodeLine(_cst_node_to_code(node))
     # Catch dict where every key is a dunder (nothing readable extracted)
     if isinstance(val, dict) and all(
             _is_dunder(k) for k in val):
-        return _cst_node_to_code(node)
+        return CodeLine(_cst_node_to_code(node))
     return val
 
 
@@ -3249,6 +3448,49 @@ class _ModulePatcher(cst.CSTTransformer):
         # Cache converter lookups to avoid BFS on every leave_* call
         self._classdef_fn = Melty._converters.get((dict, cst.ClassDef))
         self._funcdef_fn = Melty._converters.get((dict, cst.FunctionDef))
+        self._call_fn = Melty._converters.get((dict, cst.Call))
+        # depth 0 = module top level; >0 = inside a class/function body. Bare
+        # calls are only surfaced (and patched) at the top level.
+        self._depth = 0
+        # Bare-call edits (commented `func()` / `func()#arg`) grouped by callee name in
+        # source order - see _ClassPatcher for the full rationale.
+        self._call_edits: dict[str, list] = {}
+        for k, v in self.edits.items():
+            if (_is_bare_call_key(k) and isinstance(v, dict)
+                    and isinstance(v.get("__cst__"), cst.Call)):
+                self._call_edits.setdefault(_call_func_name(v["__cst__"]), []).append(v)
+        self._call_consumed: dict[str, int] = {}
+
+    def visit_IndentedBlock(self, node):
+        self._depth += 1
+        return True
+
+    def leave_IndentedBlock(self, original_node, updated_node):
+        self._depth -= 1
+        return updated_node
+
+    def leave_Expr(self, original_node, updated_node):
+        # Bare top-level call statement. Patch it to the next matching bare-call
+        # edit for this callee; depth filter keeps calls nested in bodies alone.
+        if self._depth != 0:
+            return updated_node
+        call = updated_node.value
+        if not isinstance(call, cst.Call) or self._call_fn is None:
+            return updated_node
+        fn_name = _call_func_name(call)
+        queue = self._call_edits.get(fn_name)
+        if not queue:
+            return updated_node
+        idx = self._call_consumed.get(fn_name, 0)
+        if idx >= len(queue):
+            return updated_node
+        self._call_consumed[fn_name] = idx + 1
+        ed = dict(queue[idx])
+        ed["__cst__"] = call
+        try:
+            return updated_node.with_changes(value=self._call_fn(ed))
+        except (TypeError, ValueError):
+            return updated_node
 
     def leave_Assign(self, original_node, updated_node):
         if len(updated_node.targets) != 1:
@@ -3344,6 +3586,19 @@ def _python_to_cst_expr(py_value, old_node=None):
                 return old_node
         except Exception:
             pass
+
+    # CodeLine - a raw code expression, never a string literal. Always parse it
+    # as code (or keep old_node verbatim when unchanged), regardless of old_node:
+    # a freshly-inserted CodeLine (old_node is None) must splice as `foo()`, not
+    # quote as `"foo()"`. Checked before the plain-str branch since CodeLine is-a str.
+    if isinstance(py_value, CodeLine):
+        if old_node is not None and py_value == _cst_node_to_code(old_node):
+            return old_node  # unchanged - preserve original formatting
+        try:
+            wrapper = cst.parse_module(f"_ = {py_value}\n")
+            return wrapper.body[0].body[0].value
+        except cst.ParserSyntaxError:
+            return old_node  # unparseable (mid-edit?) - keep original, may be None
 
     # Strings - behavior depends on what old_node was:
     #   old_node is SimpleString → just/ literal (preserve quotes)

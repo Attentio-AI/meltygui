@@ -23,6 +23,7 @@ from src.lsd.gl_gui.melty import Melty, CollectionAction, ManagedWindow, SearchT
 from src.lsd.gl_gui.model.core_model.draw_state import ZoomState, TileMode, DrawState, TabState, DropDownState
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.modes import Modes
+from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.toggles import Toggles, Tint
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_style_var, \
     pop_style_var, end, begin
@@ -56,9 +57,14 @@ def empty(input_val):
 
 
 @render_func(is_default_for=(types.FrameType), use_cache=True, tint=(0.9, 0.6485209, 0.5),
-             header_same_line=False, show_bg=True, align_header=False, closed=False,
+             header_same_line=False, show_bg=False, align_header=False, closed=False,
              shadow=True, selectable=False, wrap=False, with_header=draw_header, indent_size=5, searchable=True)
 def draw_frame(input_value: types.FrameType, draw_state, **kwargs):
+
+
+
+
+
 
     file_name_truncated = Path(input_value.f_code.co_filename).name
     imgui.text(f"{file_name_truncated}:{input_value.f_lineno} in {input_value.f_code.co_name}")
@@ -75,8 +81,8 @@ def draw_frame(input_value: types.FrameType, draw_state, **kwargs):
             daemon=True).start()
     # Loop over the frame's local variables, which are the most relevant to debugging.
 
-    draw_text("Locals", name="Locals", show_header=False, searchable=False, single_line=True,
-                     font=Font.JETBRAINS_MONO_40, return_extras=True)
+    draw_text("Locals", name="Locals", show_header=False,
+                     font=Font.JETBRAINS_MONO_40)
 
     for var_name, var_value in input_value.f_locals.items():
         # Display the variable name and its value.
@@ -89,10 +95,11 @@ def draw_module(input_value: types.ModuleType, draw_state, **kwargs):
     imgui.text(f"Module: {input_value.__name__}")
 
 
-@render_func(is_default_for=types.ModuleType, use_cache=True, header_single_line=True, show_name=True, temp=True,
+@render_func(is_default_for=(type), tint=(0.2,0.1,0.0), use_cache=True, 
+             header_single_line=True, show_name=True, temp=True,
              show_bg=True, with_header=draw_header)
 def draw_type_name(input_value, **kwargs):
-    imgui.text(f"Type: {type(input_value).__name__}")
+    imgui.text(f"{input_value.__name__}")
 
 
 def _collection_match_keys(input_value, keys, excluded, show_excluded):
@@ -305,7 +312,7 @@ def search_activate_target(node):
             header_same_line=False, show_bg=True, show_instance_vars=False, align_header=False,
             manual_content_height=True, shadow=True, selectable=False,
             wrap=False, with_header=draw_header, indent_size=5, searchable=True)
-def draw_collection(input_value, draw_state, depth, style_manager, meta,
+def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=None,
                     mode=None, keys=None, get_attr=None, set_attr=None, show_excluded=False,
                     child_kwargs=None, show_bg=True, show_search=True, align_header=False,
                     on_collapse=False, search_text="", return_item=False,
@@ -318,8 +325,8 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta,
         excluded = set()
 
     if child_kwargs is None:
+    
         child_kwargs = {}
-
     changed = False
     if hasattr(input_value, 'children') and isinstance(input_value.children, (list, dict, defaultdict,
                                                                               types.MappingProxyType, deque)):
@@ -329,8 +336,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta,
         imgui.dummy(1,3)
     else:
         imgui.dummy(1,1)
-
-
+    
     # --- Setup per collection type ---
     collection = input_value
     # When the value *is* a class (e.g. an @window-registered class drawn
@@ -392,6 +398,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta,
     # the off-screen detection would skip - until the row holding the current
     # match is reached and can scroll into view.
     _search_full_render = search_session is not None and search_session.scroll_to
+    
 
     # Stash a matcher so the search owner's tree walk (DrawState.descend /
     # melty.search_walk) can count this collection's key matches without
@@ -557,7 +564,6 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta,
                 'search_match': key_is_match,
                 'search_current': key_is_current,
             }
-            
 
             # Per-field overrides: a `# [tint=...]` comment above a primitive
             # field is stored on the parent under __overrides__['__<field>__'].
@@ -573,14 +579,18 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta,
                                 item_kwargs[_ok] = _ov
 
             item_kwargs = item_kwargs | child_kwargs
-            if isinstance(input_value, (list, tuple)) or horizontal:
+            if isinstance(input_value, (list, tuple, set)) or horizontal:
                 item_kwargs['align_header'] = False
 
             if horizontal and child_draw_state is not None:
                 rect = Melty.get_clip_rect()
                 right_edge = rect[2]
                 space_left = right_edge - (imgui.get_cursor_screen_pos()[0] + child_draw_state.width)
-
+               
+                if child_draw_state.height > 50:
+                    imgui.dummy(0, 0)
+                    imgui.new_line()
+                    
                 if space_left < 0:
                     imgui.new_line()
                     imgui.dummy(0, item_spacing_y)
@@ -684,7 +694,7 @@ def draw_property(input_value:property, draw_state, **kwargs):
 
 
 
-@render_func(is_default_for=(type), show_bg=True, align_header=False, use_cache=True, shadow=False,
+@render_func(show_bg=True, align_header=False, use_cache=True, shadow=False,
              with_header=draw_header)
 def draw_type(input_value:type, **kwargs):
     try:
@@ -708,7 +718,7 @@ def draw_type(input_value:type, **kwargs):
 
 
 @render_func(show_bg=True, use_cache=True, selectable=False, header_single_line=False, align_header=False,
-             with_header=None, bg_offset=3, auto_resize=True)
+             with_header=None, bg_offset=3, auto_resize=True, temp=True)
 def draw_global_search(input_value, draw_state=None, **kwargs):
     """Renders the GlobalSearch window: the search box plus the matching nodes
     from the draw_state tree draw_main registered on us. Results are recomputed
@@ -1055,11 +1065,6 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
             kwargs.setdefault('mode', (Mode.NEW_CODE, Mode.WINDOW))
             window_func = kwargs.pop("view_func", draw_any)
             window_func(window_cls, **kwargs)
-
-    changed, value = draw_with_modes(draw_header, name="draw_header", show_bg=True, mode=(Mode.WINDOW), modes=(Mode.CODE_UI,
-                                                                                                               Mode.CODE_PLAIN_TEXT))
-    if changed:
-        test_code = value
 
     changed, value = draw_any(input_value=draw_bg, name="draw_bg_new_mode",
                                      show_bg=True, mode=(Mode.CODE, Mode.WINDOW))
@@ -2277,7 +2282,7 @@ def render_profiler_time(input_value=None, brief=False, style_manager=None ):
              shadow=False, is_tree=False, with_header=draw_header, temp=True)
 def draw_none(input_value: NoneType):
     imgui.align_text_to_frame_padding()
-    imgui.text("None")
+    imgui.text_colored("None", *(1,1,1), 0.2)
     return False, input_value
 
 
@@ -2654,8 +2659,8 @@ def draw_function(input_value, name, draw_state, unique, **kwargs):
             draw_state.params = param_dict
         if len(draw_state.params) > 0:
             changed, new_val = draw_collection(draw_state.params, name="Parameters",
-            show_add_delete=False, parent_show_add_delete=False, horizontal=True, header_same_line=False,
-                                               child_kwargs={"wrap":True, "width":200,
+            show_add_delete=False, parent_show_add_delete=False, horizontal=True,
+                                               child_kwargs={"wrap":True, "max_width":200,
                                                              "show_bg":True, "use_cache":True, "z_offset":2.0})
             if changed:
                 draw_state.params = new_val
@@ -2684,7 +2689,6 @@ def draw_function(input_value, name, draw_state, unique, **kwargs):
              is_tree=False, with_header=draw_header, align_header=True, temp=True)
 def draw_int(input_value: int, draw_state=None, min_value=-1000.0, max_value=1000.0, speed=0.1, unique=0):
     imgui.set_next_item_width(draw_state.content_width)
-
     max_int = 2147483647
     if input_value < max_int:
         changed, value = imgui.drag_int("##int", input_value,
@@ -2703,7 +2707,8 @@ def draw_debug_label(input_value: str):
     imgui.text(input_value)
 
 
-@render_func(is_default_for=Enum, is_tree=False, shadow=False, align_header=False, selectable=False, header_same_line=True,
+@render_func(is_default_for=Enum, is_tree=False, shadow=False, align_header=False, 
+            selectable=False, header_same_line=True, wrap=False,
              parent_show_add_delete=False, with_header=draw_header, temp=True)
 def draw_enum(input_value: Enum, style_manager=None, enum_tint=(0.3, 0.3, 0.3)):
     # Delegate to draw_tab_bar so enums get its wrapping and styling for free.
@@ -2873,10 +2878,52 @@ def draw_tint_context(input_value: DrawState, tab_state: TabState = None, **kwar
         imgui.separator()
     return changed, None
 
+@window
+@render_func()
+def context_menu_settings(input_value, draw_state):
+    code_file_io(draw_context_menu, mode=Modes.NEW_CODE)
+
+
+def run_scoped_eval(code, view_func, draw_state, local_vars):
+    """Run `code` with the view function's ACTUAL call-time locals in scope.
+
+    Called from the render wrapper (core_render) right before it invokes the
+    view function, so `local_vars` is the exact set of arguments the function is
+    about to receive -- its initial locals (`input_value`, `draw_state`, and
+    every kwarg by name). On top of those we layer the function's module globals
+    (so the snippet resolves the same free names the body would) plus the `value`
+    and `ds` aliases. Locals win over globals, mirroring normal scoping.
+
+    Delegates to the same eval/exec + stdout-capture machinery the MCP
+    `eval_python` tool uses, so a trailing expression's repr comes back alongside
+    any printed output. The namespace is a fresh dict layered over a *copy* of
+    the module globals, so assignments in the snippet don't leak back into the
+    module.
+    """
+    from src.lsd.gl_gui.mcp_eval import _run_code
+    ns = {}
+    if view_func is not None:
+        # Any free names the function body resolves.
+        ns.update(getattr(view_func, "__globals__", {}))
+    if local_vars:
+        ns.update(local_vars)            # the view function's call-time locals
+    ns.setdefault("draw_state", draw_state)
+    ns.setdefault("ds", ns.get("draw_state"))
+    ns.setdefault("value", ns.get("input_value"))
+    out, result, error = _run_code(code, ns)
+    parts = []
+    if out.strip():
+        parts.append(out.rstrip())
+    if result is not None:
+        parts.append("=> " + result)
+    if error:
+        parts.append(error.rstrip())
+    return "\n".join(parts) if parts else "(no output)"
+
 @render_func(use_cache=True, disable_scroll=True, show_header=False, searchable=True,
              header_same_line=False, show_tint=False, show_name=False, is_tree=False)
 def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, unique=None, search_text='', search_active=False, up_key_pressed=None,
-                      down_key_pressed=None, tab_state: TabState = None, **kwargs):
+                      down_key_pressed=None, enter_key_down=None, tab_state: TabState = None, **kwargs):
 
     context_menu_offset = input_value.context_menu_offset
     info_items = ["name", "searchable", "scroll_disabled", "_default_view_func", "column", "closable", "current_mode", "mode",
@@ -2939,6 +2986,8 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     class_name = type(input_value._raw_input_value).__name__
     paint_brush_icon = f"\uf1fc"
     tint_tab_name = f"{paint_brush_icon} Tint"
+    terminal_icon = f"\uf120"  # fa-terminal
+    eval_tab_name = f"{terminal_icon} Eval"
 
 
     # Find which class's source to show in the class tab.
@@ -2986,6 +3035,8 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     tab_tints.append(config_tint)
     tab_names.append(func_tab)
     tab_tints.append(None)
+    tab_names.append(eval_tab_name)
+    tab_tints.append((0.2, 0.7, 0.3))  # green for the eval/REPL tab
     tab_names.append(tint_tab_name)
     tab_tints.append(Melty._saturated_rgb(draw_state.tint))  # Custom tint for the tint tab
     if class_to_show is not None:
@@ -3169,6 +3220,66 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
                         # input_value._kwargs['view_function'] = new_view_func
                 else:
                     draw_str("No view function specified", name="View Function", column=t_idx, editable=False)
+
+            if tab_names[static_tab] == eval_tab_name:
+                # Eval-code REPL scoped to the current view function. This
+                # tab is just an editor + trigger: it stores the snippet and a
+                # pending flag on the TARGET widget's draw_state. The eval itself
+                # runs back in that widget's render wrapper (core_render), right
+                # before it calls the view func -- so the snippet sees the view
+                # function's real call-time locals (input_value, draw_state and
+                # every arg by name), not a reconstructed scope. We read the
+                # result back off the target draw_state.
+                target = input_value  # (possibly walked-up) target's draw_state
+                eval_view_func = target._view_func
+
+                code = getattr(target, '_eval_code', None)
+                if code is None:
+                    code = "input_value"
+                # Single-line mode: enter never reaches the editor as a newline
+                # (its newline handler is gated on `not single_line`); instead the
+                # menu claims the enter key event via its on_enter_key_down param
+                # and uses it to fire the eval below.
+                code_changed, new_code = draw_text(
+                    code, name=f"eval_code##{unique}", column=t_idx, padding_right=100,
+                    single_line=True, show_bg=True, show_header=False,
+                    tint=(0.05, 0.15, 0.08))
+                if code_changed:
+                    target._eval_code = new_code
+                    code = new_code
+
+                def _fire_eval():
+                    # Stash the snippet + arm the trigger, then force the target
+                    # to actually re-render (bypassing its cache) so its first
+                    # render func() -- and our eval runs -- this/next runs.
+                    target._eval_code = code
+                    target._eval_pending = True
+                    target._eval_request_gen = getattr(target, '_eval_generation', 0) + 1
+                    target.invalidate()
+                    target._parent.invalidate_up(max_depth=5)
+                    request_render()
+
+                run_clicked = button("Run", height=30, column=t_idx, name=f"eval_run##{unique}",
+                                     color=(0.2, 0.7, 0.3), factor=0.8)[0]
+                # Enter (claimed by the menu's on_enter_key_down param) evals too.
+                if run_clicked or enter_key_down:
+                    _fire_eval()
+
+                # The eval lands in the target's wrapper, a separate render pass.
+                # Until the requested generation is served, keep THIS menu live so
+                # we re-read the fresh result rather than serving a stale cache.
+                if getattr(target, '_eval_generation', 0) < getattr(target, '_eval_request_gen', 0):
+                    draw_state.invalidate()  # the menu's own draw_state
+                    request_render()
+
+                eval_result = getattr(target, '_eval_result', None)
+                if eval_result:
+                    text(eval_result, name=f"eval_result##{unique}",
+                             column=t_idx, show_bg=True, show_header=True,
+                             show_name=True, editable=False, wrap_text=True,
+                             wrap=False, bg_offset=-100,
+                             height=300,
+                             tint=(0.0, 0.0, 0.0))
 
             if tab_names[static_tab] == class_tab:
                 # Draw class source. For a primitive field this is the parent

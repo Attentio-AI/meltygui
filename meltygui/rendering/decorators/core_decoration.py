@@ -55,7 +55,6 @@ class MockMelty:
     re-applies that log against the real Melty during init so nothing done at
     import/decoration time is lost.
     """
-
     def __init__(self):
         # Each entry is (path, kind, payload):
         #   path    - tuple of ("attr", name) / ("item", key) / ("call",) steps

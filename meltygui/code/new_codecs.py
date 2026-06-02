@@ -4,7 +4,6 @@ import types
 from enum import EnumType
 from pathlib import Path
 
-from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace
 from src.lsd.gl_gui.view.core_conversion.address import Address, _evict_linecache, shift_sibling_linenos, is_editable_source
 from src.lsd.gl_gui.view.core_conversion.chain_converters import _ensure_import_lines
 from src.lsd.gl_gui.view.core_conversion.file_converters import _detect_newline
@@ -147,6 +146,16 @@ class TypeCodec(Codec):
         except UnicodeDecodeError:
             text = full.decode("latin-1")
         lines = text.split(newline)
+        # `data` must use the SAME span convention as load(): a span of N lines is
+        # N elements joined by N-1 newlines, with no trailing newline. If the
+        # editor (or a cst round-trip) hands us a trailing newline, splitting it
+        # yields a phantom empty element - which both splices a spurious blank line
+        # into the file AND inflates the line-count delta, so siblings below
+        # over-shift by one. That drift accumulates per save until findsource's
+        # backward walk lands on the wrong def and the view loses its reference.
+        # Stick to the load convention: strip exactly one trailing newline.
+        if data.endswith(newline):
+            data = data[:-len(newline)]
         new_lines = data.split(newline)
 
         old_start, old_end = address.start, address.end
@@ -196,12 +205,6 @@ class FunctionCodec(TypeCodec):
     @staticmethod
     def resolve_address(input_value, draw_state=None, **kwargs):
         if isinstance(input_value, types.FunctionType):
-            old_address = None
-            if "code_state" in kwargs:
-                code_state = kwargs["code_state"]
-                if code_state.address is not None:
-                    old_address = code_state.address
-
             unwrapped = inspect.unwrap(input_value)
             try:
                 source_file = inspect.getfile(unwrapped)
@@ -236,16 +239,13 @@ class FunctionCodec(TypeCodec):
             print(f"[editable_source] could not resolve {getattr(input_value, '__name__', input_value)}: {e}")
             return None
 
-        if old_address is not None and start_lineno - 1 != old_address.start:
-            print_stack_trace()
-
-            red = "\033[31m"
-            reset = "\033[0m"
-            bold = "\033[1m"
-            print(f"{red}{bold}[editable_source] warning: function {getattr(input_value, '__name__', input_value)}\n"
-                  f"Old start: {old_address.start} New start: {start_lineno}{reset}")
-            return None
-
+        # The function may resolve to a DIFFERENT line than its cached address because
+        # that's the legitimate sibling-shift case: editing another function in the
+        # same file moved this one up/down, and codec.save already patched this
+        # function's co_firstlineno (via shift_sibling_linenos) so getsourcelines
+        # now returns the truthful new span. Trust it and re-cache the address;
+        # rejecting it here would strand any OTHER editor window open on the same
+        # file (they'd lose their reference the instant a sibling is edited).
         address = Address(Path(source_file), start_lineno - 1,
                           start_lineno - 1 + len(source_lines),
                           source=input_value, watcher_ds=draw_state)

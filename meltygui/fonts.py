@@ -24,29 +24,44 @@ class FontSpec:
     oversample: int = 3
 
 
-class Font(RelaxedEnum):
-    # Order matters: a `merge=True` font is folded into the most recently
-    # added non-merged font, so primary fonts must come before their merges.
-    DEJAVU_SANS_18 = FontSpec(_DEJAVU_SANS, 18.0)
-    FONTAWESOME_14 = FontSpec(
+_JETBRAINS_MONO = str(_RESOURCES / "JetBrainsMono-Regular.ttf")
+
+
+def _fa_merge(size: float) -> FontSpec:
+    """FontAwesome icon spec to fold into the preceding base font.
+
+    Sized at ~0.78x the host glyph size (matching the 14/18 ratio of the
+    DejaVu UI font) so merged icons sit at a comparable cap height.
+    """
+    return FontSpec(
         str(_RESOURCES / "fontawesome-webfont.ttf"),
-        14.0,
+        size,
         merge=True,
         glyph_ranges=_FA_ICON_RANGE,
         extra_spacing=2.0,
     )
+
+
+class Font(RelaxedEnum):
+    # Order matters: a `merge=True` font is folded into the most recently
+    # added non-merged font, so primary fonts must come before their merges.
+    DEJAVU_SANS_18 = FontSpec(_DEJAVU_SANS, 18.0)
+    FONTAWESOME_14 = _fa_merge(14.0)
     DEJAVU_SANS_50 = FontSpec(_DEJAVU_SANS, 50.0)
     DEJAVU_SANS_22 = FontSpec(_DEJAVU_SANS, 22.0)
 
-    JETBRAINS_MONO_14 = FontSpec(str(_RESOURCES / "JetBrainsMono-Regular.ttf"), 14.0)
-    JETBRAINS_MONO_16 = FontSpec(str(_RESOURCES / "JetBrainsMono-Regular.ttf"), 16.0)
-    JETBRAINS_MONO_18 = FontSpec(str(_RESOURCES / "JetBrainsMono-Regular.ttf"), 18.0)
-    JETBRAINS_MONO_19 = FontSpec(str(_RESOURCES / "JetBrainsMono-Regular.ttf"), 20)
+    JETBRAINS_MONO_14 = FontSpec(_JETBRAINS_MONO, 14.0)
+    JETBRAINS_MONO_16 = FontSpec(_JETBRAINS_MONO, 16.0)
+    JETBRAINS_MONO_18 = FontSpec(_JETBRAINS_MONO, 18.0)
+    JETBRAINS_MONO_19 = FontSpec(_JETBRAINS_MONO, 20)
+    FONTAWESOME_MONO_19 = _fa_merge(16.0)
 
-    JETBRAINS_MONO_20 = FontSpec(str(_RESOURCES / "JetBrainsMono-Regular.ttf"), 20.0)
-    JETBRAINS_MONO_22 = FontSpec(str(_RESOURCES / "JetBrainsMono-Regular.ttf"), 22.0)
-    JETBRAINS_MONO_40 = FontSpec(str(_RESOURCES / "JetBrainsMono-Regular.ttf"), 40.0)
-    JETBRAINS_MONO_50 = FontSpec(str(_RESOURCES / "JetBrainsMono-Regular.ttf"), 50.0)
+    JETBRAINS_MONO_20 = FontSpec(_JETBRAINS_MONO, 20.0)
+    JETBRAINS_MONO_22 = FontSpec(_JETBRAINS_MONO, 22.0)
+    JETBRAINS_MONO_40 = FontSpec(_JETBRAINS_MONO, 40.0)
+    FONTAWESOME_MONO_40 = _fa_merge(31.0)
+    JETBRAINS_MONO_50 = FontSpec(_JETBRAINS_MONO, 50.0)
+    FONTAWESOME_MONO_50 = _fa_merge(39.0)
 
 
 class FontManager:

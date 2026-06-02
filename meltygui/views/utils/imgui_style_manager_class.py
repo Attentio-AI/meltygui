@@ -336,8 +336,6 @@ class ImGuiStyleManager:
         if self.root is None:
             return
 
-
-
         self.current_rgb = (r, g, b)
         h, s, v = colorsys.rgb_to_hsv(r, g, b)
         self.hsv = (h, s, v)

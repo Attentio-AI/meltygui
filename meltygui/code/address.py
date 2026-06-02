@@ -248,34 +248,58 @@ def shift_sibling_linenos(saved_source, file_path, after_lineno: int, delta: int
                    else inspect.unwrap(saved_source))
 
     def _maybe_shift(func):
-        inner = inspect.unwrap(func)
+        # inspect.unwrap can hand back a non-function (a wrapper method /
+        # builtin / slot for an overridden dunder) with no internal __code__. It
+        # can also raise on a pathological __wrapped__ chain. EITHER WAY this must
+        # not abort the walk: an unhandled error here would skip every function
+        # defined BELOW the offending member, leaving their co_firstlineno stale -
+        # which is exactly how draw_context_menu kept resolving to the wrong def
+        # after draw_collection grew above it.
+        try:
+            inner = inspect.unwrap(func)
+        except Exception:
+            return
         if inner is saved_inner and not include_saved:
             return
-        code = inner.__code__
+        code = getattr(inner, "__code__", None)
+        if not isinstance(code, types.CodeType):
+            return
         if not _same_file(code):
             return
         if code.co_firstlineno > after_lineno:
-            inner.__code__ = code.replace(
-                co_firstlineno=code.co_firstlineno + delta)
+            try:
+                inner.__code__ = code.replace(
+                    co_firstlineno=code.co_firstlineno + delta)
+            except (AttributeError, TypeError):
+                # Read-only / non-Python code object - can't shift, but don't
+                # let it stop the rest of the walk.
+                pass
 
     def _walk_class(cls):
         if cls is saved_source and not include_saved:
             return
         for val in list(vars(cls).values()):
+            try:
+                if isinstance(val, types.FunctionType):
+                    _maybe_shift(val)
+                elif isinstance(val, type):
+                    _walk_class(val)
+                elif isinstance(val, (staticmethod, classmethod)):
+                    inner = getattr(val, "__func__", None)
+                    if isinstance(inner, types.FunctionType):
+                        _maybe_shift(inner)
+            except Exception:
+                # One bad member must never strand the functions after it.
+                continue
+
+    for val in list(vars(module).values()):
+        try:
             if isinstance(val, types.FunctionType):
                 _maybe_shift(val)
             elif isinstance(val, type):
                 _walk_class(val)
-            elif isinstance(val, (staticmethod, classmethod)):
-                inner = getattr(val, "__func__", None)
-                if isinstance(inner, types.FunctionType):
-                    _maybe_shift(inner)
-
-    for val in list(vars(module).values()):
-        if isinstance(val, types.FunctionType):
-            _maybe_shift(val)
-        elif isinstance(val, type):
-            _walk_class(val)
+        except Exception:
+            continue
 
 
 def _resolve(value: Any) -> Address | None:

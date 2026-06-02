@@ -83,7 +83,7 @@ class Mode(Enum):
                     'view_func': draw_modes,
                     "child_kwargs" : {
                         'column_widths': [350],
-                        "modes": [RenderFuncs.draw_text, RenderFuncs.draw_collection],
+                        "modes": [RenderFuncs.draw_collection, RenderFuncs.draw_text],
                         "chain_in": [string_to_cst_module, cst_module_to_dict],
                         "chain_out": [dict_to_cst_module, cst_module_to_string],
                         "route": {
@@ -106,13 +106,13 @@ class Mode(Enum):
             recursive=True,
         ),
         (str, float, int, bool, types.NoneType): ModeOverrides(
-        kwargs={"show_bg": True, "selectable": False,"show_add_delete":False, "show_header": True,
+        kwargs={"show_bg": True, "selectable": False, "show_add_delete":False, "show_header": True,
                 "expanded": True, "use_cache": True},
         ),
         (type): ModeOverrides(
             func=draw_type_name,
             kwargs={"show_bg": True, "selectable": False, "show_add_delete": False, "show_header": True,
-                    'is_tree':False, "use_cache": True, 'tint':(0.2, 0.2, 0.1)},
+                    'is_tree':False, "use_cache": True, 'tint':(0.8, 0.8, 0.6)},
         ),
 
     }
@@ -167,7 +167,7 @@ class Mode(Enum):
         Any: ModeOverrides(
             kwargs={"show_bg": True, "selectable": False, "use_cache": True, "melty_window": False, "closable": True,
                     "with_header_end": draw_header_end, "auto_resize": False, "draggable": True, 'shadow': True,
-                    "show_tint": False, "show_header": True, "with_footer": draw_footer, 'indent_size': 5, "search_text": "", "searchable": True,
+                    "show_tint": False, "show_header": True, "with_footer": draw_footer, 'indent_size': 5, "search_text": "",
                     "show_add_delete": False, "with_header": draw_header, "min_width": 200, "min_height": 60,
                     "initial": {"width": 600, "height": 420, "window_pos": (100, 500)}},
 
@@ -190,7 +190,7 @@ class Mode(Enum):
             kwargs={"show_bg":True, "selectable":False, "use_cache":True, "melty_window":False, "closable":True,
                     "with_header_end":draw_header_end, "auto_resize":False, "draggable":True, 'shadow':True,
                     "show_tint":True, "show_header":True, "with_footer":draw_footer, 'indent_size':5,
-                     "searchable": True, "disable_scroll": False,
+                      "disable_scroll": False,
                    "show_add_delete":False, "with_header":draw_header, "min_width": 200, "min_height": 60,
                     "initial":{"width": 400, "height": 320, "window_pos": (100, 500)}},
 
@@ -203,7 +203,7 @@ class Mode(Enum):
             kwargs={"show_bg": True, "selectable": False, "use_cache": True, "melty_window": False, "closable": True,
                     "with_header_end": draw_header_end, "auto_resize": False, "draggable": True, 'shadow': True,
                     "show_tint": True, "show_header": True, "with_footer": draw_footer, 'indent_size': 5,
-                    "searchable": True, "disable_scroll": True,
+                    "disable_scroll": True,
                     "show_add_delete": False, "with_header": draw_header, "min_width": 200, "min_height": 60,
                     "initial": {"width": 400, "height": 320, "window_pos": (100, 500)}},
 
@@ -227,7 +227,7 @@ class Mode(Enum):
             kwargs={"show_bg":True, "selectable":False, "use_cache":True, "shadow":True,
                     "melty_window":True, "closable":True,
                     "auto_resize":True, "is_tree":False, "show_tint":False, "show_header":True,
-                    "disable_scroll":False, "searchable": True,
+                    "disable_scroll":False,
                     "initial": {"width": 400}},
             recursive=False
         )

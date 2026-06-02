@@ -25,6 +25,7 @@ from src.lsd.gl_gui.collision import Collisions
 from src.lsd.gl_gui.toggles import Toggles, Counters, Tint, Swoosh
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import set_window_registrar
 from src.lsd.gl_gui.view.core_views.monitor import Monitor
+from src.lsd.gl_gui.view.view_utils.imgui_style_manager_class import ImGuiStyleManager
 from src.shader_library.shader_manager.texture_manager import TextureManager
 from src.shader_library.shader_manager.filter import Filter
 from src.lsd.gl_gui.events.input_handler import InputHandler, InputEvent
@@ -239,10 +240,23 @@ class FileWatch:
 
     @classmethod
     def dispatch_event_for(cls, draw_state):
-        if draw_state.parent_window is not None:
-            Melty.cache.invalidate_up(draw_state.parent_window._tile_id, max_depth=10, force=True)
-        else:
+        # The file moved on disk (often a SIBLING def edited in another window,
+        # which moved this one's line span). The codec caches the resolved
+        # Address on draw_state._addr_cache keyed by (source, mtime); busting it
+        # here forces resolve_address to re-resolve the span the next time this
+        # view runs, instead of handing back the stale cached Address. Without
+        # this, a sibling edit leaves code_state.address pointing at the OLD span.
+        if getattr(draw_state, '_addr_cache', None) is not None:
+            draw_state._addr_cache = None
+
+        # Invalidate both the parent window AND this view's own tile. The
+        # _addr_cache + code_state live on THIS draw_state, so its tile must
+        # re-execute resolve_address - invalidating only the parent window can
+        # leave this nested code_file_io tile served from cache (stale address).
+        if draw_state._tile_id is not None:
             Melty.cache.invalidate_up(draw_state._tile_id, max_depth=10, force=True)
+        if draw_state.parent_window is not None and draw_state.parent_window._tile_id is not None:
+            Melty.cache.invalidate_up(draw_state.parent_window._tile_id, max_depth=10, force=True)
 
         draw_state._external_change = True
         request_render()
@@ -287,10 +301,14 @@ class FileWatch:
 class Melty:
 
     draw_state_registry = None
-    style_manager = None
+    style_manager: ImGuiStyleManager = None
 
     focused_ds = None
     text_focused_ds = None
+    # Previous frame's imgui io.want_text_input - used to detect when an imgui
+    # input widget newly captures the keyboard (rising edge), so a Melty text
+    # editor and an imgui input_text never hold focus at once. See begin_frame.
+    _prev_imgui_want_text = False
     selected = set()
     last_selected = None
     large_font = None
@@ -686,6 +704,25 @@ class Melty:
         gl.glBindVertexArray(0)
         is_popup_open = imgui.is_popup_open("", flags=imgui.POPUP_ANY_POPUP)
         Melty.imgui_popup_open = is_popup_open
+
+        # --- Melty/imgui text-focus mutual exclusion (reverse direction) ---
+        # A Melty draw_text editor (Melty.text_focused_ds) and an imgui
+        # input_text must never both own the keyboard. The forward case - a
+        # click exits a Melty editor - is handled by imgui itself (the click
+        # lands outside the active input, so imgui deactivates it next frame).
+        # The reverse case isn't: clicking an imgui input_text leaves the old
+        # Melty editor focused, so we drain keystrokes. Detect imgui newly
+        # capturing text (io.want_text_input rising edge - only an imgui input
+        # raises it; Melty editors aren't imgui items) and clear Melty focus.
+        # Edge-triggered, not level: a level check would re-clear Melty focus
+        # for the one frame after a forward click while imgui is still shutting
+        # down its old input, so the editor could never keep focus.
+        want_text = imgui.get_io().want_text_input
+        if want_text and not cls._prev_imgui_want_text and cls.text_focused_ds is not None:
+            cls.text_focused_ds = None
+            if Toggles.text_focus_stack_trace:
+                print_stack_trace()
+        cls._prev_imgui_want_text = want_text
 
         # Route the keyboard to the focused text view. While a text editor holds
         # focus, any held key force-invalidates its tile (and its parent window
@@ -1092,7 +1129,7 @@ class Melty:
             if len(draw_state._bg_stack) > 1:
                 Melty.bg_stack = draw_state._bg_stack[-2:]
             else:
-                Melty.bg_stack = draw_state._bg_stack[-1]
+                Melty.bg_stack = [draw_state._bg_stack[-1]]
 
 
         view_func = draw_state._wrapper

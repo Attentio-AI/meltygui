@@ -51,6 +51,7 @@ import tokenize
 import traceback
 import types
 from collections import defaultdict
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
@@ -67,6 +68,7 @@ from src.lsd.gl_gui.modes import Modes
 from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace, get_exception_frames
+from src.lsd.gl_gui.view.core_conversion import hotswap_guard
 from src.lsd.gl_gui.view.core_conversion.address import (
     Address,
 )
@@ -90,10 +92,13 @@ from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
 
-def save_file(address, code_str, codec=None, ensure_import=None):
+def save_file(address, code_str, codec=None, ensure_import=None, draw_state=None):
     """Write the edited value back through the resolved codec (span splice for
     code, whole-file for images, etc.)."""
+    current_time = datetime.now().strftime("%H:%M:%S")
+    print(f"{current_time} Saved {address.path} from {draw_state.name} {draw_state.parent_window.name}")
     codec.save(address=address, data=code_str, ensure_import=ensure_import)
+
 
 
 def recompile_source(source, code_str, file_path):
@@ -114,10 +119,10 @@ class TestClass:
     some = []
    
      # [tint=(0,0.2,1)]
-    def some_func(a=1, b=2):
+    def some_func(a=-26, b=3):
         print(a, b)
         
-    some_func(1,2)
+    some_func(77,-36)
 
     some_line = 87
     myflot = 5
@@ -324,7 +329,7 @@ class CodeState(DictConversion):
         self.file_size = None
         self.auto_load = False
         self.pending_save = False
-        self.recompiled_on_frame = None
+        self._recompiled_on_frame = None
         self.recompile_result = None
 
     def is_file_stale(self):
@@ -419,6 +424,35 @@ def _run_convert(chain, value, route=None, routed=None, **extra):
     return value, routed
 
 
+def _compile_check(text):
+    """Second-pass syntax check, catching errors libcst's lenient parser lets
+    through but Python's own compiler rejects — duplicate args (`def f(x, x)`),
+    repeated kwargs (`foo(a=1, a=1)`), `return`/`yield` outside a function, etc.
+
+    Returns the SyntaxError (carrying a real `lineno` for the red highlight) or
+    None if it compiles clean. Runs ONLY after libcst already parsed the buffer,
+    so it never double-reports a plain syntax error — it only *adds* the class of
+    mistakes cst misses.
+
+    Dedented first because the editor can hold an indented span (a nested class
+    as getsourcelines returns it); `compile` rejects a leading indent the same
+    way `_recompile_class` handles it. NOTE: this is a pure syntax/compile check —
+    it does NOT catch undefined names / typos (`print(myvarr)`), which are runtime
+    NameErrors, not SyntaxErrors, and need scope analysis (pyflakes) to detect."""
+    if not isinstance(text, str):
+        return None
+    import textwrap
+    try:
+        compile(textwrap.dedent(text), "<editor>", "exec")
+        return None
+    except SyntaxError as e:
+        return e
+    except Exception:
+        # Any non-SyntaxError exception (e.g. ValueError on null bytes) isn't the
+        # user's code being wrong in a way we can pin to a line - ignore it.
+        return None
+
+
 def _run_chain_in(input_value, chain=None, route=None, seed=None, **extra):
     """Background entry point for the forward (chain_in) conversion.
 
@@ -429,7 +463,12 @@ def _run_chain_in(input_value, chain=None, route=None, seed=None, **extra):
     folded back into ModesState on the main thread when the worker completes."""
     routed = dict(seed) if seed else {}
     result, routed = _run_convert(chain, input_value, route=route, routed=routed, **extra)
-    return {"routed": routed, "error": result if isinstance(result, Exception) else None}
+    error = result if isinstance(result, Exception) else None
+    # cst parsed clean - run the compiler check, to surface the syntax errors libcst
+    # is too lenient to flag (duplicate args/kwargs, ...). Same red-highlight path.
+    if error is None and isinstance(input_value, str):
+        error = _compile_check(input_value)
+    return {"routed": routed, "error": error}
 
 
 class ModesState:
@@ -634,7 +673,7 @@ def code_file_footer(input_value, code_state, **kwargs):
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  editable_source - the whole round-trip, one function                        ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
-@render_func(use_cache=True, selectable=False, searchable=True, with_footer=code_file_footer, disable_scroll=True)
+@render_func(use_cache=True, selectable=False, searchable=False, with_footer=code_file_footer, disable_scroll=True)
 def code_file_io(input_value, code_state: CodeState, codec=None, view_func=RenderFuncs.draw_text, auto_load=True,
                  auto_load_edits=False,
                  child_kwargs=None, draw_state=None, auto_save=True, auto_recompile_edits=False, save=False, load=False,
@@ -677,10 +716,12 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                 RenderFuncs.button(f"{play_icon} Run", tint=(0, 0.4, 0.1), height=top_line_height,
                                    name="recompile_btn")[0]
 
-        if code_state.recompiled_on_frame is not None:
-            duration = 10
-            recompiled_on = Melty.frame_count - code_state.recompiled_on_frame
-            fade_out = min(1.0, max(0.0, 2.0 - (max(0, recompiled_on) / duration)))
+        if code_state._recompiled_on_frame is not None:
+            duration = 10.0
+
+            recompiled_on = float(Melty.frame_count - code_state._recompiled_on_frame)
+            fade_out = min(1.0, max(0.0, 2.0 - (max(0.0, recompiled_on) / duration)))
+
             if fade_out >= 0:
                 imgui.same_line()
                 checkmark_icon_fa = "\uf00c"
@@ -688,6 +729,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             if fade_out > 0.01:
                 draw_state.invalidate()
                 request_render()
+                code_state._recompile_on_frame = None
 
         if code_state.is_file_stale() and not code_state.pending_save:
             if auto_load_edits:
@@ -731,20 +773,22 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
         if code_state.text_cache is not UNSET and code_state.text_cache is not None:
 
             child_kwargs['jump_to'] = address
-            # Two error signals reach the editor's red-line highlight, both via the
-            # route - code_file_io does NO parse of its own:
-            #   - SYNTAX errors: chain_in parses the buffer on its first thread
-            #     and routes the result to draw_modes (`code_tree` on success, a
+            # Error signals reach the editor's red-line highlight by this route -
+            # code_text_io does NO parse of its own:
+            #   • SYNTAX errors: chain_in parses the buffer on its background thread
+            #     and routes the result to draw_text (`code_tree` on success, the
             #     parse exception on failure). Clears the instant a fresh parse OKs.
             #   - RECOMPILE errors: the hotswap can fail on a SyntaxError (Python's
-            #     compiler pins a better line than libcst) OR a runtime error
-            #     (NameError, etc. - parses fine, so chain_in won't catch it). We
-            #     route the raw recompile failure down as `error`; draw_modes
-            #     merges it with the parse result (prefers the better recompile
-            #     line, drops a stale recompile SyntaxError once the buffer parses).
-            child_kwargs['error'] = (code_state.recompile_result
-                                     if isinstance(code_state.recompile_result, BaseException)
-                                     else None)
+            #     compiler pins a better line than libcst). Route it down as `error`.
+            #   - RUNTIME errors: a hotswap that compiled clean can throw when its
+            #     new code RUNS during a later render - the hotswap guard catches the
+            #     live object back and records the error here. It carries an
+            #     editor-relative `editor_line`, so it highlights the offending line.
+            _runtime_error = hotswap_guard.get_runtime_error(input_value)
+            _recompile_error = (code_state.recompile_result
+                                if isinstance(code_state.recompile_result, BaseException)
+                                else None)
+            child_kwargs['error'] = _runtime_error or _recompile_error
             edited, value = view_func(input_value=code_state.text_cache, changed=external_change, **child_kwargs)
 
             if edited:
@@ -771,11 +815,13 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
         explicit_save = save_hotkey or save
         save_start = (auto_save and edited) or explicit_save
         save_debounce = 0 if explicit_save else save_debounce_ms
+        time = datetime.now().strftime("%H:%M:%S")
         saved, result = run_in_background(save_file,
                                           child_kwargs={"address": address,
                                                         "codec": codec,
                                                         "code_str": code_state.text_cache,
-                                                        "ensure_import": ensure_import},
+                                                        "ensure_import": ensure_import,
+                                                        "draw_state": draw_state},
                                           name="save", start=save_start,
                                           debounce_ms=save_debounce)
         if result == LOADING:
@@ -797,12 +843,13 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                                             name="recompile", start=recompile_start)
         if result == LOADING:
             print("Starting recompile...")
-            code_state.recompiled_on_frame = None
+            code_state._recompiled_on_frame = None
         elif result == UNSET:
             pass
         else:
             if changed:
-                code_state.recompiled_on_frame = Melty.frame_count
+                print("Recompile successful-------------------------------")
+                code_state._recompiled_on_frame = Melty.frame_count
                 record_compile(address)
                 Melty.cache.invalidate_up(draw_state._tile_id, max_depth=10)
                 request_render()

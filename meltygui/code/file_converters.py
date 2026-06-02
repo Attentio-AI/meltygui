@@ -24,8 +24,62 @@ from src.lsd.gl_gui.melty import Melty
 import libcst as cst
 
 from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace
-from src.lsd.gl_gui.view.core_conversion.address import Address, invalidate_address_cache, update_address_cache, is_editable_source
+from src.lsd.gl_gui.view.core_conversion import hotswap_guard as _hotswap_guard
+from src.lsd.gl_gui.view.core_conversion.address import Address, invalidate_address_cache, update_address_cache, is_editable_source, shift_sibling_linenos
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import invalidate_usage_cache
+
+
+def _class_code_objects(cls: type) -> set:
+    """All code-object ids reachable from a class's methods — used to attribute a
+    runtime traceback frame back to a hotswapped class."""
+    ids: set = set()
+    for val in vars(cls).values():
+        fn = None
+        if isinstance(val, types.FunctionType):
+            fn = val
+        elif isinstance(val, (staticmethod, classmethod)):
+            fn = val.__func__
+        if fn is not None and isinstance(getattr(fn, "__code__", None), types.CodeType):
+            ids |= _hotswap_guard.collect_code_ids(fn.__code__)
+    return ids
+
+
+def _snapshot_class(cls: type) -> type:
+    """A throwaway clone of `cls` whose members mirror the current class — copies
+    of each method (so its live __code__ is preserved even as the original is
+    patched in place) plus a snapshot of every other attribute. Rolling back means
+    `_hotswap_class(cls, snapshot)`, which writes these members back over cls."""
+    members = {}
+    for name, val in list(vars(cls).items()):
+        if name in ("__dict__", "__weakref__"):
+            continue
+        if isinstance(val, types.FunctionType):
+            clone = types.FunctionType(val.__code__, val.__globals__, val.__name__,
+                                       val.__defaults__, val.__closure__)
+            clone.__kwdefaults__ = val.__kwdefaults__
+            clone.__annotations__ = dict(val.__annotations__ or {})
+            clone.__doc__ = val.__doc__
+            members[name] = clone
+        elif isinstance(val, (staticmethod, classmethod)):
+            inner = val.__func__
+            clone = types.FunctionType(inner.__code__, inner.__globals__, inner.__name__,
+                                       inner.__defaults__, inner.__closure__)
+            clone.__kwdefaults__ = inner.__kwdefaults__
+            clone.__annotations__ = dict(inner.__annotations__ or {})
+            members[name] = type(val)(clone)
+        else:
+            members[name] = val
+    return type(f"_snapshot_{cls.__name__}", (), members)
+
+
+def _register_hotswap(source, restore, code, line_base=0):
+    """Register a successful hotswap with the rollback guard. `code` is either a
+    single code object (function) or a set of code-object ids (class/module)."""
+    if isinstance(code, types.CodeType):
+        code_ids = _hotswap_guard.collect_code_ids(code)
+    else:
+        code_ids = set(code)
+    _hotswap_guard.register(source, restore, code_ids, line_base=line_base)
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -208,6 +262,18 @@ def recompile_fn(input_value, ref=None, function_ref=None):
     lines[ref.start:ref.end] = new_lines
     ref.path.write_text(newline.join(lines), encoding="utf-8")
     invalidate_usage_cache(ref.path)
+
+    # An edit that changes the function's line count shifts all function definitions
+    # BELOW it down (or up) in the file. Patch their co_firstlineno so the next
+    # resolve via inspect.getsourcelines returns truthful line numbers - the same
+    # fix _do_save applies in the chain save path. Without it a reload resolves
+    # to a stale span (findsource jumps back to the parent def, or to line 0 →
+    # wiped to head), which breaks rendering of every function below.
+    if ref.start is not None and ref.end is not None:
+        delta = (ref.start + len(new_lines)) - ref.end
+        shift_sibling_linenos(function_ref if function_ref is not None else ref.source,
+                              ref.path, after_lineno=ref.end, delta=delta)
+
     new_ref = Address(ref.path, ref.start, ref.start + len(new_lines))
     yellow = "\033[93m"
     reset = "\033[0m"
@@ -298,6 +364,17 @@ def recompile_cls_fn(input_value, ref=None, class_ref=None,
     lines[ref.start:ref.end] = new_lines
     ref.path.write_text(newline.join(lines), encoding="utf-8")
     invalidate_usage_cache(ref.path)
+
+    # Shift co_firstlineno of every function/class after this one when the one's
+    # line count changes, so their next resolve lands on the right span (see the
+    # matching block in recompile_fn / _do_save). The edited class's own methods
+    # are handled by the recompile in _recompile_class; shift_sibling_linenos skips
+    # the saved class and only corrects what comes after it in the file.
+    if ref.start is not None and ref.end is not None:
+        delta = (ref.start + len(new_lines)) - ref.end
+        shift_sibling_linenos(class_ref if class_ref is not None else ref.source,
+                              ref.path, after_lineno=ref.end, delta=delta)
+
     yellow = "\033[93m"
     reset = "\033[0m"
     print(f"{yellow}[File Write] Updated file {ref.path}{reset}")
@@ -450,6 +527,10 @@ def _recompile(func: types.FunctionType, source: str,
     unwrapped = inspect.unwrap(func)
     namespace = dict(unwrapped.__globals__)
 
+    # Snapshot the decorator registries BEFORE exec re-runs the decorators (which
+    # register a throwaway wrapper), restored after the hotswap below.
+    _pre_reg = _snapshot_func_registrations()
+
     freevars = unwrapped.__code__.co_freevars
     has_closure = bool(freevars and unwrapped.__closure__)
 
@@ -481,13 +562,13 @@ def _recompile(func: types.FunctionType, source: str,
         print_stack_trace()
         return TypeError(f"Recompiled object '{unwrapped.__name__}' is not callable")
 
-    # Keep the freshly-DECORATED wrapper: exec re-ran @default_func/@window/etc.,
-    # which registered THIS object in Melty's registries (default_funcs_by_type,
-    # ...). We hotswap the old function in place (below) to keep `from x import fn`
-    # references valid, then redirect those new registrations back onto it -
-    # otherwise the registry serves this orphaned object, which never enters
-    # vars(module) so shift_sibling_linenos can't keep its co_firstlineno honest,
-    # and resolve_address eventually returns start=0 (wiping the file head).
+    # Capture the freshly-DECORATED object that exec produced: re-running
+    # @render_func/@window/etc. registered THIS throwaway object in Melty's
+    # registries. We hotswap the original file function in place (below) - keeping
+    # `from x import fn` refs to the original wrapper valid - then restore the
+    # registries to that original wrapper (see _redirect_function_registrations).
+    # Left registered, the throwaway causes stale renders and windows on entering
+    # vars(module): its co_firstlineno rots → resolve_address returns start=0.
     new_wrapper = new_func
     new_func = inspect.unwrap(new_func)
 
@@ -496,6 +577,12 @@ def _recompile(func: types.FunctionType, source: str,
         _validate_local_names(new_func.__code__)
 
         original_firstlineno = unwrapped.__code__.co_firstlineno
+
+        # Snapshot the PREVIOUS compiled state before patching, so the hotswap
+        # guard can roll it back if the new code throws at runtime (see register).
+        _prev = (unwrapped.__code__, unwrapped.__defaults__,
+                 unwrapped.__kwdefaults__, dict(unwrapped.__annotations__ or {}),
+                 unwrapped.__doc__)
 
         unwrapped.__code__ = new_func.__code__
         unwrapped.__defaults__ = new_func.__defaults__
@@ -507,7 +594,17 @@ def _recompile(func: types.FunctionType, source: str,
             co_firstlineno=original_firstlineno
         )
 
-        _redirect_function_registrations(func, new_wrapper)
+        _redirect_function_registrations(_pre_reg, new_wrapper)
+
+        def _restore(u=unwrapped, prev=_prev):
+            u.__code__, u.__defaults__, u.__kwdefaults__, ann, u.__doc__ = prev
+            u.__annotations__ = dict(ann)
+            Melty.cache.invalidate_up_by_func(u, max_depth=10)
+        # The installed code's co_firstlineno was reset to the function's file
+        # position, so a traceback's line number is file-absolute → subtract
+        # (firstlineno - 1) to map back to the editor buffer (1-based).
+        _register_hotswap(func, _restore, unwrapped.__code__,
+                          line_base=original_firstlineno - 1)
 
     except Exception as e:
         print_stack_trace(exception=e)
@@ -562,9 +659,22 @@ def _recompile_class(cls: type, source: str, filename: str) -> None:
     if new_cls is None:
         return NameError(f"Class '{cls.__name__}' not found in recompiled code")
 
+    # Snapshot the PREVIOUS compiled state before patching: a throwaway clone whose
+    # members (incl. live method code objects) mirror the current class. Rollback
+    # re-hotswaps this clone back over cls, keeping methods/attrs in place.
+    _prev_cls = _snapshot_class(cls)
+
     _hotswap_class(cls, new_cls)
     _redirect_class_registrations(cls, new_cls)
     Melty.cache.invalidate_up_by_obj(cls, max_depth=10)
+
+    def _restore(c=cls, snap=_prev_cls):
+        _hotswap_class(c, snap)
+        _redirect_class_registrations(c, snap)
+        Melty.cache.invalidate_up_by_obj(c, max_depth=10)
+    # Class bodies compile at buffer-relative line numbers (the editor shows the
+    # whole class span starting at line 1), so no line base offset.
+    _register_hotswap(cls, _restore, _class_code_objects(new_cls), line_base=0)
     return None
 
 
@@ -573,6 +683,11 @@ def _recompile_module(module: types.ModuleType, source: str,
     old_attrs = dict(module.__dict__)
 
     code = compile(source, filename, "exec")
+    # Per-member snapshot of the PREVIOUS compiled state, taken BEFORE patching so
+    # in-place edits don't clobber it (old_attrs aliases the live objects, whose
+    # __code__ we update below). Each entry is a zero-arg restore closure.
+    _member_restores = []
+    new_code_ids = set()
     try:
         exec(code, module.__dict__)
 
@@ -582,22 +697,53 @@ def _recompile_module(module: types.ModuleType, source: str,
                 continue
 
             if isinstance(old_obj, types.FunctionType) and isinstance(new_obj, types.FunctionType):
+                _prev = (old_obj.__code__, old_obj.__defaults__,
+                         old_obj.__kwdefaults__, dict(old_obj.__annotations__ or {}),
+                         old_obj.__doc__)
+
+                def _restore_fn(o=old_obj, p=_prev):
+                    o.__code__, o.__defaults__, o.__kwdefaults__, ann, o.__doc__ = p
+                    o.__annotations__ = dict(ann)
+                _member_restores.append(_restore_fn)
+
                 old_obj.__code__ = new_obj.__code__
                 old_obj.__defaults__ = new_obj.__defaults__
                 old_obj.__kwdefaults__ = new_obj.__kwdefaults__
                 old_obj.__annotations__ = new_obj.__annotations__
                 old_obj.__doc__ = new_obj.__doc__
                 module.__dict__[name] = old_obj
+                new_code_ids |= _hotswap_guard.collect_code_ids(new_obj.__code__)
 
             elif isinstance(old_obj, type) and isinstance(new_obj, type):
+                _snap = _snapshot_class(old_obj)
+
+                def _restore_cls(o=old_obj, s=_snap):
+                    _hotswap_class(o, s)
+                    _redirect_class_registrations(o, s)
+                    invalidate_address_cache(o)
+                _member_restores.append(_restore_cls)
+
                 _hotswap_class(old_obj, new_obj)
                 _redirect_class_registrations(old_obj, new_obj)
                 invalidate_address_cache(old_obj)
                 module.__dict__[name] = old_obj
+                new_code_ids |= _class_code_objects(new_obj)
     except Exception as e:
         # Roll back to old attributes on error
         module.__dict__.update(old_attrs)
         print(f"Error recompiling module '{module.__name__}': {e}")
+        return e
+
+    # Register a whole-module rollback: re-applying every member restore reverts
+    # the module to its last compiled state if any patched member throws at
+    # runtime. Module bodies compile at file/buffer line numbers → base 0.
+    def _restore_module(restores=tuple(_member_restores)):
+        for r in restores:
+            try:
+                r()
+            except Exception as ex:
+                print(f"[hotswap_guard] module member restore failed: {ex}")
+    _hotswap_guard.register(module, _restore_module, new_code_ids, line_base=0)
 
 
 def _hotswap_class(old_cls: type, new_cls: type) -> None:
@@ -693,39 +839,59 @@ def _redirect_class_registrations(old_cls: type, new_cls: type) -> None:
             reg[old_cls] = reg.pop(new_cls)
 
 
-def _redirect_function_registrations(old_func, new_wrapper) -> None:
-    """Repoint decorator-driven registries from `new_wrapper` back to `old_func`.
+# Registries the function decorators (@render_func is_default_for / converter /
+# interrupt_source_for, @window) add to. Snapshotted before a recompile's exec
+# and restored after, so the re-run decorators don't leave a throwaway wrapper
+# registered.
+_FUNC_REGISTRY_NAMES = ("default_funcs_by_type", "default_funcs_by_name",
+                        "type_interrupts", "_converters",
+                        "annotated_window_classes")
+
+
+def _snapshot_func_registrations() -> dict:
+    """Shallow-copy the function registries BEFORE a recompile's exec, so we can
+    tell which entries the re-run decorators overwrote and restore them."""
+    snap = {}
+    for name in _FUNC_REGISTRY_NAMES:
+        reg = getattr(Melty, name, None)
+        if isinstance(reg, dict):
+            snap[name] = dict(reg)
+    return snap
+
+
+def _redirect_function_registrations(pre_snapshot: dict, new_wrapper) -> None:
+    """Restore decorator-driven registries that `_recompile`'s exec clobbered.
 
     The function analog of `_redirect_class_registrations`. `_recompile` re-execs
-    a function's source, which RE-RUNS its decorators (`@render_func`,
-    `@window`, converter registration, `interrupt_source_for`). Those register
-    the FRESH wrapper in Melty's value-keyed registries, while the app keeps the
-    old function (hotswapped in place so `from x import fn` stays valid). The
-    fresh wrapper is doubly wrong: it serves stale renders, and — never being in
-    vars(module) — it's invisible to shift_sibling_linenos, so its co_firstlineno
-    rots and resolve_address eventually returns start=0, wiping the file head.
+    a function's source, which RE-RUNS its decorators (`@render_func`, `@window`,
+    converter registration, `interrupt_source_for`). Those register a FRESH,
+    throwaway wrapper in Melty's registries, while the app keeps editing/calling
+    the ORIGINAL wrapper (which `@wraps`-wraps the raw function we hotswap in
+    place, lives in vars(module), and `inspect.unwrap`s to the raw so both
+    resolve_address and shift_sibling_linenos stay correct). The throwaway is
+    doubly wrong: it serves stale renders, and — never being in vars(module) —
+    its co_firstlineno rots so resolve_address eventually returns start=0.
 
-    Mirror the class path: wherever a registry now holds `new_wrapper`, restore
-    `old_func`. These are VALUE-keyed maps (type/name/tuple → wrapper), so sweep
-    by identity. annotated_window_classes is name-keyed to a (target, kwargs)
-    tuple — keep the freshly-parsed kwargs but rebind to old_func.
+    NOTE: we must NOT just point the registry at the recompiled `func` — the
+    editor hands `_recompile` the RAW function (draw_state._view_func), so doing
+    that registers an undecorated callable and draw_any calls it without the
+    injected draw_state/depth/style_manager/meta. Instead restore whatever
+    WRAPPER the registry held before the exec; it wraps the now-hotswapped raw.
     """
-    if new_wrapper is None or new_wrapper is old_func:
+    if new_wrapper is None:
         return
-
-    # Value-keyed sweeps: type → wrapper, name → wrapper, (from, to) → wrapper.
-    for reg_name in ("default_funcs_by_type", "default_funcs_by_name",
-                     "type_interrupts", "_converters"):
-        reg = getattr(Melty, reg_name, None)
-        if isinstance(reg, dict):
-            for key, val in list(reg.items()):
-                if val is new_wrapper:
-                    reg[key] = old_func
-
-    # @window - name-keyed (target, kwargs); keep fresh kwargs, restore identity.
-    name = getattr(old_func, "__name__", None)
-    wins = getattr(Melty, "annotated_window_classes", None)
-    if isinstance(wins, dict) and name is not None:
-        entry = wins.get(name)
-        if entry is not None and entry[0] is new_wrapper:
-            wins[name] = (old_func, entry[1])
+    for name, before in pre_snapshot.items():
+        reg = getattr(Melty, name, None)
+        if not isinstance(reg, dict):
+            continue
+        for key, val in list(reg.items()):
+            old = before.get(key)
+            # Direct wrapper value (default_funcs_*, type_interrupts, _converters).
+            if val is new_wrapper:
+                if old is not None and old is not new_wrapper:
+                    reg[key] = old
+            # @window - name-keyed (target, kwargs); keep fresh kwargs, restore id.
+            elif (isinstance(val, tuple) and len(val) == 2 and val[0] is new_wrapper
+                  and isinstance(old, tuple) and len(old) == 2
+                  and old[0] is not new_wrapper):
+                reg[key] = (old[0], val[1])

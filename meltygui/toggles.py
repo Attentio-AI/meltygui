@@ -1,15 +1,87 @@
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import tint, Core, defaults
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
+from src.lsd.gl_gui.view.view_utils.imgui_style_manager_class import ImGuiStyleManager
+
 
 class Counters:
     # Nested window
     nested_window_count = 18
     some_dict = [1,1,1]
     some_dict2 = {1:1}
-    
+
+def rgb_to_hsv(r, g, b):
+    maxc = max(r, g, b)
+    minc = min(r, g, b)
+    rangec = (maxc - minc)
+    v = maxc
+    if minc == maxc:
+        return 0.0, 0.0, v
+    s = rangec / maxc
+    rc = (maxc - r) / rangec
+    gc = (maxc - g) / rangec
+    bc = (maxc - b) / rangec
+    if r == maxc:
+        h = bc - gc
+    elif g == maxc:
+        h = 2.0 + rc - bc
+    else:
+        h = 4.0 + gc - rc
+    h = (h / 6.0) % 1.0
+    return h, s, v
+
+def hsv_to_rgb(h, s, v):
+    if s == 0.0:
+        return v, v, v
+    i = int(h * 6.0)  # XXX assume int() truncates!
+    f = (h * 6.0) - i
+    p = v * (1.0 - s)
+    q = v * (1.0 - s * f)
+    t = v * (1.0 - s * (1.0 - f))
+    i = i % 6
+    if i == 0:
+        return v, t, p
+    if i == 1:
+        return q, v, p
+    if i == 2:
+        return p, v, t
+    if i == 3:
+        return p, q, v
+    if i == 4:
+        return t, p, v
+    if i == 5:
+        return v, p, q
+
+def mix(r1, g1, b1, r2, g2, b2, alpha):
+    """Mix two colors with alpha blending"""
+    return (
+        r1 * (1 - alpha) + r2 * alpha,
+        g1 * (1 - alpha) + g2 * alpha,
+        b1 * (1 - alpha) + b2 * alpha
+    )
+
 @window
 class Tint:
+    max_saturation = 3.0
+    max_value = 10.0
+
+    @staticmethod
+    @defaults(tint=(0.1,0.1,0))
+    def icon_tint():
+        style_manager: ImGuiStyleManager = Core.melty.style_manager
+        active_hsv = style_manager.hsv
+
+        hue_delta = -0.03
+        saturation_factor = 2.0
+        value_factor = 1.648
+
+        active_hsv = ((active_hsv[0] + hue_delta),
+                      min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
+                      min(max(active_hsv[2] * value_factor, 0), Tint.max_value))
+        return hsv_to_rgb(*active_hsv)
+
+
+
     # Context menu tints
     context_select_tint = (1.0, 0.7, 0.2)
     context_select_outline_alpha = -0.015
@@ -29,6 +101,8 @@ class Tint:
     select_outline_thickness = 2.0       # selection outline line thickness
     select_outline_alpha = 0.65          # selection outline opacity
     select_bg_alpha = 0.08               # selection fill opacity
+
+
 
 @window
 class Swoosh:
@@ -51,17 +125,18 @@ class Swoosh:
     some_dict = [1,1,1,1]
 
 
-@window(tint=(0.5, 0.6, 0.7))
+@window(tint=(0.6, 0.8, 0.9))
 class Toggles:
     test_float = 3.303
     debug_scroll = False
-    @defaults(tint=(0.3,0.2,0.2))
+    
+    @defaults(tint=(0.3,0.0,0.0))
     class InvalidateTracker:
         keep_for_frames = 2
         enable = False
         draw_bvh = False
         
-    @defaults(tint=(0.10598, 0.2410416603088379,0.320930242538452))
+    @defaults(tint=(0.08177394419908524, 0.1272051,0.195348858833313))
     class Debug:
         slow_frame_rate = False
     # Overlay a transparent green square on any draw_state whose blit tile is
@@ -81,7 +156,6 @@ class Toggles:
     debug_stale_tint = False
     show_line_break = False
     # Filter SettingS
-
     brightness = 0.317
     contrast = 1.574
     saturation = -0.4

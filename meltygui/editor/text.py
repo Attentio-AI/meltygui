@@ -10,6 +10,7 @@ from src.lsd.gl_gui.melty import Melty, SearchTerm
 from src.lsd.gl_gui.fonts import Font
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.jump_to import draw_jump_to
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
 
 
 def _hex(h):
@@ -594,7 +595,12 @@ def _exception_errors(error):
         line = int(line)
     except (TypeError, ValueError):
         return []
-    msg = getattr(error, 'message', None) or str(error)
+    # Prefer the clean message: libcst exposes `.message`, builtin SyntaxError
+    # exposes `.msg` ("duplicate name 'x' ...") - `str(e)` would tack on the
+    # noisy "(<file>, line ...)" suffix, so reach for the attrs first.
+    msg = (getattr(error, 'message', None)
+           or getattr(error, 'msg', None)
+           or str(error))
     return [(line, msg)]
 
 
@@ -624,26 +630,20 @@ def draw_text(input_value: str,
               code_tree=None, error=None):
     ds = draw_state
 
-    # Jump-to-source button drawn inline at the top (before the monospace font
-    # push, so it has the normal UI font), above the text body.
-    if jump_to is not None:
-        draw_jump_to(jump_to)
-
-    # Debug indicator for the routed code_tree: makes the str→cst→str round trip
-    # visible - shows the type/size that arrived, or a red ParseError + line.
-    _ct_errors = None
-    if code_tree is not None:
-        _ct_errors = _code_tree_errors(code_tree)
-        if _ct_errors:
-            imgui.text_colored(f"code_tree: {_describe_code_tree(code_tree)}", 0.9, 0.3, 0.3, 1.0)
-        else:
-            imgui.text_colored(f"code_tree: {_describe_code_tree(code_tree)}", 0.55, 0.55, 0.62, 1.0)
-
     # Error markers to highlight in red: the routed code_tree's parse errors plus
     # any exception routed in via the mode route (e.g. draw_modes hands us the
-    # chain_in failure so the offending source line lights up here).
+    # chain_in failure so the offending source line lights up here). Computed up
+    # front so the message can ride along into the file header bar.
+    _ct_errors = _code_tree_errors(code_tree) if code_tree is not None else None
     _err_markers = list(_ct_errors) if _ct_errors else []
     _err_markers += _exception_errors(error)
+
+    # Jump-to-source button drawn inline at the top (before the monospace font
+    # push, so it uses the normal UI font), before the text body. The first error
+    # message (if any) rides into the header, beside the filename, in red.
+    if jump_to is not None:
+        _err_msg = _err_markers[0][1] if _err_markers else None
+        draw_jump_to(jump_to, error_msg=_err_msg)
 
     _font_pushed = False
     if font is not None and Melty.font_mgr is not None:
@@ -669,6 +669,27 @@ def draw_text(input_value: str,
     left = imgui.get_cursor_screen_pos()[0]
     top = imgui.get_cursor_screen_pos()[1]
 
+    # --- Line-number gutter ---
+    # Shown only when the routed address (jump_to) supplies a starting line, so
+    # a function body span shows its true file line numbers. Plain buffers with
+    # no address or single-line cells (search box, inline text editors) get no
+    # gutter. gutter_w is folded into origin_x, so every downstream operation
+    # (scroll, search, cursor, mouse hit-testing) shifts with it; the numbers
+    # themselves are drawn in their own clip column at the end so
+    # horizontally-scrolled code never slides underneath them.
+    show_gutter = (not single_line and not is_search_box
+                   and jump_to is not None
+                   and getattr(jump_to, 'start', None) is not None)
+    if show_gutter:
+        line_offset = jump_to.start
+        last_line_no = line_offset + text.count('\n') + 1
+        gutter_digits = max(len(str(last_line_no)), 2)
+        gutter_w = gutter_digits * char_w + 12.0
+    else:
+        line_offset = 0
+        gutter_w = 0.0
+    text_visible_width = draw_state.content_width - gutter_w
+
     # Snapshot the clip rect in the same scroll frame as `left`/`top`. Those
     # come from the imgui cursor the wrapper positioned at abs_top *before* this
     # func ran; the drag handlers just below then mutate scroll_offset (here and
@@ -689,7 +710,7 @@ def draw_text(input_value: str,
         sx, sy = ds.scroll_offset
         ds.scroll_offset = (sx, sy - horizontal_scroll_drag.dy)
 
-    origin_x = left - ds.text_h_scroll
+    origin_x = left + gutter_w - ds.text_h_scroll
     origin_y = top
 
     # Keystrokes come from the GLFW-callback queue (Melty.frame_key_events:
@@ -1107,7 +1128,14 @@ def draw_text(input_value: str,
         # is fully on screen. Pass the line's full vertical band [top, bottom] in
         # screen space - _scroll_into_view takes (top_abs, bottom_abs), so a
         # match ABOVE the viewport scrolls up and one BELOW scrolls down.
-        match_top_abs = ds.abs_top + line * line_px
+        # Anchor on origin_y (the actual rendered content top, == abs_top minus
+        # the editor's own vertical scroll) - the SAME origin the highlight is
+        # drawn at below (origin_y + m_line * line_px). Using ds.abs_top here
+        # would ignore the editor's self-scroll, so the computed origin always
+        # sat at-or-below the true one: the view only ever scrolled down (never
+        # up) and the match landed off-screen whenever the editor owned its
+        # scrollbar.
+        match_top_abs = origin_y + line * line_px
         _scroll_into_view(ds, match_top_abs, match_top_abs + line_px)
 
         # Horizontal: default back to the line start (h_scroll 0) while paging
@@ -1116,19 +1144,19 @@ def draw_text(input_value: str,
         match_x = (ms - line_start) * char_w
         match_x_end = (me - line_start) * char_w
         edge_padding = 20.0
-        if ds.content_width > 0:
-            if match_x_end <= ds.content_width - edge_padding:
+        if text_visible_width > 0:
+            if match_x_end <= text_visible_width - edge_padding:
                 ds.text_h_scroll = 0.0
             else:
                 # Pin the match's end to the right edge so we scroll the least
                 # amount needed to reveal it, instead of dragging it to the left.
-                ds.text_h_scroll = max(0.0, match_x_end - ds.content_width + edge_padding)
+                ds.text_h_scroll = max(0.0, match_x_end - text_visible_width + edge_padding)
         request_render()
 
     # --- Horizontal auto-scroll ---
     # Only kicks in when the cursor moved this frame, so middle-drag pans
     # are not snapped back. Brings the cursor into view on a single line.
-    visible_width = draw_state.content_width
+    visible_width = text_visible_width
     if ds.text_cursor_pos != ds.text_prev_cursor_pos and visible_width > 0:
         line_start = _get_line_start(text, ds.text_cursor_pos)
         cursor_logical_x = (ds.text_cursor_pos - line_start) * char_w
@@ -1143,11 +1171,13 @@ def draw_text(input_value: str,
     max_line_width = max((len(l) for l in text.split('\n')), default=0) * char_w
     max_h_scroll = max(0.0, max_line_width - visible_width + 50.0)
     ds.text_h_scroll = max(0.0, min(ds.text_h_scroll, max_h_scroll))
-    origin_x = left - ds.text_h_scroll
+    origin_x = left + gutter_w - ds.text_h_scroll
 
     # --- Drawing ---
     draw_list = imgui.get_window_draw_list()
-    rect_min_x = left
+    # Text content is clipped to start after the gutter, so highlights never
+    # bleed under the line numbers when scrolled horizontally.
+    rect_min_x = left + gutter_w
     rect_min_y = draw_state.abs_clip_rect[1]
     rect_max_x = left + draw_state.content_width
     rect_max_y = draw_state.abs_clip_rect[3]
@@ -1197,7 +1227,8 @@ def draw_text(input_value: str,
 
     # Parse/compile error line highlight from the routed ast_tree or a routed
     # exception: a translucent red wash spanning the offending line, drawn under
-    # the glyphs so the code stays readable.
+    # the glyphs so the code stays readable. The message itself rides in the file
+    # header (see draw_header_text above), not floated over the code.
     if _err_markers:
         err_bg = (110 << 24) | (40 << 16) | (40 << 8) | 210  # translucent red (ABGR)
         for err_line, _msg in _err_markers:
@@ -1245,6 +1276,32 @@ def draw_text(input_value: str,
             draw_list.add_line(cx, cy, cx, cy + line_px, cursor_color, 1.0)
 
     draw_list.pop_clip_rect()
+
+    # --- Line-number gutter ---
+    # Drawn after the text body in its own clip column (left to → gutter_w) so
+    # the numbers stay fixed while code scrolls horizontally under them. Numbers
+    # ride origin_y, so they scroll vertically in lockstep with their lines. The
+    # cursor's line is brightened for emphasis.
+    if show_gutter and gutter_w > 0:
+        gutter_bg = (255 << 24) | (38 << 16) | (33 << 8) | 28  # faint black gray (ABGR)
+        num_color = COLORS['comment']
+        cur_color = COLORS['default']
+        cur_line = _index_to_line_col(text, ds.text_cursor_pos)[0] if is_focused else -1
+        # Clamp the column's top to the text body (origin_y) so the fill doesn't
+        # ride up over the header bar above it; rect_min_y still works once the
+        # body has scrolled up past the clip top.
+        gutter_top = max(rect_min_y, origin_y)
+        draw_list.push_clip_rect(left, gutter_top, left + gutter_w, rect_max_y, True)
+        draw_list.add_rect_filled(left, gutter_top, left + gutter_w, rect_max_y, gutter_bg)
+        total_lines = text.count('\n') + 1
+        for line_idx in range(total_lines):
+            ly = origin_y + line_idx * line_px
+            if ly + line_px < gutter_top or ly > rect_max_y:
+                continue
+            num_str = str(line_offset + line_idx + 1)
+            nx = left + gutter_w - 6.0 - len(num_str) * char_w
+            draw_list.add_text(nx, ly, cur_color if line_idx == cur_line else num_color, num_str)
+        draw_list.pop_clip_rect()
 
     if changed:
         text_height = (text.count('\n') + 1) * line_px + 2

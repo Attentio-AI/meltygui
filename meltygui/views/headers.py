@@ -11,11 +11,12 @@ from src.lsd.gl_gui.global_style import GlobalStyle
 from src.lsd.gl_gui.melty import Melty, add_to_collection
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
 from src.lsd.gl_gui.model.core_model.draw_state import TileMode
-from src.lsd.gl_gui.toggles import Toggles
+from src.lsd.gl_gui.toggles import Toggles, Tint
 from src.lsd.gl_gui.utils.custom_views import push_style_var, push_style_color, pop_style_color, pop_style_var
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
 from src.lsd.gl_gui.view.core_conversion.path_finder import PendingState
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
+from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.core_views.folders_proxy import FolderProxy
 
 
@@ -59,7 +60,16 @@ def render_search(search_ds, draw_state, unique=None, ):
     # re-grab runs before draw_text's key handling, so no keystroke is lost,
     # and it won't steal focus from a user click into the editor (which
     # leaves text_focused_ds non-None).
-    focus_search = (not search_ds._search_was_active) or Melty.text_focused_ds is None
+    # `_search_focus_pending` is the one-shot set when Ctrl+F opened the search:
+    # claim focus this frame regardless of who holds it focus (the underlying
+    # text view can reclaim melty text focus before this box renders, so
+    # `text_focused_ds is None` alone misses the just-opened case). Consume it so
+    # later frames fall back to the gentle re-grab and don't fight a deliberate
+    # click into the editor.
+    focus_search = ((not search_ds._search_was_active)
+                    or Melty.text_focused_ds is None
+                    or search_ds._search_focus_pending)
+    search_ds._search_focus_pending = False
     search_ds._search_was_active = True
     search_icon = ""
     imgui.align_text_to_frame_padding()
@@ -168,9 +178,9 @@ def render_search(search_ds, draw_state, unique=None, ):
         imgui.text_colored("No results", 0.74, 0.5, 0.5, 1.0)
 
 
-
+@window
 def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add_delete=False, width=0, suffix="",
-                collection=None, display_name=None, meta=None, unique=None, is_tree=True,
+                collection=None, icon=None, display_name=None, meta=None, unique=None, is_tree=True,
                 show_name=True, name_func=None, show_type=False, show_unique=False,
                 on_search=False, trigger_collapse=False, trigger_expand=False,
                 draw_state=None, show_tint=False, opacity=1.23, show_add_delete=True,
@@ -181,11 +191,10 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     # Depth-driven name brightness
     depth_scale       = 0.06
     depth_offset      = -30.0
-    name_value_factor = 0.777
+
     # Depth drives text saturation falloff
     sat_depth_factor  = -0.004
     sat_depth_offset  = -1.773
-    some_val = 6
 
     spinner_icon_0 = ""
     spinner_icon_1 = ""
@@ -195,6 +204,10 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     spinner_icon = [spinner_icon_0, spinner_icon_1][spinner_icon_idx]
     icon_width = imgui.calc_text_size(spinner_icon)[0]/2
 
+    depth = max(0.0, Melty.bg_depth)
+    depth_intensity = float(depth + depth_offset) * depth_scale
+
+    sat_shift = float(depth + sat_depth_offset) * sat_depth_factor
 
     # Name text (value is the base offset, updated to depth below)
     name_style = {
@@ -206,45 +219,34 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     max_name_chars      = 40
     min_name_text_width = 62
 
-    # Tree arrow
+    # Type / unique label colors
+    type_label_tint   = (3.672, 1.944, 2.861, 1.0)
+    unique_label_tint = (-1.535, 0.0, 0.9, 1.0)
+
+    # ── Depth-driven color computation ─────────────────────────
+
+    name_style['value'] = depth_intensity * name_style['depth_factor'] + name_style['value']
+    name_style['saturation'] = name_style['saturation'] + sat_shift
+    name_color = style_manager.make_color_style_value(input=name_style)
+
     arrow_style = {
         'value': 7.788, 'saturation': 1.559,
         'alpha': 0.071, 'max_value': 1.601,
         'depth_factor': 0.332
     }
+    arrow_style['value'] = depth_intensity * arrow_style['depth_factor'] + arrow_style['value']
+    arrow_style['saturation'] = arrow_style['saturation'] + sat_shift
+    arrow_color = style_manager.make_color_style_value(input=arrow_style)
 
-    # Type / unique label colors
-    type_label_color   = (3.672, 1.944, 2.861, 1.0)
-    unique_label_color = (-1.535, 0.0, 0.9, 1.0)
-
-    # ── Setup ──────────────────────────────────────────────────
-    if display_name is not None:
-        name = display_name
-
+    # ── Tree arrow ─────────────────────────────────────────────
     imgui.dummy(5, 0)
-
     start_x = imgui.get_cursor_screen_pos()[0]
 
     on_change = False
     return_val = on_action
     push_style_var(imgui.STYLE_ALPHA, opacity)
-
-    # ── Depth-driven color computation ─────────────────────────
-    depth = max(0.0, Melty.bg_depth)
-
-    depth_intensity = float(depth + depth_offset) * depth_scale
-    name_style['value'] = depth_intensity * name_style['depth_factor'] + name_style['value']
-    arrow_style['value'] = depth_intensity * arrow_style['depth_factor'] + arrow_style['value']
-
-    sat_shift = float(depth + sat_depth_offset) * sat_depth_factor
-    name_style['saturation'] = name_style['saturation'] + sat_shift
-    arrow_style['saturation'] = arrow_style['saturation'] + sat_shift
-
-    name_color = style_manager.make_color_style_value(input=name_style)
-    arrow_color = style_manager.make_color_style_value(input=arrow_style)
-    draw_state._name_color = arrow_color
-
-    # ── Tree button ─────────────────────────────────────────────
+    if display_name is not None:
+        name = display_name
     imgui.align_text_to_frame_padding()
 
     if is_tree:
@@ -274,10 +276,10 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
     # ── Type / unique labels ───────────────────────────────────
     if show_type:
-        imgui.text_colored(f"({input_value.__class__.__name__})", *type_label_color)
+        imgui.text_colored(f"({input_value.__class__.__name__})", *type_label_tint)
         same_line()
     if show_unique:
-        imgui.text_colored(f"({str(Melty.get_tile_id())})", *unique_label_color)
+        imgui.text_colored(f"({str(Melty.get_tile_id())})", *unique_label_tint)
         same_line()
     if show_name and name != "":
         same_line()
@@ -334,33 +336,39 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
     if has_visible_name:
         # Folder open button for dictionaries
-        if isinstance(input_value, (dict, MutableMapping)):
-            push_style_color(imgui.COLOR_BUTTON, 0.0, 0.0, 0.0, 0.0)
-            push_style_color(imgui.COLOR_TEXT, *name_color)
-            # if imgui.button("##open_folder"):
-            #     if hasattr(input_value, "file_path"):
-            #         open_file(input_value.file_path)
-            pop_style_color(2)
-            same_line()
+        # if isinstance(input_value, (dict, MutableMapping)):
+        #     push_style_color(imgui.COLOR_BUTTON, 0.0, 0.0, 0.0, 0.0)
+        #     push_style_color(imgui.COLOR_TEXT, *name_color)
+        #     # if imgui.button("##open_folder"):
+        #     #     if hasattr(input_value, "file_path"):
+        #     #         open_folder(input_value.file_path)
+        #     pop_style_color(2)
+        #     same_line()
 
-        # File open button for folder proxies
-        elif isinstance(collection, FolderProxy):
-            push_style_color(imgui.COLOR_BUTTON, 0.0, 0.0, 0.0, 0.0)
-            push_style_color(imgui.COLOR_TEXT, name_color[0], name_color[1], name_color[2], 0.5)
-            if imgui.button("##open_file"):
-                if hasattr(collection, "file_path"):
-                    file_path = os.path.join(collection.file_path, str(name))
-                    open_file(file_path)
-            pop_style_color(2)
-            same_line()
+        # # File open button for folder proxies
+        # elif isinstance(collection, FolderProxy):
+        #     push_style_color(imgui.COLOR_BUTTON, 0.0, 0.0, 0.0, 0.0)
+        #     push_style_color(imgui.COLOR_TEXT, name_color[0], name_color[1], name_color[2], 0.5)
+        #     if imgui.button("##open_file"):
+        #         if hasattr(collection, "file_path"):
+        #             file_path = os.path.join(collection.file_path, str(key))
+        #             open_file(file_path)
+        #     pop_style_color(2)
+        #     same_line()
 
         clipped_name = name.split("##")[0][:max_name_chars]
         text_width = imgui.calc_text_size(clipped_name)[0]
 
 
+        if icon is not None:
+            imgui.align_text_to_frame_padding()
+            imgui.text_colored(icon, *Tint.icon_tint())
+            imgui.same_line()
+
         push_style_var(imgui.STYLE_FRAME_ROUNDING, name_rounding)
 
         if not draw_state._name_edit:
+        
             draw_list: _DrawList = imgui.get_window_draw_list()
             cursor_pos = imgui.get_cursor_screen_pos()
             # Search-match highlight behind the key name (drawn before the text

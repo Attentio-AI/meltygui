@@ -1290,8 +1290,8 @@ def render_func(*args, **o_kwargs):
                     # available_width = snap_int(parent_wrap_width)
                     # draw_state.height = snap_int(parent_wrap_height)
                     # draw_state._source["height"] = "fill height"
-
             single_line_avail = available_width - header_width - 10
+
 
             # Auto expand (go multi-line) when the content can't fit on a
             # single line at its min_width. Falls back to 150 when no
@@ -1514,6 +1514,12 @@ def render_func(*args, **o_kwargs):
                     # the view's own text focus, so the search box takes
                     # priority even when the view was already focused.
                     draw_state._search_was_active = False
+                    # One-off: flag the find UI to claim focus on the next
+                    # render even if the editor re-grabs melty text focus before
+                    # the UI renders (clearing text_focused_ds here alone isn't
+                    # enough - the focused searchable view can reclaim it, which
+                    # left the box double-focused after Ctrl+F).
+                    draw_state._search_focus_pending = True
                     Melty.text_focused_ds = None
                     Melty.focused_ds = draw_state
 
@@ -2878,6 +2884,9 @@ def render_func(*args, **o_kwargs):
 
 
             column = kwargs.get("column", None)
+            current_cursor = imgui.get_cursor_screen_pos()
+            delta_x = current_cursor[0] - draw_state.abs_left
+            delta_y = current_cursor[1] - draw_state.abs_top
 
             if column_parent is not None:
                 if column is not None:
@@ -2886,9 +2895,7 @@ def render_func(*args, **o_kwargs):
                     column_parent._column_cursor[column][1] += draw_state.height
 
 
-            current_cursor = imgui.get_cursor_screen_pos()
-            delta_x = current_cursor[0] - draw_state.abs_left
-            delta_y = current_cursor[1] - draw_state.abs_top
+
             if not closable:
                 clip_rect = draw_state._parent.abs_clip_rect
 
@@ -2918,6 +2925,16 @@ def render_func(*args, **o_kwargs):
 
 
         except Exception as e:
+            # A hotswapped function/class/module that compiled clean can still
+            # throw when its new code actually RUNS here. Ask the rollback guard to
+            # match this traceback to a recent hotswap; if it owns it, the live
+            # object is reverted to its previous good state (app stays up) and the
+            # error is recorded for the user to surface. A rolled-back swap won't
+            # throw again next frame, so the loop recovers.
+            from src.lsd.gl_gui.view.core_conversion import hotswap_guard
+            if hotswap_guard.handle_exception(e):
+                request_render()
+
             # Check if previous stack trace is the same as the current one to avoid flooding logs with the same error
             is_same_exception = False
             if draw_state is not None and draw_state._stack_trace is not None:
@@ -3233,6 +3250,22 @@ def render_func(*args, **o_kwargs):
                 else:
 
                     Melty.silence_invalidate = False
+
+                    # Eval harness hook (used by the context menu's eval tab).
+                    # We run the snippet HERE, right before the view function, so
+                    # it sees that function's real call-time locals: clean_args is
+                    # exactly the arg set about to be bound as the func's params.
+                    if getattr(draw_state, '_eval_pending', False):
+                        draw_state._eval_pending = False
+                        try:
+                            from src.lsd.gl_gui.view.core_views.new_core_view import run_scoped_eval
+                            draw_state._eval_result = run_scoped_eval(
+                                getattr(draw_state, '_eval_code', '') or '',
+                                func, draw_state, clean_args)
+                        except Exception as _eval_err:
+                            draw_state._eval_result = f"eval harness error: {_eval_err}"
+                        draw_state._eval_generation = getattr(draw_state, '_eval_generation', 0) + 1
+                        request_render()
 
                     start_cursor = imgui.get_cursor_screen_pos()
                     return_value = func(**clean_args)

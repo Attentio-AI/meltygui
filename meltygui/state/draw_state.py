@@ -567,6 +567,12 @@ class DrawState(DictConversion):
         self._search_session = None
         self._search_last_term = None
         self._search_nav_pending = False
+        # Temporary state: set when search is opened (Ctrl+F) so the find box grabs
+        # text focus on the activating frame even if the underlying searchable
+        # view (the owner) currently holds melty text focus. Consumed (cleared)
+        # by render_search after the box requests focus, so it won't keep
+        # yanking focus away from a later deliberate click into the editor.
+        self._search_focus_pending = False
         # Set by the owner's search_walk to the local index of the global-current
         # match when it lands in THIS view (else None). The view reads it while
         # drawing to highlight/scroll to that match - so the count and the
