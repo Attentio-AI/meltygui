@@ -1085,7 +1085,7 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     draw_any(vis.root.lora_collection.loras, name="Loras View Three", child_kwargs={
        'is_tree':True, 'expanded':False, 'show_add_delete': False}, mode=Mode.WINDOW)
 
-    #
+
     # normalized_sub_mask, _, _ = Melty.filter.normalize(Melty.cache._mask_tex)
     # draw_texture(normalized_sub_mask, show_bg=True, max_contrast=30, jet=True,
     #             max_brightness=30, name="mask_tex", live=True, mode=Mode.WINDOW)

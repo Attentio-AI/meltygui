@@ -199,11 +199,11 @@ class TileMode(Enum):
          "text_cursor_pos", "text_h_scroll", "text_selection_start", "text_selection_end", "text_is_focused", "text_cursor_blink_time",
          "premature_break", "wrapped_left", "_did_use_cache", "hover_rects", "window_pos", "content_width",
          "content_region", "value_hash", "drag_window", "content_region", "did_render", "footer_height", "footer_width",
-         "bounding_hovered", "dlt_count", "clip_rect",
+         "bounding_hovered", "dlt_count", "clip_rect", "final_max_column",
  "scrolled", "is_hovered_last", "frame_count", "z_pos", "corner_radius",
          "text_search_current", "text_search_count")
 @no_save_exclude('render_time',  "total_z_offset", 'closable', 'has_full_tile', 'invalid_content_height',
-                  "parent_window", "pressed", "bbox", "final_max_column", "child_selected",
+                  "parent_window", "pressed", "bbox", "", "child_selected",
                  'hover_rects', 'nested_window', 'use_cache', "header_top", "header_left", "left_offset",
                  "top_offset", 'kwargs', "just_shadow", "header_width", "header_end_width",
                  "header_natural_width", "max_header_width", "pin_to_clip", "pin_clip_rect", "pin_clamp",
@@ -473,7 +473,7 @@ class DrawState(DictConversion):
         # Per-divider pixel nudges applied left-to-right on top of the basic
         # content_width/#columns split. offsets[c-1] shifts interior boundary
         # c; values are never clamped (see column_boundary in core_render).
-        self._column_offsets = []
+        self.column_offsets = []
         self._column_cursor = defaultdict(lambda: [0, 0])
         self._melty_cursor = (0,0)
         self._melty_content_height = 0

@@ -178,6 +178,7 @@ class Toggles:
    
      # Shadow Settings
     shadow_downscale = 2
+    
     shadow_edge_sharpness = 50.0
     draw_legacy = False
 

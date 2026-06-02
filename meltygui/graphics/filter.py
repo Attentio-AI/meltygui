@@ -404,41 +404,40 @@ class Filter:
             output_texture: Optional specific output texture to render to
 
         Returns:
-            The output texture ID (same as input if in_place=True)
+            (output_texture_id, min_value, max_value). For the auto-computed
+            path min/max stay on the GPU and are returned as None — callers that
+            need the CPU values should call texture_min_max.get_texture_min_max.
         """
-        # Lazy import to avoid requiring OpenGL at import time
-        def _get_gl():
-            from OpenGL import GL
-            return GL
-
-        GL = _get_gl()
-
-        # Get texture dimensions
-        GL.glBindTexture(GL.GL_TEXTURE_2D, texture_id)
-        reduction_textures = []  # Track temporary textures for cleanup
-
-        if min_value is None or max_value is None:
-            min_value_compute, max_value_compute = texture_min_max.get_texture_min_max(texture_id)
+        # The remap reads (min, max) from a 1x1 GPU texture instead of float
+        # uniforms, so the range never round-trips through the CPU (the old
+        # get_texture_min_max readback was a per-frame GPU sync stall). Both
+        # paths below leave the value in that texture, which normalize_remap
+        # samples.
+        if min_value is not None and max_value is not None:
+            # Explicit range: tiny upload, no reduction.
+            min_max_tex = texture_min_max.set_min_max_texture(texture_id, min_value, max_value)
+        elif min_value is None and max_value is None:
+            # Auto range: GPU reduction to single result texel, no readback.
+            min_max_tex = texture_min_max.compute_min_max_to_texture(texture_id)
+        else:
+            # Partial override (rare): the GPU path can't blend a caller value
+            # with a computed one, so fall back to the CPU reduction to get the
+            # missing bound, then upload the resolved range.
+            mn, mx = texture_min_max.get_texture_min_max(texture_id)
             if min_value is None:
-                min_value = min_value_compute
+                min_value = mn
             if max_value is None:
-                max_value = max_value_compute
-        try:
-            # Apply normalization remap
-            result = self.apply(
-                'normalize_remap',
-                texture_id,
-                in_place=in_place,
-                output_texture=output_texture,
-                min_value=min_value,
-                max_value=max_value
-            )
-            return result, min_value, max_value
+                max_value = mx
+            min_max_tex = texture_min_max.set_min_max_texture(texture_id, min_value, max_value)
 
-        finally:
-            # Clean up temporary reduction textures
-            if reduction_textures:
-                GL.glDeleteTextures(len(reduction_textures), reduction_textures)
+        result = self.apply(
+            'normalize_remap',
+            texture_id,
+            in_place=in_place,
+            output_texture=output_texture,
+            min_max_tex=min_max_tex,
+        )
+        return result, min_value, max_value
 
     def get_cache_stats(self) -> Dict[str, Any]:
         """

@@ -20,6 +20,8 @@ import libcst as cst
 from libcst._nodes.internal import CodegenState as _CodegenState
 
 from src.lsd.gl_gui.melty import Melty
+from src.lsd.gl_gui.modes import Modes
+from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.view.core_conversion.path_finder import convert, PendingState
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
@@ -89,6 +91,7 @@ class Comment(str):
         return hash(("__comment__", str(self), self.inline))
 
 
+@defaults(tint=(0.0, 0.1706498, 0.2930232286453247), view_func=RenderFuncs.draw_text, align_header=False)
 class CodeLine(str):
     """A raw line/expression of code that couldn't be reduced to a Python value,
     as a str subclass for differentiated dispatch.
@@ -104,7 +107,6 @@ class CodeLine(str):
     alone round-trips — the reverse re-parses it (or preserves the original node
     when it's unchanged), so no CST node needs to be carried here.
     """
-    __slots__ = ()
 
 
 @defaults(tint=(0.8, 0.7651617, 0.11906976997852325))
@@ -404,7 +406,10 @@ _jedi_pool: _PPE | None = None
 
 def _get_jedi_pool() -> _PPE:
     global _jedi_pool
-    if _jedi_pool is None:
+    # Recreate if never made or if a prior shutdown (e.g. a studio restart in
+    # place) left the executor unusable - otherwise submit() would fail and the
+    # off-GIL path would silently fall back anyway.
+    if _jedi_pool is None or getattr(_jedi_pool, "_shutdown_thread", False):
         _jedi_pool = _PPE(max_workers=1)
     return _jedi_pool
 
@@ -491,6 +496,32 @@ def _jedi_subprocess(file_path_str: str,
     return result
 
 
+# ── Intra-module usage collection (off-GIL) ───────────────────
+# The _UsageCollector visit is CPU-bound pure Python, so running it in a thread
+# holds the GIL and stalls the render thread. For large trees we run it in the
+# same child-process pool as jedi (separate interpreter = no GIL); small
+# trees stay in-process because the IPC round-trip would cost more than the
+# visit. Mirrors _jedi_subprocess. Its output is plain {name: [scopes]} - no
+# libcst nodes cross the process boundary.
+_USAGE_SUBPROCESS_MIN_CHARS = 2000
+
+
+def _intra_usage_worker(source: str, is_class: bool) -> dict[str, list[str]]:
+    """Top-level function executed in a child process: parse + collect usages.
+
+    Returns {defined_name: [scopes]} (picklable). Re-parses from source rather
+    than receiving a libcst tree, which doesn't pickle cheaply."""
+    module = cst.parse_module(source)
+    if is_class and module.body:
+        tree = module.body[0]
+        collector = _UsageCollector("<class>")
+    else:
+        tree = module
+        collector = _UsageCollector("<module>")
+    tree.visit(collector)
+    return {name: sorted(scopes) for name, scopes in collector.usages.items()}
+
+
 def invalidate_usage_cache(path: _Path | str | None = None) -> None:
     """Drop cached cross-file references for a path, or all if None."""
     print("Invalidating usage cache for", path if path else "ALL PATHS")
@@ -554,20 +585,40 @@ def _collect_usages(
     tree: cst.Module | cst.ClassDef,
     top_scope: str = "<module>",
 ) -> dict[str, list[UsageRef]]:
-    """Collect intra-module usages only (fast libcst pass).
+    """Collect intra-module usages (the libcst visit).
 
-    Cross-file references are populated separately via
-    populate_usages(), which should be called outside the
-    stateful converter chain (e.g. via a non-stateful Background.run).
+    For large trees the visit runs in the jedi child-process pool so its
+    CPU-bound pure-Python work doesn't hold the GIL and stall the render thread;
+    small trees stay in-process because IPC would cost more than the visit.
+    Cross-file references are populated separately via populate_usages().
     """
-    intra, _ = _collect_intra_usages(tree, top_scope)
-    usages: dict[str, list[UsageRef]] = {}
-    for name, scopes in intra.items():
-        usages[name] = [
-            UsageRef(path=None, line=0, scope=s, module_name="")
-            for s in sorted(scopes)
-        ]
-    return usages
+    is_class = top_scope == "<class>"
+    if isinstance(tree, cst.Module):
+        source = tree.code
+    else:
+        try:
+            source = cst.Module(body=[tree]).code
+        except Exception:
+            source = None
+
+    raw: dict[str, list[str]] | None = None
+    if source is not None and len(source) >= _USAGE_SUBPROCESS_MIN_CHARS:
+        # .result() blocks THIS thread (the background analysis thread) but
+        # releases the GIL while the child works, so the render thread runs.
+        try:
+            raw = _get_jedi_pool().submit(
+                _intra_usage_worker, source, is_class).result()
+        except Exception:
+            raw = None  # child unavailable/failed - fall back to in-process
+
+    if raw is None:
+        intra, _ = _collect_intra_usages(tree, top_scope)
+        raw = {name: sorted(scopes) for name, scopes in intra.items()}
+
+    return {
+        name: [UsageRef(path=None, line=0, scope=s, module_name="") for s in scopes]
+        for name, scopes in raw.items()
+    }
 
 
 def populate_usages(gp: GeneralParse) -> None:
@@ -811,75 +862,80 @@ def cst_module_to_dict(input_value: cst.Module) -> dict:
         return input_value
     readable = GeneralParse(source=input_value.code)
 
-    # Module header comments (top-of-file, before first statement)
-    for ll in input_value.header:
-        if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
-            c = Comment(ll.comment.value)
-            readable[c] = c
-            _merge_override_comment(c, readable)
+    # Publish the src global scope so every nested name/callable resolution
+    # below (values, classdef/funcdef defaults) resolves against project src
+    # only, no per-usage sys.modules scan. Built once here; nested classdef /
+    # funcdef conversions inherit it.
+    with _module_scope(_build_src_scope()):
+        # Module header comments (top-of-file, before first statement)
+        for ll in input_value.header:
+            if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
+                c = Comment(ll.comment.value)
+                readable[c] = c
+                _merge_override_comment(c, readable)
 
-    _classdef_to_dict = Melty._converters.get((cst.ClassDef, dict))
-    _funcdef_to_dict = Melty._converters.get((cst.FunctionDef, dict))
+        _classdef_to_dict = Melty._converters.get((cst.ClassDef, dict))
+        _funcdef_to_dict = Melty._converters.get((cst.FunctionDef, dict))
 
-    # Sigs defs help a bare top-level caller bind its positional args to
-    # parameter names; call_seen keys repeat calls (func()#1, ...).
-    local_sigs = _collect_local_signatures(input_value.body)
-    call_seen: dict[str, int] = {}
+        # Sibling defs let a bare top-level caller bind its positional args to
+        # parameter names; call_seen keys repeat calls (configure()#1, ...).
+        local_sigs = _collect_local_signatures(input_value.body)
+        call_seen: dict[str, int] = {}
 
-    for stmt in input_value.body:
-        if isinstance(stmt, cst.SimpleStatementLine):
-            # Leading comments (override comments go to the field below)
-            _extract_leading_comments(stmt, readable, skip_overrides=True)
+        for stmt in input_value.body:
+            if isinstance(stmt, cst.SimpleStatementLine):
+                # Leading comments (override comments routed to the field below)
+                _extract_leading_comments(stmt, readable, skip_overrides=True)
 
-            last_key = None
-            for node in stmt.body:
-                # x = 0
-                if isinstance(node, cst.Assign) and len(node.targets) == 1:
-                    target = node.targets[0].target
-                    if isinstance(target, cst.Name):
-                        py_value = _cst_to_python_or_raw(node.value)
-                        if py_value is not _UNREADABLE:
-                            readable[target.value] = py_value
-                            last_key = target.value
-                # x: int = 0
-                elif isinstance(node, cst.AnnAssign):
-                    if isinstance(node.target, cst.Name) and node.value is not None:
-                        py_value = _cst_to_python_or_raw(node.value)
-                        if py_value is not _UNREADABLE:
-                            readable[node.target.value] = py_value
-                            last_key = node.target.value
-                else:
-                    # Bare call statement, e.g. func(debug=True)
-                    ck = _extract_call_statement(node, readable, call_seen, local_sigs)
-                    if ck is not None:
-                        last_key = ck
+                last_key = None
+                for node in stmt.body:
+                    # x = 0
+                    if isinstance(node, cst.Assign) and len(node.targets) == 1:
+                        target = node.targets[0].target
+                        if isinstance(target, cst.Name):
+                            py_value = _cst_to_python_or_raw(node.value)
+                            if py_value is not _UNREADABLE:
+                                readable[target.value] = py_value
+                                last_key = target.value
+                    # x: int = 0
+                    elif isinstance(node, cst.AnnAssign):
+                        if isinstance(node.target, cst.Name) and node.value is not None:
+                            py_value = _cst_to_python_or_raw(node.value)
+                            if py_value is not _UNREADABLE:
+                                readable[node.target.value] = py_value
+                                last_key = node.target.value
+                    else:
+                        # Bare call statement, e.g. configure(foo=True)
+                        ck = _extract_call_statement(node, readable, call_seen, local_sigs)
+                        if ck is not None:
+                            last_key = ck
 
-            # Trailing inline comment
-            _extract_trailing_comment(stmt, last_key, readable)
-            _attach_field_override(stmt, last_key, readable)
+                # Trailing statement comment
+                _extract_trailing_comment(stmt, last_key, readable)
+                _attach_field_override(stmt, last_key, readable)
 
-        elif isinstance(stmt, cst.ClassDef):
-            _extract_leading_comments(stmt, readable, skip_overrides=True)
-            if _classdef_to_dict is not None:
-                try:
-                    child = _classdef_to_dict(stmt)
-                    _attach_leading_override(stmt, child)
-                    readable[stmt.name.value] = child
-                except (TypeError, ValueError):
-                    pass
+            elif isinstance(stmt, cst.ClassDef):
+                _extract_leading_comments(stmt, readable, skip_overrides=True)
+                if _classdef_to_dict is not None:
+                    try:
+                        child = _classdef_to_dict(stmt)
+                        _attach_leading_override(stmt, child)
+                        readable[stmt.name.value] = child
+                    except (TypeError, ValueError):
+                        pass
 
-        elif isinstance(stmt, cst.FunctionDef):
-            _extract_leading_comments(stmt, readable, skip_overrides=True)
-            if _funcdef_to_dict is not None:
-                try:
-                    child = _funcdef_to_dict(stmt)
-                    _attach_leading_override(stmt, child)
-                    readable[stmt.name.value] = child
-                except (TypeError, ValueError):
-                    pass
+            elif isinstance(stmt, cst.FunctionDef):
+                _extract_leading_comments(stmt, readable, skip_overrides=True)
+                if _funcdef_to_dict is not None:
+                    try:
+                        child = _funcdef_to_dict(stmt)
+                        _attach_leading_override(stmt, child)
+                        readable[stmt.name.value] = child
+                    except (TypeError, ValueError):
+                        pass
 
-    readable["__cst__"] = input_value
-    readable.usages = _collect_usages(input_value, top_scope="<module>")
+        readable["__cst__"] = input_value
+        readable.usages = _collect_usages(input_value, top_scope="<module>")
     return readable
 
 
@@ -3295,137 +3351,169 @@ def _collect_attribute_parts(node):
     return None
 
 
+# ── Scoped name resolution ──────────────────────────────────────────────────
+# Resolving a used name/callable to a live object used to scan all of
+# sys.modules (thousands of entries) for every usage, and getattr() on the
+# lazily-imported ones (numpy, torch, ...) triggered real imports as a side
+# effect - pathological on every keystroke of the live code editor. Now the
+# converter that owns a module publishes a name->object scope built from that
+# file's OWN imports; the resolvers consult builtins and that scope (O(1))
+# first. The fallback scan that remains reads module __dict__s directly, which
+# never fall through to a module-level lazy __getattr__, so it triggers no
+# imports.
+import threading as _threading
+
+_resolution_scope = _threading.local()
+
+
+def _active_scope():
+    return getattr(_resolution_scope, "names", None)
+
+
+class _module_scope:
+    """Publish the import scope for a module conversion. A nested conversion (a
+    classdef converted while its module converts) inherits the outer scope
+    instead of replacing it, and only the outermost clears it."""
+    __slots__ = ("scope", "_owned")
+
+    def __init__(self, scope):
+        self.scope = scope
+        self._owned = False
+
+    def __enter__(self):
+        if getattr(_resolution_scope, "names", None) is None:
+            _resolution_scope.names = self.scope
+            self._owned = True
+        return self
+
+    def __exit__(self, *exc):
+        if self._owned:
+            _resolution_scope.names = None
+        return False
+
+
+def _attr_no_trigger(obj, attr):
+    """getattr that never fires a module's lazy __getattr__.
+
+    Modules are read through __dict__ (PEP 562 lazy imports live behind
+    __getattr__, which we must not trigger); classes/objects use normal getattr
+    so inherited members still resolve."""
+    if isinstance(obj, type(sys)):            # a module
+        d = getattr(obj, "__dict__", None)
+        return d.get(attr) if d is not None else None
+    return getattr(obj, attr, None)
+
+
+_SRC_PREFIX = str(_Path(__file__).resolve().parents[4]) + "/"  # .../latent-descent/src/
+
+
+def _build_src_scope():
+    """name -> live object for every top-level symbol defined in latent-descent
+    src. THIS is the resolution scope: a name resolves only if it names a src
+    symbol (function / class / enum / src module); stdlib and third-party are
+    out of scope and intentionally left as raw source. Built once per analysis —
+    its size is bounded by the project's symbol count, not the file size, and it
+    replaces the per-usage sys.modules scans entirely."""
+    src_mods = {}
+    for modname, mod in list(sys.modules.items()):
+        if mod is None:
+            continue
+        f = getattr(mod, "__file__", None)
+        if f and f.startswith(_SRC_PREFIX):
+            src_mods[modname] = mod
+    src_names = set(src_mods)
+
+    scope = {}
+    for modname, mod in src_mods.items():
+        # The module itself, keyed by its import leaf (a.b.melty -> "melty"), so
+        # dotted names like `melty.Melty` resolve through it.
+        scope.setdefault(modname.rsplit(".", 1)[-1], mod)
+        d = getattr(mod, "__dict__", None)
+        if not d:
+            continue
+        for name, obj in d.items():
+            if name.startswith("__"):
+                continue
+            # Only import objects DEFINED in src - a src module's `import numpy as
+            # np` puts `np` in its __dict__, but numpy is out of scope. Re-exports
+            # of other src modules (__module__ is a different src module) are fine.
+            om = getattr(obj, "__module__", None)
+            if om not in src_names:
+                continue
+            if om == modname:
+                scope[name] = obj                  # canonical definition wins
+            else:
+                scope.setdefault(name, obj)         # src re-export fills gaps
+    return scope
+
+
 def _resolve_as_enum(parts):
-    """Try to resolve a dotted name like ["SomeEnum", "VALUE"] to an
-    actual enum member by searching sys.modules.
+    """Resolve ClassName.MEMBER (or mod.ClassName.MEMBER) to an enum member.
 
-    Tries progressively longer module prefixes:
-      ["SomeEnum", "VALUE"]           → look for SomeEnum in all modules
-      ["mod", "SomeEnum", "VALUE"]    → try mod.SomeEnum, then SomeEnum in mod
-      ["pkg", "mod", "Enum", "VALUE"] → try pkg.mod.Enum, etc.
-
-    Returns _UNREADABLE if nothing resolves to an enum member.
+    Authoritative: resolves the class through the src scope only — no
+    sys.modules scan. Enum classes outside src stay unresolved (-> raw source).
     """
-    # We expect at least ClassName.MEMBER (2 parts)
     if len(parts) < 2:
         return _UNREADABLE
-
-    member_name = parts[-1]
-
-    # Strategy 1: the last-but-one element is the enum class name,
-    # everything before it is a module path
-    for split in range(len(parts) - 1, 0, -1):
-        # parts[:split] should be a module path, parts[split-1] the class
-        # e.g. for ["mod", "SomeEnum", "VALUE"]:
-        #   split=2 → module_parts=["mod", "SomeEnum"], but that's not valid
-        #   We want to try resolving "mod.SomeEnum" as a class in modules
-
-        # Try: look for a class at parts[split-1] in module ".".join(parts[:split-1])
-        class_name = parts[split - 1]
-        module_path = ".".join(parts[:split - 1]) if split > 1 else None
-
-        if module_path:
-            mod = sys.modules.get(module_path)
-            if mod is not None:
-                cls = getattr(mod, class_name, None)
-                if cls is not None and isinstance(cls, type) and issubclass(cls, enum.Enum):
-                    member = cls.__members__.get(member_name)
-                    if member is not None:
-                        return member
-
-    # Strategy 2: just the class name (no module prefix), scan all modules
-    class_name = parts[-2]
-    for mod in sys.modules.values():
-        cls = getattr(mod, class_name, None)
-        if cls is not None and isinstance(cls, type) and issubclass(cls, enum.Enum):
-            member = cls.__members__.get(member_name)
-            if member is not None:
-                return member
-
+    scope = _active_scope()
+    if scope is None:
+        return _UNREADABLE
+    cls = scope.get(parts[0])
+    if cls is None:
+        return _UNREADABLE
+    for attr_name in parts[1:-1]:        # walk to the class (skip the MEMBER)
+        cls = _attr_no_trigger(cls, attr_name)
+        if cls is None:
+            return _UNREADABLE
+    if isinstance(cls, type) and issubclass(cls, enum.Enum):
+        member = cls.__members__.get(parts[-1])
+        if member is not None:
+            return member
     return _UNREADABLE
 
 
 def _resolve_callable_by_name(name):
-    """Try to resolve a bare name to a callable via sys.modules.
+    """Resolve a bare name to a callable defined in src (or a builtin).
 
-    Checks builtins first, then scans all loaded modules for a
-    matching attribute that is callable.
+    Authoritative: consults builtins and the src scope only — no sys.modules
+    scan. Names outside src (stdlib, third-party) are intentionally left
+    unresolved, so they round-trip as raw source instead of a live object.
 
     draw_header → <function draw_header>
     type        → <class 'type'>
-
-    Returns _UNREADABLE if nothing resolves.
     """
     import builtins
-    # Builtins first (type, int, len, print, etc.)
     obj = getattr(builtins, name, None)
     if obj is not None and callable(obj):
         return obj
-
-    # Scan all loaded modules
-    for mod in sys.modules.values():
-        if mod is None:
-            continue
-        obj = getattr(mod, name, None)
+    scope = _active_scope()
+    if scope is not None:
+        obj = scope.get(name)
         if obj is not None and callable(obj):
-            # Verify this is the canonical location (not a re-export)
-            obj_module = getattr(obj, "__module__", None)
-            obj_qualname = getattr(obj, "__qualname__", None)
-            if obj_module and obj_qualname:
-                # Accept if the object's __name__ matches what we're looking for
-                obj_name = obj_qualname.rsplit(".", 1)[-1]
-                if obj_name == name:
-                    return obj
-            else:
-                # No metadata - accept if name matches
-                return obj
-
+            return obj
     return _UNREADABLE
 
 
 def _resolve_callable_by_parts(parts):
-    """Try to resolve a dotted name like ["module", "func"] to a callable.
+    """Resolve a dotted name like ["module", "func"] to a callable.
 
-    Tries progressively longer module prefixes:
-      ["os", "path", "join"]    → os.path.join
-      ["mymod", "MyClass"]      → mymod.MyClass (if callable)
-      ["Foo", "bar"]            → Foo.bar (class method, scanned)
+    Authoritative: resolves the root through the src scope and walks the rest —
+    no sys.modules scan. Out-of-src roots stay unresolved.
 
-    Returns _UNREADABLE if nothing resolves to a callable.
+      ["melty", "Melty", "draw"] → src module melty -> Melty -> draw
+      ["MyClass", "method"]      → MyClass.method (MyClass defined in src)
     """
-    # Strategy 1: fully-qualified - try splitting into module path + attr chain
-    for split in range(len(parts) - 1, 0, -1):
-        module_path = ".".join(parts[:split])
-        mod = sys.modules.get(module_path)
-        if mod is None:
-            continue
-        # Walk remaining parts as attribute chain
-        obj = mod
-        for attr_name in parts[split:]:
-            obj = getattr(obj, attr_name, None)
-            if obj is None:
-                break
-        if obj is not None and callable(obj):
-            return obj
-
-    # Strategy 2: bare class/function name, scan all modules
-    # e.g. ["MyClass", "method"] - find MyClass, then .method
-    root_name = parts[0]
-    for mod in sys.modules.values():
-        if mod is None:
-            continue
-        obj = getattr(mod, root_name, None)
+    scope = _active_scope()
+    if scope is None:
+        return _UNREADABLE
+    obj = scope.get(parts[0])
+    if obj is None:
+        return _UNREADABLE
+    for attr_name in parts[1:]:
+        obj = _attr_no_trigger(obj, attr_name)
         if obj is None:
-            continue
-        # Walk remaining parts
-        for attr_name in parts[1:]:
-            obj = getattr(obj, attr_name, None)
-            if obj is None:
-                break
-        if obj is not None and callable(obj):
-            return obj
-
-    return _UNREADABLE
+            return _UNREADABLE
+    return obj if callable(obj) else _UNREADABLE
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗

@@ -19,15 +19,18 @@ file.
 
 VIEWS are codec-agnostic and reusable. `code_file_io` hands the loaded value to
 an injected `view_func` (default `draw_text`). `draw_modes` is the interesting
-one: it shows a tab per repr (text | structured), running a `chain_in` once to
-convert (e.g. str → cst → dict for `draw_collection`) and `chain_out` back on
-edit. `_run_convert` runs those chains inline (bare functions, no threads) and
-treats a parse failure as a VALUE — a cst error over half-typed source is a
-normal editor state, surfaced as UI (and as a red line highlight, see
-`text_editor`), with structured views falling back to the last good parse
-(`ModesState`).
+one: it shows a tab per repr (text | structured), running a `chain_in` (e.g.
+str → cst → dict for `draw_collection`) and `chain_out` back on edit. BOTH
+chains run on a background worker (`_run_chain_in` / `_run_chain_out` via
+`run_in_background`) — they are O(buffer) cst rebuilds and would otherwise stall
+the render loop on every keystroke / drag. `_run_convert` is the inline executor
+the worker calls (bare functions, no threads, no imgui). A parse failure is
+treated as a VALUE — a cst error over half-typed source is a normal editor
+state, surfaced as UI (and as a red line highlight, see `text_editor`), with
+structured views falling back to the last good parse (`ModesState`).
 
-ASYNC + DEBOUNCE. load / save / recompile each run through `run_in_background`,
+ASYNC + DEBOUNCE. load / save / recompile / chain_in / chain_out each run through
+`run_in_background`,
 a one-shot worker keyed by a distinct `name=` so they never clobber each other.
 Load is effectively cached (re-offered only on disk change); save auto-fires on
 edit but is debounced (`save_debounce_ms`) so a burst of keystrokes collapses
@@ -114,28 +117,28 @@ def recompile_source(source, code_str, file_path):
 
 
 class TestClass:
-    some_val = 76
-    some_other_val = 40
+    some_val = 146
+    some_other_val = 67
     some = []
    
-     # [tint=(0,0.2,1)]
-    def some_func(a=-26, b=3):
+     # [tint=(0.38801515102386475, 0.45181113481521606, 0.7069768)]
+    def some_func(a=78, b=-49):
         print(a, b)
         
     some_func(77,-36)
 
     some_line = 87
     myflot = 5
-    tint = (0.08707411, 0.1469433, 0.1627907156944275)
-    some_tuple = (68, 1)
+    tint = (0.02146025, 0.2325083, 0.2883721)
+    some_tuple = (105, 1)
 
     # [tint=(0.9069767594337463, 0.5192674398422241, 0.029529478400945663)]
     class NestedClass:
-        so = 1
+        so = 31
 
-    some_val = 76
+    some_val = 146
     new_bool = True
-    a_dict = {"x": -52, "y": 53}
+    a_dict = {"x": -40, "y": 53}
 
 
 def slow_task(**kwargs):
@@ -240,7 +243,7 @@ LOADING = object()
 @render_func(use_cache=True, selectable=False, temp=True)
 def run_in_background(input_value, loading_state: LoadingState,
                       draw_state, child_kwargs, start=False, timeout=20,
-                      debounce_ms=0, **kwargs):
+                      debounce_ms=40, **kwargs):
     if start:
         loading_state.run_next = input_value, child_kwargs
         if debounce_ms:
@@ -291,7 +294,7 @@ def run_in_background(input_value, loading_state: LoadingState,
                 finally:
                     loading_state._loading = False
                     loading_state.pending_change = True
-                    Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=10)
+                    Melty.cache.invalidate_up(draw_state._tile_id, max_depth=4)
                     request_render()
 
             if Melty.frame_count < 1:
@@ -471,6 +474,23 @@ def _run_chain_in(input_value, chain=None, route=None, seed=None, **extra):
     return {"routed": routed, "error": error}
 
 
+def _run_chain_out(input_value, chain=None, **extra):
+    """Background entry point for the reverse (chain_out) conversion.
+
+    The mirror of _run_chain_in: a plain module-level function (NOT a
+    @render_func) so run_in_background can call it on its worker thread.
+    chain_out is `dict → cst → str` — it REBUILDS and re-serializes the whole
+    module (O(buffer)), which is exactly the work that pegged the render loop
+    when it ran inline on every structured edit. Returns {"value": text} on
+    success or {"error": exc} (a half-typed structured edit can fail to round-
+    trip; we surface it as a value rather than letting it propagate, same as
+    chain_in)."""
+    result, _ = _run_convert(chain, input_value)
+    if isinstance(result, Exception):
+        return {"error": result}
+    return {"value": result}
+
+
 class ModesState:
     """Per-window scratch for draw_modes.
 
@@ -600,6 +620,10 @@ def draw_modes(input_value, modes=None, chain_in=None, chain_out=None, route=Non
     routed['error'] = recompile_error or chain_in_error
 
     out_changed, out_value = False, input_value
+    # A structured edit (uses_converted) defers its dict→cst→text conversion to a
+    # background worker after the loop; this holds the latest such edit. A raw
+    # text edit needs no chain_out and is returned inline below.
+    converted_edit = UNSET
     for idx, mode in enumerate(tab_state.selected_tabs):
         view_func = view_of(mode)
         mode_kwargs = mode[1] if isinstance(mode, tuple) else {}
@@ -652,13 +676,44 @@ def draw_modes(input_value, modes=None, chain_in=None, chain_out=None, route=Non
 
 
         if uses_converted and chain_out:
-            result, _ = _run_convert(chain_out, m_out)
-            if isinstance(result, Exception):
-                imgui.text_colored(f" chain_out: {result}", 1.0, 0.5, 0.0)
-            else:
-                out_value, out_changed = result, True
+            # Defer to the background worker below; keep only the last edit so a
+            # continuous drag collapses into one conversion when it settles.
+            converted_edit = m_out
         else:
+            # Raw text edit (draw_text) - no chain_out needed - or a converted view
+            # with no chain_out function: return the value directly.
             out_value, out_changed = m_out, True
+
+    # chain_out on a BACKGROUND thread - the mirror of chain_in. dict_to_cst_module
+    # + cst_module_to_text rebuild and re-serialize the whole module (O(lines));
+    # running it inline wedged the render loop on every structured edit, most
+    # notably a continuous slider/tint drag that edits every frame.
+    #
+    # NO PING-PONG. chain_out is started ONLY by a converted structured edit
+    # (converted_edit set this frame), never by chain_in's output. The text it
+    # produces folds back as input_value and re-runs chain_in, but that re-parsed
+    # dict reaches the structured view via `draw=` (the disk-external-change flag),
+    # NOT `changed=`, so the view never reports it as an edit - so it can't
+    # re-trigger chain_out. The two chains run on distinct workers (distinct
+    # name=) and neither blocks on the other.
+    #
+    # Called EVERY frame (like chain_in) so a conversion queued by a just-finished
+    # drag still runs and folds back even on a frame with no fresh edit: `start`
+    # only fires on a real edit. While a conversion is in flight run_in_background
+    # returns LOADING and out stays unchanged, so code_file_io doesn't touch
+    # text_cache mid-drag - the debounce falls out for free.
+    if chain_out:
+        co_start = converted_edit is not UNSET
+        co_changed, co_payload = run_in_background(
+            _run_chain_out,
+            child_kwargs={"input_value": converted_edit if co_start else None,
+                          "chain": chain_out},
+            name=f"chain_out{unique}", start=co_start)
+        if co_changed and isinstance(co_payload, dict):
+            if co_payload.get("error") is not None:
+                imgui.text_colored(f" chain_out: {co_payload['error']}", 1.0, 0.5, 0.0)
+            elif "value" in co_payload:
+                out_value, out_changed = co_payload["value"], True
 
     return out_changed, out_value
 

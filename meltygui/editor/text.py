@@ -4,6 +4,7 @@ import glfw
 import imgui
 
 from src.lsd.gl_gui.model.core_model.draw_state import Anchor, Pin
+from src.lsd.gl_gui.view.core_conversion.libcst_conversion import CodeLine
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.headers import draw_header, draw_footer
 from src.lsd.gl_gui.melty import Melty, SearchTerm
@@ -636,7 +637,7 @@ def _describe_code_tree(code_tree):
     return name
 
 
-@render_func(show_bg=True, wrap=False, use_cache=True, disable_scroll=False,
+@render_func(is_default_for=(CodeLine), show_bg=True, wrap=False, use_cache=True, disable_scroll=False,
              with_header=draw_header, shadow=True, with_footer=draw_footer, determines_height=True,
              selectable=False, searchable=True, bg_offset=-100)
 def draw_text(input_value: str,

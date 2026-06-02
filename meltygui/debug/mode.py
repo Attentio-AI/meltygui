@@ -128,7 +128,6 @@ class Mode(Enum):
           ))
     }
 
-
     DROPDOWN_WINDOW = {
         (Any): ModeOverrides(
             kwargs={"show_bg": False, "selectable": False, "min_width": -2, "min_height":18, "wrap":True, "z_offset":0,

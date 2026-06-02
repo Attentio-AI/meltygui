@@ -132,7 +132,7 @@ def set_column_width(column_parent, n_cols, column, column_width):
     last writer in a frame wins.
     """
     content_width = column_parent.content_width
-    offsets = column_parent._column_offsets
+    offsets = column_parent.column_offsets
     left_boundary = column_boundary(content_width, n_cols, offsets, column)
     base_right = snap_int(content_width / n_cols * (column + 1))
     if len(offsets) <= column:
@@ -1217,7 +1217,7 @@ def render_func(*args, **o_kwargs):
                 column_width_override = kwargs.get("column_width", None)
                 if column_width_override is not None:
                     set_column_width(column_parent, n_cols, column, column_width_override)
-                offsets = column_parent._column_offsets
+                offsets = column_parent.column_offsets
                 if n_cols > 1:
                     left_boundary = column_boundary(column_parent.content_width, n_cols, offsets, column)
                     right_boundary = column_boundary(column_parent.content_width, n_cols, offsets, column + 1)

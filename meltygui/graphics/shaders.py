@@ -941,15 +941,22 @@ class NormalizeRemap:
     """
     shader_type = 'standard'
     uniforms = {
-        'min_value': (GLType.FLOAT, 0.0),
-        'max_value': (GLType.FLOAT, 1.0),
+        # (min, max) live in the .r/.g of a 1x1 texture stored on the GPU by
+        # texture_min_max - sampled here so the range is read straight from the
+        # GPU with no CPU readback.
+        'min_max_tex': (GLType.SAMPLER2D, None),
     }
     fragment_code = """
 void main() {
     vec4 color = texture(u_texture, v_texcoord);
 
+    vec2 mm = texelFetch(min_max_tex, ivec2(0, 0), 0).rg;
+    float min_value = mm.x;
+    float max_value = mm.y;
+
     // Avoid division by zero
     float range = max_value - min_value;
+    if (abs(range) < 1e-20) range = 1.0;
 
     // Remap from [min, max] to [0, 1]
     color.rgb = (color.rgb - min_value) / range;
