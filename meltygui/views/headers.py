@@ -195,7 +195,8 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     # Depth drives text saturation falloff
     sat_depth_factor  = -0.004
     sat_depth_offset  = -1.773
-
+    
+    
     spinner_icon_0 = ""
     spinner_icon_1 = ""
 

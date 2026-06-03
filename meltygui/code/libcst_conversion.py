@@ -164,6 +164,31 @@ class Loop(dict):
             return self._bg_hash_cache
 
 
+@defaults(tint=(0.7209302186965942, 0.3097, 0.3097))
+class Try(dict):
+    """A try / except / else / finally branch's contents, as a dict subclass.
+
+    isinstance(t, dict) → True, so iteration/access works normally.
+    isinstance(t, Try)  → True, so the UI can render it as a try block.
+
+    Each branch of a try statement (the try body, each except handler, the
+    else, the finally) becomes its own Try entry under the enclosing scope,
+    keyed by its header text. The .header attribute holds that header
+    (e.g. "try", "except ValueError as e", "try else", "finally") and the
+    dict body holds the branch's assignments — extracted recursively, so
+    locals nested inside a try are no longer dropped.
+    """
+
+    def __init__(self, *args, header=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.header = header  # e.g. "try", "except ValueError as e", "finally"
+
+    def __bg_hash__(self) -> str:
+        keys = ",".join(sorted(str(k) for k in self.keys() if not str(k).startswith("_")))
+        return f"Try:{self.header}:{keys}"
+
+
+@defaults(included="__symbol_usages__")
 class GeneralParse(dict):
     def __init__(self, *args, source="", file_path=None, line_offset=0, **kwargs):
         super().__init__(*args, **kwargs)
@@ -665,6 +690,219 @@ def _symbol_refs_local(file_path: str, start_line: int, end_line: int) -> dict:
     return _rebuild_symbol_usages(_symbol_refs_worker(file_path, start_line, end_line))
 
 
+# ── Fast caller index (import resolution, no jedi) ──────────────────
+# Builds the SAME {symbol: {sites, definition, callers}} as the jedi worker, but
+# without jedi. Only two reference kinds resolved through each file's MODULE
+# NAMESPACE:
+#   - module-level symbols  -> bare-name refs, resolved by live-object identity
+#   - class members         -> `ClassName.member` attribute refs, resolved by
+#                              (class-object, attr)
+# A walk all the loaded src files (ast - fast), cached per file mtime so a
+# re-index only re-parses changed files. Misses what jedi catches: re-exports,
+# `import x; x.Sym` chains, `from x import *`, `self.member` instance access, and
+# locals. Toggle Toggles.jedi_correctness to A/B-test the full jedi path.
+
+_index_refs_cache: dict = {}   # resolved_path -> (mtime, [(kind, key, line, col, scope)])
+
+
+def _src_mod_map() -> dict:
+    """{resolved_file: module} for every loaded src module. Dual import paths
+    (`src.lsd...` vs `lsd...`) create DUPLICATE modules for the same file with
+    DIFFERENT live objects; the app imports via `src.`, so prefer the
+    `src.`-prefixed module so refs and targets resolve to the same objects."""
+    mod_map = {}
+    for mod in list(sys.modules.values()):
+        f = getattr(mod, "__file__", None)
+        if not (f and f.startswith(_SRC_PREFIX)):
+            continue
+        try:
+            rp = _Path(f).resolve()
+        except (OSError, ValueError):
+            continue
+        existing = mod_map.get(rp)
+        if existing is None or (mod.__name__.startswith("src.")
+                                and not existing.__name__.startswith("src.")):
+            mod_map[rp] = mod
+    return mod_map
+
+
+def _collect_refs(tree) -> list:
+    """Reference occurrences in a module AST:
+      ("name", name, line, col, scope)            -- a bare Name
+      ("attr", (base_name, attr), line, col, scope) -- `base_name.attr` access
+    col is 0-indexed; scope is the nearest enclosing def/class."""
+    out = []
+
+    def walk(node, scope):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                out.append(("name", child.name, child.lineno, child.col_offset, scope))
+                walk(child, child.name)
+            elif isinstance(child, ast.Attribute):
+                if isinstance(child.value, ast.Name):
+                    out.append(("attr", (child.value.id, child.attr),
+                                child.lineno, child.col_offset, scope))
+                walk(child, scope)          # also records the base case beneath
+            elif isinstance(child, ast.Name):
+                out.append(("name", child.id, child.lineno, child.col_offset, scope))
+            else:
+                walk(child, scope)
+
+    walk(tree, "<module>")
+    return out
+
+
+def _file_index_refs(path, module) -> list:
+    """Resolved references in one src file, cached by mtime:
+      ("name", id(obj)|None, line, col, scope)         -- bare name -> object id
+      ("attr", (id(base)|None, attr)|None, ...)        -- base.attr -> (base id, attr)
+    Resolution is via the file's module namespace (no triggering)."""
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return []
+    cached = _index_refs_cache.get(path)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    od = getattr(module, "__dict__", None)
+    refs = []
+    if od is not None:
+        try:
+            for (kind, payload, line, col, scope) in _collect_refs(ast.parse(path.read_text())):
+                if kind == "name":
+                    obj = od.get(payload)
+                    refs.append(("name", id(obj) if obj is not None else None, line, col, scope))
+                else:
+                    base = od.get(payload[0])
+                    key = (id(base), payload[1]) if base is not None else None
+                    refs.append(("attr", key, line, col, scope))
+        except Exception:
+            refs = []
+    _index_refs_cache[path] = (mtime, refs)
+    return refs
+
+
+def _collect_targets(file_tree, module, s: int, e: int):
+    """Resolve the symbols DEFINED in span [s, e] against live objects, walking
+    the file's container chain (module -> class -> nested). Returns:
+      obj_targets  {id(obj): name}            -- module-level defs/vars
+      mem_targets  {(id(class), name): name}  -- class members
+      sites        {name: [(line, col)]}      -- occurrences of the def in span
+      def_lines    {name: line}               -- the def line
+    Module-level symbols are found by bare-name callers; members by ClassName.member."""
+    obj_targets, mem_targets, obj_by_name, sites, def_lines = {}, {}, {}, {}, {}
+    _ModuleType = type(sys)
+
+    def add(name, line, col, container, obj):
+        if not (s <= line <= e):
+            return
+        sites.setdefault(name, []).append((line, col))
+        def_lines.setdefault(name, line)
+        if isinstance(container, _ModuleType):
+            if obj is not None:
+                obj_targets[id(obj)] = name
+                obj_by_name[name] = obj
+        elif container is not None:
+            mem_targets[(id(container), name)] = name
+
+    def walk(node, container):
+        cd = getattr(container, "__dict__", None) or {}
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                obj = cd.get(child.name)
+                add(child.name, child.lineno, child.col_offset, container, obj)
+                walk(child, obj)             # recurse with the def's object as container
+            elif isinstance(child, (ast.Assign, ast.AnnAssign)):
+                tgts = child.targets if isinstance(child, ast.Assign) else [child.target]
+                for t in tgts:
+                    if isinstance(t, ast.Name):
+                        add(t.id, child.lineno, t.col_offset, container, cd.get(t.id))
+            else:
+                walk(child, container)
+
+    walk(file_tree, module)
+    return obj_targets, mem_targets, obj_by_name, sites, def_lines
+
+
+def _symbol_refs_index(file_path: str, start_line: int, end_line: int) -> dict:
+    """jedi-free fast path. Resolve the span's symbols (module-level + class
+    members) against live objects, then find callers across loaded src files —
+    bare-name refs for module-level, ClassName.member refs for members. Returns
+    the same raw shape as _symbol_refs_worker."""
+    resolved = _Path(file_path).resolve()
+    mod_map = _src_mod_map()
+    owning = mod_map.get(resolved)
+    if owning is None:
+        return {}
+    try:
+        file_tree = ast.parse(resolved.read_text())
+    except Exception:
+        return {}
+    obj_targets, mem_targets, obj_by_name, sites, def_lines = _collect_targets(
+        file_tree, owning, start_line, end_line)
+    # Also target module-level names REFERENCED (not defined) in the span -
+    # decorators (@window/@defaults), used imports (WindowMode) - so they're
+    # clickable too. Member accesses (foo.attr) are already covered by mem_targets.
+    od = getattr(owning, "__dict__", None) or {}
+    for (kind, payload, line, col, scope) in _collect_refs(file_tree):
+        if kind == "name" and start_line <= line <= end_line:
+            obj = od.get(payload)
+            if obj is not None and id(obj) not in obj_targets:
+                obj_targets[id(obj)] = payload
+                obj_by_name.setdefault(payload, obj)
+                sites.setdefault(payload, []).append((line, col))
+                def_lines.setdefault(payload, line)
+    if not obj_targets and not mem_targets:
+        return {}
+
+    callers = {}
+    for path, mod in mod_map.items():
+        for (kind, key, line, col, scope) in _file_index_refs(path, mod):
+            if key is None:
+                continue
+            nm = obj_targets.get(key) if kind == "name" else mem_targets.get(key)
+            if nm is not None:
+                callers.setdefault(nm, []).append(
+                    (str(path), line, col, scope, getattr(mod, "__name__", "") or ""))
+
+    rp_str = str(resolved)
+    mod_name = getattr(owning, "__name__", "") or ""
+    out = {}
+    for nm in sites:                              # every target name has sites
+        obj = obj_by_name.get(nm)
+        if obj is not None:                       # module-level: real source via inspect
+            try:
+                df = inspect.getsourcefile(obj)
+                dl = inspect.getsourcelines(obj)[1]
+                dm = getattr(obj, "__module__", "") or mod_name
+            except (TypeError, OSError):
+                df, dl, dm = rp_str, def_lines.get(nm, 0), mod_name
+        else:                                     # class member: defined in this file
+            df, dl, dm = rp_str, def_lines.get(nm, 0), mod_name
+        out[nm] = {
+            "sites": sites[nm],
+            "definition": (df, dl, 0, dm),
+            "callers": callers.get(nm, []),
+        }
+    return out
+
+
+def _distribute_by_name(gp, flat: dict) -> None:
+    """Attach each symbol's usage to the GeneralParse node that DIRECTLY contains
+    it (its immediate parent), recursing into nested GeneralParse children. A
+    symbol never lands on a grandparent — each node owns only its own keys."""
+    own = {}
+    for k, v in list(gp.items()):
+        if k == "__cst__":
+            continue
+        if isinstance(v, GeneralParse):
+            _distribute_by_name(v, flat)
+        if isinstance(k, str) and k in flat:
+            own[k] = flat[k]
+    if own:
+        gp["__symbol_usages__"] = own
+
+
 def compute_symbol_usages_for_address(address) -> dict:
     """Build {symbol: SymbolUsage} (callers + definition) for an address's source
     span, via in-process jedi. The entry point for the editor's manual trigger;
@@ -680,19 +918,32 @@ def compute_symbol_usages_for_address(address) -> dict:
             end = resolved.read_text().count("\n") + 1
         except OSError:
             return {}
+    return _compute_symbol_usages(resolved, start, end)
+
+
+def _compute_symbol_usages(resolved, start, end) -> dict:
+    """Cache + A/B branch core: {symbol: SymbolUsage} for a [start, end] span.
+    Toggles.jedi_correctness picks the resolver — jedi (accurate, slow:
+    re-exports / dotted access / locals) vs the import index (fast, direct
+    imports of module-level symbols). Cached per (file mtime, resolver) so
+    flipping the toggle re-computes for a clean comparison."""
+    from src.lsd.gl_gui.toggles import Toggles   # lazy to avoid import cycle
+    accurate = getattr(Toggles, "jedi_correctness", False)
     key = (resolved, start, end)
     try:
         mtime = resolved.stat().st_mtime
     except OSError:
         mtime = None
     cached = _symbol_usage_cache.get(key)
-    if cached is not None and cached[0] == mtime:
+    if cached is not None and cached[0] == mtime and cached[2] == accurate:
         return cached[1]
     try:
-        usages = _symbol_refs_local(str(resolved), start, end)
+        raw = (_symbol_refs_worker(str(resolved), start, end) if accurate
+               else _symbol_refs_index(str(resolved), start, end))
+        usages = _rebuild_symbol_usages(raw)
     except Exception:
         usages = {}
-    _symbol_usage_cache[key] = (mtime, usages)
+    _symbol_usage_cache[key] = (mtime, usages, accurate)
     return usages
 
 
@@ -704,23 +955,9 @@ def populate_symbol_usages(gp: GeneralParse) -> None:
         return
     resolved = _Path(file_path).resolve()
     source = getattr(gp, "source", "") or ""
-    start = (getattr(gp, "line_offset", 0) or 0) + 1   # jedi lines are 1-indexed
+    start = (getattr(gp, "line_offset", 0) or 0) + 1   # lines are 1-indexed
     end = start + source.count("\n")
-    key = (resolved, start, end)
-    try:
-        mtime = resolved.stat().st_mtime
-    except OSError:
-        mtime = None
-    cached = _symbol_usage_cache.get(key)
-    if cached is not None and cached[0] == mtime:
-        gp["__symbol_usages__"] = cached[1]
-        gp.symbol_usage = cached
-        return
-    try:
-        usages = _symbol_refs_local(str(resolved), start, end)
-    except Exception:
-        usages = {}
-    _symbol_usage_cache[key] = (mtime, usages)
+    usages = _compute_symbol_usages(resolved, start, end)
     gp["__symbol_usages__"] = usages
     gp.symbol_usage = usages
 
@@ -1156,15 +1393,13 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
         address = kwargs.get("jump_to")
         if address is not None:
             try:
-                su = compute_symbol_usages_for_address(address)
-                # Store under the dunder key __symbol_usages__ (like __cst__) - a
-                # dict entry, not a custom property, so it survives dict copies and
-                # round-trips. Attach to the VIEWED unit's gp, not the module
-                # wrapper: a class/function span parses to a shallow dict whose
-                # single nested GeneralParse IS the thing being edited, so put the
-                # index there. The root only owns it for a whole-module view.
-                readable["__symbol_usages__"] = su
-                readable.symbol_usage = su
+                # Flat {symbol: SymbolUsage} for the whole span (module-level
+                # symbols AND class members), distributed down the gp tree: each
+                # GeneralParse node gets __symbol_usages__ for its OWN keys, so a
+                # member lands on its own node, not the class/module wrapper.
+                flat = compute_symbol_usages_for_address(address)
+                readable.symbol_usage = flat       # whole-span index (debug access)
+                _distribute_by_name(readable, flat)
             except Exception:
                 pass
     return readable
@@ -2120,6 +2355,10 @@ def _extract_block_assignments(stmts):
             _extract_leading_comments(stmt, result)
             _extract_for_loop(stmt, result)
 
+        elif isinstance(stmt, (cst.Try, cst.TryStar)):
+            _extract_leading_comments(stmt, result)
+            _extract_try_block(stmt, result)
+
     return result
 
 
@@ -2535,6 +2774,55 @@ def _extract_for_loop(for_node, result):
             result[f"{key} else"] = Conditional(else_body, condition="else")
 
 
+def _try_handler_header(handler):
+    """Build the header text for an except handler, e.g.:
+        except                  (bare)
+        except ValueError       (typed)
+        except ValueError as e  (typed + bound name)
+    The leading keyword is "except*" for an ExceptStarHandler (PEP 654)."""
+    keyword = "except*" if isinstance(handler, cst.ExceptStarHandler) else "except"
+    parts = [keyword]
+    if handler.type is not None:
+        parts.append(_cst_node_to_code(handler.type))
+    if handler.name is not None:
+        parts.append("as")
+        parts.append(_cst_node_to_code(handler.name.name))
+    return " ".join(parts)
+
+
+def _extract_try_block(try_node, result):
+    """Extract a try/except/else/finally statement.
+
+    Each branch becomes its own Try entry under `result`, keyed by header:
+      try:               → "try"
+      except X as e:      → "except X as e"
+      else:               → "try else"   (prefixed to avoid colliding with if/for else)
+      finally:            → "finally"
+    Bodies are extracted recursively, so assignments wrapped in a try are
+    surfaced as locals instead of being dropped. Empty branches are skipped,
+    mirroring the if/for extractors.
+    """
+    body = _extract_block_assignments(try_node.body.body)
+    if body:
+        result["try"] = Try(body, header="try")
+
+    for handler in try_node.handlers:
+        header = _try_handler_header(handler)
+        hbody = _extract_block_assignments(handler.body.body)
+        if hbody:
+            result[header] = Try(hbody, header=header)
+
+    if try_node.orelse is not None and isinstance(try_node.orelse, cst.Else):
+        else_body = _extract_block_assignments(try_node.orelse.body.body)
+        if else_body:
+            result["try else"] = Try(else_body, header="try else")
+
+    if try_node.finalbody is not None and isinstance(try_node.finalbody, cst.Finally):
+        fin_body = _extract_block_assignments(try_node.finalbody.body.body)
+        if fin_body:
+            result["finally"] = Try(fin_body, header="finally")
+
+
 def _extract_range_args(iter_node):
     """Extract positional args from a range() call, or None if not range().
 
@@ -2674,7 +2962,13 @@ def _parse_edit_keys(edits):
         if isinstance(val, dict) and (key.startswith("if ") or
                                       key.startswith("elif ") or
                                       key == "else" or
-                                      key.startswith("for ")):
+                                      key.startswith("for ") or
+                                      key == "try" or
+                                      key == "try else" or
+                                      key == "finally" or
+                                      key == "except" or
+                                      key.startswith("except ") or
+                                      key.startswith("except* ")):
             block_edits[key] = val
         elif isinstance(key, str) and "#" in key:
             name, idx_str = key.rsplit("#", 1)
@@ -2733,6 +3027,16 @@ def _patch_body_direct(body_node, edits, comment_text_map=None):
                 new_stmt = _patch_stmt_comments(new_stmt, comment_text_map)
             if block_edits:
                 new_stmt = _patch_for_loop_direct(new_stmt, block_edits, comment_text_map)
+            if new_stmt is not stmt:
+                new_stmts[i] = new_stmt
+                changed = True
+
+        elif isinstance(stmt, (cst.Try, cst.TryStar)):
+            new_stmt = stmt
+            if comment_text_map:
+                new_stmt = _patch_stmt_comments(new_stmt, comment_text_map)
+            if block_edits:
+                new_stmt = _patch_try_block_direct(new_stmt, block_edits, comment_text_map)
             if new_stmt is not stmt:
                 new_stmts[i] = new_stmt
                 changed = True
@@ -2901,6 +3205,55 @@ def _patch_for_loop_direct(for_node, block_edits, comment_text_map=None):
             result = result.with_changes(body=new_body)
 
     return result
+
+
+def _patch_try_block_direct(try_node, block_edits, comment_text_map=None):
+    """Patch a try/except/else/finally statement's branches from block_edits.
+
+    Mirrors _extract_try_block's keying: "try", "except <...>", "try else",
+    "finally". Each matching branch's body is recursively patched.
+    """
+    result = try_node
+    changed = False
+
+    # try body
+    if "try" in block_edits:
+        new_body = _patch_body_direct(result.body, block_edits["try"], comment_text_map)
+        if new_body is not result.body:
+            result = result.with_changes(body=new_body)
+            changed = True
+
+    # excepts
+    new_handlers = list(result.handlers)
+    handlers_changed = False
+    for idx, handler in enumerate(new_handlers):
+        header = _try_handler_header(handler)
+        if header in block_edits:
+            new_hbody = _patch_body_direct(handler.body, block_edits[header], comment_text_map)
+            if new_hbody is not handler.body:
+                new_handlers[idx] = handler.with_changes(body=new_hbody)
+                handlers_changed = True
+    if handlers_changed:
+        result = result.with_changes(handlers=new_handlers)
+        changed = True
+
+    # else
+    if ("try else" in block_edits and result.orelse is not None
+            and isinstance(result.orelse, cst.Else)):
+        new_eb = _patch_body_direct(result.orelse.body, block_edits["try else"], comment_text_map)
+        if new_eb is not result.orelse.body:
+            result = result.with_changes(orelse=result.orelse.with_changes(body=new_eb))
+            changed = True
+
+    # finally
+    if ("finally" in block_edits and result.finalbody is not None
+            and isinstance(result.finalbody, cst.Finally)):
+        new_fb = _patch_body_direct(result.finalbody.body, block_edits["finally"], comment_text_map)
+        if new_fb is not result.finalbody.body:
+            result = result.with_changes(finalbody=result.finalbody.with_changes(body=new_fb))
+            changed = True
+
+    return result if changed else try_node
 
 
 def _patch_range_args(iter_node, new_args):
@@ -4194,3 +4547,95 @@ def _graft_attribute_formatting(new_attr, old_attr):
     if isinstance(new_attr.attr, cst.Name) and isinstance(old_attr.attr, cst.Name):
         changes["attr"] = old_attr.attr.with_changes(value=new_attr.attr.value)
     return old_attr.with_changes(**changes)
+
+
+# ── Background cache warmer ───────────────────────────────────
+# Keeps the fast caller-index cache (_index_refs_cache) hot on a worker thread
+# so the editor's Index is instant. Placed at module end so the index infra it
+# leans on (_threading, _index_refs_cache, _src_mod_map, _file_index_refs) is
+# already defined when this runs at import time.
+import time as _time
+from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window as _window
+
+
+def build_index_cache() -> tuple:
+    """(Re)resolve every loaded src file's references into _index_refs_cache so
+    the fast Index is warm before it's clicked. Only files whose mtime changed
+    are re-parsed (the rest hit the cache). Returns (n_src_files, n_reparsed).
+    Pure index work — safe on a background thread (no imgui / Melty)."""
+    mod_map = _src_mod_map()
+    reparsed = 0
+    for path, mod in mod_map.items():
+        prev = _index_refs_cache.get(path)
+        _file_index_refs(path, mod)
+        if _index_refs_cache.get(path) is not prev:
+            reparsed += 1
+    return len(mod_map), reparsed
+
+
+@_window
+class SymbolIndexCache:
+    """Keeps the fast caller-index cache warm on a background thread, so the
+    editor's Index button is instant. Flip `auto` off to stop the periodic
+    refresh; call rebuild() for a one-shot. Status fields below are live."""
+    auto = True              # keep the cache warm in the background
+    interval_s = 15.0        # seconds between background refresh passes
+    startup_delay_s = 0.2    # wait for src modules to finish importing first
+    # ── status (written by the worker) ──
+    building = False
+    src_files = 0
+    last_reparsed = 0
+    last_secs = 0.0
+    builds = 0
+
+    @classmethod
+    def _build_once(cls):
+        if cls.building:
+            return
+        cls.building = True
+        t0 = _time.perf_counter()
+        try:
+            cls.src_files, cls.last_reparsed = build_index_cache()
+        except Exception:
+            pass
+        finally:
+            cls.last_secs = round(_time.perf_counter() - t0, 3)
+            cls.builds += 1
+            cls.building = False
+
+    @classmethod
+    def rebuild(cls):
+        """Kick a one-off cache build on a background thread."""
+        _threading.Thread(target=cls._build_once, daemon=True,
+                          name="symbol-index-rebuild").start()
+
+
+def _symbol_index_daemon():
+    # Re-fetch the class from sys.modules each pass rather than closing over the
+    # module-load-time SymbolIndexCache: a restart-in-place reload swaps this
+    # module for a fresh instance, and the sys-guard below keeps THIS daemon running
+    # the old one - so it must target whatever class is live now, building into
+    # the live module's _index_refs_cache (its method's __globals__), not the
+    # orphaned original. On a clean start there's only one instance and this is
+    # a no-op.
+    modname = __name__
+
+    def live_cls():
+        mod = sys.modules.get(modname)
+        return getattr(mod, "SymbolIndexCache", None) or SymbolIndexCache
+
+    _time.sleep(max(0.0, getattr(live_cls(), "startup_delay_s", 8.0)))
+    live_cls()._build_once()                             # one warm build at startup
+    while True:                                          # then keep cache fresh
+        cls = live_cls()
+        if getattr(cls, "auto", True):
+            cls._build_once()
+        _time.sleep(max(1.0, getattr(cls, "interval_s", 15.0)))
+
+
+# Guard on `sys` (shared across the src./lsd. module universes) so the daemon starts
+# exactly once even though this module can be imported under two names.
+if not getattr(sys, "_symbol_index_daemon_started", False):
+    sys._symbol_index_daemon_started = True
+    _threading.Thread(target=_symbol_index_daemon, daemon=True,
+                      name="symbol-index-daemon").start()

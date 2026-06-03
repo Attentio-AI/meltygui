@@ -83,17 +83,17 @@ class Mode(Enum):
                     'view_func': draw_modes,
                     "child_kwargs" : {
                         'column_widths': [350],
-                        "modes": [RenderFuncs.draw_collection, RenderFuncs.draw_text],
+                        "modes": [RenderFuncs.draw_collection, RenderFuncs.draw_text, draw_type],
                         "chain_in": [string_to_cst_module, cst_module_to_dict],
                         "chain_out": [dict_to_cst_module, cst_module_to_string],
                         "route": {
                             cst_module_to_dict: "code_dict",
                             RenderFuncs.draw_collection: "code_dict",
+                            draw_type: "root_input"
                         },
                     },
             },
             recursive=False,
-
             func=code_file_io
         )
     }
@@ -101,18 +101,18 @@ class Mode(Enum):
     READ_ONLY = {
         (Any): ModeOverrides(
             kwargs={"show_bg": True, "selectable": False, "header_same_line":True, "show_header": True,
-                    "tint":(1,1,1), "show_add_delete": False, "shadow":True,
+                    "show_add_delete": False, "bg_offset": -1,
                     "use_cache": True, "initial": {"expanded": False, "closed":False}},
             recursive=True,
         ),
         (str, float, int, bool, types.NoneType): ModeOverrides(
-        kwargs={"show_bg": True, "selectable": False, "show_add_delete":False, "show_header": True,
-                "expanded": True, "use_cache": True},
+        kwargs={"show_bg": False, "selectable": False, "show_add_delete":False, "show_header": True,
+                "expanded": True, "use_cache": True, "shadow":False},
         ),
         (type): ModeOverrides(
             func=draw_type_name,
-            kwargs={"show_bg": True, "selectable": False, "show_add_delete": False, "show_header": True,
-                    'is_tree':False, "use_cache": True, 'tint':(0.8, 0.8, 0.6)},
+            kwargs={"show_bg": False, "selectable": False, "show_add_delete": False, "show_header": True,
+                    'is_tree':False, "use_cache": True, "shadow": False, 'tint':(0.8, 0.8, 0.6)},
         ),
 
     }
@@ -189,7 +189,7 @@ class Mode(Enum):
             kwargs={"show_bg":True, "selectable":False, "use_cache":True, "melty_window":False, "closable":True,
                     "with_header_end":draw_header_end, "auto_resize":False, "draggable":True, 'shadow':True,
                     "show_tint":True, "show_header":True, "with_footer":draw_footer, 'indent_size':5,
-                      "disable_scroll": False,
+                      "disable_scroll": False, "bg_offset": -1,
                    "show_add_delete":False, "with_header":draw_header, "min_width": 200, "min_height": 60,
                     "initial":{"width": 400, "height": 320, "window_pos": (100, 500)}},
 

@@ -187,19 +187,19 @@ class TileMode(Enum):
          "dragged", "expanded_height", "clipped", "fully_clipped",  "header_height", "inside_clip", "layer",
          "overhead_time", "scroll_visible", "depth_and_layer", "imgui_is_toggled_open", "top", "left",
          "hotkey_receiver", "use_child", "cst", "bg_color", "depth", "z_pos",
-         "is_active", "clip_rect", "wrapped_top", "current_tint", "wrapped_left", "multi_line", "content_height",
+         "is_active", "clip_rect", "wrapped_top", "current_tint", "wrapped_left", "multi_line",
          "min_width", "min_height", "is_focused", "drag_window_pos_x", "drag_window_pos_y", "corner_radius",
-         "drag_mode", "is_hovered_last", "bg_shown", "draw_window_pos_x", "z_offset", "content_width", "melty_window",
+         "drag_mode", "is_hovered_last", "bg_shown", "draw_window_pos_x", "z_offset", "melty_window",
          "misc_used", "draw_window_pos_y", "drag_delta", "screen_pos", "hover_rects", "melty_window", "auto_resize",
          "imgui_is_item_activated", "frame_count", "text_search_current", "text_search_count")
 @exclude("current_tint", "overhead_time", "premature_break", "drag_mode",
          "clip_rect", "_input_value", "flow_spacing", "expanded_rect", 'max_column', 'text_selection_start', 'text_selection_end',
-         'width', "height", "size_change", 'left', 'top', 'content_height', "clipped", "fully_clipped", "melty_window", "text_double_click_time", "text_cursor_blink_time",
+         'width', "height", "size_change", 'left', 'top', "clipped", "fully_clipped", "melty_window", "text_double_click_time", "text_cursor_blink_time",
          "hovered", "wrapped_top", "params", "scroll_visible", "depth_and_layer", "clipped_by_rect", "multi_line", "text_prev_cursor_pos",
          "text_cursor_pos", "text_h_scroll", "text_selection_start", "text_selection_end", "text_is_focused", "text_cursor_blink_time",
          "premature_break", "wrapped_left", "_did_use_cache", "hover_rects", "window_pos", "content_width",
          "content_region", "value_hash", "drag_window", "content_region", "did_render", "footer_height", "footer_width",
-         "bounding_hovered", "dlt_count", "clip_rect", "final_max_column",
+         "bounding_hovered", "dlt_count", "clip_rect",
  "scrolled", "is_hovered_last", "frame_count", "z_pos", "corner_radius",
          "text_search_current", "text_search_count")
 @no_save_exclude('render_time',  "total_z_offset", 'closable', 'has_full_tile', 'invalid_content_height',
@@ -477,8 +477,6 @@ class DrawState(DictConversion):
         self._column_cursor = defaultdict(lambda: [0, 0])
         self._melty_cursor = (0,0)
         self._melty_content_height = 0
-
-
 
         self._outside_column_height = 0
         self._inner_cursor = 0 # column -> (x, y)

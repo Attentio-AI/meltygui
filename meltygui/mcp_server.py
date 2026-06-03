@@ -17,9 +17,11 @@ Tools call thread-safe methods on the ModelServer (``mcp_launch`` etc.), which
 queue work on the existing task queue — the same path as the Ctrl+Enter re-run.
 """
 
+import functools
 import re
 import sys
 import threading
+import traceback
 from pathlib import Path
 
 # Project root: src/lsd/gl_gui/mcp_server.py -> parents[3] == latent-descent/
@@ -28,11 +30,18 @@ STATE_DIR = _ROOT / ".melty"
 LOG_PATH = STATE_DIR / "console.log"
 
 import os
+
+from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
+
 PORT = int(os.environ.get("MELTY_MCP_PORT", "8787"))
 HOST = "127.0.0.1"
 
 _tee_installed = False
 _mcp_started = False
+
+# Cap stored result/error text so a chatty tool (get_logs returning 200 lines)
+# can't balloon the in-memory log.
+_LOG_RESULT_CAP = 2000
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 # Markers that begin an error region, in this codebase's three formats:
@@ -182,7 +191,38 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
 
     mcp = FastMCP("latent-descent-launcher", host=host, port=port)
 
-    @mcp.tool()
+    def logged_tool():
+        """Like ``mcp.tool()`` but records each call to ``MCPServerLog.logs``.
+
+        ``functools.wraps`` copies ``__wrapped__`` so FastMCP's
+        ``inspect.signature`` still resolves the original signature, name, and
+        docstring — the tool schema is unchanged.
+        """
+
+        def deco(fn):
+            from src.lsd.gl_gui.view.core_views.monitor import MCPServerLog
+
+            @functools.wraps(fn)
+            def wrapper(*args, **kwargs):
+                # Bind positional args to names so the log is self-describing.
+                call_args = dict(kwargs)
+                names = list(fn.__code__.co_varnames[:fn.__code__.co_argcount])
+                for name, val in zip(names, args):
+                    call_args[name] = val
+                try:
+                    result = fn(*args, **kwargs)
+                except Exception:
+                    MCPServerLog.record(fn.__name__, call_args,
+                                        error=traceback.format_exc())
+                    raise
+                MCPServerLog.record(fn.__name__, call_args, result=result)
+                return result
+
+            return mcp.tool()(wrapper)
+
+        return deco
+
+    @logged_tool()
     def get_logs(lines: int = 200) -> str:
         """Return the last `lines` lines of the launcher's console output.
 
@@ -196,12 +236,12 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
             return "(log is empty)"
         return "\n".join(rows[-max(1, lines):])
 
-    @mcp.tool()
+    @logged_tool()
     def status() -> str:
         """Report the launcher PID and whether a studio session is running."""
         return model_server.mcp_status()
 
-    @mcp.tool()
+    @logged_tool()
     def last_error() -> str:
         """Return the most recent traceback from the console log, or a note that
         the run looks clean. Faster than scanning get_logs after a crash."""
@@ -212,7 +252,7 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
             return "no traceback found in the current run's log (looks clean)"
         return block
 
-    @mcp.tool()
+    @logged_tool()
     def launch() -> str:
         """Open the latent-descent studio by replaying the last run.
 
@@ -220,7 +260,7 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
         """
         return model_server.mcp_launch()
 
-    @mcp.tool()
+    @logged_tool()
     def restart() -> str:
         """Restart the studio session in place: interrupt the running session
         (if any) and replay the last run. The launcher process stays up, so the
@@ -228,7 +268,7 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
         """
         return model_server.mcp_restart()
 
-    @mcp.tool()
+    @logged_tool()
     def screenshot(window: str):
         """Capture one Melty studio window by name and return it as a PNG image.
 
@@ -244,7 +284,7 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
             return f"screenshot failed: {error}"
         return Image(path=path)
 
-    @mcp.tool()
+    @logged_tool()
     def list_windows() -> str:
         """List the names of currently-open Melty studio windows."""
         if not model_server._studio_running():
@@ -253,7 +293,7 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
         names = list_window_names()
         return "\n".join(sorted(set(names))) if names else "(no named windows open)"
 
-    @mcp.tool()
+    @logged_tool()
     def eval_python(code: str) -> str:
         """Execute Python in the live launcher process; returns stdout + result.
 
@@ -267,7 +307,7 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
         from src.lsd.gl_gui.mcp_eval import request_eval
         return request_eval(code, model_server)
 
-    @mcp.tool()
+    @logged_tool()
     def restart_launcher() -> str:
         """Fully restart the launcher process (not just the studio session).
 

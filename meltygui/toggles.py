@@ -84,7 +84,7 @@ class Tint:
 
     # Context menu tints
     context_select_tint = (1.0, 0.7, 0.2)
-    context_select_outline_alpha = -0.015
+    context_select_outline_alpha = -0.12
     context_select_bg_alpha = 0.592
     context_select_rounding = 4.988
     
@@ -125,7 +125,7 @@ class Swoosh:
     some_dict = [1,1,1,1]
 
 
-@window(tint=(0.7, 0.78, 0.9))
+@window(tint=(0.9, 0.5, 0.04369932))
 class Toggles:
     test_float = 3.303
     debug_scroll = False
@@ -146,16 +146,12 @@ class Toggles:
     # invalidation stop-at-filled gate is actually marking tiles complete.
     show_filled_tiles = False
     
-    # When False, PyOpenGL's per-call glGetError round-trip is disabled (a
-    # main-thread hotspot - ~10% of active CPU). Flip to True to restore
-    # checking for debugging GL state. Honored externally via
-    # MeltyCore.set_gl_error_checking, called each begin_frame.
     gl_check_error = False
 
-    # When True, the code editor shows an "Index" button that runs jedi (main
-    # process, background thread) to fill gp['__symbol_usages__'] - the caller/
-    # definition index behind the shortcuts. False by default: jedi is expensive.
     enable_jedi = True
+
+    # [tint(0.9, 0.5, 0.0)]
+    jedi_correctness = False
 
     # Invalidation settings
     invalidate_stack_trace = False
@@ -172,7 +168,7 @@ class Toggles:
   
     # Filter SettingS
     brightness = 0.338
-    contrast = 1.574
+    contrast = 1.645
     saturation = -0.4
     prefered_header_width = 115
     max_preferred_header_width = 196

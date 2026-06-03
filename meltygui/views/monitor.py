@@ -1,5 +1,10 @@
 import subprocess
 import threading
+import time
+
+from src.lsd.gl_gui.mcp_server import _LOG_RESULT_CAP
+from src.lsd.gl_gui.render_funcs import RenderFuncs
+from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 
 _SENTINEL = object()
 
@@ -61,3 +66,40 @@ class _MonitorMeta(type):
 
 class Monitor(metaclass=_MonitorMeta):
     pass
+
+
+@window(live=True, view_func=RenderFuncs.draw_type)
+class MCPServerLog:
+    """Append-only, in-memory record of MCP tool interactions for this launcher.
+
+    Every tool call (and its outcome) is appended to the ``logs`` class
+    attribute by the logging wrapper in ``start_launcher_mcp``. It's a class
+    attribute rather than an instance field so it's reachable from anywhere —
+    including ``eval_python`` — as just ``MCPServerLog.logs`` without threading
+    an instance around.
+
+    Each entry is a dict::
+
+        {"tool": str, "args": dict, "result": str|None,
+         "error": str|None, "timestamp": float}
+    """
+
+    logs = []
+    def __init__(self):
+        pass
+
+    @classmethod
+    def record(cls, tool, args, result=None, error=None):
+        def _cap(v):
+            if v is None:
+                return None
+            s = v if isinstance(v, str) else repr(v)
+            return s if len(s) <= _LOG_RESULT_CAP else s[:_LOG_RESULT_CAP] + "…"
+
+        cls.logs.append({
+            "tool": tool,
+            "args": dict(args),
+            "result": _cap(result),
+            "error": _cap(error),
+            "timestamp": time.time(),
+        })

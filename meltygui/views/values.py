@@ -57,15 +57,11 @@ def empty(input_val):
     pass
 
 
-@render_func(is_default_for=(types.FrameType), use_cache=True, tint=(0.9, 0.6485209, 0.5),
+@render_func(is_default_for=(types.FrameType), use_cache=True, tint=(0.6, 0.2, 0.0),
              header_same_line=False, show_bg=False, align_header=False, closed=False,
-             shadow=True, selectable=False, wrap=False, with_header=draw_header, indent_size=5, searchable=True)
+             shadow=True, selectable=False, wrap=False, with_header=draw_header, 
+             indent_size=5, searchable=True, shaodw=False, bg_offset=3)
 def draw_frame(input_value: types.FrameType, draw_state, **kwargs):
-
-
-
-
-
 
     file_name_truncated = Path(input_value.f_code.co_filename).name
     imgui.text(f"{file_name_truncated}:{input_value.f_lineno} in {input_value.f_code.co_name}")
@@ -83,11 +79,14 @@ def draw_frame(input_value: types.FrameType, draw_state, **kwargs):
     # Loop over the frame's local variables, which are the most relevant to debugging.
 
     draw_text("Locals", name="Locals", show_header=False,
-                     font=Font.JETBRAINS_MONO_40)
+                     font=Font.JETBRAINS_MONO_40, bg_offset=3)
 
     for var_name, var_value in input_value.f_locals.items():
         # Display the variable name and its value.
+        imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0] + 40, imgui.get_cursor_screen_pos()[1]))
+        imgui.begin_group()
         draw_any(var_value, with_header=draw_header, show_header=True, name=var_name, mode=Modes.READ_ONLY)
+        imgui.end_group()
 
 
 @render_func(is_default_for=types.ModuleType, use_cache=True,
@@ -324,13 +323,16 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
                     mode=None, keys=None, get_attr=None, set_attr=None, show_excluded=False,
                     child_kwargs=None, show_bg=True, show_search=True, align_header=False,
                     on_collapse=False, search_text="", return_item=False,
-                    on_expand=False, show_add_delete=True, item_spacing_y=1, show_system=False,
+                    on_expand=False, show_add_delete=True, item_spacing_y=1, show_system=False, included=None,
                     horizontal=False, show_indices=False, excluded=None, **kwargs):
     """
     Universal collection renderer
     """
     if excluded is None:
         excluded = set()
+
+    if included is None:
+        included = set()
 
     if child_kwargs is None:
     
@@ -511,16 +513,6 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
         if key is None and item is None:
             seperator(Melty.spacing[1])
             continue
-
-        if not show_excluded and hasattr(type(input_value), "__excluded_attrs__"):
-            if not Toggles.show_excluded:
-                if str(key) in type(input_value).__excluded_attrs__:
-                    continue
-        display_name = None
-
-        if str(key).split("##")[0] in excluded:
-            continue
-
         # apply global skip to all types
         if isinstance(key, (float, Enum, NoneType)):
             key_str = f"{input_value.__class__.__name__}"
@@ -528,9 +520,20 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
             key_str = f"{key}"
         else:
             key_str = str(key)
+        key_str = key_str.split("##")[0]
+
+        if not show_excluded and hasattr(type(input_value), "__excluded_attrs__"):
+            if not Toggles.show_excluded:
+                if key_str in type(input_value).__excluded_attrs__ and key_str not in included:
+                    continue
+        display_name = None
+
+        if key_str in excluded and key_str not in included:
+            continue
 
         if not show_excluded and (not show_system and (key_str.startswith("_") or key_str.endswith("_"))):
-            continue
+            if key_str not in included:
+                continue
 
         # ----- SEARCH (key match) -----
         # Whether this key is the search-current match was decided by the
@@ -1070,7 +1073,7 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
         else:
             kwargs['disable_scroll'] = True
             kwargs.setdefault('mode', (Mode.NEW_CODE, Mode.WINDOW))
-            window_func = kwargs.pop("view_func", draw_any)
+            window_func = kwargs.pop("view_func", code_file_io)
             window_func(window_cls, **kwargs)
 
     from src.lsd.gl_gui.model.app_model import TensorView
@@ -1094,11 +1097,11 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     # normalized_sub_mask, _, _ = Melty.filter.normalize(Melty.cache._mask_tex)
     # draw_texture(normalized_sub_mask, show_bg=True, max_contrast=30, jet=True,
     #             max_brightness=30, name="mask_tex", live=True, mode=Mode.WINDOW)
-    # draw_any(Melty.cache.viewport_tex, show_bg=True, name="Viewport", live=True, mode=Mode.WINDOW)
-    #
-    # normalized_sub_mask, _, _ = Melty.filter.normalize(Melty.cache._full_mask_tex)
-    # draw_any(normalized_sub_mask, show_bg=True, max_contrast=30, jet=True,
-    #             max_brightness=30, name="full_mask_tex", live=True, mode=Mode.WINDOW)
+    draw_any(Melty.cache.snapshot_tex, show_bg=True, name="Viewport", live=True, mode=Mode.WINDOW)
+
+    normalized_sub_mask, _, _ = Melty.filter.normalize(Melty.cache._full_mask_tex)
+    draw_any(normalized_sub_mask, show_bg=True, max_contrast=30, jet=True,
+                max_brightness=30, name="full_mask_tex", live=True, mode=Mode.WINDOW)
 
     mouse_pos = imgui.get_mouse_pos()
     ds_under_mouse = Melty.bvh_query(mouse_pos[0], mouse_pos[1])
@@ -2543,8 +2546,9 @@ def draw_function(input_value, name, draw_state, unique, **kwargs):
     if not callable(input_value):
         imgui.text("Not a callable function")
         return False, input_value
-
+    sees_this = 5
     try:
+        does_not_see_this = 4
         signature = inspect.signature(input_value)
         params = signature.parameters
         if len(draw_state.params) != len(params):
@@ -2575,8 +2579,7 @@ def draw_function(input_value, name, draw_state, unique, **kwargs):
         imgui.text(f"Error inspecting function parameters: {e}")
         draw_state.params = {}
 
-
-    if imgui.button(f"{input_value.__name__}##{unique}"):
+    if button(f"{input_value.__name__}##{unique}", height=30, tint=(0.3196106, 0.7720930576324463, 0.3743293))[0]:
         try:
             draw_state.result = input_value(**draw_state.params)
             Melty.cache.invalidate_up_current(force=True)
@@ -3182,7 +3185,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
 
                 eval_result = getattr(target, '_eval_result', None)
                 if eval_result:
-                    text(eval_result, name=f"eval_result##{unique}",
+                    draw_text(eval_result, name=f"eval_result##{unique}",
                              column=t_idx, show_bg=True, show_header=True,
                              show_name=True, editable=False, wrap_text=True,
                              wrap=False, bg_offset=-100,

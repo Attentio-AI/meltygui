@@ -1191,7 +1191,8 @@ def render_func(*args, **o_kwargs):
 
             column_parent = draw_state._parent if len(Melty.fixed_size_stack) > 1 else draw_state._parent
 
-            draw_state.final_max_column = draw_state._current_max_column
+            if draw_state.frame_count > 1:
+                draw_state.final_max_column = draw_state._current_max_column
 
             if draw_state.final_max_column > 0 and column is None and column_parent is not None:
                 column = kwargs.get("column", 0)

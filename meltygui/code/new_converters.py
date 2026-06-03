@@ -95,11 +95,11 @@ from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
 
-def save_file(address, code_str, codec=None, ensure_import=None, draw_state=None):
+def save_file(address, code_str, codec=None, ensure_import=None, parent_ds=None):
     """Write the edited value back through the resolved codec (span splice for
     code, whole-file for images, etc.)."""
     current_time = datetime.now().strftime("%H:%M:%S")
-    print(f"{current_time} Saved {address.path} from {draw_state.name} {draw_state.parent_window.name}")
+    print(f"{current_time} Saved {address.path} from {parent_ds.name}")
     codec.save(address=address, data=code_str, ensure_import=ensure_import)
 
 
@@ -218,13 +218,13 @@ class LoadingState:
     def __init__(self):
         self._loading = False
         self.cached_result = UNSET
-        self.run_next = None
-        self.pending_change = False
+        self._run_next = None
+        self._pending_change = False
         self.error = None
         self._loading_start_frame = None
         # Wall-clock deadline (time.time()) the queued task must wait until before
         # it launches. None = no debounce. Each fresh `start` pushes it out.
-        self.debounce_deadline = None
+        self._debounce_deadline = None
         # One-shot timer that wakes the render loop once at the deadline, so we
         # don't busy-spin request_render every frame during the quiet window.
         self._debounce_timer = None
@@ -241,13 +241,13 @@ LOADING = object()
 
 
 @render_func(use_cache=True, selectable=False, temp=True)
-def run_in_background(input_value, loading_state: LoadingState,
+def run_in_background(input_value, loading_state: LoadingState, unique,
                       draw_state, child_kwargs, start=False, timeout=20,
                       debounce_ms=40, **kwargs):
-    if Melty.frame_count < 2:
+    if Melty.frame_count < 5:
         debounce_ms = 0
     if start:
-        loading_state.run_next = input_value, child_kwargs
+        loading_state._run_next = input_value, child_kwargs
         if debounce_ms:
             # Debounce: defer the launch until the input goes quiet. Re-start on
             # every start (a burst of typing keeps pushing it out), and wake the
@@ -255,7 +255,7 @@ def run_in_background(input_value, loading_state: LoadingState,
             # request_render per frame, or we peg the whole render thread. The
             # run_next field above always holds the LATEST value, so the
             # eventual single run uses the final value.
-            loading_state.debounce_deadline = time.time() + debounce_ms / 1000.0
+            loading_state._debounce_deadline = time.time() + debounce_ms / 1000.0
             if loading_state._debounce_timer is not None:
                 loading_state._debounce_timer.cancel()
             timer = threading.Timer(debounce_ms / 1000.0, request_render)
@@ -264,19 +264,19 @@ def run_in_background(input_value, loading_state: LoadingState,
             timer.start()
             draw_state.invalidate()
         else:
-            loading_state.debounce_deadline = None
+            loading_state._debounce_deadline = None
             draw_state.invalidate()
             request_render()
 
-    if loading_state.run_next is not None:
-        deadline = loading_state.debounce_deadline
+    if loading_state._run_next is not None:
+        deadline = loading_state._debounce_deadline
         if deadline is not None and time.time() < deadline:
             # Inside the quiet window - keep this draw_state dirty so the deadline
             # render re-runs this frame, but DON'T request_render: the one-shot
             # timer above wakes the loop exactly once when the deadline lands.
             draw_state.invalidate()
         else:
-            loading_state.debounce_deadline = None
+            loading_state._debounce_deadline = None
             if loading_state._debounce_timer is not None:
                 loading_state._debounce_timer.cancel()
                 loading_state._debounce_timer = None
@@ -293,29 +293,30 @@ def run_in_background(input_value, loading_state: LoadingState,
                     loading_state.cached_result = value(**background_kwargs)
                 except Exception as exc:
                     loading_state.error = exc
+                    print_stack_trace(exception=exc)
                 finally:
                     loading_state._loading = False
-                    loading_state.pending_change = True
+                    loading_state._pending_change = True
                     Melty.cache.invalidate_up(draw_state._tile_id, max_depth=4)
                     request_render()
 
             if Melty.frame_count < 1:
-                run(run_next_inner=loading_state.run_next)
+                run(run_next_inner=loading_state._run_next)
             else:
-                run_next = loading_state.run_next
+                run_next = loading_state._run_next
                 if not loading_state._loading:
-                    loading_state.run_next = None
+                    loading_state._run_next = None
                     threading.Thread(target=run, kwargs={"run_next_inner": run_next}).start()
                     loading_state._loading_start_frame = Melty.frame_count
-                    if loading_state.run_next is run_next:
-                        loading_state.run_next = None
+                    if loading_state._run_next is run_next:
+                        loading_state._run_next = None
 
     if loading_state._loading:
         loading_for = Melty.frame_count - loading_state._loading_start_frame
         return False, LOADING
 
-    if loading_state.pending_change and loading_state.run_next is None:
-        loading_state.pending_change = False
+    if loading_state._pending_change and loading_state._run_next is None:
+        loading_state._pending_change = False
         draw_state.invalidate_up(max_depth=20)
         request_render()
         return True, loading_state.cached_result
@@ -332,8 +333,7 @@ class CodeState(DictConversion):
         self.address = None
         self.file_mtime = None
         self.file_size = None
-        self.auto_load = False
-        self.pending_save = False
+        self._pending_save = False
         self._recompiled_on_frame = None
         self.recompile_result = None
 
@@ -550,7 +550,7 @@ def draw_modes(input_value, modes=None, chain_in=None, chain_out=None, route=Non
     # state from before function refs round-tripped, which would leave None here.
     tab_state.selected_tabs = [t for t in tab_state.selected_tabs if view_of(t) is not None]
     if not tab_state.selected_tabs:
-        tab_state.selected_tabs = [modes[0]]
+        tab_state.selected_tabs = [modes[0], modes[1]]
 
     names = [getattr(view_of(m), '__name__', str(m)) for m in modes]
     tab_changed, new_tabs = RenderFuncs.draw_tab_bar(indent_size=0, z_offset=-1,
@@ -571,6 +571,7 @@ def draw_modes(input_value, modes=None, chain_in=None, chain_out=None, route=Non
     if 'jump_to' in kwargs:
         routed['jump_to'] = kwargs['jump_to']
 
+    routed['root_input'] = kwargs.get("root_input", input_value)
 
     chain_in_error = modes_state.last_error
     if chain_in:
@@ -627,6 +628,8 @@ def draw_modes(input_value, modes=None, chain_in=None, chain_out=None, route=Non
     converted_edit = UNSET
     for idx, mode in enumerate(tab_state.selected_tabs):
         view_func = view_of(mode)
+        if view_func.__name__ == "draw_type":
+            pass
         mode_kwargs = mode[1] if isinstance(mode, tuple) else {}
 
         arg_name = route.get(view_func) if route else None
@@ -645,12 +648,14 @@ def draw_modes(input_value, modes=None, chain_in=None, chain_out=None, route=Non
                 # that worked so the structured view doesn't blank out.
                 view_input = modes_state.last_good[arg_name]
             else:
-                # Never had a good conversion (invalid on first load): render the
-                # error in place of this view rather than crash.
-                imgui.text_colored(
-                    f" {getattr(view_func, '__name__', 'view')}: {chain_in_error}",
-                    1.0, 0.5, 0.0)
-                continue
+                view_input = UNSET
+
+                # # Never had a good conversion (invalid on first load): show the
+                # # exception in place of this view rather than crash.
+                # imgui.text_colored(
+                #     f" {getattr(view_func, '__name__', 'unknown')}: {chain_in_error}",
+                #     1.0, 0.5, 0.0)
+                # continue
 
         call_kwargs = {**child_kwargs, **routed, **mode_kwargs}
 
@@ -770,7 +775,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             play_icon = "\uf04b"
             recompile = \
                 RenderFuncs.button(f"{play_icon} Run", tint=(0, 0.4, 0.1), height=top_line_height,
-                                   name="recompile_btn")[0]
+                                   name=f"recompile_btn{unique}")[0]
 
         if Toggles.enable_jedi:
             imgui.same_line(spacing=0)
@@ -794,23 +799,23 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                 request_render()
                 code_state._recompile_on_frame = None
 
-        if code_state.is_file_stale() and not code_state.pending_save:
+        if code_state.is_file_stale() and not code_state._pending_save:
             if auto_load_edits:
                 load = True
                 code_state.mark_file_current()
             else:
                 imgui.same_line(spacing=0)
-                if RenderFuncs.button("Load", width=100, height=top_line_height, name=f"reload")[0]:
+                if RenderFuncs.button("Load", width=100, height=top_line_height, name=f"reload{unique}")[0]:
                     load = True
 
-                if not code_state.pending_save:
+                if not code_state._pending_save:
                     imgui.same_line()
-                    if RenderFuncs.button("Keep mine", width=100, height=top_line_height, name=f"keepmine")[0]:
+                    if RenderFuncs.button("Keep mine", width=100, height=top_line_height, name=f"keepmine{unique}")[0]:
                         save = True
 
-        if not auto_save and code_state.pending_save:
+        if not auto_save and code_state._pending_save:
             imgui.same_line(spacing=0)
-            if RenderFuncs.button("Save", width=100, height=top_line_height, name=f"save")[0]:
+            if RenderFuncs.button("Save", width=100, height=top_line_height, name=f"save{unique}")[0]:
                 save = True
 
         if auto_save:
@@ -819,7 +824,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
 
         changed, new_text = run_in_background(load_file,
                                               child_kwargs={"input_value": address, 'codec': codec},
-                                              name=f"load", start=load)
+                                              name=f"load{unique}", start=load)
         if new_text is LOADING:
             code_state.mark_file_current()
 
@@ -827,7 +832,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             code_state.text_cache = new_text
             code_state.mark_file_current()
             draw_state.invalidate_up(max_depth=6)
-            code_state.pending_save = False
+            code_state._pending_save = False
             external_change = True
             request_render()
 
@@ -855,12 +860,13 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                                 if isinstance(code_state.recompile_result, BaseException)
                                 else None)
             child_kwargs['error'] = _runtime_error or _recompile_error
+            child_kwargs['root_input'] = input_value
             edited, value = view_func(input_value=code_state.text_cache, changed=external_change, **child_kwargs)
 
             if edited:
                 code_state.text_cache = value
                 code_state.mark_file_current()
-                code_state.pending_save = True
+                code_state._pending_save = True
         else:
             edited = False
 
@@ -887,8 +893,8 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                                                         "codec": codec,
                                                         "code_str": code_state.text_cache,
                                                         "ensure_import": ensure_import,
-                                                        "draw_state": draw_state},
-                                          name="save", start=save_start,
+                                                        "parent_ds": draw_state},
+                                          name=f"save{draw_state.name}", start=save_start,
                                           debounce_ms=save_debounce)
         if result == LOADING:
             code_state.mark_file_current()
@@ -896,7 +902,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             # Our own write bumped mtime; clear the stale flag set on edit so the
             # next frame doesn't read the disk as an external change.
             code_state.mark_file_current()
-            code_state.pending_save = False
+            code_state._pending_save = False
             Melty.cache.invalidate_up(draw_state._tile_id, max_depth=10)
 
         # Recompile (hot reload, no disk write): button, Ctrl+Enter, or recompile=True
@@ -947,6 +953,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
         call_stack = getattr(code_state, "_resolve_stack", [])
         RenderFuncs.draw_collection(call_stack, name=f"resolve_stack{unique}{id(call_stack)}",
                                     mode=Modes.WINDOW, tint=(0.9, 0.4, 0.1))
+        print_stack_trace(exception=e)
 
     # This is the root function, end of the line.
     return False, None
