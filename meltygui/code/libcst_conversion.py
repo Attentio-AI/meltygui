@@ -219,7 +219,7 @@ class Except(dict):
         return f"Except:{self.header}:{keys}"
 
 
-@defaults(included="__symbol_usages__")
+@defaults(included="__symbol_usages__", disable_scroll=True)
 class GeneralParse(dict):
     def __init__(self, *args, source="", file_path=None, line_offset=0, **kwargs):
         super().__init__(*args, **kwargs)
@@ -2762,13 +2762,33 @@ def _patch_module_comments(module, comment_edits):
     return result
 
 
+def _condition_to_editable(test_node):
+    """Surface an if/elif test as an editable value (see _extract_if_chain).
+
+    A bare call test (`if is_pressed(btn):`) becomes a CallParse whose args are
+    editable. A call wrapped in a subscript (`if button(...)[0]:`) surfaces the
+    INNER call as a CallParse too — the subscript wrapper is preserved on
+    round-trip by _patch_condition_expr. Everything else (comparisons, names,
+    …) falls back to an editable CodeLine."""
+    if isinstance(test_node, cst.Subscript) and isinstance(test_node.value, cst.Call):
+        inner = _cst_to_python_or_raw(test_node.value)
+        if isinstance(inner, CallParse):
+            return inner
+        return CodeLine(_cst_node_to_code(test_node))
+    return _cst_to_python_or_raw(test_node)
+
+
 def _extract_if_chain(if_node, result):
     """Walk an if/elif/else chain, extracting each branch as a sub-dict.
 
     Besides the dict KEY (e.g. "if selected"), each if/elif branch surfaces its
-    test expression as an editable CodeLine under the branch keyword ("if" /
+    test expression as an editable value under the branch keyword ("if" /
     "elif") so the nested condition can be edited in place — the reverse patcher
-    parses it back into `if_node.test`. The keyword keys can't collide with body
+    converts it back into `if_node.test`. The value comes from
+    _condition_to_editable: a call condition (`if is_pressed(btn):`) — or a
+    subscripted call (`if button(...)[0]:`) — becomes a CallParse whose
+    arguments are themselves editable parameters; comparisons, names, etc. fall
+    back to an editable CodeLine. The keyword keys can't collide with body
     assignments (they're Python keywords). The else branch has no condition.
     Empty branches are skipped, so a branch with no body isn't surfaced.
     """
@@ -2778,7 +2798,7 @@ def _extract_if_chain(if_node, result):
     body = _extract_block_assignments(if_node.body.body)
     if body:
         branch = Conditional(condition=key)
-        branch["if"] = CodeLine(condition)  # editable test, ahead of the body
+        branch["if"] = _condition_to_editable(if_node.test)  # surface test, ahead of body
         branch.update(body)
         result[key] = branch
 
@@ -2792,7 +2812,7 @@ def _extract_if_chain(if_node, result):
             body = _extract_block_assignments(orelse.body.body)
             if body:
                 branch = Conditional(condition=key)
-                branch["elif"] = CodeLine(condition)
+                branch["elif"] = _condition_to_editable(orelse.test)
                 branch.update(body)
                 result[key] = branch
             orelse = orelse.orelse
@@ -3226,16 +3246,31 @@ def _patch_stmt_comments(stmt, text_map):
 
 
 def _patch_condition_expr(test_node, branch_edits, cond_key):
-    """Patch an if/elif test expression from its editable CodeLine.
+    """Patch an if/elif test expression from its editable surfaced value.
 
-    The condition is surfaced (see _extract_if_chain) as a CodeLine under the
-    branch keyword (`cond_key`, "if"/"elif"). Returns the original `test_node`
-    when the key is absent or unchanged (so callers can identity-check), else a
-    freshly parsed expression node.
+    The condition is surfaced (see _extract_if_chain / _condition_to_editable)
+    under the branch keyword (`cond_key`, "if"/"elif") as a CallParse for a call
+    (or subscripted-call) test, a CodeLine otherwise. _python_to_cst_expr handles
+    each (a CallParse round-trips via dict_to_cst_call). For a subscripted call
+    (`button(...)[0]`) the surfaced value is the INNER call, so patch the call
+    and keep the subscript wrapper. Returns the original `test_node` when the key
+    is absent or unchanged (so callers can identity-check), else the rebuilt node.
     """
     if cond_key not in branch_edits:
         return test_node
-    new_test = _python_to_cst_expr(branch_edits[cond_key], test_node)
+    edit = branch_edits[cond_key]
+    # Call wrapped in a subscript: the surfaced value is the inner call's
+    # CallParse - patch the call, preserve the subscript (mirrors the forward
+    # _condition_to_editable, which surfaces test_node.value).
+    if (isinstance(test_node, cst.Subscript)
+            and isinstance(test_node.value, cst.Call)
+            and isinstance(edit, dict)
+            and isinstance(edit.get("__cst__"), cst.Call)):
+        new_call = _python_to_cst_expr(edit, test_node.value)
+        if new_call is not None and new_call is not test_node.value:
+            return test_node.with_changes(value=new_call)
+        return test_node
+    new_test = _python_to_cst_expr(edit, test_node)
     return new_test if new_test is not None else test_node
 
 

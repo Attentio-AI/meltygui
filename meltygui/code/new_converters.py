@@ -122,10 +122,10 @@ class TestClass:
     some = []
    
      # [tint=(0.38801515102386475, 0.45181113481521606, 0.7069768)]
-    def some_func(a=78, b=-49):
+    def some_func(a=95, b=-49):
         print(a, b)
         
-    some_func(77,-36)
+    some_func(77,-25)
 
     some_line = 87
     myflot = 5
@@ -747,10 +747,25 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             child_kwargs = {}
         # ── 1. Resolve the source's line span ─────────────────────────────────────
         if codec is None:
-            if type(input_value) in type_to_codec:
-                codec = type_to_codec[type(input_value)]
-            elif isinstance(input_value, (str, Path)):
+            # Class lookup: match the value's type against registered types,
+            # walking the MRO (like Mode.get_config_for) so a subclass of a
+            # registered type still matches -- e.g. a class object whose
+            # metaclass subclasses `type`, or an extended primitive instance.
+            for klass in type(input_value).__mro__:
+                if klass in type_to_codec:
+                    codec = type_to_codec[klass]
+                    break
+            # File-path fallback by extension -- only for a GENUOUS path or a
+            # bare str. Exact-type the str check so an extended primitive like
+            # CodeLine(str) (whose type is SOURCE, not a FILE) isn't whacked
+            # into being interpreted as a path. Path uses isinstance so real
+            # path objects (PosixPath, a Path subclass) still match.
+            if codec is None and (isinstance(input_value, Path) or type(input_value) is str):
                 codec = extension_to_codec.get(Path(str(input_value)).suffix)
+
+        if codec is None:
+            imgui.text(f"No codec for type: {type(input_value).__name__}")
+            return False, None
 
         address = codec.resolve_address(input_value, draw_state, code_state=code_state)
         code_state.address = address

@@ -125,19 +125,19 @@ class Swoosh:
     some_dict = [1,1,1,1]
 
 
-@window(tint=(0.8, 0.4, 0.07995673))
+@window(tint=(0.9, 0.5, 0.3))
 class Toggles:
     test_float = 3.303
     debug_scroll = False
     
     
-    @defaults(tint=(0.3,0.0,0.0))
+    @defaults(tint=(0.9,0.7,0.1))
     class InvalidateTracker:
-        keep_for_frames = 2
+        keep_for_frames = 10
         enable = False
         draw_bvh = False
         
-    @defaults(tint=(0.08177394419908524, 0.1272051,0.195348858833313))
+    @defaults(tint=(0.16452135145664215, 0.1824345,0.2093023))
     class Debug:
         slow_frame_rate = False
 

@@ -2585,7 +2585,7 @@ def draw_function(input_value, name, draw_state, unique, **kwargs):
         sees_this = 0
 
     # Does not see this either
-    if button(f"{input_value.__name__}##{unique}", height=30, bg_offset=-1, tint=(0.0196106, 0.209, 0.0743293, 0.5))[0]:
+    if button(f"{input_value.__name__}##{unique}", height=30, bg_offset=-1, tint=(0.5413521, 0.856, 0.6322788, 0.5))[0]:
         try:
             draw_state.result = input_value(**draw_state.params)
             Melty.cache.invalidate_up_current(force=True)
