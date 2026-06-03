@@ -24,7 +24,7 @@ from src.lsd.gl_gui.modes import Modes
 from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.view.core_conversion.path_finder import convert, PendingState
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults, Core
 
 
 def register(fn):
@@ -45,10 +45,19 @@ def register(fn):
 # Sentinel for arguments with no default value.
 # Shows up in the dict so the UI can display the parameter name,
 # but signals "no default" on the reverse path.
-NO_DEFAULT = type("NO_DEFAULT", (), {
-    "__repr__": lambda self: "NO_DEFAULT",
-    "__bool__": lambda self: False,
-})()
+
+@defaults(show_bg=False, wrap=True, expanded=False, is_tree=False, shadow=False, align_header=False)
+class NoDefault():
+    """Sentinel for parameters with no default value.
+
+    Shows up in the dict so the UI can display the parameter name,
+    but signals "no default" on the reverse path.
+    """
+    def __repr__(self):
+        return "NO_DEFAULT"
+
+
+NO_DEFAULT = NoDefault()
 
 
 class Comment(str):
@@ -91,7 +100,8 @@ class Comment(str):
         return hash(("__comment__", str(self), self.inline))
 
 
-@defaults(tint=(0.0, 0.1706498, 0.2930232286453247), view_func=RenderFuncs.draw_text, align_header=False)
+@defaults(tint=(0.0, 0.1706498, 0.2930232286453247, 0.3), shadow=False, use_cache=True, show_bg=True, z_offset=2,
+ view_func=RenderFuncs.draw_text, align_header=False)
 class CodeLine(str):
     """A raw line/expression of code that couldn't be reduced to a Python value,
     as a str subclass for differentiated dispatch.
@@ -109,7 +119,7 @@ class CodeLine(str):
     """
 
 
-@defaults(tint=(0.8, 0.7651617, 0.11906976997852325))
+@defaults(tint=(0.8, 0.7651616, 0.11906976997852325, 0.655), shadow=True, bg_offset=1)
 class Conditional(dict):
     """An if/elif/else block's contents, as a dict subclass.
 
@@ -133,7 +143,7 @@ class Conditional(dict):
         keys = ",".join(sorted(str(k) for k in self.keys() if not str(k).startswith("_")))
         return f"Conditional:{self.condition}:{keys}"
 
-@defaults(tint=(0.10816656798124313, 0.4651162624359131, 0.3904058337211609))
+@defaults(tint=(0.02764737419784069, 0.33023256063461304, 0.2669007480144501, 0.611))
 class Loop(dict):
     """A for-loop block's contents, as a dict subclass.
 
@@ -164,7 +174,7 @@ class Loop(dict):
             return self._bg_hash_cache
 
 
-@defaults(tint=(0.7209302186965942, 0.3097, 0.3097))
+@defaults(tint=(0.2, 0.2, 0.2, 1.0), shadow=True, bg_offset=-3, show_bg=True)
 class Try(dict):
     """A try / except / else / finally branch's contents, as a dict subclass.
 
@@ -188,6 +198,27 @@ class Try(dict):
         return f"Try:{self.header}:{keys}"
 
 
+@defaults(tint=(0.17, 0.0, 0.0, 0.85), shadow=True, bg_offset=-3, show_bg=True)
+class Except(dict):
+    """A single except handler's body, as a dict subclass.
+
+    Same shape and round-trip as Try (a branch keyed by its header text, with
+    the header in the .header attribute), but a distinct type so the UI can
+    render except handlers differently from the try/else/finally branches —
+    e.g. "except ValueError as e". Block detection and reverse patching are
+    keyed off the header STRING ("except ...", see _parse_edit_keys and
+    _patch_try_block_direct), so nothing depends on Try vs Except by type.
+    """
+
+    def __init__(self, *args, header=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.header = header  # e.g. "except ValueError as e", "except: TypeError"
+
+    def __bg_hash__(self) -> str:
+        keys = ",".join(sorted(str(k) for k in self.keys() if not str(k).startswith("_")))
+        return f"Except:{self.header}:{keys}"
+
+
 @defaults(included="__symbol_usages__")
 class GeneralParse(dict):
     def __init__(self, *args, source="", file_path=None, line_offset=0, **kwargs):
@@ -209,7 +240,7 @@ class GeneralParse(dict):
     #     return self._bg_hash_cache
 
 
-@defaults(tint=(0.6954678, 0.7870253, 0.8744186))
+@defaults(tint=(0.1, 0.1928505, 0.2, 1.0), bg_offset=-7, shadow=True, z_offset=1.626)
 class CallParse(GeneralParse):
     """A function call's arguments, as a GeneralParse subclass.
 
@@ -233,7 +264,7 @@ class CallParse(GeneralParse):
         self.func_name = func_name
 
 
-@defaults(tint=(0.6232558488845825, 0.5391884, 0.0), icon="@", horizontal=True, disable_scroll=True)
+@defaults(tint=(0.8465116, 0.7424207, 0.1, 0.7), icon="@", disable_scroll=True, initial={"expanded":False})
 class DecorationParse(CallParse):
     """A decorator application (`@name(...)`), as a CallParse subclass.
 
@@ -2314,6 +2345,11 @@ def _extract_block_assignments(stmts):
     # Pass 2: assignments with occurrence-indexed keys + if/elif/else + comments
     result = GeneralParse(source="\n".join(_cst_node_to_code(stmt) for stmt in stmts))
     seen: dict[str, int] = {}
+    # Sibling defs in THIS block let a bare caller's positional args bind to
+    # parameter names; call_seen keys repeat calls (func_call#1, ...). Scoped per
+    # block so the reverse patcher's per-body occurrence counting aligns.
+    local_sigs = _collect_local_signatures(stmts)
+    call_seen: dict[str, int] = {}
     for stmt in stmts:
         if isinstance(stmt, cst.SimpleStatementLine):
             # Leading comments (standalone lines above the statement);
@@ -2323,24 +2359,34 @@ def _extract_block_assignments(stmts):
             last_key = None
             for node in stmt.body:
                 name = _assign_target_name(node)
-                if name is None:
+                if name is not None:
+                    val_node = _assign_value_node(node)
+                    if val_node is None:
+                        continue
+
+                    occurrence = seen.get(name, 0)
+                    seen[name] = occurrence + 1
+
+                    if counts[name] == 1:
+                        key = name
+                    elif occurrence == 0:
+                        key = name
+                    else:
+                        key = f"{name}#{occurrence}"
+
+                    result[key] = _cst_to_python_or_raw(val_node)
+                    last_key = key
                     continue
-                val_node = _assign_value_node(node)
-                if val_node is None:
-                    continue
 
-                occurrence = seen.get(name, 0)
-                seen[name] = occurrence + 1
-
-                if counts[name] == 1:
-                    key = name
-                elif occurrence == 0:
-                    key = name
-                else:
-                    key = f"{name}#{occurrence}"
-
-                result[key] = _cst_to_python_or_raw(val_node)
-                last_key = key
+                # Surface a function call so its arguments are plpatchable:
+                # a bare call statement (foo(...)) or a call assigned to a
+                # NON-Name target (a, b = foo(...) or obj.x = foo(...)). A plain
+                # x = foo(...) stays keyed by its name (handled above).
+                call_node = _stmt_call_node(node)
+                if call_node is not None:
+                    ck = _surface_call(call_node, result, call_seen, local_sigs)
+                    if ck is not None:
+                        last_key = ck
 
             # Trailing inline comment on this statement
             _extract_trailing_comment(stmt, last_key, result)
@@ -2717,13 +2763,24 @@ def _patch_module_comments(module, comment_edits):
 
 
 def _extract_if_chain(if_node, result):
-    """Walk an if/elif/else chain, extracting each branch as a sub-dict."""
+    """Walk an if/elif/else chain, extracting each branch as a sub-dict.
+
+    Besides the dict KEY (e.g. "if selected"), each if/elif branch surfaces its
+    test expression as an editable CodeLine under the branch keyword ("if" /
+    "elif") so the nested condition can be edited in place — the reverse patcher
+    parses it back into `if_node.test`. The keyword keys can't collide with body
+    assignments (they're Python keywords). The else branch has no condition.
+    Empty branches are skipped, so a branch with no body isn't surfaced.
+    """
     # "if <condition>"
     condition = _cst_node_to_code(if_node.test)
     key = f"if {condition}"
     body = _extract_block_assignments(if_node.body.body)
     if body:
-        result[key] = Conditional(body, condition=key)
+        branch = Conditional(condition=key)
+        branch["if"] = CodeLine(condition)  # editable test, ahead of the body
+        branch.update(body)
+        result[key] = branch
 
     # Walk the orelse chain
     orelse = if_node.orelse
@@ -2734,7 +2791,10 @@ def _extract_if_chain(if_node, result):
             key = f"elif {condition}"
             body = _extract_block_assignments(orelse.body.body)
             if body:
-                result[key] = Conditional(body, condition=key)
+                branch = Conditional(condition=key)
+                branch["elif"] = CodeLine(condition)
+                branch.update(body)
+                result[key] = branch
             orelse = orelse.orelse
         elif isinstance(orelse, cst.Else):
             # else
@@ -2793,9 +2853,11 @@ def _try_handler_header(handler):
 def _extract_try_block(try_node, result):
     """Extract a try/except/else/finally statement.
 
-    Each branch becomes its own Try entry under `result`, keyed by header:
-      try:               → "try"
-      except X as e:      → "except X as e"
+    Each branch becomes its own entry under `result`, keyed by header. The
+    try/else/finally branches are Try entries; each except handler is an
+    Except entry (a distinct type so the UI can style handlers separately):
+      try:               → "try"            (Try)
+      except X as e:      → "except X as e"  (Except)
       else:               → "try else"   (prefixed to avoid colliding with if/for else)
       finally:            → "finally"
     Bodies are extracted recursively, so assignments wrapped in a try are
@@ -2810,7 +2872,7 @@ def _extract_try_block(try_node, result):
         header = _try_handler_header(handler)
         hbody = _extract_block_assignments(handler.body.body)
         if hbody:
-            result[header] = Try(hbody, header=header)
+            result[header] = Except(hbody, header=header)
 
     if try_node.orelse is not None and isinstance(try_node.orelse, cst.Else):
         else_body = _extract_block_assignments(try_node.orelse.body.body)
@@ -2947,19 +3009,27 @@ def dict_to_cst_funcdef(value: dict) -> cst.FunctionDef:
 
 
 def _parse_edit_keys(edits):
-    """Split a locals dict into assignment edits and block edits.
+    """Split a locals dict into assignment, block, and call edits.
 
-    Returns (assign_edits, block_edits) where:
+    Returns (assign_edits, block_edits, call_edits) where:
       assign_edits = {(name, occurrence): value}
       block_edits = {"if cond": sub_dict, "elif ...": ..., "else": ...}
+      call_edits  = {func_name: [CallParse, ...]}  (source order, consumed by
+                    occurrence in _patch_simple_stmt — mirrors _ClassPatcher)
     """
     assign_edits: dict[tuple[str, int], object] = {}
     block_edits: dict[str, dict] = {}
+    call_edits: dict[str, list] = {}
 
     for key, val in edits.items():
         if isinstance(key, Comment):
             continue
-        if isinstance(val, dict) and (key.startswith("if ") or
+        # Surfaced calls (`func()` / `func()#N`) - keyed before the "#" occurren
+        # added so the occurrence suffix isn't mistaken for an assignment index.
+        if (_is_bare_call_key(key) and isinstance(val, dict)
+                and isinstance(val.get("__cst__"), cst.Call)):
+            call_edits.setdefault(_call_func_name(val["__cst__"]), []).append(val)
+        elif isinstance(val, dict) and (key.startswith("if ") or
                                       key.startswith("elif ") or
                                       key == "else" or
                                       key.startswith("for ") or
@@ -2979,7 +3049,7 @@ def _parse_edit_keys(edits):
         elif isinstance(key, str):
             assign_edits[(key, 0)] = val
 
-    return assign_edits, block_edits
+    return assign_edits, block_edits, call_edits
 
 
 def _patch_body_direct(body_node, edits, comment_text_map=None):
@@ -2994,17 +3064,18 @@ def _patch_body_direct(body_node, edits, comment_text_map=None):
     if not isinstance(body_node, cst.IndentedBlock):
         return body_node
 
-    assign_edits, block_edits = _parse_edit_keys(edits)
-    if not assign_edits and not block_edits and not comment_text_map:
+    assign_edits, block_edits, call_edits = _parse_edit_keys(edits)
+    if not assign_edits and not block_edits and not call_edits and not comment_text_map:
         return body_node
 
     new_stmts = list(body_node.body)
     changed = False
     seen: dict[str, int] = {}
+    call_consumed: dict[str, int] = {}
 
     for i, stmt in enumerate(new_stmts):
         if isinstance(stmt, cst.SimpleStatementLine):
-            new_stmt = _patch_simple_stmt(stmt, assign_edits, seen)
+            new_stmt = _patch_simple_stmt(stmt, assign_edits, seen, call_edits, call_consumed)
             if comment_text_map:
                 new_stmt = _patch_stmt_comments(new_stmt, comment_text_map)
             if new_stmt is not stmt:
@@ -3046,8 +3117,9 @@ def _patch_body_direct(body_node, edits, comment_text_map=None):
     return body_node.with_changes(body=new_stmts)
 
 
-def _patch_simple_stmt(stmt, assign_edits, seen):
-    """Patch a SimpleStatementLine's assignments by name+occurrence.
+def _patch_simple_stmt(stmt, assign_edits, seen, call_edits=None, call_consumed=None):
+    """Patch a SimpleStatementLine's assignments by name+occurrence, and any
+    surfaced calls (bare or non-Name-target assigns) by callee+occurrence.
 
     Returns the same stmt object if nothing changed (identity check).
     """
@@ -3056,28 +3128,57 @@ def _patch_simple_stmt(stmt, assign_edits, seen):
 
     for j, node in enumerate(new_body):
         name = _assign_target_name(node)
-        if name is None:
+        if name is not None:
+            occurrence = seen.get(name, 0)
+            seen[name] = occurrence + 1
+
+            edit_val = assign_edits.get((name, occurrence))
+            if edit_val is None:
+                continue
+
+            val_node = _assign_value_node(node)
+            if val_node is None:
+                continue
+
+            new_cst = _python_to_cst_expr(edit_val, val_node)
+            if new_cst is None or new_cst is val_node:
+                continue
+
+            if isinstance(node, cst.Assign):
+                new_body[j] = node.with_changes(value=new_cst)
+            elif isinstance(node, cst.AnnAssign):
+                new_body[j] = node.with_changes(value=new_cst)
+            changed = True
             continue
 
-        occurrence = seen.get(name, 0)
-        seen[name] = occurrence + 1
-
-        edit_val = assign_edits.get((name, occurrence))
-        if edit_val is None:
+        # Surfaced call: patch the call node's args from the matching CallParse.
+        # Consumed in FIFO order per callee, mirroring _extract_call's key order
+        # (and _ClassPatcher.leave_Expr for the instance/class path).
+        if not call_edits:
             continue
-
-        val_node = _assign_value_node(node)
-        if val_node is None:
+        call_node = _stmt_call_node(node)
+        if call_node is None:
             continue
-
-        new_cst = _python_to_cst_expr(edit_val, val_node)
-        if new_cst is None or new_cst is val_node:
+        fn_name = _call_func_name(call_node)
+        queue = call_edits.get(fn_name)
+        if not queue:
             continue
-
-        if isinstance(node, cst.Assign):
-            new_body[j] = node.with_changes(value=new_cst)
-        elif isinstance(node, cst.AnnAssign):
-            new_body[j] = node.with_changes(value=new_cst)
+        idx = call_consumed.get(fn_name, 0)
+        if idx >= len(queue):
+            continue
+        call_consumed[fn_name] = idx + 1
+        call_fn = Melty._converters.get((dict, cst.Call))
+        if call_fn is None:
+            continue
+        ed = dict(queue[idx])
+        ed["__cst__"] = call_node
+        try:
+            new_call = call_fn(ed)
+        except (TypeError, ValueError):
+            continue
+        if new_call is call_node:
+            continue
+        new_body[j] = node.with_changes(value=new_call)
         changed = True
 
     if not changed:
@@ -3124,16 +3225,38 @@ def _patch_stmt_comments(stmt, text_map):
     return result
 
 
+def _patch_condition_expr(test_node, branch_edits, cond_key):
+    """Patch an if/elif test expression from its editable CodeLine.
+
+    The condition is surfaced (see _extract_if_chain) as a CodeLine under the
+    branch keyword (`cond_key`, "if"/"elif"). Returns the original `test_node`
+    when the key is absent or unchanged (so callers can identity-check), else a
+    freshly parsed expression node.
+    """
+    if cond_key not in branch_edits:
+        return test_node
+    new_test = _python_to_cst_expr(branch_edits[cond_key], test_node)
+    return new_test if new_test is not None else test_node
+
+
 def _patch_if_chain_direct(if_node, block_edits, comment_text_map=None):
     """Patch an if/elif/else chain by direct body walk — no CSTTransformer."""
     result = if_node
     changed = False
 
-    # "if <cond>" body
+    # "if <cond>" - condition expression, then body. The dict key reflects the
+    # ORIGINAL condition (block_edits is keyed that this), so match on that; the
+    # edited condition lives in the branch's "if" entry.
     condition = _cst_node_to_code(result.test)
     key = f"if {condition}"
     if key in block_edits:
-        new_body = _patch_body_direct(result.body, block_edits[key], comment_text_map)
+        branch_edits = block_edits[key]
+        new_test = _patch_condition_expr(result.test, branch_edits, "if")
+        if new_test is not result.test:
+            result = result.with_changes(test=new_test)
+            changed = True
+        body_edits = {k: v for k, v in branch_edits.items() if k != "if"}
+        new_body = _patch_body_direct(result.body, body_edits, comment_text_map)
         if new_body is not result.body:
             result = result.with_changes(body=new_body)
             changed = True
@@ -3158,9 +3281,14 @@ def _patch_orelse_direct(node, block_edits, comment_text_map=None):
         key = f"elif {condition}"
         new_orelse = orelse
         if key in block_edits:
-            new_body = _patch_body_direct(orelse.body, block_edits[key], comment_text_map)
-            if new_body is not orelse.body:
-                new_orelse = orelse.with_changes(body=new_body)
+            branch_edits = block_edits[key]
+            new_test = _patch_condition_expr(new_orelse.test, branch_edits, "elif")
+            if new_test is not new_orelse.test:
+                new_orelse = new_orelse.with_changes(test=new_test)
+            body_edits = {k: v for k, v in branch_edits.items() if k != "elif"}
+            new_body = _patch_body_direct(new_orelse.body, body_edits, comment_text_map)
+            if new_body is not new_orelse.body:
+                new_orelse = new_orelse.with_changes(body=new_body)
         # Recurse into this elif's own orelse
         recursed = _patch_orelse_direct(new_orelse, block_edits, comment_text_map)
         if recursed is not new_orelse:
@@ -3722,29 +3850,61 @@ def _collect_local_signatures(stmts):
     return sigs
 
 
-def _extract_call_statement(node, readable, call_seen, local_sigs):
-    """If `node` is a bare expression-statement call (e.g. `some_func(1, 2)`),
-    surface it as a CallParse keyed `func()` — distinct from a `func` def key in
-    the same scope — and return that key. Repeat calls to the same func get
-    `func()#1`, `func()#2`, … (occurrence order, mirroring the assignment keying).
+def _stmt_call_node(node):
+    """Return the cst.Call a statement node should surface as a CallParse, or None.
+
+    - bare call expression statement: `foo(...)`                  → the call
+    - call assigned to a NON-Name target:
+        `a, b = foo(...)`, `obj.x = foo(...)`, `d[k] = foo(...)`   → the call
+
+    A single-Name-target call assignment (`x = foo()`) returns None: it stays
+    keyed by its variable name with the call rendered as a code string, matching
+    the module/class extractors. Surfacing the call here makes its arguments
+    visible and editable wherever the call's return value isn't bound to a plain
+    name we already key on."""
+    if isinstance(node, cst.Expr) and isinstance(node.value, cst.Call):
+        return node.value
+    if isinstance(node, cst.Assign) and isinstance(node.value, cst.Call):
+        if not (len(node.targets) == 1 and isinstance(node.targets[0].target, cst.Name)):
+            return node.value
+    if isinstance(node, cst.AnnAssign) and isinstance(node.value, cst.Call):
+        if not isinstance(node.target, cst.Name):
+            return node.value
+    return None
+
+
+def _surface_call(call_node, readable, call_seen, local_sigs):
+    """Surface a cst.Call as a CallParse under `readable`, keyed `func()` —
+    distinct from a `func` def key in the same scope — and return that key.
+    Repeat calls to the same func get `func()#1`, `func()#2`, … (occurrence
+    order, mirroring the assignment keying).
 
     Positional args bind to the sibling def's parameter names when `local_sigs`
     has them, so an in-file caller shows `a=1, b=2` even though the callee can't
-    be imported. Returns None when `node` isn't a bare call."""
-    if not (isinstance(node, cst.Expr) and isinstance(node.value, cst.Call)):
-        return None
+    be imported. Returns None when the call converter is missing or the call
+    can't be converted. Shared by bare call statements and non-Name-target call
+    assignments (see _stmt_call_node)."""
     call_fn = Melty._converters.get((cst.Call, dict))
     if call_fn is None:
         return None
-    fname = _call_func_name(node.value) or "call"
+    fname = _call_func_name(call_node) or "call"
     occ = call_seen.get(fname, 0)
     call_seen[fname] = occ + 1
     key = f"{fname}()" if occ == 0 else f"{fname}()#{occ}"
     try:
-        readable[key] = call_fn(node.value, pos_names_override=local_sigs.get(fname))
+        readable[key] = call_fn(call_node, pos_names_override=local_sigs.get(fname))
     except (TypeError, ValueError):
         return None
     return key
+
+
+def _extract_call_statement(node, readable, call_seen, local_sigs):
+    """If `node` is a bare expression-statement call (e.g. `some_func(1, 2)`),
+    surface it as a CallParse keyed `func()`. Thin wrapper over _surface_call
+    used by the module/class extractors (which only surface bare calls)."""
+    if not (isinstance(node, cst.Expr) and isinstance(node.value, cst.Call)):
+        return None
+    return _surface_call(node.value, readable, call_seen, local_sigs)
 
 
 def _is_bare_call_key(key):

@@ -336,6 +336,17 @@ class ImGuiStyleManager:
         if self.root is None:
             return
 
+        # A 4-component tint carries an alpha that controls how much of the
+        # current (parent) tint bleeds through. a=1.0 -> use the new color
+        # outright; a=0.0 -> keep the parent color in full force. Because every
+        # nested layer re-applies its tint through here, a low alpha lets the
+        # parent tint accumulate down the layer stack instead of washing out.
+        if a < 1.0 and self.current_rgb is not None:
+            pr, pg, pb = self.current_rgb
+            r = r * a + pr * (1.0 - a)
+            g = g * a + pg * (1.0 - a)
+            b = b * a + pb * (1.0 - a)
+
         self.current_rgb = (r, g, b)
         h, s, v = colorsys.rgb_to_hsv(r, g, b)
         self.hsv = (h, s, v)

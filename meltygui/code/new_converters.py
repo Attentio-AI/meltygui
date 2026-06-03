@@ -759,10 +759,6 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
         imgui.same_line(spacing=0)
 
         if address is None:
-            RenderFuncs.draw_text(
-                f"editable_source: can't resolve source for {type(input_value).__name__}",
-                name=f"resolve_error{unique}",
-                mode=Modes.WINDOW)
             return False, None
 
         if auto_load:

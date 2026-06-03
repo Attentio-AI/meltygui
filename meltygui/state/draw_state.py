@@ -186,7 +186,7 @@ class TileMode(Enum):
          "shadow", "size_change", "drag_released", "clicked", "dragged", "clipped_by_rect",
          "dragged", "expanded_height", "clipped", "fully_clipped",  "header_height", "inside_clip", "layer",
          "overhead_time", "scroll_visible", "depth_and_layer", "imgui_is_toggled_open", "top", "left",
-         "hotkey_receiver", "use_child", "cst", "bg_color", "depth", "z_pos",
+         "hotkey_receiver", "use_child", "cst", "bg_color", "depth", "z_pos", "content_height",
          "is_active", "clip_rect", "wrapped_top", "current_tint", "wrapped_left", "multi_line",
          "min_width", "min_height", "is_focused", "drag_window_pos_x", "drag_window_pos_y", "corner_radius",
          "drag_mode", "is_hovered_last", "bg_shown", "draw_window_pos_x", "z_offset", "melty_window",

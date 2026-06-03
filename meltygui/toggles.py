@@ -125,7 +125,7 @@ class Swoosh:
     some_dict = [1,1,1,1]
 
 
-@window(tint=(0.9, 0.5, 0.04369932))
+@window(tint=(0.8, 0.4, 0.07995673))
 class Toggles:
     test_float = 3.303
     debug_scroll = False
@@ -170,8 +170,8 @@ class Toggles:
     brightness = 0.338
     contrast = 1.645
     saturation = -0.4
-    prefered_header_width = 115
-    max_preferred_header_width = 196
+    prefered_header_width = 116
+    max_preferred_header_width = 188
     debug_z_depth = False
     filters = True
     show_excluded = True

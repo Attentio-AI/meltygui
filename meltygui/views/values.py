@@ -1072,7 +1072,7 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
             window_cls(None, **kwargs)
         else:
             kwargs['disable_scroll'] = True
-            kwargs.setdefault('mode', (Mode.NEW_CODE, Mode.WINDOW))
+            kwargs.setdefault('mode', (Mode.NEW_CODE, Mode.MODE_WINDOW))
             window_func = kwargs.pop("view_func", code_file_io)
             window_func(window_cls, **kwargs)
 
@@ -1195,7 +1195,7 @@ def draw_pending_texture(input_value: PendingTexture, draw_state):
 
 @render_func(is_default_for=numpy.uint32, show_bg=True, use_cache=False, show_add_delete=False, z_offset=2, fill_height=True,
              indent_size=0, min_width=100, min_height=100, wrap=False, disable_scroll=True,
-             enable_scroll=True, zoom_speed=0.3, with_header=draw_header, manual_content_height=True)
+              zoom_speed=0.3, with_header=draw_header, manual_content_height=True)
 def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mouse_drag, right_mouse_drag,
                  zoom_state: ZoomState, zoom_speed, header_height=0, min_zoom=0.1,
                  max_zoom=50.0, style_manager=None, max_brightness=5.0, max_contrast=5.0,
@@ -2546,13 +2546,16 @@ def draw_function(input_value, name, draw_state, unique, **kwargs):
     if not callable(input_value):
         imgui.text("Not a callable function")
         return False, input_value
-    sees_this = 5
+    sees_this = 19
     try:
-        does_not_see_this = 4
+        #vvvv Does not see this vvvv
+        imgui.text(f"Error inspecting function parameters:")
+
         signature = inspect.signature(input_value)
         params = signature.parameters
         if len(draw_state.params) != len(params):
             param_dict = {}
+
             for name, param in params.items():
                 if name == 'kwargs':
                     continue
@@ -2569,6 +2572,7 @@ def draw_function(input_value, name, draw_state, unique, **kwargs):
 
             draw_state.params = param_dict
         if len(draw_state.params) > 0:
+            sees_this = 15
             changed, new_val = draw_collection(draw_state.params, name="Parameters",
             show_add_delete=False, parent_show_add_delete=False, horizontal=True,
                                                child_kwargs={"wrap":True, "max_width":200,
@@ -2578,8 +2582,10 @@ def draw_function(input_value, name, draw_state, unique, **kwargs):
     except Exception as e:
         imgui.text(f"Error inspecting function parameters: {e}")
         draw_state.params = {}
+        sees_this = 0
 
-    if button(f"{input_value.__name__}##{unique}", height=30, tint=(0.3196106, 0.7720930576324463, 0.3743293))[0]:
+    # Does not see this either
+    if button(f"{input_value.__name__}##{unique}", height=30, bg_offset=-1, tint=(0.0196106, 0.209, 0.0743293, 0.5))[0]:
         try:
             draw_state.result = input_value(**draw_state.params)
             Melty.cache.invalidate_up_current(force=True)
@@ -2635,9 +2641,9 @@ def draw_enum(input_value: Enum, style_manager=None, enum_tint=(0.3, 0.3, 0.3)):
 
 
 
-@render_func(is_tree=False, show_bg=True, shadow=False, use_cache=True, z_offset=0, header_same_line=True,
+@render_func(is_tree=False, show_bg=True, shadow=False, use_cache=True, z_offset=0, header_same_line=True, disable_scroll=True,
              indent_size=0, show_add_delete=False, show_name=False, selectable=False, parent_show_add_delete=False, with_header=draw_header)
-def draw_tab_bar(input_value: list, tab_height=20, names=None, tint_value=0.202, tint_saturation=0.372, unique=None,
+def draw_tab_bar(input_value: list, tab_height=30, names=None, tint_value=0.235, tint_saturation=0.372, unique=None,
                  collection=None, as_toggles=False, tints=None, draw_state=None):
     """Tab bar with multi-select via shift-click. input_value is the list of selected items, collection is all available tabs.
     Tabs wrap onto a new row when the cumulative width would exceed draw_state.content_width.
@@ -2909,7 +2915,10 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     raw_value = input_value._raw_input_value
     class_to_show = None
     class_is_parent = False
-    if not isinstance(raw_value, (int, float, str, bool)):
+    # Use exact-type matching, not subclass: a subclass of a primitive
+    # (e.g. CodeString(str)) DOES have its own source, so it should show its
+    # own class tab rather than being treated as a bare primitive.
+    if type(raw_value) not in (int, float, str, bool):
         class_to_show = type(raw_value)
     else:
         max_walk = 4

@@ -81,6 +81,7 @@ class Mode(Enum):
                     "auto_load": True,
                     "auto_save": True,
                     'view_func': draw_modes,
+                    "disable_scroll": True,
                     "child_kwargs" : {
                         'column_widths': [350],
                         "modes": [RenderFuncs.draw_collection, RenderFuncs.draw_text, draw_type],
@@ -202,7 +203,6 @@ class Mode(Enum):
             kwargs={"show_bg": True, "selectable": False, "use_cache": True, "melty_window": False, "closable": True,
                     "with_header_end": draw_header_end, "auto_resize": False, "draggable": True, 'shadow': True,
                     "show_tint": True, "show_header": True, "with_footer": draw_footer, 'indent_size': 5,
-                    "disable_scroll": True,
                     "show_add_delete": False, "with_header": draw_header, "min_width": 200, "min_height": 60,
                     "initial": {"width": 400, "height": 320, "window_pos": (100, 500)}},
 

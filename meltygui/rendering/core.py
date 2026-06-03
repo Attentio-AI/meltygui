@@ -319,7 +319,7 @@ def render_func(*args, **o_kwargs):
             for mode in not_recursive:
                 if kwargs['mode'] == mode:
                     kwargs.pop('mode', None)
-
+        kwargs = Melty.default_kwargs_by_type[kwargs.get("real_type", type(input_value))] | kwargs
         as_window = kwargs.get("as_window", False)
         initial_values = kwargs.get("initial", {})
 
@@ -341,6 +341,9 @@ def render_func(*args, **o_kwargs):
             from src.lsd.gl_gui.view.core_views.headers import draw_header
             kwargs['with_header_end'] = draw_header_end
             kwargs['with_header'] = draw_header
+
+
+        # kwargs = Melty.default_kwargs_by_attrib_type[kwargs.get("type_collection", type(collection))][key] | kwargs
 
         passed_width = kwargs.get('width', None)
         passed_height = kwargs.get('height', None)
@@ -2020,8 +2023,11 @@ def render_func(*args, **o_kwargs):
                     previous_tint = style_manager.get_tint()
                     new_tint = kwargs.get("tint")
                     if isinstance(new_tint, (tuple, list)):
-                        if len(new_tint) == 3:
-                            style_manager.set_imgui_tint(*kwargs.get("tint"))
+                        # Forward the full tint, incl. a 4th alpha channel:
+                        # set_imgui_tint blends it against the previous tint so the
+                        # background bleed accumulates down the tint stack.
+                        if len(new_tint) >= 3:
+                            style_manager.set_imgui_tint(*new_tint[:4])
 
                 elif hasattr(input_value, "tint") and input_value.tint is not None and isinstance(input_value.tint,
                                                                                                   (tuple, list)):
@@ -2895,8 +2901,6 @@ def render_func(*args, **o_kwargs):
                     height = clip_bottom - draw_state.abs_top
                     column_parent._column_cursor[column][1] += draw_state.height
 
-
-
             if not closable:
                 clip_rect = draw_state._parent.abs_clip_rect
 
@@ -3106,7 +3110,7 @@ def render_func(*args, **o_kwargs):
         draw_state.use_cache = use_cache
         kwargs.pop("use_cache", None)
 
-        needs_scroll = draw_state.abs_content_height > draw_state.height + draw_state.footer_height + draw_state.header_height and draw_state.multi_line
+        needs_scroll = draw_state.abs_content_height > draw_state.height + draw_state.footer_height + draw_state.header_height
 
         if not kwargs.get("disable_scroll", True) and Toggles.debug_scroll:
             draw_list = imgui.get_overlay_draw_list()
