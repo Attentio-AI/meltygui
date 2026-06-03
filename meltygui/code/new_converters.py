@@ -552,10 +552,11 @@ def draw_modes(input_value, modes=None, chain_in=None, chain_out=None, route=Non
     if not tab_state.selected_tabs:
         tab_state.selected_tabs = [modes[0], modes[1]]
 
+    imgui.dummy(0,1)
     names = [getattr(view_of(m), '__name__', str(m)) for m in modes]
     tab_changed, new_tabs = RenderFuncs.draw_tab_bar(indent_size=0, z_offset=-1,
         input_value=tab_state.selected_tabs, collection=modes, names=names, bg_offset=2, wrap=True,
-        tab_height=26, show_bg=True, name=f"mode_tabs{unique}", as_toggles=False)
+        tab_height=30, show_bg=True, name=f"mode_tabs{unique}", as_toggles=False)
     if tab_changed:
         tab_state.selected_tabs = new_tabs
 

@@ -19,6 +19,7 @@ from typing import Any
 import libcst as cst
 from libcst._nodes.internal import CodegenState as _CodegenState
 
+from src.lsd.gl_gui.fonts import Font
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.modes import Modes
 from src.lsd.gl_gui.render_funcs import RenderFuncs
@@ -100,7 +101,7 @@ class Comment(str):
         return hash(("__comment__", str(self), self.inline))
 
 
-@defaults(tint=(0.0, 0.1706498, 0.2930232286453247, 0.3), shadow=False, use_cache=True, show_bg=True, z_offset=2,
+@defaults(tint=(0.0, 0.1706498, 0.2930232286453247, 0.0), shadow=False, is_tree=False, use_cache=True, show_bg=False,
  view_func=RenderFuncs.draw_text, align_header=False)
 class CodeLine(str):
     """A raw line/expression of code that couldn't be reduced to a Python value,
@@ -119,7 +120,8 @@ class CodeLine(str):
     """
 
 
-@defaults(tint=(0.8, 0.7651616, 0.11906976997852325, 0.655), shadow=True, bg_offset=1)
+@defaults(tint=(0.9, 0.7767628, 0.16231479, 0.02), shadow=True, z_offset=-0.5, name_color=(1.0, 0.479, 0.0), font=Font.JETBRAINS_MONO_19,
+ is_tree=False, bg_offset=1, header_same_line=True)
 class Conditional(dict):
     """An if/elif/else block's contents, as a dict subclass.
 
@@ -143,7 +145,7 @@ class Conditional(dict):
         keys = ",".join(sorted(str(k) for k in self.keys() if not str(k).startswith("_")))
         return f"Conditional:{self.condition}:{keys}"
 
-@defaults(tint=(0.02764737419784069, 0.33023256063461304, 0.2669007480144501, 0.611))
+@defaults(tint=(0.02764737419784069, 0.33023256063461304, 0.2669007480144501, 0.232))
 class Loop(dict):
     """A for-loop block's contents, as a dict subclass.
 
@@ -174,7 +176,7 @@ class Loop(dict):
             return self._bg_hash_cache
 
 
-@defaults(tint=(0.2, 0.2, 0.2, 1.0), shadow=True, bg_offset=-3, show_bg=True)
+@defaults(tint=(0.1, 0.1, 0.1, 0.0), shadow=True, is_tree=False, header_same_line=True, name_color=(1.0, 0.479, 0.0), bg_offset=-3, show_bg=True)
 class Try(dict):
     """A try / except / else / finally branch's contents, as a dict subclass.
 
@@ -240,7 +242,7 @@ class GeneralParse(dict):
     #     return self._bg_hash_cache
 
 
-@defaults(tint=(0.1, 0.1928505, 0.2, 1.0), bg_offset=-7, shadow=True, z_offset=1.626)
+@defaults(tint=(0.04, 0.17, 0.25, 0.016), bg_offset=2, font=Font.JETBRAINS_MONO_19, is_tree=False, wrap=False, shadow=False, z_offset=1, child_kwargs={"font":Font.JETBRAINS_MONO_19})
 class CallParse(GeneralParse):
     """A function call's arguments, as a GeneralParse subclass.
 
@@ -2350,6 +2352,15 @@ def _extract_block_assignments(stmts):
     # block so the reverse patcher's per-body occurrence counting aligns.
     local_sigs = _collect_local_signatures(stmts)
     call_seen: dict[str, int] = {}
+    # Per-keyword occurrence counters for conditional branches in THIS block, so
+    # keys are stable (if##0, elif##0, else##0) regardless of edited condition
+    # text. The reverse patcher walks the same statements with the same counters
+    # so indices align. Weed per branch encountered (even empty ones, which
+    # aren't emitted) to keep that alignment structural, not body-dependent.
+    cond_counters: dict[str, int] = {"if": 0, "elif": 0, "else": 0}
+    # Occurrence counter for for/try block headers, so duplicate headers in this
+    # scope get hidden ##N suffixes instead of colliding (see _block_key).
+    block_occ: dict[str, int] = {}
     for stmt in stmts:
         if isinstance(stmt, cst.SimpleStatementLine):
             # Leading comments (standalone lines above the statement);
@@ -2395,15 +2406,15 @@ def _extract_block_assignments(stmts):
         elif isinstance(stmt, cst.If):
             # Leading comments on the if statement itself
             _extract_leading_comments(stmt, result)
-            _extract_if_chain(stmt, result)
+            _extract_if_chain(stmt, result, cond_counters)
 
         elif isinstance(stmt, cst.For):
             _extract_leading_comments(stmt, result)
-            _extract_for_loop(stmt, result)
+            _extract_for_loop(stmt, result, block_occ)
 
         elif isinstance(stmt, (cst.Try, cst.TryStar)):
             _extract_leading_comments(stmt, result)
-            _extract_try_block(stmt, result)
+            _extract_try_block(stmt, result, block_occ)
 
     return result
 
@@ -2778,65 +2789,113 @@ def _condition_to_editable(test_node):
     return _cst_to_python_or_raw(test_node)
 
 
-def _extract_if_chain(if_node, result):
+def _condition_key(test_node, keyword):
+    """The dict key under which an if/elif test is surfaced inside its branch.
+
+    Both forms carry a trailing `##keyword` suffix that the UI hides, so the
+    keyword label never clutters the display:
+      - call (or subscripted call): `name()##keyword` → shows as `name()`, with
+        its args nested and editable; the `()` keeps it distinct from a
+        same-named body call so `branch.update(body)` can't clobber it.
+      - everything else (comparisons, names, boolops): `##keyword` → shows as
+        just the bare CodeLine expression (e.g. `len(x.params) > 0`), with no
+        redundant "if"/"elif" prefix.
+    The suffix also makes the key STABLE (it doesn't move when the condition text
+    is edited) and unable to collide with body assignments/calls. Forward and
+    reverse both derive the key from the test node, so they always agree."""
+    call = test_node.value if isinstance(test_node, cst.Subscript) else test_node
+    if isinstance(call, cst.Call):
+        name = _call_func_name(call) or "call"
+        return f"{name}()##{keyword}"
+    return f"##{keyword}"
+
+
+def _extract_if_chain(if_node, result, counters):
     """Walk an if/elif/else chain, extracting each branch as a sub-dict.
 
-    Besides the dict KEY (e.g. "if selected"), each if/elif branch surfaces its
-    test expression as an editable value under the branch keyword ("if" /
-    "elif") so the nested condition can be edited in place — the reverse patcher
-    converts it back into `if_node.test`. The value comes from
-    _condition_to_editable: a call condition (`if is_pressed(btn):`) — or a
-    subscripted call (`if button(...)[0]:`) — becomes a CallParse whose
-    arguments are themselves editable parameters; comparisons, names, etc. fall
-    back to an editable CodeLine. The keyword keys can't collide with body
-    assignments (they're Python keywords). The else branch has no condition.
-    Empty branches are skipped, so a branch with no body isn't surfaced.
+    Branches are keyed by per-keyword occurrence index — if##0, elif##0, else##0
+    (counters is the block-scoped {keyword: next_index} map) — so the key is
+    STABLE while the condition text is live-edited (the old `if <cond>` key
+    shifted every keystroke, churning draw-state and caches). Counters advance
+    for every branch encountered, including empty ones that aren't emitted, so
+    the reverse patcher's identical walk lines indices up structurally.
+
+    Each if/elif branch also surfaces its test as an editable value under
+    _condition_key (a CallParse for a call/subscripted-call test — see
+    _condition_to_editable — else a CodeLine); the reverse converts it back into
+    the test node. The else branch has no condition.
+
+    Every if/elif branch is surfaced, even one whose body has nothing
+    extractable (a guard clause `if not ready: return`, a one-liner), so its
+    condition is still editable — an empty body just yields a branch holding
+    only its condition. The reverse patcher has no body guard either, so an
+    emitted-but-empty branch round-trips unchanged. An else is still only
+    surfaced when it has a body: with no condition and nothing extractable there
+    is nothing to show or edit (its else## counter still advances, keeping the
+    reverse walk aligned).
     """
-    # "if <condition>"
-    condition = _cst_node_to_code(if_node.test)
-    key = f"if {condition}"
+    # if
+    if_idx = counters["if"]; counters["if"] += 1
+    key = f"if##{if_idx}"
     body = _extract_block_assignments(if_node.body.body)
-    if body:
-        branch = Conditional(condition=key)
-        branch["if"] = _condition_to_editable(if_node.test)  # surface test, ahead of body
-        branch.update(body)
-        result[key] = branch
+    branch = Conditional(condition=key)
+    branch[_condition_key(if_node.test, "if")] = _condition_to_editable(if_node.test)
+    branch.update(body)
+    result[key] = branch
 
     # Walk the orelse chain
     orelse = if_node.orelse
     while orelse is not None:
         if isinstance(orelse, cst.If):
             # elif
-            condition = _cst_node_to_code(orelse.test)
-            key = f"elif {condition}"
+            elif_idx = counters["elif"]; counters["elif"] += 1
+            key = f"elif##{elif_idx}"
             body = _extract_block_assignments(orelse.body.body)
-            if body:
-                branch = Conditional(condition=key)
-                branch["elif"] = _condition_to_editable(orelse.test)
-                branch.update(body)
-                result[key] = branch
+            branch = Conditional(condition=key)
+            branch[_condition_key(orelse.test, "elif")] = _condition_to_editable(orelse.test)
+            branch.update(body)
+            result[key] = branch
             orelse = orelse.orelse
         elif isinstance(orelse, cst.Else):
-            # else
+            # else - only surfaced when it has a body (no condition to edit
+            # otherwise). The counter still advances so the reverse walk aligns.
+            else_idx = counters["else"]; counters["else"] += 1
+            key = f"else##{else_idx}"
             body = _extract_block_assignments(orelse.body.body)
             if body:
-                result["else"] = Conditional(body, condition="else")
+                result[key] = Conditional(body, condition=key)
             orelse = None
         else:
             break
 
 
-def _extract_for_loop(for_node, result):
+def _occ_key(base, occ_counter):
+    """Disambiguate a block key that may repeat within one scope.
+
+    The first occurrence of `base` keeps the bare base; later ones get a hidden
+    ##N suffix (N = occurrence index) so duplicate for/try headers don't collide
+    in the dict (two `for arg in args:` loops, three `try:` blocks, …). The UI
+    hides the ##N just like the if##N indices. Forward and reverse both call this
+    for every structural block in the same walk order, so the suffix a key gets
+    is identical on both sides — N=0 → no suffix keeps the common (no-collision)
+    case byte-for-byte unchanged."""
+    n = occ_counter.get(base, 0)
+    occ_counter[base] = n + 1
+    return base if n == 0 else f"{base}##{n}"
+
+
+def _extract_for_loop(for_node, result, block_occ):
     """Extract a for loop as a Loop dict entry.
 
-    Key is the full loop header: "for i in range(10)"
+    Key is the full loop header: "for i in range(10)" (a repeat header gets a
+    hidden ##N suffix via _occ_key so duplicate loops don't collide).
     Value is a Loop dict containing:
       - "range": [args...]  if the iterator is a range() call
       - body assignments (recursively extracted)
     """
     target_code = _cst_node_to_code(for_node.target)
     iter_code = _cst_node_to_code(for_node.iter)
-    key = f"for {target_code} in {iter_code}"
+    key = _occ_key(f"for {target_code} in {iter_code}", block_occ)
 
     body = _extract_block_assignments(for_node.body.body)
 
@@ -2870,7 +2929,7 @@ def _try_handler_header(handler):
     return " ".join(parts)
 
 
-def _extract_try_block(try_node, result):
+def _extract_try_block(try_node, result, block_occ):
     """Extract a try/except/else/finally statement.
 
     Each branch becomes its own entry under `result`, keyed by header. The
@@ -2883,26 +2942,36 @@ def _extract_try_block(try_node, result):
     Bodies are extracted recursively, so assignments wrapped in a try are
     surfaced as locals instead of being dropped. Empty branches are skipped,
     mirroring the if/for extractors.
+
+    Every header is run through _occ_key (against the block-shared `block_occ`),
+    advanced for each STRUCTURAL branch that exists regardless of body emptiness,
+    so repeated trys (three `try:` blocks, two `except OSError:`) get hidden ##N
+    suffixes instead of clobbering each other — and the reverse, walking the same
+    structure, derives the same keys.
     """
+    try_key = _occ_key("try", block_occ)
     body = _extract_block_assignments(try_node.body.body)
     if body:
-        result["try"] = Try(body, header="try")
+        result[try_key] = Try(body, header="try")
 
     for handler in try_node.handlers:
         header = _try_handler_header(handler)
+        hkey = _occ_key(header, block_occ)
         hbody = _extract_block_assignments(handler.body.body)
         if hbody:
-            result[header] = Except(hbody, header=header)
+            result[hkey] = Except(hbody, header=header)
 
     if try_node.orelse is not None and isinstance(try_node.orelse, cst.Else):
+        else_key = _occ_key("try else", block_occ)
         else_body = _extract_block_assignments(try_node.orelse.body.body)
         if else_body:
-            result["try else"] = Try(else_body, header="try else")
+            result[else_key] = Try(else_body, header="try else")
 
     if try_node.finalbody is not None and isinstance(try_node.finalbody, cst.Finally):
+        fin_key = _occ_key("finally", block_occ)
         fin_body = _extract_block_assignments(try_node.finalbody.body.body)
         if fin_body:
-            result["finally"] = Try(fin_body, header="finally")
+            result[fin_key] = Try(fin_body, header="finally")
 
 
 def _extract_range_args(iter_node):
@@ -3028,6 +3097,29 @@ def dict_to_cst_funcdef(value: dict) -> cst.FunctionDef:
     return result
 
 
+def _block_base(key):
+    """Strip a trailing ##<digits> occurrence suffix from a block key.
+
+    if##0 → if, for x in y##1 → for x in y, try##2 → try. A non-numeric ##
+    suffix (e.g. button()##if — a condition key, never seen at this level) or no
+    ## is returned unchanged."""
+    if isinstance(key, str) and "##" in key:
+        base, suf = key.rsplit("##", 1)
+        if suf.isdigit():
+            return base
+    return key
+
+
+def _is_block_key(key):
+    """True if `key` names an if/elif/else/for/try block branch (with or without
+    an ##N occurrence suffix). Used to route it to block_edits."""
+    base = _block_base(key)
+    return (base == "if" or base == "elif" or base == "else"
+            or base.startswith("for ") or base == "try" or base == "try else"
+            or base == "finally" or base == "except"
+            or base.startswith("except ") or base.startswith("except* "))
+
+
 def _parse_edit_keys(edits):
     """Split a locals dict into assignment, block, and call edits.
 
@@ -3049,16 +3141,7 @@ def _parse_edit_keys(edits):
         if (_is_bare_call_key(key) and isinstance(val, dict)
                 and isinstance(val.get("__cst__"), cst.Call)):
             call_edits.setdefault(_call_func_name(val["__cst__"]), []).append(val)
-        elif isinstance(val, dict) and (key.startswith("if ") or
-                                      key.startswith("elif ") or
-                                      key == "else" or
-                                      key.startswith("for ") or
-                                      key == "try" or
-                                      key == "try else" or
-                                      key == "finally" or
-                                      key == "except" or
-                                      key.startswith("except ") or
-                                      key.startswith("except* ")):
+        elif isinstance(val, dict) and isinstance(key, str) and _is_block_key(key):
             block_edits[key] = val
         elif isinstance(key, str) and "#" in key:
             name, idx_str = key.rsplit("#", 1)
@@ -3092,6 +3175,13 @@ def _patch_body_direct(body_node, edits, comment_text_map=None):
     changed = False
     seen: dict[str, int] = {}
     call_consumed: dict[str, int] = {}
+    # Per-keyword conditional counters, advanced for every If chain encountered
+    # so the indexed keys (if##0, elif##0, else##0) line up with the forward
+    # extractor's identical walk - see _extract_if_chain.
+    cond_counters: dict[str, int] = {"if": 0, "elif": 0, "else": 0}
+    # for/try header occurrence counter, advanced for every for/try encountered
+    # so the ##N disambiguation matches the forward walk (see _occ_key).
+    block_occ: dict[str, int] = {}
 
     for i, stmt in enumerate(new_stmts):
         if isinstance(stmt, cst.SimpleStatementLine):
@@ -3106,8 +3196,9 @@ def _patch_body_direct(body_node, edits, comment_text_map=None):
             new_stmt = stmt
             if comment_text_map:
                 new_stmt = _patch_stmt_comments(new_stmt, comment_text_map)
-            if block_edits:
-                new_stmt = _patch_if_chain_direct(new_stmt, block_edits, comment_text_map)
+            # Always call (even with empty block_edits) so cond_counters advance
+            # in lock-step with the forward walk; it no-ops when nothing matches.
+            new_stmt = _patch_if_chain_direct(new_stmt, block_edits, cond_counters, comment_text_map)
             if new_stmt is not stmt:
                 new_stmts[i] = new_stmt
                 changed = True
@@ -3116,8 +3207,8 @@ def _patch_body_direct(body_node, edits, comment_text_map=None):
             new_stmt = stmt
             if comment_text_map:
                 new_stmt = _patch_stmt_comments(new_stmt, comment_text_map)
-            if block_edits:
-                new_stmt = _patch_for_loop_direct(new_stmt, block_edits, comment_text_map)
+            # Always call so block_occ advances in lock-step with the forward walk.
+            new_stmt = _patch_for_loop_direct(new_stmt, block_edits, block_occ, comment_text_map)
             if new_stmt is not stmt:
                 new_stmts[i] = new_stmt
                 changed = True
@@ -3126,8 +3217,8 @@ def _patch_body_direct(body_node, edits, comment_text_map=None):
             new_stmt = stmt
             if comment_text_map:
                 new_stmt = _patch_stmt_comments(new_stmt, comment_text_map)
-            if block_edits:
-                new_stmt = _patch_try_block_direct(new_stmt, block_edits, comment_text_map)
+            # Always call so block_occ advances in lock-step with the forward walk.
+            new_stmt = _patch_try_block_direct(new_stmt, block_edits, block_occ, comment_text_map)
             if new_stmt is not stmt:
                 new_stmts[i] = new_stmt
                 changed = True
@@ -3274,30 +3365,35 @@ def _patch_condition_expr(test_node, branch_edits, cond_key):
     return new_test if new_test is not None else test_node
 
 
-def _patch_if_chain_direct(if_node, block_edits, comment_text_map=None):
-    """Patch an if/elif/else chain by direct body walk — no CSTTransformer."""
+def _patch_if_chain_direct(if_node, block_edits, counters, comment_text_map=None):
+    """Patch an if/elif/else chain by direct body walk — no CSTTransformer.
+
+    Branches are matched by their stable indexed key (if##N, elif##N, else##N).
+    `counters` is the block-scoped {keyword: next_index} map, advanced for every
+    branch encountered (mirroring _extract_if_chain) so the index a key refers to
+    is identical on both sides regardless of edited condition text.
+    """
     result = if_node
     changed = False
 
-    # "if <cond>" - condition expression, then body. The dict key reflects the
-    # ORIGINAL condition (block_edits is keyed that this), so match on that; the
-    # edited condition lives in the branch's "if" entry.
-    condition = _cst_node_to_code(result.test)
-    key = f"if {condition}"
+    # If
+    if_idx = counters["if"]; counters["if"] += 1
+    key = f"if##{if_idx}"
     if key in block_edits:
         branch_edits = block_edits[key]
-        new_test = _patch_condition_expr(result.test, branch_edits, "if")
+        cond_key = _condition_key(result.test, "if")
+        new_test = _patch_condition_expr(result.test, branch_edits, cond_key)
         if new_test is not result.test:
             result = result.with_changes(test=new_test)
             changed = True
-        body_edits = {k: v for k, v in branch_edits.items() if k != "if"}
+        body_edits = {k: v for k, v in branch_edits.items() if k != cond_key}
         new_body = _patch_body_direct(result.body, body_edits, comment_text_map)
         if new_body is not result.body:
             result = result.with_changes(body=new_body)
             changed = True
 
     # Patch the orelse chain
-    new_result = _patch_orelse_direct(result, block_edits, comment_text_map)
+    new_result = _patch_orelse_direct(result, block_edits, counters, comment_text_map)
     if new_result is not result:
         result = new_result
         changed = True
@@ -3305,35 +3401,41 @@ def _patch_if_chain_direct(if_node, block_edits, comment_text_map=None):
     return result
 
 
-def _patch_orelse_direct(node, block_edits, comment_text_map=None):
-    """Recursively patch elif/else branches by direct body walk."""
+def _patch_orelse_direct(node, block_edits, counters, comment_text_map=None):
+    """Recursively patch elif/else branches by direct body walk.
+
+    Advances `counters` for every elif/else encountered so the indexed keys
+    align with the forward walk even for unedited branches."""
     orelse = node.orelse
     if orelse is None:
         return node
 
     if isinstance(orelse, cst.If):
-        condition = _cst_node_to_code(orelse.test)
-        key = f"elif {condition}"
+        elif_idx = counters["elif"]; counters["elif"] += 1
+        key = f"elif##{elif_idx}"
         new_orelse = orelse
         if key in block_edits:
             branch_edits = block_edits[key]
-            new_test = _patch_condition_expr(new_orelse.test, branch_edits, "elif")
+            cond_key = _condition_key(new_orelse.test, "elif")
+            new_test = _patch_condition_expr(new_orelse.test, branch_edits, cond_key)
             if new_test is not new_orelse.test:
                 new_orelse = new_orelse.with_changes(test=new_test)
-            body_edits = {k: v for k, v in branch_edits.items() if k != "elif"}
+            body_edits = {k: v for k, v in branch_edits.items() if k != cond_key}
             new_body = _patch_body_direct(new_orelse.body, body_edits, comment_text_map)
             if new_body is not new_orelse.body:
                 new_orelse = new_orelse.with_changes(body=new_body)
         # Recurse into this elif's own orelse
-        recursed = _patch_orelse_direct(new_orelse, block_edits, comment_text_map)
+        recursed = _patch_orelse_direct(new_orelse, block_edits, counters, comment_text_map)
         if recursed is not new_orelse:
             new_orelse = recursed
         if new_orelse is not orelse:
             return node.with_changes(orelse=new_orelse)
 
     elif isinstance(orelse, cst.Else):
-        if "else" in block_edits:
-            new_body = _patch_body_direct(orelse.body, block_edits["else"], comment_text_map)
+        else_idx = counters["else"]; counters["else"] += 1
+        key = f"else##{else_idx}"
+        if key in block_edits:
+            new_body = _patch_body_direct(orelse.body, block_edits[key], comment_text_map)
             if new_body is not orelse.body:
                 new_orelse = orelse.with_changes(body=new_body)
                 return node.with_changes(orelse=new_orelse)
@@ -3341,11 +3443,14 @@ def _patch_orelse_direct(node, block_edits, comment_text_map=None):
     return node
 
 
-def _patch_for_loop_direct(for_node, block_edits, comment_text_map=None):
-    """Patch a for loop's body and range args from block_edits."""
+def _patch_for_loop_direct(for_node, block_edits, block_occ, comment_text_map=None):
+    """Patch a for loop's body and range args from block_edits.
+
+    Advances `block_occ` for the loop header (matching _extract_for_loop) so a
+    repeated header resolves to the same ##N-suffixed key on both sides."""
     target_code = _cst_node_to_code(for_node.target)
     iter_code = _cst_node_to_code(for_node.iter)
-    key = f"for {target_code} in {iter_code}"
+    key = _occ_key(f"for {target_code} in {iter_code}", block_occ)
 
     if key not in block_edits:
         return for_node
@@ -3370,18 +3475,24 @@ def _patch_for_loop_direct(for_node, block_edits, comment_text_map=None):
     return result
 
 
-def _patch_try_block_direct(try_node, block_edits, comment_text_map=None):
+def _patch_try_block_direct(try_node, block_edits, block_occ, comment_text_map=None):
     """Patch a try/except/else/finally statement's branches from block_edits.
 
     Mirrors _extract_try_block's keying: "try", "except <...>", "try else",
-    "finally". Each matching branch's body is recursively patched.
+    "finally", each disambiguated through _occ_key against the shared `block_occ`
+    so repeated trys/handlers resolve to the same ##N-suffixed keys on both
+    sides. _occ_key is advanced for every STRUCTURAL branch that exists (try +
+    each handler always; else/finally only when present) — exactly the forward
+    walk — so the occurrence counts stay aligned. Each matching branch's body is
+    recursively patched.
     """
     result = try_node
     changed = False
 
     # try body
-    if "try" in block_edits:
-        new_body = _patch_body_direct(result.body, block_edits["try"], comment_text_map)
+    try_key = _occ_key("try", block_occ)
+    if try_key in block_edits:
+        new_body = _patch_body_direct(result.body, block_edits[try_key], comment_text_map)
         if new_body is not result.body:
             result = result.with_changes(body=new_body)
             changed = True
@@ -3390,9 +3501,9 @@ def _patch_try_block_direct(try_node, block_edits, comment_text_map=None):
     new_handlers = list(result.handlers)
     handlers_changed = False
     for idx, handler in enumerate(new_handlers):
-        header = _try_handler_header(handler)
-        if header in block_edits:
-            new_hbody = _patch_body_direct(handler.body, block_edits[header], comment_text_map)
+        hkey = _occ_key(_try_handler_header(handler), block_occ)
+        if hkey in block_edits:
+            new_hbody = _patch_body_direct(handler.body, block_edits[hkey], comment_text_map)
             if new_hbody is not handler.body:
                 new_handlers[idx] = handler.with_changes(body=new_hbody)
                 handlers_changed = True
@@ -3400,21 +3511,23 @@ def _patch_try_block_direct(try_node, block_edits, comment_text_map=None):
         result = result.with_changes(handlers=new_handlers)
         changed = True
 
-    # else
-    if ("try else" in block_edits and result.orelse is not None
-            and isinstance(result.orelse, cst.Else)):
-        new_eb = _patch_body_direct(result.orelse.body, block_edits["try else"], comment_text_map)
-        if new_eb is not result.orelse.body:
-            result = result.with_changes(orelse=result.orelse.with_changes(body=new_eb))
-            changed = True
+    # else (advance _occ_key only when the branch exists - mirror the forward)
+    if result.orelse is not None and isinstance(result.orelse, cst.Else):
+        else_key = _occ_key("try else", block_occ)
+        if else_key in block_edits:
+            new_eb = _patch_body_direct(result.orelse.body, block_edits[else_key], comment_text_map)
+            if new_eb is not result.orelse.body:
+                result = result.with_changes(orelse=result.orelse.with_changes(body=new_eb))
+                changed = True
 
     # finally
-    if ("finally" in block_edits and result.finalbody is not None
-            and isinstance(result.finalbody, cst.Finally)):
-        new_fb = _patch_body_direct(result.finalbody.body, block_edits["finally"], comment_text_map)
-        if new_fb is not result.finalbody.body:
-            result = result.with_changes(finalbody=result.finalbody.with_changes(body=new_fb))
-            changed = True
+    if result.finalbody is not None and isinstance(result.finalbody, cst.Finally):
+        fin_key = _occ_key("finally", block_occ)
+        if fin_key in block_edits:
+            new_fb = _patch_body_direct(result.finalbody.body, block_edits[fin_key], comment_text_map)
+            if new_fb is not result.finalbody.body:
+                result = result.with_changes(finalbody=result.finalbody.with_changes(body=new_fb))
+                changed = True
 
     return result if changed else try_node
 
@@ -3622,6 +3735,18 @@ def cst_call_to_dict(value: cst.Call, pos_names_override=None, result_cls=CallPa
         pos_names = pos_names_override
     else:
         pos_names = _call_positional_param_names(value) if has_positional else None
+    # Callee unresolvable (e.g. imgui.text, a C function with no introspectable
+    # signature) but it has plain positional args - surface them under synthetic
+    # arg0/arg1/... keys so the arguments are still visible and editable instead of
+    # vanishing into __cst__ (the call rendering as a bare function). The names are
+    # stamped into __pos_names__ below, so the reverse maps them back by position.
+    if pos_names is None and has_positional:
+        n_plain = sum(1 for a in value.args if a.keyword is None and a.star == "")
+        existing_kw = {a.keyword.value for a in value.args if a.keyword is not None}
+        pos_names = [f"arg{i}" for i in range(n_plain)]
+        # Avoid a rare clash with a real kwarg literally named argN.
+        if any(n in existing_kw for n in pos_names):
+            pos_names = None
     pos_idx = 0
 
     for arg in value.args:
@@ -3845,17 +3970,26 @@ def dict_to_cst_call(value: dict) -> cst.Call:
 
 
 def _call_func_name(call_node):
-    """Extract the function name from a Call node.
+    """Extract the (dotted) function name from a Call node.
 
     my_func(...)           → "my_func"
-    mod.my_func(...)       → "my_func"
-    obj.method(...)        → "method"
-    complex(expr)(...)     → None
-    """
+    mod.my_func(...)        → "mod.my_func"
+    imgui.text(...)         → "imgui.text"
+    pkg.mod.fn(...)         → "pkg.mod.fn"
+    obj.method()(...)       → "method"   (chain broken by a Call → just the attr)
+    complex(expr)(...)      → None
+
+    The full dotted path is kept so the surfaced call key reads `imgui.text()`
+    rather than a bare `text()` (and so two distinct callees with the same final
+    attr — `imgui.text` vs `self.text` — don't share an occurrence slot). Forward
+    keying and reverse matching both call this, so they stay in agreement."""
     func = call_node.func
     if isinstance(func, cst.Name):
         return func.value
     if isinstance(func, cst.Attribute):
+        parts = _collect_attribute_parts(func)
+        if parts is not None:
+            return ".".join(parts)
         return func.attr.value
     return None
 
@@ -4477,6 +4611,17 @@ def _python_to_cst_expr(py_value, old_node=None):
         if old_node is None or isinstance(old_node, cst.SimpleString):
             # String literal
             if isinstance(old_node, cst.SimpleString):
+                # Unchanged → keep the original literal verbatim. The naive
+                # re-render below only escapes backslash + the quote char, so it
+                # mangles control chars ('\n' → a literal newline) and chokes on
+                # prefixed literals (r'...', b'...' - value[0] is the prefix, not
+                # the quote). Preserving the node when the Python value matches
+                # sidesteps all of that for the common no-edit round-trip.
+                try:
+                    if _cst_to_python(old_node) == py_value:
+                        return old_node
+                except Exception:
+                    pass
                 quote_char = old_node.value[0]
                 escaped = py_value.replace("\\", "\\\\").replace(quote_char, f"\\{quote_char}")
                 return old_node.with_changes(value=f"{quote_char}{escaped}{quote_char}")
@@ -4773,7 +4918,7 @@ class SymbolIndexCache:
     """Keeps the fast caller-index cache warm on a background thread, so the
     editor's Index button is instant. Flip `auto` off to stop the periodic
     refresh; call rebuild() for a one-shot. Status fields below are live."""
-    auto = True              # keep the cache warm in the background
+    auto = False              # keep the cache warm in the background
     interval_s = 15.0        # seconds between background refresh passes
     startup_delay_s = 0.2    # wait for src modules to finish importing first
     # ── status (written by the worker) ──

@@ -1518,12 +1518,12 @@ def render_func(*args, **o_kwargs):
                     # the view's own text focus, so the search box takes
                     # priority even when the view was already focused.
                     draw_state._search_was_active = False
-                    # One-off: flag the find UI to claim focus on the next
-                    # render even if the editor re-grabs melty text focus before
-                    # the UI renders (clearing text_focused_ds here alone isn't
-                    # enough - the focused searchable view can reclaim it, which
-                    # left the box double-focused after Ctrl+F).
-                    draw_state._search_focus_pending = True
+                    # # One-shot: force the find box to claim focus on the next
+                    # # render, if the editor re-grabs melty text focus before
+                    # # the box renders (clearing text_focused_ds here alone isn't
+                    # # enough - the next searchable view did reclaim it, which
+                    # # left the box un-focused after Ctrl+F).
+                    # draw_state._search_focus_pending = True
                     Melty.text_focused_ds = None
                     Melty.focused_ds = draw_state
 
@@ -3110,7 +3110,7 @@ def render_func(*args, **o_kwargs):
         draw_state.use_cache = use_cache
         kwargs.pop("use_cache", None)
 
-        needs_scroll = draw_state.abs_content_height > draw_state.height + draw_state.footer_height + draw_state.header_height
+        needs_scroll = draw_state.abs_content_height > draw_state.height + draw_state.footer_height + draw_state.header_height and draw_state.multi_line
 
         if not kwargs.get("disable_scroll", True) and Toggles.debug_scroll:
             draw_list = imgui.get_overlay_draw_list()

@@ -181,13 +181,20 @@ def render_search(search_ds, draw_state, unique=None, ):
 @window
 def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add_delete=False, width=0, suffix="",
                 collection=None, icon=None, display_name=None, meta=None, unique=None, is_tree=True,
-                show_name=True, name_func=None, show_type=False, show_unique=False,
-                on_search=False, trigger_collapse=False, trigger_expand=False,
+                show_name=True, name_func=None, show_type=False, show_unique=False, name_color=None,
+                on_search=False, trigger_collapse=False, trigger_expand=False, header_same_line=False,
                 draw_state=None, show_tint=False, opacity=1.23, show_add_delete=True,
-                on_drag=False, on_action=None, style_manager=None,
+                on_drag=False, on_action=None, style_manager=None, font=None,
                 **kwargs):
 
-    # ── Constants ──────────────────────────────────────────────
+    # Text
+    _font_pushed = False
+    if font is not None and Melty.font_mgr is not None:
+        _font_handle = Melty.font_mgr.get(font)
+        if _font_handle is not None:
+            imgui.push_font(_font_handle)
+            _font_pushed = True
+    
     # Depth-driven name brightness
     depth_scale       = 0.06
     depth_offset      = -30.0
@@ -224,12 +231,15 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     type_label_tint   = (3.672, 1.944, 2.861, 1.0)
     unique_label_tint = (-1.535, 0.0, 0.9, 1.0)
 
-    # ── Depth-driven color computation ─────────────────────────
+    # Depth-driven color computation
 
     name_style['value'] = depth_intensity * name_style['depth_factor'] + name_style['value']
     name_style['saturation'] = name_style['saturation'] + sat_shift
-    name_color = style_manager.make_color_style_value(input=name_style)
-
+    
+    if name_color is not None:
+        name_color = style_manager.make_color_style_rgb(*name_color, input=name_style, factor=0.1)
+    else:
+        name_color = style_manager.make_color_style_value(input=name_style, value=0.5)
     arrow_style = {
         'value': 7.788, 'saturation': 1.559,
         'alpha': 0.071, 'max_value': 1.601,
@@ -240,7 +250,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     arrow_color = style_manager.make_color_style_value(input=arrow_style)
 
     # ── Tree arrow ─────────────────────────────────────────────
-    imgui.dummy(5, 0)
+    imgui.dummy(0, 0)
     start_x = imgui.get_cursor_screen_pos()[0]
 
     on_change = False
@@ -273,7 +283,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         pop_style_color(1)
         same_line()
     else:
-        imgui.same_line()
+        imgui.same_line(spacing=0)
 
     # ── Type / unique labels ───────────────────────────────────
     if show_type:
@@ -283,7 +293,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         imgui.text_colored(f"({str(Melty.get_tile_id())})", *unique_label_tint)
         same_line()
     if show_name and name != "":
-        same_line()
+        same_line(spacing=3)
         imgui.set_item_allow_overlap()
 
     from src.lsd.gl_gui.view.core_views.new_core_view import draw_tuple
@@ -336,30 +346,13 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     has_visible_name = show_name and name not in ("", None, "None")
 
     if has_visible_name:
-        # Folder open button for dictionaries
-        # if isinstance(input_value, (dict, MutableMapping)):
-        #     push_style_color(imgui.COLOR_BUTTON, 0.0, 0.0, 0.0, 0.0)
-        #     push_style_color(imgui.COLOR_TEXT, *name_color)
-        #     # if imgui.button("##open_folder"):
-        #     #     if hasattr(input_value, "file_path"):
-        #     #         open_folder(input_value.file_path)
-        #     pop_style_color(2)
-        #     same_line()
-
-        # # File open button for folder proxies
-        # elif isinstance(collection, FolderProxy):
-        #     push_style_color(imgui.COLOR_BUTTON, 0.0, 0.0, 0.0, 0.0)
-        #     push_style_color(imgui.COLOR_TEXT, name_color[0], name_color[1], name_color[2], 0.5)
-        #     if imgui.button("##open_file"):
-        #         if hasattr(collection, "file_path"):
-        #             file_path = os.path.join(collection.file_path, str(key))
-        #             open_file(file_path)
-        #     pop_style_color(2)
-        #     same_line()
-
         clipped_name = name.split("##")[0][:max_name_chars]
-        text_width = imgui.calc_text_size(clipped_name)[0]
+        if header_same_line:
+            text_width = imgui.calc_text_size(clipped_name)[0] - 4
+        else:
+            text_width = imgui.calc_text_size(clipped_name)[0]
 
+        
 
         if icon is not None:
             imgui.align_text_to_frame_padding()
@@ -377,10 +370,10 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
             # (global-current) match; a faint fill for the rest. The flags are
             # set by draw_collection when this header's key matches the query.
             if kwargs.get("search_match", False):
-                pad = 2.0
-                hx0, hy0 = cursor_pos[0] - pad, cursor_pos[1] - 1
+                pad = 0.0
+                hx0, hy0 = cursor_pos[0] - pad, cursor_pos[1] 
                 hx1 = cursor_pos[0] + text_width + pad
-                hy1 = cursor_pos[1] + imgui.get_text_line_height() + 1
+                hy1 = cursor_pos[1] + imgui.get_text_line_height()
                 if kwargs.get("search_current", False):
                     draw_list.add_rect_filled(hx0, hy0, hx1, hy1, (150 << 24) | (60 << 16) | (170 << 8) | 240)
                     draw_list.add_rect(hx0, hy0, hx1, hy1, (255 << 24) | (90 << 16) | (200 << 8) | 255)
@@ -423,6 +416,8 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
     pop_style_var(1)
 
+    if _font_pushed:
+        imgui.pop_font()
     # Record the natural (pre-pad) header width so core_render can fold it into
     # the parent window's running max for the next frame.
     draw_state.header_natural_width = end_x - start_x
@@ -435,7 +430,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
             pad_target = max(pad_target, parent_window.max_header_width)
         if end_x - start_x < pad_target:
             imgui.dummy(pad_target - (end_x - start_x), 1)
-            imgui.same_line(0)
+            imgui.same_line(8)
 
     return on_change, return_val
 
