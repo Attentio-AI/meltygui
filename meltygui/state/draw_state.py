@@ -275,6 +275,9 @@ class DrawState(DictConversion):
         self.context_menu_ds = None
         self.context_menu_offset = 0
         self._offset_ds = None
+        # Set on a context menu's target draw_state to reopen it after a deferred
+        # per-view screenshot lands (see screenshot.process_take_screenshot_flags).
+        self._reopen = False
         # Resolved call site (filename, line) of where this widget was invoked,
         # computed ONCE in the inline render pass of first frame its context menu
         # is opened (see core_render) and cached until app restart. We cache the

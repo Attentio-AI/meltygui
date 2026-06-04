@@ -460,7 +460,6 @@ def _run_chain_in(input_value, chain=None, route=None, seed=None, **extra):
     dict — every column's input in one shared payload. The result/exception is
     folded back into ModesState on the main thread when the worker completes."""
     routed = dict(seed) if seed else {}
-    print(str(extra))
     result, routed = _run_convert(chain, input_value, route=route, routed=routed, **extra)
     error = result if isinstance(result, Exception) else None
     # cst parsed clean - run the compiler check, to surface the syntax errors libcst

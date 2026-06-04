@@ -61,6 +61,8 @@ class NoDefault():
 NO_DEFAULT = NoDefault()
 
 
+
+
 class Comment(str):
     """A comment, as a str subclass for auto-rendering dispatch.
 
@@ -120,7 +122,7 @@ class CodeLine(str):
     """
 
 
-@defaults(tint=(0.9, 0.7767628, 0.16231479, 0.02), shadow=True, z_offset=-0.5, name_color=(1.0, 0.479, 0.0), font=Font.JETBRAINS_MONO_19,
+@defaults(tint=(0.7, 0.406749, 0.0264792, 0.09), shadow=True, z_offset=-0.5, name_color=(1.0, 0.479, 0.0), font=Font.JETBRAINS_MONO_19,
  is_tree=False, bg_offset=1, header_same_line=True)
 class Conditional(dict):
     """An if/elif/else block's contents, as a dict subclass.
@@ -242,7 +244,7 @@ class GeneralParse(dict):
     #     return self._bg_hash_cache
 
 
-@defaults(tint=(0.04, 0.17, 0.25, 0.016), bg_offset=2, font=Font.JETBRAINS_MONO_19, is_tree=False, wrap=False, shadow=False, z_offset=1, child_kwargs={"font":Font.JETBRAINS_MONO_19})
+@defaults(tint=(0.04, 0.17, 0.25, 0.016), bg_offset=2, font=Font.JETBRAINS_MONO_19, is_tree=False, shadow=False, z_offset=1, child_kwargs={"font":Font.JETBRAINS_MONO_19})
 class CallParse(GeneralParse):
     """A function call's arguments, as a GeneralParse subclass.
 
@@ -1327,6 +1329,248 @@ def cst_module_to_str(value: cst.Module) -> str:
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  Source spans - two-way line ↔ node map for the CST dict                    ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+#
+# Every dict node produced below can carry the source position (`.span`) of the
+# code it was parsed from, so a text editor showing the span can map a line to
+# the node it belongs to and back. Lines are 1-INDEXED but RELATIVE to the
+# parsed source - the root GeneralParse.source, i.e. the displayed function /
+# class span; columns are 0-indexed. Add the span's file line offset
+# (Address.start / GeneralParse.line_offset) for absolute file lines - Span
+# and LineMap take that offset.
+#
+# Positions come from libcst's PositionProvider, resolved once per top-level
+# conversion and published on a thread-local (mirrors _module_scope). The
+# wrapper is built with unsafe_skip_copy=True so the provider keys on the SAME
+# node objects the extractors walk - a deep copy would make every lookup miss.
+
+import threading as _threading_spans
+from libcst.metadata import (MetadataWrapper as _MetadataWrapper,
+                             PositionProvider as _PositionProvider)
+
+
+class Span:
+    """A source position range for a node in the CST dict.
+
+    Lines are 1-indexed and relative to the parsed source the node came from
+    (the root GeneralParse.source); columns are 0-indexed. `start_char` aliases
+    `start_col`. `.absolute(line_offset)` shifts the lines into absolute file
+    coordinates — `line_offset` is the span's 0-indexed first file line (e.g.
+    Address.start), so relative line 1 → file line line_offset + 1.
+    """
+    __slots__ = ("start_line", "start_col", "end_line", "end_col")
+
+    def __init__(self, start_line, start_col, end_line, end_col):
+        self.start_line = start_line
+        self.start_col = start_col
+        self.end_line = end_line
+        self.end_col = end_col
+
+    @property
+    def start_char(self):
+        return self.start_col
+
+    def contains(self, line):
+        return self.start_line <= line <= self.end_line
+
+    def absolute(self, line_offset):
+        return Span(self.start_line + line_offset, self.start_col,
+                    self.end_line + line_offset, self.end_col)
+
+    def __repr__(self):
+        return (f"Span({self.start_line}:{self.start_col}"
+                f"–{self.end_line}:{self.end_col})")
+
+    def __eq__(self, other):
+        return (isinstance(other, Span)
+                and (self.start_line, self.start_col, self.end_line, self.end_col)
+                == (other.start_line, other.start_col, other.end_line, other.end_col))
+
+    def __hash__(self):
+        return hash((self.start_line, self.start_col, self.end_line, self.end_col))
+
+
+_span_scope = _threading_spans.local()
+
+
+def _active_positions():
+    return getattr(_span_scope, "positions", None)
+
+
+class _position_map:
+    """Publish a PositionProvider for `module` on the thread-local for the
+    duration of a conversion, so nested extractors can stamp spans via
+    `_span_of`. Failed/absent resolution degrades to no spans (None)."""
+
+    def __init__(self, module):
+        self._module = module
+
+    def __enter__(self):
+        self._prev = getattr(_span_scope, "positions", None)
+        try:
+            wrapper = _MetadataWrapper(self._module, unsafe_skip_copy=True)
+            _span_scope.positions = wrapper.resolve(_PositionProvider)
+        except Exception:
+            _span_scope.positions = None
+        return self
+
+    def __exit__(self, *exc):
+        _span_scope.positions = self._prev
+
+
+def _span_of(node):
+    """Span for a CST `node` from the active provider, or None when no provider
+    is active (conversion outside _position_map) or the node isn't in it."""
+    positions = _active_positions()
+    if positions is None or node is None:
+        return None
+    cr = positions.get(node)
+    if cr is None:
+        return None
+    return Span(cr.start.line, cr.start.column, cr.end.line, cr.end.column)
+
+
+def _union_span(cst_nodes):
+    """Span covering several cst nodes (None entries skipped), or None."""
+    spans = [s for s in (_span_of(n) for n in cst_nodes) if s is not None]
+    if not spans:
+        return None
+    start = min(spans, key=lambda s: (s.start_line, s.start_col))
+    end = max(spans, key=lambda s: (s.end_line, s.end_col))
+    return Span(start.start_line, start.start_col, end.end_line, end.end_col)
+
+
+def _stamp_span(node_obj, cst_node):
+    """Attach `.span` to a container dict node — the position of `cst_node`, or
+    `cst_node` itself if it's already a Span. No-op without a range. Returns
+    node_obj for call-site chaining."""
+    span = cst_node if isinstance(cst_node, Span) else _span_of(cst_node)
+    if span is not None:
+        node_obj.span = span
+    return node_obj
+
+
+def _record_child(container, key, value, cst_node):
+    """Record the span of a LEAF child (`container[key]`, source `cst_node`) in
+    the container's `_child_spans` map. Skipped for dict-valued children — those
+    are containers that carry their own `.span` and are found by tree walk.
+    Lets literal assignments (a plain int/str/bool that can't hold a `.span`) be
+    located by line."""
+    if isinstance(value, dict):
+        return
+    span = _span_of(cst_node)
+    if span is None:
+        return
+    cs = getattr(container, "_child_spans", None)
+    if cs is None:
+        cs = {}
+        container._child_spans = cs
+    cs[key] = span
+
+
+def _merge_child_spans(dst, src):
+    """Move src's `_child_spans` into dst's — needed wherever a container is
+    rebuilt from another via dict-copy (Conditional.update(body), Loop(body),
+    Try(body), …), which copies items but NOT the `_child_spans` attribute."""
+    src_cs = getattr(src, "_child_spans", None)
+    if not src_cs:
+        return
+    dst_cs = getattr(dst, "_child_spans", None)
+    if dst_cs is None:
+        dst_cs = {}
+        dst._child_spans = dst_cs
+    dst_cs.update(src_cs)
+
+
+class NodeRef:
+    """A node located by line lookup: the `value`, its `key` in `parent` (None
+    for the root), the `parent` container, the `Span` it occupies (relative to
+    the parse source), and the full key-`path` from the root."""
+    __slots__ = ("value", "key", "parent", "span", "path")
+
+    def __init__(self, value, key, parent, span, path):
+        self.value = value
+        self.key = key
+        self.parent = parent
+        self.span = span
+        self.path = path
+
+    def __repr__(self):
+        return f"NodeRef(path={self.path!r}, {self.span!r})"
+
+
+class LineMap:
+    """Two-way map between source lines and the nodes of a CST dict.
+
+    Build from a root parse: `lm = LineMap(general_parse)`. Pass `line_offset`
+    (the span's 0-indexed first file line, e.g. Address.start) to query/return
+    in absolute file lines.
+
+      line → node:  lm.node_at_line(34)            # relative to the parse source
+                    lm.node_at_line(412, absolute=True)
+      node → line:  node.span                       # directly on the node
+                    lm.span_of(node)                # also works for leaf values
+
+    Reverse direction is really just a node's `.span`; this class indexes the
+    forward direction and resolves leaf children (via `_child_spans`) that
+    can't carry their own attribute.
+    """
+
+    def __init__(self, root, line_offset=0):
+        self.root = root
+        self.line_offset = line_offset
+        self._entries = []  # list of (span, depth, NodeRef)
+        self._build(root, key=None, parent=None, path=(), depth=0)
+
+    def _build(self, node, key, parent, path, depth):
+        span = getattr(node, "span", None)
+        if isinstance(span, Span):
+            self._entries.append((span, depth, NodeRef(node, key, parent, span, path)))
+        if isinstance(node, dict):
+            child_spans = getattr(node, "_child_spans", None) or {}
+            for k, v in node.items():
+                cpath = path + (k,)
+                if isinstance(v, dict):
+                    self._build(v, k, node, cpath, depth + 1)
+                else:
+                    cspan = child_spans.get(k)
+                    if isinstance(cspan, Span):
+                        self._entries.append(
+                            (cspan, depth + 1, NodeRef(v, k, node, cspan, cpath)))
+
+    def node_at_line(self, line, absolute=False):
+        """The most specific NodeRef whose span contains `line`, or None.
+
+        `line` is relative to the parse source unless `absolute=True`, when
+        `line_offset` is subtracted first. 'Most specific' = deepest node, tie
+        broken by narrowest line range — so an assignment inside an if-branch
+        wins over the branch, which wins over the function."""
+        if absolute:
+            line = line - self.line_offset
+        best = None  # (depth, size, ref)
+        for span, depth, ref in self._entries:
+            if span.start_line <= line <= span.end_line:
+                size = span.end_line - span.start_line
+                if best is None or depth > best[0] or (depth == best[0] and size < best[1]):
+                    best = (depth, size, ref)
+        return best[2] if best else None
+
+    def span_of(self, node, absolute=False):
+        """The span of `node` — via its `.span`, else by identity in the index.
+        Returns None if unknown; `absolute=True` shifts into file lines."""
+        span = getattr(node, "span", None)
+        if not isinstance(span, Span):
+            for s, _depth, ref in self._entries:
+                if ref.value is node:
+                    span = s
+                    break
+        if not isinstance(span, Span):
+            return None
+        return span.absolute(self.line_offset) if absolute else span
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  cst.Module ↔ dict                                                         ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
@@ -1341,12 +1585,15 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
         print("Expected cst.Module, got", type(input_value).__name__, file=sys.stderr)
         return input_value
     readable = GeneralParse(source=input_value.code)
+    _stamp_span(readable, input_value)
 
     # Publish the src global scope so every nested name/callable resolution
     # below (values, classdef/funcdef defaults) resolves against project src
     # only, no per-usage sys.modules scan. Built once here; nested classdef /
-    # funcdef conversions inherit it.
-    with _module_scope(_build_src_scope()):
+    # funcdef conversions inherit it. The _position_map publishes a
+    # PositionProvider / the node span so extractors can stamp source spans
+    # (.span / _child_spans) with the line ↔ node map.
+    with _position_map(input_value), _module_scope(_build_src_scope()):
         # Module header comments (top-of-file, before first statement)
         for ll in input_value.header:
             if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
@@ -1376,6 +1623,7 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
                             py_value = _cst_to_python_or_raw(node.value)
                             if py_value is not _UNREADABLE:
                                 readable[target.value] = py_value
+                                _record_child(readable, target.value, py_value, node)
                                 last_key = target.value
                     # x: int = 0
                     elif isinstance(node, cst.AnnAssign):
@@ -1383,6 +1631,7 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
                             py_value = _cst_to_python_or_raw(node.value)
                             if py_value is not _UNREADABLE:
                                 readable[node.target.value] = py_value
+                                _record_child(readable, node.target.value, py_value, node)
                                 last_key = node.target.value
                     else:
                         # Bare call statement, e.g. configure(foo=True)
@@ -1786,6 +2035,7 @@ def cst_classdef_to_dict(value: cst.ClassDef) -> dict:
     Decorators go in a "decorators" sub-dict.
     """
     readable = GeneralParse(source=_cst_node_to_code(value))
+    _stamp_span(readable, value)
 
     decorators = _extract_decorators(value.decorators)
     if decorators:
@@ -1813,11 +2063,13 @@ def cst_classdef_to_dict(value: cst.ClassDef) -> dict:
                     target = node.targets[0].target
                     if isinstance(target, cst.Name):
                         readable[target.value] = _cst_to_python_or_raw(node.value)
+                        _record_child(readable, target.value, readable[target.value], stmt)
                         last_key = target.value
                 # debug: bool = False  (annotated assignment)
                 elif isinstance(node, cst.AnnAssign) and isinstance(node.target, cst.Name):
                     if node.value is not None:
                         readable[node.target.value] = _cst_to_python_or_raw(node.value)
+                        _record_child(readable, node.target.value, readable[node.target.value], stmt)
                         last_key = node.target.value
                 else:
                     # Bare call statement, e.g. some_func(1, 2)
@@ -1878,6 +2130,7 @@ def cst_classdef_to_dict(value: cst.ClassDef) -> dict:
                     attr_name = target.attr.value
                     if attr_name not in readable:  # body-level takes priority
                         readable[attr_name] = _cst_to_python_or_raw(val_node)
+                        _record_child(readable, attr_name, readable[attr_name], stmt)
 
     readable["__cst__"] = value
     readable.usages = _collect_usages(value, top_scope="<class>")
@@ -2256,6 +2509,7 @@ def cst_funcdef_to_dict(value: cst.FunctionDef) -> dict:
       }
     """
     readable = GeneralParse(source=_cst_node_to_code(value))
+    _stamp_span(readable, value)
 
     decorators = _extract_decorators(value.decorators)
     if decorators:
@@ -2263,11 +2517,13 @@ def cst_funcdef_to_dict(value: cst.FunctionDef) -> dict:
 
     params = _extract_param_defaults(value.params)
     if params:
+        _stamp_span(params, value.params)
         readable["parameters"] = params
 
     # Body assignments under "locals"
     locals_ = _extract_body_assignments(value.body)
     if locals_:
+        _stamp_span(locals_, value.body)
         readable["locals"] = locals_
 
     readable["__cst__"] = value
@@ -2386,6 +2642,7 @@ def _extract_block_assignments(stmts):
                         key = f"{name}#{occurrence}"
 
                     result[key] = _cst_to_python_or_raw(val_node)
+                    _record_child(result, key, result[key], stmt)
                     last_key = key
                     continue
 
@@ -2839,8 +3096,12 @@ def _extract_if_chain(if_node, result, counters):
     key = f"if##{if_idx}"
     body = _extract_block_assignments(if_node.body.body)
     branch = Conditional(condition=key)
-    branch[_condition_key(if_node.test, "if")] = _condition_to_editable(if_node.test)
+    cond_key = _condition_key(if_node.test, "if")
+    branch[cond_key] = _condition_to_editable(if_node.test)
     branch.update(body)
+    _merge_child_spans(branch, body)               # update() copies items, not _child_spans
+    _record_child(branch, cond_key, branch[cond_key], if_node.test)
+    _stamp_span(branch, _union_span([if_node.test, if_node.body]))
     result[key] = branch
 
     # Walk the orelse chain
@@ -2852,8 +3113,12 @@ def _extract_if_chain(if_node, result, counters):
             key = f"elif##{elif_idx}"
             body = _extract_block_assignments(orelse.body.body)
             branch = Conditional(condition=key)
-            branch[_condition_key(orelse.test, "elif")] = _condition_to_editable(orelse.test)
+            cond_key = _condition_key(orelse.test, "elif")
+            branch[cond_key] = _condition_to_editable(orelse.test)
             branch.update(body)
+            _merge_child_spans(branch, body)
+            _record_child(branch, cond_key, branch[cond_key], orelse.test)
+            _stamp_span(branch, _union_span([orelse.test, orelse.body]))
             result[key] = branch
             orelse = orelse.orelse
         elif isinstance(orelse, cst.Else):
@@ -2863,7 +3128,10 @@ def _extract_if_chain(if_node, result, counters):
             key = f"else##{else_idx}"
             body = _extract_block_assignments(orelse.body.body)
             if body:
-                result[key] = Conditional(body, condition=key)
+                branch = Conditional(body, condition=key)
+                _merge_child_spans(branch, body)
+                _stamp_span(branch, orelse)
+                result[key] = branch
             orelse = None
         else:
             break
@@ -2904,13 +3172,21 @@ def _extract_for_loop(for_node, result, block_occ):
     if range_args is not None:
         body["range"] = range_args
 
-    result[key] = Loop(body, target=target_code, iter=iter_code)
+    loop = Loop(body, target=target_code, iter=iter_code)
+    _merge_child_spans(loop, body)
+    if range_args is not None:
+        _record_child(loop, "range", range_args, for_node.iter)
+    _stamp_span(loop, for_node)
+    result[key] = loop
 
     # for/else
     if for_node.orelse is not None and isinstance(for_node.orelse, cst.Else):
         else_body = _extract_block_assignments(for_node.orelse.body.body)
         if else_body:
-            result[f"{key} else"] = Conditional(else_body, condition="else")
+            else_branch = Conditional(else_body, condition="else")
+            _merge_child_spans(else_branch, else_body)
+            _stamp_span(else_branch, for_node.orelse)
+            result[f"{key} else"] = else_branch
 
 
 def _try_handler_header(handler):
@@ -2952,26 +3228,38 @@ def _extract_try_block(try_node, result, block_occ):
     try_key = _occ_key("try", block_occ)
     body = _extract_block_assignments(try_node.body.body)
     if body:
-        result[try_key] = Try(body, header="try")
+        tryobj = Try(body, header="try")
+        _merge_child_spans(tryobj, body)
+        _stamp_span(tryobj, try_node.body)
+        result[try_key] = tryobj
 
     for handler in try_node.handlers:
         header = _try_handler_header(handler)
         hkey = _occ_key(header, block_occ)
         hbody = _extract_block_assignments(handler.body.body)
         if hbody:
-            result[hkey] = Except(hbody, header=header)
+            excobj = Except(hbody, header=header)
+            _merge_child_spans(excobj, hbody)
+            _stamp_span(excobj, handler)
+            result[hkey] = excobj
 
     if try_node.orelse is not None and isinstance(try_node.orelse, cst.Else):
         else_key = _occ_key("try else", block_occ)
         else_body = _extract_block_assignments(try_node.orelse.body.body)
         if else_body:
-            result[else_key] = Try(else_body, header="try else")
+            elseobj = Try(else_body, header="try else")
+            _merge_child_spans(elseobj, else_body)
+            _stamp_span(elseobj, try_node.orelse)
+            result[else_key] = elseobj
 
     if try_node.finalbody is not None and isinstance(try_node.finalbody, cst.Finally):
         fin_key = _occ_key("finally", block_occ)
         fin_body = _extract_block_assignments(try_node.finalbody.body.body)
         if fin_body:
-            result[fin_key] = Try(fin_body, header="finally")
+            finobj = Try(fin_body, header="finally")
+            _merge_child_spans(finobj, fin_body)
+            _stamp_span(finobj, try_node.finalbody)
+            result[fin_key] = finobj
 
 
 def _extract_range_args(iter_node):
@@ -3752,6 +4040,7 @@ def cst_call_to_dict(value: cst.Call, pos_names_override=None, result_cls=CallPa
     for arg in value.args:
         if arg.keyword is not None:
             readable[arg.keyword.value] = _cst_to_python_or_raw(arg.value)
+            _record_child(readable, arg.keyword.value, readable[arg.keyword.value], arg)
         elif arg.star == "**" and isinstance(arg.value, cst.Dict):
             # `**{**kwargs, 'clint': True}`: surface the literal string-keyed entries
             # as editable kwargs (the leading **splat passes through via __cst__).
@@ -3765,6 +4054,7 @@ def cst_call_to_dict(value: cst.Call, pos_names_override=None, result_cls=CallPa
                         continue
                     if isinstance(key, str):
                         readable[key] = _cst_to_python_or_raw(el.value)
+                        _record_child(readable, key, readable[key], el)
         elif arg.star == "":
             # Plain positional arg → surface under the parameter name it binds
             # to, if we could resolve the signature. Advance the positional
@@ -3772,6 +4062,7 @@ def cst_call_to_dict(value: cst.Call, pos_names_override=None, result_cls=CallPa
             # an unresolved callee) won't shift later bindings.
             if pos_names is not None and pos_idx < len(pos_names):
                 readable[pos_names[pos_idx]] = _cst_to_python_or_raw(arg.value)
+                _record_child(readable, pos_names[pos_idx], readable[pos_names[pos_idx]], arg)
             pos_idx += 1
         # else: `*args` splat - passes through via __cst__
 
@@ -3780,6 +4071,7 @@ def cst_call_to_dict(value: cst.Call, pos_names_override=None, result_cls=CallPa
         # re-resolving (and so a same-source / non-importable callee round-trips).
         readable["__pos_names__"] = list(pos_names)
     readable["__cst__"] = value
+    _stamp_span(readable, value)
     return readable
 
 

@@ -990,7 +990,28 @@ class Melty:
         where they don't it slides out to the facing edges/corners. The overlap
         bounds use a smooth min/max (window Swoosh.edge_softness) so the
         anchor glides as the overlap region changes instead of snapping at the
-        kinks of hard min/max. Returns (x0, y0, x1, y1).
+        kinks of hard min/max.
+
+        When the two rects overlap on both axes the shared-edge center lands
+        *inside* their intersection rect — under the (on-top) child, hiding the
+        parent's point and forcing the connector across the child. If
+        Swoosh.avoid_intersection is on, both endpoints are then slid along their
+        own rect's edge, out of the intersection rect, to flank a reentrant
+        corner of the union (a corner of the intersection where a parent edge
+        meets a child edge). The returned control point bows the curve out
+        through that corner into the exterior, so the line hugs the outside of
+        the overlap instead of crossing either view. The slide is bounded by the
+        exposed edge length, so it degrades to a short hook on heavy overlap and
+        falls back to the plain anchor under full containment.
+
+        As the overlap deepens from zero, the endpoints ease from the plain
+        shared-edge anchor to the slid corner positions over Swoosh.intersect_soft
+        px (and the control point blends with the default bow over the same
+        window) so entering the overlap doesn't snap between modes.
+
+        Returns (x0, y0, x1, y1, ctrl, g) where ctrl is a (cx, cy) bezier control
+        point (None to use the default perpendicular bow) and g in [0, 1] is the
+        blend weight of the overlap mode (the caller blends the bow by g).
         """
         k = Swoosh.edge_softness
 
@@ -1011,9 +1032,142 @@ class Melty:
         cx = (smax(ax0, bx0) + smin(ax1, bx1)) * 0.5
         cy = (smax(ay0, by0) + smin(ay1, by1)) * 0.5
 
-        xa, ya = clamp(cx, ax0, ax1), clamp(cy, ay0, ay1)
-        xb, yb = clamp(cx, bx0, bx1), clamp(cy, by0, by1)
-        return xa, ya, xb, yb
+        # Disjoint anchor (the g=0 end of the transition): plain shared-edge
+        # center clamped onto each rect.
+        dax, day = clamp(cx, ax0, ax1), clamp(cy, ay0, ay1)
+        dbx, dby = clamp(cx, bx0, bx1), clamp(cy, by0, by1)
+
+        if not Swoosh.avoid_intersection:
+            return dax, day, dbx, dby, None, 1.0
+
+        # Hard intersection rect of the two rects (the region under the child).
+        ix0, iy0 = max(ax0, bx0), max(ay0, by0)
+        ix1, iy1 = min(ax1, bx1), min(ay1, by1)
+        wx, wy = ix1 - ix0, iy1 - iy0
+        if wx <= 0.0 or wy <= 0.0:
+            # No 2-D intersection: the shared-edge center is already outside.
+            return dax, day, dbx, dby, None, 1.0
+
+        tol = 1e-6
+        # Which rect owns each intersection edge (an edge may be shared).
+        xL_P, xL_C = abs(ix0 - ax0) < tol, abs(ix0 - bx0) < tol
+        xR_P, xR_C = abs(ix1 - ax1) < tol, abs(ix1 - bx1) < tol
+        yT_P, yT_C = abs(iy0 - ay0) < tol, abs(iy0 - by0) < tol
+        yB_P, yB_C = abs(iy1 - ay1) < tol, abs(iy1 - by1) < tol
+
+        # Reentrant corners of the union: an intersection corner where one rect
+        # owns the x-edge and the other owns the y-edge (so a parent edge meets a
+        # child edge there). The exterior opens up outside such a corner.
+        corners = []
+        for ex, exP, exC, xv in (("L", xL_P, xL_C, ix0), ("R", xR_P, xR_C, ix1)):
+            for ey, eyP, eyC, yv in (("T", yT_P, yT_C, iy0), ("B", yB_P, yB_C, iy1)):
+                p_owns_x = exP and eyC   # parent owns x-edge, child owns y-edge
+                p_owns_y = exC and eyP   # child owns x-edge, parent owns y-edge
+                if p_owns_x or p_owns_y:
+                    corners.append((ex, ey, xv, yv, p_owns_x))
+        if not corners:
+            # Full containment - no exterior notch (no reentrant corner exists).
+            if bx0 <= ax0 and by0 <= ay0 and bx1 >= ax1 and by1 >= ay1:
+                # Parent is completely under the (on-top) child: hide the connector.
+                return None
+            # Child sits inside the parent: anchor to matching edges on the side
+            # where it sits closest - left↔left / right↔right when closest
+            # horizontally, top↔top / bottom↔bottom when vertically - blending
+            # between the two as it rounds a corner. Each endpoint is the exit of a
+            # ray cast from its rect's centre through the blended edge target, so
+            # the points slide smoothly along the corners (the default slope bow
+            # then curves the diagonal as in the non-overlap case).
+            acx, acy = (ax0 + ax1) * 0.5, (ay0 + ay1) * 0.5
+            bcx, bcy = (bx0 + bx1) * 0.5, (by0 + by1) * 0.5
+            # Always anchor to the left and bottom edges so the connection never
+            # flips left↔right or top↔bottom as the child crosses centre.
+            h_px, h_cx, gh = ax0, bx0, bx0 - ax0   # left edge
+            v_py, v_cy, gv = ay1, by1, ay1 - by1   # bottom edge
+            # Prefer horizontal edges: pin s to 0 (horizontal/left edge) or 1
+            # (vertical/bottom edge), only opening the diagonal blend window when
+            # the child is actually near the corner - i.e. the nearer gap is
+            # within a zone (Swoosh.envelop_corner × the parent's shorter side).
+            # Far from the corner the window collapses, so the line stays flat
+            # until it is near to rounding the corner.
+            raw = gh / (gh + gv + 1e-6)
+            zone = Swoosh.envelop_corner * min(ax1 - ax0, ay1 - ay0)
+            m = gh if gh < gv else gv
+            prox = (1.0 - m / zone) if (zone > 1e-6 and m < zone) else 0.0
+            prox = prox * prox * (3.0 - 2.0 * prox)
+            w = Swoosh.envelop_tie * prox
+            t = (raw - 0.5 + w) / (2.0 * w) if w > 1e-6 else (1.0 if raw >= 0.5 else 0.0)
+            t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
+            s = t * t * (3.0 - 2.0 * t)
+
+            def ray(cx0, cy0, rx0, ry0, rx1, ry1, dx, dy):
+                tx = (rx1 - cx0) / dx if dx > 1e-9 else (rx0 - cx0) / dx if dx < -1e-9 else float("inf")
+                ty = (ry1 - cy0) / dy if dy > 1e-9 else (ry0 - cy0) / dy if dy < -1e-9 else float("inf")
+                t = tx if tx < ty else ty
+                return cx0 + dx * t, cy0 + dy * t
+
+            xa, ya = ray(acx, acy, ax0, ay0, ax1, ay1,
+                         (h_px - acx) * (1 - s) + (bcx - acx) * s,
+                         (bcy - acy) * (1 - s) + (v_py - acy) * s)
+            xb, yb = ray(bcx, bcy, bx0, by0, bx1, by1,
+                         (h_cx - bcx) * (1 - s), (v_cy - bcy) * s)
+            return xa, ya, xb, yb, None, 1.0
+
+        icx, icy = (ix0 + ix1) * 0.5, (iy0 + iy1) * 0.5
+        acx, acy = (ax0 + ax1) * 0.5, (ay0 + ay1) * 0.5
+        bcx, bcy = (bx0 + bx1) * 0.5, (by0 + by1) * 0.5
+        ddx, ddy = bcx - acx, bcy - acy
+
+        # Pick the reentrant corner continuously: most counter-clockwise from the
+        # parent->child vector. Rotates as the child is dragged; only flips when
+        # the rects are (anti)concentric or the overlap changes corner/edge type.
+        best = None
+        for cn in corners:
+            key = ddx * (cn[3] - icy) - ddy * (cn[2] - icx)
+            if best is None or key > best[0]:
+                best = (key, cn)
+        ex, ey, xv, yv, p_owns_x = best[1]
+
+        hook = Swoosh.intersect_hook
+
+        def lim(avail):
+            return max(0.0, min(hook, avail))
+
+        if p_owns_x:
+            # parent on the vertical x=xv edge; child on the horizontal y=yv edge
+            hp = lim(iy0 - ay0 if ey == "T" else ay1 - iy1)
+            nax, nay = xv, (iy0 - hp if ey == "T" else iy1 + hp)
+            hc = lim(ix0 - bx0 if ex == "L" else bx1 - ix1)
+            nbx, nby = (ix0 - hc if ex == "L" else ix1 + hc), yv
+        else:
+            # parent on the horizontal y=yv edge; child on the vertical x=xv edge
+            hp = lim(ix0 - ax0 if ex == "L" else ax1 - ix1)
+            nax, nay = (ix0 - hp if ex == "L" else ix1 + hp), yv
+            hc = lim(iy0 - by0 if ey == "T" else by1 - iy1)
+            nbx, nby = xv, (iy0 - hc if ey == "T" else iy1 + hc)
+
+        # Control point: bow out through the corner, away from the overlap centre.
+        dx, dy = xv - icx, yv - icy
+        n = math.hypot(dx, dy) or 1.0
+        push = max(hp, hc) * 0.9
+        ctrl = (xv + dx / n * push, yv + dy / n * push)
+
+        # Ease from the shared-edge anchor to the slid corner anchor as the
+        # overlap deepens. Both coordinates are interpolated; the caller projects
+        # the result back onto the rect's (rounded) perimeter so the endpoint
+        # slides along the edge and around corners instead of cutting across.
+        soft = Swoosh.intersect_soft
+        depth = min(wx, wy)
+        if soft <= 0.0:
+            g = 1.0
+        else:
+            t = depth / soft
+            t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
+            g = t * t * (3.0 - 2.0 * t)
+        xa = dax + (nax - dax) * g
+        ya = day + (nay - day) * g
+        xb = dbx + (nbx - dbx) * g
+        yb = dby + (nby - dby) * g
+        return xa, ya, xb, yb, ctrl, g
 
     @staticmethod
     def _round_rect_point(px, py, x0, y0, x1, y1, r):
@@ -1033,6 +1187,36 @@ class Melty:
         if d > r and d > 1e-6:
             return cxc + dx / d * r, cyc + dy / d * r
         return px, py
+
+    @staticmethod
+    def _project_to_rounded_rect(px, py, x0, y0, x1, y1, r):
+        """Project an arbitrary point onto the nearest point of a rect's
+        rounded-corner perimeter. A rounded rect is the inset box [+r] expanded
+        by r, so the nearest boundary point is the nearest point of the inset box
+        pushed out by r along the offset direction. Used to keep a connection
+        endpoint on the visible edge while both of its coordinates interpolate."""
+        ix0, iy0, ix1, iy1 = x0 + r, y0 + r, x1 - r, y1 - r
+        if ix1 < ix0:
+            ix0 = ix1 = (x0 + x1) * 0.5
+        if iy1 < iy0:
+            iy0 = iy1 = (y0 + y1) * 0.5
+        qx = ix0 if px < ix0 else ix1 if px > ix1 else px
+        qy = iy0 if py < iy0 else iy1 if py > iy1 else py
+        dx, dy = px - qx, py - qy
+        d = math.hypot(dx, dy)
+        if d > 1e-6:
+            # Outside the inset box: ride the rounded boundary at radius r.
+            return qx + dx / d * r, qy + dy / d * r
+        # Inside the inset box: drop straight out to the nearest straight edge.
+        dl, dr, dt, db = px - x0, x1 - px, py - y0, y1 - py
+        m = min(dl, dr, dt, db)
+        if m == dl:
+            return x0, py
+        if m == dr:
+            return x1, py
+        if m == dt:
+            return px, y0
+        return px, y1
 
     @staticmethod
     def _highlight_rgb(tint=None):
@@ -1084,17 +1268,38 @@ class Melty:
             if vx1 > vx0 and vy1 > vy0:
                 px, py, pw, ph = vx0, vy0, vx1 - vx0, vy1 - vy0
 
-        # Anchor both ends at the center of the rects' shared edge (smoothed),
-        # so the connector stays centered and glides as the rects move.
-        x0, y0, x1, y1 = Melty._closest_perimeter_points(
-            px, py, px + pw, py + ph,
-            nx, ny, nx + nw, ny + nh,
-        )
+        # Real (un-grown) view rects: the endpoints must land on these.
+        rpx0, rpy0, rpx1, rpy1 = px, py, px + pw, py + ph
+        rnx0, rny0, rnx1, rny1 = nx, ny, nx + nw, ny + nh
 
-        # Pull the ends onto the rounded-corner boundary so the end dots sit flush
-        # against the visible edge rather than the square corner.
-        x0, y0 = Melty._round_rect_point(x0, y0, px, py, px + pw, py + ph, p_round)
-        x1, y1 = Melty._round_rect_point(x1, y1, nx, ny, nx + nw, ny + nh, n_round)
+        # The overlap transition is computed on the grown rects so it begins
+        # as the views approach, before they actually touch (Swoosh.overlap_padding).
+        # Only the math uses the grown rects; the endpoints are pulled back onto
+        # the real view edges below.
+        pad = Swoosh.overlap_padding
+        gpx0, gpy0, gpx1, gpy1 = rpx0 - pad, rpy0 - pad, rpx1 + pad, rpy1 + pad
+        gnx0, gny0, gnx1, gny1 = rnx0 - pad, rny0 - pad, rnx1 + pad, rny1 + pad
+
+        # Anchor both ends at the center of the rects' shared edge (smoothed),
+        # so the connector stays centered and glides as the rects move. When the
+        # rects overlap, the ends slide out of the intersection and `ctrl` bows
+        # the curve through it (see _closest_perimeter_points).
+        geom = Melty._closest_perimeter_points(
+            gpx0, gpy0, gpx1, gpy1,
+            gnx0, gny0, gnx1, gny1,
+        )
+        if geom is None:
+            # Parent fully hidden under the child: no connector to draw.
+            return
+        x0, y0, x1, y1, ctrl, ctrl_g = geom
+
+        # Project each endpoint onto the real view's (rounded) perimeter: this
+        # pulls it off the grown rect to the real edge and, since both
+        # coordinates were interpolated, lets it slide along the edge and around
+        # the rounded corners. The control point stays out in the exterior so the
+        # bow is preserved.
+        x0, y0 = Melty._project_to_rounded_rect(x0, y0, rpx0, rpy0, rpx1, rpy1, p_round)
+        x1, y1 = Melty._project_to_rounded_rect(x1, y1, rnx0, rny0, rnx1, rny1, n_round)
 
         seg_dx, seg_dy = x1 - x0, y1 - y0
         seg_len = math.hypot(seg_dx, seg_dy)
@@ -1109,12 +1314,24 @@ class Melty:
         slope_ratio = min(adx, ady) / max(adx, ady) if max(adx, ady) > 1e-6 else 0.0
         curve_factor = slope_ratio ** Swoosh.curve_ramp
 
-        # Quadratic bezier control point: midpoint bowed perpendicular to the chord
-        # by an amount scaled by curve_factor.
+        # Quadratic bezier control point: bow the curve perpendicular to the
+        # chord by an amount scaled by curve_factor. If the ends were slid out
+        # of an overlap, _closest_perimeter_points also hands back a control
+        # point that bows the curve through the exterior notch; bias toward it
+        # by ctrl_g (the overlap-mode weight) so the bow eases in with the slide.
         mx, my = (x0 + x1) * 0.5, (y0 + y1) * 0.5
         perp_x, perp_y = -seg_dy / seg_len, seg_dx / seg_len
         bow = seg_len * Swoosh.curve * curve_factor
         cxp, cyp = mx + perp_x * bow, my + perp_y * bow
+        if ctrl is not None:
+            # The exterior route's bow also scales with Swoosh.curve (measured
+            # from the chord midpoint, designed full at curve≈0.22) so lowering
+            # curve flattens it and curve=0 gives a straight connector.
+            cg = Swoosh.curve / 0.22
+            ncx = mx + (ctrl[0] - mx) * cg
+            ncy = my + (ctrl[1] - my) * cg
+            cxp = cxp + (ncx - cxp) * ctrl_g
+            cyp = cyp + (ncy - cyp) * ctrl_g
 
         col = imgui.get_color_u32_rgba(*rgb, Swoosh.alpha)
         segments = max(2, int(Swoosh.segments))
@@ -1331,10 +1548,6 @@ class Melty:
         for ds_id, discard_ds in to_discard:
             cls.root_draw_states[ds_id].remove(discard_ds)
 
-        selected_by_layer = defaultdict(list)
-        for selected_ds in cls.selected:
-            selected_by_layer[selected_ds.abs_layer].append(selected_ds)
-
         for idx in range(len(cls.layers)):
             layer = cls.layers[idx]
             imgui.set_cursor_screen_pos((0, 0))
@@ -1349,18 +1562,6 @@ class Melty:
             for draw_state in layer:
                 if draw_state is not None:
                     cls.draw(draw_state)
-
-
-            selected_at_layer = selected_by_layer.get(idx, [])
-            # for draw_state in selected_at_layer:
-            #     draw_list = imgui.get_window_draw_list()
-            #     clip_rect = draw_state.abs_clip_rect
-            #     draw_list.push_clip_rect(clip_rect[0], clip_rect[1], clip_rect[2], clip_rect[3], True)
-            #     selected_rect = draw_state.abs_left, draw_state.abs_top, draw_state.width, draw_state.height
-            #     draw_list.add_rect_filled(selected_rect[0], selected_rect[1], selected_rect[0] + selected_rect[2],
-            #                               selected_rect[1] + selected_rect[3],
-            #                               imgui.get_color_u32_rgba(1, 1, 1, 0.3))
-            #     draw_list.pop_clip_rect()
 
             Melty.depth = 0
             if Melty.channels_split:
@@ -1537,11 +1738,27 @@ class Melty:
         overlay.add_text(window_size.x - 600, 5, imgui.get_color_u32_rgba(1, 1, 1, 1),
                          f"FPS: {imgui.get_io().framerate:.1f}")
 
+        to_unselect = set()
         for selected_ds in cls.selected:
+            if selected_ds.abs_closed or selected_ds.closed:
+                to_unselect.add(selected_ds)
+
             if not selected_ds._kwargs.get("selectable", True):
-                continue
+                to_unselect.add(selected_ds)
+
+        for ds in to_unselect:
+            if ds in cls.selected:
+                cls.selected.remove(ds)
+
+
+        for selected_ds in cls.selected:
+
             if selected_ds.width is None or selected_ds.height is None:
                 continue
+
+            draw_fill = True
+            if selected_ds.height > 30:
+                draw_fill = False
 
             # Draw the selection rect to the selected view's own overlay
             # channel (same as the nested-view highlight and swoosh) so a
@@ -1561,7 +1778,8 @@ class Melty:
             overlay.push_clip_rect(clip_rect[0], clip_rect[1], clip_rect[2], clip_rect[3], True)
             x0, y0 = selected_ds.abs_left, selected_ds.abs_top
             x1, y1 = x0 + selected_ds.width, y0 + selected_ds.height
-            overlay.add_rect_filled(x0, y0, x1, y1, bg_col, rounding=rounding)
+            if draw_fill:
+                overlay.add_rect_filled(x0, y0, x1, y1, bg_col, rounding=rounding)
             overlay.add_rect(x0, y0, x1, y1, outline_col, rounding=rounding,
                              thickness=Tint.select_outline_thickness)
             overlay.pop_clip_rect()
@@ -1745,8 +1963,10 @@ class Melty:
 
         # Fulfill any pending MCP window screenshots now: the full frame is in
         # GL_BACK and the GL context is current on this (render) thread.
-        from src.lsd.gl_gui.screenshot import process_captures
+        from src.lsd.gl_gui.screenshot import process_captures, process_take_screenshot_flags
         process_captures(window)
+        # Service deferred context-menu 'window' screenshots (front + settle, then grab).
+        process_take_screenshot_flags(window)
 
         # Run any pending MCP eval_python commands on this (render) thread, where
         # it's safe to touch Melty/imgui state.

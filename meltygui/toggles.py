@@ -114,18 +114,29 @@ class Swoosh:
     end_thickness = 2.304      # half-width at the two endpoints (thick)
     cap_scale = 0.962          # end-cap dot radius as a multiple of end thickness
     mid_thickness = 0.441      # half-width at the middle (thin)
-    curve = 0.22             # max arc bow as a fraction of endpoint distance
-    curve_ramp = 0.581        # how the bow eases in with slope (>1 stays straighter longer)
+    curve = 0.029             # max curve bow as a fraction of endpoint distance
+    curve_ramp = 2.0        # how the curve eases in with slope (>1 stays straighter longer)
     edge_softness = 1.138     # px smoothing window for the shared-edge anchor (0 = hard)
     segments = 31            # tessellation count (higher = smoother)
     taper = 10.0              # slope of the end->middle thickness falloff
     aa_width = 1.5           # antialiased edge-stroke width in px (0 = none)
-    
-    some_text = False
-    some_dict = [1,1,1,1]
+
+    # When the child overlaps the parent, slide both endpoints along their own
+    # rect edge out of the intersection area to flank the reentrant corner of the
+    # union, then bow the curve smoothly towards that corner so the connector hugs the
+    # outside of the overlap instead of crossing either view. See
+    # Melty._closest_perimeter_points.
+    avoid_intersection = True   # slide the endpoints out of the overlap, avoid the corner
+    intersect_hook = 24.0       # px the endpoints slide along the edge past the overlap
+    intersect_soft = 50.0       # px of overlap depth over which to ease in from the plain cur
+    overlap_padding = 20.0      # grow each rect by this so the transition starts before they touch
+    envelop_tie = 0.048          # enveloped child: near-tie window for the corner edge blend
+                                #   (0 = always flat edges, hard switch; 0.5 = always blending)
+    envelop_corner = 0.25       # enveloped child: only round the corner when the nearer gap is
+                                # within this fraction of the parent's shorter side (else stay flat)
 
 
-@window(tint=(0.944186, 0.47592, 0.176))
+@window(tint=(0.9627907, 0.566004, 0.2))
 class Toggles:
     test_float = 3.303
     debug_scroll = False
@@ -161,7 +172,7 @@ class Toggles:
     slow_down_threads = False
     render_depth = False
     ds_invalidate_stack = False
-    profile_mode = ProfileMode.LIGHT
+    profile_mode = ProfileMode.OFF
     debug_stale_tint = False
     show_line_break = False
   
@@ -183,8 +194,11 @@ class Toggles:
     shadow_edge_sharpness = 50.0
     draw_legacy = False
 
-    # Scroll settings 
-    scroll_speed = 280.0
+    # Scroll settings
+    scroll_speed = 600.0
+
+    # Screenshot output directory (used by screenshot.py / context menu capture)
+    screenshots = "/home/lukas/melty/screenshots"
 
 @window
 class LegacyToggles:

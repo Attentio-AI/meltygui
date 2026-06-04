@@ -2309,7 +2309,7 @@ def render_func(*args, **o_kwargs):
                             draw_state.header_natural_width))
 
                     if not draw_state.multi_line:
-                        same_line()
+                        same_line(spacing=0.0)
 
                 else:
                     draw_state.header_left = draw_state.left
@@ -3183,7 +3183,7 @@ def render_func(*args, **o_kwargs):
                                             max(min_scroll_y, min(target_y, max_scroll_y)))
 
             if scroll_y_changed is not None:
-                Melty.cache.invalidate_up(draw_state._tile_id, max_depth=3)
+                Melty.cache.invalidate_up(draw_state._tile_id, max_depth=7)
                 Melty.cache.invalidate_scrolled_in(draw_state, on_change=False)
 
             if not draw_state.closed:

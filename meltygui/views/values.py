@@ -39,7 +39,7 @@ from src.lsd.gl_gui.view.core_views.codec_register import registry as FILE_CODEC
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.core_undo import UndoManager
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import hotkey, tint
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import hotkey, tint, Core
 from src.lsd.gl_gui.view.core_views.decoration.invalidation_decoration import live
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.core_views.folders_proxy import FolderProxy
@@ -221,29 +221,29 @@ def go_to_search_result(ds, win=None):
     result into view (via the editor's _scroll_into_view, which walks up to the
     real scroll container) and focus it."""
     name = getattr(ds, 'name', None)
-    target = Melty.find_window(name) if name else None
+    target = Core.melty.find_window(name) if name else None
     if target is not None and target is not win:
         target.closed = False
         # Summon it (move + raise) to where the search is, so it comes to you
         # instead of staying at its old, maybe off-screen, spot.
-        gs = Melty.find_window("GlobalSearch")
+        gs = Core.melty.find_window("GlobalSearch")
         if gs is not None and gs.abs_left is not None:
-            Melty.summon_window(target, gs.abs_left, gs.abs_top)
+            Core.melty.summon_window(target, gs.abs_left, gs.abs_top)
         else:
-            Melty.move_window_to_front(target)
-        Melty.focused_ds = target
+            Core.melty.move_window_to_front(target)
+        Core.melty.focused_ds = target
         # Sole-select it so it shows Melty's selection outline.
-        Melty.selected = {target}
-        Melty.last_selected = target
+        Core.melty.selected = {target}
+        Core.melty.last_selected = target
         request_render()
         return
 
     if win is not None:
         win.closed = False
-        Melty.move_window_to_front(win)
-    Melty.focused_ds = ds
-    Melty.selected = {ds}
-    Melty.last_selected = ds
+        Core.melty.move_window_to_front(win)
+    Core.melty.focused_ds = ds
+    Core.melty.selected = {ds}
+    Core.melty.last_selected = ds
     if ds.abs_top is not None and ds.height is not None:
         _scroll_into_view(ds, ds.abs_top, ds.abs_top + ds.height)
     request_render()
@@ -254,13 +254,13 @@ def _dismiss_global_search():
     after a result is activated (clicked or Enter), so picking a result also
     dismisses the search. Also clears the query, so the next open starts fresh
     (Esc, which doesn't call this, leaves the query for resuming)."""
-    win = Melty.find_window("GlobalSearch")
+    win = Core.melty.find_window("GlobalSearch")
     if win is not None:
         win.closed = True
     GlobalSearch.query = ""
     GlobalSearch._last_query = None
     GlobalSearch.selected = 0
-    Melty.text_focused_ds = None
+    Core.melty.text_focused_ds = None
     request_render()
 
 
@@ -317,7 +317,7 @@ def draw_symbol_usage(input_value):
 @render_func(is_default_for=(dict, MutableMapping, defaultdict, tuple, list, GeneralParse, CallParse), use_cache=True,
              header_same_line=False, show_bg=True, show_instance_vars=False, align_header=False,
              manual_content_height=True, shadow=True, selectable=False,
-             wrap=False, with_header=draw_header, indent_size=5, searchable=True)
+             wrap=False, with_header=draw_header, indent_size=2, searchable=True)
 def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=None,
                     mode=None, keys=None, get_attr=None, set_attr=None, show_excluded=False,
                     child_kwargs=None, show_bg=True, show_search=True, align_header=False,
@@ -369,7 +369,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
                 keys = range(len(input_value))
                 collection = list(input_value)
 
-        elif hasattr(input_value, "__dict__") and depth < Melty.max_depth:
+        elif hasattr(input_value, "__dict__") and depth < Core.melty.max_depth:
             if hasattr(type(input_value), "__field_defaults__") and hasattr(input_value, 'to_dict'):
                 type(input_value).__field_defaults__.update(input_value.__dict__)
                 keys = type(input_value).__field_defaults__.keys()
@@ -443,12 +443,12 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
     drew_any = False
 
     start_cursor = imgui.get_cursor_pos()[1]
-    rect = Melty.get_clip_rect()
+    rect = Core.melty.get_clip_rect()
 
     premature_break = False
 
-    Melty.collection_index_stack.append(0)
-    this_collection = len(Melty.collection_index_stack) - 1
+    Core.melty.collection_index_stack.append(0)
+    this_collection = len(Core.melty.collection_index_stack) - 1
 
     max_items = 5000
     start_index = 0
@@ -477,7 +477,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
         clipped = False
         if (not horizontal and child_draw_state is not None
                 and child_draw_state.relative_pos is not None
-                and not Melty.frame_count <= 2
+                and not Core.melty.frame_count <= 2
                 and (not draw_state.invalid_content_height or imgui.is_mouse_down(0)
                      or imgui.is_mouse_down(1) or imgui.is_mouse_down(2))):
             _spy = true_top + child_draw_state.relative_pos[1] - child_draw_state.header_height
@@ -490,7 +490,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
                                           child_draw_state.height)))
             continue
 
-        Melty.collection_index_stack[this_collection] = idx
+        Core.melty.collection_index_stack[this_collection] = idx
         item = None
         if get_attr is None:
             if isinstance(collection, dict) and key not in collection:
@@ -509,7 +509,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
 
         # visual separator (object extras)
         if key is None and item is None:
-            seperator(Melty.spacing[1])
+            seperator(Core.melty.spacing[1])
             continue
         # apply global skip to all types
         if isinstance(key, (float, Enum, NoneType)):
@@ -550,7 +550,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
                     prev_tint = style_manager.get_tint()
                     style_manager.set_imgui_tint(*codec.tint)
 
-            y_offset = Melty.collection_spacing
+            y_offset = Core.melty.collection_spacing
             if show_indices:
                 display_name = f"{str(idx)}"
 
@@ -590,11 +590,11 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
                 item_kwargs['align_header'] = False
 
             if horizontal and child_draw_state is not None:
-                rect = Melty.get_clip_rect()
+                rect = Core.melty.get_clip_rect()
                 right_edge = rect[2]
                 space_left = right_edge - (imgui.get_cursor_screen_pos()[0] + child_draw_state.width)
 
-                if child_draw_state.height > 50:
+                if len(child_draw_state._children) > 0 and child_draw_state.height > 50:
                     imgui.dummy(0, 0)
 
                 elif space_left < 0:
@@ -622,7 +622,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
 
             if isinstance(out_val, CollectionAction):
                 # perform the move; this should mutate the plain dicts you supply
-                result = Melty.to_apply(out_val)
+                result = Core.melty.to_apply(out_val)
                 item_changed, out_val = False, None
 
             if set_attr is not None and item_changed:
@@ -658,7 +658,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
             if prev_tint is not None:
                 style_manager.set_imgui_tint(*prev_tint)
 
-    Melty.collection_index_stack.pop()
+    Core.melty.collection_index_stack.pop()
 
     # When navigation just happened, scroll the current key into view.
     # draw_collection disables its own scroll, so _scroll_into_view walks up fo
@@ -760,7 +760,7 @@ def draw_global_search(input_value, draw_state=None, **kwargs):
     # While the box holds text focus (single-line, so Up/Down/Enter don't touch
     # it): Up/Down move the highlight by result, Ctrl+Up/Down jump between window
     # sections (group starts), and Enter launches the highlighted result.
-    if n and box_ds is not None and Melty.text_focused_ds is box_ds:
+    if n and box_ds is not None and Core.melty.text_focused_ds is box_ds:
         # Flat indices where each window group begins (for Ctrl jumps).
         starts = [i for i in range(n) if i == 0 or flat[i][2] is not flat[i - 1][2]]
 
@@ -771,9 +771,9 @@ def draw_global_search(input_value, draw_state=None, **kwargs):
                     gi = j
             return gi
 
-        downs = [m for k, m in Melty.frame_key_events if k == glfw.KEY_DOWN]
-        ups = [m for k, m in Melty.frame_key_events if k == glfw.KEY_UP]
-        enters = [k for k, _ in Melty.frame_key_events if k in (glfw.KEY_ENTER, glfw.KEY_KP_ENTER)]
+        downs = [m for k, m in Core.melty.frame_key_events if k == glfw.KEY_DOWN]
+        ups = [m for k, m in Core.melty.frame_key_events if k == glfw.KEY_UP]
+        enters = [k for k, _ in Core.melty.frame_key_events if k in (glfw.KEY_ENTER, glfw.KEY_KP_ENTER)]
         if downs:
             if any(m & glfw.MOD_CONTROL for m in downs):
                 input_value.selected = starts[(_group_idx() + 1) % len(starts)]
@@ -800,11 +800,11 @@ def draw_global_search(input_value, draw_state=None, **kwargs):
     for win, items in groups.items():
         win_label = str(getattr(win, 'name', '') or '').split("##")[0] or "?"
         imgui.dummy(2, 10)
-        text(win_label, height=26, indent_size=10, text_color=Melty.window_tint(getattr(win, 'name', None)),
+        text(win_label, height=26, indent_size=10, text_color=Core.melty.window_tint(getattr(win, 'name', None)),
              wrap=True, name=f"gsg_{idx}", width=w, font=Font.DEJAVU_SANS_22)
         for label, ds in items:
             sel = (idx == input_value.selected)
-            entry = Melty.find_window(getattr(ds, 'name', None))
+            entry = Core.melty.find_window(getattr(ds, 'name', None))
             tint = Melty.window_tint(getattr(ds, 'name', None) if entry is not None
                                      else getattr(win, 'name', None))
             if tint is None:
@@ -1022,12 +1022,12 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     # front (instead of needing an extreme priority that would consume events
     # from everything else) and doesn't eat the key from other views.
     if draw_state.on_action("non_blocking_ctrl_shift_f_down"):
-        gs = Melty.open_window("GlobalSearch")
+        gs = Core.melty.open_window("GlobalSearch")
         if gs is not None:
             # Summon the box to just above the cursor so it pops up where you're
             # looking and is ready to type into.
             mx, my = imgui.get_mouse_pos()
-            Melty.summon_window(gs, mx, my - 65)
+            Core.melty.summon_window(gs, mx, my - 65)
         GlobalSearch._focus_requested = True
         request_render()
 
@@ -1044,17 +1044,17 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     # no matter where the cursor is. non_blocking so the front window's blocker
     # doesn't eat Esc; only subscribes while open, so it doesn't swallow Esc from
     # a per-view search otherwise.
-    _gs = Melty.find_window("GlobalSearch")
+    _gs = Core.melty.find_window("GlobalSearch")
     if _gs is not None and not _gs.closed and draw_state.on_action("non_blocking_escape_key_down_inverted"):
         _gs.closed = True
-        Melty.text_focused_ds = None
-        Melty.focused_ds = None
+        Core.melty.text_focused_ds = None
+        Core.melty.focused_ds = None
         request_render()
 
-    draw_any(Melty.registered_windows, name="Dock", with_header=draw_header,
+    draw_any(Core.melty.registered_windows, name="Dock", with_header=draw_header,
              mode=(Mode.WINDOW_MANAGER_SORTED, Mode.WINDOW))
 
-    for window_cls, stored_kwargs in Melty.annotated_window_classes.values():
+    for window_cls, stored_kwargs in Core.melty.annotated_window_classes.values():
 
         # Copy: the stored dict is the @window decorator kwargs and persists
         # across frames. Popping view_func out of it would consume the override
@@ -1078,6 +1078,9 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     draw_any(TensorView, name="Tensorview", mode=(Mode.WINDOW))
 
     draw_any(filesystem_proxy, name="Filesystem", disable_scroll=False, mode=Mode.WINDOW)
+    draw_any([screenshots], name="Screenshots", mode=Mode.WINDOW,
+                child_kwargs={"child_kwargs":{"auto_resize": True}, "shadow":False,
+                              "show_name":False, "show_header":False, "show_bg":False, "horizontal":True})
 
     global drop_down_selection
     changed, selection = draw_dropdown(drop_down_selection, collection=dropdown_demo_data,
@@ -1094,14 +1097,14 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     # normalized_sub_mask, _, _ = Melty.filter.normalize(Melty.cache._mask_tex)
     # draw_texture(normalized_sub_mask, show_bg=True, max_contrast=30, jet=True,
     #             max_brightness=30, name="mask_tex", live=True, mode=Mode.WINDOW)
-    draw_any(Melty.cache.snapshot_tex, show_bg=True, name="Viewport", live=True, mode=Mode.WINDOW)
+    draw_any(Core.melty.cache.snapshot_tex, show_bg=True, name="Viewport", live=True, mode=Mode.WINDOW)
 
-    normalized_sub_mask, _, _ = Melty.filter.normalize(Melty.cache._full_mask_tex)
+    normalized_sub_mask, _, _ = Core.melty.filter.normalize(Core.melty.cache._full_mask_tex)
     draw_any(normalized_sub_mask, show_bg=True, max_contrast=30, jet=True,
              max_brightness=30, name="full_mask_tex", live=True, mode=Mode.WINDOW)
 
     mouse_pos = imgui.get_mouse_pos()
-    ds_under_mouse = Melty.bvh_query(mouse_pos[0], mouse_pos[1])
+    ds_under_mouse = Core.melty.bvh_query(mouse_pos[0], mouse_pos[1])
     ds_names = [ds.name for ds in ds_under_mouse]
     draw_any(ds_names, name="Draw State under mouse", show_bg=True, wrap=True, use_cache=True, mode=Mode.WINDOW,
              live=True)
@@ -1120,6 +1123,8 @@ name_edits = {}
 code_export_str = "Test"
 
 filesystem_proxy = FolderProxy("/home/lukas/test_folder", text_mode=True)
+
+screenshots = FolderProxy(Toggles.screenshots, text_mode=True)
 
 
 # Main draw function, called by the GUI framework
@@ -1150,42 +1155,51 @@ def draw_melty_windows(vis):
     title = "main##window_melty"
     opened, _ = begin(title, closable=False, flags=flags)
 
-    Melty.imgui_main_window_hovered = imgui.is_window_hovered()
+    Core.melty.imgui_main_window_hovered = imgui.is_window_hovered()
 
-    Melty.begin_frame()
+    Core.melty.begin_frame()
 
     # imgui.invisible_button("window_blocker", width=fb_w, height=fb_h)
     imgui.set_cursor_screen_pos((0, 0))
     imgui.set_item_allow_overlap()
 
     draw_list = imgui.get_window_draw_list()
-    draw_list.channels_split(Melty.max_depth)
-    Melty.channels_split = True
-    Melty.window_stack.append((title, True))
+    draw_list.channels_split(Core.melty.max_depth)
+    Core.melty.channels_split = True
+    Core.melty.window_stack.append((title, True))
 
     draw_main(name="Main Window", vis=vis, width=fb_w, height=fb_h)
 
     from src.lsd.gl_gui.applet.test_applet import render_app
     render_app()
 
-    Melty.end_frame()
+    Core.melty.end_frame()
 
     # End frame ###############
-    Melty.window_stack.pop()
+    Core.melty.window_stack.pop()
     draw_list.channels_merge()
-    Melty.channels_split = False
+    Core.melty.channels_split = False
 
     end()
 
 
-@render_func(is_default_for=PendingTexture, use_cache=True, z_offset=0, selectable=False,
-             show_bg=False, auto_resize=True, with_header=draw_header)
+@render_func(is_default_for=PendingTexture, use_cache=True, wrap=True, z_offset=1, selectable=False,
+             show_bg=True, auto_resize=True, with_header=draw_header)
 def draw_pending_texture(input_value: PendingTexture, draw_state):
     if input_value.texture_id is None:
         imgui.text(f"Uploading... {id(input_value)}")
         return False, input_value
 
-    return_val = draw_texture(input_value.texture_id, name=f"{draw_state.id}_inner", auto_resize=False,
+    max_size = 300
+    if input_value.tex_width > input_value.tex_height:
+        width = max_size
+        height = int(max_size * input_value.tex_height / input_value.tex_width)
+    else:
+        height = max_size
+        width = int(max_size * input_value.tex_width / input_value.tex_height)
+
+    return_val = draw_texture(input_value.texture_id, initial={"width":width, "height":height},
+                              name=f"{draw_state.id}_inner", auto_resize=False,
                               show_header=False, use_cache=True, wrap=False, tint=(0.2, 0.2, 0.3))
 
     return return_val
@@ -1193,7 +1207,7 @@ def draw_pending_texture(input_value: PendingTexture, draw_state):
 
 @render_func(is_default_for=numpy.uint32, show_bg=True, use_cache=False, show_add_delete=False, z_offset=2,
              fill_height=True,
-             indent_size=0, min_width=100, min_height=100, wrap=False, disable_scroll=True,
+             indent_size=0, min_width=35, min_height=35, wrap=False, disable_scroll=True,
              zoom_speed=0.3, with_header=draw_header, manual_content_height=True)
 def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mouse_drag, right_mouse_drag,
                  zoom_state: ZoomState, zoom_speed, header_height=0, min_zoom=0.1,
@@ -1289,44 +1303,44 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
         # zoom_state.contrast = max(0.0, min(max_contrast, zoom_state.contrast))
 
     if jet:
-        texture_id = Melty.filter.brightness_contrast(
+        texture_id = Core.melty.filter.brightness_contrast(
             input_value,
             brightness=zoom_state.brightness,
             contrast=zoom_state.contrast
         )
 
-        # texture_id = Melty.filter.swirl(
+        # texture_id = Core.melty.filter.swirl(
         #     input_value,
         #     radius=zoom_state.brightness,
         #     angle=zoom_state.contrast
         #
         # )
-        texture_id = Melty.filter.jet(texture_id, offset=zoom_state.hue)
+        texture_id = Core.melty.filter.jet(texture_id, offset=zoom_state.hue)
     else:
-        texture_id = Melty.filter.brightness_contrast(
+        texture_id = Core.melty.filter.brightness_contrast(
             input_value,
             brightness=zoom_state.brightness,
             contrast=zoom_state.contrast
         )
 
-        # texture_id = Melty.filter.swirl(
+        # texture_id = Core.melty.filter.swirl(
         #     input_value,
         #     radius=zoom_state.brightness,
         #     angle=zoom_state.contrast
         #
         # )
-        texture_id = Melty.filter.hue_saturation(
+        texture_id = Core.melty.filter.hue_saturation(
             texture_id,
             saturation=(zoom_state.saturation),
             hue_shift=(zoom_state.hue),
         )
 
-    # texture_id = Melty.filter.swirl(
+    # texture_id = Core.melty.filter.swirl(
     #     input_value,
     #     radius=1.0,
     #     angle=(zoom_state.brightness * 5),
     # )
-    # texture_id = Melty.filter.swirl(
+    # texture_id = Core.melty.filter.swirl(
     #     texture_id,
     #     angle=zoom_state.brightness,
     #     radius=zoom_state.contrast
@@ -1506,7 +1520,7 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
     else:
         draw_state.hover_reported = False
 
-    Melty.push_clip((clip_left, clip_top, clip_right - 3, clip_bottom))
+    Core.melty.push_clip((clip_left, clip_top, clip_right - 3, clip_bottom))
     draw_list.add_image_rounded(texture_id,
                                 a=p_min,
                                 b=p_max,
@@ -1516,7 +1530,7 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
     draw_list.add_rect(raw_img_left, raw_img_top, raw_img_right + 1, raw_img_bottom + 1,
                        imgui.get_color_u32_rgba(*mixed_color[:3], 1.0),
                        0.0, 0, 1.0)
-    Melty.pop_clip()
+    Core.melty.pop_clip()
 
     line_height = imgui.get_text_line_height()
     draw_list.add_text(max(p_min_x + 5, raw_img_left), clip_top - line_height - 5,
@@ -1546,7 +1560,7 @@ def draw_managed_window(input_value, name, draw_state, mouse_down=False, selecta
     imgui.same_line()
 
     if not window_draw_state.persistent and not window_draw_state.seen and window_draw_state.closed:
-        Melty.delete_window(window_draw_state)
+        Core.melty.delete_window(window_draw_state)
 
     window_tint = None
 
@@ -1606,8 +1620,8 @@ def draw_managed_window(input_value, name, draw_state, mouse_down=False, selecta
         from_zero_x = window_draw_state.abs_left - window_draw_state.window_pos[0]
         from_zero_y = window_draw_state.abs_top - window_draw_state.window_pos[1]
         window_draw_state.window_pos = (this_window_right + 10 - from_zero_x, draw_state.abs_top - from_zero_y)
-        Melty.move_window_to_front(window_draw_state)
-        Melty.cache.invalidate_up_by_obj(input_value)
+        Core.melty.move_window_to_front(window_draw_state)
+        Core.melty.cache.invalidate_up_by_obj(input_value)
 
     imgui.set_cursor_screen_pos(start_cursor)
 
@@ -1633,12 +1647,12 @@ def export_code(test_param_2: int = 5):
 def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
                           collection, key, melty, y_offset, enable_flow, min_width,
                           unique, tag, style_manager, offset=0, indent_size=10):
-    if Melty.active_layer == Melty.drag_layer:
+    if Core.melty.active_layer == Core.melty.drag_layer:
         return False, 0.0
 
     cursor_y_screen = imgui.get_cursor_screen_pos()[1]
 
-    if collection == input_value or not Melty.is_window_enabled():
+    if collection == input_value or not Core.melty.is_window_enabled():
         return False, 0.0
 
     if melty.initial_drag_offset is None:
@@ -1684,12 +1698,12 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
         drag_delta_curve = 1.0
 
     if tag == "top":
-        Melty.flow_spacing += (flow_spacing)
+        Core.melty.flow_spacing += (flow_spacing)
         # imgui.set_cursor_pos_y(imgui.get_cursor_pos()[1] + (flow_spacing))
 
     draw_list = imgui.get_window_draw_list()
-    # if Melty.channels_split:
-    #     draw_list.channels_set_current(min(Melty.max_depth - 1, depth + 2))
+    # if Core.melty.channels_split:
+    #     draw_list.channels_set_current(min(Core.melty.max_depth - 1, depth + 2))
 
     # line_width = imgui.get_style().frame_padding.y * 2.0
     # color = style_manager.make_color_rgb(*(1.0, 1.0, 1.0), factor=1.0,
@@ -1709,11 +1723,11 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
             active_drop = (melty.drag_drop_target == draw_state.unique
                            and tag == melty.drag_drop_target_tag)
 
-            if Melty.channels_split:
-                draw_list.channels_set_current(min(Melty.get_channel() + 1, Melty.max_depth - 1))
+            if Core.melty.channels_split:
+                draw_list.channels_set_current(min(Core.melty.get_channel() + 1, Core.melty.max_depth - 1))
 
                 if active_drop:
-                    draw_list.channels_set_current(min(Melty.get_channel() + 2, Melty.max_depth - 1))
+                    draw_list.channels_set_current(min(Core.melty.get_channel() + 2, Core.melty.max_depth - 1))
                     cursor_bottom += ((1.0 - drag_delta_curve) * drop_gap)
 
             if distance_to_mouse < melty.nearest_drop_distance:
@@ -1739,7 +1753,7 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
             opacity *= initial_fade_offset
             # opacity = 1.0 if active_drop else opacity
 
-            bg_tint = Melty.get_bg_color(-1)
+            bg_tint = Core.melty.get_bg_color(-1)
             bg_style = GlobalStyle.get_global_constant("bg_style", folder="bg_styles")
 
             color = style_manager.make_custom_styled(*bg_tint, input=bg_style,
@@ -1771,7 +1785,7 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
                                       col=imgui.get_color_u32_rgba(*color), rounding=4.0)
 
             if opacity > 0:
-                Melty.cache.mask_mark_rect(draw_state, Melty.max_depth - 1, draw_state.shadow_depth, left, top, width,
+                Core.melty.cache.mask_mark_rect(draw_state, Core.melty.max_depth - 1, draw_state.shadow_depth, left, top, width,
                                            height,
                                            key=f"{left}x{top}_flow")
             #
@@ -1785,10 +1799,10 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
 
 @hotkey(glfw.KEY_O)
 def toggle_offscreen():
-    if Melty.cache.enabled:
-        Melty.cache.set_enabled(False)
+    if Core.melty.cache.enabled:
+        Core.melty.cache.set_enabled(False)
     else:
-        Melty.cache.set_enabled(True)
+        Core.melty.cache.set_enabled(True)
 
 
 import imgui
@@ -1871,8 +1885,8 @@ def draw_vertical_scrollbar(content_height: float,
     track_w = track_x2 - track_x1
     track_h = track_y2 - track_y1
     dl.add_rect_filled(track_x1, track_y1, track_x2, track_y2, col_track, rounding)
-    # Melty.cache.mask_mark_rect(Melty.depth, track_x1, track_y1, track_w, track_h,
-    #                            key=str(Melty.unique_stack[-1]) + "scrollbar")
+    # Core.melty.cache.mask_mark_rect(Core.melty.depth, track_x1, track_y1, track_w, track_h,
+    #                            key=str(Core.melty.unique_stack[-1]) + "scroll_track")
 
     dl.add_rect(track_x1, track_y1, track_x2, track_y2, col_border, rounding)
     # Grab
@@ -1921,7 +1935,7 @@ def get_bg_color(depth, rounding, style_manager, auto_resize):
         bleed_factor = 0.2
     else:
         bleed_factor = 0.0
-    bg_bleed = Melty.get_bg_color(-1)
+    bg_bleed = Core.melty.get_bg_color(-1)
     bg_bleed = style_manager.make_custom_styled(*bg_bleed, input=bg_style,
                                                 value=0.6,
                                                 alpha=1.0, saturation=1.8)
@@ -1987,7 +2001,7 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
 
     # ── Helpers ────────────────────────────────────────────────
     def current_indent_px():
-        return Melty.current_indent
+        return Core.melty.current_indent
 
     def mix_colors(color_a, color_b, factor):
         return (
@@ -1998,7 +2012,7 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
 
     # -- Depth calculation -------------------
     max_depth = 15
-    wrapped_depth = min(max_depth, (Melty.bg_depth % depth_wrap) + bg_offset)
+    wrapped_depth = min(max_depth, (Core.melty.bg_depth % depth_wrap) + bg_offset)
     scaled_depth = wrapped_depth * depth_scale
     depth_intensity = (scaled_depth + intensity_offset) * intensity_factor
     max_depth_intensity = 0.652
@@ -2038,7 +2052,7 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
     # ── Background bleed color ─────────────────────────────────
     bleed_factor = bleed_mix['nested'] if nested_bg else bleed_mix['default']
 
-    bleed_base = Melty.get_bg_color(-1)
+    bleed_base = Core.melty.get_bg_color(-1)
     bleed_color = style_manager.make_custom_styled(
         *bleed_base, input=bg_style, **bleed_style,
     )
@@ -2212,8 +2226,8 @@ def draw_bool(input_value: bool):
              disable_scroll=True, min_width=30, with_header=draw_header, temp=True)
 def text(input_value: str, wrap, wrap_text=False, text_color=(1, 1, 1), draw_state=None, font=None):
     _font_pushed = False
-    if font is not None and Melty.font_mgr is not None:
-        _font_handle = Melty.font_mgr.get(font)
+    if font is not None and Core.melty.font_mgr is not None:
+        _font_handle = Core.melty.font_mgr.get(font)
         if _font_handle is not None:
             imgui.push_font(_font_handle)
             _font_pushed = True
@@ -2334,9 +2348,9 @@ def draw_usage(input_value: UsageRef):
 def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=False):
     changed, value = False, input_value
 
-    imgui.dummy(10, 10)
-    depth = max(0.0, Melty.bg_depth)
-    depth_scale = 0.039
+    imgui.dummy(0, 4)
+    depth = max(0.0, Core.melty.bg_depth)
+    depth_scale = 0.088
     name_style = {
         'value': -0.479, 'saturation': 1.172,
         'alpha': 0.014, 'max_value': 3.921,
@@ -2364,7 +2378,7 @@ def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=F
 
 @render_func(is_default_for=('tint', 'help_yellow_tint', 'context_select_tint', "text_color"), has_popup=True,
              indent_size=0, is_tree=False,
-             show_name=True, selectable=False, wrap=True, min_width=40, use_cache=False, with_header=None)
+             show_name=True, selectable=False, wrap=True, min_width=40, use_cache=False, with_header=draw_header)
 def draw_tuple(input_value: tuple, name, unique):
     if len(input_value) > 0 and isinstance(input_value[0], (float, int)):
         if len(input_value) == 4:
@@ -2512,7 +2526,7 @@ def eval_function(input_value, draw_state):
         result = input_value(**kwargs)
         draw_any(result, name="Result", show_header=True, show_add_delete=False)
         if draw_state._result != result:
-            Melty.cache.invalidate_all()
+            Core.melty.cache.invalidate_all()
         draw_state._result = result
 
     except Exception as e:
@@ -2546,17 +2560,13 @@ def draw_app_model(input_val):
     imgui.text("An App Model Instance")
 
 
-@render_func(is_default_for=(types.FunctionType, types.MethodType), show_add_delete=False, show_bg=False,
+@render_func(is_default_for=(types.FunctionType, types.MethodType), show_add_delete=False, selectable=False, show_bg=False,
              parent_show_add_delete=False, is_tree=False, show_name=False, with_header=draw_header)
 def draw_function(input_value, name, draw_state, unique, **kwargs):
     if not callable(input_value):
         imgui.text("Not a callable function")
         return False, input_value
-    sees_this = 3
     try:
-        # vvvv Does not see this vvvv
-        imgui.text(f"Error inspecting function parameters:")
-
         signature = inspect.signature(input_value)
         params = signature.parameters
         if len(draw_state.params) != len(params):
@@ -2573,15 +2583,14 @@ def draw_function(input_value, name, draw_state, unique, **kwargs):
                     if default_value is not inspect.Parameter.empty:
                         param_dict[name] = default_value
                     else:
-                        if name in Melty.global_attrs:
-                            param_dict[name] = Melty.global_attrs[name]
+                        if name in Core.melty.global_attrs:
+                            param_dict[name] = Core.melty.global_attrs[name]
 
             draw_state.params = param_dict
         if len(draw_state.params) > 0:
-            sees_this = 34
             changed, new_val = draw_collection(draw_state.params, name="Parameters",
                                                show_add_delete=False, parent_show_add_delete=False, horizontal=True,
-                                               child_kwargs={"wrap": True, "max_width": 200,
+                                               child_kwargs={"max_width": 200,
                                                              "show_bg": True, "use_cache": True, "z_offset": 2.0})
             if changed:
                 draw_state.params = new_val
@@ -2590,11 +2599,10 @@ def draw_function(input_value, name, draw_state, unique, **kwargs):
         draw_state.params = {}
         sees_this = 0
 
-    # Does not see this either
-    if button(f"{input_value.__name__}##{unique}", height=35, bg_offset=-20, tint=(0.0107301, 0.029, 0.074, 0.0))[0]:
+    if button(f"{input_value.__name__}##{unique}", height=35, bg_offset=-15, tint=(0.021, 0.104, 0.167, 0.0))[0]:
         try:
             draw_state.result = input_value(**draw_state.params)
-            Melty.cache.invalidate_up_current(force=True)
+            Core.melty.cache.invalidate_up_current(force=True)
         except Exception as e:
             print(f"Error calling function '{input_value.__name__}': {e}")
             print_colored_traceback(*sys.exc_info())
@@ -2630,7 +2638,7 @@ def draw_debug_label(input_value: str):
 
 
 @render_func(is_default_for=Enum, is_tree=False, shadow=False, align_header=False,
-             selectable=False, header_same_line=True, wrap=False,
+             selectable=False, header_same_line=True,
              parent_show_add_delete=False, with_header=draw_header, temp=True)
 def draw_enum(input_value: Enum, draw_state=None, style_manager=None, enum_tint=(0.3, 0.3, 0.3)):
     # Delegate to draw_tab_bar so enums get its wrapping and styling for free.
@@ -2639,9 +2647,8 @@ def draw_enum(input_value: Enum, draw_state=None, style_manager=None, enum_tint=
     options = list(input_value.__class__)
 
     names = [opt.name.replace("_", " ").capitalize() for opt in options]
-    changed, selected = draw_tab_bar([input_value], collection=options, names=names,
-                                     min_width=draw_state.content_width, z_offset=1,
-                                     unique="enum", as_toggles=False)
+    changed, selected = draw_tab_bar([input_value], collection=options, names=names, wrap=True,
+                                      z_offset=-1, unique="enum", as_toggles=False, bg_offset=-3)
     if changed and selected:
         return True, selected[0]
     return False, input_value
@@ -2748,7 +2755,7 @@ def draw_tab_bar(input_value: list, tab_height=30, names=None, tint_value=0.235,
     # pop_style_var(1)
 
     if changed:
-        Melty.refresh_nested_windows(draw_state)
+        Core.melty.refresh_nested_windows(draw_state)
 
     return changed, selected
 
@@ -2867,15 +2874,15 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     if input_value._parent.id is not None:
         if button(fa_up_arrow, height=30)[0] or up_key_pressed:
             input_value.context_menu_offset += 1
-            Melty.cache.invalidate_up(draw_state._tile_id, max_depth=5)
-            Melty.cache.invalidate_up(input_value._tile_id, max_depth=5)
+            Core.melty.cache.invalidate_up(draw_state._tile_id, max_depth=5)
+            Core.melty.cache.invalidate_up(input_value._tile_id, max_depth=5)
 
         imgui.same_line()
     if input_value.context_menu_offset > 0:
         if button(fa_down_arrow, height=30)[0] or down_key_pressed:
             input_value.context_menu_offset = max(0, input_value.context_menu_offset - 1)
-            Melty.cache.invalidate_up(draw_state._tile_id, max_depth=5)
-            Melty.cache.invalidate_up(input_value._tile_id, max_depth=5)
+            Core.melty.cache.invalidate_up(draw_state._tile_id, max_depth=5)
+            Core.melty.cache.invalidate_up(input_value._tile_id, max_depth=5)
 
     else:
         imgui.dummy(30, 30)
@@ -2883,6 +2890,24 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     imgui.same_line()
     imgui.text_colored(f"{context_menu_offset}", 1, 1, 1, 0.3)
     imgui.same_line()
+    
+    
+    # Screenshot this menu's parent view, top of the menu below the nav arrows.
+    # Deferred so the menu isn't in the shot: front the owning window (so the
+    # view is visible), queue the view capture, hide this menu (asking to reopen
+    # it afterward), then let screenshot.process_window_screenshot_flags grab the
+    # view's rect a few frames later and reopen the menu.
+    if button(f" ", height=30, tint=(0,0,0,1.0), name=f"screenshot_window##{unique}")[0]:
+        from src.lsd.gl_gui.screenshot import request_view_capture
+        view_ds = input_value  # the view this menu is for (offset-walked)
+        Core.melty.move_window_to_front(view_ds.root_window)
+        draw_state._reopen = True
+        request_view_capture(view_ds, Core.melty.frame_count, reopen_menu_ds=draw_state)
+        draw_state.closed = True
+        request_render()
+
+    imgui.same_line()
+
 
     offset_ds = input_value
     for i in range(context_menu_offset):
@@ -2898,8 +2923,8 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     if (offset_ds is not input_value and not offset_ds._call_site_captured
             and not offset_ds._call_site_requested):
         offset_ds._call_site_requested = True
-        if Melty.cache is not None:
-            Melty.cache.invalidate_up(offset_ds._tile_id, max_depth=5)
+        if Core.melty.cache is not None:
+            Core.melty.cache.invalidate_up(offset_ds._tile_id, max_depth=5)
         request_render()
 
     input_value._offset_ds = offset_ds
@@ -2965,7 +2990,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     tab_names.append(eval_tab_name)
     tab_tints.append((0.2, 0.7, 0.3))  # green for the eval/REPL tab
     tab_names.append(tint_tab_name)
-    tab_tints.append(Melty._saturated_rgb(draw_state.tint))  # Custom tint for the tint tab
+    tab_tints.append(Core.melty._saturated_rgb(draw_state.tint))  # orange tint for the tint tab
     if class_to_show is not None:
         tab_names.append(class_tab)
         tab_tints.append(None)
@@ -2986,7 +3011,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     imgui.same_line()
     tab_changed, new_tabs = draw_tab_bar(tab_state.selected_tabs, names=tab_names, wrap=True, tab_height=40,
                                          tint_value=0.7,
-                                         width=max(50, draw_state.content_width - 125),
+                                         width=max(50, draw_state.content_width - 165),
                                          show_bg=True, name=f"tab_bar#{view_func_name}{unique}",
                                          z_offset=-0.5, bg_offset=-7, draw=True,
                                          collection=indices, tints=tab_tints, as_toggles=False)
@@ -3121,34 +3146,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
                                      show_name=True, show_header=True,
                                      show_add_delete=False, draw=True)
             if tab_names[static_tab] == func_tab:
-                start_cursor = imgui.get_cursor_screen_pos()
-                imgui.set_cursor_screen_pos(
-                    (imgui.get_cursor_screen_pos()[0] + 350, imgui.get_cursor_screen_pos()[1] + 28))
-                # Jump-to-caller: open the call site where this widget's render
-                # func was invoked. Reads the (filename, lineno) cached at
-                # menu-open (_call_site) - only available at offset 0.
-                _site = getattr(input_value, '_call_site', None)
-
-                if _site is not None:
-                    _caller_file, _caller_line = _site
-                    # Resolve the enclosing caller function name from the line --
-                    # same approach the Convert tab uses (chain_converters).
-                    from src.lsd.gl_gui.view.core_conversion.chain_converters import _enclosing_function
-                    _caller_fn = _enclosing_function(_caller_file, _caller_line)
-                    _caller_label = f"{Path(_caller_file).name}:{_caller_line}"
-                    if _caller_fn is not None:
-                        _caller_label = f"{_caller_fn.__name__}  ({_caller_label})"
-                    if button(_caller_label,
-                              height=28, z_offset=-2, rounding=3, shadow=True, tint_value=0.15
-                            , saturation=0.9, name="jump_to_caller")[0]:
-                        from src.lsd.gl_gui.utils.jump_to_code import open_in_intellij
-                        threading.Thread(
-                            target=open_in_intellij,
-                            args=(str(_caller_file),),
-                            kwargs={"line_number": _caller_line},
-                            daemon=True).start()
-
-                imgui.set_cursor_screen_pos((start_cursor[0], start_cursor[1]))
+          
 
                 view_func = input_value._view_func
                 # Draw view function
@@ -3394,13 +3392,13 @@ def draw_any(input_value: any = None, view_func=None, mode: any = None, chain=No
     collection_type = kwargs.get("type_collection", type(kwargs.get("collection", None)))
 
     # if view_func is None:
-    #     view_func = Melty.get_default_view_function(real_type=real_type, collection_type=collection_type, attrib_key=key)
+    #     view_func = Core.melty.get_default_view_function(real_type=real_type, collection_type=collection_type, attrib_key=key)
     #
     # if view_func is None:
     #     view_func = draw_collection
 
     if view_func is None:
-        new_default = Melty.get_default_view_function(real_type=real_type, collection_type=collection_type,
+        new_default = Core.melty.get_default_view_function(real_type=real_type, collection_type=collection_type,
                                                       attrib_key=key)
         if new_default is None:
             new_default = draw_collection
@@ -3413,7 +3411,7 @@ def draw_any(input_value: any = None, view_func=None, mode: any = None, chain=No
         return run_chain(input_value, chain=chain, **kwargs)
 
     if mode is None:
-        mode = Melty.mode_stack[-1] if len(Melty.mode_stack) > 0 else None
+        mode = Core.melty.mode_stack[-1] if len(Core.melty.mode_stack) > 0 else None
 
     if isinstance(mode, tuple) and len(mode) > 0:
         main_mode = mode[0]
@@ -3421,14 +3419,14 @@ def draw_any(input_value: any = None, view_func=None, mode: any = None, chain=No
         main_mode = mode
 
     # --- Search: forward the active search term to searchable child views ---
-    # The term rides Melty.search_stack so it reaches the whole subtree. We
+    # The term in Core.melty.search_stack so it reaches the whole subtree. We
     # simply hand it to each searchable view via its "search_text` param and
     # let the view decide what to do with it (the text editor highlights
     # matches in place). No value conversion or filtering happens here.
-    # if (len(Melty.search_stack) > 0
+    # if (len(Core.melty.search_stack) > 0
     #         and (getattr(kwargs_view_func, '_searchable', False) or kwargs.get("searchable", False))
     #         and "search_text" not in kwargs):
-    #     kwargs["search_text"] = Melty.search_stack[-1]
+    #     kwargs["search_text"] = Core.melty.search_stack[-1]
 
     if main_mode is not None:
         # Loop over super types

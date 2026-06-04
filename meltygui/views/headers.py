@@ -250,7 +250,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     arrow_color = style_manager.make_color_style_value(input=arrow_style)
 
     # ── Tree arrow ─────────────────────────────────────────────
-    imgui.dummy(0, 0)
+    imgui.dummy(5, 0)
     start_x = imgui.get_cursor_screen_pos()[0]
 
     on_change = False
@@ -274,7 +274,6 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         arrow_dir = imgui.DIRECTION_DOWN if draw_state.expanded else imgui.DIRECTION_RIGHT
         if imgui.arrow_button("##tree", arrow_dir):
             draw_state.expanded = not draw_state.expanded
-            print(f"Expanded: {draw_state.expanded}")
             draw_state.content_height = 0
             draw_state.invalid_content_height = True
             request_render()
@@ -293,7 +292,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         imgui.text_colored(f"({str(Melty.get_tile_id())})", *unique_label_tint)
         same_line()
     if show_name and name != "":
-        same_line(spacing=3)
+        same_line(spacing=0)
         imgui.set_item_allow_overlap()
 
     from src.lsd.gl_gui.view.core_views.new_core_view import draw_tuple
@@ -346,7 +345,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     has_visible_name = show_name and name not in ("", None, "None")
 
     if has_visible_name:
-        clipped_name = name.split("##")[0][:max_name_chars]
+        clipped_name = name.split("##")[0][:max_name_chars] + " "
         if header_same_line:
             text_width = imgui.calc_text_size(clipped_name)[0] - 4
         else:

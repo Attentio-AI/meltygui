@@ -1075,7 +1075,7 @@ class TileCacheMasked:
         # in still carries its previous box and a clip query misses it - the
         # very views this needs to find. children_in_clip binary searches the
         # ordered child dict using live abs_top, so it sees the current layout.
-        children_in_clip = draw_state.children_in_clip(clip, max_depth=9)
+        children_in_clip = draw_state.children_in_clip(clip, max_depth=5)
         for ds in children_in_clip:
             if Toggles.InvalidateTracker.draw_bvh:
                 InvalidateTracker.invalidations[f"{ds.name} in {draw_state.name} ds"] = Note(name="ds rect",
