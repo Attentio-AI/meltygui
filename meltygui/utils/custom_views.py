@@ -9,9 +9,9 @@ import imgui
 import psutil
 from imgui import ImGuiError
 
-from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.model.model_enums import RelaxedEnum
 from src.lsd.gl_gui.utils.glfw_utils import _needs_render, print_stack_trace
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
 from src.lsd.train.lsd_utils import singleton
 
 
@@ -38,8 +38,8 @@ class LSDView:
 
 
     def is_key_release(self, key=glfw.KEY_ESCAPE):
-        return (glfw.get_key(Melty.vis.window, key) == glfw.RELEASE and
-                key in Melty.vis.last_frame_keys)
+        return (glfw.get_key(Core.melty.vis.window, key) == glfw.RELEASE and
+                key in Core.melty.vis.last_frame_keys)
 
     def set_style_manager(self, style_manager):
         """
@@ -366,7 +366,7 @@ def does_need_render():
 
 
 def new_frame():
-    if Melty.imgui_crashed:
+    if Core.melty.imgui_crashed:
         return
 
     LSDView().group_stack.append(GroupType.FRAME)
@@ -374,13 +374,13 @@ def new_frame():
 
 
 def end_frame():
-    if Melty.imgui_crashed:
+    if Core.melty.imgui_crashed:
         return
 
     # Merge the foreground/overlay channels before ImGui finalizes the frame because
     # ImGui's render path requires merged channels, and this is the last frame
     # after all user draws.
-    Melty.finalize_overlay_channels()
+    Core.melty.finalize_overlay_channels()
 
     if LSDView().group_stack[-1] == GroupType.FRAME:
         LSDView().group_stack.pop()
@@ -392,7 +392,7 @@ def end_frame():
 
 
 def begin_child(signatures, *args, **kwargs):
-    if Melty.imgui_crashed:
+    if Core.melty.imgui_crashed:
         return False
 
     LSDView().group_stack.append(GroupType.CHILD)
@@ -400,7 +400,7 @@ def begin_child(signatures, *args, **kwargs):
 
 
 def end_child():
-    if Melty.imgui_crashed:
+    if Core.melty.imgui_crashed:
         return
 
     if LSDView().group_stack[-1] == GroupType.CHILD:
@@ -413,7 +413,7 @@ def end_child():
 
 
 def begin(str_label, closable=False, flags=0):
-    if Melty.imgui_crashed:
+    if Core.melty.imgui_crashed:
         return False, False
 
     LSDView().group_stack.append(GroupType.WINDOW)
@@ -421,7 +421,7 @@ def begin(str_label, closable=False, flags=0):
 
 
 def end():
-    if Melty.imgui_crashed:
+    if Core.melty.imgui_crashed:
         return
 
     if LSDView().group_stack[-1] == GroupType.WINDOW:
@@ -434,14 +434,14 @@ def end():
 
 
 def push_style_color(ImGuiCol_variable, float_r, float_g, float_b, float_a=1.):
-    if Melty.imgui_crashed:
+    if Core.melty.imgui_crashed:
         return
     LSDView().color_stack.append(GroupType.COLOR)
     return imgui.push_style_color(ImGuiCol_variable, float_r, float_g, float_b, float_a)
 
 
 def pop_style_color(size=1):
-    if Melty.imgui_crashed:
+    if Core.melty.imgui_crashed:
         return
 
     for _ in range(size):
@@ -455,14 +455,14 @@ def pop_style_color(size=1):
             imgui.pop_style_color(1)
 
 def push_style_var(ImGuiStyleVar_variable, value):
-    if Melty.imgui_crashed:
+    if Core.melty.imgui_crashed:
         return
 
     LSDView().style_stack.append(GroupType.STYLE)
     return imgui.push_style_var(ImGuiStyleVar_variable, value)
 
 def pop_style_var(size=1):
-    if Melty.imgui_crashed:
+    if Core.melty.imgui_crashed:
         return
 
     for _ in range(size):
@@ -544,15 +544,15 @@ def print_colored_traceback(exc_type=None, exc_value=None, exc_traceback=None, l
         color = "CYAN"
 
     e = exc_value
-    if not Melty.imgui_crashed:
+    if not Core.melty.imgui_crashed:
         if isinstance(e, ImGuiError):
-            if Melty.vis is not None:
-                Melty.imgui_crashed = True
-                if Melty.vis.imgui_ctx is not None:
+            if Core.melty.vis is not None:
+                Core.melty.imgui_crashed = True
+                if Core.melty.vis.imgui_ctx is not None:
 
-                    # if Melty.vis._impl is not None:
-                    #     Melty.vis._impl.shutdown()
-                    #     Melty.vis.impl = None
+                    # if Core.melty.vis._impl is not None:
+                    #     Core.melty.vis._impl.shutdown()
+                    #     Core.melty.vis.impl = None
                     RED_BOLD = "\033[1;31m"
                     RESET = "\033[0m"
                     print("-" * 80)
@@ -561,8 +561,8 @@ def print_colored_traceback(exc_type=None, exc_value=None, exc_traceback=None, l
                     stack_from_e = traceback.extract_tb(exc_traceback)
                     print("-" * 80)
 
-                    Melty.vis.exception_raised = True
-                    Melty.imgui_crashed = True
+                    Core.melty.vis.exception_raised = True
+                    Core.melty.imgui_crashed = True
                     # Stack trace
                     print_colored_traceback(*info, limit=50)
 
@@ -659,7 +659,7 @@ def print_colored_traceback(exc_type=None, exc_value=None, exc_traceback=None, l
     if file is None:
         file = sys.stdout
 
-    if Melty.imgui_crashed:
+    if Core.melty.imgui_crashed:
         #p
         import time
         time.sleep(0.1)

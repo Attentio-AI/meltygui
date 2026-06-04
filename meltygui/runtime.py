@@ -16,7 +16,6 @@ from rtree import index as rtree_index
 from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.view.attribute_churn import AttributeChurnMonitor
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
-from src.lsd.gl_gui.view.driver_playground import DriverPlayground
 from src.lsd.gl_gui.view.invalidation_tracker import InvalidateTracker, Note
 
 from src.lsd.gl_gui.background import Background
@@ -32,7 +31,6 @@ from src.lsd.gl_gui.events.input_handler import InputHandler, InputEvent
 from src.lsd.gl_gui.events.event_backends import ImGuiBackend, GlfwQueueBackend
 from src.lsd.gl_gui.model.core_model.core_enums import generate_id
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
-
 
 import OpenGL.GL as gl
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
@@ -438,6 +436,8 @@ class Melty:
     default_funcs_by_name_type = defaultdict(lambda: defaultdict(lambda: list()))
     default_funcs_by_name = defaultdict(lambda: None)
 
+    default_lenses_by_type = defaultdict(lambda: None)
+
     # Every @render_func wrapper, keyed by its own name (e.g. "draw_type").
     # Auto-populated by the decorator; the RenderFuncs accessor below resolves
     # against it lazily so modules can reference render_funcs by symbol without
@@ -590,8 +590,9 @@ class Melty:
         cls._bvh_next_id += 1
         draw_state._bvh_id = rid
         cls._bvh_id_to_ds[rid] = draw_state
-        cls._bvh.insert(rid, bbox)
-        cls._bvh_gen += 1
+        if bbox[0] < bbox[2] and bbox[1] < bbox[3]:
+            cls._bvh.insert(rid, bbox)
+            cls._bvh_gen += 1
         draw_state._bvh_bbox = bbox
         return rid
 

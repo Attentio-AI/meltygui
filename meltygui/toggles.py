@@ -138,13 +138,13 @@ class Swoosh:
 
 @window(tint=(0.9627907, 0.566004, 0.2))
 class Toggles:
-    test_float = 3.303
+    test_float = 0.598
     debug_scroll = False
     
     
     @defaults(tint=(0.9,0.7,0.1))
     class InvalidateTracker:
-        keep_for_frames = 10
+        keep_for_frames = 12
         enable = False
         draw_bvh = False
         
@@ -152,17 +152,18 @@ class Toggles:
     class Debug:
         slow_frame_rate = False
 
-     # Overlay a small green rect on every draw_state whose blit tile is
+    # Overlay a transparent tint overlay on every draw_state whose blit tile is
     # fully filled (filled_bbox covers full size). Used to verify the scroll-
     # invalidation stop-at-filled gate is actually marking tiles complete.
     show_filled_tiles = False
-    
+
     gl_check_error = False
     enable_jedi = True
 
     # [tint(0.9, 0.5, 0.0)]
     jedi_correctness = False
-
+    
+    
     # Invalidation settings
     invalidate_stack_trace = False
     text_focus_stack_trace = False
@@ -175,9 +176,9 @@ class Toggles:
     profile_mode = ProfileMode.OFF
     debug_stale_tint = False
     show_line_break = False
-  
+ 
     # Filter SettingS
-    brightness = 0.338
+    brightness = 0.334
     contrast = 1.645
     saturation = -0.4
     prefered_header_width = 17
@@ -199,6 +200,12 @@ class Toggles:
 
     # Screenshot output directory (used by screenshot.py / context menu capture)
     screenshots = "/home/lukas/melty/screenshots"
+
+    # Function names caller_site walks PAST when resolving a call site - wrapper /
+    # dispatch shells that aren't the user's real caller. Climb the stack until a
+    # frame whose function isn't in this list. (RenderFuncs._dispatch plus the
+    # draw_* render shells.)
+    ignore_call_from = ("draw_main", "draw_inner", "draw_inner_main", "__call__", "draw_collection", "draw_with_view_funcs")
 
 @window
 class LegacyToggles:

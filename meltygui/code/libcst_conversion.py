@@ -21,10 +21,11 @@ from libcst._nodes.internal import CodegenState as _CodegenState
 
 from src.lsd.gl_gui.fonts import Font
 from src.lsd.gl_gui.melty import Melty
-from src.lsd.gl_gui.modes import Modes
+from src.lsd.gl_gui.modes import Modes, _LazyMode
 from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.view.core_conversion.path_finder import convert, PendingState
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
+from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults, Core
 
 
@@ -1616,26 +1617,27 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
 
                 last_key = None
                 for node in stmt.body:
-                    # x = 0
-                    if isinstance(node, cst.Assign) and len(node.targets) == 1:
-                        target = node.targets[0].target
-                        if isinstance(target, cst.Name):
-                            py_value = _cst_to_python_or_raw(node.value)
-                            if py_value is not _UNREADABLE:
-                                readable[target.value] = py_value
-                                _record_child(readable, target.value, py_value, node)
-                                last_key = target.value
-                    # x: int = 0
-                    elif isinstance(node, cst.AnnAssign):
-                        if isinstance(node.target, cst.Name) and node.value is not None:
-                            py_value = _cst_to_python_or_raw(node.value)
-                            if py_value is not _UNREADABLE:
-                                readable[node.target.value] = py_value
-                                _record_child(readable, node.target.value, py_value, node)
-                                last_key = node.target.value
-                    else:
-                        # Bare call statement, e.g. configure(foo=True)
-                        ck = _extract_call_statement(node, readable, call_seen, local_sigs)
+                    # x = 0  /  x: int = 0 - keyed by the plain target name.
+                    name = _assign_target_name(node)
+                    if name is not None:
+                        val_node = _assign_value_node(node)
+                        py_value = (_cst_to_python_or_raw(val_node)
+                                    if val_node is not None else _UNREADABLE)
+                        if py_value is not _UNREADABLE:
+                            readable[name] = py_value
+                            _record_child(readable, name, py_value, node)
+                            last_key = name
+                        continue
+                    # Surface a function call so its args are visible/editable: a bare
+                    # call (configure(debug=True)) OR a call assigned to a NON-Name
+                    # target (changed, new_dict = draw_collection(...)). The latter
+                    # has to hit the Assign branch, fail the `isinstance Name` check,
+                    # and surface nothing - the gap that made a lone call line parse
+                    # to an empty dict. Mirrors _extract_block_assignments so a call
+                    # statement surfaces the same at module level as in a method body.
+                    call_node = _stmt_call_node(node)
+                    if call_node is not None:
+                        ck = _surface_call(call_node, readable, call_seen, local_sigs)
                         if ck is not None:
                             last_key = ck
 
@@ -1671,7 +1673,9 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
     # hang the caller/definition index straight onto the gp. `jump_to` is the
     # resolved source address (file + line span) jedi needs; it rides in the chain
     # **extra. Because this gp IS what the editor draws, nothing downstream wires.
+
     if run_jedi:
+        print("Running jedi for cross-file usages on", readable.file_path)
         address = kwargs.get("jump_to")
         if address is not None:
             try:
@@ -1736,23 +1740,6 @@ def dict_to_cst_module(input_value: dict) -> cst.Module:
 # ║  Standalone wrappers for convert_in / convert_out chains                    ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
-def cst_to_dict(value, ref=None) -> GeneralParse:
-    """Forward: cst.Module → GeneralParse dict.
-
-    Thin wrapper around cst_module_to_dict for convert_in chains.
-    Sets file_path from ref and kicks off async cross-file usage
-    collection via Background.run.
-    """
-    result = cst_module_to_dict(value)
-
-    # if ref is not None:
-    #     result.file_path = ref.path
-    #     result.line_offset = ref.line or 0
-    #     # Deferred: cross-file usages run on a background thread
-    #     # after the stateful convert-in completes.
-    # populate_usages(result)
-
-    return None, result
 
 
 def dict_to_cst(value) -> cst.Module:
@@ -4527,7 +4514,20 @@ def _cst_to_python_or_raw(node):
     Also catches "empty" compound results — e.g. a Call with no kwargs
     produces {"__cst__": <Call>} which isn't useful, so we return
     the raw code string "some_func(1, 2)" instead.
+
+    A call wrapped in a subscript (`button(...)[0]`) surfaces the INNER call
+    as a CallParse so its arguments stay visible/editable wherever the
+    expression appears (assignment RHS, call args, collection elements, …).
+    The subscript wrapper round-trips via _python_to_cst_expr, which re-wraps
+    when old_node is the Subscript. Handled centrally here so every context
+    that routes through this function gets it. Falls through to the normal
+    CodeLine when the inner call can't be surfaced (e.g. `foo()[0]`, no args).
     """
+    if isinstance(node, cst.Subscript) and isinstance(node.value, cst.Call):
+        inner = _cst_to_python_or_raw(node.value)
+        if isinstance(inner, CallParse):
+            return inner
+
     val = _cst_to_python(node)
     if val is _UNREADABLE:
         return CodeLine(_cst_node_to_code(node))
@@ -4654,11 +4654,35 @@ def _build_src_scope():
     return scope
 
 
+def _unwrap_lazy_enum(obj):
+    """Return the real enum member `obj` IS or stands in for, else None.
+
+    Handles a live enum member directly and a `_LazyMode` proxy — `Modes.WINDOW`
+    is a deferred stand-in (not an enum.Enum) that resolves to the real
+    `Mode.WINDOW`, so the editor sees a proper enum member instead of raw source.
+    """
+    if isinstance(obj, enum.Enum):
+        return obj
+    if isinstance(obj, _LazyMode):
+        try:
+            member = obj._resolve()
+        except Exception:
+            return None
+        if isinstance(member, enum.Enum):
+            return member
+    return None
+
+
 def _resolve_as_enum(parts):
     """Resolve ClassName.MEMBER (or mod.ClassName.MEMBER) to an enum member.
 
     Authoritative: resolves the class through the src scope only — no
     sys.modules scan. Enum classes outside src stay unresolved (-> raw source).
+
+    Also resolves a proxy container whose members stand in for enum members —
+    `Modes.WINDOW`, where `Modes` is a singleton holding `_LazyMode` deferrals to
+    real `Mode` members (so a file can reference a mode without importing
+    view.mode). The member is unwrapped to the actual `Mode` enum member.
     """
     if len(parts) < 2:
         return _UNREADABLE
@@ -4676,6 +4700,12 @@ def _resolve_as_enum(parts):
         member = cls.__members__.get(parts[-1])
         if member is not None:
             return member
+        return _UNREADABLE
+    # Proxy container (e.g. `Modes`): resolve the member attribute and unwrap a
+    # _LazyMode (or live enum member) to the real enum member.
+    resolved = _unwrap_lazy_enum(_attr_no_trigger(cls, parts[-1]))
+    if resolved is not None:
+        return resolved
     return _UNREADABLE
 
 
@@ -4764,34 +4794,52 @@ class _ModulePatcher(cst.CSTTransformer):
         self._depth -= 1
         return updated_node
 
+    def _consume_call_patch(self, call):
+        """Patch a surfaced call (a bare `Expr` call, or the value of a non-Name
+        call assignment) to the next matching bare-call edit for its callee, in
+        source order. Returns the new Call node, or None when there's no pending
+        edit / the patch fails. Shared so leave_Expr and leave_Assign/AnnAssign
+        consume from the SAME per-callee queue, keeping the occurrence order the
+        forward _surface_call assigned."""
+        if not isinstance(call, cst.Call) or self._call_fn is None:
+            return None
+        fn_name = _call_func_name(call)
+        queue = self._call_edits.get(fn_name)
+        if not queue:
+            return None
+        idx = self._call_consumed.get(fn_name, 0)
+        if idx >= len(queue):
+            return None
+        self._call_consumed[fn_name] = idx + 1
+        ed = dict(queue[idx])
+        ed["__cst__"] = call
+        try:
+            return self._call_fn(ed)
+        except (TypeError, ValueError):
+            return None
+
     def leave_Expr(self, original_node, updated_node):
         # Bare top-level call statement. Patch it to the next matching bare-call
         # edit for this callee; depth filter keeps calls nested in bodies alone.
         if self._depth != 0:
             return updated_node
-        call = updated_node.value
-        if not isinstance(call, cst.Call) or self._call_fn is None:
+        patched = self._consume_call_patch(updated_node.value)
+        if patched is None:
             return updated_node
-        fn_name = _call_func_name(call)
-        queue = self._call_edits.get(fn_name)
-        if not queue:
-            return updated_node
-        idx = self._call_consumed.get(fn_name, 0)
-        if idx >= len(queue):
-            return updated_node
-        self._call_consumed[fn_name] = idx + 1
-        ed = dict(queue[idx])
-        ed["__cst__"] = call
-        try:
-            return updated_node.with_changes(value=self._call_fn(ed))
-        except (TypeError, ValueError):
-            return updated_node
+        return updated_node.with_changes(value=patched)
 
     def leave_Assign(self, original_node, updated_node):
         if len(updated_node.targets) != 1:
             return updated_node
         target = updated_node.targets[0].target
         if not isinstance(target, cst.Name):
+            # A call assignment to a NON-Name target (eg, new_dict = defaultdict(...))
+            # was surfaced as a bare-call edit by the forward pass - patch its value
+            # the same way leave_Expr patches a bare call (same queue and source order).
+            if self._depth == 0:
+                patched = self._consume_call_patch(updated_node.value)
+                if patched is not None:
+                    return updated_node.with_changes(value=patched)
             return updated_node
         if target.value not in self.edits:
             return updated_node
@@ -4805,6 +4853,12 @@ class _ModulePatcher(cst.CSTTransformer):
 
     def leave_AnnAssign(self, original_node, updated_node):
         if not isinstance(updated_node.target, cst.Name):
+            # Same as leave_Assign - a non-Name annotated call assignment surfaced as
+            # a bare-call edit, so patch its value from the shared queue.
+            if self._depth == 0:
+                patched = self._consume_call_patch(updated_node.value)
+                if patched is not None:
+                    return updated_node.with_changes(value=patched)
             return updated_node
         if updated_node.target.value not in self.edits:
             return updated_node
@@ -4938,7 +4992,15 @@ def _python_to_cst_expr(py_value, old_node=None):
             fn = Melty._converters.get((dict, cst.Call))
             if fn is not None:
                 try:
-                    return fn(py_value)
+                    new_call = fn(py_value)
+                    # Surfaced from a `call(...)[k]` subscript (see
+                    # _cst_to_python_dict_raw): the Call still holds the inner call,
+                    # so re-wrap the rebuilt call in the original subscript to
+                    # preserve the `[k]` on round-trip.
+                    if (isinstance(old_node, cst.Subscript)
+                            and isinstance(old_node.value, cst.Call)):
+                        return old_node.with_changes(value=new_call)
+                    return new_call
                 except (TypeError, ValueError):
                     pass
         elif isinstance(cst_node, cst.Dict):
@@ -4955,12 +5017,14 @@ def _python_to_cst_expr(py_value, old_node=None):
         cls_name = type(py_value).__name__
         member_name = py_value.name
         if isinstance(old_node, cst.Attribute):
-            # Preserve formatting (dot whitespace, parens) from old node
-            return old_node.with_changes(
-                value=old_node.value.with_changes(value=cls_name)
-                if isinstance(old_node.value, cst.Name) else cst.Name(cls_name),
-                attr=cst.Name(member_name),
-            )
+            # Keep the original qualifier verbatim (leading whitespace + base name)
+            # and swap only the member. The base may not be the actual enum's
+            # class name - a proxy stand-in (`Modes.WINDOW`, where Modes defers to
+            # Mode) should round-trip back to `Modes.<member>`, not be rewritten to
+            # `Mode.<member>` (which would force the view.mode import the proxy
+            # exists to avoid). The members mirror the class 1:1, so swapping just
+            # the attr is valid. Also preserves any dotted path like `mod.Enum`.
+            return old_node.with_changes(attr=cst.Name(member_name))
         return cst.Attribute(
             value=cst.Name(cls_name),
             attr=cst.Name(member_name),

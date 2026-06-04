@@ -48,6 +48,7 @@ hotswaps the live object and flashes a checkmark.
 
 import inspect
 import linecache
+import textwrap
 import threading
 import time
 import tokenize
@@ -73,10 +74,10 @@ from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace, get_exception_frames
 from src.lsd.gl_gui.view.core_conversion import hotswap_guard
 from src.lsd.gl_gui.view.core_conversion.address import (
-    Address,
+    Address, _evict_linecache,
 )
 from src.lsd.gl_gui.view.core_conversion.chain_converters import (
-    record_compile,
+    record_compile, _enclosing_function,
 )
 from src.lsd.gl_gui.view.core_conversion.file_converters import (
     _recompile, _recompile_class, _recompile_module,
@@ -84,7 +85,7 @@ from src.lsd.gl_gui.view.core_conversion.file_converters import (
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
     cst_module_to_dict, dict_to_cst_module,
 )
-from src.lsd.gl_gui.view.core_conversion.new_codecs import Codec, type_to_codec, extension_to_codec
+from src.lsd.gl_gui.view.core_conversion.new_codecs import Codec, CallSite, type_to_codec, extension_to_codec
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import no_save_exclude
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
@@ -103,9 +104,13 @@ def save_file(address, code_str, codec=None, ensure_import=None, parent_ds=None)
     codec.save(address=address, data=code_str, ensure_import=ensure_import)
 
 
+def recompile_source(source, code_str, file_path, address=None):
+    """Hotswap the edited code in place (no disk write) — do_recompile's dispatch.
 
-def recompile_source(source, code_str, file_path):
-    """Hotswap the edited code in place (no disk write) — do_recompile's dispatch."""
+    type / function / module: code_str IS the whole object's source, so it
+    recompiles directly. A CallSite is different — code_str is a single statement
+    inside a function body, which redefines nothing on its own — so we recompile
+    the ENCLOSING function instead (see _recompile_caller)."""
     result = None
     if isinstance(source, type):
         result = _recompile_class(source, code_str, str(file_path))
@@ -113,19 +118,65 @@ def recompile_source(source, code_str, file_path):
         result = _recompile(source, code_str, str(file_path))
     elif isinstance(source, types.ModuleType):
         result = _recompile_module(source, code_str, str(file_path))
+    elif isinstance(source, CallSite):
+        result = _recompile_caller(source, code_str, file_path, address)
     return result
 
 
+def _recompile_caller(call_site, stmt_str, file_path, address):
+    """Hotswap the function ENCLOSING a call site, with the edited statement
+    spliced into its live source.
+
+    The codec hands code_file_io just the call STATEMENT span (CallerCodec.load),
+    so recompiling `stmt_str` alone would redefine nothing. The enclosing function
+    is the unit that recompiles — already resolved onto `address.source` by
+    CallerCodec (via _enclosing_function), with a fallback re-resolve from the
+    site if that's missing.
+
+    We read the function's current source and splice the edited statement over its
+    span, then recompile the whole def. Splicing (rather than just reading the
+    def back from disk, the old recompile_caller_fn approach) makes the hotswap
+    reflect the LIVE buffer even before the debounced disk save lands: the unedited
+    lines come from disk, the edited statement from the buffer."""
+    fn = getattr(address, "source", None) if address is not None else None
+    if not isinstance(fn, types.FunctionType):
+        fn = _enclosing_function(call_site.filename, call_site.lineno)
+    if not isinstance(fn, types.FunctionType):
+        return None
+
+    unwrapped = inspect.unwrap(fn)
+    _evict_linecache(str(file_path))
+    try:
+        fn_lines, fn_start = inspect.getsourcelines(unwrapped)  # fn_start is 1-based
+    except (OSError, TypeError, tokenize.TokenError, SyntaxError) as e:
+        print(f"_recompile_caller: could not read source for {unwrapped.__name__}: {e}")
+        return None
+
+    # Splice the edited statement over its span in the function. Address spans
+    # are file-absolute 0-based (load convention); shift them to the function's
+    # own line list. Guard the bounds - a stale/odd span falls back to recompiling
+    # the function's unedited disk source rather than blanking it.
+    new_source = "".join(fn_lines)
+    if address is not None and address.start is not None and address.end is not None:
+        rel_start = address.start - (fn_start - 1)
+        rel_end = address.end - (fn_start - 1)
+        if 0 <= rel_start <= rel_end <= len(fn_lines):
+            stmt_lines = [line + "\n" for line in stmt_str.splitlines()]
+            new_source = "".join(fn_lines[:rel_start] + stmt_lines + fn_lines[rel_end:])
+
+    return _recompile(unwrapped, new_source, str(file_path))
+
+
 class TestClass:
-    some_val = 146
-    some_other_val = 67
+    some_val = 102
+    some_other_val = 76
     some = []
-   
-     # [tint=(0.38801515102386475, 0.45181113481521606, 0.7069768)]
-    def some_func(a=95, b=-49):
+
+    # [tint=(0.38801515102386475, 0.45181113481521606, 0.7069768)]
+    def some_func(a=108, b=-49):
         print(a, b)
-        
-    some_func(77,-25)
+
+    some_func(77, -25)
 
     some_line = 87
     myflot = 5
@@ -136,16 +187,17 @@ class TestClass:
     class NestedClass:
         so = 31
 
-    some_val = 146
+    some_val = 102
     new_bool = True
     a_dict = {"x": -40, "y": 53}
+
+
 
 
 def slow_task(**kwargs):
     import time
     print("Starting slow task...")
-    time.sleep(1)
-
+    time.sleep(1);
     print("Slow task completed.")
     return {"result": "This is the result of the slow task", "kwargs": kwargs}
     print("Slow task completed.")
@@ -163,31 +215,38 @@ def editor_window():
     )
     return False, None
 
+
 @window()
 @render_func(use_cache=True)
 def editor_window_2():
     code_file_io(
         TestClass,
-        view_func=draw_modes,
+        view_func=convert_in_and_out,
         auto_load_edits=False,
         auto_load=False,
         auto_save=False,
         child_kwargs={
-            "modes": [RenderFuncs.draw_text, RenderFuncs.draw_collection],
+            # convert_in_and_out runs the chains; draw_with_view_funcs draws the
+            # tabs/columns. string_to_cst_module's output is named "code_tree" -
+            # draw_text reads it to highlight parse errors (a failed parse arrives
+            # as the exception value). cst_module_to_dict's output is "code_dict",
+            # which draw_collection consumes. draw_text gets the raw string as its
+            # input_value (no route key).
+            "view_func": draw_with_view_funcs,
             "chain_in": [string_to_cst_module, cst_module_to_dict],
             "chain_out": [dict_to_cst_module, cst_module_to_string],
-            # string_to_cst_module's output is named "code_tree" - draw_text reads
-            # it to highlight parse errors (a failed parse arrives as the exception
-            # value). cst_module_to_dict's output is "code_dict" - draw_collection
-            # consumes it. draw_text still gets the raw string as its input_value.
             "route": {
                 string_to_cst_module: "code_tree",
                 cst_module_to_dict: "code_dict",
                 RenderFuncs.draw_collection: "code_dict",
             },
+            "child_kwargs": {
+                "view_funcs": [RenderFuncs.draw_text, RenderFuncs.draw_collection],
+            },
         },
     )
     return False, None
+
 
 @window()
 @render_func(use_cache=True, disable_scroll=True)
@@ -195,7 +254,7 @@ def draw_collection_code():
     # view_func=draw_modes: text | dict tabs over one shared file-IO layer.
     code_file_io(
         RenderFuncs.draw_collection,
-           mode=Modes.NEW_CODE
+        mode=Modes.NEW_CODE
     )
     return False, None
 
@@ -334,6 +393,10 @@ class CodeState(DictConversion):
         self.file_mtime = None
         self.file_size = None
         self._pending_save = False
+        # Set the frame an edit changes the buffer; consumed next frame to force a
+        # reconvert (so chain_in re-parses the new text and surfaces syntax errors)
+        # even when nothing external changed.
+        self._reconvert = False
         self._recompiled_on_frame = None
         self.recompile_result = None
 
@@ -362,15 +425,77 @@ class CodeState(DictConversion):
         self.file_size = None
 
 
+def _common_indent(text):
+    """The leading whitespace `textwrap.dedent` would strip — i.e. the indent
+    shared by every non-blank line, returned as the actual chars (tab-safe), or
+    "" if there is none. The inverse prefix for re-indenting after a round trip."""
+    if not isinstance(text, str):
+        return ""
+    dedented = textwrap.dedent(text)
+    for orig, ded in zip(text.splitlines(), dedented.splitlines()):
+        if orig.strip():
+            return orig[:len(orig) - len(ded)]
+    return ""
+
+
+# A call site is a statement lifted from INSIDE a function body, and a
+# `return` / `yield` / `await` is a syntax error at module scope even though the
+# code is fine where it lives. Wrap it in a throwaway function so the parser
+# accepts it: `def` for return/yield/yield from, `async def` for await. The
+# synthetic def is self-marking (by name), so the reverse strips it without any
+# flag to remember. Shared by string_to_cst_module (libcst) and _compile_check
+# (compile) so both treat the in-function case identically.
+_CALL_WRAP_NAME = "__melty_call_wrap__"
+_CALL_WRAP_PREFIXES = (f"def {_CALL_WRAP_NAME}():\n", f"async def {_CALL_WRAP_NAME}():\n")
+
+
+def _unwrap_call_module(module):
+    """Strip the synthetic `def __melty_call_wrap__()` string_to_cst_module added
+    to parse an in-function statement, recovering the original snippet at module
+    column. A no-op for a normal (unwrapped) module."""
+    body = getattr(module, "body", None)
+    if (body and len(body) == 1 and isinstance(body[0], cst.FunctionDef)
+            and body[0].name.value == _CALL_WRAP_NAME):
+        return cst.Module(body=list(body[0].body.body)).code
+    return module.code
+
+
 @render_func()
 def string_to_cst_module(input_value, **kwargs):
-    cst_tree = cst.parse_module(input_value)
-    return True, cst_tree
+    # A targeted codec (a call site, a nested def/class) hands in a snippet that
+    # carries its original leading indentation, which cst.parse_module rejects - a
+    # module can't start indented ("expected an indented block"/"unexpected
+    # indent"). Strip the common indent before parsing; cst_module_to_string
+    # re-applies it on the way out so the edit splices back at its real column.
+    # No-op for top-level source (common indent is ""), so unchanged for the
+    # class/function/module codecs.
+    text = textwrap.dedent(input_value) if isinstance(input_value, str) else input_value
+    if not isinstance(text, str):
+        return True, cst.parse_module(text)
+    try:
+        return True, cst.parse_module(text)
+    except cst.ParserSyntaxError as bare_exc:
+        # Bare parse failed - retry wrapped in a function (then async function), the
+        # same fallback _compile_check uses, so an in-function statement parses.
+        # cst_module_to_string strips the wrapper back off via _unwrap_call_module.
+        indented = textwrap.indent(text, "    ")
+        for prefix in _CALL_WRAP_PREFIXES:
+            try:
+                return True, cst.parse_module(prefix + indented)
+            except cst.ParserSyntaxError:
+                continue
+        raise bare_exc  # genuinely unparseable - surface the original error
 
 
 @render_func()
-def cst_module_to_string(input_value, **kwargs):
-    code_str = input_value.code
+def cst_module_to_string(input_value, indent="", **kwargs):
+    # Mirror of string_to_cst_module: strip any synthetic wrapper def, then re-apply
+    # the snippet's original indent (computed once from the whole buffer by
+    # convert_in_to_out and threaded down through chain_out). Empty indent and an
+    # unwrapped module both make this a no-op for top-level source.
+    code_str = _unwrap_call_module(input_value)
+    if indent:
+        code_str = textwrap.indent(code_str, indent)
     return True, code_str
 
 
@@ -404,11 +529,14 @@ def _run_convert(chain, value, route=None, routed=None, **extra):
         else:
             node_kwargs = {}
         inner = getattr(node, '__wrapped__', node)
-        sig = inspect.signature(inner)
-        accepts_var_kw = any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values())
+        if not hasattr(node, "__params__"):
+            node.__params__ = dict(inspect.signature(inner).parameters)
+
+        accepts_var_kw = "kwargs" in node.__params__
         call = {'input_value': value, **routed, **extra, **node_kwargs}
+
         if not accepts_var_kw:
-            call = {k: v for k, v in call.items() if k in sig.parameters}
+            call = {k: v for k, v in call.items() if k in node.__params__}
         try:
             result = inner(**call)
         except Exception as e:
@@ -418,14 +546,24 @@ def _run_convert(chain, value, route=None, routed=None, **extra):
         else:
             value = result
         if route and node in route:
-            routed[route[node]] = value
+            # A route entry is either a bare output NAME, or a tuple whose first
+            # element is the output name and whose remaining elements are the
+            # extra-input kwargs this node consumes (handled by its caller, not
+            # here). Either way the node's output is stashed under the name only -
+            # NOT under every tuple element (that used to alias jump_to/run_jedi to
+            # the dict and clobber them).
+            target = route[node]
+            out_name = target[0] if isinstance(target, tuple) else target
+            if out_name:
+                routed[out_name] = value
+
     return value, routed
 
 
 def _compile_check(text):
     """Second-pass syntax check, catching errors libcst's lenient parser lets
     through but Python's own compiler rejects — duplicate args (`def f(x, x)`),
-    repeated kwargs (`foo(a=1, a=1)`), `return`/`yield` outside a function, etc.
+    repeated kwargs (`foo(a=1, a=1)`), etc.
 
     Returns the SyntaxError (carrying a real `lineno` for the red highlight) or
     None if it compiles clean. Runs ONLY after libcst already parsed the buffer,
@@ -434,24 +572,51 @@ def _compile_check(text):
 
     Dedented first because the editor can hold an indented span (a nested class
     as getsourcelines returns it); `compile` rejects a leading indent the same
-    way `_recompile_class` handles it. NOTE: this is a pure syntax/compile check —
-    it does NOT catch undefined names / typos (`print(myvarr)`), which are runtime
-    NameErrors, not SyntaxErrors, and need scope analysis (pyflakes) to detect."""
+    way `_recompile_class` handles it.
+
+    Call sites complicate this: a caller snippet is a statement lifted from INSIDE
+    a function body, so a `return` / `yield` / `await` / bare continuation is a
+    SyntaxError at module scope ("'return' outside function") even though the code
+    is perfectly valid where it lives. When the bare compile fails, retry the
+    snippet wrapped in a throwaway `def`; if THAT compiles clean the error was only
+    the missing function context, so report nothing. A real mistake survives the
+    wrap and is reported, with its line mapped back by 1 (the synthetic `def` adds
+    a line on top). NOTE: pure syntax/compile only — it does NOT catch undefined
+    names / typos (`print(myvarr)`), which are runtime NameErrors needing scope
+    analysis (pyflakes)."""
     if not isinstance(text, str):
         return None
     import textwrap
+    dedented = textwrap.dedent(text)
     try:
-        compile(textwrap.dedent(text), "<editor>", "exec")
+        compile(dedented, "<editor>", "exec")
         return None
     except SyntaxError as e:
-        return e
+        # Retry inside a function - then an async function - so a statement valid
+        # only inside a function body isn't flagged just for missing that context:
+        # `return` / `yield` / `yield from` need a `def`, `await` needs `async def`.
+        # Clean under EITHER wrapper → not a bug, report nothing. Both wrappers are
+        # one line, so map a surviving error's line back by 1.
+        indented = textwrap.indent(dedented, "    ")
+        wrapped_e = None
+        for prefix in _CALL_WRAP_PREFIXES:
+            try:
+                compile(prefix + indented, "<editor>", "exec")
+                return None
+            except SyntaxError as we:
+                wrapped_e = we
+            except Exception:
+                return e
+        if wrapped_e is not None and wrapped_e.lineno is not None:
+            wrapped_e.lineno = max(1, wrapped_e.lineno - 1)
+        return wrapped_e if wrapped_e is not None else e
     except Exception:
         # Any non-SyntaxError exception (e.g. ValueError on null bytes) isn't the
         # user's code being wrong in a way we can pin to a line - ignore it.
         return None
 
 
-def _run_chain_in(input_value, chain=None, route=None, seed=None, **extra):
+def _run_chain_in(input_value, chain=None, **extra):
     """Background entry point for the forward (chain_in) conversion.
 
     A plain module-level function (NOT a @render_func) so run_in_background can
@@ -459,8 +624,7 @@ def _run_chain_in(input_value, chain=None, route=None, seed=None, **extra):
     state. Runs the whole chain via _run_convert and returns the full `routed`
     dict — every column's input in one shared payload. The result/exception is
     folded back into ModesState on the main thread when the worker completes."""
-    routed = dict(seed) if seed else {}
-    result, routed = _run_convert(chain, input_value, route=route, routed=routed, **extra)
+    result, routed = _run_convert(chain, input_value, **extra)
     error = result if isinstance(result, Exception) else None
     # cst parsed clean - run the compiler check, to surface the syntax errors libcst
     # is too lenient to flag (duplicate args/kwargs, ...). Same red-highlight path.
@@ -479,8 +643,12 @@ def _run_chain_out(input_value, chain=None, **extra):
     when it ran inline on every structured edit. Returns {"value": text} on
     success or {"error": exc} (a half-typed structured edit can fail to round-
     trip; we surface it as a value rather than letting it propagate, same as
-    chain_in)."""
-    result, _ = _run_convert(chain, input_value)
+    chain_in).
+
+    `**extra` (e.g. `indent`) is forwarded to every node so cst_module_to_string
+    can re-apply the snippet's leading indent stripped by string_to_cst_module —
+    nodes without a matching param ignore it (_run_convert filters by signature)."""
+    result, _ = _run_convert(chain, input_value, **extra)
     if isinstance(result, Exception):
         return {"error": result}
     return {"value": result}
@@ -497,14 +665,12 @@ class ModesState:
       selected column reads the SAME last_good, so they never drift apart. While a
       fresh conversion is in flight (or one throws on half-typed source) the views
       keep rendering off this snapshot instead of blanking out.
-    last_input — the source text the last background run was started from. A new
-      run is triggered only when the input actually changes (the editor
-      re-renders every frame with identical text otherwise)."""
+    last_error — the parse/compile error from the last run, or None when clean."""
 
     def __init__(self):
         self.last_good = {}
-        self.last_input = UNSET
         self.last_error = None
+
 
 def compute_height(draw_state):
     view_top = draw_state.abs_top
@@ -512,214 +678,205 @@ def compute_height(draw_state):
     fill_height = draw_state.parent_window.height - delta_from_top - 15
     return fill_height
 
+
 @render_func(use_cache=True, show_bg=False, selectable=False, disable_scroll=True,
              shadow=False, indent_size=0, with_footer=None, fill_height=True)
-def draw_modes(input_value, modes=None, chain_in=None, chain_out=None, route=None,
-               tab_state: TabState = None, modes_state: ModesState = None,
-               changed=False, child_kwargs=None, column_widths=None,
-               draw_state=None, unique=0, **kwargs):
-    """General form of the round-trip that used to be hardcoded in
-    code_file_io_wrapped. Takes the loaded text and:
+def draw_with_view_funcs(input_value, view_funcs, route, routed, route_to_kwargs,
+                         tab_state: TabState, unique, column_widths=None,
+                         draw=False, draw_state=None, **kwargs):
+    """Tab strip + columns half of the old draw_modes.
 
-      * runs `chain_in` ONCE (e.g. string -> cst -> dict), stashing every output
-        named in `route` so it can be handed to whichever view wants it;
-      * shows a tab per entry in `modes` (each a view render_func, or a
-        `(view_func, kwargs)` tuple) and renders the selected ones side by side;
-      * feeds each view the routed value `route[view_func]` as its input_value
-        (e.g. draw_collection <- the dict). A view with NO route entry gets the
-        raw text instead (draw_text <- the string). Every routed value also rides
-        in as a kwarg, so a view picks up extras it wants (draw_text <- jump_to /
-        code_tree);
-      * when a view edits a routed (converted) value, the edit is run back
-        through `chain_out` to canonical text. A view editing the raw text
-        returns it directly — no chain_out needed.
+    Shows a tab per entry in `view_funcs` and renders the selected ones side by
+    side. The shared `routed` payload (built by convert_in_and_out) decides each
+    column's input: a view with a `route` entry is fed routed[route[view]] (e.g.
+    draw_collection <- the parsed dict); a view with no entry edits the raw text
+    (draw_text <- input_value). Every routed value also rides in as a kwarg, so a
+    view picks up the extras it wants (draw_text <- jump_to / error / code_tree)
+    WITHOUT convert_in_and_out hand-threading them — that's the routing.
 
-    NOTE: the params are `chain_in` / `chain_out`, NOT convert_in / convert_out —
-    the latter are reserved kwargs the render_func wrapper still interprets as the
-    old deprecated convert path."""
-    if child_kwargs is None:
-        child_kwargs = {}
-    if modes is None:
-        modes = [RenderFuncs.draw_text]
-
-    def view_of(m):
-        return m[0] if isinstance(m, tuple) else m
-
-    # Pr out entries that didn't survive (de)serialization - e.g. a saved
-    # state from before function refs round-tripped, which would leave None here.
-    tab_state.selected_tabs = [t for t in tab_state.selected_tabs if view_of(t) is not None]
+    Two edit channels flow back to convert_in_and_out:
+      * a RAW text edit is returned directly as (changed, value);
+      * a CONVERTED edit (a routed/structured view) is stashed on the shared
+        `routed` dict under 'converted_edit', because it must go back through
+        chain_out before it becomes text. It's written AFTER the loop so the
+        columns in this same frame never see it as an input kwarg."""
+    # Drop entries that didn't survive (de)serialization, then default to the
+    # first two views (text | structured) like the old draw_modes did.
+    tab_state.selected_tabs = [t for t in tab_state.selected_tabs if t is not None]
     if not tab_state.selected_tabs:
-        tab_state.selected_tabs = [modes[0], modes[1]]
+        tab_state.selected_tabs = view_funcs[:2] or view_funcs[:1]
 
-    imgui.dummy(0,1)
-    names = [getattr(view_of(m), '__name__', str(m)) for m in modes]
-    tab_changed, new_tabs = RenderFuncs.draw_tab_bar(indent_size=0, z_offset=-1,
-        input_value=tab_state.selected_tabs, collection=modes, names=names, bg_offset=2, wrap=True,
-        tab_height=30, show_bg=True, name=f"mode_tabs{unique}", as_toggles=False)
+    imgui.dummy(0, 5)
+    names = [getattr(vf, '__name__', str(vf)) for vf in view_funcs]
+    tab_changed, new_tabs = RenderFuncs.draw_tab_bar(input_value=tab_state.selected_tabs,
+                                                     tab_height=30, show_bg=False, bg_offset=1,
+                                                     name=f"tab_bar{unique}", wrap=True, names=names,
+                                                     collection=view_funcs, as_toggles=False)
     if tab_changed:
         tab_state.selected_tabs = new_tabs
 
-    # chain_in runs ONCE on a background thread (it's O(buffer): cst parse + dict
-    # transform) and its outputs are SHARED across every selected tab - that's what
-    # keeps the columns in sync. We trigger a fresh run only when the input text
-    # changes; in between, and while a run is in flight, every column reads the
-    # same modes_state.last_good snapshot.
-    #
-    # The current address rides in as `jump_to`; views that want it (draw_text)
-    # pick it up alongside the other outputs, so seed the shared `routed` with it.
-    routed = dict(modes_state.last_good)
-    if 'jump_to' in kwargs:
-        routed['jump_to'] = kwargs['jump_to']
-
-    routed['root_input'] = kwargs.get("root_input", input_value)
-
-    chain_in_error = modes_state.last_error
-    if chain_in:
-        input_changed = input_value != modes_state.last_input
-        if input_changed:
-            modes_state.last_input = input_value
-        # One worker per draw_modes instance (distinct name=). It snapshots the
-        # input at trigger time, runs _run_chain_in off-thread, and re-renders on
-        # completion. `start` only on a real input change so we don't respawn the
-        # parse every frame.
-        # The Go button's click rides in as run_jedi; force a chain re-run on
-        # it (the text didn't change) and pass it + the address (jump_to) through
-        # as **extra so cst_module_to_dict can attach the jedi index to the gp.
-        _run_jedi = bool(kwargs.get('run_jedi'))
-        finished, payload = run_in_background(
-            _run_chain_in,
-            child_kwargs={"input_value": input_value, "chain": chain_in,
-                          "route": route, "seed": child_kwargs,
-                          "run_jedi": _run_jedi, "jump_to": kwargs.get('jump_to')},
-            name=f"chain_in{unique}", start=input_changed or _run_jedi)
-        if finished and isinstance(payload, dict):
-            # Fold the fresh outputs into the shared snapshot. last_good
-            # only ever holds clean values; a parse failure leaves the last
-            # good values in place so columns keep rendering.
-            # good values in place so columns keep rendering.
-            modes_state.last_error = payload.get("error")
-            for name, val in payload["routed"].items():
-                modes_state.last_good[name] = val
-                if name != 'jump_to':
-                    routed[name] = val
-            chain_in_error = modes_state.last_error
-
-    # Route the error to the views: draw_text reads `error` and lights up the
-    # offending source line in red. Two sources merge here:
-    #   - recompile_error - passed down by code_file_io (the last hotswap failure).
-    #     Python's compiler pins a better line than libcst, so it WINS when present
-    #     - UNLESS it's a stale SyntaxError: once chain_in parses the buffer clean
-    #     (chain_in_error is None) the error was fixed, so we ignore it. A recompile
-    #     *runtime* error (not a SyntaxError) parses fine, so it survives until the
-    #     next Run.
-    #   - chain_in_error - the background parse failure (live, per-keystroke).
-    # None when everything is clean, which clears any prior error. (code_tree
-    # carries the parsed tree on success but not the failure - _run_convert stops
-    # before writing a failing node's route entry - so the exception travels up.)
-    recompile_error = kwargs.get('error')
-    if isinstance(recompile_error, SyntaxError) and chain_in_error is None:
-        recompile_error = None  # buffer parses again → the recompile syntax error is fixe
-    routed['error'] = recompile_error or chain_in_error
-
-    out_changed, out_value = False, input_value
-    # A structured edit (uses_converted) defers its dict→cst→text conversion to a
-    # background worker after the loop; this holds the latest such edit. A raw
-    # text edit needs no chain_out and is returned inline below.
+    imgui.dummy(0, 2)
+    raw_changed, raw_value = False, input_value
     converted_edit = UNSET
-    for idx, mode in enumerate(tab_state.selected_tabs):
-        view_func = view_of(mode)
-        if view_func.__name__ == "draw_type":
-            pass
-        mode_kwargs = mode[1] if isinstance(mode, tuple) else {}
-
-        arg_name = route.get(view_func) if route else None
-        if arg_name is None:
-            # No routed input - this view gets the raw text (e.g. draw_text). It
-            # is unaffected by a chain_in failure; it sees what the user typed.
-            uses_converted = False
-            view_input = input_value
-        else:
-            uses_converted = True
-            fresh = routed.get(arg_name)
-            if fresh is not None:
-                view_input = fresh
-            elif arg_name in modes_state.last_good:
-                # chain_in failed since producing this value - keep the last one
-                # that worked so the structured view doesn't blank out.
-                view_input = modes_state.last_good[arg_name]
-            else:
-                view_input = UNSET
-
-                # # Never had a good conversion (invalid on first load): show the
-                # # exception in place of this view rather than crash.
-                # imgui.text_colored(
-                #     f" {getattr(view_func, '__name__', 'unknown')}: {chain_in_error}",
-                #     1.0, 0.5, 0.0)
-                # continue
-
-        call_kwargs = {**child_kwargs, **routed, **mode_kwargs}
-
-        # Pass external change as `draw=`, NOT `changed=`: `draw` just bypasses
-        # the view's cache for a redraw; `changed` would set the view's sticky
-        # _external_change / _pending edit flags, so a forced redraw would come
-        # back reported AS an edit - with auto_save that becomes a
-        # save -> reload -> redraw -> save feedback spin. (Matches the ol
-        # hardcoded `draw_collection(..., draw=changed)`.)
+    for idx, view_func in enumerate(tab_state.selected_tabs):
         if column_widths is not None and len(column_widths) > idx:
             column_width = column_widths[idx]
         else:
             column_width = None
 
+        # A view with a route entry consumes a routed (converted) value; one
+        # without edits the raw text. Falls back to the last-good routed value
+        # (already merged into `routed`), or UNSET if it never parsed.
+        uses_converted = route is not None and view_func in route
+        if uses_converted:
+            view_input = routed.get(route[view_func], UNSET)
+        else:
+            view_input = input_value
 
-        m_changed, m_out = view_func(input_value=view_input, excluded=["__cst__"], show_system=True, draw=changed, disable_scroll=False, show_header=False,
-                                     column=idx, column_width=column_width, show_add_delete=False, name=f"{modes[idx].__name__}##{unique}",
-                                     selectable=False,
-                                     **call_kwargs)
+        # route_to_kwargs_this = route_to_kwargs.get(view_func, {})
+        # for k in route_to_kwargs_this:
+        #     arg_name = route_to_kwargs_this[k]
+        #     if arg_name in routed:
+        #         routed[k] = routed[arg_name]
+
+        # routed = {**routed, **{k: routed.get(k) for k in route_to_kwargs_this}}
+
+        # `draw=` (the external trigger flag) bypasses the view's cache for one
+        # redraw WITHOUT setting any sticky edit flags - never pass it as
+        # `changed=`, or a forced redraw comes back reported as an edit and, with
+        # auto_save, spins an endless reload -> redraw -> save.
+        m_changed, m_out = view_func(input_value=view_input, excluded=["__cst__"],
+                                     show_system=True, draw=draw,
+                                     disable_scroll=False, show_header=False,
+                                     column=idx, column_width=column_width,
+                                     show_add_delete=False, name=f"{view_func.__name__}##{unique}",
+                                     selectable=False, **routed)
         if not m_changed:
             continue
-        else:
+        if draw_state is not None:
             draw_state.invalidate_up(max_depth=3)
-
-
-        if uses_converted and chain_out:
-            # Defer to the background worker below; keep only the last edit so a
-            # continuous drag collapses into one conversion when it settles.
+        if uses_converted:
+            # Keep only the latest converted edit so a continuous drag collapses
+            # into one chain_out call when it settles.
             converted_edit = m_out
         else:
-            # Raw text edit (draw_text) - no chain_out needed - or a converted view
-            # with no chain_out function: return the value directly.
-            out_value, out_changed = m_out, True
+            raw_changed, raw_value = True, m_out
 
-    # chain_out on a BACKGROUND thread - the mirror of chain_in. dict_to_cst_module
-    # + cst_module_to_text rebuild and re-serialize the whole module (O(lines));
-    # running it inline wedged the render loop on every structured edit, most
-    # notably a continuous slider/tint drag that edits every frame.
-    #
-    # NO PING-PONG. chain_out is started ONLY by a converted structured edit
-    # (converted_edit set this frame), never by chain_in's output. The text it
-    # produces folds back as input_value and re-runs chain_in, but that re-parsed
-    # dict reaches the structured view via `draw=` (the disk-external-change flag),
-    # NOT `changed=`, so the view never reports it as an edit - so it can't
-    # re-trigger chain_out. The two chains run on distinct workers (distinct
-    # name=) and neither blocks on the other.
-    #
-    # Called EVERY frame (like chain_in) so a conversion queued by a just-finished
-    # drag still runs and folds back even on a frame with no fresh edit: `start`
-    # only fires on a real edit. While a conversion is in flight run_in_background
-    # returns LOADING and out stays unchanged, so code_file_io doesn't touch
-    # text_cache mid-drag - the debounce falls out for free.
+    if converted_edit is not UNSET:
+        routed['converted_edit'] = converted_edit
+    return raw_changed, raw_value
+
+
+@render_func(use_cache=True, show_bg=False, selectable=False, disable_scroll=True,
+             shadow=False, indent_size=0, with_footer=None, fill_height=True)
+def convert_in_and_out(input_value, draw_state, view_func=None, chain_in=None, chain_out=None,
+                       run_chain_kwargs=None, route=None, modes_state: ModesState = None,
+                       external_change=False, child_kwargs=None, unique=0, **kwargs):
+    """Conversion half of the old draw_modes — chains only, no tabs.
+
+    Runs `chain_in` ONCE on a background worker (str -> cst -> dict), shares its
+    outputs across every column via `routed`, hands rendering off to the injected
+    `view_func` (draw_with_view_funcs), then runs the reverse `chain_out` on a
+    background worker when that view reports a CONVERTED (structured) edit.
+
+    Routing is the indirection that keeps this view-agnostic — convert_in_and_out
+    names NONE of the extra inputs it threads through:
+      * `route[node]` (a name, or a tuple `(out_name, *input_names)`) names where a
+        chain node's output lands in `routed`, and which of the caller's kwargs the
+        node consumes. Those declared inputs are forwarded, by name from `route`
+        alone, into the chain payload (`run_chain_kwargs`) AND into `routed` so the
+        columns can pick them up.
+      * `changed` is the chain_in trigger, supplied whole by code_file_io (load /
+        external edit / the Index pulse) — we never diff the text or name an input.
+      * draw_with_view_funcs reads the same `route`/`routed` to feed each column."""
+    if child_kwargs is None:
+        child_kwargs = {}
+    if route is None:
+        route = {}
+
+    # Forward every kwarg a route entry DECLARES (the tuple tail after the output
+    # name) from the caller's kwargs into one payload - agnostically; we look the
+    # names up from `route`, never spell them out. This seeds the chain inputs and
+    # the values the columns read.
+    forwarded = dict(run_chain_kwargs) if run_chain_kwargs else {}
+    for target in route.values():
+        if isinstance(target, tuple):
+            for arg_name in target[1:]:
+                if arg_name in kwargs:
+                    forwarded[arg_name] = kwargs[arg_name]
+
+    # last_good only ever holds CLEAN values, so copying it here means a column
+    # keeps rendering the prior good parse while a fresh chain_in is in flight or
+    # fails on badly-typed source. The forwarded inputs ride alongside it so views
+    # (draw_text <- draw_input) get them without being hand-fed.
+    routed = dict(modes_state.last_good)
+    routed['root_input'] = kwargs.get("root_input", None)
+    routed.update(forwarded)
+
+    chain_in_error = modes_state.last_error
+    if chain_in:
+        # Fresh dict per run (run_in_background snapshots it as _run_kwargs): never
+        # reuse it for chain_out below, or a deferred chain_in run reads back
+        # chain_out's mutated values.
+        chain_in_kwargs = {**forwarded, "input_value": input_value,
+                           "chain": chain_in, "route": route}
+        # `changed` is the only trigger - code_file_io rolls load / external edit /
+        # the Index pulse into it, so we never diff the text or sniff inputs here.
+        finished, payload = run_in_background(
+            _run_chain_in,
+            child_kwargs=chain_in_kwargs,
+            name=f"chain_in{unique}", start=external_change)
+        if finished and isinstance(payload, dict):
+            # Fold the completed outputs into the shared snapshot AND this
+            # frame's routed (so the columns see the good values immediately).
+            modes_state.last_error = payload.get("error")
+            for name, val in payload["routed"].items():
+                modes_state.last_good[name] = val
+                routed[name] = val
+            chain_in_error = modes_state.last_error
+
+    out_changed, out_value = False, input_value
+
+    recompile_error = kwargs.get('error')
+    if isinstance(recompile_error, SyntaxError) and chain_in_error is None:
+        recompile_error = None  # buffer parses again → the recompile syntax error is fixe
+    routed['error'] = recompile_error or chain_in_error
+
+    # Fresh dict - don't mutate the shared global child_kwargs. A raw text edit
+    # comes straight back as the new text; a converted (structured) edit is
+    # stashed on `routed` for chain_out below.
+    # view_kwargs = {**child_kwargs, 'route': route, 'routed': routed}
+    child_kwargs['routed'] = routed
+
+    raw_changed, raw_value = view_func(input_value=input_value, **child_kwargs)
+    if raw_changed:
+        out_changed, out_value = True, raw_value
+        draw_state.invalidate_up(max_depth=3)
+
+    converted_edit = routed.pop('converted_edit', UNSET)
+
+    # chain_out in a BACKGROUND thread - the mirror of chain_in. Started ONLY by a
+    # real structured edit from above (converted_edit set), never by chain_in's
+    # output, so there's no ping-pong. Called every frame so a conversion queued
+    # by a just-finished edit still drains; `start` is still the trigger flag.
     if chain_out:
         co_start = converted_edit is not UNSET
+        # Re-indent the edited snippet to the buffer's original column. The buffer
+        # (input_value) is the source of truth for indentation; string_to_cst_module
+        # dedented to parse, so chain_out must restore it. Computed here (not inside
+        # the chain) because only the live buffer knows the indent; "" for top-level
+        # source, so a no indent for all class/function/module codecs.
+        indent = _common_indent(input_value)
         co_changed, co_payload = run_in_background(
             _run_chain_out,
             child_kwargs={"input_value": converted_edit if co_start else None,
-                          "chain": chain_out},
+                          "chain": chain_out, "indent": indent},
             name=f"chain_out{unique}", start=co_start)
         if co_changed and isinstance(co_payload, dict):
             if co_payload.get("error") is not None:
                 imgui.text_colored(f" chain_out: {co_payload['error']}", 1.0, 0.5, 0.0)
             elif "value" in co_payload:
-                out_value, out_changed = co_payload["value"], True
+                out_changed, out_value = True, co_payload["value"]
 
     return out_changed, out_value
 
@@ -731,6 +888,7 @@ def code_file_footer(input_value, code_state, **kwargs):
         imgui.text(f"Address not resolved for {input_value.__class__.__name__}")
     return False, None
 
+
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  editable_source - the whole round-trip, one function                        ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
@@ -741,7 +899,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                  recompile=False, run_jedi=False, save_debounce_ms=600,
                  ensure_import=None, s_key_pressed=None, enter_key_pressed=None, unique=None, **kwargs):
     try:
-        imgui.dummy(0,0)
+        imgui.dummy(0, 0)
 
         if child_kwargs is None:
             child_kwargs = {}
@@ -791,7 +949,6 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
         if Toggles.enable_jedi:
             imgui.same_line(spacing=0)
             search_icon = "\uf002"
-            external_change = True
             run_jedi = RenderFuncs.button(f"{search_icon} Index", tint=(0.1, 0.2, 0.45),
                                           height=top_line_height, name="jedi_index_btn")[0] or run_jedi
 
@@ -830,8 +987,9 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                 save = True
 
         if auto_save:
-            imgui.same_line(spacing=0)
-            imgui.text(f"Auto-save")
+            imgui.same_line(spacing=8)
+            imgui.align_text_to_frame_padding()
+            imgui.text_colored(f"Auto-save", *(0.6, 1.0, 0.1, 1.0))
 
         changed, new_text = run_in_background(load_file,
                                               child_kwargs={"input_value": address, 'codec': codec},
@@ -846,7 +1004,6 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             code_state._pending_save = False
             external_change = True
             request_render()
-
 
         # ── 3. Edit - the actual call ─────────────────────────────────────────────
         if code_state.text_cache is not UNSET and code_state.text_cache is not None:
@@ -872,12 +1029,29 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                                 else None)
             child_kwargs['error'] = _runtime_error or _recompile_error
             child_kwargs['root_input'] = input_value
-            edited, value = view_func(input_value=code_state.text_cache, changed=external_change, **child_kwargs)
+            # The view's reconvert trigger: load / external edit (external_change),
+            # the Index button (run_jedi), and a buffer edit from last frame
+            # (_reconvert) - chain_in re-parses typed text and surfaces syntax
+            # errors. The view passes it as-is to chain_in, but the whole trigger
+            # lives here, not in the view.
+            #
+            # Pass it as BOTH external_change (the body reads it for `start=`) and
+            # draw=True : the view is blit-cached, so without bypassing that cache its
+            # body is skipped and the trigger never fires. draw=True is the view's
+            # one-shot cache bypass (no sticky edit flags), so the body runs at
+            # frame whenever we asked for a reconvert.
+            reconvert = code_state._reconvert
+            code_state._reconvert = False
+            trigger = external_change or run_jedi or reconvert
+            edited, value = view_func(input_value=code_state.text_cache,
+                                      external_change=trigger, draw=trigger,
+                                      **child_kwargs)
 
             if edited:
                 code_state.text_cache = value
                 code_state.mark_file_current()
                 code_state._pending_save = True
+                code_state._reconvert = True
         else:
             edited = False
 
@@ -922,7 +1096,8 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
         changed, result = run_in_background(recompile_source,
                                             child_kwargs={"source": input_value,
                                                           "code_str": code_state.text_cache,
-                                                          "file_path": address.path},
+                                                          "file_path": address.path,
+                                                          "address": address},
                                             name="recompile", start=recompile_start)
         if result == LOADING:
             print("Starting recompile...")

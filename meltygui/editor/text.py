@@ -648,7 +648,7 @@ def draw_text(input_value: str,
               line_height=1.2, font: Font = Font.JETBRAINS_MONO_19, jump_to=None,
               code_tree=None, error=None):
     ds = draw_state
-
+    
     # Error markers to highlight in red: the routed code_tree's parse errors plus
     # any exception routed in via the mode route (e.g. draw_modes hands us the
     # chain_in failure so the offending source line lights up here). Computed up

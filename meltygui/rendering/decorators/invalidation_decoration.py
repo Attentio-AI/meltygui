@@ -1,10 +1,9 @@
 import functools
 from typing import Any
 
-from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.utils.custom_views import print_stack_trace
 from src.lsd.gl_gui.utils.glfw_utils import request_render
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import auto_eval
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import auto_eval, Core
 from src.lsd.gl_gui.view.invalidation_tracker import Note
 
 
@@ -35,7 +34,7 @@ def live(cls):
         else:
             original_setattr(self, name, value)
 
-        if Melty.silence_invalidate or Melty.frame_count < 2:
+        if Core.melty.silence_invalidate or Core.melty.frame_count < 2:
             return
 
         # Check if we're initializing
@@ -49,9 +48,9 @@ def live(cls):
         visible = visible or do_deep_refresh
         #
         if name in invalidate_all:
-            if Melty.init_complete():
+            if Core.melty.init_complete():
                 print(f"Invalidate all called due to change in {name}")
-                Melty.cache.invalidate_all()
+                Core.melty.cache.invalidate_all()
                 return
 
         # Call invalidate() if:
@@ -65,20 +64,20 @@ def live(cls):
             changed = value != original_value
 
             if changed:
-                # if Melty.frame_count > 10 and Melty.frame_count % 20 == 0 and name == "width":
+                # if Core.melty.frame_count > 10 and Core.melty.frame_count % 20 == 0 and name == "width":
                 #     print_stack_trace()
 
                 if not initializing and visible and not name.startswith('_') \
-                        and name != "driver" and Melty.frame_count > 2:
-                    Melty.last_attr = name
+                        and name != "driver" and Core.melty.frame_count > 2:
+                    Core.melty.last_attr = name
                     from src.lsd.gl_gui.view.attribute_churn import AttributeChurnMonitor
                     AttributeChurnMonitor.record(type(self).__name__, name)
                     if do_deep_refresh:
                         note = Note(name=name, reason="(deep) invalidate_up_by_obj", tint=(0, 0, 1))
-                        Melty.cache.invalidate_up_by_obj(obj=self, max_depth=2, force=True, note=note)
+                        Core.melty.cache.invalidate_up_by_obj(obj=self, max_depth=2, force=True, note=note)
                     else:
                         note = Note(name=name, reason="invalidate_by_obj", tint=(0, 0, 1))
-                        Melty.cache.invalidate_by_obj(self, name, note=note)
+                        Core.melty.cache.invalidate_by_obj(self, name, note=note)
 
                     from src.lsd.gl_gui.toggles import Toggles
                     if Toggles.attrib_change_stack_trace:

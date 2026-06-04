@@ -827,6 +827,11 @@ def caller_site(frames):
             continue
         if base == "new_core_view.py" and func_name == "draw_any":  # draw_any dispatch
             continue
+        # User-configurable wrapper/dispatch shells (RenderFunc's @resolve, the
+        # draw_* render shells): walk PAST them - by func name, any file - until we
+        # land on the real caller, rather than stopping at the wrapper.
+        if func_name in getattr(Toggles, "ignore_call_from", ()):
+            continue
 
         return filename, lineno
     return None

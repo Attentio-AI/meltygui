@@ -317,10 +317,10 @@ def draw_symbol_usage(input_value):
 @render_func(is_default_for=(dict, MutableMapping, defaultdict, tuple, list, GeneralParse, CallParse), use_cache=True,
              header_same_line=False, show_bg=True, show_instance_vars=False, align_header=False,
              manual_content_height=True, shadow=True, selectable=False,
-             wrap=False, with_header=draw_header, indent_size=2, searchable=True)
+             wrap=False, with_header=draw_header, indent_size=4, searchable=True)
 def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=None,
                     mode=None, keys=None, get_attr=None, set_attr=None, show_excluded=False,
-                    child_kwargs=None, show_bg=True, show_search=True, align_header=False,
+                    child_kwargs=None, show_bg=False, show_search=True, align_header=False,
                     on_collapse=False, search_text="", return_item=False,
                     on_expand=False, show_add_delete=True, item_spacing_y=1, show_system=False, included=None,
                     horizontal=False, show_indices=False, excluded=None, **kwargs):
@@ -518,7 +518,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
             key_str = f"{key}"
         else:
             key_str = str(key)
-        key_str = key_str.split("##")[0]
+
 
         if not show_excluded and hasattr(type(input_value), "__excluded_attrs__"):
             if not Toggles.show_excluded:
@@ -697,6 +697,23 @@ def draw_property(input_value: property, draw_state, **kwargs):
     imgui.text_colored(f"Property: {input_value.fget.__name__}", 1.0, 0.5, 0.0, 1.0)
     # value = input_value.fget(input_value)
     # draw_any(value, name="value", show_bg=True, draw_state=draw_state)
+
+
+
+@render_func(is_lens_for=(type), skip_draw=True)
+def type_lens(input_value, view_func, child_kwargs, **kwargs):
+    changed, value = view_func(**child_kwargs)
+    if changed:
+        for k, v in value.items():
+            if hasattr(input_value, k):
+                if k.startswith("_"):
+                    continue
+                try:
+                    setattr(input_value, k, v)
+                except Exception as e:
+                    pass
+
+    return changed, value
 
 
 @render_func(show_bg=True, align_header=False, use_cache=True, shadow=False,
@@ -2648,7 +2665,7 @@ def draw_enum(input_value: Enum, draw_state=None, style_manager=None, enum_tint=
 
     names = [opt.name.replace("_", " ").capitalize() for opt in options]
     changed, selected = draw_tab_bar([input_value], collection=options, names=names, wrap=True,
-                                      z_offset=-1, unique="enum", as_toggles=False, bg_offset=-3)
+                                      z_offset=-1, unique="enum", rounding=5, as_toggles=False, bg_offset=-3)
     if changed and selected:
         return True, selected[0]
     return False, input_value
@@ -2717,11 +2734,11 @@ def draw_tab_bar(input_value: list, tab_height=30, names=None, tint_value=0.235,
         if active:
             selected_value = 0.204
             clicked = button(label, indent_size=0, z_offset=3, name=f"tab_{i}_{unique}",
-                             height=tab_height, value=value + selected_value,
+                             height=tab_height - 3, value=value + selected_value,
                              color=tab_color, factor=tab_factor, draw=True)[0]
         else:
             saturation = 1.0 if tinted else 0.3
-            clicked = button(label, indent_size=0, height=tab_height, draw=True, z_offset=0.0,
+            clicked = button(label, indent_size=0, height=tab_height, draw=True, z_offset=1.0,
                              alpha=0.0 if tinted else 0.0, value=value if not tinted else 0.1, saturation=saturation,
                              name=f"tab_{i}_{unique}_deactivated", color=tab_color, factor=tab_factor,
                              text_value=1.0 if not tinted else 0.9,
@@ -2851,18 +2868,258 @@ def run_scoped_eval(code, view_func, draw_state, local_vars):
     return "\n".join(parts) if parts else "(no output)"
 
 
-@render_func(use_cache=True, disable_scroll=True, show_header=False, searchable=True,
-             header_same_line=False, show_tint=False, show_name=False, is_tree=False)
-def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, unique=None, search_text='',
-                      search_active=False, up_key_pressed=None,
-                      down_key_pressed=None, enter_key_down=None, tab_state: TabState = None, **kwargs):
-    context_menu_offset = input_value.context_menu_offset
+# ── Context menu tabs ────────────────────────────────────────────────────────
+# Each tab view is its own render_func. draw_context_menu places one per selected
+# column by calling it with column=t_idx; the tab then owns a single-column
+# layout, so the inner views inside it no longer pass column themselves.
+
+@render_func(use_cache=True, show_bg=False, show_header=False, show_name=False, selectable=False)
+def draw_info_tab(input_value, search_text='', unique=None, **kwargs):
+    """Read-only dump of the inspected view's draw_state fields. `search_text`
+    (the menu's resolved search term) probes an arbitrary kwarg/attr by name."""
     info_items = ["name", "searchable", "scroll_disabled", "_default_view_func", "column", "closable", "current_mode",
                   "mode",
                   "show_add_delete", "_source", "window_pos", "left", "top", "width", "height", "content_height",
                   "scroll_offset",
                   "final_max_column", "_column_cursor", "_content_rect", "_max_column_index", "_outside_column_height",
                   "disable_scroll"]
+
+    if search_text is None or search_text == "":
+        item_value = ""
+    elif search_text in input_value._kwargs:
+        item_value = input_value._kwargs.get(search_text, 'Not found')
+    elif search_text in input_value.__dict__:
+        item_value = getattr(input_value, search_text, 'Not found')
+    else:
+        item_value = 'Not found'
+
+    imgui.spacing()
+    text(str(item_value), show_bg=False, tint=(0.5, 0.5, 0.0), show_header=True, show_name=True,
+         wrap=False, name=f"{search_text}##it", editable=False)
+
+    draw_str(str(len(input_value._view_children)),
+             show_bg=True, tint=(0.1, 0.01, 0.4), show_header=True, wrap=False, show_name=True,
+             name=f"._view_children##{unique}", editable=False)
+    draw_str(str(input_value.scroll_visible),
+             show_bg=True, tint=(0.1, 0.01, 0.4), show_header=True, wrap=False, show_name=True,
+             name=f"scroll_enabled##{unique}", editable=False)
+
+    draw_str(str(input_value.abs_clipped_height),
+             show_bg=True, tint=(0.1, 0.01, 0.4), show_header=True, wrap=False, show_name=True,
+             name=f"abs_clip_height##{unique}", editable=False)
+    draw_str(str(input_value._observed_content_height),
+             show_bg=True, tint=(0.1, 0.01, 0.4), show_header=True, wrap=False, show_name=True,
+             name=f"_observed_content_height##{unique}", editable=False)
+
+    draw_str(str(input_value.abs_content_height),
+             show_bg=True, tint=(0.1, 0.01, 0.4), show_header=True, wrap=False, show_name=True,
+             name=f"abs_content_height##{unique}", editable=False)
+    text(f"{input_value._view_func.__name__}", show_bg=True, show_name=True, show_header=True, wrap=True,
+         name="Rendered by", editable=False, tint=(0.84, 0.68, 0.639))
+    text(f"{type(input_value._raw_input_value).__name__}", show_name=True,
+         show_header=True, name="input_value type", editable=False)
+
+    text(f"{input_value.window_index}", show_name=True, show_header=True, name="window_index",
+         editable=False, tint=(0.8, 0.8, 0.2))
+
+    text(f"{input_value._default_view_func}", show_name=True, name="default_view_func", editable=False)
+
+    text(f"{input_value._kwargs.get('real_type', None)}", show_name=True, name="kwargs type", editable=False)
+
+    text(f"{input_value._kwargs.get('type_collection', None)}", show_name=True,
+         name="kwargs collection type", editable=False)
+
+    for info_item in info_items:
+        if info_item in input_value._kwargs:
+            item_value = input_value._kwargs.get(info_item, 'Not found')
+        elif info_item in input_value.__dict__:
+            item_value = getattr(input_value, info_item, 'Not found')
+        else:
+            item_value = 'Not found'
+
+        if isinstance(item_value, (int, float, str, bool, Enum)):
+            text(f"{item_value}", name=info_item, show_name=True, show_header=True, editable=False)
+        else:
+            draw_any(item_value, name=info_item, show_name=True,
+                     show_header=True, show_add_delete=False, draw=True)
+
+    if button("print_stack_trace")[0]:
+        print_stack_trace()
+    return False, input_value
+
+
+@render_func(use_cache=True, show_bg=False, show_header=False, show_name=False, selectable=False)
+def draw_config_tab(input_value, **kwargs):
+    """List the inspected view function's configurable parameters and their
+    current values (kwarg override, else signature default)."""
+    view_func = input_value._view_func
+    if view_func is None:
+        text("No view function")
+        return False, input_value
+
+    # Unwrap the @render_func wrapper to read the original signature.
+    raw_func = getattr(view_func, '__wrapped__', view_func)
+    sig = inspect.signature(raw_func)
+    ds_kwargs = input_value._kwargs or {}
+    # Framework-injected params the user can't configure.
+    skip_params = {"input_value", "draw_state", "args", "o_kwargs",
+                   "kwargs", "meta", "viewstate", "self"}
+    for param_name, param in sig.parameters.items():
+        if param_name in skip_params:
+            if param_name in ds_kwargs:
+                param_value = ds_kwargs[param_name]
+                text(f"{param.__class__.__name__}", name=param_name,
+                     editable=False, tint=(0.8, 0.8, 0.2))
+            continue
+
+        if param.kind in (inspect.Parameter.VAR_POSITIONAL,
+                          inspect.Parameter.VAR_KEYWORD):
+            continue
+
+        # Current value: kwarg override, else the signature default.
+        if param_name in ds_kwargs:
+            param_value = ds_kwargs[param_name]
+        elif param.default is not inspect.Parameter.empty:
+            param_value = object()
+        else:
+            param_value = None
+
+        if isinstance(param_value, (int, float, str, bool, Enum)):
+            text(f"{param_value}", name=param_name, editable=False)
+        else:
+            draw_any(param_value, name=param_name,
+                     show_name=True, show_header=True,
+                     show_add_delete=False, draw=True)
+    return False, input_value
+
+
+@render_func(use_cache=True, show_bg=False, show_header=False, show_name=False, selectable=False)
+def draw_func_tab(input_value, **kwargs):
+    """Editable source of the inspected view function; hotswaps on save."""
+    from src.lsd.gl_gui.view.mode import Mode
+    view_func = input_value._view_func
+    if view_func is not None:
+        view_func_name = view_func.__name__ if hasattr(view_func, '__name__') else str(view_func)
+        change, new_view_func = draw_any(view_func, mode=Mode.NEW_CODE, name=view_func_name)
+        if change:
+            print(f"Changing view function from {view_func.__name__} to {new_view_func.__name__}")
+            input_value._view_func = new_view_func
+    else:
+        draw_str("No view function specified", name="View Function", editable=False)
+    return False, input_value
+
+
+@render_func(use_cache=True, show_bg=False, show_header=False, show_name=False, selectable=False)
+def draw_eval_tab(input_value, draw_state, unique=None, enter_key_down=None,
+                  menu_draw_state=None, **kwargs):
+    """Arbitrary-code REPL scoped to the inspected view function. This tab is just
+    an editor + trigger: it stashes the snippet and a pending flag on the TARGET
+    widget's draw_state. The eval itself runs back in that widget's render wrapper
+    (core_render), right before it calls the view func -- so the snippet sees the
+    view function's real call-time locals. We read the result back off the same
+    draw_state."""
+    target = input_value  # (possibly walked-up) target's draw_state
+    eval_view_func = target._view_func
+
+    code = getattr(target, '_eval_code', None)
+    if code is None:
+        code = "input_value"
+    # Single-line editor: enter never enters the editor as a newline (its newline
+    # handler is gated on `not single_line`); instead the menu claims the
+    # enter-down event via its on_enter_key_down param and uses it to fire the
+    # eval below.
+    code_changed, new_code = draw_text(
+        code, name=f"eval_code##{unique}", padding_right=100,
+        single_line=True, show_bg=True, show_header=False,
+        tint=(0.05, 0.15, 0.08))
+    if code_changed:
+        target._eval_code = new_code
+        code = new_code
+
+    def _fire_eval():
+        # Stash the snippet + arm the trigger, then force the target to actually
+        # re-render (bypassing its cache), so its wrapper calls func() -- including our
+        # eval hook -- this/next frame.
+        target._eval_code = code
+        target._eval_pending = True
+        target._eval_request_gen = getattr(target, '_eval_generation', 0) + 1
+        target.invalidate()
+        target._parent.invalidate_up(max_depth=5)
+        request_render()
+
+    run_clicked = button("Run", height=30, name=f"eval_run##{unique}",
+                         color=(0.2, 0.7, 0.3), factor=0.8)[0]
+    # Enter (claimed by the menu's on_enter_key_down param) evals too.
+    if run_clicked or enter_key_down:
+        _fire_eval()
+
+    # The eval lands in the target's wrapper, a separate render pass. Until the
+    # requested generation is served, keep THIS tab (and the owning menu) live so
+    # we re-run and re-read the fresh result rather than using a stale cache.
+    if getattr(target, '_eval_generation', 0) < getattr(target, '_eval_request_gen', 0):
+        draw_state.invalidate()  # this tab's own draw_state
+        if menu_draw_state is not None:
+            menu_draw_state.invalidate()  # the menu so it re-calls this tab
+        request_render()
+
+    eval_result = getattr(target, '_eval_result', None)
+    if eval_result:
+        draw_text(eval_result, name=f"eval_result##{unique}",
+                  show_bg=True, show_header=True,
+                  show_name=True, editable=False, wrap_text=True,
+                  wrap=False, bg_offset=-100,
+                  height=300,
+                  tint=(0.0, 0.0, 0.0))
+    return False, input_value
+
+
+@render_func(use_cache=True, show_bg=False, show_header=False, show_name=False, selectable=False)
+def draw_input_tab(input_value, unique=None, **kwargs):
+    """Show the raw value this view was handed, rendered with its natural
+    renderer so it's inspectable/editable.
+
+    Below it, a usage example for the CallSite/CallerCodec: edit the source line
+    where THIS view was called from. `input_value` is the (offset-walked) parent
+    view's draw_state, and its `_call_site` is the (filename, lineno) of that call,
+    captured once when the menu opened. Wrapping it in a `CallSite` routes
+    code_file_io through CallerCodec, which spans the call STATEMENT and loads it
+    as editable text -- the same load/edit/save flow a function object gets from
+    FunctionCodec, just pointed at the caller line instead of a def."""
+    call_site = getattr(input_value, "_call_site", None)
+    if call_site is not None:
+        from src.lsd.gl_gui.view.core_conversion.new_codecs import CallSite
+        draw_any(CallSite(*call_site), name=f"caller_source##{unique}", mode=Modes.NEW_CODE)
+    return False, input_value
+
+
+@render_func(use_cache=True, show_bg=False, show_header=False, show_name=False, selectable=False)
+def draw_class_tab(input_value, class_to_show=None, class_is_parent=False, class_name='', **kwargs):
+    """Editable class source. For a primitive field this is the parent object's
+    class (e.g. Lora for a Lora.rank float) -- labelled so the source is clear."""
+    from src.lsd.gl_gui.view.mode import Mode
+    if class_is_parent:
+        text(f"Parent type of {class_name}", name="Source",
+             editable=False, tint=(1.0, 0.64, 0.113))
+    cls_change, new_cls = draw_any(class_to_show, mode=Mode.NEW_CODE,
+                                   name=class_to_show.__name__)
+    return False, input_value
+
+
+@render_func(use_cache=True, show_bg=False, show_header=False, show_name=False, selectable=False)
+def draw_mode_tab(input_value, draw_state, current_mode=None, **kwargs):
+    """Show the current Mode's value string."""
+    if current_mode is not None:
+        mode_change, new_mode = text(str(current_mode.value), width=draw_state.content_width,
+                                     name=str(current_mode))
+    return False, input_value
+
+
+@render_func(use_cache=True, disable_scroll=True, show_header=False,
+             header_same_line=False, show_tint=False, show_name=False, is_tree=False)
+def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, unique=None, search_text='',
+                      search_active=False, up_key_pressed=None,
+                      down_key_pressed=None, enter_key_down=None, tab_state: TabState = None, **kwargs):
+    context_menu_offset = input_value.context_menu_offset
 
     # imgui.text(type(input_value._input_value).__name__)
     imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0] - 1, imgui.get_cursor_screen_pos()[1] - 18))
@@ -2940,6 +3197,8 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     tint_tab_name = f"{paint_brush_icon} Tint"
     terminal_icon = f"\uf120"  # fa-terminal
     eval_tab_name = f"{terminal_icon} Eval"
+    keyboard_icon = f"\uf11c"  # fa-keyboard
+    input_tab_name = f"{keyboard_icon} Input"
 
     # Find which class's source to show in the class tab.
     # For a non-primitive value that's just the value's own class. For a
@@ -2989,6 +3248,8 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     tab_tints.append(None)
     tab_names.append(eval_tab_name)
     tab_tints.append((0.2, 0.7, 0.3))  # green for the eval/REPL tab
+    tab_names.append(input_tab_name)
+    tab_tints.append((0.4, 0.2, 0.7))  # purple for the input tab
     tab_names.append(tint_tab_name)
     tab_tints.append(Core.melty._saturated_rgb(draw_state.tint))  # orange tint for the tint tab
     if class_to_show is not None:
@@ -3021,221 +3282,41 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     imgui.dummy(0,2)
 
     for t_idx, static_tab in enumerate(tab_state.selected_tabs):
-        from src.lsd.gl_gui.view.mode import Mode
-        if static_tab < len(tab_names):
-            if tab_names[static_tab] == tint_tab_name:
-                changed, new_tint = draw_tint_context(input_value, name=f"Context Tint##{unique}", column=t_idx)
-                if changed:
-                    pass
+        if static_tab >= len(tab_names):
+            continue
+        this_tab = tab_names[static_tab]
+        # Each tab has its own render_func placed at column=t_idx; the tab owns a
+        # single-column row so its inner views don't need column themselves.
+        if this_tab == tint_tab_name:
+            draw_tint_context(input_value, name=f"Context Tint##{unique}", column=t_idx)
 
-            if tab_names[static_tab] == info_icon_fa:
+        elif this_tab == info_icon_fa:
+            # Use the effective search term (menu kwarg, else its search box).
+            info_search = search_text if search_text != "" else draw_state.search_text
+            draw_info_tab(input_value, search_text=info_search, unique=unique,
+                          name=f"info_tab_{t_idx}##{unique}", column=t_idx)
 
-                if search_text == "":
-                    search_text = draw_state.search_text
+        elif this_tab == config_icon_fa:
+            draw_config_tab(input_value, name=f"config_tab_{t_idx}##{unique}", column=t_idx)
 
-                if search_text is None or search_text == "":
-                    item_value = ""
-                elif search_text in input_value._kwargs:
-                    item_value = input_value._kwargs.get(search_text, 'Not found')
-                elif search_text in input_value.__dict__:
-                    item_value = getattr(input_value, search_text, 'Not found')
-                else:
-                    item_value = f'Not found'
+        elif this_tab == func_tab:
+            draw_func_tab(input_value, name=f"func_tab_{t_idx}##{unique}", column=t_idx)
 
-                imgui.spacing()
-                text(str(item_value), show_bg=False, tint=(0.5, 0.5, 0.0), show_header=True, show_name=True,
-                     wrap=False, name=f"{search_text}##it",
-                     column=t_idx, editable=False)
+        elif this_tab == eval_tab_name:
+            draw_eval_tab(input_value, unique=unique, enter_key_down=enter_key_down,
+                          menu_draw_state=draw_state,
+                          name=f"eval_tab_{t_idx}##{unique}", column=t_idx)
 
-                draw_str(str(len(input_value._view_children)),
-                         show_bg=True, tint=(0.1, 0.01, 0.4), show_header=True, wrap=False, show_name=True,
-                         name=f"._view_children##{unique}",
-                         column=t_idx, editable=False)
-                draw_str(str(input_value.scroll_visible),
-                         show_bg=True, tint=(0.1, 0.01, 0.4), show_header=True, wrap=False, show_name=True,
-                         name=f"scroll_enabled##{unique}",
-                         column=t_idx, editable=False)
+        elif this_tab == input_tab_name:
+            draw_input_tab(input_value, name=f"input_tab_{t_idx}##{unique}", auto_resize=True, height=1500, column=t_idx)
 
-                draw_str(str(input_value.abs_clipped_height),
-                         show_bg=True, tint=(0.1, 0.01, 0.4), show_header=True, wrap=False, show_name=True,
-                         name=f"abs_clip_height##{unique}",
-                         column=t_idx, editable=False)
-                draw_str(str(input_value._observed_content_height),
-                         show_bg=True, tint=(0.1, 0.01, 0.4), show_header=True, wrap=False, show_name=True,
-                         name=f"_observed_content_height##{unique}",
-                         column=t_idx, editable=False)
+        elif this_tab == class_tab:
+            draw_class_tab(input_value, class_to_show=class_to_show, class_is_parent=class_is_parent,
+                           class_name=class_name, name=f"class_tab_{t_idx}##{unique}", column=t_idx)
 
-                draw_str(str(input_value.abs_content_height),
-                         show_bg=True, tint=(0.1, 0.01, 0.4), show_header=True, wrap=False, show_name=True,
-                         name=f"abs_content_height##{unique}",
-                         column=t_idx, editable=False)
-                text(f"{input_value._view_func.__name__}", show_bg=True, show_name=True, show_header=True, wrap=True,
-                     name="Rendered by", column=t_idx,
-                     editable=False, tint=(0.84, 0.68, 0.639))
-                text(f"{type(input_value._raw_input_value).__name__}", show_name=True,
-                     show_header=True, name="input_value type", column=t_idx, editable=False)
-
-                text(f"{input_value.window_index}", show_name=True, show_header=True, name="window_index", column=t_idx,
-                     editable=False, tint=(0.8, 0.8, 0.2))
-
-                text(f"{input_value._default_view_func}", show_name=True, name="default_view_func", column=t_idx,
-                     editable=False)
-
-                text(f"{input_value._kwargs.get('real_type', None)}", show_name=True, name="kwargs type", column=t_idx,
-                     editable=False)
-
-                text(f"{input_value._kwargs.get('type_collection', None)}", show_name=True,
-                     name="kwargs collection type", column=t_idx,
-                     editable=False)
-
-                for info_item in info_items:
-                    if info_item in input_value._kwargs:
-                        item_value = input_value._kwargs.get(info_item, 'Not found')
-                    elif info_item in input_value.__dict__:
-                        item_value = getattr(input_value, info_item, 'Not found')
-                    else:
-                        item_value = 'Not found'
-
-                    if isinstance(item_value, (int, float, str, bool, Enum)):
-                        text(f"{item_value}", name=info_item, show_name=True, show_header=True, column=t_idx,
-                             editable=False)
-                    else:
-                        draw_any(item_value, name=info_item, column=t_idx, show_name=True,
-                                 show_header=True, show_add_delete=False, draw=True)
-
-                if button("print_stack_trace", column=t_idx)[0]:
-                    print_stack_trace()
-
-            if tab_names[static_tab] == config_icon_fa:
-                view_func = input_value._view_func
-                if view_func is None:
-                    text("No view function", column=t_idx)
-                else:
-                    # Unwrap the @render_func wrapper to read the original signature.
-                    raw_func = getattr(view_func, '__wrapped__', view_func)
-                    sig = inspect.signature(raw_func)
-                    ds_kwargs = input_value._kwargs or {}
-                    # Auto-injected params the user doesn't configure.
-                    skip_params = {"input_value", "draw_state", "args", "o_kwargs",
-                                   "kwargs", "meta", "viewstate", "self"}
-                    for param_name, param in sig.parameters.items():
-                        if param_name in skip_params:
-                            if param_name in ds_kwargs:
-                                param_value = ds_kwargs[param_name]
-                                text(f"{param.__class__.__name__}", name=param_name, column=t_idx,
-                                     editable=False, tint=(0.8, 0.8, 0.2))
-                            continue
-
-                        if param.kind in (inspect.Parameter.VAR_POSITIONAL,
-                                          inspect.Parameter.VAR_KEYWORD):
-                            continue
-
-                        # Current value: kwarg override, else the signature default.
-                        if param_name in ds_kwargs:
-                            param_value = ds_kwargs[param_name]
-                        elif param.default is not inspect.Parameter.empty:
-                            param_value = object()
-                        else:
-                            param_value = None
-
-                        if isinstance(param_value, (int, float, str, bool, Enum)):
-                            text(f"{param_value}", name=param_name, column=t_idx,
-                                 editable=False)
-                        else:
-                            draw_any(param_value, name=param_name, column=t_idx,
-                                     show_name=True, show_header=True,
-                                     show_add_delete=False, draw=True)
-            if tab_names[static_tab] == func_tab:
-          
-
-                view_func = input_value._view_func
-                # Draw view function
-                if view_func is not None:
-                    view_func_name = view_func.__name__ if hasattr(view_func, '__name__') else str(view_func)
-                    change, new_view_func = draw_any(view_func, column=t_idx, mode=Mode.NEW_CODE, name=view_func_name)
-                    if change:
-                        print(f"Changing view function from {view_func.__name__} to {new_view_func.__name__}")
-                        input_value._view_func = new_view_func
-                        # input_value._kwargs['view_function'] = new_view_func
-                else:
-                    draw_str("No view function specified", name="View Function", column=t_idx, editable=False)
-
-            if tab_names[static_tab] == eval_tab_name:
-                # Eval-code REPL scoped to the current view function. This
-                # tab is just an editor + trigger: it stores the snippet and a
-                # pending flag on the TARGET widget's draw_state. The eval itself
-                # runs back in that widget's render wrapper (core_render), right
-                # before it calls the view func -- so the snippet sees the view
-                # function's real call-time locals (input_value, draw_state and
-                # every arg by name), not a reconstructed scope. We read the
-                # result back off the target draw_state.
-                target = input_value  # (possibly walked-up) target's draw_state
-                eval_view_func = target._view_func
-
-                code = getattr(target, '_eval_code', None)
-                if code is None:
-                    code = "input_value"
-                # Single-line mode: enter never reaches the editor as a newline
-                # (its newline handler is gated on `not single_line`); instead the
-                # menu claims the enter key event via its on_enter_key_down param
-                # and uses it to fire the eval below.
-                code_changed, new_code = draw_text(
-                    code, name=f"eval_code##{unique}", column=t_idx, padding_right=100,
-                    single_line=True, show_bg=True, show_header=False,
-                    tint=(0.05, 0.15, 0.08))
-                if code_changed:
-                    target._eval_code = new_code
-                    code = new_code
-
-                def _fire_eval():
-                    # Stash the snippet + arm the trigger, then force the target
-                    # to actually re-render (bypassing its cache) so its first
-                    # render func() -- and our eval runs -- this/next runs.
-                    target._eval_code = code
-                    target._eval_pending = True
-                    target._eval_request_gen = getattr(target, '_eval_generation', 0) + 1
-                    target.invalidate()
-                    target._parent.invalidate_up(max_depth=5)
-                    request_render()
-
-                run_clicked = button("Run", height=30, column=t_idx, name=f"eval_run##{unique}",
-                                     color=(0.2, 0.7, 0.3), factor=0.8)[0]
-                # Enter (claimed by the menu's on_enter_key_down param) evals too.
-                if run_clicked or enter_key_down:
-                    _fire_eval()
-
-                # The eval lands in the target's wrapper, a separate render pass.
-                # Until the requested generation is served, keep THIS menu live so
-                # we re-read the fresh result rather than serving a stale cache.
-                if getattr(target, '_eval_generation', 0) < getattr(target, '_eval_request_gen', 0):
-                    draw_state.invalidate()  # the menu's own draw_state
-                    request_render()
-
-                eval_result = getattr(target, '_eval_result', None)
-                if eval_result:
-                    draw_text(eval_result, name=f"eval_result##{unique}",
-                              column=t_idx, show_bg=True, show_header=True,
-                              show_name=True, editable=False, wrap_text=True,
-                              wrap=False, bg_offset=-100,
-                              height=300,
-                              tint=(0.0, 0.0, 0.0))
-
-            if tab_names[static_tab] == class_tab:
-                # Draw class source. For a primitive field this is the parent
-                # object's class (e.g. Lora for a LoraID), so so label it
-                # clearly so it's obvious the source is the owning type.
-                if class_is_parent:
-                    text(f"Parent type of {class_name}", name="Source", column=t_idx,
-                         editable=False, tint=info_tint)
-                cls_change, new_cls = draw_any(class_to_show, column=t_idx, mode=Mode.NEW_CODE,
-                                               name=class_to_show.__name__)
-
-            if tab_names[static_tab] == mode_tab:
-                if current_mode is not None:
-                    # prettiafy the string using json.dumps
-
-                    mode_change, new_mode = text(str(current_mode.value), column=t_idx, width=draw_state.content_width,
-                                                 name=str(current_mode))
+        elif this_tab == mode_tab:
+            draw_mode_tab(input_value, current_mode=current_mode,
+                          name=f"mode_tab_{t_idx}##{unique}", column=t_idx)
     imgui.dummy(0, 30)
 
     return False, input_value

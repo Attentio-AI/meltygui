@@ -13,7 +13,6 @@ import imgui
 from imgui.core import _DrawList
 
 from src.lsd.gl_gui.background import Background, Pending
-from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.toggles import Counters, Toggles, Tint
 from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
 from src.lsd.gl_gui.view.core_conversion.address import to_address, Address
@@ -293,6 +292,26 @@ def render_func(*args, **o_kwargs):
         modes = kwargs.get("mode", None)
         if not isinstance(modes, tuple):
             modes = (modes,) if modes is not None else None
+
+        drives = kwargs.pop("drives", None)
+        lens_func = None
+        if drives is not None:
+            if isinstance(drives, tuple):
+                driven_value = drives[0]
+                lens_func = drives[1]
+            else:
+                driven_value = drives
+                if type(driven_value) in Melty.default_lenses_by_type:
+                    lens_func = Melty.default_lenses_by_type[type(driven_value)]
+
+            if lens_func is not None:
+                kwargs['input_value'] = input_value
+                changed, value = lens_func.__wrapped__(driven_value, view_func=wrapper, lens_func=lens_func, child_kwargs=kwargs,
+                                           _converter_mode=True)
+                if changed:
+                    Core.melty.cache.invalidate_up_by_obj(driven_value)
+                return changed, value
+
 
         mode_stacked = False
         current_mode = None
@@ -578,6 +597,14 @@ def render_func(*args, **o_kwargs):
         draw_state._wrapper = wrapper
         draw_state._bg_stack = copy(Melty.bg_stack)
         draw_state._bg_depth = Melty.bg_depth
+
+
+        #######################################
+        #### Wrapper
+        with_wrapper = kwargs.get("with_wrapper", None)
+        if with_wrapper is not None:
+            kwargs['view_func'] = func
+            return with_wrapper(**kwargs)
 
 
         #############################################
@@ -1276,7 +1303,7 @@ def render_func(*args, **o_kwargs):
 
                     view_top = draw_state.abs_top
                     delta_from_top = view_top - draw_state.parent_window.abs_top
-                    fill_height = draw_state.parent_window.height - delta_from_top - 20
+                    fill_height = min(kwargs.get("max_height", 1e9), draw_state.parent_window.height - delta_from_top - 20)
                     draw_state.height = fill_height
                     parent_wrap_height = fill_height
                     # fixed_size_draw_state = Melty.fixed_size_stack[-2]
@@ -2569,7 +2596,8 @@ def render_func(*args, **o_kwargs):
 
                     current_cursor = imgui.get_cursor_screen_pos()
                     imgui.set_cursor_screen_pos((current_cursor[0] + outline_margin,
-                                                 draw_state.abs_top + draw_state._observed_content_height))
+                                                 min(draw_state.abs_top + draw_state.height - draw_state.footer_height,
+                                                     draw_state.abs_top + draw_state._observed_content_height)))
 
                     push_id(str(unique) + "footer")
                     imgui.begin_group()
@@ -2852,7 +2880,7 @@ def render_func(*args, **o_kwargs):
                 if passed_height is None:
                     max_height = kwargs.get("max_height", 1e9)
                     if not closable:
-                        draw_state.height = snap_int(item_rect[1])
+                        draw_state.height = min(snap_int(item_rect[1]), max_height)
                         draw_state._source["height"] = "not closable, item_rect[1]"
                     else:
                         display_height = imgui.get_io().display_size[1]
@@ -3273,7 +3301,37 @@ def render_func(*args, **o_kwargs):
                         request_render()
 
                     start_cursor = imgui.get_cursor_screen_pos()
+
+                    # drives = kwargs.pop("drives", None)
+                    lens_func = None
+                    # if drives is not None:
+                    #     imgui.text("driving")
+                    #     print(f"drives: {drives}")
+                    #
+                    #     if isinstance(drives, tuple):
+                    #         driven_value = drives[0]
+                    #         lens_func = drives[1]
+                    #     else:
+                    #         driven_value = drives
+                    #         if type(driven_value) in Melty.default_lenses_by_type:
+                    #             lens_func = Melty.default_lenses_by_type[type(driven_value)]
+                    #
+                    #     if lens_func is not None:
+                    #         changed, value = lens_func(driven_value, view_func=func, lens_func=lens_func,
+                    #                                    child_kwargs=clean_args, _converter_mode=True)
+                    #
+                    #         if changed:
+                    #             Core.melty.cache.invalidate_up_by_obj(driven_value)
+                    #
+                    #         return_value = changed, value
+                    #
+                    #     else:
+                    #         imgui.text_colored(f"No lens for type {type(driven_value).__name__}", 1, 0.5, 0.5)
+                    # else:
+
                     return_value = func(**clean_args)
+                    # Stack cleanup handled by the finally block below
+
                     draw_state._return_value = return_value
                     end_cursor = imgui.get_cursor_screen_pos()
                     draw_state._observed_content_height = int(end_cursor[1] - start_cursor[1])
@@ -3331,6 +3389,13 @@ def render_func(*args, **o_kwargs):
         add_default(is_default_for)
     elif isinstance(is_default_for, str):
         add_default(is_default_for)
+
+    is_lens_for = o_kwargs.pop('is_lens_for', None)
+    if isinstance(is_lens_for, (tuple, list)):
+        for a_type in is_lens_for:
+            Melty.default_lenses_by_type[a_type] = wrapper
+    else:
+        Melty.default_lenses_by_type[is_lens_for] = wrapper
 
     interrupt_type = o_kwargs.pop('interrupt_source_for', None)
     if interrupt_type is not None:
@@ -3406,6 +3471,7 @@ def render_func(*args, **o_kwargs):
 
     wrapper.__render_func__ = True
     wrapper.__header_defaults__ = header_defaults
+    wrapper.__params__ = params
 
     # Auto-register by name so RenderFuncs.<name> can resolve this lazily
     # without anyone importing the module that defines it (avoids import cycles).

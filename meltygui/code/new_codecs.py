@@ -1,11 +1,12 @@
 import inspect
 import tokenize
 import types
+from dataclasses import dataclass
 from enum import EnumType
 from pathlib import Path
 
 from src.lsd.gl_gui.view.core_conversion.address import Address, _evict_linecache, shift_sibling_linenos, is_editable_source
-from src.lsd.gl_gui.view.core_conversion.chain_converters import _ensure_import_lines
+from src.lsd.gl_gui.view.core_conversion.chain_converters import _ensure_import_lines, _resolve_call_address
 from src.lsd.gl_gui.view.core_conversion.file_converters import _detect_newline
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
 
@@ -32,6 +33,23 @@ type_to_codec = {}
 # Library-source guard is in address.py (is_editable_source) so the codec and
 # the older file_converters save paths share one gate. Local alias for brevity.
 _is_editable_source = is_editable_source
+
+
+@dataclass(frozen=True)
+class CallSite:
+    """The dispatch key for `CallerCodec`: where a function is CALLED, not where
+    it's defined. A function object resolves to its `def` span; a `CallSite`
+    resolves to the call STATEMENT at `(filename, lineno)`.
+
+    A plain `(filename, lineno)` tuple can't be type-dispatched (it's just a
+    tuple), so we wrap it in a dedicated type and register the codec `for_type`.
+    This is the pattern future targeted codecs follow too — e.g. a `ClassAttribute`
+    type pointing a codec at a single `name = value` line in a class body.
+
+    Construct from `caller_site(get_live_frames())` (which already strips the
+    render-dispatch frames), then hand the `CallSite` to `code_file_io`."""
+    filename: str
+    lineno: int
 
 def register_codec(cls=None, **kwargs):
     def wrap(cls):
@@ -250,6 +268,62 @@ class FunctionCodec(TypeCodec):
                           start_lineno - 1 + len(source_lines),
                           source=input_value, watcher_ds=draw_state)
         draw_state._addr_cache = (input_value, mtime, address)
+        return address
+
+
+@register_codec(for_type=CallSite)
+class CallerCodec(TypeCodec):
+    """Edit the call STATEMENT at a CallSite, the way FunctionCodec edits a def.
+
+    Only `resolve_address` differs from FunctionCodec: instead of `getsourcelines`
+    on a function object, it ast-walks the file for the outermost Call covering the
+    site's line and spans that whole statement (so a multi-line call round-trips as
+    one). `load`/`save` are inherited verbatim — they read/write the line span as
+    text via the Address, exactly like a def.
+
+    The enclosing function is attached as `address.source` (by `_resolve_call_address`)
+    so the inherited save shifts siblings correctly, and so anything wanting to
+    hotswap the surrounding `def` after an edit has it to hand."""
+    name = "Python Call Site"
+
+    @staticmethod
+    def resolve_address(input_value, draw_state=None, **kwargs):
+        if not isinstance(input_value, CallSite):
+            return None
+        filename, lineno = input_value.filename, input_value.lineno
+        if filename is None or lineno is None:
+            return None
+
+        # Refuse library source - we only ever edit this project's own code.
+        if not _is_editable_source(filename):
+            return None
+
+        path = Path(filename)
+        if draw_state is not None:
+            FileWatch.register_draw_state(draw_state, path)
+
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            mtime = None
+        # Cache by (filename, lineno, mtime) - a fresh CallSite is passed each frame,
+        # so compare by VALUE, not identity (FunctionCodec can use `is` on the stable
+        # function object; we don't). Re-resolves only when the file changes.
+        cached = getattr(draw_state, '_addr_cache', None)
+        if cached is not None and cached[0] == (filename, lineno) and cached[1] == mtime:
+            return cached[2]
+
+        _evict_linecache(str(path))
+        # ast.walk + loop (in C, single-digit ms) finds the call span and attaches
+        # the enclosing function as .source - see _resolve_call_address. NOT libcst's
+        # PositionTracker, which is O(whole file) pure-Python and stalls the loop.
+        address = _resolve_call_address((filename, lineno))
+        if not isinstance(address, Address):
+            return cached[2] if cached is not None else None
+
+        address._watcher_ds = draw_state
+        if draw_state is not None:
+            draw_state._addr_cache = ((filename, lineno), mtime, address)
         return address
 
 

@@ -18,16 +18,17 @@ from src.lsd.gl_gui.view.core_conversion.chain_converters import module_to_addre
 from src.lsd.gl_gui.view.core_conversion.file_converters import path_to_dict, bytes_to_str, \
     rf_dict_to_path, rf_str_to_bytes
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import GeneralParse, Conditional, Comment, \
-    cst_to_dict, dict_to_cst, cst_module_to_str, str_to_cst_module, cst_module_to_dict, dict_to_cst_module
+     dict_to_cst, cst_module_to_str, str_to_cst_module, cst_module_to_dict, dict_to_cst_module
+from src.lsd.gl_gui.view.core_conversion.new_codecs import CallSite
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.core_views.headers import draw_footer, draw_header_end, draw_header
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
 from src.lsd.gl_gui.view.core_views.new_core_view import draw_collection, draw_comment, \
     sort_dict_alphabetically, unsort_dict_alphabetically, draw_with_modes, draw_type, \
-    class_to_var_dict, var_dict_to_class, draw_dropdown, draw_blank, draw_drop_down_item, draw_type_name
+    class_to_var_dict, var_dict_to_class, draw_dropdown, draw_blank, draw_drop_down_item, draw_type_name, type_lens
 from src.lsd.gl_gui.view.core_views.text_editor import draw_text
-from src.lsd.gl_gui.view.core_conversion.new_converters import code_file_io, draw_modes, string_to_cst_module, \
-    cst_module_to_string
+from src.lsd.gl_gui.view.core_conversion.new_converters import code_file_io, convert_in_and_out, string_to_cst_module, \
+    cst_module_to_string, draw_with_view_funcs
 
 
 def compute_height(draw_state):
@@ -76,22 +77,28 @@ class Mode(Enum):
             self.unwrapped = unwrapped
 
     NEW_CODE = {
-        (type, types.FunctionType, types.ModuleType): ModeOverrides(
+        (type, types.FunctionType, types.ModuleType, CallSite): ModeOverrides(
             kwargs={"auto_load_edits": True,
                     "auto_load": True,
                     "auto_save": True,
-                    'view_func': draw_modes,
+                    'view_func': convert_in_and_out,
                     "disable_scroll": True,
                     "child_kwargs" : {
-                        'column_widths': [350],
-                        "modes": [RenderFuncs.draw_collection, RenderFuncs.draw_text, draw_type],
+                        "view_func": draw_with_view_funcs,
                         "chain_in": [string_to_cst_module, cst_module_to_dict],
                         "chain_out": [dict_to_cst_module, cst_module_to_string],
                         "route": {
-                            cst_module_to_dict: "code_dict",
-                            RenderFuncs.draw_collection: "code_dict",
-                            draw_type: "root_input"
+                            cst_module_to_dict: ("code_dict", "jump_to", "run_jedi", "drive"),
                         },
+                        'child_kwargs': {
+                            "route": {
+                                RenderFuncs.draw_collection: ("code_dict"),
+                                draw_type: "root_input",
+                            },
+                            'column_widths': [350],
+                            "view_funcs": [RenderFuncs.draw_collection, RenderFuncs.draw_text, draw_type],
+                        }
+
                     },
             },
             recursive=False,
