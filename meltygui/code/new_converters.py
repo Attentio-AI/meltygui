@@ -127,17 +127,20 @@ def _recompile_caller(call_site, stmt_str, file_path, address):
     """Hotswap the function ENCLOSING a call site, with the edited statement
     spliced into its live source.
 
-    The codec hands code_file_io just the call STATEMENT span (CallerCodec.load),
-    so recompiling `stmt_str` alone would redefine nothing. The enclosing function
-    is the unit that recompiles — already resolved onto `address.source` by
-    CallerCodec (via _enclosing_function), with a fallback re-resolve from the
-    site if that's missing.
+    The codec hands code_file_io just the call EXPRESSION (CallerCodec edits the
+    bare `foo(...)`, not the statement around it), so recompiling `stmt_str` alone
+    would redefine nothing — and splicing it raw would drop the statement's
+    indentation/prefix (`if `, `x = `) and suffix (`[0]:`), landing the call at
+    col 0 → IndentationError. The enclosing function is the unit that recompiles —
+    already resolved onto `address.source` by CallerCodec (via _enclosing_function),
+    with a fallback re-resolve from the site if that's missing.
 
-    We read the function's current source and splice the edited statement over its
-    span, then recompile the whole def. Splicing (rather than just reading the
-    def back from disk, the old recompile_caller_fn approach) makes the hotswap
-    reflect the LIVE buffer even before the debounced disk save lands: the unedited
-    lines come from disk, the edited statement from the buffer."""
+    We read the function's current source and splice the FULL reconstructed
+    statement (prefix + edited call + suffix, the same reattachment CallerCodec.save
+    does) over its span, then recompile the whole def. Splicing (rather than just
+    reading the def back from disk, the old recompile_caller_fn approach) makes the
+    hotswap reflect the LIVE buffer even before the debounced disk save lands: the
+    unedited lines come from disk, the edited statement from the buffer."""
     fn = getattr(address, "source", None) if address is not None else None
     if not isinstance(fn, types.FunctionType):
         fn = _enclosing_function(call_site.filename, call_site.lineno)
@@ -161,7 +164,17 @@ def _recompile_caller(call_site, stmt_str, file_path, address):
         rel_start = address.start - (fn_start - 1)
         rel_end = address.end - (fn_start - 1)
         if 0 <= rel_start <= rel_end <= len(fn_lines):
-            stmt_lines = [line + "\n" for line in stmt_str.splitlines()]
+            # Reattach the prefix/suffix CallerCodec stripped (the `if `/=` and
+            # `[0]:` around the call), then splice - exactly like CallerCodec.save.
+            prefix = getattr(address, "_call_prefix", "")
+            suffix = getattr(address, "_call_suffix", "")
+            stmt = stmt_str
+            if stmt.endswith("\r\n"):
+                stmt = stmt[:-2]
+            elif stmt.endswith("\n"):
+                stmt = stmt[:-1]
+            full_stmt = prefix + stmt + suffix
+            stmt_lines = [line + "\n" for line in full_stmt.splitlines()]
             new_source = "".join(fn_lines[:rel_start] + stmt_lines + fn_lines[rel_end:])
 
     return _recompile(unwrapped, new_source, str(file_path))
@@ -673,10 +686,8 @@ class ModesState:
 
 
 def compute_height(draw_state):
-    view_top = draw_state.abs_top
-    delta_from_top = view_top - draw_state.parent_window.abs_top
-    fill_height = draw_state.parent_window.height - delta_from_top - 15
-    return fill_height
+    return None
+    # return min(draw_state., 400)
 
 
 @render_func(use_cache=True, show_bg=False, selectable=False, disable_scroll=True,
@@ -710,7 +721,7 @@ def draw_with_view_funcs(input_value, view_funcs, route, routed, route_to_kwargs
     names = [getattr(vf, '__name__', str(vf)) for vf in view_funcs]
     tab_changed, new_tabs = RenderFuncs.draw_tab_bar(input_value=tab_state.selected_tabs,
                                                      tab_height=30, show_bg=False, bg_offset=1,
-                                                     name=f"tab_bar{unique}", wrap=True, names=names,
+                                                     name=f"tab_bar{unique}", names=names,
                                                      collection=view_funcs, as_toggles=False)
     if tab_changed:
         tab_state.selected_tabs = new_tabs
@@ -745,6 +756,8 @@ def draw_with_view_funcs(input_value, view_funcs, route, routed, route_to_kwargs
         # redraw WITHOUT setting any sticky edit flags - never pass it as
         # `changed=`, or a forced redraw comes back reported as an edit and, with
         # auto_save, spins an endless reload -> redraw -> save.
+        if len(tab_state.selected_tabs) == 1:
+            column = None
         m_changed, m_out = view_func(input_value=view_input, excluded=["__cst__"],
                                      show_system=True, draw=draw,
                                      disable_scroll=False, show_header=False,
@@ -884,17 +897,15 @@ def convert_in_and_out(input_value, draw_state, view_func=None, chain_in=None, c
 def code_file_footer(input_value, code_state, **kwargs):
     if code_state.address is not None:
         imgui.text(str(code_state.address.path))
-    else:
-        imgui.text(f"Address not resolved for {input_value.__class__.__name__}")
     return False, None
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  editable_source - the whole round-trip, one function                        ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
-@render_func(use_cache=True, selectable=False, searchable=False, with_footer=code_file_footer, disable_scroll=True)
+@render_func(use_cache=True, selectable=False, searchable=False, disable_scroll=True)
 def code_file_io(input_value, code_state: CodeState, codec=None, view_func=RenderFuncs.draw_text, auto_load=True,
-                 auto_load_edits=False,
+                 auto_load_edits=False, min_height=20,
                  child_kwargs=None, draw_state=None, auto_save=True, auto_recompile_edits=False, save=False, load=False,
                  recompile=False, run_jedi=False, save_debounce_ms=600,
                  ensure_import=None, s_key_pressed=None, enter_key_pressed=None, unique=None, **kwargs):
@@ -943,14 +954,18 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
         if not auto_recompile_edits and code_state.text_cache is not UNSET and code_state.text_cache is not None:
             play_icon = "\uf04b"
             recompile = \
-                RenderFuncs.button(f"{play_icon} Run", tint=(0, 0.4, 0.1), height=top_line_height,
-                                   name=f"recompile_btn{unique}")[0]
+                RenderFuncs.button(f"{play_icon} Run", 
+                    tint=(0.05678745, 0.5, 0.2, 0.5), 
+                    height=top_line_height,
+                    name=f"recompile_btn{unique}")[0]
 
         if Toggles.enable_jedi:
             imgui.same_line(spacing=0)
             search_icon = "\uf002"
-            run_jedi = RenderFuncs.button(f"{search_icon} Index", tint=(0.1, 0.2, 0.45),
-                                          height=top_line_height, name="jedi_index_btn")[0] or run_jedi
+            run_jedi = RenderFuncs.button(f"{search_icon} Index", 
+                      tint=(0.8, 0.54, 0.2),
+                      height=top_line_height, 
+                      name="jedi_index_btn")[0] or run_jedi
 
         if code_state._recompiled_on_frame is not None:
             duration = 10.0
@@ -1044,8 +1059,8 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             code_state._reconvert = False
             trigger = external_change or run_jedi or reconvert
             edited, value = view_func(input_value=code_state.text_cache,
-                                      external_change=trigger, draw=trigger,
-                                      **child_kwargs)
+      external_change=trigger, draw=trigger,
+      **child_kwargs)
 
             if edited:
                 code_state.text_cache = value

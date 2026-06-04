@@ -957,7 +957,7 @@ def run_chain(input_value, chain=None, draw_state=None, route=None,
 
     for i, func in enumerate(chain):
         if isinstance(func, tuple):
-            func, func_kwargs = func
+            func, func_kwargs = func[0], func[1]
         else:
             func_kwargs = {}
 
@@ -2733,7 +2733,7 @@ def draw_tab_bar(input_value: list, tab_height=30, names=None, tint_value=0.235,
 
         if active:
             selected_value = 0.204
-            clicked = button(label, z_offset=0, name=f"tab_{i}_{unique}",
+            clicked = button(label, z_offset=2, name=f"tab_{i}_{unique}",
                              height=tab_height - 3, value=value + selected_value,
                              color=tab_color, factor=tab_factor, draw=True)[0]
         else:
@@ -3028,10 +3028,14 @@ def draw_eval_tab(input_value, draw_state, unique=None, enter_key_down=None,
     # handler is gated on `not single_line`); instead the menu claims the
     # enter-down event via its on_enter_key_down param and uses it to fire the
     # eval below.
-    code_changed, new_code = draw_text(
+    # return_extras gives the text box's draw_state so we can tell when it holds
+    # text focus (and thus when Enter should fire the eval -- see below).
+    box = draw_text(
         code, name=f"eval_code##{unique}", padding_right=100,
         single_line=True, show_bg=True, show_header=False,
-        tint=(0.05, 0.15, 0.08))
+        return_extras=True, tint=(0.05, 0.15, 0.08))
+    code_changed, new_code = box[0], box[1]
+    code_ds = box[2] if len(box) > 2 else None
     if code_changed:
         target._eval_code = new_code
         code = new_code
@@ -3049,8 +3053,14 @@ def draw_eval_tab(input_value, draw_state, unique=None, enter_key_down=None,
 
     run_clicked = button("Run", height=30, name=f"eval_run##{unique}",
                          color=(0.2, 0.7, 0.3), factor=0.8)[0]
-    # Enter (claimed by the menu's on_enter_key_down param) evals too.
-    if run_clicked or enter_key_down:
+    # Enter fires the eval. Check for it ourselves (the way draw_text reads keys
+    # off the event queue) rather than relying on the menu to claim it: while the
+    # single-line code box holds text focus, Enter never reaches it as a newline,
+    # so we claim it here when that box is the focused editor.
+    enter_pressed = (code_ds is not None and Core.melty.text_focused_ds is code_ds
+                     and any(k in (glfw.KEY_ENTER, glfw.KEY_KP_ENTER)
+                             for k, _ in Core.melty.frame_key_events))
+    if run_clicked or enter_pressed:
         _fire_eval()
 
     # The eval lands in the target's wrapper, a separate render pass. Until the
@@ -3068,27 +3078,89 @@ def draw_eval_tab(input_value, draw_state, unique=None, enter_key_down=None,
                   show_bg=True, show_header=True,
                   show_name=True, editable=False, wrap_text=True,
                   wrap=False, bg_offset=-100,
-                  height=300,
+                  height=300, min_width=600,
+                  
                   tint=(0.0, 0.0, 0.0))
     return False, input_value
 
 
-@render_func(use_cache=True, show_bg=False, show_header=False, show_name=False, selectable=False)
+@render_func(use_cache=True, show_bg=False, show_header=False, show_name=False, selectable=False, temp=True)
 def draw_input_tab(input_value, unique=None, **kwargs):
-    """Edit the whole chain of draw_x(...) calls that produced this view.
+    """Walk the WHOLE call stack that produced this view, one row per frame.
 
     `input_value` is the (offset-walked) parent view's draw_state; its
-    `_call_stack` is the filtered caller chain (innermost-first list of (filename,
-    lineno)), captured once when the menu opened. Each entry becomes a `CallSite`
-    routed through CallerCodec, which spans that call STATEMENT and loads it as
-    editable text -- the same load/edit/save flow a function gets from
-    FunctionCodec, pointed at each caller line. One code_file_io per frame, from
-    the nearest caller outward, so you can walk up the stack and edit any call."""
+    `_call_stack` is the full UNfiltered stack (innermost-first list of (filename,
+    lineno, func_name)), captured once when the menu opened. The filtering happens
+    HERE, per frame: a machinery / ignored shell (_is_dispatch_frame) renders as a
+    plain label, a real call site renders as an editable code_file_io -- its line
+    wrapped in a `CallSite` and routed through CallerCodec (spans the call
+    STATEMENT, loads it as editable text). Each view is named `func_name:lineno`.
+
+    The live `_call_stack` of a view rendered inside a DEFERRED layer bottoms out at
+    the end-of-frame dispatch machinery — the original caller that QUEUED the layer
+    is off the live stack by then. So we walk up the parent chain and append each
+    deferred ancestor's `_deferred_call_stack` (captured preemptively at queue time,
+    core_render), lazily requesting it from any ancestor that doesn't have it yet."""
     from src.lsd.gl_gui.view.core_conversion.new_codecs import CallSite
-    call_stack = getattr(input_value, "_call_stack", None) or []
-    for i, site in enumerate(call_stack):
-        draw_any(CallSite(*site), name=f"caller_source_{i}##{unique}", max_height=300,
-                  mode=Modes.NEW_CODE)
+    from src.lsd.gl_gui.view.core_conversion.chain_converters import _is_dispatch_frame
+
+    # The FUNCTION ITSELF - the render function whose body produced this view. It's
+    # not on the captured stack: the capture runs in the wrapper before the function
+    # body executes, and the innermost frame is the (filtered) wrapper. Show it
+    # FIRST (innermost), edited as a whole function via FunctionCodec, not a call.
+
+
+    call_stack = list(getattr(input_value, "_call_stack", None) or [])
+    # Walk UP the parent chain. The root draw_state's `_parent` points to ITSELF
+    # (draw_state.py: self._parent = self), so stop on that - never `is None`
+    # - or this loops forever; bound defensively too.
+    ds = input_value._parent
+    seen = 0
+    while ds is not None and seen < 64:
+        if getattr(ds, "_is_deferred_layer", False):
+            deferred = getattr(ds, "_deferred_call_stack", None)
+            if deferred:
+                call_stack += list(deferred)
+            elif not ds._deferred_stack_requested:
+                # Ask the deferred ancestor to capture its queue-time stack on its
+                # next core render (one-shot), then re-render this view to pick it
+                # up - same lazy pattern the offset-walk uses for _call_site.
+                ds._deferred_stack_requested = True
+                if Core.melty.cache is not None:
+                    Core.melty.cache.invalidate_up(ds._tile_id, max_depth=5)
+                request_render()
+        if ds._parent is ds:   # reached the self-referential root
+            break
+        ds = ds._parent
+        seen += 1
+
+    reversed_stack = list(reversed(call_stack))
+    for i, (filename, lineno, func_name) in enumerate(reversed_stack):
+        view_name = f"{func_name}:{lineno}"
+        if _is_dispatch_frame(filename, func_name):
+            # Filtered frame -- render-dispatch machinery or an ignored shell. Just
+            # label it (greyed) so the call stack stays visible without an editor.
+            if Toggles.show_full_call_stack:
+                text(view_name, name=f"frame_{i}##{unique}", editable=False, tint=(0.5, 0.5, 0.5))
+        else:
+            draw_any(CallSite(filename, lineno), 
+         name=f"{view_name}##{i}_{unique}",
+         mode=Modes.NEW_CODE_UI,
+         min_width=100,
+                     max_height=300,
+                     fill_height=False)
+
+    view_func = getattr(input_value, "_view_func", None)
+    if inspect.isfunction(view_func):
+        draw_any(view_func, name=f"{view_func.__name__} (self)##self_{unique}",
+                 mode=Modes.NEW_CODE_UI,
+                 min_width=100,
+                 max_height=300,
+                 fill_height=False)
+
+    imgui.text("---")
+
+
     return False, input_value
 
 
@@ -3309,7 +3381,8 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
 
         elif this_tab == input_tab_name:
             draw_input_tab(input_value, name=f"input_tab_{t_idx}##{unique}", 
-                    auto_resize=True, column=t_idx)
+                     fill_height=True, column=t_idx, disable_scroll=False)
+
 
         elif this_tab == class_tab:
             draw_class_tab(input_value, class_to_show=class_to_show, class_is_parent=class_is_parent,

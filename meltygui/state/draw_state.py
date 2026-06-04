@@ -286,11 +286,22 @@ class DrawState(DictConversion):
         # flip mid-drag (the "skip parents" optimization changes the call stack).
         # Underscore-prefixed → not serialized.
         self._call_site = None
-        # The whole filtered caller chain (innermost-first list of (filename,
-        # lineno)), captured alongside _call_site; _call_site is just its head.
-        # draw_context_menu creates one code_file_io per entry to edit the full
-        # stack of draw_x(...) calls that built this view.
+        # The whole UNfiltered call stack (innermost-first list of (filename,
+        # lineno, func_name)), captured alongside _call_site. draw_context_menu
+        # renders every frame, filtering per-frame: a real call site shows an
+        # editable code_file_io, a machinery/ignored frame just a label.
         self._call_stack = []
+        # Queue-time call stack for a DEFERRED layer (a view drawn at end of frame).
+        # At end-of-frame dispatch the live stack is just the layer-loop machinery,
+        # so a view rendered inside a deferred layer has a _call_stack that bottoms
+        # out there. The original caller chain that QUEUED the layer is captured
+        # preemptively at queue-time (core_render, deferred pass) into this field;
+        # draw_context_menu appends it to complete a descendant's stack.
+        # _is_deferred_layer marks a queued view; _deferred_stack_requested is the
+        # lazy capture gate, set by a descendant's open menu and consumed next frame.
+        self._deferred_call_stack = []
+        self._is_deferred_layer = False
+        self._deferred_stack_requested = False
         self._call_site_captured = False
         # Set by the context menu when it walks UP to this draw state via the
         # up-arrow offset; this view never had its own menu open, so the normal
@@ -700,10 +711,7 @@ class DrawState(DictConversion):
 
     @property
     def abs_clipped_height(self):
-        clip_rect = (self._parent.abs_left,
-                     self._parent.abs_top,
-                     self._parent.abs_left + self._parent.width,
-                     self._parent.abs_top + self._parent.height)
+        clip_rect = self.abs_clip_rect
 
         clipped_bottom = min(clip_rect[3], self.abs_top + self.height)
         clipped_top = max(clip_rect[1], self.abs_top)

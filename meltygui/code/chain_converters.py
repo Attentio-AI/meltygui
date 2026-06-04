@@ -841,6 +841,21 @@ def caller_site(frames):
     return sites[0] if sites else None
 
 
+def call_stack_frames(frames):
+    """The WHOLE call stack as lightweight (filename, lineno, func_name) tuples,
+    innermost-first and UNFILTERED. draw_context_menu renders the full stack and
+    decides PER-FRAME (via _is_dispatch_frame) whether to show a plain label
+    (machinery / ignored shell) or an editable code_file_io (a real call site) —
+    so the filtering lives in the render, not here.
+
+    Carries func_name (for the filter decision and the view's name) on top of what
+    caller_sites returns, but still drops the frame's f_locals / source-line, so
+    it stays cheap to hold and hash (see caller_sites)."""
+    if not frames:
+        return []
+    return [(entry[0], entry[1], entry[2]) for entry in reversed(frames)]
+
+
 def _first_call(module):
     """The outermost cst.Call in a parsed statement (don't descend into nested
     calls), or None."""
@@ -955,7 +970,8 @@ def _resolve_call_address(input_value):
     path = Path(filename)
     address = Address(path, lineno - 1, lineno)  # line default
     try:
-        tree = ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
+        src_text = path.read_text(encoding='utf-8')
+        tree = ast.parse(src_text, filename=str(path))
         best_key = None
         best_node = None
         for node in ast.walk(tree):
@@ -973,11 +989,23 @@ def _resolve_call_address(input_value):
             e = best_node.end_lineno or s
             address = Address(path, s - 1, e)
             # Column span (UTF-8 byte offsets, per ast) of the call WITHIN its
-            # line span. Lets address_to_call_parse extract just the call
-            # expression even when it's embedded in a larger statement
+            # line span. Lets the save / address_to_call_parse extract just the
+            # call expression even when it's embedded in a larger statement
             # (e.g. `if ... or button(...):`) and splice the edit back without
             # disturbing the surrounding prefix/suffix.
             address._call_cols = (best_node.col_offset, best_node.end_col_offset)
+            # Capture the surrounding prefix/suffix here, while the file is known-
+            # valid (ast just parsed it), so CallerCodec.save has them BEFORE any
+            # save and independent of when load runs. They're intra-line fragments
+            # (no newline), so the '\n' split is newline-agnostic.
+            try:
+                span_lines = src_text.split('\n')[s - 1:e]
+                pre, _call, suf = _split_span_at_call(
+                    span_lines, best_node.col_offset, best_node.end_col_offset, '\n')
+                address._call_prefix = pre
+                address._call_suffix = suf
+            except Exception:
+                pass
     except Exception as ex:
         print(f"_resolve_call_address: could not resolve call span in {filename}:{lineno}: {ex}")
 

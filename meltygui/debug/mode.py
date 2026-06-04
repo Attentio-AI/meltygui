@@ -76,6 +76,7 @@ class Mode(Enum):
                     unwrapped[key] = value
             self.unwrapped = unwrapped
 
+
     NEW_CODE = {
         (type, types.FunctionType, types.ModuleType, CallSite): ModeOverrides(
             kwargs={"auto_load_edits": True,
@@ -84,7 +85,7 @@ class Mode(Enum):
                     'view_func': convert_in_and_out,
                     "disable_scroll": True,
                     "with_header": draw_header,
-                    "child_kwargs" : {
+                    "child_kwargs": {
                         "view_func": draw_with_view_funcs,
                         "chain_in": [string_to_cst_module, cst_module_to_dict],
                         "chain_out": [dict_to_cst_module, cst_module_to_string],
@@ -99,11 +100,40 @@ class Mode(Enum):
                             'column_widths': [350],
                             "view_funcs": [RenderFuncs.draw_collection, RenderFuncs.draw_text],
                         }
+                    },
+                    },
+            func=code_file_io
+        )
+    }
+
+    NEW_CODE_UI = {
+        (type, types.FunctionType, types.ModuleType, CallSite): ModeOverrides(
+            kwargs={"auto_load_edits": True,
+                    "auto_load": True,
+                    "auto_save": True,
+                    "fill_height":False,
+                    'view_func': convert_in_and_out,
+                    "disable_scroll": True,
+                    "with_header": draw_header,
+                    "child_kwargs": {
+                        "view_func": draw_with_view_funcs,
+                        "chain_in": [string_to_cst_module, cst_module_to_dict],
+                        "chain_out": [dict_to_cst_module, cst_module_to_string],
+                        "route": {
+                            cst_module_to_dict: ("code_dict", "jump_to", "run_jedi", "drive"),
+                        },
+                        'child_kwargs': {
+                            "route": {
+                                RenderFuncs.draw_collection: ("code_dict"),
+                            },
+                            'column_widths': [350],
+                            "view_funcs": [RenderFuncs.draw_collection],
+                        }
 
                     },
-            },
-            recursive=False,
+                    },
             func=code_file_io
+
         )
     }
 

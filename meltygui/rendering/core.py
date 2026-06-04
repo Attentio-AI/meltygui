@@ -650,14 +650,17 @@ def render_func(*args, **o_kwargs):
                     and not draw_state._call_site_captured):
                 draw_state._call_site_captured = True
                 draw_state._call_site_requested = False
-                from src.lsd.gl_gui.view.core_conversion.chain_converters import caller_sites
-                # Grab the WHOLE filtered caller chain here (once, from this frame's
-                # stack); _call_site is just its head for the lens. Resolving it now
-                # and caching tuples - never re-walking the live stack later - is
-                # essential: a drag re-renders with parents skipped, which changes
-                # the stack and would shift every site.
-                draw_state._call_stack = caller_sites(get_live_frames(skip_count=0))
-                draw_state._call_site = draw_state._call_stack[0] if draw_state._call_stack else None
+                from src.lsd.gl_gui.view.core_conversion.chain_converters import (
+                    caller_site, call_stack_frames)
+                # Grab the WHOLE stack here (once, from this frame's stack), UNfiltered
+                # - the menu renders all of it and filters per-frame at draw time.
+                # _call_site stays the filtered head for the lens. Resolving now and
+                # caching tuples - never re-walking the live stack later - is
+                # essential: a drag re-renders with parents skipped, which changes the
+                # stack and would change every site.
+                frames = get_live_frames(skip_count=0)
+                draw_state._call_stack = call_stack_frames(frames)
+                draw_state._call_site = caller_site(frames)
 
             if closable:
                 if draw_state is not None and draw_state.parent_window is not None:
@@ -725,6 +728,22 @@ def render_func(*args, **o_kwargs):
 
 
                 Melty.cache.mark_uncached(name, input_value, collection, tile_id, draw_state)
+
+                # This view is being DEFERRED to a layer (drawn at end of frame).
+                # Capture the QUEUE-TIME stack NOW: we're still in the inline pass,
+                # so the live stack holds the full caller chain that led here. At
+                # end-of-frame dispatch that chain is gone (just the layer-loop
+                # dispatch), so a descendant rendered inside this layer has a
+                # _call_stack that bottoms out at the dispatch. draw_context_menu
+                # appends this preemptively-captured stack to complete the picture.
+                # Mark the view, and capture lazily - not in the inline pass
+                # so get_live_frames stays off the hot path: only when this view's
+                # own menu is open, or a descendant requested it.
+                draw_state._is_deferred_layer = True
+                if draw_state.context_menu_open or draw_state._deferred_stack_requested:
+                    draw_state._deferred_stack_requested = False
+                    from src.lsd.gl_gui.view.core_conversion.chain_converters import call_stack_frames
+                    draw_state._deferred_call_stack = call_stack_frames(get_live_frames(skip_count=0))
 
                 if Toggles.layer_stack_trace:
                     get_stack = get_live_frames(skip_count=1)
@@ -1299,9 +1318,14 @@ def render_func(*args, **o_kwargs):
                         parent_wrap_width = fixed_size_draw_state.width
                         draw_state.width = snap_int(parent_wrap_width)
                     draw_state.height = snap_int(fill_height_result) - content_margin
+                    parent_wrap_width = fixed_size_draw_state.width
                     available_width = snap_int(parent_wrap_width)
+
                 else:
-                    fixed_size_draw_state = Melty.fixed_size_stack[-2]
+                    if len(Melty.fixed_size_stack) > 2:
+                        fixed_size_draw_state = Melty.fixed_size_stack[-2]
+                    else:
+                        fixed_size_draw_state = Melty.melty_window_stack[-1] if len(Melty.melty_window_stack) > 0 else draw_state
                     parent_wrap_width = fixed_size_draw_state.width
                     available_width = snap_int(parent_wrap_width)
                     draw_state._source["height"] = "fill height"
@@ -1309,7 +1333,11 @@ def render_func(*args, **o_kwargs):
 
                     view_top = draw_state.abs_top
                     delta_from_top = view_top - draw_state.parent_window.abs_top
-                    fill_height = min(kwargs.get("max_height", 1e9), draw_state.parent_window.height - delta_from_top - 20)
+                    if draw_state.expanded:
+                        fill_height = min(kwargs.get("max_height", 1e9), draw_state.parent_window.height - delta_from_top)
+
+                    else:
+                        fill_height = 20
                     draw_state.height = fill_height
                     parent_wrap_height = fill_height
                     # fixed_size_draw_state = Melty.fixed_size_stack[-2]
@@ -2586,6 +2614,9 @@ def render_func(*args, **o_kwargs):
                             max_column_index = i
                     draw_state._max_column_height = max_height
                     draw_state._max_column_index = max_column_index
+
+                    imgui.set_cursor_screen_pos((draw_state.abs_left + draw_state._column_width * max_column_index,
+                                                    draw_state.abs_top + draw_state._header_height + max_height))
                     # draw_state._content_rect = (draw_state._column_width, content_rect[1])
 
                 draw_state._content_rect = content_rect
@@ -2875,7 +2906,7 @@ def render_func(*args, **o_kwargs):
                 draw_state.height = 30
                 draw_state._source["height"] = "min 30"
 
-            if auto_resize and kwargs.get("fill_height", None) is None:
+            if auto_resize:
 
                 if kwargs.get("wrap", False) or closable:
                     if passed_width is None:
@@ -2883,7 +2914,7 @@ def render_func(*args, **o_kwargs):
                         min_width = kwargs.get("min_width", 20)
                         draw_state.width = snap_int(max(min(item_rect[0], max_width), min_width))
 
-                if passed_height is None:
+                if passed_height is None and kwargs.get("fill_height", None) is None:
                     max_height = kwargs.get("max_height", 1e9)
                     if not closable:
                         draw_state.height = min(snap_int(item_rect[1]), max_height)

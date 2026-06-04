@@ -6,7 +6,8 @@ from enum import EnumType
 from pathlib import Path
 
 from src.lsd.gl_gui.view.core_conversion.address import Address, _evict_linecache, shift_sibling_linenos, is_editable_source
-from src.lsd.gl_gui.view.core_conversion.chain_converters import _ensure_import_lines, _resolve_call_address
+from src.lsd.gl_gui.view.core_conversion.chain_converters import (
+    _ensure_import_lines, _resolve_call_address, _split_span_at_call)
 from src.lsd.gl_gui.view.core_conversion.file_converters import _detect_newline
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
 
@@ -273,17 +274,22 @@ class FunctionCodec(TypeCodec):
 
 @register_codec(for_type=CallSite)
 class CallerCodec(TypeCodec):
-    """Edit the call STATEMENT at a CallSite, the way FunctionCodec edits a def.
+    """Edit the call EXPRESSION at a CallSite — just `foo(...)`, not the statement
+    around it.
 
-    Only `resolve_address` differs from FunctionCodec: instead of `getsourcelines`
-    on a function object, it ast-walks the file for the outermost Call covering the
-    site's line and spans that whole statement (so a multi-line call round-trips as
-    one). `load`/`save` are inherited verbatim — they read/write the line span as
-    text via the Address, exactly like a def.
+    `resolve_address` ast-walks the file for the outermost Call covering the site's
+    line (attaching its column span as `_call_cols` and the enclosing function as
+    `.source`). `load`/`save` then slice out the bare call using those columns and
+    keep the surrounding text (e.g. the `if `/`[0]:` of `if button(...)[0]:`, or the
+    `return ` of `return foo()`) as prefix/suffix to splice an edit back between.
 
-    The enclosing function is attached as `address.source` (by `_resolve_call_address`)
-    so the inherited save shifts siblings correctly, and so anything wanting to
-    hotswap the surrounding `def` after an edit has it to hand."""
+    Why the call expression and not the whole line (like FunctionCodec's def span):
+    a statement HEADER (`if foo():`, `for x in foo():`) or a non-module-level
+    statement is not independently parseable — wrapping it in a dummy function
+    doesn't help (`if foo():` still needs a body). A bare call expression always
+    parses, surfaces as an editable CallParse, and round-trips cleanly. The
+    prefix/suffix are stable (the user edits only the call), so they stay valid even
+    through half-typed states where the call's columns drift."""
     name = "Python Call Site"
 
     @staticmethod
@@ -318,13 +324,74 @@ class CallerCodec(TypeCodec):
         # the enclosing function as .source - see _resolve_call_address. NOT libcst's
         # PositionTracker, which is O(whole file) pure-Python and stalls the loop.
         address = _resolve_call_address((filename, lineno))
-        if not isinstance(address, Address):
+
+        # _resolve_call_address NEVER raises and never returns None - when ast.parse
+        # fails (the file is mid-edit / syntactically invalid as the user types), it
+        # returns a degenerate ONE-LINE fallback span with no `_call_cols`. Saving
+        # the multi-line buffer into that 1-line span splices the extra lines IN,
+        # appending a copy of the call's continuation lines on every keystroke-save.
+        # So treat a missing `_call_cols` as "could not resolve" and keep the last
+        # good address - its span matches what our last save wrote, so the next save
+        # replaces in place. Mirrors FunctionCodec's getsourcelines-raised guard;
+        # there, resolve error surfaces as an exception, here as a flag and span.
+        resolved = isinstance(address, Address) and getattr(address, "_call_cols", None) is not None
+        if not resolved:
             return cached[2] if cached is not None else None
+
+        # _resolve_call_address sets the call's prefix/suffix on every valid resolve.
+        # As a safety net (e.g. if its inner split ever fails), carry forward the
+        # last good ones - they're stable (the user edits only the call, never the
+        # `if `/`[0]:` around it), so they stay valid across re-resolves.
+        if (not hasattr(address, "_call_prefix")
+                and cached is not None and hasattr(cached[2], "_call_prefix")):
+            address._call_prefix = cached[2]._call_prefix
+            address._call_suffix = cached[2]._call_suffix
 
         address._watcher_ds = draw_state
         if draw_state is not None:
             draw_state._addr_cache = ((filename, lineno), mtime, address)
         return address
+
+    @staticmethod
+    def load(address, **kwargs):
+        """Load just the call EXPRESSION (not the whole statement). Slice the bare
+        call out of its line span using `_call_cols`, and stash the surrounding
+        prefix/suffix on the address so save can splice an edit back between them.
+        The bare call always parses; the statement around it may not."""
+        data = address.path.read_bytes()
+        newline = _detect_newline(data)
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            text = data.decode("latin-1")
+        span_lines = text.split(newline)[address.start:address.end]
+        cols = getattr(address, "_call_cols", None)
+        if cols is not None and span_lines:
+            prefix, call_text, suffix = _split_span_at_call(span_lines, cols[0], cols[1], newline)
+            address._call_prefix = prefix
+            address._call_suffix = suffix
+            return call_text
+        # No column info (resolution was a line fallback) - no span, no splice.
+        address._call_prefix = ""
+        address._call_suffix = ""
+        return newline.join(span_lines)
+
+    @staticmethod
+    def save(address, data, ensure_import=None, **kwargs):
+        """Splice the edited call expression back between its stored prefix/suffix
+        (captured by load), reconstructing the full statement, then write the whole
+        span via TypeCodec.save (which handles the line splice + sibling shift)."""
+        prefix = getattr(address, "_call_prefix", "")
+        suffix = getattr(address, "_call_suffix", "")
+        newline = _detect_newline(address.path.read_bytes())
+        # Drop one trailing newline the editor / cst round-trip may append, so the
+        # suffix doesn't get pushed onto a phantom next line.
+        if data.endswith(newline):
+            data = data[:-len(newline)]
+        elif data.endswith("\n"):
+            data = data[:-1]
+        full = prefix + data + suffix
+        return TypeCodec.save(address=address, data=full, ensure_import=ensure_import, **kwargs)
 
 
 @register_codec(for_type=types.ModuleType)

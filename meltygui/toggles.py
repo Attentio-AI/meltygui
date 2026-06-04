@@ -136,34 +136,30 @@ class Swoosh:
                                 # within this fraction of the parent's shorter side (else stay flat)
 
 
-@window(tint=(0.9627907, 0.566004, 0.2))
+@window(tint=(0.8, 0.5, 0.2))
 class Toggles:
     test_float = 0.598
     debug_scroll = False
-    
-    
+
+
     @defaults(tint=(0.9,0.7,0.1))
     class InvalidateTracker:
         keep_for_frames = 12
         enable = False
         draw_bvh = False
-        
+
     @defaults(tint=(0.16452135145664215, 0.1824345,0.2093023))
     class Debug:
         slow_frame_rate = False
 
-    # Overlay a transparent tint overlay on every draw_state whose blit tile is
-    # fully filled (filled_bbox covers full size). Used to verify the scroll-
-    # invalidation stop-at-filled gate is actually marking tiles complete.
     show_filled_tiles = False
-
     gl_check_error = False
     enable_jedi = True
 
     # [tint(0.9, 0.5, 0.0)]
     jedi_correctness = False
-    
-    
+
+
     # Invalidation settings
     invalidate_stack_trace = False
     text_focus_stack_trace = False
@@ -176,7 +172,7 @@ class Toggles:
     profile_mode = ProfileMode.OFF
     debug_stale_tint = False
     show_line_break = False
- 
+
     # Filter SettingS
     brightness = 0.334
     contrast = 1.645
@@ -188,24 +184,23 @@ class Toggles:
     show_excluded = True
     layer_stack_trace = False
     show_line_breaks = False
-   
+
      # Shadow Settings
     shadow_downscale = 2
-    
+
     shadow_edge_sharpness = 50.0
     draw_legacy = False
 
     # Scroll settings
     scroll_speed = 600.0
 
+    show_full_call_stack = False
+    ignore_call_from = ("draw", "_run_visualization", "run", "_bootstrap",
+                        "_bootstrap_inner", "convert_in_and_out", "draw_melty_windows",
+                        "draw_main", "end_frame", "render", "draw_inner",
+                        "draw_inner_main", "__call__", "draw_collection", "draw_with_view_funcs")
     # Screenshot output directory (used by screenshot.py / context menu capture)
     screenshots = "/home/lukas/melty/screenshots"
-
-    # Function names caller_site walks PAST when resolving a call site - wrapper /
-    # dispatch shells that aren't the user's real caller. Climb the stack until a
-    # frame whose function isn't in this list. (RenderFuncs._dispatch plus the
-    # draw_* render shells.)
-    ignore_call_from = ("convert_in_and_out", "draw_main", "draw_inner", "draw_inner_main", "__call__", "draw_collection", "draw_with_view_funcs")
 
 @window
 class LegacyToggles:
