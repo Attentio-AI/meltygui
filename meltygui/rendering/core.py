@@ -650,8 +650,14 @@ def render_func(*args, **o_kwargs):
                     and not draw_state._call_site_captured):
                 draw_state._call_site_captured = True
                 draw_state._call_site_requested = False
-                from src.lsd.gl_gui.view.core_conversion.chain_converters import caller_site
-                draw_state._call_site = caller_site(get_live_frames(skip_count=0))
+                from src.lsd.gl_gui.view.core_conversion.chain_converters import caller_sites
+                # Grab the WHOLE filtered caller chain here (once, from this frame's
+                # stack); _call_site is just its head for the lens. Resolving it now
+                # and caching tuples - never re-walking the live stack later - is
+                # essential: a drag re-renders with parents skipped, which changes
+                # the stack and would shift every site.
+                draw_state._call_stack = caller_sites(get_live_frames(skip_count=0))
+                draw_state._call_site = draw_state._call_stack[0] if draw_state._call_stack else None
 
             if closable:
                 if draw_state is not None and draw_state.parent_window is not None:

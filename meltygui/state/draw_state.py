@@ -286,6 +286,11 @@ class DrawState(DictConversion):
         # flip mid-drag (the "skip parents" optimization changes the call stack).
         # Underscore-prefixed → not serialized.
         self._call_site = None
+        # The whole filtered caller chain (innermost-first list of (filename,
+        # lineno)), captured alongside _call_site; _call_site is just its head.
+        # draw_context_menu creates one code_file_io per entry to edit the full
+        # stack of draw_x(...) calls that built this view.
+        self._call_stack = []
         self._call_site_captured = False
         # Set by the context menu when it walks UP to this draw state via the
         # up-arrow offset; this view never had its own menu open, so the normal

@@ -205,7 +205,7 @@ class Toggles:
     # dispatch shells that aren't the user's real caller. Climb the stack until a
     # frame whose function isn't in this list. (RenderFuncs._dispatch plus the
     # draw_* render shells.)
-    ignore_call_from = ("draw_main", "draw_inner", "draw_inner_main", "__call__", "draw_collection", "draw_with_view_funcs")
+    ignore_call_from = ("convert_in_and_out", "draw_main", "draw_inner", "draw_inner_main", "__call__", "draw_collection", "draw_with_view_funcs")
 
 @window
 class LegacyToggles:

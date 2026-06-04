@@ -795,46 +795,50 @@ def focus(input_value, path=(), default=None, kind=None, draw_state=None, unique
 _DISPATCH_SKIP = ("core_render.py",)  # the render_func wrapper lives here
 
 
-def caller_site(frames):
-    """Walk outward from the render_func wrapper to the first frame that ISN'T
-    render-dispatch machinery, and return its (filename, lineno).
+def _is_dispatch_frame(filename, func_name):
+    """True if a frame is render-dispatch machinery to skip when resolving call
+    sites — the render_func wrapper, Melty.draw / draw_any re-dispatch, or a
+    user-configured shell in Toggles.ignore_call_from (matched by func name, any
+    file). Shared by caller_site and caller_sites so both filter identically."""
+    base = filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    if base in _DISPATCH_SKIP:                                  # render_func wrapper
+        return True
+    # Func-name-specific (NOT whole-file): new_core_view.py / melty.py also hold
+    # real user app code, so only their dispatch frames are skipped.
+    if base == "melty.py" and func_name == "draw":             # Melty.draw re-dispatch
+        return True
+    if base == "new_core_view.py" and func_name == "draw_any":  # draw_any dispatch
+        return True
+    # User-configurable wrapper/dispatch shells (RenderFuncs._draw, the user_*
+    # render shells).
+    if func_name in getattr(Toggles, "ignore_call_from", ()):
+        return True
+    return False
 
-    Widgets are re-dispatched via Melty.draw -> draw_state._wrapper(**kwargs)
-    (melty.py:1074), so the frame directly above the wrapper is often the
-    DISPATCHER, not the user's draw_text(...) call. We skip the render_func
-    wrapper (core_render.py) and the Melty.draw frame so the result is the real
-    caller — the user's call for a directly-invoked widget, or the dispatch's
-    caller for a re-dispatched one.
 
-    Returning just (filename, lineno) is critical: the frames list carries each
-    frame's f_locals (the whole AppModel, tensors, cyclic refs). Feeding that
-    into draw_any/render_func would hash/compare it and hang. The lens root calls
-    this so the chain's input_value is a tiny, cheap-to-hash tuple."""
+def caller_sites(frames):
+    """Every real caller (filename, lineno), innermost-first, with the render-
+    dispatch machinery and Toggles.ignore_call_from shells filtered out — the
+    chain of user draw_x(...) calls that produced this view, from the nearest
+    caller outward. draw_context_menu draws one code_file_io per entry.
+
+    Returning just (filename, lineno) tuples is critical: the frames list carries
+    each frame's f_locals (the whole AppModel, tensors, cyclic refs). Feeding that
+    into draw_any/render_func would hash/compare it and hang."""
     if not frames:
-        return None
-    # frames is outermost-first; walk innermost-first to find the nearest caller.
-    for idx, entry in enumerate(reversed(frames)):
+        return []
+    # frames is outermost-first; keep innermost-first so the list runs from the
+    # nearest caller outward.
+    return [(entry[0], entry[1]) for entry in reversed(frames)
+            if not _is_dispatch_frame(entry[0], entry[2])]
 
-        filename, lineno, func_name = entry[0], entry[1], entry[2]
-        base = filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-        if base in _DISPATCH_SKIP:
-            continue
-        # Skip the re-dispatch machinery so the site is the user's draw_xxx(...)
-        # call, not the dispatch's `draw_state._wrapper(**kwargs)`. These are
-        # func-name-specific (NOT whole-file): new_core_view.py also holds real
-        # user render code, so only its `draw_any` dispatch frame is skipped.
-        if base == "melty.py" and func_name == "draw":            # Melty.draw re-dispatch
-            continue
-        if base == "new_core_view.py" and func_name == "draw_any":  # draw_any dispatch
-            continue
-        # User-configurable wrapper/dispatch shells (RenderFunc's @resolve, the
-        # draw_* render shells): walk PAST them - by func name, any file - until we
-        # land on the real caller, rather than stopping at the wrapper.
-        if func_name in getattr(Toggles, "ignore_call_from", ()):
-            continue
 
-        return filename, lineno
-    return None
+def caller_site(frames):
+    """The nearest real caller (filename, lineno) — the first entry of
+    caller_sites, or None. The lens root (caller_arg) reads this for a single
+    cheap-to-hash tuple; see caller_sites for the filtering rationale."""
+    sites = caller_sites(frames)
+    return sites[0] if sites else None
 
 
 def _first_call(module):

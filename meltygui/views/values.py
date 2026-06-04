@@ -2733,12 +2733,12 @@ def draw_tab_bar(input_value: list, tab_height=30, names=None, tint_value=0.235,
 
         if active:
             selected_value = 0.204
-            clicked = button(label, indent_size=0, z_offset=3, name=f"tab_{i}_{unique}",
+            clicked = button(label, z_offset=0, name=f"tab_{i}_{unique}",
                              height=tab_height - 3, value=value + selected_value,
                              color=tab_color, factor=tab_factor, draw=True)[0]
         else:
             saturation = 1.0 if tinted else 0.3
-            clicked = button(label, indent_size=0, height=tab_height, draw=True, z_offset=1.0,
+            clicked = button(label, indent_size=0, height=tab_height, draw=True, z_offset=0.0,
                              alpha=0.0 if tinted else 0.0, value=value if not tinted else 0.1, saturation=saturation,
                              name=f"tab_{i}_{unique}_deactivated", color=tab_color, factor=tab_factor,
                              text_value=1.0 if not tinted else 0.9,
@@ -2873,7 +2873,7 @@ def run_scoped_eval(code, view_func, draw_state, local_vars):
 # column by calling it with column=t_idx; the tab then owns a single-column
 # layout, so the inner views inside it no longer pass column themselves.
 
-@render_func(use_cache=True, show_bg=False, show_header=False, show_name=False, selectable=False)
+@render_func(use_cache=True, show_bg=False, show_header=False, disable_scroll=False, searchable=True, show_name=False, selectable=False)
 def draw_info_tab(input_value, search_text='', unique=None, **kwargs):
     """Read-only dump of the inspected view's draw_state fields. `search_text`
     (the menu's resolved search term) probes an arbitrary kwarg/attr by name."""
@@ -3075,20 +3075,20 @@ def draw_eval_tab(input_value, draw_state, unique=None, enter_key_down=None,
 
 @render_func(use_cache=True, show_bg=False, show_header=False, show_name=False, selectable=False)
 def draw_input_tab(input_value, unique=None, **kwargs):
-    """Show the raw value this view was handed, rendered with its natural
-    renderer so it's inspectable/editable.
+    """Edit the whole chain of draw_x(...) calls that produced this view.
 
-    Below it, a usage example for the CallSite/CallerCodec: edit the source line
-    where THIS view was called from. `input_value` is the (offset-walked) parent
-    view's draw_state, and its `_call_site` is the (filename, lineno) of that call,
-    captured once when the menu opened. Wrapping it in a `CallSite` routes
-    code_file_io through CallerCodec, which spans the call STATEMENT and loads it
-    as editable text -- the same load/edit/save flow a function object gets from
-    FunctionCodec, just pointed at the caller line instead of a def."""
-    call_site = getattr(input_value, "_call_site", None)
-    if call_site is not None:
-        from src.lsd.gl_gui.view.core_conversion.new_codecs import CallSite
-        draw_any(CallSite(*call_site), name=f"caller_source##{unique}", mode=Modes.NEW_CODE)
+    `input_value` is the (offset-walked) parent view's draw_state; its
+    `_call_stack` is the filtered caller chain (innermost-first list of (filename,
+    lineno)), captured once when the menu opened. Each entry becomes a `CallSite`
+    routed through CallerCodec, which spans that call STATEMENT and loads it as
+    editable text -- the same load/edit/save flow a function gets from
+    FunctionCodec, pointed at each caller line. One code_file_io per frame, from
+    the nearest caller outward, so you can walk up the stack and edit any call."""
+    from src.lsd.gl_gui.view.core_conversion.new_codecs import CallSite
+    call_stack = getattr(input_value, "_call_stack", None) or []
+    for i, site in enumerate(call_stack):
+        draw_any(CallSite(*site), name=f"caller_source_{i}##{unique}", max_height=300,
+                  mode=Modes.NEW_CODE)
     return False, input_value
 
 
@@ -3308,7 +3308,8 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
                           name=f"eval_tab_{t_idx}##{unique}", column=t_idx)
 
         elif this_tab == input_tab_name:
-            draw_input_tab(input_value, name=f"input_tab_{t_idx}##{unique}", auto_resize=True, height=1500, column=t_idx)
+            draw_input_tab(input_value, name=f"input_tab_{t_idx}##{unique}", 
+                    auto_resize=True, column=t_idx)
 
         elif this_tab == class_tab:
             draw_class_tab(input_value, class_to_show=class_to_show, class_is_parent=class_is_parent,

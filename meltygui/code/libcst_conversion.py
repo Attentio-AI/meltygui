@@ -5186,6 +5186,16 @@ def _patch_sequence(py_values, old_node, node_cls):
     return old_node.with_changes(elements=new_els)
 
 
+def _node_leaf_name(node):
+    """The trailing identifier of a bare Name or dotted Attribute, else None.
+    Name("f") → "f"; Attribute(RenderFuncs, draw_text) → "draw_text"."""
+    if isinstance(node, cst.Name):
+        return node.value
+    if isinstance(node, cst.Attribute):
+        return node.attr.value
+    return None
+
+
 def _callable_to_cst_expr(py_value, old_node=None):
     """Convert a callable (function, class, builtin) to a CST expression.
 
@@ -5205,6 +5215,16 @@ def _callable_to_cst_expr(py_value, old_node=None):
                 return old_node
         except (TypeError, ValueError):
             pass
+        # Scope-less fallback: the reverse runs WITHOUT the resolution scope the
+        # forward built up, so _cst_to_python above can't re-resolve old_node to
+        # confirm identity and the guard misses. If old_node already names this
+        # callable by its leaf (a bare Name, or the final `.attr` of a dotted
+        # ref), the reference is unchanged - preserve it verbatim so the source
+        # qualifier isn't stripped (e.g. RenderFuncs.draw_text → draw_text, whose
+        # _LazyRenderFunc proxy has __qualname__ None but __name__ "draw_text").
+        leaf = getattr(py_value, "__name__", None)
+        if leaf is not None and _node_leaf_name(old_node) == leaf:
+            return old_node
 
     qualname = getattr(py_value, "__qualname__", None) or py_value.__name__
     parts = qualname.split(".")

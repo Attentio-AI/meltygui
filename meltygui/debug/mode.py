@@ -83,6 +83,7 @@ class Mode(Enum):
                     "auto_save": True,
                     'view_func': convert_in_and_out,
                     "disable_scroll": True,
+                    "with_header": draw_header,
                     "child_kwargs" : {
                         "view_func": draw_with_view_funcs,
                         "chain_in": [string_to_cst_module, cst_module_to_dict],
@@ -96,7 +97,7 @@ class Mode(Enum):
                                 draw_type: "root_input",
                             },
                             'column_widths': [350],
-                            "view_funcs": [RenderFuncs.draw_collection, RenderFuncs.draw_text, draw_type],
+                            "view_funcs": [RenderFuncs.draw_collection, RenderFuncs.draw_text],
                         }
 
                     },
