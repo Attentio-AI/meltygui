@@ -65,19 +65,20 @@ def _notify(node):
         root._mark_changed()
 
 
-def is_unchanged(cur, value):
-    """True if writing `value` over `cur` is a no-op edit — same object, or equal by
-    value. draw_collection re-assigns its rendered child back every frame
-    (input_value[key] = out_val), and reconstructs immutables (a tuple inside a list)
-    as a NEW but EQUAL object, so an identity check alone still loops. A real edit
-    changes the value, so `==` is False and we notify. Falls back to False if `==`
-    raises (unhashable/odd types)."""
-    if cur is value:
-        return True
-    try:
-        return bool(cur == value)
-    except Exception:
-        return False
+# Immutable SCALAR leaf types. imgui widgets hand back a FRESH object each frame for
+# these (a slider returns a new int/float; ints outside CPython's -5..256 cache aren't
+# interned), so an identity (`is`) check sees a spurious "change" and re-fires notify -
+# which, through the proxy round-trip, becomes a Tree↔String save feedback loop. An `==`
+# on a scalar leaf is O(1) and BOUNDED (its own size, the rendering cost paid), so
+# it's safe here - unlike a deep `==` over a whole container/GeneralParse tree, which is
+# what doesn't scale. Containers fall through to identity (they're edited in place).
+_SCALAR_TYPES = frozenset({int, float, complex, bool, str, bytes, type(None)})
+
+
+def _unchanged_leaf(cur, value):
+    """True if writing `value` over `cur` is a no-op: the SAME object, or an equal
+    immutable scalar (a reconstructed-but-equal leaf). Containers → identity only."""
+    return cur is value or (type(value) in _SCALAR_TYPES and cur == value)
 
 
 def _is_internal_key(key):
@@ -98,9 +99,11 @@ class _BubblingDictMixin:
         if _is_internal_key(key):
             super().__setitem__(key, value)      # bookkeeping write, no bubble
             return
-        # Re-assigning an equal value is not an edit (draw_collection writes its
-        # rendered child back every frame) - store it, but don't notify / loop.
-        unchanged = key in self and is_unchanged(dict.__getitem__(self, key), value)
+        # Re-assigning an unchanged child is not an edit (draw_collection writes the
+        # rendered child back every frame) - store it, but don't notify / loop. Identity
+        # for containers (edited in place → same object), O(1) `==` for scalar leaves
+        # (imgui reconstructs them, so `is` would spuriously fire). See _unchanged_leaf.
+        unchanged = key in self and _unchanged_leaf(dict.__getitem__(self, key), value)
         root = self._bubble_root
         if root is not None:
             value = install_bubbling(value, root)
@@ -154,9 +157,10 @@ class _BubblingListMixin:
     _bubble_root = None
 
     def __setitem__(self, idx, value):
-        # Re-assigning an equal element is not an edit (draw_collection reconstructs a
-        # tuple in a list as a new-but-equal object every frame) - store, don't notify.
-        unchanged = not isinstance(idx, slice) and is_unchanged(list.__getitem__(self, idx), value)
+        # Unchanged element is not an edit → store but don't notify. Identity for containers,
+        # O(1) `==` for scalar leaves (imgui hands back a new int/float each frame, so a
+        # `is` check spuriously fires → the list-element feedback loop). See _unchanged_leaf.
+        unchanged = not isinstance(idx, slice) and _unchanged_leaf(list.__getitem__(self, idx), value)
         root = self._bubble_root
         if root is not None:
             value = ([install_bubbling(v, root) for v in value]

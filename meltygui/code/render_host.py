@@ -33,10 +33,10 @@ import sys
 
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
-from src.lsd.gl_gui.view.core_conversion.bubbling import install_bubbling, _reinstall_children, is_unchanged
+from src.lsd.gl_gui.view.core_conversion.bubbling import install_bubbling, _reinstall_children
 from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
-
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults, Core
+from src.lsd.gl_gui.view.invalidation_tracker import Note
 
 _UNSET = object()
 
@@ -62,7 +62,7 @@ class RenderHost(dict):
 
     # Log every change the proxy triggers (dict-dirty + outbound edits) with a caller
     # trail - for diagnosing spurious saves. `RenderHost.debug_changes = False` silences.
-    debug_changes = True
+    debug_changes = False
 
     def __init__(self, wrapper=None, *args, input_value=None, child_kwargs=None,
                  renderer=None, name=None, hidden=False, window=True, standalone=True,
@@ -89,6 +89,17 @@ class RenderHost(dict):
                                          # return_extras - so a value edit can invalidate IT and
                                          # the wrapper actually re-runs to process the change.
         self._last_resolved = _UNSET    # last resolved input - drives the wrapper's external_change
+        self._pending_external = False  # input changed (detected in draw()) → external_change for the wrapper
+        self._awaiting_inbound = False  # an upstream edit happened; a remote derived result (e.g.
+                                        # convert's BACKGROUND chain_in) is in flight - materialize it
+                                        # when it lands, not just on the pulse frame.
+        # Frame stamps for event ordering. The held value (a LOCAL edit) is set
+        # immediately; the wrapper's derived result (a re-parse) is asynchronous and may be
+        # based on a source that lags the last local edit. We only accept an inbound
+        # result when the source it's based on is at least as NEW as the last local edit
+        # - otherwise the newest event (the local edit) wins. See _internal_view_func.
+        self._input_change_frame = 0    # frame the resolved INPUT (source) last changed
+        self._local_edit_frame = 0      # frame the held value was last LOCALLY edited
         self._last_return = None
         self._registered = False
 
@@ -166,6 +177,7 @@ class RenderHost(dict):
     # ── Dict mutation → external_change (bubble root) ──────────────────────────
     def _mark_changed(self):
         self._external_change = True
+        self._local_edit_frame = Melty.frame_count   # stamp: a LOCAL edit happened NOW
         # Invalidate BOTH the window envelope AND the wrapper's own draw_state: the
         # envelope so render_host_view re-runs and calls the wrapper, and the wrapper
         # so its blit-cached body actually re-executes to process the edit (load/save
@@ -173,7 +185,11 @@ class RenderHost(dict):
         for ds in (self._draw_state, self._wrapper_draw_state):
             if ds is not None:
                 try:
-                    ds.invalidate()
+                    # ds.invalidate(frame_delta=0)
+                    # ds.invalidate(frame_delta=1)
+                    note = Note(name="RenderHost _mark_changed", tint=(1, 0.5, 0), draw_state=ds)
+                    ds.invalidate(note=note)
+
                 except Exception:
                     pass
         self._log_change("DIRTY (dict/nested mutated)")
@@ -190,7 +206,8 @@ class RenderHost(dict):
     def __setitem__(self, key, value):
         # Re-assigning an equal value isn't an edit (draw_collection writes its
         # rendered value back each frame) - store it but don't mark dirty / redraw.
-        unchanged = key in self and is_unchanged(dict.__getitem__(self, key), value)
+        unchanged = key in self and dict.__getitem__(self, key) is value
+
         value = install_bubbling(value, self)
         super().__setitem__(key, value)
         if not unchanged:
@@ -247,8 +264,64 @@ class RenderHost(dict):
         pre_dirty = self._external_change
         self._external_change = False
 
-        if not pre_dirty and input_value is not None and input_value is not self:
-            self._materialize(input_value)
+        # INBOUND. The HELD value is AUTHORITATIVE: it was set via __setitem__ (the
+        # user's draw_text string) and flows OUT to the wrapper. We do NOT materialize
+        # the wrapper's value (code_file_io's text_cache, which LAGS the latest
+        # keystrokes and is a stale-to-save snapshot) back over it - that's the "save
+        # replaces the text with the saved version, losing chars typed during edit" bug.
+        #
+        # Two exceptions:
+        #   - a genuine UPSTREAM change - draw() saw a NEW resolved input object and set
+        #     `_pending_external` (NOT the wrapper's `external_change` param, which for
+        #     code_file_io is just its per-keystroke reconvert pulse) - wins even over a
+        #     local dirty; drop the stale dirty so we don't surface a spurious outbound.
+        #   - an INITIAL fill, when nothing is held yet.
+        # An upstream change (draw() set `_pending_external`) means the wrapper will
+        # produce a FRESH derived result - but convert's chain_in re-parses on a
+        # BACKGROUND thread, so it fires a frame+ after the pulse. Latch "awaiting" so we
+        # still materialize it when it arrives (a new object), not just on the pulse
+        # frame - otherwise the gate blocks the catch-up and the dict holds the PREVIOUS
+        # parse forever ("dict always holds the old snapshot").
+        if self._pending_external:
+            self._awaiting_inbound = True
+
+        # FRAME PRECEDENCE (all O(1) - no content comparison). Is there a GENUINE pending
+        # local edit, newer than the source it round-trips to? Each cross-thread round-trip
+        # adds a frame of lag, and rendering the held value writes reconstructed children
+        # back (draw_collection) a frame later - a local 1-frame "edit" echo. So a diff
+        # of ≤1 is NOT genuine; only a local edit MORE than 1 frame ahead of the source
+        # counts (a live drag, whose source lags by the whole debounced save round-trip,
+        # many frames). This single predicate drives BOTH directions and replaces the
+        # `not pre_dirty` gate, which the echo tripped every cycle (the catch-up ed
+        # re-surfacing → re-saving forever).
+        local_ahead = self._local_edit_frame > self._input_change_frame + 1
+
+        if input_value is not None and input_value is not self:
+            if self.value_key not in self:
+                self._materialize(input_value)
+                note = Note(name="_materialize", tint=(1, 1.0, 1.0))
+                # Needed for initial load
+                self._draw_state._parent.invalidate_by_obj(obj=self, note=note)
+                request_render()
+
+                # initial fill
+            elif (self._awaiting_inbound and external_change
+                  and input_value is not self._held()
+                  and not local_ahead):
+
+                # Pull only the fresh parse. `external_change` is the wrapper signalling a
+                # FRESH derived result THIS frame (convert sets it only on the frame its
+                # background chain_in FINISHES, with the current source's parse - and
+                # run_in_background coalesces to latest-only, so a finished result is never
+                # superseded). Without this gate we'd pull whatever `primary` happens to be
+                # when `local_ahead` flips false - which, mid round-trip, is the STALE
+                # last-good parse of the PREVIOUS source → the 428↔445 snap-back/oscillation.
+                # `not local_ahead` still lets a genuine live edit win.
+                # Needed
+                note = Note(name="Render host, self", tint=(1, 1, 1))
+                self._draw_state._parent.invalidate_by_obj(obj=self, note=note)
+                self._materialize(input_value)
+                self._awaiting_inbound = False
 
         from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
         renderer = self.renderer or draw_any
@@ -259,13 +332,37 @@ class RenderHost(dict):
         # A string edit (immutable) comes back via the return; store it. A dict/tree
         # edit mutated in place and already set _external_change via bubbling.
         if r_changed and self.get(self.value_key) is not r_new:
+            # Needed
             self[self.value_key] = r_new
+            self._draw_state._parent.invalidate_by_obj(obj=input_value)
+            self._draw_state._parent.invalidate_by_obj(obj=self)
 
-        edited = bool(pre_dirty or self._external_change or r_changed)
+            request_render()
+
+        # OUTBOUND only a GENUINE local edit - one MORE than 1 frame ahead of the source
+        # (a real drag), NOT the 1-frame draw_collection frame echo. Without this, the
+        # echo re-surfaces the just-materialized value every cycle → chain_out → save in
+        # a self-sustaining loop. r_changed (the renderer's own edit) always surfaces.
+        if self._external_change:
+            self._wrapper_draw_state._parent.invalidate(obj=input_value)
+
+            self._draw_state._parent.invalidate_by_obj(obj=input_value)
+            self._draw_state._parent.invalidate_by_obj(obj=self)
+
+            request_render()
+
+        edited = bool((pre_dirty and local_ahead) or self._external_change or r_changed)
         self._external_change = False
         if edited:
+            # Needed
+            note = Note(name="Render host, nested view edited", tint=(1, 1, 1))
+            self._draw_state._parent.invalidate_by_obj(obj=input_value, note=note)
+            request_render()
+            note = Note(name="Render host, self", tint=(1, 1, 1))
+            self._draw_state._parent.invalidate_by_obj(obj=self, note=note)
+
             self._log_change("OUTBOUND → return (True, value)",
-                             pre_dirty=pre_dirty, r_changed=r_changed, external_change=external_change)
+                             pre_dirty=pre_dirty, r_changed=r_changed, local_ahead=local_ahead)
             return True, self._outbound_value()
         return False, self._outbound_value()
 
@@ -305,12 +402,19 @@ class RenderHost(dict):
 
     def _set_held(self, value):
         """Cross-proxy write: a downstream proxy pushes the wrapper's output (a new
-        source string) onto this upstream proxy. Goes through the public __setitem__
-        so it bubbles + marks dirty → this proxy surfaces it to ITS wrapper next frame
-        (string_proxy → code_file_io saves). Identity-guarded so an unchanged push
-        doesn't spuriously dirty."""
-        if self.value_key is not None and self.get(self.value_key) is not value:
-            self[self.value_key] = value
+        source string) onto this upstream proxy → it surfaces to ITS wrapper and saves.
+
+        The LOCAL __setitem__ value is AUTHORITATIVE: a pending local edit (dirty — the
+        user just typed) is NOT overwritten, so a late/stale background result (a
+        debounced chain_out snapshotted frames ago) can't clobber what's being typed.
+        All O(1) — no content comparison."""
+        if self.value_key is None:
+            return
+        if self._external_change:
+            return                              # pending local edit wins over a write-back
+        if self.get(self.value_key) is value:
+            return                              # same object - no change
+        self[self.value_key] = value
 
     # ── Lifecycle: draw the wrapper in this host's window (draw_main calls this) ─
     def draw(self, **extra):
@@ -325,6 +429,32 @@ class RenderHost(dict):
         if isinstance(iv, RenderHost):
             iv = iv._held()
 
+        # Detect the input change HERE, not in render_host_view. draw() runs EVERY frame
+        # (draw_main is uncached), whereas render_host_view's window body is blit-cached
+        # and won't run on the frame an upstream proxy's value changed - so detecting it
+        # there drops the external_change event intermittently. On a change: flag it for
+        # the wrapper (so convert re-parses) AND invalidate the wrapper so its body
+        # actually re-runs to consume the flag. Identity compare - a changed source is a
+        # new string object; no content comparison needed.
+
+
+        if iv is not self._last_resolved:
+            self._last_resolved = iv
+            self._pending_external = True
+            self._input_change_frame = Melty.frame_count   # stamp: the input (source) changed here
+            # Invalidate BOTH the window envelope AND the wrapper's draw_state. The
+            # envelope so render_host_view re-runs and CALLS the wrapper; the wrapper
+            # so its blit-cached body actually re-executes (re-parses) - invalidating
+            # only the envelope re-calls a wrapper that just replays its cache, so the
+            # re-parse never happens and the change is lost (an intermittent bug).
+            for ds in (None, self._wrapper_draw_state):
+                if ds is not None:
+                    note = Note(name="Renderhost _last_resolved", tint=(1, 0.5, 0), draw_state=ds)
+                    ds.invalidate(note=note)
+                    ds.invalidate_by_obj(obj=self, note=note)
+
+            request_render()
+
         win_kwargs = {"name": self.name}
         if self.window:
             win_kwargs.setdefault("mode", Mode.WINDOW)
@@ -336,6 +466,7 @@ class RenderHost(dict):
         finally:
             RenderHost._active.pop()
         self._last_return = result if isinstance(result, tuple) else (False, result)
+
         return self._last_return[1]
 
     def __repr__(self):
@@ -372,14 +503,19 @@ def render_host_view(input_value, external_change=False, draw_state=None, name=N
         from src.lsd.gl_gui.view.core_views.new_core_view import draw_collection
         return draw_collection(host, name=host.name)
 
-    ext = bool(external_change or (input_value is not host._last_resolved))
-    host._last_resolved = input_value
+    # external_change for the wrapper: the framework's, OR the input-changed flag that
+    # draw() set this frame (computed there because draw() runs every frame; consuming
+    # it here, in the deferred/cached body, is reliable since draw() also runs us).
+    ext = bool(external_change or host._pending_external)
 
     # return_extras=True → the wrapper hands back its OWN draw_state as a 3rd value;
-    # store it so a later value edit can invalidate it (see _mark_dirty) and the
-    # wrapper fully re-runs instead of replaying its blit cache.
+    # store it so a later value edit can invalidate it (see _mark_changed) and the
+    # wrapper actually re-runs instead of replaying its blit cache. NOTE: reset
+    # _pending_external AFTER the wrapper - _internal_view_func reads it (during this
+    # call) to tell a genuine upstream change from the wrapper's own per-keystroke pulse.
     result = host.wrapper(input_value=input_value, view_func=host._internal_view_func,
                           external_change=ext, return_extras=True, **host.child_kwargs)
+    host._pending_external = False
     if isinstance(result, tuple) and len(result) == 3:
         edited, out, host._wrapper_draw_state = result
     else:

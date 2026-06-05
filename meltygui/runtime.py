@@ -14,6 +14,7 @@ from imgui.core import _DrawList
 from rtree import index as rtree_index
 
 from src.lsd.gl_gui.render_funcs import RenderFuncs
+from src.lsd.gl_gui.utils import glfw_utils
 from src.lsd.gl_gui.view.attribute_churn import AttributeChurnMonitor
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
 from src.lsd.gl_gui.view.invalidation_tracker import InvalidateTracker, Note
@@ -833,9 +834,11 @@ class Melty:
             else:
                 for k in range(32, 349):  # GLFW_KEY_SPACE through GLFW_KEY_LAST
                     if glfw.get_key(cls.glfw_window, k) == glfw.PRESS:
+                        note = Note(name="Melty, on glfw key press", tint=(1, 0.5, 0), rect=(0, 0, 100, 20))
                         if focused.parent_window is not None:
-                            cls.cache.invalidate_up(focused.parent_window._tile_id, force=True)
-                        cls.cache.invalidate(focused._tile_id, force=True)
+                            cls.cache.invalidate_up(focused.parent_window._tile_id, force=True, note=note)
+                        note = Note(name="Melty, on glfw key press", tint=(1, 0.5, 0), rect=(0, 0, 100, 20))
+                        cls.cache.invalidate(focused._tile_id, force=True, note=note)
                         request_render()
                         break
 
@@ -1509,6 +1512,9 @@ class Melty:
 
     @classmethod
     def end_frame(cls):
+        if glfw_utils.frames_left > 0:
+            request_render()
+
         cls.apply_move_to_front()
 
         cls.apply_refresh_nested_windows()

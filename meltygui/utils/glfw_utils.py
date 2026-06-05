@@ -875,11 +875,19 @@ def _summarize(value):
 # ── GLFW management ───────────────────────────────────────
 
 _needs_render = threading.Event()
+frames_left = 0
 
+def request_render(for_frames:int | None=None):
+    global frames_left
+    if frames_left > 0:
+        frames_left -= 1
 
-def request_render():
+    if for_frames is not None:
+        frames_left = for_frames
+
     if Toggles.invalidate_stack_trace:
         if Core.melty.frame_count > 0 and Core.melty.frame_count % 10 == 0:
             print_stack_trace(size=5)
     _needs_render.set()
     glfw.post_empty_event()
+

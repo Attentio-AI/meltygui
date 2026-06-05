@@ -18,7 +18,7 @@ from src.lsd.gl_gui.view.core_conversion.chain_converters import module_to_addre
 from src.lsd.gl_gui.view.core_conversion.file_converters import path_to_dict, bytes_to_str, \
     rf_dict_to_path, rf_str_to_bytes
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import GeneralParse, Conditional, Comment, \
-     dict_to_cst, cst_module_to_str, str_to_cst_module, cst_module_to_dict, dict_to_cst_module
+    dict_to_cst, cst_module_to_str, str_to_cst_module, cst_module_to_dict, dict_to_cst_module
 from src.lsd.gl_gui.view.core_conversion.new_codecs import CallSite, Decorations
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.core_views.headers import draw_footer, draw_header_end, draw_header
@@ -38,16 +38,18 @@ def compute_height(draw_state):
     else:
         return 500
 
+
 @dataclass
 class ModeOverrides:
     kwargs: Optional[dict] = None
     func: Optional[callable] = None
-    recursive:Optional[bool] = True
-    route: Optional[dict]  = None
+    recursive: Optional[bool] = True
+    route: Optional[dict] = None
 
 
 @window
 class Mode(Enum):
+    some_int = 20
     def get_config_for(self, input_value=None, the_type=None):
         if input_value is not None:
             the_type = type(input_value)
@@ -55,7 +57,7 @@ class Mode(Enum):
         config = self.unwrapped.get(the_type, None)
         if config is not None:
             return config
-        
+
         for super_type in type(input_value).__mro__:
             config = self.unwrapped.get(super_type, None)
             if config is not None:
@@ -75,7 +77,6 @@ class Mode(Enum):
                 else:
                     unwrapped[key] = value
             self.unwrapped = unwrapped
-
 
     NEW_CODE = {
         (type, types.FunctionType, types.ModuleType, CallSite, Decorations): ModeOverrides(
@@ -111,7 +112,7 @@ class Mode(Enum):
             kwargs={"auto_load_edits": True,
                     "auto_load": True,
                     "auto_save": True,
-                    "fill_height":False,
+                    "fill_height": False,
                     'view_func': convert_in_and_out,
                     "disable_scroll": True,
                     "with_header": draw_header,
@@ -139,19 +140,19 @@ class Mode(Enum):
 
     READ_ONLY = {
         (Any): ModeOverrides(
-            kwargs={"show_bg": True, "selectable": False, "header_same_line":True, "show_header": True,
+            kwargs={"show_bg": True, "selectable": False, "header_same_line": True, "show_header": True,
                     "show_add_delete": False, "bg_offset": -1,
-                    "use_cache": True, "initial": {"expanded": False, "closed":False}},
+                    "use_cache": True, "initial": {"expanded": False, "closed": False}},
             recursive=True,
         ),
         (str, float, int, bool, types.NoneType): ModeOverrides(
-        kwargs={"show_bg": False, "selectable": False, "show_add_delete":False, "show_header": True,
-                "expanded": True, "use_cache": True, "shadow":False},
+            kwargs={"show_bg": False, "selectable": False, "show_add_delete": False, "show_header": True,
+                    "expanded": True, "use_cache": True, "shadow": False},
         ),
         (type): ModeOverrides(
             func=draw_type_name,
             kwargs={"show_bg": False, "selectable": False, "show_add_delete": False, "show_header": True,
-                    'is_tree':False, "use_cache": True, "shadow": False, 'tint':(0.8, 0.8, 0.6)},
+                    'is_tree': False, "use_cache": True, "shadow": False, 'tint': (0.8, 0.8, 0.6)},
         ),
 
     }
@@ -162,15 +163,16 @@ class Mode(Enum):
             kwargs={"show_bg": True, "selectable": False, "use_cache": True},
             recursive=True,
             func=(sort_dict_alphabetically,
-                  (draw_collection, {"show_add_delete":False, "selectable":False, "show_bg": False}),
+                  (draw_collection, {"show_add_delete": False, "selectable": False, "show_bg": False}),
 
-          ))
+                  ))
     }
 
     DROPDOWN_WINDOW = {
         (Any): ModeOverrides(
-            kwargs={"show_bg": False, "selectable": False, "min_width": -2, "min_height":18, "wrap":True, "z_offset":0,
-                    "shadow":False, "is_tree": False, "use_cache": True, "layer_offset": 1},
+            kwargs={"show_bg": False, "selectable": False, "min_width": -2, "min_height": 18, "wrap": True,
+                    "z_offset": 0,
+                    "shadow": False, "is_tree": False, "use_cache": True, "layer_offset": 1},
             recursive=False,
             func=draw_drop_down_item
         ),
@@ -180,11 +182,11 @@ class Mode(Enum):
                     "with_header_end": draw_header_end, "auto_resize": True, "draggable": True,
                     'shadow': True, "return_item": True,
                     "show_tint": False, "show_header": False, 'indent_size': 5,
-                    "disable_scroll": False, "searchable": True, "wrap":True,
-                    "child_kwargs": {"force_initial":True, "initial": {"window_pos": (-20, -1), "closed":False},
-                                     "bg_offset":2, "swoosh":False, "auto_resize":True, "closed":False,
+                    "disable_scroll": False, "searchable": True, "wrap": True,
+                    "child_kwargs": {"force_initial": True, "initial": {"window_pos": (-20, -1), "closed": False},
+                                     "bg_offset": 2, "swoosh": False, "auto_resize": True, "closed": False,
                                      "return_item": True,
-                                     "inline":True, "anchor": Anchor.TOP_LEFT, "parent_anchor": Anchor.TOP_LEFT},
+                                     "inline": True, "anchor": Anchor.TOP_LEFT, "parent_anchor": Anchor.TOP_LEFT},
                     "show_add_delete": False, "with_header": draw_header, "min_width": 10, "min_height": 20},
             recursive=True,
         )
@@ -196,16 +198,17 @@ class Mode(Enum):
             recursive=False,
             func=(sort_dict_alphabetically,
                   (draw_collection, {"show_add_delete": False, "selectable": False, "show_bg": False,
-                                     "excluded":WindowManager.excluded_windows}),
+                                     "excluded": WindowManager.excluded_windows}),
                   unsort_dict_alphabetically)
         )
     }
-    
+
     WINDOW_NO_HEADER = {
         Any: ModeOverrides(
             kwargs={"show_bg": True, "selectable": False, "use_cache": True, "melty_window": False, "closable": True,
                     "with_header_end": draw_header_end, "auto_resize": False, "draggable": True, 'shadow': True,
-                    "show_tint": False, "show_header": True, "with_footer": draw_footer, 'indent_size': 5, "search_text": "",
+                    "show_tint": False, "show_header": True, "with_footer": draw_footer, 'indent_size': 5,
+                    "search_text": "",
                     "show_add_delete": False, "with_header": draw_header, "min_width": 200, "min_height": 60,
                     "initial": {"width": 600, "height": 420, "window_pos": (100, 500)}},
 
@@ -215,8 +218,8 @@ class Mode(Enum):
     WINDOW_AUTO_FIT = {
         Any: ModeOverrides(
             kwargs={"use_cache": True, "melty_window": False, "closable": True, "layer_offset": 4,
-                    "auto_resize": True, "draggable": True, 'min_width':600, "swoosh": False,
-                    "inline": True, "show_header":False,
+                    "auto_resize": True, "draggable": True, 'min_width': 600, "swoosh": False,
+                    "inline": True, "show_header": False,
                     "initial": {"width": 400, "height": 320}},
 
             recursive=False
@@ -225,12 +228,12 @@ class Mode(Enum):
 
     WINDOW = {
         Any: ModeOverrides(
-            kwargs={"show_bg":True, "selectable":False, "use_cache":True, "melty_window":False, "closable":True,
-                    "with_header_end":draw_header_end, "auto_resize":False, "draggable":True, 'shadow':True,
-                    "show_tint":True, "show_header":True, "with_footer":draw_footer, 'indent_size':5,
-                      "disable_scroll": False, "bg_offset": -1,
-                   "show_add_delete":False, "with_header":draw_header, "min_width": 200, "min_height": 60,
-                    "initial":{"width": 400, "height": 320, "window_pos": (100, 500)}},
+            kwargs={"show_bg": True, "selectable": False, "use_cache": True, "melty_window": False, "closable": True,
+                    "with_header_end": draw_header_end, "auto_resize": False, "draggable": True, 'shadow': True,
+                    "show_tint": True, "show_header": True, "with_footer": draw_footer, 'indent_size': 5,
+                    "disable_scroll": False, "bg_offset": -1,
+                    "show_add_delete": False, "with_header": draw_header, "min_width": 200, "min_height": 60,
+                    "initial": {"width": 400, "height": 320, "window_pos": (100, 500)}},
 
             recursive=False
         )
@@ -250,8 +253,8 @@ class Mode(Enum):
 
     FLOATING = {
         Any: ModeOverrides(
-            kwargs={"use_cache": True, "melty_window": False, "closable": True, "layer_offset":0,
-                    "auto_resize": True, "draggable": True, "window_pos":(0,0), "swoosh": False,
+            kwargs={"use_cache": True, "melty_window": False, "closable": True, "layer_offset": 0,
+                    "auto_resize": True, "draggable": True, "window_pos": (0, 0), "swoosh": False,
                     "inline": True,
                     "initial": {"width": 400, "height": 320, "window_pos": (0, 0)}},
 
@@ -261,10 +264,10 @@ class Mode(Enum):
 
     WINDOW_CLEAN = {
         Any: ModeOverrides(
-            kwargs={"show_bg":True, "selectable":False, "use_cache":True, "shadow":True,
-                    "melty_window":True, "closable":True,
-                    "auto_resize":True, "is_tree":False, "show_tint":False, "show_header":True,
-                    "disable_scroll":False,
+            kwargs={"show_bg": True, "selectable": False, "use_cache": True, "shadow": True,
+                    "melty_window": True, "closable": True,
+                    "auto_resize": True, "is_tree": False, "show_tint": False, "show_header": True,
+                    "disable_scroll": False,
                     "initial": {"width": 400}},
             recursive=False
         )
@@ -272,7 +275,7 @@ class Mode(Enum):
 
     code_ui_auto_load = True
     code_ui_params = {'save': True,
-                     'recompile': False}
+                      'recompile': False}
     CODE_UI = {
         types.FunctionType: ModeOverrides(
             recursive=True,
@@ -299,11 +302,12 @@ class Mode(Enum):
             recursive=True
         ),
         Conditional: ModeOverrides(
-            kwargs={"tint": (0.2, 0.2, 0.1), 'show_add_delete': True, 'is_tree':False},
+            kwargs={"tint": (0.2, 0.2, 0.1), 'show_add_delete': True, 'is_tree': False},
             recursive=True,
         ),
         Comment: ModeOverrides(
-            kwargs={"tint": (0.1, 0.1, 0.1), "show_bg":False, "shadow":False, 'show_add_delete': True, 'is_tree':False},
+            kwargs={"tint": (0.1, 0.1, 0.1), "show_bg": False, "shadow": False, 'show_add_delete': True,
+                    'is_tree': False},
             func=draw_comment,
             recursive=True,
         ),
@@ -314,32 +318,31 @@ class Mode(Enum):
         ),
     }
 
-
     code_plain_text_auto_load = True
     code_plain_text_params = {'save': True,
                               'recompile': False}
     draw_text_funcs = ((address_to_general_parse,
-                            {'load': code_plain_text_auto_load}),
-                        general_parse_to_str,
-                        draw_text,
-                        str_to_general_parse,
-                        (general_parse_to_address,
-                            code_plain_text_params))
+                        {'load': code_plain_text_auto_load}),
+                       general_parse_to_str,
+                       draw_text,
+                       str_to_general_parse,
+                       (general_parse_to_address,
+                        code_plain_text_params))
 
     CODE_PLAIN_TEXT = {
         types.FunctionType: ModeOverrides(
             recursive=True,
             route={function_to_address: "jump_to", address_to_general_parse: "code_tree"},
-            func=(function_to_address,*draw_text_funcs,address_to_function),
+            func=(function_to_address, *draw_text_funcs, address_to_function),
         ),
         types.ModuleType: ModeOverrides(
             recursive=True,
-            route={module_to_address : "jump_to", address_to_general_parse: "code_tree"},
-            func=(module_to_address,*draw_text_funcs, address_to_module),
+            route={module_to_address: "jump_to", address_to_general_parse: "code_tree"},
+            func=(module_to_address, *draw_text_funcs, address_to_module),
         ),
         type: ModeOverrides(
             route={class_to_address: "jump_to", address_to_general_parse: "code_tree"},
-            func=(class_to_address,*draw_text_funcs, address_to_class),
+            func=(class_to_address, *draw_text_funcs, address_to_class),
             recursive=True
         ),
     }
@@ -378,7 +381,7 @@ class Mode(Enum):
     # the converter chain it needs. Used as the `modes` arg to
     # draw_with_modes in Mode.CODE so that load / save / file-watch
     # registration happen ONCE upstream and are shared across columns.
-    
+
     CODE_INNER_TEXT = {
         GeneralParse: ModeOverrides(
             recursive=True,
@@ -401,7 +404,6 @@ class Mode(Enum):
     CODE = {}
 
 
-
 def _populate_code_mode():
     """Fill in Mode.CODE.value. Deferred until after the Mode class is
     defined so the chain can reference Mode.CODE_INNER_TEXT /
@@ -417,11 +419,11 @@ def _populate_code_mode():
 
     def chain_for(address_in, address_out):
         return ModeOverrides(
-            kwargs={"disable_scroll": True, "searchable":True},
+            kwargs={"disable_scroll": True, "searchable": True},
             recursive=True,
 
             func=(address_in,
-                  (address_to_general_parse, {'load': True,}),
+                  (address_to_general_parse, {'load': True, }),
                   (draw_with_modes, {'modes': inner_modes, 'disable_scroll': True, 'fill_height': compute_height}),
                   (general_parse_to_address, {'save': True, 'recompile': False}),
                   address_out),
@@ -435,7 +437,6 @@ def _populate_code_mode():
 
 
 _populate_code_mode()
-
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  Lenses - generic, field-parameterized accessors for "where does X live"      ║
@@ -502,7 +503,7 @@ def _build_code_chain(root, tail, default, kind, prefix_class=True, ensure_impor
     file lacks it (so a synthesized @defaults decorator resolves)."""
     load_node, save_node = _ADDR_PAIRS.get(type(root), _ADDR_PAIRS[type])
     if load_override is not None and isinstance(root, type):
-        load_node = load_override        # e.g. extend the span to include a leading comment
+        load_node = load_override  # e.g. extend the span to include a leading comment
     prefix = (root.__name__,) if (prefix_class and isinstance(root, type)) else ()
     save_kwargs = dict(_CODE_SAVE)
     if ensure_import is not None:
@@ -516,13 +517,13 @@ def _build_code_chain(root, tail, default, kind, prefix_class=True, ensure_impor
 
 @dataclass
 class Lens:
-    label: str            # unique display id (kind + name) - drives draw_state identity
-    name: str             # the field/leaf name this lens reads/writes
-    root: Any             # draw_state -> the object the chain starts from
-    path: tuple           # in-place kinds: attr-name path to the leaf
-    default: Any = None   # value the "+ Add" affordance stamps in
-    chain: Any = None     # code kinds: root -> generated chain tuple; None = in-place
-    kind: str = ""        # short, clean display label (no attr name; no internal prefix)
+    label: str  # unique row id (kind + name) - drives draw_collection identity
+    name: str  # the field/leaf name this lens reads/writes
+    root: Any  # draw_state -> the object the lens starts from
+    path: tuple  # in-place kinds: root -> path to the leaf
+    default: Any = None  # value the "+ Add" affordance stamps in
+    chain: Any = None  # code kinds: root -> generated chain tuple; None for in-place
+    kind: str = ""  # short, clean display name (no attr name, no internal keys)
     tint: Optional[tuple] = None  # optional override tint for this source
 
 
@@ -596,7 +597,7 @@ def caller_arg(name, default=None):
 _TINT_DEFAULT = (0.485, 0.61, 0.76)
 LENSES_BY_ATTR = {
     "tint": [
-         caller_arg("tint", _TINT_DEFAULT),
+        caller_arg("tint", _TINT_DEFAULT),
         draw_state_attr("tint", _TINT_DEFAULT),
         instance_attr("tint", _TINT_DEFAULT),
         class_var("tint", _TINT_DEFAULT),

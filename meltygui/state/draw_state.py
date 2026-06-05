@@ -624,11 +624,18 @@ class DrawState(DictConversion):
         self._cache = None
         self._return_value = None
 
-    def invalidate_up(self, max_depth=4):
-        Core.melty.cache.invalidate_up(self._tile_id, max_depth=max_depth)
+    def invalidate_up(self, max_depth=4, frame_delta=0, note=None):
+        Core.melty.cache.invalidate_up(self._tile_id, frame_delta=frame_delta, max_depth=max_depth, note=note)
 
-    def invalidate(self):
-        Core.melty.cache.invalidate(self._tile_id)
+    def invalidate(self, frame_delta=0, note=None):
+        Core.melty.cache.invalidate(self._tile_id, frame_delta=frame_delta, note=note)
+
+    def invalidate_by_obj(self, obj=None, frame_delta=0, note=None):
+        Core.melty.cache.invalidate_by_obj(obj=obj, frame_delta=frame_delta, note=note)
+
+    def invalidate_up_by_obj(self, obj=None, max_depth=3, frame_delta=0, note=None):
+        print(self._raw_input_value.__class__.__name__)
+        Core.melty.cache.invalidate_up_by_obj(obj, max_depth=max_depth, frame_delta=frame_delta, note=note)
 
     @property
     def cursor_screen_pos(self):

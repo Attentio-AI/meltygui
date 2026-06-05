@@ -139,6 +139,7 @@ class Swoosh:
 @window(tint=(0.8, 0.5, 0.2))
 class Toggles:
     debug_scroll = False
+    myval = 86
 
     @defaults(tint=(0.2, 0.45, 0.7))
     class TextEditor:
@@ -148,7 +149,7 @@ class Toggles:
         enable_spell_check = False
     @defaults(tint=(0.9,0.7,0.1))
     class InvalidateTracker:
-        keep_for_frames = 5
+        keep_for_frames = 15
         enable = False
         draw_bvh = False
 
@@ -159,7 +160,6 @@ class Toggles:
     show_filled_tiles = False
     gl_check_error = False
     enable_jedi = True
-
     # [tint(0.9, 0.5, 0.0)]
     jedi_correctness = False
 

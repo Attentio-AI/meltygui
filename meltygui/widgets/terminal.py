@@ -27,6 +27,7 @@ import imgui
 
 from src.lsd.gl_gui.fonts import Font
 from src.lsd.gl_gui.melty import Melty
+from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
@@ -89,6 +90,8 @@ def _set_winsize(fd, rows, cols):
         pass
 
 
+
+
 def _preexec():
     # New session + make the pty slave (fd 0) the controlling terminal, so the
     # child has a real session leader with job control - what an interactive shell
@@ -100,6 +103,50 @@ def _preexec():
         pass
 
 
+_TERM_SCREEN_CLS = None
+
+
+def _make_history_screen(pyte, cols, rows):
+    """A pyte HistoryScreen that also implements SU/SD (CSI Ps S / CSI Ps T), which
+    pyte omits entirely. tmux clears the screen (and redraws on scroll) by setting a
+    scroll region and SCROLLING UP — `\\x1b[<n>S` — not `\\x1b[2J`. Without a handler
+    pyte silently drops it, so the pane never clears; tmux's later writes assume a
+    blank pane and overprint the stale rows (mangled output) until a resize forces a
+    full redraw. We map S/T to index()/reverse_index() (scroll one line within the
+    margins, which is exactly SU/SD).
+
+    The CSI dispatch is compiled once from `pyte.Stream.csi` at stream construction, so
+    S/T must be registered BEFORE the ByteStream is built (start() does so right after
+    this call)."""
+    global _TERM_SCREEN_CLS
+    if _TERM_SCREEN_CLS is None:
+        from pyte.screens import Margins
+
+        class _TermScreen(pyte.HistoryScreen):
+            def scroll_up(self, count=1):           # CSI Ps S
+                count = count or 1
+                sy, sx = self.cursor.y, self.cursor.x
+                _, bottom = self.margins or Margins(0, self.lines - 1)
+                self.cursor.y = bottom
+                for _ in range(count):
+                    self.index()                    # scrolls the region up by one
+                self.cursor.y, self.cursor.x = sy, sx
+
+            def scroll_down(self, count=1):          # CSI Ps T
+                count = count or 1
+                sy, sx = self.cursor.y, self.cursor.x
+                top, _ = self.margins or Margins(0, self.lines - 1)
+                self.cursor.y = top
+                for _ in range(count):
+                    self.reverse_index()            # scrolls the region down by one
+                self.cursor.y, self.cursor.x = sy, sx
+
+        if "S" not in pyte.Stream.csi:
+            pyte.Stream.csi = {**pyte.Stream.csi, "S": "scroll_up", "T": "scroll_down"}
+        _TERM_SCREEN_CLS = _TermScreen
+    return _TERM_SCREEN_CLS(cols, rows, history=4000, ratio=0.5)
+
+
 class Terminal:
     """A PTY-backed terminal session plus its pyte screen.
 
@@ -108,8 +155,9 @@ class Terminal:
     are shared with any external `tmux attach`). The reader thread feeds bytes into
     pyte under `lock`; the render thread reads the screen grid under the same `lock`."""
 
-    def __init__(self, launch_cmd=None):
+    def __init__(self, launch_cmd=None, tmux_session=None):
         self.launch_cmd = launch_cmd or [os.environ.get("SHELL", "/bin/bash"), "-i"]
+        self.tmux_session = tmux_session   # session ID (if tmux-backed), for reference
         self.master_fd = None
         self.proc = None
         self.screen = None
@@ -134,7 +182,7 @@ class Terminal:
             self.error = "pyte not installed — run: pip install pyte"
             return
         try:
-            self.screen = pyte.HistoryScreen(cols, rows, history=4000, ratio=0.5)
+            self.screen = _make_history_screen(pyte, cols, rows)
             self.stream = pyte.ByteStream(self.screen)
             master, slave = os.openpty()
             self.master_fd = master
@@ -166,6 +214,31 @@ class Terminal:
                 break
             with self.lock:
                 self.stream.feed(data)
+            # Coalesce a burst into ONE re-render. A flood of logs arrives as many
+            # 64KB chunks; invalidating per chunk re-renders + re-blits the whole
+            # window each time (the real cost; the pyte feed itself is cheap). So
+            # keep feeding whatever was ALREADY queued before invalidating once. The
+            # time/byte budget keeps continuous output updating (~100Hz) instead of
+            # the drain ever starving the render. Each chunk feeds under its own lock
+            # so the render can still interleave.
+            ended = False
+            deadline = time.monotonic() + 0.008
+            read_total = len(data)
+            while read_total < (1 << 20) and time.monotonic() < deadline:
+                try:
+                    r, _, _ = select.select([fd], [], [], 0)
+                    if fd not in r:
+                        break
+                    more = os.read(fd, 65536)
+                except OSError:
+                    ended = True
+                    break
+                if not more:
+                    ended = True
+                    break
+                with self.lock:
+                    self.stream.feed(more)
+                read_total += len(more)
             # New output -> mark the window dirty so it re-renders this/next frame.
             # invalidate() just flips a tile flag (safe to call off the render thread,
             # like request_render); this replaces the now with live=True.
@@ -173,6 +246,8 @@ class Terminal:
             if ds is not None:
                 ds.invalidate()
             request_render()
+            if ended:
+                break
 
     def write(self, data):
         fd = self.master_fd
@@ -200,7 +275,6 @@ class Terminal:
         if self.pending_size is None:
             return
         if defer or time.monotonic() - self.pending_at < _RESIZE_SETTLE:
-            request_render()  # keep the loop ticking until the drag ends / settles
             return
         cols, rows = self.pending_size
         self.pending_size = None
@@ -314,6 +388,18 @@ _ALT_SCREEN_MODES = {47 << 5, 1047 << 5, 1049 << 5}
 # tmux with `mouse on`) wants mouse events forwarded; 1006 is the SGR form.
 _MOUSE_MODES = {1000 << 5, 1002 << 5, 1003 << 5}
 _SGR_MOUSE = 1006 << 5
+# tmux's copy-mode WheelUpPane scrolls this many lines per forwarded wheel escape
+# (its `bind-keys -X -N 5 scroll-up` default), with a smaller line count between escapes.
+_TMUX_WHEEL_LINES = 5
+
+
+def _wheel_lines(visible_px, line_px):
+    """Lines to scroll per wheel tick, from the global Toggles scroll settings — the
+    same pixel model core_render uses (`scroll_speed` px, capped to a fraction of the
+    visible height so small views don't overshoot), converted to lines."""
+    s = Toggles.ScrollSettings
+    px = min(s.scroll_speed, s.max_increment_fraction * max(1.0, visible_px))
+    return max(1, int(round(px / max(1.0, line_px))))
 
 
 def _row_blank(line, ncols):
@@ -335,7 +421,8 @@ _PROJECT_ROOT = "/home/lukas/Desktop/latent-descent"
 _LINK_RE = re.compile(
     r'File "(?P<p1>[^"\n]+)", line (?P<l1>\d+)'
     r'|(?<![\w./~-])(?P<p2>(?:/|~/|\./|\.\./)[^\s:"\'\)\],]+\.[A-Za-z0-9_]+):(?P<l2>\d+)')
-_LINK_COLOR = (200 << 24) | (255 << 16) | (180 << 8) | 110  # ABGR underline (cyan-blue)
+_LINK_COLOR = (200 << 24) | (255 << 16) | (180 << 8) | 110   # ABGR color (cyan-blue)
+_LINK_HOVER_COLOR = (255 << 24) | (255 << 16) | (235 << 8) | 170  # brighter on hover
 
 
 def _resolve_path(p):
@@ -447,21 +534,22 @@ def draw_terminal_screen(input_value: Terminal, draw_state, view_state: Terminal
         vs.last_total = total
         over = left <= io.mouse_pos.x <= right and top <= io.mouse_pos.y <= bottom
         if over and io.mouse_wheel:
+            lines = _wheel_lines(bottom - top, line_px)   # speed = Toggles.ScrollSettings
             if _MOUSE_MODES & modes:
                 # The program wants the mouse (e.g. tmux/less/vim) - forward the wheel
                 # so it scrolls ITS scrollback instead of our (empty, only-the-screen)
-                # pyte history. Button 64 = wheel up, 65 = wheel down.
+                # pyte history. Button 64 = wheel up, 65 = wheel down. tmux scrolls
+                # _TMUX_WHEEL_LINES per escape, so send enough escapes to hit `lines`.
                 col = max(0, min(int((io.mouse_pos.x - x0) / char_w), scols - 1))
                 row = max(0, min(int((io.mouse_pos.y - y0) / line_px), srows - 1))
                 btn = 64 if io.mouse_wheel > 0 else 65
-                for _ in range(abs(int(round(io.mouse_wheel))) or 1):
+                ticks = abs(int(round(io.mouse_wheel))) or 1
+                for _ in range(ticks * max(1, round(lines / _TMUX_WHEEL_LINES))):
                     term.write(_mouse_seq(modes, btn, col, row))
-                request_render()  # echo arrives via the reader, which invalidates
             else:
-                vs.scroll += int(round(io.mouse_wheel)) * 3
+                vs.scroll += int(round(io.mouse_wheel * lines))
                 if term._ds is not None:   # our own scrollback moved - re-render it
                     term._ds.invalidate()
-                request_render()
         vs.scroll = max(0, min(vs.scroll, max_scroll))
         at_bottom = vs.scroll == 0
 
@@ -473,6 +561,17 @@ def draw_terminal_screen(input_value: Terminal, draw_state, view_state: Terminal
 
         # Clickable file:line links in the visible text (underlined, click to jump).
         links = _find_links(grid, scols)
+        hovered_link = None
+        if over:
+            hc = int((io.mouse_pos.x - x0) / char_w)
+            hr = int((io.mouse_pos.y - y0) / line_px)
+            for i, (_p, _l, segs) in enumerate(links):
+                if any(r == hr and lo_c <= hc < hi_c for (r, lo_c, hi_c) in segs):
+                    hovered_link = i
+                    break
+            if links and term._ds is not None:
+                term._ds.invalidate()   # re-render so the hover highlight tracks the mouse
+
 
         # Per-row printed width (columns up to the last non-blank cell) and the last
         # row with any content. Selection clamps to these so a drag can't run off
@@ -496,7 +595,6 @@ def draw_terminal_screen(input_value: Terminal, draw_state, view_state: Terminal
             mx = left_mouse_drag.x if left_mouse_drag else io.mouse_pos.x
             my = left_mouse_drag.y if left_mouse_drag else io.mouse_pos.y
             vs.sel_active = xy_to_rc(mx, my)
-            request_render()
 
         # A plain click (no drag) on a link -> jump to it in the IDE, off-thread like
         # draw_text's jump button. `left_mouse_clicked` fires only on click, not drag,
@@ -518,7 +616,6 @@ def draw_terminal_screen(input_value: Terminal, draw_state, view_state: Terminal
             # the focused terminal pays this; the rest stay idle until they get focus.
             if term._ds is not None:
                 term._ds.invalidate()
-            request_render()
 
         # --- render: per-row style runs, selection highlight, block cursor ---
         # Clip to the body rect: while a resize drag is deferred the PTY is still at
@@ -554,11 +651,14 @@ def draw_terminal_screen(input_value: Terminal, draw_state, view_state: Terminal
                     dl.add_text(x0 + x * char_w, ry, _pack(_resolve(fg, _DEFAULT_FG, bold)), seg)
                 x = j
 
-        # Underline clickable file:line links so they read as actionable.
-        for _p, _l, segments in links:
+        # Underline clickable file:line links so they read as actionable; the link
+        # under the mouse gets a brighter, thicker underline.
+        for i, (_p, _l, segments) in enumerate(links):
+            hot = i == hovered_link
+            lc, th = (_LINK_HOVER_COLOR, 2.0) if hot else (_LINK_COLOR, 1.0)
             for (r, lo_c, hi_c) in segments:
                 uy = y0 + r * line_px + line_px - 1.0
-                dl.add_line(x0 + lo_c * char_w, uy, x0 + hi_c * char_w, uy, _LINK_COLOR, 1.0)
+                dl.add_line(x0 + lo_c * char_w, uy, x0 + hi_c * char_w, uy, lc, th)
 
         if is_focused and at_bottom and not cur_hidden and 0 <= cursor_vy < srows and int(time.time() * 2) % 2 == 0:
             cx, cy = x0 + cur_x * char_w, y0 + cursor_vy * line_px
@@ -607,7 +707,6 @@ def _forward_keys(term, vs):
                 send(b"\x00")
             continue
         send(ch.encode())
-    request_render()
 
 
 def _copy_selection(term, vs):
@@ -644,8 +743,8 @@ def _tmux_launch(session):
 # Two durable, attachable terminals. `main` is the app's shell; `lsd` is reserved
 # for the studio/launcher session (will hold the app's console once the app is
 # wrapped in tmux). test_instance kept as an alias so old tooling still works.
-terminal_instance = Terminal(_tmux_launch("main"))
-session_instance = Terminal(_tmux_launch("lsd"))
+terminal_instance = Terminal(_tmux_launch("main"), tmux_session="main")
+session_instance = Terminal(_tmux_launch("lsd"), tmux_session="lsd")
 test_instance = terminal_instance
 
 

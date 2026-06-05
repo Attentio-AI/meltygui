@@ -85,10 +85,12 @@ from src.lsd.gl_gui.view.core_conversion.file_converters import (
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
     cst_module_to_dict, dict_to_cst_module,
 )
-from src.lsd.gl_gui.view.core_conversion.new_codecs import Codec, CallSite, Decorations, type_to_codec, extension_to_codec
+from src.lsd.gl_gui.view.core_conversion.new_codecs import Codec, CallSite, Decorations, type_to_codec, \
+    extension_to_codec
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import no_save_exclude
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
+from src.lsd.gl_gui.view.invalidation_tracker import Note
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -254,8 +256,6 @@ class TestClass:
     a_dict = {"x": -40, "y": 53}
 
 
-
-
 def slow_task(**kwargs):
     import time
     print("Starting slow task...")
@@ -364,7 +364,7 @@ LOADING = object()
 @render_func(use_cache=True, selectable=False, temp=True)
 def run_in_background(input_value, loading_state: LoadingState, unique,
                       draw_state, child_kwargs, start=False, timeout=20,
-                      debounce_ms=40, **kwargs):
+                      debounce_ms=0, **kwargs):
     if Melty.frame_count < 5:
         debounce_ms = 0
     if start:
@@ -383,10 +383,12 @@ def run_in_background(input_value, loading_state: LoadingState, unique,
             timer.daemon = True
             loading_state._debounce_timer = timer
             timer.start()
-            draw_state.invalidate()
+            note = Note(name="Run in background, start debounce", tint=(1, 0.5, 0))
+            draw_state.invalidate(note=note)
         else:
             loading_state._debounce_deadline = None
-            draw_state.invalidate()
+            note = Note(name="Run in background, no debounce", tint=(1, 0.5, 0))
+            draw_state.invalidate(note=note)
             request_render()
 
     if loading_state._run_next is not None:
@@ -395,7 +397,9 @@ def run_in_background(input_value, loading_state: LoadingState, unique,
             # Inside the quiet window - keep this draw_state dirty so the deadline
             # render re-runs this frame, but DON'T request_render: the one-shot
             # timer above wakes the loop exactly once when the deadline lands.
-            draw_state.invalidate()
+            note = Note(name="new converters, Deadline", tint=(1, 0.5, 1.0), draw_state=draw_state)
+
+            draw_state.invalidate(note=note)
         else:
             loading_state._debounce_deadline = None
             if loading_state._debounce_timer is not None:
@@ -418,7 +422,8 @@ def run_in_background(input_value, loading_state: LoadingState, unique,
                 finally:
                     loading_state._loading = False
                     loading_state._pending_change = True
-                    Melty.cache.invalidate(draw_state._tile_id)
+                    note= Note(name="Run in background complete", tint=(0.5, 1.0, 0.5), draw_state=draw_state)
+                    Melty.cache.invalidate(draw_state._tile_id, note=note)
                     request_render()
 
             if Melty.frame_count < 1:
@@ -438,7 +443,9 @@ def run_in_background(input_value, loading_state: LoadingState, unique,
 
     if loading_state._pending_change and loading_state._run_next is None:
         loading_state._pending_change = False
-        draw_state.invalidate_up(max_depth=4)
+        note = Note(name="run in background complete, new conv", tint=(0.5, 0.5, 1.0))
+
+        draw_state.invalidate_up(max_depth=4, note=note)
         request_render()
         return True, loading_state.cached_result
     else:
@@ -1011,12 +1018,22 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
             _run_chain_in,
             child_kwargs=chain_in_kwargs,
             name=f"chain_in{unique}", start=external_change)
+        if external_change:
+            note = Note(name="convert_in_out, chain in start", tint=(1, 0.5, 0))
+            draw_state._parent.invalidate(note=note)
+        external_change = False
         if finished and isinstance(payload, dict):
             modes_state.last_error = payload.get("error")
             for name, val in payload["routed"].items():
                 modes_state.last_good[name] = val
                 routed[name] = val
+
             chain_in_error = modes_state.last_error
+            external_change = True
+            note = Note(name="Convert in and out, chain in finished", tint=(1, 0.5, 1.0), draw_state=draw_state)
+            draw_state._parent.invalidate(note=note)
+
+
 
     out_changed, out_value = False, input_value
 
@@ -1040,7 +1057,7 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
                                      **child_kwargs)
     converted_edit = edited_value if (edited and edited_value is not None) else UNSET
     if edited:
-        draw_state.invalidate_up(max_depth=3)
+        draw_state.invalidate(note=Note(name="convert_in_out, view func edit", tint=(1.0, 0.5, 0), draw_state=draw_state))
 
     # ── (identical) chain_out in background ───────────────────────────────────────
     if chain_out:
@@ -1120,18 +1137,18 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
         if not auto_recompile_edits and code_state.text_cache is not UNSET and code_state.text_cache is not None:
             play_icon = "\uf04b"
             recompile = \
-                RenderFuncs.button(f"{play_icon} Run", 
-                    tint=(0.05678745, 0.5, 0.2, 0.5), 
-                    height=top_line_height,
-                    name=f"recompile_btn{unique}")[0]
+                RenderFuncs.button(f"{play_icon} Run",
+                                   tint=(0.05678745, 0.5, 0.2, 0.5),
+                                   height=top_line_height,
+                                   name=f"recompile_btn{unique}")[0]
 
         if Toggles.enable_jedi:
             imgui.same_line(spacing=0)
             search_icon = "\uf002"
-            run_jedi = RenderFuncs.button(f"{search_icon} Index", 
-                      tint=(0.8, 0.54, 0.2),
-                      height=top_line_height, 
-                      name="jedi_index_btn")[0] or run_jedi
+            run_jedi = RenderFuncs.button(f"{search_icon} Index",
+                                          tint=(0.8, 0.54, 0.2),
+                                          height=top_line_height,
+                                          name="jedi_index_btn")[0] or run_jedi
 
         if code_state._recompiled_on_frame is not None:
             duration = 10.0
@@ -1225,8 +1242,8 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             code_state._reconvert = False
             trigger = external_change or run_jedi or reconvert
             edited, value = view_func(input_value=code_state.text_cache,
-      external_change=trigger, draw=trigger,
-      **child_kwargs)
+                                      external_change=trigger, draw=trigger,
+                                      **child_kwargs)
 
             if edited:
                 code_state.text_cache = value
@@ -1254,6 +1271,10 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
         save_start = (auto_save and edited) or explicit_save
         save_debounce = 0 if explicit_save else save_debounce_ms
         time = datetime.now().strftime("%H:%M:%S")
+        if save_start:
+            note = Note(name="Code_file_io save start", tint=(1, 0.5, 0))
+            Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=4, note=note)
+
         saved, result = run_in_background(save_file,
                                           child_kwargs={"address": address,
                                                         "codec": codec,
@@ -1264,12 +1285,15 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                                           debounce_ms=save_debounce)
         if result == LOADING:
             code_state.mark_file_current()
+
         elif saved:
             # Our own write bumped mtime; clear the stale flag set on edit so the
             # next frame doesn't read the disk as an external change.
             code_state.mark_file_current()
             code_state._pending_save = False
-            Melty.cache.invalidate_up(draw_state._tile_id, max_depth=10)
+            note = Note(name="On saved, code_file_io", tint=(0.5, 1.0, 1.0), draw_state=draw_state)
+
+            Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=4, note=note)
 
         # Recompile (hot reload, no disk write): button, Ctrl+Enter, or recompile=True
         # on edit. Same runner, its own loading_state.

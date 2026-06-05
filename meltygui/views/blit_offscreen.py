@@ -272,7 +272,7 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
         t.filled_bbox = (0, 0, cw, ch) if cw > 0 and ch > 0 else None
     else:
         t.filled_bbox = None
-    t.last_invalidated_frame = frame_id + 1
+    t.last_invalidated_frame = max(t.last_invalidated_frame, frame_id + 1)
     request_render()
     return t
 
@@ -936,7 +936,7 @@ class TileCacheMasked:
                 if child != k:
                     pt = self._tiles.get(child)
                     if pt is not None:
-                        pt.last_invalidated_frame = max(pt.last_invalidated_frame, self._frame_id + 1) + frame_delta
+                        pt.last_invalidated_frame = max(pt.last_invalidated_frame, self._frame_id + 1 + frame_delta)
                         pt.dirty = self._is_dirty(pt)
                         pt.force_invalidate = True
                         # self.pending_invalid.append(pt)
@@ -1039,7 +1039,7 @@ class TileCacheMasked:
                     if parent_draw_state is not None and parent_draw_state._print_last_invalid:
                         print_stack_trace()
                     pt.force_invalidate = True
-                    pt.last_invalidated_frame = max(pt.last_invalidated_frame, self._frame_id + 1) + frame_delta
+                    pt.last_invalidated_frame = max(pt.last_invalidated_frame, self._frame_id + 1 + frame_delta)
                     pt.dirty = self._is_dirty(pt)
                     if Toggles.InvalidateTracker.enable:
                         InvalidateTracker.invalidations[k] = note
