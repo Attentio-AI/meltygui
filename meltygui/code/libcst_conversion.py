@@ -269,7 +269,7 @@ class CallParse(GeneralParse):
         self.func_name = func_name
 
 
-@defaults(tint=(0.8465116, 0.7424207, 0.1, 0.7), icon="@", disable_scroll=True, initial={"expanded":False})
+@defaults(tint=(0.8465116, 0.7424207, 0.1, 0.7), icon="@", disable_scroll=True)
 class DecorationParse(CallParse):
     """A decorator application (`@name(...)`), as a CallParse subclass.
 

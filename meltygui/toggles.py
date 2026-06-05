@@ -138,13 +138,17 @@ class Swoosh:
 
 @window(tint=(0.8, 0.5, 0.2))
 class Toggles:
-    test_float = 0.598
     debug_scroll = False
 
-
+    @defaults(tint=(0.2, 0.45, 0.7))
+    class TextEditor:
+        # Red wavy underline under unknown words in the text editor. Detection +
+        # suggestion are provided by symspellpy; results are cached on the editor's
+        # draw_state and only recomputed when the buffer text changes.
+        enable_spell_check = False
     @defaults(tint=(0.9,0.7,0.1))
     class InvalidateTracker:
-        keep_for_frames = 12
+        keep_for_frames = 5
         enable = False
         draw_bvh = False
 
@@ -159,7 +163,6 @@ class Toggles:
     # [tint(0.9, 0.5, 0.0)]
     jedi_correctness = False
 
-
     # Invalidation settings
     invalidate_stack_trace = False
     text_focus_stack_trace = False
@@ -169,12 +172,12 @@ class Toggles:
     slow_down_threads = False
     render_depth = False
     ds_invalidate_stack = False
-    profile_mode = ProfileMode.OFF
+    profile_mode = ProfileMode.LIGHT
     debug_stale_tint = False
     show_line_break = False
 
     # Filter SettingS
-    brightness = 0.334
+    brightness = 0.371
     contrast = 1.645
     saturation = -0.4
     prefered_header_width = 17
@@ -192,7 +195,17 @@ class Toggles:
     draw_legacy = False
 
     # Scroll settings
-    scroll_speed = 600.0
+    @defaults(tint=(0.2, 0.6, 0.55))
+    class ScrollSettings:
+        # Base speed (px per wheel-tick unit) when the view is large enough that
+        # the dynamic cap doesn't bind.
+        scroll_speed = 2e+03
+        # A single wheel tick never jumps more than this fraction of the visible
+        # (clipped) height, so small views don't overshoot.
+        max_increment_fraction = 0.5
+        # Reserved for time-based scroll acceleration: wheel ticks arriving within
+        # this window count as a continuous gesture. Not yet wired into the code.
+        acceleration_threshold = 200  # ms
 
     show_full_call_stack = False
     ignore_call_from = ("draw", "_run_visualization", "run", "_bootstrap",

@@ -1007,7 +1007,10 @@ class TileCacheMasked:
 
         if Toggles.invalidate_stack_trace:
             if Melty.frame_count > 100 and Melty.frame_count % 30 == 0:
-                print_stack_trace()
+                if note.name != "hover change":
+                    print_stack_trace()
+                else:
+                    print("hover change")
 
         t = self._tiles.get(k)
         if t is not None:

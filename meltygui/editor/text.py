@@ -648,7 +648,11 @@ def draw_text(input_value: str,
               line_height=1.2, font: Font = Font.JETBRAINS_MONO_19, jump_to=None,
               code_tree=None, error=None):
     ds = draw_state
-    
+
+    # Imported in-function to avoid a module-load import cycle (toggles pulls in
+    # decoration/window machinery). For the spell-check button + squiggles below.
+    from src.lsd.gl_gui.toggles import Toggles
+
     # Error markers to highlight in red: the routed code_tree's parse errors plus
     # any exception routed in via the mode route (e.g. draw_modes hands us the
     # chain_in failure so the offending source line lights up here). Computed up
@@ -1304,6 +1308,49 @@ def draw_text(input_value: str,
             x = origin_x
             y += line_px
             start = nl + 1
+
+    # --- Spell-check squiggles -------------------------------------------------
+    # Red wavy lines under unknown words. Gated behind the global toggle and
+    # only recomputed when the buffer text changes (cached on the draw_state), so
+    # scrolling / cursor-blink repaints never re-scan. Drawn after the glyphs and
+    # inside the text clip rect so the squiggles scroll with the code.
+    #
+    # TODO(symbol-aware): this currently spell-checks every alphabetic word in the
+    # buffer (find_misspellings(text)). THIS is the integration point - when the
+    # libcst parsing work lands, drive the span list off the routed `code_tree`
+    # instead: only check tokens belonging to comment / string / docstring /
+    # identifier symbols, splitting identifiers on camelCase / snake_case. Do NOT
+    # reuse this view's syntax `tokenize()` for that - the libcst symbol tree is
+    # the source of truth. Replace the find_misspellings(text) call below with a
+    # tree-driven list of (start, end, word) spans; the rendering stays the same.
+    if Toggles.TextEditor.enable_spell_check:
+        if getattr(ds, '_spell_cache_text', None) != text:
+            from src.lsd.gl_gui.view.core_views import spell_check
+            ds._spell_cache_text = text
+            ds._spell_errors = spell_check.find_misspellings(text)
+        spell_color = 0xFF0000FF  # red (ABGR)
+        period = 4.0   # px per complete zig-zag
+        amp = 1.6      # px above/below the baseline
+        for ws, we, _word in ds._spell_errors:
+            e_line, _ = _index_to_line_col(text, ws)
+            e_ls = _get_line_start(text, ws)
+            sx = origin_x + (ws - e_ls) * char_w
+            ex = origin_x + (we - e_ls) * char_w
+            base_y = origin_y + e_line * line_px + line_px - 2.0
+            if base_y < rect_min_y or base_y > rect_max_y:
+                continue
+            # Triangle-wave squiggle from short segments (see the add_line
+            # idiom is here; no reliance on add_polyline).
+            px, py = sx, base_y
+            up = True
+            cx = sx
+            while cx < ex:
+                nx = min(cx + period / 2.0, ex)
+                ny = base_y - amp if up else base_y + amp
+                draw_list.add_line(px, py, nx, ny, spell_color, 1.0)
+                px, py = nx, ny
+                cx = nx
+                up = not up
 
     # Cursor. Drawn at the caret even while a selection exists, so the active
     # (moving) edge of a drag or shift-selection shows where delete and arrow

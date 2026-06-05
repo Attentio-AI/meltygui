@@ -1084,12 +1084,18 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
         if is_render_func:
             kwargs.setdefault('mode', Mode.MODE_WINDOW)
             kwargs['disable_scroll'] = True
-            window_cls(None, **kwargs)
+            window_cls(**kwargs)
         else:
             kwargs['disable_scroll'] = True
             kwargs.setdefault('mode', (Mode.NEW_CODE, Mode.MODE_WINDOW))
             window_func = kwargs.pop("view_func", code_file_io)
             window_func(window_cls, **kwargs)
+
+    # Self-registering RenderHost objects (view/core_conversion/render_host.py): each
+    # drives a stateful view and draws into its own window. Snapshot the values - a
+    # host may register/remove during drawing (re-entrant mutation).
+    for host in list(Core.melty.render_hosts.values()):
+        host.draw()
 
     from src.lsd.gl_gui.model.app_model import TensorView
     draw_any(TensorView, name="Tensorview", mode=(Mode.WINDOW))
@@ -2107,7 +2113,7 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
 @render_func(use_cache=True, selectable=False, disable_scroll=True, indent_size=0, show_bg=False, min_width=10,
              min_height=10, wrap=True)
 def button(input_value="", draw_state=None, alpha=1.0, left_mouse_held=False, shadow=True, left_mouse_down=False,
-           color=(0.5, 0.5, 0.5), hovered=False, width=None, height=None, style_manager=None,
+           color=(2.558, 0.5, 0.5), hovered=False, width=None, height=None, style_manager=None,
            factor=1.0, tint_value=0.32, text_value=1.023, saturation=0.8, unique=0, text_align="center",
            search_match=False, search_current=False, tint=None, rounding=None):
     if color is not None:
@@ -2272,7 +2278,7 @@ def text(input_value: str, wrap, wrap_text=False, text_color=(1, 1, 1), draw_sta
     return False, input_value
 
 
-@render_func(is_default_for=(str), shadow=False, show_bg=False, wrap=False,
+@render_func(is_default_for=(str), shadow=False, show_bg=False, wrap=False, selectable=False,
              is_tree=False, show_add_delete=False, use_cache=True, min_width=60, min_height=20,
              disable_scroll=True, with_header=draw_header, temp=True)
 def draw_str(input_value: str, draw_state, editable=True, immediate_return=False, alpha=1.0):
@@ -2316,7 +2322,8 @@ def draw_str(input_value: str, draw_state, editable=True, immediate_return=False
     else:
         imgui.set_cursor_screen_pos((snap_int(draw_state.abs_left), snap_int(draw_state.abs_top)))
         # disable scrolling
-        changed, value = draw_text(str(input_value), editable=True, with_header=draw_header,
+        changed, value = draw_text(str(input_value), name=draw_state.name +"##innder", 
+                                    editable=True, with_header=draw_header,
                                    show_name=False, is_tree=False, temp=True)
         imgui.dummy(draw_state.content_width, text_height - height + 10)
 
@@ -2394,10 +2401,11 @@ def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=F
 
 
 @render_func(is_default_for=('tint', 'help_yellow_tint', 'context_select_tint', "text_color"), has_popup=True,
-             indent_size=0, is_tree=False,
-             show_name=True, selectable=False, wrap=True, min_width=40, use_cache=False, with_header=draw_header)
+             indent_size=2, is_tree=False, align_header=False, header_same_line=True,
+             show_name=True, selectable=False, wrap=False, min_width=33, use_cache=False, with_header=draw_header)
 def draw_tuple(input_value: tuple, name, unique):
     if len(input_value) > 0 and isinstance(input_value[0], (float, int)):
+        imgui.same_line(spacing=4)
         if len(input_value) == 4:
             # imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (4, 0))
             # imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (4, 0))
@@ -2632,7 +2640,7 @@ def draw_function(input_value, name, draw_state, unique, **kwargs):
     return False, input_value
 
 
-@render_func(is_default_for=(int), shadow=False, use_cache=True, min_width=60, wrap=False,
+@render_func(is_default_for=(int), shadow=False, use_cache=False, min_width=60, wrap=False,
              is_tree=False, with_header=draw_header, align_header=True, temp=True)
 def draw_int(input_value: int, draw_state=None, min_value=-1000.0, max_value=1000.0, speed=0.1, unique=0):
     imgui.set_next_item_width(draw_state.content_width)
@@ -2993,6 +3001,37 @@ def draw_config_tab(input_value, **kwargs):
     return False, input_value
 
 
+@render_func(use_cache=True, show_bg=False, live=True, show_header=False, show_name=False, selectable=False)
+def draw_live_tab(input_value, **kwargs):
+    """List the inspected view function's configurable parameters and their
+    current values (kwarg override, else signature default)."""
+    imgui.text("Re-renders view frequently, bad for performance but good for debugging")
+
+    params_to_view = ["unique", ("abs_left", "abs_top"), ("width", "height"), ("content_width", "content_height")]
+    for to_view in params_to_view:
+        if isinstance(to_view, str):
+            value = getattr(input_value, to_view, 'N/A')
+            text(f"{to_view}: {value}", name=to_view, editable=False)
+        else:
+            values = [getattr(input_value, attr, 'N/A') for attr in to_view]
+            text(f"{', '.join(to_view)}: {', '.join(str(v) for v in values)}", name=", ".join(to_view), editable=False)
+
+    # imgui.text_colored(f"Unique {input_value.unique}", *(0.5, 0.01, 0.6))
+    # imgui.dummy(0,2)
+    #
+    # imgui.text_colored(f"Top, Left {input_value.abs_top}, {input_value.abs_left}", *(0.5, 0.5, 0.0))
+    # imgui.dummy(0, 2)
+    #
+    # # Width, Height
+    # imgui.text_colored(f"Width, Height {input_value.width}, {input_value.height}", *(0.5, 0.01, 0.6))
+    # imgui.dummy(0, 2)
+    #
+    # imgui.text_colored(f"Unique {input_value.unique}", *(0.5, 0.01, 0.6))
+    # imgui.dummy(0, 2)
+
+    return False, input_value
+
+
 @render_func(use_cache=True, show_bg=False, show_header=False, show_name=False, selectable=False)
 def draw_func_tab(input_value, **kwargs):
     """Editable source of the inspected view function; hotswaps on save."""
@@ -3085,81 +3124,37 @@ def draw_eval_tab(input_value, draw_state, unique=None, enter_key_down=None,
 
 
 @render_func(use_cache=True, show_bg=False, show_header=False, show_name=False, selectable=False, temp=True)
-def draw_input_tab(input_value, unique=None, **kwargs):
-    """Walk the WHOLE call stack that produced this view, one row per frame.
+def draw_input_tab(input_value, unique=None, class_to_show=None, **kwargs):
+    """The three editable sources behind this view, in dispatch order:
 
-    `input_value` is the (offset-walked) parent view's draw_state; its
-    `_call_stack` is the full UNfiltered stack (innermost-first list of (filename,
-    lineno, func_name)), captured once when the menu opened. The filtering happens
-    HERE, per frame: a machinery / ignored shell (_is_dispatch_frame) renders as a
-    plain label, a real call site renders as an editable code_file_io -- its line
-    wrapped in a `CallSite` and routed through CallerCodec (spans the call
-    STATEMENT, loads it as editable text). Each view is named `func_name:lineno`.
+      1. RENDER FUNCTION — the render_func whose body produced the view, edited
+         whole via FunctionCodec. It isn't on the captured stack (the capture runs
+         in the wrapper BEFORE the body executes, so the innermost frame is the
+         filtered wrapper), so it's read from `_view_func`.
+      2. CALLER — the direct `draw_x(...)` call site that invoked this view, edited
+         via CallerCodec (spans just the call expression). `_call_site` is the
+         nearest real caller (filename, lineno), captured once on menu-open with the
+         render-dispatch machinery already filtered out (caller_site, core_render).
+      3. DECORATIONS — the `@...` block on the value's class, edited via
+         DecorationsCodec. `class_to_show` is resolved by draw_context_menu (the
+         value's own class, or the nearest parent with source for a primitive
+         field); only classes carry decorations, so it's skipped otherwise."""
+    from src.lsd.gl_gui.view.core_conversion.new_codecs import CallSite, Decorations
 
-    The live `_call_stack` of a view rendered inside a DEFERRED layer bottoms out at
-    the end-of-frame dispatch machinery — the original caller that QUEUED the layer
-    is off the live stack by then. So we walk up the parent chain and append each
-    deferred ancestor's `_deferred_call_stack` (captured preemptively at queue time,
-    core_render), lazily requesting it from any ancestor that doesn't have it yet."""
-    from src.lsd.gl_gui.view.core_conversion.new_codecs import CallSite
-    from src.lsd.gl_gui.view.core_conversion.chain_converters import _is_dispatch_frame
-
-    # The FUNCTION ITSELF - the render function whose body produced this view. It's
-    # not on the captured stack: the capture runs in the wrapper before the function
-    # body executes, and the innermost frame is the (filtered) wrapper. Show it
-    # FIRST (innermost), edited as a whole function via FunctionCodec, not a call.
-
-
-    call_stack = list(getattr(input_value, "_call_stack", None) or [])
-    # Walk UP the parent chain. The root draw_state's `_parent` points to ITSELF
-    # (draw_state.py: self._parent = self), so stop on that - never `is None`
-    # - or this loops forever; bound defensively too.
-    ds = input_value._parent
-    seen = 0
-    while ds is not None and seen < 64:
-        if getattr(ds, "_is_deferred_layer", False):
-            deferred = getattr(ds, "_deferred_call_stack", None)
-            if deferred:
-                call_stack += list(deferred)
-            elif not ds._deferred_stack_requested:
-                # Ask the deferred ancestor to capture its queue-time stack on its
-                # next core render (one-shot), then re-render this view to pick it
-                # up - same lazy pattern the offset-walk uses for _call_site.
-                ds._deferred_stack_requested = True
-                if Core.melty.cache is not None:
-                    Core.melty.cache.invalidate_up(ds._tile_id, max_depth=5)
-                request_render()
-        if ds._parent is ds:   # reached the self-referential root
-            break
-        ds = ds._parent
-        seen += 1
-
-    reversed_stack = list(reversed(call_stack))
-    for i, (filename, lineno, func_name) in enumerate(reversed_stack):
-        view_name = f"{func_name}:{lineno}"
-        if _is_dispatch_frame(filename, func_name):
-            # Filtered frame -- render-dispatch machinery or an ignored shell. Just
-            # label it (greyed) so the call stack stays visible without an editor.
-            if Toggles.show_full_call_stack:
-                text(view_name, name=f"frame_{i}##{unique}", editable=False, tint=(0.5, 0.5, 0.5))
-        else:
-            draw_any(CallSite(filename, lineno), 
-         name=f"{view_name}##{i}_{unique}",
-         mode=Modes.NEW_CODE_UI,
-         min_width=100,
-                     max_height=300,
-                     fill_height=False)
+    common = dict(mode=Modes.NEW_CODE, min_width=100, max_height=300, fill_height=False)
 
     view_func = getattr(input_value, "_view_func", None)
     if inspect.isfunction(view_func):
-        draw_any(view_func, name=f"{view_func.__name__} (self)##self_{unique}",
-                 mode=Modes.NEW_CODE_UI,
-                 min_width=100,
-                 max_height=300,
-                 fill_height=False)
+        draw_any(view_func, name=f"{view_func.__name__} (self)##self_{unique}", **common)
 
-    imgui.text("---")
+    call_site = getattr(input_value, "_call_site", None)
+    if call_site is not None:
+        filename, lineno = call_site
+        draw_any(CallSite(filename, lineno), name=f"caller:{lineno}##caller_{unique}", **common)
 
+    if isinstance(class_to_show, type):
+        draw_any(Decorations(class_to_show),
+                 name=f"{class_to_show.__name__} decorations##deco_{unique}", **common)
 
     return False, input_value
 
@@ -3271,6 +3266,9 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     eval_tab_name = f"{terminal_icon} Eval"
     keyboard_icon = f"\uf11c"  # fa-keyboard
     input_tab_name = f"{keyboard_icon} Input"
+    # lightning bolt
+    live_icon = f"\uf0e7"
+    live_tab = f"{live_icon} Live"
 
     # Find which class's source to show in the class tab.
     # For a non-primitive value that's just the value's own class. For a
@@ -3328,6 +3326,9 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
         tab_names.append(class_tab)
         tab_tints.append(None)
 
+    tab_names.append(live_tab)
+    tab_tints.append((0.7, 0.0, 0.0))
+
     indices = list(range(len(tab_names)))
 
     if not tab_state.selected_tabs:
@@ -3380,7 +3381,8 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
                           name=f"eval_tab_{t_idx}##{unique}", column=t_idx)
 
         elif this_tab == input_tab_name:
-            draw_input_tab(input_value, name=f"input_tab_{t_idx}##{unique}", 
+            draw_input_tab(input_value, class_to_show=class_to_show,
+                     name=f"input_tab_{t_idx}##{unique}",
                      fill_height=True, column=t_idx, disable_scroll=False)
 
 
@@ -3391,6 +3393,11 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
         elif this_tab == mode_tab:
             draw_mode_tab(input_value, current_mode=current_mode,
                           name=f"mode_tab_{t_idx}##{unique}", column=t_idx)
+
+        elif this_tab == live_tab:
+            draw_live_tab(input_value, name=f"live_tab_{t_idx}##{unique}", column=t_idx)
+
+
     imgui.dummy(0, 30)
 
     return False, input_value

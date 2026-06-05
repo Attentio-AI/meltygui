@@ -19,7 +19,7 @@ from src.lsd.gl_gui.view.core_conversion.file_converters import path_to_dict, by
     rf_dict_to_path, rf_str_to_bytes
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import GeneralParse, Conditional, Comment, \
      dict_to_cst, cst_module_to_str, str_to_cst_module, cst_module_to_dict, dict_to_cst_module
-from src.lsd.gl_gui.view.core_conversion.new_codecs import CallSite
+from src.lsd.gl_gui.view.core_conversion.new_codecs import CallSite, Decorations
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.core_views.headers import draw_footer, draw_header_end, draw_header
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
@@ -78,7 +78,7 @@ class Mode(Enum):
 
 
     NEW_CODE = {
-        (type, types.FunctionType, types.ModuleType, CallSite): ModeOverrides(
+        (type, types.FunctionType, types.ModuleType, CallSite, Decorations): ModeOverrides(
             kwargs={"auto_load_edits": True,
                     "auto_load": True,
                     "auto_save": True,
@@ -107,7 +107,7 @@ class Mode(Enum):
     }
 
     NEW_CODE_UI = {
-        (type, types.FunctionType, types.ModuleType, CallSite): ModeOverrides(
+        (type, types.FunctionType, types.ModuleType, CallSite, Decorations): ModeOverrides(
             kwargs={"auto_load_edits": True,
                     "auto_load": True,
                     "auto_save": True,

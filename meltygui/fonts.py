@@ -13,6 +13,23 @@ _DEJAVU_SANS = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 # Font Awesome 5+ private use range; trailing 0 terminates the imgui's list.
 _FA_ICON_RANGE: Tuple[int, ...] = (0xF000, 0xFFFF, 0)
 
+# Glyph ranges for a monospace terminal font: Latin plus the box-drawing, block,
+# shape, arrow, and dingbat ranges that TUIs (Crude Code, vim, ...) draw their
+# borders/spinners with. Specifying ranges replaces imgui's ASCII-only default, so
+# Latin (0x0020-0x00FF) is listed first. JetBrains Mono covers all of these. Trailing
+# 0 terminates the list.
+_MONO_TUI_RANGE: Tuple[int, ...] = (
+    0x0020, 0x00FF,  # ASCII Latin + Latin-1 Supplement
+    0x2010, 0x2027,  # general punctuation (dashes, smart quotes, ellipsis)
+    0x2190, 0x21FF,  # arrows
+    0x2500, 0x257F,  # box drawing
+    0x2580, 0x259F,  # block elements
+    0x25A0, 0x25FF,  # geometric shapes (○ ◯ □ ▪)
+    0x2600, 0x27BF,  # misc symbols + dingbats (  )
+    0x2B00, 0x2BFF,  # misc symbols and arrows
+    0,
+)
+
 
 @dataclass(frozen=True)
 class FontSpec:
@@ -53,7 +70,7 @@ class Font(RelaxedEnum):
     JETBRAINS_MONO_14 = FontSpec(_JETBRAINS_MONO, 14.0)
     JETBRAINS_MONO_16 = FontSpec(_JETBRAINS_MONO, 16.0)
     JETBRAINS_MONO_18 = FontSpec(_JETBRAINS_MONO, 18.0)
-    JETBRAINS_MONO_19 = FontSpec(_JETBRAINS_MONO, 20)
+    JETBRAINS_MONO_19 = FontSpec(_JETBRAINS_MONO, 20, glyph_ranges=_MONO_TUI_RANGE)
     FONTAWESOME_MONO_19 = _fa_merge(16.0)
 
     JETBRAINS_MONO_20 = FontSpec(_JETBRAINS_MONO, 20.0)

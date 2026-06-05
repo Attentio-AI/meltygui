@@ -85,7 +85,7 @@ from src.lsd.gl_gui.view.core_conversion.file_converters import (
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
     cst_module_to_dict, dict_to_cst_module,
 )
-from src.lsd.gl_gui.view.core_conversion.new_codecs import Codec, CallSite, type_to_codec, extension_to_codec
+from src.lsd.gl_gui.view.core_conversion.new_codecs import Codec, CallSite, Decorations, type_to_codec, extension_to_codec
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import no_save_exclude
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
@@ -110,9 +110,13 @@ def recompile_source(source, code_str, file_path, address=None):
     type / function / module: code_str IS the whole object's source, so it
     recompiles directly. A CallSite is different — code_str is a single statement
     inside a function body, which redefines nothing on its own — so we recompile
-    the ENCLOSING function instead (see _recompile_caller)."""
+    the ENCLOSING function instead (see _recompile_caller). Decorations is the same
+    shape: code_str is just the `@...` block, which redefines nothing alone, so we
+    recompile the WHOLE decorated object (see _recompile_decorations)."""
     result = None
-    if isinstance(source, type):
+    if isinstance(source, Decorations):
+        result = _recompile_decorations(source, code_str, file_path, address)
+    elif isinstance(source, type):
         result = _recompile_class(source, code_str, str(file_path))
     elif isinstance(source, types.FunctionType):
         result = _recompile(source, code_str, str(file_path))
@@ -121,6 +125,51 @@ def recompile_source(source, code_str, file_path, address=None):
     elif isinstance(source, CallSite):
         result = _recompile_caller(source, code_str, file_path, address)
     return result
+
+
+def _recompile_decorations(decorations, deco_str, file_path, address):
+    """Hotswap a class/function after its DECORATOR block was edited.
+
+    The codec hands code_file_io just the `@...` lines (DecorationsCodec edits the
+    decorator block, not the def/class), so recompiling `deco_str` alone redefines
+    nothing. The decorated OBJECT is the unit that recompiles: we read its current
+    source, splice the edited decorator lines over the decorator span, then re-run
+    the whole object through the normal class/function recompile — which re-executes
+    the decorators (already handled by _recompile / _recompile_class).
+
+    Splicing the live buffer over the on-disk object source (rather than reading the
+    object back from disk) makes the hotswap reflect the edit before the debounced
+    save lands — same trick as _recompile_caller."""
+    target = decorations.target
+    if not isinstance(target, (type, types.FunctionType)):
+        return None
+    unwrapped = inspect.unwrap(target) if isinstance(target, types.FunctionType) else target
+    _evict_linecache(str(file_path))
+    try:
+        # getsourcelines starts at the first decorator (1-based obj_start) - so its
+        # line list is shifted with the address's decorator span at the top.
+        obj_lines, obj_start = inspect.getsourcelines(unwrapped)
+    except (OSError, TypeError, tokenize.TokenError, SyntaxError) as e:
+        print(f"_recompile_decorations: could not read source for "
+              f"{getattr(unwrapped, '__name__', unwrapped)}: {e}")
+        return None
+
+    new_source = "".join(obj_lines)
+    if address is not None and address.start is not None and address.end is not None:
+        rel_start = address.start - (obj_start - 1)
+        rel_end = address.end - (obj_start - 1)
+        if 0 <= rel_start <= rel_end <= len(obj_lines):
+            deco = deco_str
+            if deco.endswith("\r\n"):
+                deco = deco[:-2]
+            elif deco.endswith("\n"):
+                deco = deco[:-1]
+            deco_lines = [line + "\n" for line in deco.splitlines()] if deco else []
+            new_source = "".join(obj_lines[:rel_start] + deco_lines + obj_lines[rel_end:])
+
+    if isinstance(target, type):
+        return _recompile_class(target, new_source, str(file_path))
+    return _recompile(unwrapped, new_source, str(file_path))
 
 
 def _recompile_caller(call_site, stmt_str, file_path, address):
@@ -369,7 +418,7 @@ def run_in_background(input_value, loading_state: LoadingState, unique,
                 finally:
                     loading_state._loading = False
                     loading_state._pending_change = True
-                    Melty.cache.invalidate_up(draw_state._tile_id, max_depth=4)
+                    Melty.cache.invalidate(draw_state._tile_id)
                     request_render()
 
             if Melty.frame_count < 1:
@@ -389,7 +438,7 @@ def run_in_background(input_value, loading_state: LoadingState, unique,
 
     if loading_state._pending_change and loading_state._run_next is None:
         loading_state._pending_change = False
-        draw_state.invalidate_up(max_depth=20)
+        draw_state.invalidate_up(max_depth=4)
         request_render()
         return True, loading_state.cached_result
     else:
@@ -461,15 +510,30 @@ def _common_indent(text):
 _CALL_WRAP_NAME = "__melty_call_wrap__"
 _CALL_WRAP_PREFIXES = (f"def {_CALL_WRAP_NAME}():\n", f"async def {_CALL_WRAP_NAME}():\n")
 
+# A Decorations codec span is a bare `@deco` block, which needs a def/class after
+# it to parse. Append a throwaway def so the parser accepts it. the decorators
+# attach to it and the reverse (cst_module_to_string) lifts them back off, so no
+# flag has to thread through. Self-marking via the synthetic def.
+_DECO_WRAP_NAME = "__melty_deco_wrap__"
+_DECO_WRAP_SUFFIX = f"\ndef {_DECO_WRAP_NAME}(): pass\n"
+
 
 def _unwrap_call_module(module):
-    """Strip the synthetic `def __melty_call_wrap__()` string_to_cst_module added
-    to parse an in-function statement, recovering the original snippet at module
-    column. A no-op for a normal (unwrapped) module."""
+    """Strip the synthetic def string_to_cst_module added to parse an isolated
+    snippet, recovering the original source at module column. A no-op for a normal
+    (unwrapped) module.
+
+    Two shapes: `def __melty_call_wrap__()` wraps an in-function STATEMENT (recover
+    its body); `def __melty_deco_wrap__()` carries a DECORATOR block (recover the
+    `@...` lines off its decorators)."""
     body = getattr(module, "body", None)
-    if (body and len(body) == 1 and isinstance(body[0], cst.FunctionDef)
-            and body[0].name.value == _CALL_WRAP_NAME):
-        return cst.Module(body=list(body[0].body.body)).code
+    if body and len(body) == 1 and isinstance(body[0], cst.FunctionDef):
+        name = body[0].name.value
+        if name == _CALL_WRAP_NAME:
+            return cst.Module(body=list(body[0].body.body)).code
+        if name == _DECO_WRAP_NAME:
+            blank = cst.Module(body=[])
+            return "".join(blank.code_for_node(d) for d in body[0].decorators)
     return module.code
 
 
@@ -497,6 +561,13 @@ def string_to_cst_module(input_value, **kwargs):
                 return True, cst.parse_module(prefix + indented)
             except cst.ParserSyntaxError:
                 continue
+        # Decorator-only snippet (a Decorations codec span): a bare `@deco` needs a
+        # def after it. Append a throwaway one; _unwrap_call_module strips the
+        # decorators back off on the way out.
+        try:
+            return True, cst.parse_module(text.rstrip() + _DECO_WRAP_SUFFIX)
+        except cst.ParserSyntaxError:
+            pass
         raise bare_exc  # genuinely unparseable - surface the original error
 
 
@@ -888,6 +959,101 @@ def convert_in_and_out(input_value, draw_state, view_func=None, chain_in=None, c
         if co_changed and isinstance(co_payload, dict):
             if co_payload.get("error") is not None:
                 imgui.text_colored(f" chain_out: {co_payload['error']}", 1.0, 0.5, 0.0)
+            elif "value" in co_payload:
+                out_changed, out_value = True, co_payload["value"]
+
+    return out_changed, out_value
+
+
+@render_func(use_cache=True, show_bg=False, selectable=False, disable_scroll=True,
+             shadow=False, indent_size=0, with_footer=None, fill_height=True)
+def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=None, chain_out=None,
+                             run_chain_kwargs=None, route=None, modes_state: ModesState = None,
+                             external_change=False, child_kwargs=None, unique=0, **kwargs):
+    """Like `convert_in_and_out`, but hands the view_func the chain_in OUTPUT directly.
+
+    IDENTICAL background processing to `convert_in_and_out` — chain_in and chain_out
+    both run on the `run_in_background` worker, same `modes_state.last_good` snapshot,
+    same error handling. The ONE difference is the view_func contract:
+
+      convert_in_and_out        view_func(input_value=<source TEXT>, routed={code_dict: tree})
+                                a structured edit comes BACK via routed['converted_edit'].
+      convert_in_and_out_value  view_func(input_value=<chain_in's output, the TREE>)
+                                the view_func's RETURN is the structured edit → chain_out.
+
+    This is the shape a RenderHost proxy wants: it gets the parsed value as its own
+    `input_value` (already a dict — no `routed` side-channel, no `materialize_from`)
+    and returns the edited value, which goes straight to chain_out. The legacy
+    `convert_in_and_out` + `draw_with_view_funcs` (text|tree tabs) is untouched, so the
+    NEW_CODE views keep working."""
+    if child_kwargs is None:
+        child_kwargs = {}
+    if route is None:
+        route = {}
+
+    # ── (identical to convert_in_and_out) seed routed + run chain_in in background ──
+    forwarded = dict(run_chain_kwargs) if run_chain_kwargs else {}
+    for target in route.values():
+        if isinstance(target, tuple):
+            for arg_name in target[1:]:
+                if arg_name in kwargs:
+                    forwarded[arg_name] = kwargs[arg_name]
+
+    routed = dict(modes_state.last_good)
+    routed['root_input'] = kwargs.get("root_input", None)
+    routed.update(forwarded)
+
+    chain_in_error = modes_state.last_error
+    if chain_in:
+        chain_in_kwargs = {**forwarded, "input_value": input_value,
+                           "chain": chain_in, "route": route}
+        finished, payload = run_in_background(
+            _run_chain_in,
+            child_kwargs=chain_in_kwargs,
+            name=f"chain_in{unique}", start=external_change)
+        if finished and isinstance(payload, dict):
+            modes_state.last_error = payload.get("error")
+            for name, val in payload["routed"].items():
+                modes_state.last_good[name] = val
+                routed[name] = val
+            chain_in_error = modes_state.last_error
+
+    out_changed, out_value = False, input_value
+
+    recompile_error = kwargs.get('error')
+    if isinstance(recompile_error, SyntaxError) and chain_in_error is None:
+        recompile_error = None
+    routed['error'] = recompile_error or chain_in_error
+
+    # ── THE DIFFERENCE: hand the chain_in output (by name) to the view_func ────────
+    # The parsed value is the routed entry the last chain_in node maps to (e.g.
+    # cst_module_to_dict -> "code_dict"). That's what the view_func edits; its return
+    # is the structured edit (vs convert_in_and_out's routed['converted_edit']).
+    primary_key = None
+    if chain_in:
+        tgt = route.get(chain_in[-1])
+        primary_key = tgt[0] if isinstance(tgt, tuple) else tgt
+    primary = routed.get(primary_key) if primary_key is not None else None
+
+    child_kwargs['routed'] = routed
+    edited, edited_value = view_func(input_value=primary, external_change=external_change,
+                                     **child_kwargs)
+    converted_edit = edited_value if (edited and edited_value is not None) else UNSET
+    if edited:
+        draw_state.invalidate_up(max_depth=3)
+
+    # ── (identical) chain_out in background ───────────────────────────────────────
+    if chain_out:
+        co_start = converted_edit is not UNSET
+        indent = _common_indent(input_value)
+        co_changed, co_payload = run_in_background(
+            _run_chain_out,
+            child_kwargs={"input_value": converted_edit if co_start else None,
+                          "chain": chain_out, "indent": indent},
+            name=f"chain_out{unique}", start=co_start)
+        if co_changed and isinstance(co_payload, dict):
+            if co_payload.get("error") is not None:
+                imgui.text_colored(f" chain_out: {co_payload['error']}", 1.0, 0.5, 0.0)
             elif "value" in co_payload:
                 out_changed, out_value = True, co_payload["value"]
 

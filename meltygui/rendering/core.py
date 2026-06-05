@@ -3219,7 +3219,15 @@ def render_func(*args, **o_kwargs):
             current_x = scroll_offset[0]
             current_y = scroll_offset[1]
             direction = -1
-            new_offset_y = current_y + scroll_delta * direction * Toggles.scroll_speed
+            # Scale the scroll speed to the window: never let a single wheel
+            # tick jump more than max_increment_fraction of the visible (clipped)
+            # height, so small views don't overshoot. Larger views fall back to
+            # the constant increment.
+            scroll_speed = min(
+                Toggles.ScrollSettings.scroll_speed,
+                Toggles.ScrollSettings.max_increment_fraction *
+                draw_state.abs_clipped_height)
+            new_offset_y = current_y + scroll_delta * direction * scroll_speed
 
             min_scroll_y = 0
             max_scroll_y = max(0, draw_state.abs_content_height -

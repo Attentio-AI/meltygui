@@ -1,4 +1,6 @@
+import ast
 import inspect
+import textwrap
 import tokenize
 import types
 from dataclasses import dataclass
@@ -51,6 +53,23 @@ class CallSite:
     render-dispatch frames), then hand the `CallSite` to `code_file_io`."""
     filename: str
     lineno: int
+
+
+@dataclass(frozen=True)
+class Decorations:
+    """The dispatch key for `DecorationsCodec`: the DECORATOR block above a class
+    or function, edited on its own.
+
+    `Decorations(Toggles)` resolves to just the `@window(...)` line(s) above
+    `class Toggles:` — not the class body (that's `TypeCodec`) and not a call site
+    (that's `CallSite`). Same family pattern as `CallSite`: wrap the target so the
+    codec can be type-dispatched, then hand it to `code_file_io`.
+
+    `target` is the live class or function object whose decorators are edited. The
+    codec slices out the decorator lines for editing and re-runs the decorators by
+    recompiling the WHOLE object (see `_recompile_decorations`)."""
+    target: object
+
 
 def register_codec(cls=None, **kwargs):
     def wrap(cls):
@@ -392,6 +411,101 @@ class CallerCodec(TypeCodec):
             data = data[:-1]
         full = prefix + data + suffix
         return TypeCodec.save(address=address, data=full, ensure_import=ensure_import, **kwargs)
+
+
+def _resolve_decoration_span(target):
+    """((path, deco_start, deco_end), unwrapped) for the DECORATOR block above a
+    class/function — 0-based [start, end) file lines covering only the `@...`
+    lines, NOT the def/class or its body.
+
+    ast-parses the dedented object source (decorators + def, always parseable) to
+    get each decorator's precise line span, so a multi-line `@deco(\n ...\n)` is
+    covered exactly. When the object has NO decorators, returns a zero-length span
+    pinned to the def/class line, so a save splices a brand-new decorator in right
+    above it (the "+ add" path). Raises on an unreadable/invalid file (caller keeps
+    the last good address, mirroring FunctionCodec)."""
+    unwrapped = inspect.unwrap(target) if isinstance(target, types.FunctionType) else target
+    source_file = inspect.getfile(unwrapped)
+    _evict_linecache(source_file)
+    # getsourcelines starts at the FIRST decorator (1-based start_lineno) for a
+    # decorated object, or at the def/class line when undecorated.
+    source_lines, start_lineno = inspect.getsourcelines(unwrapped)
+    tree = ast.parse(textwrap.dedent("".join(source_lines)))
+    node = tree.body[0]  # the def/class - block coords are 1-based, line 1 = source_lines[0]
+    decos = getattr(node, "decorator_list", [])
+    base0 = start_lineno - 1  # file line (0-based) of source_lines[0]
+    if decos:
+        first = min(d.lineno for d in decos)
+        last = max(getattr(d, "end_lineno", d.lineno) for d in decos)
+        deco_start, deco_end = base0 + (first - 1), base0 + last
+    else:
+        pos = base0 + (node.lineno - 1)  # the def/class line - empty span above it
+        deco_start = deco_end = pos
+    return (Path(source_file), deco_start, deco_end), unwrapped
+
+
+@register_codec(for_type=Decorations)
+class DecorationsCodec(TypeCodec):
+    """Edit the DECORATOR block above a class or function — just the `@...` lines.
+
+    Like `CallerCodec`, only `resolve_address` differs from `TypeCodec`: it points
+    the Address at the decorator lines instead of the whole def/class. `load`/`save`
+    are inherited and operate on that line span as text (the decorators are full
+    lines, so no column splicing is needed — unlike a call embedded in a larger
+    statement). `.source` is the wrapped target object, so the inherited save shifts
+    siblings correctly; recompile re-runs the decorators by rebuilding the whole
+    object (`_recompile_decorations`).
+
+    An undecorated target resolves to a zero-length span pinned above its def/class
+    line: load returns "", and saving typed text splices a fresh decorator in."""
+    name = "Python Decorations"
+
+    @staticmethod
+    def resolve_address(input_value, draw_state=None, **kwargs):
+        if not isinstance(input_value, Decorations):
+            return None
+        target = input_value.target
+        if not isinstance(target, (type, types.FunctionType)):
+            return None
+        try:
+            source_file = inspect.getfile(
+                inspect.unwrap(target) if isinstance(target, types.FunctionType) else target)
+        except TypeError:
+            return None
+        # Refuse library source - we only ever edit this project's own code.
+        if not _is_editable_source(source_file):
+            return None
+
+        path = Path(source_file)
+        if draw_state is not None:
+            FileWatch.register_draw_state(draw_state, path)
+
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            mtime = None
+        # Cache by (target, mtime): a fresh Decorations wraps the SAME stable target
+        # each frame, so compare the target by identity (like FunctionCodec). Re-
+        # resolves only if the file changes.
+        cached = getattr(draw_state, "_addr_cache", None)
+        if cached is not None and cached[0] is target and cached[1] == mtime:
+            return cached[2]
+
+        try:
+            (p, start, end), _unwrapped = _resolve_decoration_span(target)
+        except (OSError, TypeError, tokenize.TokenError, SyntaxError, ValueError) as e:
+            # File mid-edit / unreadable - keep the last good address so a save
+            # replaces in-place rather than writing to a bad span. Mirrors
+            # FunctionCodec's getsourcelines fallback.
+            if cached is not None:
+                return cached[2]
+            print(f"[DecorationsCodec] could not resolve {getattr(target, '__name__', target)}: {e}")
+            return None
+
+        address = Address(p, start, end, source=target, watcher_ds=draw_state)
+        if draw_state is not None:
+            draw_state._addr_cache = (target, mtime, address)
+        return address
 
 
 @register_codec(for_type=types.ModuleType)

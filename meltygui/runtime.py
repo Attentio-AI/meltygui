@@ -367,6 +367,9 @@ class Melty:
     clip_stack_holder = {}
     annotated_window_classes = {}
     registered_windows = defaultdict(lambda: ManagedWindow())
+    # Self-registering RenderHost objects (id -> host). draw_main renders each one
+    # in its own thread every frame; see view/core_conversion/render_host.py.
+    render_hosts = {}
     scroll_stack = []
     tile_id_stack = []
     wrap_stack = []
