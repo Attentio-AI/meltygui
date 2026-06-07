@@ -134,7 +134,7 @@ claude_proxy = RenderHost(io_function=claude_terminals_io, input_value=None,
 
 
 # ── the renderer: draw each discovered terminal stacked in the host window ──────
-@window(input_value=claude_proxy, tint=(0.8604651,0.23612763,0.23612763))
+@window(input_value=claude_proxy, tint=(0.306977,0.09673172,0.04568956))
 @render_func(show_bg=False, use_cache=True, selectable=False)
 def draw_claude_terminals(input_value, draw_state, **kwargs):
     # input_value is the proxy. The {session: Terminal} dict is held ONE LEVEL DOWN

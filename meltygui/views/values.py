@@ -2155,7 +2155,7 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
 @render_func(use_cache=True, selectable=False, disable_scroll=True, indent_size=0, show_bg=False, min_width=10,
              min_height=10, wrap=True)
 def button(input_value="", draw_state=None, alpha=1.0, left_mouse_held=False, shadow=True, left_mouse_down=False,
-           color=(2.558, 0.5, 0.5), hovered=False, width=None, height=None, style_manager=None,
+           color=(0.533, 0.068, 0.5), hovered=False, width=None, height=None, style_manager=None,
            factor=1.0, tint_value=0.32, text_value=1.023, saturation=0.8, unique=0, text_align="center",
            search_match=False, search_current=False, tint=None, rounding=None):
     if color is not None:
@@ -2411,8 +2411,8 @@ def draw_usage(input_value: UsageRef):
     return False, input_value
 
 
-@render_func(is_default_for=(Comment), shadow=False, indent_size=5, selectable=False, use_cache=True,
-             show_bg=False, with_header=None, is_tree=True, temp=True)
+@render_func(is_default_for=(Comment), shadow=False, indent_size=4, selectable=False, use_cache=True,
+             show_bg=True, with_header=None, is_tree=True, temp=True)
 def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=False):
     changed, value = False, input_value
 
@@ -3247,8 +3247,6 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, unique=None, class_to
                 })
 
 
-
-
     # changed, value = draw_text(cm_state.render_func_str.value, name=f"View Function##{unique}", column=0, disable_scroll=False)
     # if changed:
     #     cm_state.render_func_str.value = value
@@ -3257,26 +3255,26 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, unique=None, class_to
 
     render_func = cm_state.render_func_dict.parameters()
     if render_func:
-        changed, value = draw_collection(render_func, name=f"{input_value._view_func.__name__}##{unique}", disable_scroll=True)
+        changed, value = draw_collection(render_func, tint=(0.3, 0.1, 0.6), name=f"{input_value._view_func.__name__}##{unique}", disable_scroll=True)
 
     call_site_dict = cm_state.call_site_dict.deep.unwrap() if cm_state.call_site_dict else None
     if call_site_dict:
-        changed, value = draw_collection(call_site_dict, tint=(0.2219578,0.3135362,0.8372093), name=f"Call site##{unique}",
+        changed, value = draw_collection(call_site_dict, tint=(0.828,0.8,0.285), name=f"Call site##{unique}",
                                          disable_scroll=True)
 
 
     render_func = cm_state.render_func_dict.decorators.render_func()
     if render_func:
-        changed, value = draw_collection(render_func, tint=(0.1,0.0,0.0), name=f"render_func##{unique}", disable_scroll=True)
+        changed, value = draw_collection(render_func, tint=(0.9,0.9,0.9), name=f"render_func##{unique}", disable_scroll=True)
 
     window_decoration = cm_state.render_func_dict.decorators.window()
     if window_decoration:
-        changed, value = draw_collection(window_decoration, tint=(1,0,1), name=f"@window##{unique}",
+        changed, value = draw_collection(window_decoration, tint=(1.00,0.00,1.00), name=f"@window##{unique}",
                                          disable_scroll=True)
 
     class_defaults = cm_state.class_dict.decorators.defaults()
     if class_defaults:
-        changed, value = draw_collection(class_defaults, tint=(0,0,0), name=f"defaults##{unique}",
+        changed, value = draw_collection(class_defaults, tint=(0.00,0.00,0.00), name=f"defaults##{unique}",
                                          disable_scroll=True)
     else:
         imgui.text("No @defaults decoration found on this class or its parents")

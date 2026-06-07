@@ -136,13 +136,13 @@ class Swoosh:
                                 # within this fraction of the parent's shorter side (else stay flat)
 
 
-@window(tint=(0.93, 0.5, 0.0))
+@window(tint=(0.9, 0.9, 0.9))
 class Toggles:
 
     @defaults(tint=(1.0, 1.0, 1.0))
     class TextEditor:
         enable_spell_check = False
-    @defaults(tint=(0.9,0.4,0.4))
+    @defaults(tint=(0.9,0.5,0.1))
     class InvalidateTracker:
         keep_for_frames = 13
         enable = False
@@ -164,7 +164,7 @@ class Toggles:
         # this window count as a continuous gesture. Not yet wired into the cap.
         acceleration_threshold = 200  # ms
 
-    @defaults(tint=(0.1, 0.1, 0.3))
+    @defaults(tint=(0.2, 0.1, 0.3))
     class InputHandlerToggles:
         show_debug = True
 
