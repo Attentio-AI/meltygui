@@ -89,7 +89,7 @@ class Tint:
     context_select_rounding = 4.988
     
     # Background constants
-    context_menu_bg_offset = 4.0
+    context_menu_bg_offset = -1.0
 
     # Highlight outline boxes (parent + child views)
     highlight_outline_thickness = 3.0   # outline line thickness
@@ -189,8 +189,8 @@ class Toggles:
     show_line_break = False
 
     # Filter SettingS
-    brightness = 0.333
-    contrast = 1.527
+    brightness = 0.425
+    contrast = 1.762
     saturation = -0.4
     prefered_header_width = 17
     max_preferred_header_width = 153
@@ -210,7 +210,7 @@ class Toggles:
     show_full_call_stack = False
     ignore_call_from = ("draw", "_run_visualization", "run", "_bootstrap",
                         "_bootstrap_inner", "convert_in_and_out", "draw_melty_windows", "end_frame", "render", "draw_inner",
-                        "draw_inner_main", "__call__", "draw_collection", "draw_with_view_funcs")
+                        "draw_inner_main", "draw_collection", "draw_with_view_funcs")
     # Screenshot output directory (used by screenshot.py / context menu capture)
     screenshots = "/home/lukas/melty/screenshots"
 

@@ -69,7 +69,7 @@ dict_proxy = RenderHost(
 
 
 @window
-@render_func()
+@render_func(tint=(0.0923043042421341, 0.041103292256593704, 0.23255813121795654), auto_resize=True)
 def draw_modifies_playground(_, draw_state):
     # Both proxies show themselves in their own windows (draw_main → draw()). This
     # window just inspects them AS ordinary dicts - the framework has no idea they're

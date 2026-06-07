@@ -1701,7 +1701,7 @@ class Melty:
                                         outline_col, rounding=rounding,
                                         thickness=Tint.highlight_outline_thickness)
 
-                    overlay_dl.channels_set_current(min(Melty.max_layer - 1, offset_ds.window_index))
+                    # overlay_dl.channels_set_current(min(Melty.max_layer - 1, offset_ds.window_index))
 
                     Melty._draw_swoosh(
                         overlay_dl,

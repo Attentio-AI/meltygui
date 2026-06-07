@@ -33,7 +33,274 @@ Cycle- and idempotency-safe: re-installing an already-bubbling tree just re-poin
 the root and recurses into any fresh subtrees.
 """
 
+from collections import deque
+
 from src.lsd.gl_gui.melty import Melty
+
+
+# ── Lazy deep attribute traversal ──────────────────────────────────────────────
+#
+# A converted value tree is full of redundant wrapper rungs:
+#
+#     render_func_dict["value"]["draw_collection"]["decorators"]["render_func"]
+#
+# Only "decorators" and "render_func" carry meaning - "value" and "draw_collection"
+# are bookkeeping the converter had to spell out and guard (`if "value" in d: ...`).
+# The `.deep` accessor lets you name ONLY the rungs you care about and finds the rest:
+#
+#     func_dict.deep.decorators.render_func()   # == the line above, without guards
+#
+# It is reached via an EXPLICIT `.deep` property - NOT a blanket __getattr__ on
+# the container. A blanket __getattr__ would answer EVERY missing-attribute probe the
+# framework makes (`hasattr(d, 'children')`, `getattr(d, 'x', default)`, copy/pickle
+# dunders) with a stand-in object instead of the AttributeError those call sites
+# expect - so MISSING/proxy values leak everywhere. `.deep` is opt-in: normal
+# attribute access on the container is still completely unaffected.
+#
+# `.deep.a.b` accumulates the path lazily; calling it (`()`) resolves the WHOLE path
+# at once with backtracking, so a name that matches a dead-end branch (one lacking the
+# next rung) doesn't terminate the lookup - it tries the next candidate. Resolution
+# returns the real value (ready to hand to draw_collection), or MISSING.
+
+
+class _Missing:
+    """The result of a deep lookup that found nothing.
+
+    A null object so a resolved chain is easy to test: it's falsy, iterates empty,
+    has len 0, and any further attr/index access returns itself. Underscore names
+    still raise AttributeError so it can't masquerade as having dunder/protocol
+    methods (copy/pickle/etc.)."""
+
+    __slots__ = ()
+
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return self
+
+    def __getitem__(self, key):
+        return self
+
+    def __call__(self, *args, **kwargs):
+        return self
+
+    def __iter__(self):
+        return iter(())
+
+    def __len__(self):
+        return 0
+
+    def __bool__(self):
+        return False
+
+    def __contains__(self, item):
+        return False
+
+    def __repr__(self):
+        return "<missing>"
+
+
+MISSING = _Missing()
+
+
+def _iter_matches(node, name):
+    """Yield every value stored under key `name` at or below `node`, breadth-first
+    (shallowest first), descending through nested dicts/lists. Internal `__…` keys
+    are neither matched nor descended."""
+    queue = deque([node])
+    seen = set()
+    while queue:
+        cur = queue.popleft()
+        cid = id(cur)
+        if cid in seen:
+            continue
+        seen.add(cid)
+        if isinstance(cur, dict):
+            if name in cur and not _is_internal_key(name):
+                yield dict.__getitem__(cur, name)
+            for k, v in cur.items():
+                if not _is_internal_key(k) and isinstance(v, (dict, list)):
+                    queue.append(v)
+        elif isinstance(cur, list):
+            for v in cur:
+                if isinstance(v, (dict, list)):
+                    queue.append(v)
+
+
+def _resolve_chain(node, names):
+    """Resolve `names` from `node` with backtracking. For each rung, try every place
+    the name matches (shallowest first); recurse for the rest, and only accept a
+    candidate whose subtree can satisfy the REMAINING rungs. So a repeated key on a
+    branch that lacks the next rung is skipped rather than dead-ending the lookup.
+    Returns the matched value, or MISSING when no full path exists."""
+    if not names:
+        return node
+    first, rest = names[0], names[1:]
+    for cand in _iter_matches(node, first):
+        result = _resolve_chain(cand, rest)
+        if result is not MISSING:
+            return result
+    return MISSING
+
+
+def deep_get(container, *names):
+    """Resolve a path of `names` through `container`, skipping redundant wrapper rungs
+    and backtracking past dead-end branches (see `_resolve_chain`). The function form
+    of the `.deep` accessor: `deep_get(host, "decorators", "render_func")`."""
+    return _resolve_chain(container, names)
+
+
+def _resolve_all(node, names, out, seen):
+    """Collect EVERY value reachable by `names` from `node` (all branches, not just the
+    first backtracked hit), deduped by identity. Empty `names` → `node` itself."""
+    if not names:
+        if id(node) not in seen:
+            seen.add(id(node))
+            out.append(node)
+        return
+    first, rest = names[0], names[1:]
+    for cand in _iter_matches(node, first):
+        _resolve_all(cand, rest, out, seen)
+
+
+def _iter_leaves(node, prefix, seen):
+    """Yield `(path_tuple, value)` for every LEAF (non-dict/list) at or below `node`,
+    descending dicts/lists. Internal `__…` keys are skipped. Cycle-safe."""
+    nid = id(node)
+    if nid in seen:
+        return
+    if isinstance(node, dict):
+        seen.add(nid)
+        for k, v in node.items():
+            if _is_internal_key(k):
+                continue
+            if isinstance(v, (dict, list)):
+                yield from _iter_leaves(v, prefix + (k,), seen)
+            else:
+                yield prefix + (k,), v
+    elif isinstance(node, list):
+        seen.add(nid)
+        for i, v in enumerate(node):
+            if isinstance(v, (dict, list)):
+                yield from _iter_leaves(v, prefix + (i,), seen)
+            else:
+                yield prefix + (i,), v
+    else:
+        yield prefix, node
+
+
+def deep_all(container, *names):
+    """Every value matching `names` across ALL branches (the multi-hit form of
+    `deep_get`). With no names → every leaf value in the whole tree. Function form of
+    `host.deep.all()` / `host.deep.<names>.all()`."""
+    if not names:
+        return [v for _, v in _iter_leaves(container, (), set())]
+    out = []
+    _resolve_all(container, names, out, set())
+    return out
+
+
+class _DeepPath:
+    """Lazy, backtracking path builder returned by `.deep`. Each `.name` / `[name]`
+    appends a rung WITHOUT resolving; calling it (`path()`) resolves the whole chain
+    at once against the root, so backtracking can see the full path. Underscore names
+    raise AttributeError so it stays invisible to attribute/copy/pickle probes."""
+
+    __slots__ = ("_root", "_names")
+
+    def __init__(self, root, names=()):
+        object.__setattr__(self, "_root", root)
+        object.__setattr__(self, "_names", names)
+
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return _DeepPath(self._root, self._names + (name,))
+
+    def __getitem__(self, key):
+        return _DeepPath(self._root, self._names + (key,))
+
+    def __call__(self):
+        return _resolve_chain(self._root, self._names)
+
+    def all(self):
+        """Every value matching the accumulated path, across ALL branches — the
+        multi-hit counterpart to `()` (which returns just the first). With NO path
+        (`host.deep.all()`) → every leaf value in the whole tree: "I don't know the
+        path, give me everything". `host.deep.params.all()` → every `params` anywhere."""
+        return deep_all(self._root, *self._names)
+
+    def unwrap(self):
+        """The structure-preserving "everything": descend past redundant single-entry
+        wrapper rungs (`value`, the fn-name level, …) and return the first MEANINGFUL
+        container — the dict/list that actually holds the content — with its KEYS
+        intact, ready for draw_collection. Use this (not `.all()`) to render a whole
+        subtree when you don't know the path: `.all()` flattens to a list of leaf
+        values (so a labelled `tint=(...)` becomes a positional list entry); `.unwrap()`
+        keeps it a dict. Stops at the first branch (>1 child) or leaf-bearing level."""
+        node = self.__call__()
+        seen = set()
+        while isinstance(node, dict) and id(node) not in seen:
+            seen.add(id(node))
+            keys = [k for k in node.keys() if not _is_internal_key(k)]
+            if len(keys) != 1:
+                break                                  # branch or empty → this is the content
+            child = dict.__getitem__(node, keys[0])
+            if not isinstance(child, (dict, list)):
+                break                                  # single child is a leaf → keep the dict
+            node = child
+        return node
+
+    def items(self):
+        """Every leaf as `(path_tuple, value)` so you can see WHERE each came from.
+        Spans all branches the path resolves to (the whole tree for an empty path)."""
+        roots = self.all() if self._names else [self._root]
+        out = []
+        for node in roots:
+            if node is MISSING:
+                continue
+            out.extend(_iter_leaves(node, (), set()))
+        return out
+
+    def __bool__(self):
+        # `if host.a.b:` resolves and tests the result - no explicit call needed. Also
+        # the safety net for a bad probe that leaks here: an unresolved/empty chain
+        # reads as falsy, so framework code treats a leaked proxy like None.
+        result = self.__call__()
+        return result is not MISSING and bool(result)
+
+    def __iter__(self):
+        result = self.__call__()
+        return iter(result) if result is not MISSING else iter(())
+
+    def __len__(self):
+        result = self.__call__()
+        try:
+            return len(result) if result is not MISSING else 0
+        except TypeError:
+            return 0
+
+    def __contains__(self, item):
+        result = self.__call__()
+        try:
+            return result is not MISSING and item in result
+        except TypeError:
+            return False
+
+    def __repr__(self):
+        return f"<deep {'.'.join(map(str, self._names))} -> {self.__call__()!r}>"
+
+
+class _DeepAttrMixin:
+    """Gives a dict/list container a `.deep` entry point for safe path traversal.
+
+    `.deep` is a real attribute (a property), so it never interferes with normal
+    attribute lookup, `getattr(x, name, default)`, `hasattr`, or copy/pickle — those
+    all behave exactly as before. Only `host.deep.<names>()` runs the deep search."""
+
+    @property
+    def deep(self):
+        return _DeepPath(self)
 
 
 # base type -> generated bubbling subclass (one per concrete type, cached)
@@ -106,7 +373,7 @@ def _is_internal_key(key):
 
 
 # ── Mixins (front of the MRO) - bubble every mutation, keep new children bubbling ──
-class _BubblingDictMixin:
+class _BubblingDictMixin(_DeepAttrMixin):
     _bubble_root = None
 
     def __setitem__(self, key, value):
@@ -168,7 +435,7 @@ class _BubblingDictMixin:
             _notify(self)
 
 
-class _BubblingListMixin:
+class _BubblingListMixin(_DeepAttrMixin):
     _bubble_root = None
 
     def __setitem__(self, idx, value):

@@ -28,11 +28,13 @@ from src.lsd.gl_gui.toggles import Toggles, Tint
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_style_var, \
     pop_style_var, end, begin
 from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace, request_render
-from src.lsd.gl_gui.view.core_conversion.bubbling import _BubblingDict
+from src.lsd.gl_gui.view.core_conversion.bubbling import _BubblingDict, _DeepPath
 from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment, GeneralParse, UsageRef, CallParse, \
-    SymbolUsage
-from src.lsd.gl_gui.view.core_conversion.new_converters import code_file_io
+    SymbolUsage, cst_module_to_dict, dict_to_cst_module
+from src.lsd.gl_gui.view.core_conversion.new_codecs import CallSite
+from src.lsd.gl_gui.view.core_conversion.new_converters import code_file_io, convert_in_and_out_value, \
+    cst_module_to_string, string_to_cst_module
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
@@ -315,7 +317,7 @@ def draw_symbol_usage(input_value):
     imgui.text(str(input_value))
 
 
-@render_func(is_default_for=(dict, MutableMapping, defaultdict, tuple, list, GeneralParse, CallParse, _BubblingDict), use_cache=True,
+@render_func(is_default_for=(dict, MutableMapping, defaultdict, tuple, list, GeneralParse, CallParse, _BubblingDict, _DeepPath), use_cache=True,
              header_same_line=False, show_bg=True, show_instance_vars=False, align_header=False,
              manual_content_height=True, shadow=True, selectable=False, show_add_delete=False,
              wrap=False, with_header=draw_header, indent_size=4, searchable=True)
@@ -1053,6 +1055,11 @@ dropdown_demo_data = {
 
 drop_down_selection = None
 
+@render_func(use_cache=False, show_bg=True)
+def draw_hosts():
+    for host in list(Core.melty.render_hosts.values()):
+        host.draw()
+
 
 @render_func(use_cache=False, show_bg=True, selectable=False,
              show_tint=True, bg_offset=-1, with_header=draw_header)
@@ -1666,9 +1673,12 @@ def draw_managed_window(input_value, name, draw_state, mouse_down=False, selecta
 
     imgui.same_line()
 
+    if window_tint is None or not isinstance(window_tint, tuple) or len(window_tint) < 3:
+        print(window_tint.__class__.__name__)
+        window_tint = (2.558, 0.5, 0.5)
+
     target_icon = ""  # Target icon (FontAwesome Unicode)
-    if \
-    button(f"{target_icon}##{name}", height=button_height, color=window_tint, z_offset=-2, tint_value=target_tint_value,
+    if  button(f"{target_icon}##{name}", height=button_height, color=window_tint, z_offset=-2, tint_value=target_tint_value,
            factor=0.9,
            saturation=0.2, shadow=False)[0]:
         this_window_right = draw_state.abs_left + draw_state.width
@@ -2149,6 +2159,8 @@ def button(input_value="", draw_state=None, alpha=1.0, left_mouse_held=False, sh
            factor=1.0, tint_value=0.32, text_value=1.023, saturation=0.8, unique=0, text_align="center",
            search_match=False, search_current=False, tint=None, rounding=None):
     if color is not None:
+        if not isinstance(color, tuple) or len(color) < 3:
+            color = (2.558, 0.5, 0.5)
         if shadow:
             if left_mouse_held:
                 draw_state.z_offset = 0
@@ -2516,7 +2528,7 @@ def draw_float_ctx(input_value):
              with_header=draw_header, temp=True)
 def draw_float(input_value: float,
                draw_state,
-               min_value=-100.0,
+               min_value=-98.703,
                max_value=99.264,
                speed=0.0042):
     imgui.set_next_item_width(min(600, max(30, draw_state.content_width)))
@@ -2645,7 +2657,7 @@ def draw_function(input_value, name, draw_state, unique, **kwargs):
 
             draw_state.params = param_dict
         if len(draw_state.params) > 0:
-            changed, new_val = draw_collection(draw_state.params, name="Parameters",
+            changed, new_val = draw_collection(draw_state.params, name="Parameters", initial={"expanded":False},
                                                show_add_delete=False, parent_show_add_delete=False, horizontal=True,
                                                child_kwargs={"max_width": 200,
                                                              "show_bg": True, "use_cache": True, "z_offset": 2.0})
@@ -3033,13 +3045,13 @@ def draw_config_tab(input_value, **kwargs):
     return False, input_value
 
 
-@render_func(use_cache=True, show_bg=False, live=True, show_header=False, show_name=False, selectable=False)
+@render_func(use_cache=True, show_bg=False, live=True, mode=Modes.WINDOW, show_header=False, show_name=False, selectable=False)
 def draw_live_tab(input_value, **kwargs):
     """List the inspected view function's configurable parameters and their
     current values (kwarg override, else signature default)."""
     imgui.text("Re-renders view frequently, bad for performance but good for debugging")
 
-    params_to_view = ["unique", ("abs_left", "abs_top"), ("width", "height"), ("content_width", "content_height")]
+    params_to_view = ["unique", ("abs_left", "abs_top"), ("width", "height"), ("content_width", "content_height"), "layer", "z_offset"]
     for to_view in params_to_view:
         if isinstance(to_view, str):
             value = getattr(input_value, to_view, 'N/A')
@@ -3050,6 +3062,8 @@ def draw_live_tab(input_value, **kwargs):
 
     if isinstance(input_value._raw_input_value, (dict, list, tuple)):
         text(f"Length: {len(input_value._raw_input_value)}", name="raw_input_length", editable=False)
+
+
 
     # imgui.text_colored(f"Unique {input_value.unique}", *(0.5, 0.01, 0.6))
     # imgui.dummy(0,2)
@@ -3158,8 +3172,20 @@ def draw_eval_tab(input_value, draw_state, unique=None, enter_key_down=None,
     return False, input_value
 
 
-@render_func(use_cache=True, show_bg=False, show_header=False, show_name=False, selectable=False, temp=True)
-def draw_input_tab(input_value, unique=None, class_to_show=None, **kwargs):
+from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
+
+class ContextMenuState:
+    def __init__(self):
+        self.render_func_str = None
+        self.render_func_dict = None
+        self.class_str = None
+        self.class_dict = None
+        self.call_site = None
+        self.call_site_dict = None
+
+
+@render_func(use_cache=True, show_bg=False, show_header=False, show_name=False, selectable=False, disable_scroll=False, temp=True)
+def draw_input_tab(input_value, cm_state:ContextMenuState, unique=None, class_to_show=None, **kwargs):
     """The three editable sources behind this view, in dispatch order:
 
       1. RENDER FUNCTION — the render_func whose body produced the view, edited
@@ -3174,22 +3200,101 @@ def draw_input_tab(input_value, unique=None, class_to_show=None, **kwargs):
          DecorationsCodec. `class_to_show` is resolved by draw_context_menu (the
          value's own class, or the nearest parent with source for a primitive
          field); only classes carry decorations, so it's skipped otherwise."""
-    from src.lsd.gl_gui.view.core_conversion.new_codecs import CallSite, Decorations
 
-    common = dict(mode=Modes.NEW_CODE, min_width=100, max_height=300, fill_height=False)
+    if cm_state.render_func_str is None:
+        cm_state.render_func_str = RenderHost(io_function=code_file_io, input_value=input_value._view_func,
+                                                name=f"##{unique}render_func",
+                                                child_kwargs={"auto_load_edits": True})
 
-    view_func = getattr(input_value, "_view_func", None)
-    if inspect.isfunction(view_func):
-        draw_any(view_func, name=f"{view_func.__name__} (self)##self_{unique}", **common)
+        cm_state.render_func_dict = RenderHost(
+            io_function=convert_in_and_out_value, input_value=cm_state.render_func_str,
+            name=f"##{unique}render_func_dict",
+            child_kwargs={
+                "chain_in": [string_to_cst_module, cst_module_to_dict],
+                "chain_out": [dict_to_cst_module, cst_module_to_string],
+                "route": {cst_module_to_dict: ("code_dict", "jump_to", "run_jedi", "drive")},
+            })
 
-    call_site = getattr(input_value, "_call_site", None)
-    if call_site is not None:
-        filename, lineno = call_site
-        draw_any(CallSite(filename, lineno), name=f"caller:{lineno}##caller_{unique}", **common)
+        cm_state.class_str = RenderHost(io_function=code_file_io, input_value=class_to_show,
+                                                name=f"##{unique}class_proxy",
+                                                child_kwargs={
+                                                    "auto_load_edits": True})
+        cm_state.class_dict = RenderHost(
+            io_function=convert_in_and_out_value, input_value=cm_state.class_str,
+            name=f"##{unique}class_dict",
+            child_kwargs={
+                "chain_in": [string_to_cst_module, cst_module_to_dict],
+                "chain_out": [dict_to_cst_module, cst_module_to_string],
+                "route": {cst_module_to_dict: ("code_dict", "jump_to", "run_jedi", "drive")},
+            })
 
-    if isinstance(class_to_show, type):
-        draw_any(Decorations(class_to_show),
-                 name=f"{class_to_show.__name__} decorations##deco_{unique}", **common)
+
+    if cm_state.call_site is None:
+        call_site = getattr(input_value, "_call_site", None)
+        if call_site is not None:
+            filename, lineno = call_site
+            cm_state.call_site = RenderHost(io_function=code_file_io, input_value=CallSite(filename, lineno),
+                                            name=f"##{unique}call_site",
+                                            child_kwargs={
+                                                "auto_load_edits": True})
+            cm_state.call_site_dict = RenderHost(
+                io_function=convert_in_and_out_value, input_value=cm_state.call_site,
+                name=f"##{unique}call_site_dict",
+                child_kwargs={
+                    "chain_in": [string_to_cst_module, cst_module_to_dict],
+                    "chain_out": [dict_to_cst_module, cst_module_to_string],
+                    "route": {cst_module_to_dict: ("code_dict", "jump_to", "run_jedi", "drive")},
+                })
+
+
+
+
+    # changed, value = draw_text(cm_state.render_func_str.value, name=f"View Function##{unique}", column=0, disable_scroll=False)
+    # if changed:
+    #     cm_state.render_func_str.value = value
+
+    imgui.text(f"{input_value._call_site}")
+
+    render_func = cm_state.render_func_dict.parameters()
+    if render_func:
+        changed, value = draw_collection(render_func, name=f"{input_value._view_func.__name__}##{unique}", disable_scroll=True)
+
+    call_site_dict = cm_state.call_site_dict.deep.unwrap() if cm_state.call_site_dict else None
+    if call_site_dict:
+        changed, value = draw_collection(call_site_dict, tint=(0.2219578,0.3135362,0.8372093), name=f"Call site##{unique}",
+                                         disable_scroll=True)
+
+
+    render_func = cm_state.render_func_dict.decorators.render_func()
+    if render_func:
+        changed, value = draw_collection(render_func, tint=(0.1,0.0,0.0), name=f"render_func##{unique}", disable_scroll=True)
+
+    window_decoration = cm_state.render_func_dict.decorators.window()
+    if window_decoration:
+        changed, value = draw_collection(window_decoration, tint=(1,0,1), name=f"@window##{unique}",
+                                         disable_scroll=True)
+
+    class_defaults = cm_state.class_dict.decorators.defaults()
+    if class_defaults:
+        changed, value = draw_collection(class_defaults, tint=(0,0,0), name=f"defaults##{unique}",
+                                         disable_scroll=True)
+    else:
+        imgui.text("No @defaults decoration found on this class or its parents")
+
+    # common = dict(mode=Modes.NEW_CODE, min_width=100, max_height=300, fill_height=False)
+    #
+    # view_func = getattr(input_value, "_view_func", None)
+    # if inspect.isfunction(view_func):
+    #     draw_any(view_func, name=f"{view_func.__name__} (self)##self_{unique}", **common)
+
+    # call_site = getattr(input_value, "_call_site", None)
+    # if call_site is not None:
+    #     filename, lineno = call_site
+    #     draw_any(CallSite(filename, lineno), name=f"caller {lineno}##caller_{unique}", **common)
+    #
+    # if isinstance(class_to_show, type):
+    #     draw_any(Decorations(class_to_show),
+    #              name=f"{class_to_show.__name__} decorations##deco_{unique}", **common)
 
     return False, input_value
 
@@ -3371,7 +3476,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     indices = list(range(len(tab_names)))
 
     if not tab_state.selected_tabs:
-        tab_state.selected_tabs = [indices[0]]
+        tab_state.selected_tabs = [indices[4]]
 
     current_mode = input_value._kwargs.get('mode', None)
     mode_tab = str(current_mode)

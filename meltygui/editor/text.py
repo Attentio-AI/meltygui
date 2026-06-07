@@ -638,14 +638,14 @@ def _describe_code_tree(code_tree):
 
 
 @render_func(is_default_for=(CodeLine), show_bg=True, wrap=False, use_cache=True, disable_scroll=False,
-             with_header=draw_header, shadow=True, with_footer=draw_footer, determines_height=True,
+             with_header=draw_header, shadow=True, show_name=False, with_footer=draw_footer, determines_height=True,
              selectable=False, searchable=True, bg_offset=-100)
 def draw_text(input_value: str,
               left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
               horizontal_scroll_drag=False, search_text="",
               single_line=False, is_search_box=False,
               draw_state=None, request_focus=False,
-              line_height=1.2, font: Font = Font.JETBRAINS_MONO_19, jump_to=None,
+              line_height=1.12, font: Font = Font.JETBRAINS_MONO_19, jump_to=None,
               code_tree=None, error=None):
     ds = draw_state
 

@@ -34,7 +34,7 @@ import sys
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
-from src.lsd.gl_gui.view.core_conversion.bubbling import install_bubbling, _reinstall_children
+from src.lsd.gl_gui.view.core_conversion.bubbling import install_bubbling, _reinstall_children, _DeepAttrMixin, _DeepPath
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults, Core
 from src.lsd.gl_gui.view.invalidation_tracker import Note
@@ -43,7 +43,7 @@ _UNSET = object()
 
 
 @defaults()
-class RenderHost(dict):
+class RenderHost(_DeepAttrMixin, dict):
     """A dict that drives a stateful `wrapper` and holds the value it edits.
 
     Args:
@@ -68,7 +68,7 @@ class RenderHost(dict):
     debug_changes = False
 
     def __init__(self, io_function=None, *args, input_value=None, child_kwargs=None,
-                 renderer=None, name=None, hidden=False, window=False, standalone=True,
+                 renderer=None, name=None, hidden=False, window=True, standalone=True,
                  value_key="value", **extra):
         super().__init__(*args)
         self.io_function = io_function
@@ -204,6 +204,22 @@ class RenderHost(dict):
         return self
 
     # Every value the host stores is bubbling-upgraded so nested mutations bubble back.
+    def __getattr__(self, name):
+        # Bare deep traversal entry: `host.decorators.attr_func()` resolves a path
+        # into the held tree with backtracking (see bubbling._DeepPath). Only
+        # RenderHost, the explicit value the caller holds - gets this; the bubbling
+        # dicts it contains do NOT, so the framework's attribute probes on the rendered
+        # tree keep raising AttributeError exactly as before. Underscore/dunder names
+        # always raise so normal lookup, getattr(host, attr, default), and copy/pickle are
+        # untouched; and the returned proxy is falsy until resolved, so even a probe
+        # that does land here acts like a null rather than leaking a truthy proxy path.
+        #
+        # __getattr__ only fires when normal attribute lookup already failed, so every
+        # real RenderHost attribute (io_wrapper, name, _draw_state, ...) is unaffected.
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return _DeepPath(self, (name,))
+
     def __setitem__(self, key, value):
         # Re-assigning an equal value isn't an edit (draw_collection writes its
         # rendered value back each frame) - store it but don't mark dirty / redraw.
@@ -479,7 +495,10 @@ class RenderHost(dict):
 
         win_kwargs = {"name": self.name}
         if self.window:
-            win_kwargs.setdefault("mode", Mode.WINDOW)
+            win_kwargs.setdefault("mode", Mode.HOST_WINDOW)
+            win_kwargs["active_layer"] = 0
+            win_kwargs["unmanaged"] = True
+
         win_kwargs.update(extra)
 
         RenderHost._active.append(self)

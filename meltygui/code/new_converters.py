@@ -426,7 +426,7 @@ def run_in_background(input_value, loading_state: LoadingState, unique,
                     Melty.cache.invalidate(draw_state._tile_id, note=note)
                     request_render()
 
-            if draw_state.frame_count < 2:
+            if Melty.frame_count < 3:
                 run(run_next_inner=loading_state._run_next)
                 loading_state._run_next = None
             else:

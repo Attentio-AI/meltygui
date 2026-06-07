@@ -488,19 +488,8 @@ def render_func(*args, **o_kwargs):
                 imgui.get_cursor_screen_pos()[1] - draw_state.parent_window.abs_top + anc_sy)
 
         if closable:
-            # Only perform this check on floating windows
-# windows            if draw_state._is_nested:
-#                 if not draw_state.inside_clip:
-#                     if return_extras:
-#                         return False, None, draw_state
-#                     return False, None
-#             else:
-#                 if draw_state._parent is not None and not draw_state._parent.inside_clip:
-#                     if return_extras:
-#                         return False, None, draw_state
-#                     return False, None
 
-            if draw_state.parent_window is None:
+            if draw_state.parent_window is None and not kwargs.get("unmanaged", False):
                 Melty.registered_windows[tile_id].input_value = input_value
                 Melty.registered_windows[tile_id].draw_state = draw_state
                 Melty.registered_windows[tile_id].window_args = kwargs
@@ -680,7 +669,7 @@ def render_func(*args, **o_kwargs):
                 else:
                     # Managed windows are not nested, so we check the registry directly to find their layer
                     # Indicates this is not a nested window
-                    window_z_pos = list(Melty.registered_windows.keys()).index(window_key) \
+                    window_z_pos = (1 + list(Melty.registered_windows.keys()).index(window_key)) \
                         if window_key in Melty.registered_windows else None
                     if window_z_pos is not None:
                         window_z_pos = max(window_z_pos, Melty.active_layer)
