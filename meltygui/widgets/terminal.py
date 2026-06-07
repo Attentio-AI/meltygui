@@ -12,6 +12,7 @@ The shell owns line-editing, history, cd, prompts, job control — so this file 
 just a PTY pump + a screen renderer + a key encoder, plus selection/copy on top.
 """
 import fcntl
+import itertools
 import os
 import re
 import select
@@ -82,6 +83,11 @@ _PTY_KEYS = {
     glfw.KEY_PAGE_UP: b"\x1b[5~", glfw.KEY_PAGE_DOWN: b"\x1b[6~",
 }
 
+# Keys that should auto-repeat while held: every typeable char plus the special PTY
+# keys (arrows, backspace, enter, ...). Used to synthesize repeats from imgui since
+# GLFW doesn't emit REPEAT actions on its own - same approach as draw_text.
+_TERM_REPEATABLE_KEYS = set(_KEY_CHAR_MAP) | set(_PTY_KEYS)
+
 
 def _set_winsize(fd, rows, cols):
     try:
@@ -147,17 +153,72 @@ def _make_history_screen(pyte, cols, rows):
     return _TERM_SCREEN_CLS(cols, rows, history=4000, ratio=0.5)
 
 
+
+# A new "owned" terminal names its session claude-d-<pid>-<n> so the studio's
+# claude_terminals poller discovers + uses it just like an externally-launched
+# claude-d session. Unique per studio run (pid) + counter; distinct prefix from
+# claude-d's own `claude-d-<pid>`, so no collisions.
+_OWNED_SESSION_PREFIX = "claude-d-"
+_owned_counter = itertools.count(1)
+
+
+def _attach_argv(session):
+    """Argv that attaches an in-app PTY to an existing tmux session (a shared client).
+    `window-size latest` makes this view the active client so output wraps to it."""
+    return ["bash", "-c",
+            "tmux set -g window-size latest 2>/dev/null; "
+            "exec tmux attach-session -t " + shlex.quote(session)]
+
+
+def _new_owned_session():
+    """Create a fresh tmux session running a shell, in its OWN gnome-terminal window —
+    the same thing the claude-d script does. The gnome window owns the session: its
+    trap kills the session on close (so a melty-close ↔ gnome-close stay in sync).
+
+    Created synchronously (`new-session -d`) so the session EXISTS before the in-app
+    PTY or the studio poller go looking for it. Returns the session name. Run claude-d
+    (which detects $TMUX and won't nest) or anything else inside it."""
+    session = "%s%d-%d" % (_OWNED_SESSION_PREFIX, os.getpid(), next(_owned_counter))
+    shell = os.environ.get("SHELL", "/bin/bash")
+    try:
+        subprocess.run(["tmux", "new-session", "-d", "-s", session, shell],
+                       stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL, timeout=3)
+    except Exception:
+        pass
+    q = shlex.quote(session)
+    # No `exec`, or the trap is lost (see claude-d). `env -u TMUX` so it attaches
+    # even when the studio itself is inside tmux.
+    inner = ('trap "tmux kill-session -t ' + q + ' 2>/dev/null" EXIT HUP TERM INT; '
+             'env -u TMUX tmux attach-session -t ' + q)
+    try:
+        subprocess.Popen(["gnome-terminal", "--", "bash", "-c", inner])
+    except Exception:
+        pass
+    return session
+
+
+@defaults(tint=(0.2, 0.2, 0.3))
 class Terminal:
     """A PTY-backed terminal session plus its pyte screen.
-
     `launch_cmd` is the argv spawned in the PTY — by default a `tmux attach`/create,
     so the processes live in a durable tmux server (they survive studio restarts and
     are shared with any external `tmux attach`). The reader thread feeds bytes into
     pyte under `lock`; the render thread reads the screen grid under the same `lock`."""
 
     def __init__(self, launch_cmd=None, tmux_session=None):
+        # No args (the "+" add button calls Terminal()) -> create a brand-new OWNED
+        # terminal: a fresh tmux session running a shell in its own gnome-terminal
+        # window (claude-d style), attached to in-app. With a launch_cmd/session args
+        # (main/lsd/discovered claude-d) we just spawn them as before.
+        if launch_cmd is None and tmux_session is None:
+            tmux_session = _new_owned_session()
+            launch_cmd = _attach_argv(tmux_session)
         self.launch_cmd = launch_cmd or [os.environ.get("SHELL", "/bin/bash"), "-i"]
-        self.tmux_session = tmux_session   # session ID (if tmux-backed), for reference
+        self.tmux_session = tmux_session   # session name (if tmux attached)
+        # add_to_collection keys a dict by `.id`, so a "+"-added terminal lands in the
+        # store UNDER its session name; the studio poller then finds it already there
+        # and doesn't create a duplicate.
+        self.id = tmux_session
         self.master_fd = None
         self.proc = None
         self.screen = None
@@ -172,6 +233,13 @@ class Terminal:
                                    # so the reader thread can invalidate it on new output
         self._last_sig = None      # content signature at the last render - the reader
                                    # only invalidates/wakes when this actually changes
+        self._reader_alive = False  # True while the reader thread runs; is_dead() reads it
+
+    def is_dead(self):
+        """True once the reader thread has exited — the PTY (and thus its tmux session)
+        ended. The studio io drops a terminal on THIS (immediate) rather than waiting
+        for the ~1s poller snapshot, so a just-created terminal isn't briefly dropped."""
+        return self.started and not self._reader_alive
 
     def start(self, cols, rows):
         if self.started:
@@ -198,6 +266,8 @@ class Terminal:
                 self.launch_cmd, stdin=slave, stdout=slave, stderr=slave,
                 cwd=os.getcwd(), env=env, preexec_fn=_preexec, close_fds=True)
             os.close(slave)
+            self._reader_alive = True   # set BEFORE the reader starts so is_dead() never
+                                        # spuriously fires in the gap before it runs
             threading.Thread(target=self._read_loop, daemon=True).start()
         except Exception as e:  # surface a spawn failure in the render
             self.error = f"pty start failed: {e}"
@@ -218,7 +288,8 @@ class Terminal:
 
     def _read_loop(self):
         fd = self.master_fd
-        while True:
+        try:
+          while True:
             try:
                 r, _, _ = select.select([fd], [], [], 0.2)
                 if fd not in r:
@@ -280,6 +351,8 @@ class Terminal:
                     pass
             if ended:
                 break
+        finally:
+            self._reader_alive = False   # reader exited -> is_dead = True -> io drops us
 
     def write(self, data):
         fd = self.master_fd
@@ -704,7 +777,27 @@ def draw_terminal_screen(input_value: Terminal, draw_state, view_state: Terminal
 
 
 def _forward_keys(term, vs):
+    # Keystrokes come from the loop's event queue (Melty.frame_key_events: ordered
+    # (glfw_key, mods) per PRESS/REPEAT this frame). GLFW doesn't send REPEAT actions
+    # on every platform, so - like draw_text - supplement the queue with imgui's
+    # synthesized auto-repeat (io.key_repeat_delay/rate) for any held key, skipping
+    # those GLFW already reported this frame so a held key never double-inputs. While a
+    # repeatable key is down, keep the loop rendering so imgui's repeat cadence (which
+    # is once per frame) keeps firing instead of stalling on wait_events.
     frame_keys = list(Melty.frame_key_events)
+    io = imgui.get_io()
+    glfw_this_frame = {k for k, _m in frame_keys}
+    repeat_mods = ((glfw.MOD_SHIFT if io.key_shift else 0)
+                   | (glfw.MOD_CONTROL if io.key_ctrl else 0)
+                   | (glfw.MOD_ALT if getattr(io, 'key_alt', False) else 0))
+    any_down = False
+    for rk in _TERM_REPEATABLE_KEYS:
+        if imgui.is_key_down(rk):
+            any_down = True
+        if rk not in glfw_this_frame and imgui.is_key_pressed(rk, repeat=True):
+            frame_keys.append((rk, repeat_mods))
+    if any_down:
+        request_render()
     if not frame_keys:
         return
 
@@ -798,7 +891,7 @@ def _draw_terminal_window(term, ds, name):
 # thread invalidate()s the window on PTY output; the render below invalidate()s whe
 # focused (for the blinking cursor + input responsiveness). Idle/unfocused terminals
 # cost nothing.
-@window(tint=(0.07, 0.222, 0.3), bg_offset=-1, input_value=terminal_instance)
+@window(tint=(0.68, 0.798, 0.9), bg_offset=-1, input_value=terminal_instance)
 @render_func(is_default_for=Terminal)
 def draw_terminal(input_value: Terminal, draw_state):
     return _draw_terminal_window(input_value, draw_state, "terminal_screen")

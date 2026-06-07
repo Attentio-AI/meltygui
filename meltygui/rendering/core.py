@@ -618,7 +618,7 @@ def render_func(*args, **o_kwargs):
             draw_state._parent_ctx = Melty.cache.get_current_parent()
 
         # Set default values from initial on the first frame (before any potential mutation)
-        if draw_state.frame_count < 3:
+        if draw_state.frame_count < 5:
             approved_kwargs = ['expanded', 'closed']
             for item_name, initial_value in initial_values.items():
                 if isinstance(getattr(draw_state, item_name, None), int):

@@ -674,16 +674,22 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
     # safely key-deletable here; tuples/sets/object-__dict__ are left untouched. Sets
     # `changed` so the edit propagates to the owner (e.g. via RenderHost io_callback).
     if to_delete:
-        if isinstance(input_value, (dict, defaultdict, MutableMapping)):
+        print(f"Deleting keys {to_delete} {input_value.__class__.__name__}")
+        if isinstance(input_value, (dict, defaultdict, MutableMapping, _BubblingDict)):
             for _k in to_delete:
+                print(f"_k in to_delete Deleting key {_k}")
                 if _k in input_value:
+                    print(f"del input_value[_k found in, deleting")
                     del input_value[_k]
                     changed = True
+
+
         elif isinstance(input_value, list):
             for _i in sorted((k for k in to_delete if isinstance(k, int)), reverse=True):
                 if 0 <= _i < len(input_value):
                     del input_value[_i]
                     changed = True
+
 
     # When navigation just happened, scroll the current key into view.
     # draw_collection disables its own scroll, so _scroll_into_view walks up fo
@@ -2426,8 +2432,8 @@ def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=F
 
 
 @render_func(is_default_for=('tint', 'help_yellow_tint', 'context_select_tint', "text_color"), has_popup=True,
-             indent_size=2, is_tree=False, align_header=False, header_same_line=True,
-             show_name=True, selectable=False, wrap=False, min_width=33, use_cache=False, with_header=draw_header)
+             indent_size=2, is_tree=False, align_header=False, header_same_line=True, wrap=True,
+             show_name=True, selectable=False, max_width=100, min_width=33, use_cache=False, with_header=draw_header)
 def draw_tuple(input_value: tuple, name, unique):
     if len(input_value) > 0 and isinstance(input_value[0], (float, int)):
         imgui.same_line(spacing=4)
@@ -3144,7 +3150,7 @@ def draw_eval_tab(input_value, draw_state, unique=None, enter_key_down=None,
         draw_text(eval_result, name=f"eval_result##{unique}",
                   show_bg=True, show_header=True,
                   show_name=True, editable=False, wrap_text=True,
-                  wrap=False, bg_offset=-100,
+                  wrap=False, bg_offset=-100, width=draw_state.content_width,
                   height=300, min_width=600,
                   
                   tint=(0.0, 0.0, 0.0))

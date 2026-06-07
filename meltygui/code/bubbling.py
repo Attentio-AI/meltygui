@@ -126,6 +126,7 @@ class _BubblingDictMixin:
             _notify(self)
 
     def __delitem__(self, key):
+        print("DEL", key)
         internal = _is_internal_key(key)
         super().__delitem__(key)
         if not internal:

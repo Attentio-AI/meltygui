@@ -39,6 +39,19 @@ HOST = "127.0.0.1"
 _tee_installed = False
 _mcp_started = False
 
+# The uvicorn server + its event loop, captured in _run so the Melty lifecycle
+# handlers can reach in and drop connections without stopping the listener (the
+# launcher can stay reachable across studio sessions, e.g. for `launch`/`status`
+# while idle).
+_uvicorn_server = None
+_uvicorn_loop = None
+# Set while Melty is tearing down: the gate closes during the drop so a fresh
+# request can't re-hang the launcher. Auto-clears shortly after the drop (see
+# notify_melty_shutdown), so the launcher is reachable again while idle.
+_draining = threading.Event()
+# Drop requests until Melty has painted this many frames - see _serving_ready.
+WARMUP_FRAMES = 3
+
 # Cap stored result/error text so a chatty tool (get_logs returning 200 lines)
 # can't balloon the in-memory log.
 _LOG_RESULT_CAP = 2000
@@ -276,6 +289,26 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
         return model_server.mcp_restart()
 
     @logged_tool()
+    def hotswap(path: str, source: str = "") -> str:
+        """Recompile a project source file and hotswap it into the running studio
+        process — apply code changes live, no full restart.
+
+        path:   absolute or project-relative path to a .py file whose module is
+                already imported in the running process.
+        source: optional full new file contents. Omit it to reload the file's
+                current on-disk contents (e.g. after editing it on disk). If
+                given, it is hotswapped first and written to disk only on a clean
+                compile, so a syntax error never leaves broken code on disk.
+
+        The whole module is reloaded: every function/class in the file is patched
+        in place, so imported names and live instances keep working. A swap that
+        compiles but throws at runtime is auto-reverted by the editor's hotswap
+        guard. Library/stdlib paths are refused. Returns a status line.
+        """
+        from src.lsd.gl_gui import mcp_hotswap
+        return mcp_hotswap.hotswap_file(path, source or None)
+
+    @logged_tool()
     def screenshot(window: str):
         """Capture one Melty studio window by name and return it as a PNG image.
 
@@ -326,16 +359,95 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
         return model_server.mcp_restart_launcher()
 
     def _run():
+        global _uvicorn_server, _uvicorn_loop
         try:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            app = mcp.streamable_http_app()
-            config = uvicorn.Config(app, host=host, port=port, log_level="warning")
+            app = _make_gate(mcp.streamable_http_app())
+            # timeout_graceful_shutdown=0: if the server ever does stop, never
+            # wait on connections (we drop them explicitly via notify_melty_shutdown).
+            config = uvicorn.Config(app, host=host, port=port, log_level="warning",
+                                    timeout_graceful_shutdown=0)
             server = uvicorn.Server(config)
             server.install_signal_handlers = lambda: None  # off the main thread
+            _uvicorn_server = server
+            _uvicorn_loop = loop
             loop.run_until_complete(server.serve())
         except Exception as e:
             print(f"[mcp] server thread crashed: {e}")
 
     threading.Thread(target=_run, daemon=True, name="launcher-mcp").start()
     print(f"[mcp] launcher MCP listening on http://{host}:{port}/mcp")
+
+
+def _serving_ready():
+    """True when the server should accept requests.
+
+    Rejects during a Melty teardown drain, and until Melty has painted
+    WARMUP_FRAMES frames (Melty.init_complete() == frame_count > 2) so clients
+    can't poke a process whose GUI hasn't initialized. Fails OPEN if Melty isn't
+    importable yet — the launcher tools (status/launch) must stay reachable to
+    bring the studio up.
+    """
+    if _draining.is_set():
+        return False
+    try:
+        from src.lsd.gl_gui.melty import Melty
+        return Melty.init_complete()
+    except Exception:
+        return True
+
+
+def _make_gate(app):
+    """ASGI wrapper rejecting HTTP requests with 503 until _serving_ready().
+
+    Non-HTTP scopes (lifespan) pass through untouched so uvicorn startup/shutdown
+    events still fire.
+    """
+    async def gate(scope, receive, send):
+        if scope.get("type") == "http" and not _serving_ready():
+            await send({
+                "type": "http.response.start",
+                "status": 503,
+                "headers": [(b"content-type", b"text/plain; charset=utf-8"),
+                            (b"connection", b"close")],
+            })
+            await send({"type": "http.response.body", "body": b"melty not ready"})
+            return
+        await app(scope, receive, send)
+
+    return gate
+
+
+def notify_melty_shutdown():
+    """Drop all active MCP connections immediately, so a hanging client can't
+
+    block Melty's teardown. Keeps the listener bound (the launcher stays
+    reachable for the next session / idle `launch`), and clears the drain shortly
+    after so new requests are served again. Safe to call if the server never
+    started.
+    """
+    server, loop = _uvicorn_server, _uvicorn_loop
+    if server is None or loop is None or loop.is_closed():
+        return
+    _draining.set()
+
+    def _drop():
+        try:
+            # Same primitives uvicorn's own Server.shutdown uses: ask every live
+            # connection to close, and cancel any in-flight request task that
+            # would otherwise keep the teardown waiting.
+            for conn in list(getattr(server.server_state, "connections", ())):
+                conn.shutdown()
+            for task in list(getattr(server.server_state, "tasks", ())):
+                task.cancel()
+        except Exception as e:
+            print(f"[mcp] error dropping connections on melty shutdown: {e}")
+        finally:
+            loop.call_later(1.0, _draining.clear)
+
+    try:
+        loop.call_soon_threadsafe(_drop)
+    except RuntimeError:
+        # Loop already gone - nothing to drop.
+        _draining.clear()

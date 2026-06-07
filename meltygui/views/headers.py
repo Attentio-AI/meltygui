@@ -1,5 +1,6 @@
 import os
 import sys
+import types
 from types import NoneType
 from typing import MutableMapping
 
@@ -11,13 +12,13 @@ from src.lsd.gl_gui.global_style import GlobalStyle
 from src.lsd.gl_gui.melty import Melty, add_to_collection
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
 from src.lsd.gl_gui.model.core_model.draw_state import TileMode
+from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.toggles import Toggles, Tint
 from src.lsd.gl_gui.utils.custom_views import push_style_var, push_style_color, pop_style_color, pop_style_var
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
-from src.lsd.gl_gui.view.core_conversion.path_finder import PendingState
+from src.lsd.gl_gui.view.core_conversion.bubbling import _BubblingDict
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
-from src.lsd.gl_gui.view.core_views.folders_proxy import FolderProxy
 
 
 def open_file(path, app=None):
@@ -183,7 +184,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
                 collection=None, icon=None, display_name=None, meta=None, unique=None, is_tree=True,
                 show_name=True, name_func=None, show_type=False, show_unique=False, name_color=None,
                 on_search=False, trigger_collapse=False, trigger_expand=False, header_same_line=False,
-                draw_state=None, show_tint=False, opacity=1.23, show_add_delete=True,
+                draw_state=None, show_tint=False, opacity=1.23, show_add_delete=True, new_item_type=types.NoneType,
                 on_drag=False, on_action=None, style_manager=None, font=None,
                 **kwargs):
 
@@ -329,10 +330,10 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         same_line()
 
     # ── Add button ─────────────────────────────────────────────
-    if show_add_delete and (isinstance(input_value, (list, dict)) or hasattr(input_value, "__dict__")):
+    if show_add_delete and (isinstance(input_value, (list, dict, _BubblingDict)) or hasattr(input_value, "__dict__")):
         if show_add_delete:
-            if imgui.small_button(f"\uf067##add{unique}"):
-                hinted_type = NoneType
+            if RenderFuncs.button(f"\uf067##add{unique}", name=f"\uf067##add{unique}")[0]:
+                hinted_type = new_item_type
                 if meta is not None and meta.field_type is not None and hasattr(meta.field_type, "__args__"):
                     if len(meta.field_type.__args__) == 2:
                         hinted_type = meta.field_type.__args__[1]
@@ -456,30 +457,35 @@ def draw_header_end(input_value=None, name="", key=None, melty=None, parent_show
                     collection=None, draw_state=None, closable=False, style_manager=None,
                     unique=None, **kwargs):
 
-    if parent_show_add_delete:
-        bg_style = {
-            "value": 0.01,
-            "saturation": 1.0,
-            "alpha": 1.0,
-            'max_value': 1.0
-        }
-        bg_style = GlobalStyle.get_global_constant("bg_style", default=bg_style, folder="bg_styles")
-        search_color = (style_manager.
-                        make_color_style_value(input=bg_style, saturation=0.7, value=1.0))
-        push_style_color(imgui.COLOR_TEXT, *search_color)
-        push_style_color(imgui.COLOR_BUTTON, *(0.0, 0.0, 0.0, 0.0))
-        if imgui.button(f"\uf1f8##del"):
-            melty.to_delete(key, collection)
-            print("No selected_views or remove_view method")
-        same_line(spacing=0.0)
-        pop_style_color(2)
-
     if closable and not input_value == Melty.registered_windows:
         close_icon = ""
         from src.lsd.gl_gui.view.core_views.new_core_view import button
         if button(f"{close_icon}##{unique}", show_bg=True, shadow=True, z_offset=20, tile_mode=TileMode.MAX, color=(9, 1, 1, 0))[0]:
             draw_state.closed = not draw_state.closed
             Melty.cache.invalidate_up_by_obj(Melty.registered_windows)
+
+            # draw_state._parent.invalidate_up()
+            if draw_state.parent_window is not None:
+                draw_state.parent_window.invalidate_up()
+
             # if draw_state.parent_window is not None:
             #     Melty.cache.invalidate_up(draw_state.parent_window._tile_id, max_depth=10)
+    else:
+        if parent_show_add_delete:
+            bg_style = {
+                "value": 0.01,
+                "saturation": 1.0,
+                "alpha": 1.0,
+                'max_value': 1.0
+            }
+            bg_style = GlobalStyle.get_global_constant("bg_style", default=bg_style, folder="bg_styles")
+            search_color = (style_manager.
+                            make_color_style_value(input=bg_style, saturation=0.7, value=1.0))
+            push_style_color(imgui.COLOR_TEXT, *search_color)
+            push_style_color(imgui.COLOR_BUTTON, *(0.0, 0.0, 0.0, 0.0))
+            if imgui.button(f"\uf1f8##del"):
+                Melty.to_delete(key, collection)
+                print("No selected_views or remove_view method")
+            same_line(spacing=0.0)
+            pop_style_color(2)
 

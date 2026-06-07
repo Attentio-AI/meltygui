@@ -57,37 +57,69 @@ def _attach_cmd(session):
             "exec tmux attach-session -t " + shlex.quote(session)]
 
 
+def _kill_session(session):
+    """Kill a claude-d tmux session off-thread. This ends the `claude-d` process
+    running it (its EXIT/HUP trap fires) → the gnome window closes, and the session
+    leaves the tmux server so the poller drops it from `_live_sessions`."""
+    def go():
+        try:
+            subprocess.run(["tmux", "kill-session", "-t", session],
+                           stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL, timeout=2)
+        except Exception:
+            pass
+    threading.Thread(target=go, daemon=True).start()
+
+
 # ── the stateful wrapper: discover -> view_func(dict) -> apply ──────────────────
 # Shaped like code_file_io: stateful work, ONE nested view_func call, stateful work.
 # This does not know about RenderHost - the host hands it `view_func` and consumes
 # whatever dict it passes through.
 @render_func(use_cache=True, selectable=False, show_bg=False)
 def claude_terminals_io(input_value, draw_state, view_func=None, external_change=False, **kwargs):
-    # ── IN: reconcile the HELD dict IN PLACE against the live sessions. We mutate
-    # `input_value` - the host's held {session: Terminal} dict it passes us - NOT a
-    # separate draw_state store, so adds/drops land in the SAME dict the @window
-    # reads (no materialize-render lag). First frame the host is empty (input_value is
-    # None); start fresh and view_func materializes it as the held value.
+    # ── IN: reconcile the HELD dict IN PLACE against the live sessions. Reconcile
+    # `input_value` (the host's held {session: Terminal} it hands us) - NOT a separate
+    # draw_state store - so adds/drops happen in the SAME object the @window reads. A
+    # separate store leaves the host's materialized ["value"] a stale COPY: if the
+    # first materialize runs before the poller fills _live_sessions, ["value"] is stuck
+    # empty forever and NO claude windows ever show. First frame the host is empty
+    # (input_value None) → start fresh; view_func materializes it as the held value.
     store = input_value if isinstance(input_value, dict) else {}
+    # Sessions we've seen in the store at least once. Distinguishes a brand-NEW session
+    # (add it) from one the user just CLOSED - its window X deleted the key from the held
+    # dict (draw_collection, by reference), but its tmux session is still live. Marking
+    # EVERY current store key covers "+"-created terminals too (they add themselves).
+    seen = getattr(draw_state, "_seen_sessions", None)
+    if seen is None:
+        seen = draw_state._seen_sessions = set()
+    for k in store:
+        seen.add(k)
     live = _live_sessions
     for s in live:
         if s not in store:
-            # New session -> a Terminal that attaches to it (its PTY/reader start
-            # lazily when first rendered, like the other terminals).
-            store[s] = Terminal(_attach_cmd(s), tmux_session=s)
-    for s in list(store):
-        if s not in live:
-            store.pop(s)   # session gone -> drop it; the dropped Terminal's PTY
-                           # closes on its next read (EOF) and the thread exits.
+            if s in seen:
+                # OUT (change by reference): the user closed this terminal's window, so
+                # it's gone from the held dict but its tmux session is still alive. Kill
+                # the session (ends claude-d → closes the gnome window); the poller then
+                # drops it from `live`, so we do NOT re-add the store here.
+                _kill_session(s)
+            else:
+                # New external session -> add a Terminal (PTY/reader start on render).
+                store[s] = Terminal(_attach_cmd(s), tmux_session=s)
+                seen.add(s)
+    # Drop the terminal when its PTY has ENDED (reader EOF) - immediate, and not tied
+    # to the ~1s poller loop, so a just-created "+" terminal whose session the poller
+    # hasn't scanned yet isn't briefly dropped (the flicker). `is_dead` is False until
+    # the reader has started and then exited.
+    for k, term in list(store.items()):
+        if getattr(term, "is_dead", None) and term.is_dead():
+            store.pop(k)
+    seen &= set(live) | set(store)   # forget sessions that are neither live nor still held
 
     # ── VIEW: hand the dict to the host's view_func (it materializes + renders) ──
     edited, value = view_func(input_value=store, external_change=False, **kwargs)
 
     if store is not None:
         imgui.text(f"Found {len(store)} terminals")
-    # ── OUT: apply any edits the view made to the dict (rename/recolor/close).
-    # Read-only for now - the renderer never edits - but this is where a future
-    # "rename session" / "close session" affordance would write back to tmux.
     return edited, value
 
 
@@ -99,22 +131,23 @@ claude_proxy = RenderHost(io_function=claude_terminals_io, input_value=None,
 
 
 # ── the renderer: draw each discovered terminal stacked in the host window ──────
-@window(input_value=claude_proxy, tint=(0.7116279,0.5,0.3045106))
+@window(input_value=claude_proxy, tint=(0.944186,0.9,0.8300053))
 @render_func(show_bg=False, use_cache=True, selectable=False)
 def draw_claude_terminals(input_value, draw_state, **kwargs):
     # input_value is the proxy. The {session: Terminal} dict is held ONE LEVEL DOWN
     # under value_key ("value") - draw_collection on the proxy itself would only see
     # the single {"value": ...} key (and render that _BubblingDict, not the
     # Terminals). Pull the held dict out and draw its terminals.
-    windows = input_value.get("value") if isinstance(input_value, dict) else None
-    if not windows:
-        imgui.text("No claude-d sessions running.   (start one with:  claude-d)")
-        return False, None
+    windows = input_value.get("value") if isinstance(input_value, dict) else {}
+    if windows is None:
+        windows = {}
+
 
     # Each Terminal mutates in place (stable identity), so the wrapper's cache won't
     # see new output on its own - the terminal's reader thread must invalidate THIS
     # window. Point them at our draw_state, and stash it so the poller can wake us
     # when a session appears/vanishes. See [[project_live_views_stable_identity]].
+
     global _window_ds
     _window_ds = draw_state
     for term in windows.values():
@@ -127,8 +160,10 @@ def draw_claude_terminals(input_value, draw_state, **kwargs):
     # rather than relying on is_default_for=Terminal → draw_terminal, because the
     # default is the @window bound to terminal_screen with a hardcoded screen name so
     # every terminal would collide on one draw_state and show the wrong content.
-    RenderFuncs.draw_collection(windows, name="Claude Sessions", disable_scroll=True,
-                                child_kwargs={"mode": Modes.WINDOW})
+    dict_changed, new_val = RenderFuncs.draw_collection(windows, show_add_delete=True, close_triggers_delete=True,
+                                                        name="Claude Sessions", disable_scroll=True, new_item_type=Terminal,
+                                child_kwargs={"mode": Modes.TERMINAL_WINDOW, "swoosh":True})
+
     return False, None
 
 

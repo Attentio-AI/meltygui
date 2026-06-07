@@ -534,6 +534,7 @@ class Melty:
     # O(1) membership against this instead of imgui.is_mouse_hovering_rect.
     bvh_hover_ids = set()
 
+    items_to_delete = []
     # Foreground/overlay channel routing. The overlay draw list is channel-split
     # into max_depth channels (like the window draw list); a view adds its
     # overlay to channel = layer_channel(draw_state.layer). The top channel is
@@ -1614,7 +1615,7 @@ class Melty:
                         # any higher-layer window (matches the renderer's mask).
                         layer_index = draw_state.window_index
 
-                        overlay_dl.channels_set_current(min(Melty.max_layer - 1, offset_ds.window_index))
+                        overlay_dl.channels_set_current(min(Melty.max_layer - 1, offset_ds.window_index - 5))
 
                         # Color the highlight using the *parent* window's tint:
                         # the nested view doesn't always carry a tint of its own.
@@ -1727,8 +1728,8 @@ class Melty:
             melty.drag_drop_target = melty.nearest_drop_target
             melty.drag_drop_target_tag = melty.nearest_drop_target_tag
 
-        while len(melty.items_to_delete) > 0:
-            key, collection = melty.items_to_delete.pop(0)
+        while len(cls.items_to_delete) > 0:
+            key, collection = cls.items_to_delete.pop(0)
             delete_from_collection(key, collection)
             request_render()
 
@@ -1907,6 +1908,10 @@ class Melty:
             nz = [(ch, n) for ch, n in enumerate(per_channel) if n > 0]
 
     @classmethod
+    def to_delete(cls, key, collection):
+        cls.items_to_delete.append((key, collection))
+
+    @classmethod
     def post_frame(cls, imgui_impl, window):
         imgui_impl.begin_frame_split()
         imgui.render()
@@ -2021,6 +2026,14 @@ class Melty:
 
     @classmethod
     def cleanup(cls):
+        # Drop any hanging MCP connections first, before the teardown below - a
+        # client holding a streaming/keep-alive connection can otherwise block
+        # shutdown. Lazy import keeps melty free of the mcp_server dependency.
+        try:
+            from src.lsd.gl_gui.mcp_server import notify_melty_shutdown
+            notify_melty_shutdown()
+        except Exception as e:
+            print(f"[melty] mcp shutdown notify failed: {e}")
         cls.filter.cleanup()
         cls.texture_manager.clear()
         Background.shutdown()
@@ -3251,9 +3264,6 @@ class MeltyState:
             self.triggered_actions.pop(unique)
 
 
-
-    def to_delete(self, key, collection):
-        self.items_to_delete.append((key, collection))
 
 
 @defaults(tint=(0.2391563206911087, 0.47928887605667114, 0.7674418687820435))
