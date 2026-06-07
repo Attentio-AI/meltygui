@@ -17,6 +17,7 @@ from src.lsd.gl_gui.model.core_model.draw_state import TileMode
 from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace, get_live_frames
 from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.invalidation_tracker import InvalidateTracker, Note
 
@@ -1006,15 +1007,17 @@ class TileCacheMasked:
 
 
         if Toggles.invalidate_stack_trace:
-            if Melty.frame_count > 100 and Melty.frame_count % 30 == 0:
+            frames_since_last_print = Melty.frame_count - Melty.last_print_invalidate
+            if Melty.frame_count > 100 and (frames_since_last_print > 100 or frames_since_last_print == 0):
                 if note.name != "hover change":
                     print_stack_trace()
-                else:
-                    print("hover change")
+                # else:
+                #     print("hover change")
+
+            Melty.last_print_invalidate = Melty.frame_count
 
         t = self._tiles.get(k)
         if t is not None:
-
             target_frame = self._frame_id + 1
             t.last_invalidated_frame = max(t.last_invalidated_frame, target_frame)
             t.dirty = self._is_dirty(t)

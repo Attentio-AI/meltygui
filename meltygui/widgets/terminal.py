@@ -170,6 +170,8 @@ class Terminal:
         self.error = None
         self._ds = None            # this terminal's window draw_state (set by render)
                                    # so the reader thread can invalidate it on new output
+        self._last_sig = None      # content signature at the last render - the reader
+                                   # only invalidates/wakes when this actually changes
 
     def start(self, cols, rows):
         if self.started:
@@ -199,6 +201,20 @@ class Terminal:
             threading.Thread(target=self._read_loop, daemon=True).start()
         except Exception as e:  # surface a spawn failure in the render
             self.error = f"pty start failed: {e}"
+
+    def _screen_signature(self):
+        """A hash of everything we DRAW — every cell (text + colors), the cursor, and
+        the scrollback depth. Lets _read_loop invalidate/wake ONLY when a read actually
+        changed what's on screen: a terminal that emits bytes with no visible effect
+        (a query/response, a cursor report, reprinted-identical output) must not force a
+        re-render. pyte's Char is a hashable namedtuple, so we hash the rows directly."""
+        sc = self.screen
+        if sc is None:
+            return None
+        cols = sc.columns
+        buf = sc.buffer
+        rows = tuple(tuple(buf[y][x] for x in range(cols)) for y in range(sc.lines))
+        return hash((rows, sc.cursor.x, sc.cursor.y, sc.cursor.hidden, len(sc.history.top)))
 
     def _read_loop(self):
         fd = self.master_fd
@@ -239,13 +255,29 @@ class Terminal:
                 with self.lock:
                     self.stream.feed(more)
                 read_total += len(more)
-            # New output -> mark the window dirty so it re-renders this/next frame.
-            # invalidate() just flips a tile flag (safe to call off the render thread,
-            # like request_render); this replaces the now with live=True.
-            ds = self._ds
-            if ds is not None:
-                ds.invalidate()
-            request_render()
+            # Only invalidate + wake the loop if this read actually CHANGED what we
+            # draw. The session pane (the studio's own console) dribbles bytes that
+            # don't alter the visible output; invalidating per read re-rendered the app
+            # every frame. The signature is computed once per read burst, so it's
+            # cheap, and it's the only thing that calls request_render here - no data
+            # change, no wake. (invalidate is the tile cache; request_render wakes
+            # the render thread; both gated on a real change.)
+            with self.lock:
+                sig = self._screen_signature()
+            if sig != self._last_sig:
+                ds = self._ds
+                if ds is not None:
+                    ds.invalidate()
+                try:
+                    request_render()
+                    self._last_sig = sig          # commit only after a successful wake
+                except Exception:
+                    # GLFW not initialized yet (a reader can fire during studio startup,
+                    # before the window exists). request_render()'s get_current_context()
+                    # raises then, which would otherwise kill this thread → frozen
+                    # terminal. Swallow here and leave _last_sig stale so the next read
+                    # retries once GLFW is up.
+                    pass
             if ended:
                 break
 
@@ -469,7 +501,7 @@ def _find_links(grid, scols):
     return links
 
 
-@render_func(show_bg=False, show_header=False, show_name=False, is_tree=False,
+@render_func(is_default_for=(Terminal), show_bg=False, show_header=False, show_name=False, is_tree=False,
              selectable=False, disable_scroll=True)
 def draw_terminal_screen(input_value: Terminal, draw_state, view_state: TerminalScreenState,
                          left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
@@ -766,13 +798,13 @@ def _draw_terminal_window(term, ds, name):
 # thread invalidate()s the window on PTY output; the render below invalidate()s whe
 # focused (for the blinking cursor + input responsiveness). Idle/unfocused terminals
 # cost nothing.
-@window(tint=(0.032, 0.098, 0.2), bg_offset=-1, input_value=terminal_instance)
+@window(tint=(0.07, 0.222, 0.3), bg_offset=-1, input_value=terminal_instance)
 @render_func(is_default_for=Terminal)
 def draw_terminal(input_value: Terminal, draw_state):
     return _draw_terminal_window(input_value, draw_state, "terminal_screen")
 
 
-@window(tint=(0.10, 0.0, 0.02), input_value=session_instance)
+@window(tint=(0.2, 0.0, 0.0), input_value=session_instance)
 @render_func
 def draw_session_terminal(input_value: Terminal, draw_state):
     return _draw_terminal_window(input_value, draw_state, "session_screen")

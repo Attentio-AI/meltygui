@@ -474,6 +474,8 @@ def _resolve_watch(expr, filename, lineno, local_vars,
 
 # ── Main entry point ─────────────────────────────────────
 
+stacks_printed_this_frame = 0
+this_frame_number = 0
 def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
                       max_str_len=200, max_items=5, max_depth=2, max_output=200,
                       exception=None, section=None, group=None, file=None,
@@ -501,6 +503,17 @@ def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
                      plumbing). The error frame is never dropped, even if its name
                      matches. Pass None/[] to keep all frames.
     """
+    global stacks_printed_this_frame
+    global this_frame_number
+    if this_frame_number != Core.melty.frame_count:
+        this_frame_number = Core.melty.frame_count
+        stacks_printed_this_frame = 0
+
+    if stacks_printed_this_frame > 2:
+        return
+
+    stacks_printed_this_frame += 1
+
     buf = io.StringIO()
 
     if exception is not None:
@@ -627,6 +640,11 @@ def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
         buf.write(f"{_BOLD}{bar_color}{code * 60}{_RESET}\n")
 
     _dispatch(buf, group, file)
+
+    if stacks_printed_this_frame > 2:
+        RED_BOLD = "\033[1m\033[31m"
+        print(f"{RED_BOLD} Not printing [{stacks_printed_this_frame}] stacks {_RESET}")
+        return
 
 
 # ── Path helpers ─────────────────────────────────────────
@@ -878,6 +896,10 @@ _needs_render = threading.Event()
 frames_left = 0
 
 def request_render(for_frames:int | None=None):
+    # Check if glfw initialized before requesting render, as this can be called from any thread
+    if glfw.get_current_context() is None:
+        return
+
     global frames_left
     if frames_left > 0:
         frames_left -= 1
@@ -885,9 +907,11 @@ def request_render(for_frames:int | None=None):
     if for_frames is not None:
         frames_left = for_frames
 
+
     if Toggles.invalidate_stack_trace:
-        if Core.melty.frame_count > 0 and Core.melty.frame_count % 10 == 0:
-            print_stack_trace(size=5)
+        if Core.melty.frame_count > 100 and (Core.melty.frame_count % 500 == 0):
+            print_stack_trace(size=3, section="REQUEST RENDER")
+
     _needs_render.set()
     glfw.post_empty_event()
 

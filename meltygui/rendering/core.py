@@ -82,7 +82,7 @@ def _run_convert_chain(value=None, chain=None, **extra_kwargs):
             sig = inspect.signature(conv_fn)
             call_kwargs = {}
             for p in sig.parameters:
-                if p in ('input_value', 'value'):
+                if p == 'input_value':
                     continue
                 if p in injectable:
                     call_kwargs[p] = injectable[p]
@@ -2902,12 +2902,11 @@ def render_func(*args, **o_kwargs):
             Melty.input_value_stack.pop()
             Melty.wrap_stack.pop()
 
-            if draw_state.frame_count < 3 and Melty.frame_count > 5:
-                print(f"new view................ {draw_state.name}")
-                # New view created on the fly, let it settle.
-                draw_state._parent.invalidate_up(max_depth=6, frame_delta=1)
-                request_render(for_frames=2)
-
+            # if draw_state.frame_count < 3 and Melty.frame_count > 5:
+            #     print(f"new view! {draw_state.id}")
+            #     # New view created on the fly, let everything settle.
+            #     draw_state._parent.invalidate_up(max_depth=6, frame_delta=1)
+            #     request_render(for_frames=2)
 
             if melty_window and draw_state.width < 30:
                 draw_state.width = 30
@@ -3478,11 +3477,11 @@ def render_func(*args, **o_kwargs):
             inferred_to = inferred_to.__args__[0]
 
         inferred_from = None
-        for param_name in ("value", "data"):
-            param = fn_params.get(param_name)
-            if param is not None and param.annotation is not inspect.Parameter.empty:
-                inferred_from = param.annotation
-                break
+        # for param_name in ("value", "data"):
+        #     param = fn_params.get(param_name)
+        #     if param is not None and param.annotation is not inspect.Parameter.empty:
+        #         inferred_from = param.annotation
+        #         break
 
         actual_from = from_type or inferred_from
         actual_to = to_type or inferred_to

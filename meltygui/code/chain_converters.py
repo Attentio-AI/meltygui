@@ -181,6 +181,9 @@ def class_to_address(input_value: type, draw_state, changed=False):
     # bumps mtime, so the next render re-resolves fresh line numbers.
     if not isinstance(input_value, type) or input_value.__module__ in ('builtins', '_collections_abc'):
         return changed, None
+    # A runtime-generated bubbling class has no source of its own - resolve its base.
+    from src.lsd.gl_gui.view.core_conversion.bubbling import base_of_bubbling
+    input_value = base_of_bubbling(input_value)
     try:
         import inspect
         source_file = inspect.getfile(input_value)

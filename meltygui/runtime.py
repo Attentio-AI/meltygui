@@ -468,6 +468,7 @@ class Melty:
     hovered_drawstate = set()
     hovered_drawstate_pending = set()
     frame_count = 0
+    last_print_invalidate = 0
 
     blocker_hovered = False
 
@@ -909,12 +910,11 @@ class Melty:
             right_mouse_drag_events = cls.events_by_type["right_mouse_drag"]
             for event in right_mouse_drag_events:
                 Melty.cache.invalidate(event)
-        #
+
         if ("middle_mouse_drag" in cls.events_by_type):
             right_mouse_drag_events = cls.events_by_type["middle_mouse_drag"]
             for event in right_mouse_drag_events:
                 note = Note(name=event, reason="middle_mouse_drag", tint=(0, 1, 1))
-
                 Melty.cache.invalidate(event, note=note)
 
         event_keys = list(cls.events.keys())

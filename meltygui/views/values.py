@@ -28,6 +28,7 @@ from src.lsd.gl_gui.toggles import Toggles, Tint
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_style_var, \
     pop_style_var, end, begin
 from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace, request_render
+from src.lsd.gl_gui.view.core_conversion.bubbling import _BubblingDict
 from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment, GeneralParse, UsageRef, CallParse, \
     SymbolUsage
@@ -314,15 +315,15 @@ def draw_symbol_usage(input_value):
     imgui.text(str(input_value))
 
 
-@render_func(is_default_for=(dict, MutableMapping, defaultdict, tuple, list, GeneralParse, CallParse), use_cache=True,
+@render_func(is_default_for=(dict, MutableMapping, defaultdict, tuple, list, GeneralParse, CallParse, _BubblingDict), use_cache=True,
              header_same_line=False, show_bg=True, show_instance_vars=False, align_header=False,
-             manual_content_height=True, shadow=True, selectable=False,
+             manual_content_height=True, shadow=True, selectable=False, show_add_delete=False,
              wrap=False, with_header=draw_header, indent_size=4, searchable=True)
 def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=None,
                     mode=None, keys=None, get_attr=None, set_attr=None, show_excluded=False,
                     child_kwargs=None, show_bg=False, show_search=True, align_header=False,
-                    on_collapse=False, search_text="", return_item=False,
-                    on_expand=False, show_add_delete=True, item_spacing_y=1, show_system=False, included=None,
+                    on_collapse=False, search_text="", return_item=False, close_triggers_delete=False,
+                    on_expand=False, show_add_delete=False, item_spacing_y=1, show_system=False, included=None,
                     horizontal=False, show_indices=False, excluded=None, **kwargs):
     """
     Universal collection renderer
@@ -460,6 +461,9 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
 
     # remove excluded from keys
     item_to_return = None
+    # Keys of children whose close (delete button was clicked this frame - collected during the
+    # loop and removed from the collection AFTER it (never mutate keys mid-iteration).
+    to_delete = set()
 
     for idx in range(start_index, end_index + 1):
         key = keys[idx]
@@ -612,6 +616,11 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
                 draw_state._children[idx] = returned_ds
                 returned_ds._collection_draw_state = draw_state
                 returned_ds.relative_pos = relative_pos
+                # Child window closed via its X (closable + closed) -> queue its key
+                # for removal from the collection (applied after the loop).
+                if returned_ds.closable and returned_ds.closed:
+                    if close_triggers_delete:
+                        to_delete.add(key)
                 if key_is_current:
                     search_current_h = returned_ds.header_height
                 if horizontal:
@@ -659,6 +668,22 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
                 style_manager.set_imgui_tint(*prev_tint)
 
     Core.melty.collection_index_stack.pop()
+
+    # Apply removals for children closed via their X this frame (collected above, so the
+    # collection is never mutated mid-iteration). Only dict-like / list collections are
+    # safely key-deletable here; tuples/sets/object-__dict__ are left untouched. Sets
+    # `changed` so the edit propagates to the owner (e.g. via RenderHost io_callback).
+    if to_delete:
+        if isinstance(input_value, (dict, defaultdict, MutableMapping)):
+            for _k in to_delete:
+                if _k in input_value:
+                    del input_value[_k]
+                    changed = True
+        elif isinstance(input_value, list):
+            for _i in sorted((k for k in to_delete if isinstance(k, int)), reverse=True):
+                if 0 <= _i < len(input_value):
+                    del input_value[_i]
+                    changed = True
 
     # When navigation just happened, scroll the current key into view.
     # draw_collection disables its own scroll, so _scroll_into_view walks up fo
@@ -1038,7 +1063,7 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     # non_blocking action handler - so it survives a window blocker stacked in
     # front (instead of needing an extreme priority that would consume events
     # from everything else) and doesn't eat the key from other views.
-    if draw_state.on_action("non_blocking_ctrl_shift_f_down"):
+    if draw_state.on_action("non_blocking_ctrl_shift_f_down", priority_delta=512):
         gs = Core.melty.open_window("GlobalSearch")
         if gs is not None:
             # Summon the box to just above the cursor so it pops up where you're
@@ -3016,6 +3041,9 @@ def draw_live_tab(input_value, **kwargs):
             values = [getattr(input_value, attr, 'N/A') for attr in to_view]
             text(f"{', '.join(to_view)}: {', '.join(str(v) for v in values)}", name=", ".join(to_view), editable=False)
 
+    if isinstance(input_value._raw_input_value, (dict, list, tuple)):
+        text(f"Length: {len(input_value._raw_input_value)}", name="raw_input_length", editable=False)
+
     # imgui.text_colored(f"Unique {input_value.unique}", *(0.5, 0.01, 0.6))
     # imgui.dummy(0,2)
     #
@@ -3278,17 +3306,21 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     raw_value = input_value._raw_input_value
     class_to_show = None
     class_is_parent = False
+    # A bubbling tree node's type is a runtime-generated `Bubbling<Base>` with no source
+    # - resolve its real base (e.g. GeneralItem) so the Class/Decorations tabs resolve
+    # rather than erroring.
+    from src.lsd.gl_gui.view.core_conversion.bubbling import base_of_bubbling
     # Use exact-type matching, not subclass: a subclass of a primitive
     # (e.g. CodeString(str)) DOES have its own source, so it should show its
     # own class tab rather than being treated as a bare primitive.
     if type(raw_value) not in (int, float, str, bool):
-        class_to_show = type(raw_value)
+        class_to_show = base_of_bubbling(type(raw_value))
     else:
         max_walk = 4
         ancestor = input_value._parent
         while ancestor is not None and max_walk > 0:
             a_raw = getattr(ancestor, '_raw_input_value', UNSET_VALUE)
-            a_type = type(a_raw) if a_raw is not UNSET_VALUE else None
+            a_type = base_of_bubbling(type(a_raw)) if a_raw is not UNSET_VALUE else None
             if a_type is not None and getattr(a_type, '__module__', None) \
                     not in (None, 'builtins', '_collections_abc'):
                 class_to_show = a_type
@@ -3534,7 +3566,7 @@ def draw_single(input_value: any, view_func=None, mode: any = None, **kwargs):
     return changed, return_val
 
 
-@render_func(use_cache=False, show_header=True, selectable=False, with_header=draw_header)
+@render_func(use_cache=False, show_header=True, max_height=30, selectable=False, with_header=draw_header)
 def draw_blank(input_value: any, **kwargs):
     return False, None
 

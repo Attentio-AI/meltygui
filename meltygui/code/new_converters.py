@@ -973,7 +973,7 @@ def convert_in_and_out(input_value, draw_state, view_func=None, chain_in=None, c
 
 
 @render_func(use_cache=True, show_bg=False, selectable=False, disable_scroll=True,
-             shadow=False, indent_size=0, with_footer=None, fill_height=True)
+             shadow=False, indent_size=0, with_footer=None )
 def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=None, chain_out=None,
                              run_chain_kwargs=None, route=None, modes_state: ModesState = None,
                              external_change=False, child_kwargs=None, unique=0, **kwargs):

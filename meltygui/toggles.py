@@ -136,27 +136,39 @@ class Swoosh:
                                 # within this fraction of the parent's shorter side (else stay flat)
 
 
-@window(tint=(0.8, 0.5, 0.2))
+@window(tint=(0.9, 0.3, 0.0))
 class Toggles:
-    debug_scroll = False
-    myval = 86
 
-    @defaults(tint=(0.2, 0.45, 0.7))
+    @defaults(tint=(1.0, 1.0, 1.0))
     class TextEditor:
-        # Red wavy underline under unknown words in the text editor. Detection +
-        # suggestion are provided by symspellpy; results are cached on the editor's
-        # draw_state and only recomputed when the buffer text changes.
         enable_spell_check = False
-    @defaults(tint=(0.9,0.7,0.1))
+    @defaults(tint=(0.9,0.5,0.5))
     class InvalidateTracker:
-        keep_for_frames = 15
+        keep_for_frames = 13
         enable = False
         draw_bvh = False
 
-    @defaults(tint=(0.16452135145664215, 0.1824345,0.2093023))
+    @defaults(tint=(0.0607, 0.3,0.5))
     class Debug:
         slow_frame_rate = False
 
+    @defaults(tint=(0.7, 0.7, 0.7))
+    class ScrollSettings:
+        # Base speed (px per wheel-tick event) when the view is large enough that
+        # the dynamic cap doesn't bind.
+        scroll_speed = 2e+03
+        # A single wheel tick never jumps more than this fraction of the vie
+        # (clipped) height, so small views don't overshoot.
+        max_increment_fraction = 0.5
+        # Used for time-based scroll acceleration: wheel ticks arriving within
+        # this window count as a continuous gesture. Not yet wired into the cap.
+        acceleration_threshold = 200  # ms
+
+    @defaults(tint=(0.1, 0.1, 0.3))
+    class InputHandlerToggles:
+        show_debug = True
+
+    debug_scroll = False
     show_filled_tiles = False
     gl_check_error = False
     enable_jedi = True
@@ -177,8 +189,8 @@ class Toggles:
     show_line_break = False
 
     # Filter SettingS
-    brightness = 0.371
-    contrast = 1.645
+    brightness = 0.374
+    contrast = 1.66
     saturation = -0.4
     prefered_header_width = 17
     max_preferred_header_width = 153
@@ -194,18 +206,6 @@ class Toggles:
     shadow_edge_sharpness = 50.0
     draw_legacy = False
 
-    # Scroll settings
-    @defaults(tint=(0.2, 0.6, 0.55))
-    class ScrollSettings:
-        # Base speed (px per wheel-tick unit) when the view is large enough that
-        # the dynamic cap doesn't bind.
-        scroll_speed = 2e+03
-        # A single wheel tick never jumps more than this fraction of the visible
-        # (clipped) height, so small views don't overshoot.
-        max_increment_fraction = 0.5
-        # Reserved for time-based scroll acceleration: wheel ticks arriving within
-        # this window count as a continuous gesture. Not yet wired into the code.
-        acceleration_threshold = 200  # ms
 
     show_full_call_stack = False
     ignore_call_from = ("draw", "_run_visualization", "run", "_bootstrap",

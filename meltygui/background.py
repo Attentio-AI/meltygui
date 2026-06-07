@@ -104,9 +104,7 @@ class Background:
         if func_kwargs is None:
             func_kwargs = {}
 
-        if "value" in func_kwargs:
-            h = cls._timed_hash(func_kwargs.get("value", None), user_id)
-        elif "input_value" in func_kwargs:
+        if "input_value" in func_kwargs:
             h = cls._timed_hash(func_kwargs.get("input_value", None), user_id)
         else:
             print(f"Warning no 'value' or 'input_value' in func_kwargs for {func.__name__} with user_id {user_id}, using 0 as hash")

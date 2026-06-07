@@ -594,7 +594,12 @@ def _recompile(func: types.FunctionType, source: str,
             co_firstlineno=original_firstlineno
         )
 
-        _redirect_function_registrations(_pre_reg, new_wrapper)
+        _redirect_function_registrations(_pre_reg, new_wrapper,
+                                         live_raw=unwrapped, live_func=func)
+        # Re-run decoration effects (@defaults) onto the live function: the exec
+        # registered them under the throwaway exec produced, so copy them across
+        # or the edited decoration will never reach the function the app renders.
+        _redirect_function_decorations(new_wrapper, new_func, func, unwrapped)
 
         def _restore(u=unwrapped, prev=_prev):
             u.__code__, u.__defaults__, u.__kwdefaults__, ann, u.__doc__ = prev
@@ -859,12 +864,13 @@ def _snapshot_func_registrations() -> dict:
     return snap
 
 
-def _redirect_function_registrations(pre_snapshot: dict, new_wrapper) -> None:
-    """Restore decorator-driven registries that `_recompile`'s exec clobbered.
+def _redirect_function_registrations(pre_snapshot: dict, new_wrapper,
+                                     live_raw=None, live_func=None) -> None:
+    """Reconcile the decorator-driven function registries after a recompile.
 
     The function analog of `_redirect_class_registrations`. `_recompile` re-execs
-    a function's source, which RE-RUNS its decorators (`@render_func`, `@window`,
-    converter registration, `interrupt_source_for`). Those register a FRESH,
+    a function's source, which RE-RUNS its decorators (`@render_func` is_default_for
+    / converter / `interrupt_source_for`, `@window`). Those register a FRESH,
     throwaway wrapper in Melty's registries, while the app keeps editing/calling
     the ORIGINAL wrapper (which `@wraps`-wraps the raw function we hotswap in
     place, lives in vars(module), and `inspect.unwrap`s to the raw so both
@@ -872,26 +878,143 @@ def _redirect_function_registrations(pre_snapshot: dict, new_wrapper) -> None:
     doubly wrong: it serves stale renders, and — never being in vars(module) —
     its co_firstlineno rots so resolve_address eventually returns start=0.
 
-    NOTE: we must NOT just point the registry at the recompiled `func` — the
-    editor hands `_recompile` the RAW function (draw_state._view_func), so doing
-    that registers an undecorated callable and draw_any calls it without the
-    injected draw_state/depth/style_manager/meta. Instead restore whatever
-    WRAPPER the registry held before the exec; it wraps the now-hotswapped raw.
+    We must point every registration the fresh source declares at the LIVE wrapper,
+    NOT the throwaway, AND drop registrations the edit removed. Simply restoring the
+    pre-edit entry (the old behaviour) only handled keys that already existed: an
+    is_default_for type ADDED by the edit was left pointing at the dead throwaway,
+    and one REMOVED was left stale — so editing is_default_for silently lost the new
+    type. Reconciling against the live wrapper makes add/change/remove all take.
+
+    live_wrapper resolution: the module-global binding (`name` in the raw's globals)
+    IS the wrapper the app holds — we hotswap the raw in place and never rebind the
+    name, so it stays valid across runs. We must NOT register the bare raw (the
+    editor may hand `_recompile` the raw via draw_state._view_func): draw_any would
+    then call it without the injected draw_state/depth/style_manager/meta. Fall back
+    to a snapshot value that unwraps to the raw, then to the editor's object.
     """
     if new_wrapper is None:
         return
+
+    def _unwraps_to(v, raw):
+        if raw is None:
+            return False
+        try:
+            return inspect.unwrap(v) is raw
+        except Exception:
+            return False
+
+    # Resolve the live wrapper the app keeps calling for this function.
+    live_wrapper = None
+    if live_raw is not None:
+        cand = getattr(live_raw, "__globals__", {}).get(
+            getattr(live_raw, "__name__", None))
+        if cand is not None and cand is not new_wrapper and _unwraps_to(cand, live_raw):
+            live_wrapper = cand
+        if live_wrapper is None:
+            for snap in pre_snapshot.values():
+                for v in snap.values():
+                    if v is not new_wrapper and _unwraps_to(v, live_raw):
+                        live_wrapper = v
+                        break
+                    if (isinstance(v, tuple) and len(v) == 2
+                            and v[0] is not new_wrapper and _unwraps_to(v[0], live_raw)):
+                        live_wrapper = v[0]
+                        break
+                if live_wrapper is not None:
+                    break
+    if live_wrapper is None:
+        live_wrapper = live_func
+    if live_wrapper is None:
+        return  # no safe target - leave the registries untouched
+
+    def _is_live(v):
+        return (v is live_wrapper or v is new_wrapper or _unwraps_to(v, live_raw))
+
     for name, before in pre_snapshot.items():
         reg = getattr(Melty, name, None)
         if not isinstance(reg, dict):
             continue
+        is_window = (name == "annotated_window_classes")
+
+        # Keys the fresh exec just registered (value points at the throwaway).
+        fresh = {}
         for key, val in list(reg.items()):
-            old = before.get(key)
-            # Direct wrapper value (default_funcs_*, type_interrupts, _converters).
-            if val is new_wrapper:
-                if old is not None and old is not new_wrapper:
-                    reg[key] = old
-            # @window - name-keyed (target, kwargs); keep fresh kwargs, restore id.
-            elif (isinstance(val, tuple) and len(val) == 2 and val[0] is new_wrapper
-                  and isinstance(old, tuple) and len(old) == 2
-                  and old[0] is not new_wrapper):
-                reg[key] = (old[0], val[1])
+            if is_window:
+                if isinstance(val, tuple) and len(val) == 2 and val[0] is new_wrapper:
+                    fresh[key] = val[1]  # keep the fresh @window kwargs
+            elif val is new_wrapper:
+                fresh[key] = None
+
+        # Keys this function owned BEFORE the edit.
+        old_keys = set()
+        for key, val in before.items():
+            if is_window:
+                if isinstance(val, tuple) and len(val) == 2 and _is_live(val[0]):
+                    old_keys.add(key)
+            elif _is_live(val):
+                old_keys.add(key)
+
+        # Install every fresh registration under the LIVE wrapper.
+        for key, win_kwargs in fresh.items():
+            reg[key] = (live_wrapper, win_kwargs) if is_window else live_wrapper
+
+        # Drop registrations the edit removed (owned before, not re-registered now).
+        # Guard against clobbering an entry another function has since claimed.
+        for key in old_keys - set(fresh):
+            cur = reg.get(key)
+            if is_window:
+                if isinstance(cur, tuple) and len(cur) == 2 and _is_live(cur[0]):
+                    reg.pop(key, None)
+            elif _is_live(cur):
+                reg.pop(key, None)
+
+
+def _redirect_function_decorations(new_wrapper, new_raw,
+                                   live_wrapper, live_raw) -> None:
+    """Re-key the `@defaults`-style registrations a function recompile re-ran.
+
+    The function analog of the `@defaults` handling in
+    `_redirect_class_registrations`. `_recompile`'s exec re-runs the function's
+    decorators, so a `@defaults(...)` above it (functions can carry it too — e.g.
+    `icon_tint` in toggles.py) re-registers, but KEYED TO THE THROWAWAY function
+    exec produced (`@defaults` keys by the object it decorates). Like the wrapper
+    registries (`_redirect_function_registrations`, which re-points each entry at the
+    LIVE wrapper rather than the throwaway), we want the FRESH value to win —
+    otherwise editing a function's `@defaults` decoration would register the new
+    value under the throwaway and leave the live function on the stale one. The
+    difference is keying: those registries hold the wrapper, these hold the value
+    keyed BY the function, so we move/clear by the live function object instead.
+
+    To make EVERY run (not just the first) reflect exactly the current source, we
+    fully swap rather than merge: pull the freshly-registered entry off the
+    throwaway, drop the live function's prior entry under EITHER key, then reinstall
+    the fresh one under the matching live key. This way a decoration whose value
+    changed is updated, and one that was deleted entirely leaves no fresh entry, so
+    the stale value is simply cleared instead of lingering across runs. Depending on
+    decorator order `@defaults` keys by the wrapper or the raw function, so check
+    both; clearing both live keys also sidesteps the no-wrapper case (wrapper IS
+    raw) double-popping the entry we just installed.
+    """
+    pairs = ((new_wrapper, live_wrapper), (new_raw, live_raw))
+    for reg_name in ("default_kwargs_by_type",
+                     "default_kwargs_by_attrib_type",
+                     "default_funcs_by_name_type"):
+        reg = getattr(Melty, reg_name, None)
+        if not isinstance(reg, dict):
+            continue
+        # Lift the fresh entry off whichever throwaway key the decorator used, and
+        # remember the live key it should land on (wrapper-keyed → live wrapper,
+        # raw-keyed → live raw, matching where the prior import-time registration
+        # - and thus the render-time lookup - lives).
+        fresh, target = None, None
+        for new_key, live_key in pairs:
+            if new_key is not None and new_key in reg:
+                fresh, target = reg.pop(new_key), live_key
+                break
+        # Drop the live function's stale entry under either key (handles a
+        # removed/renamed decoration), then reinstall the fresh one if present.
+        for live_key in (live_wrapper, live_raw):
+            if live_key is not None:
+                reg.pop(live_key, None)
+        if fresh is not None and target is not None:
+            reg[target] = fresh

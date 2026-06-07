@@ -203,7 +203,7 @@ class Try(dict):
         return f"Try:{self.header}:{keys}"
 
 
-@defaults(tint=(0.17, 0.0, 0.0, 0.85), shadow=True, bg_offset=-3, show_bg=True)
+@defaults(tint=(0.1, 0.0, 0.0, 0.85), shadow=True, bg_offset=-3, show_bg=True)
 class Except(dict):
     """A single except handler's body, as a dict subclass.
 
@@ -269,7 +269,7 @@ class CallParse(GeneralParse):
         self.func_name = func_name
 
 
-@defaults(tint=(0.8465116, 0.7424207, 0.1, 0.7), icon="@", disable_scroll=True)
+@defaults(tint=(0.8139535, 0.6953772, 0.3, 0.7), icon="@", disable_scroll=True)
 class DecorationParse(CallParse):
     """A decorator application (`@name(...)`), as a CallParse subclass.
 
@@ -1711,7 +1711,14 @@ def dict_to_cst_module(input_value: dict) -> cst.Module:
     try:
         result = tree
         if edits:
-            result = result.visit(_ModulePatcher(edits))
+            # Resolve names against the SAME src scope the forward call used, so a
+            # dict key written as a callable/constant (Conditional, draw_collection,
+            # cst_module_to_dict, ...) resolves identically here. Without it those
+            # keys read back as _UNREADABLE during the patch, so dict_to_cst_dict
+            # keeps the original version AND appends a regenerated duplicate -
+            # bloating every kwarg dict with single-argument copies on each parse.
+            with _module_scope(_build_src_scope()):
+                result = result.visit(_ModulePatcher(edits))
 
         # Patch comments (module header & body)
         all_comment_edits = _collect_comment_edits(input_value)

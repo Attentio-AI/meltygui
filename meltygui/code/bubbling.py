@@ -59,6 +59,20 @@ def _mirror_registries(base, bubbling):
             reg[bubbling] = reg[base]
 
 
+def base_of_bubbling(t):
+    """A generated bubbling subclass (`Bubbling_<Base>`, made by `type(...)` at runtime)
+    has NO source of its own, so `inspect.getfile`/`getsourcelines` on it raises "could
+    not find class definition". It's an implementation detail that should behave like its
+    base everywhere — the registry mirroring already does this for `@defaults`; this does
+    it for SOURCE resolution. Return the real base (the non-mixin entry of `__bases__`,
+    since the subclass is `(mixin, base)`); pass non-bubbling types through unchanged."""
+    if isinstance(t, type) and issubclass(t, (_BubblingDictMixin, _BubblingListMixin)):
+        for b in t.__bases__:
+            if not (isinstance(b, type) and issubclass(b, (_BubblingDictMixin, _BubblingListMixin))):
+                return b
+    return t
+
+
 def _notify(node):
     root = getattr(node, "_bubble_root", None)
     if root is not None:

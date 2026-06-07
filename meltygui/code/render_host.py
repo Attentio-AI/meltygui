@@ -32,6 +32,7 @@ bubbling.py) so a deep change to the held tree marks the host without a manual t
 import sys
 
 from src.lsd.gl_gui.melty import Melty
+from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
 from src.lsd.gl_gui.view.core_conversion.bubbling import install_bubbling, _reinstall_children
 from src.lsd.gl_gui.view.core_views.core_render import render_func
@@ -46,12 +47,14 @@ class RenderHost(dict):
     """A dict that drives a stateful `wrapper` and holds the value it edits.
 
     Args:
-      wrapper:      the stateful func to drive (code_file_io / convert_in_and_out_value).
-                    `None` → a plain data-bag: `draw()` just renders the dict.
+      io_function:      the stateful func to drive (code_file_io / convert_in_and_out_value).
+                    `None` → a plain data-bag: `draw()` just renders the dict. This can contain UI but does not need to
+                    Any UI drawn as part of this method will end up in a settings panel, not the main UI
       input_value:  what the wrapper operates on — a raw value (a class, a path), or
                     an upstream `RenderHost` (resolved to its held value each frame).
       child_kwargs: extra kwargs for the wrapper (e.g. convert's chain_in/out + route).
-      renderer:     how to draw the held value in the wrapper's view slot
+      settings_renderer: This is draw inside the settings panel, and entirely optional
+
                     (default: `draw_any`, which routes str → editor, dict → collection).
       value_key:    the dict key the held value lives under (type intact).
       standalone:   register with Melty so draw_main calls `draw()` (its own window)."""
@@ -64,18 +67,18 @@ class RenderHost(dict):
     # trail - for diagnosing spurious saves. `RenderHost.debug_changes = False` silences.
     debug_changes = False
 
-    def __init__(self, wrapper=None, *args, input_value=None, child_kwargs=None,
+    def __init__(self, io_function=None, *args, input_value=None, child_kwargs=None,
                  renderer=None, name=None, hidden=False, window=True, standalone=True,
                  value_key="value", **extra):
         super().__init__(*args)
-        self.wrapper = wrapper
+        self.io_function = io_function
         # `is None` (not falsy): an empty host-dict is a valid input_value.
         self.input_value = self if input_value is None else input_value
         # Wrapper options (chain_in/out, route, ...). `extra` kwargs fold in too, so you
         # can pass them directly instead of nesting a child_kwargs dict.
         self.child_kwargs = {**(child_kwargs or {}), **extra}
-        self.renderer = renderer
-        self.name = name or getattr(wrapper, "__name__", None) or "RenderHost"
+        self.settings_renderer = renderer
+        self.name = name or getattr(io_function, "__name__", None) or "RenderHost"
         self.hidden = hidden
         self.window = window
         self.standalone = standalone
@@ -120,13 +123,11 @@ class RenderHost(dict):
         if not self._registered:
             Melty.render_hosts[id(self)] = self
             self._registered = True
-            request_render()
         return self
 
     def remove(self):
         Melty.render_hosts.pop(id(self), None)
         self._registered = False
-        request_render()
         return self
 
     @classmethod
@@ -285,6 +286,28 @@ class RenderHost(dict):
         if self._pending_external:
             self._awaiting_inbound = True
 
+        # FILE-WATCHER / external reload. The codec registers a file watcher on the
+        # host's draw_state at resolve_address; when the file changes, FileWatch sets
+        # that draw_state dirty and code_file_io re-reads the file into text_cache. draw()
+        # CAN'T see this - code_file_io's input object (a class / path) is immutable, so
+        # _pending_external never fires for it. Detect it here instead: the wrapper passed
+        # us a value we did NOT produce (an external_change pulse whose input_value is a
+        # DIFFERENT object than our held one) while we're not mid-edit. A keystroke does
+        # NOT match - after we surface, text_cache IS our held object, so `is not held` is
+        # false. Treat it like an upstream change (stamp input_change so frame precedence
+        # treats the source as fresh, arm awaiting); the pull below then materializes it.
+        if (external_change and input_value is not None and input_value is not self
+                and input_value is not self._held() and not pre_dirty):
+            self._input_change_frame = Melty.frame_count
+            self._awaiting_inbound = True
+            # The file changed on disk - the wrapper/blit cache won't know to re-render
+            # the reloaded value, so invalidate this proxy's view explicitly (same path
+            # as the initial fill below).
+            if self._draw_state is not None and self._draw_state._parent is not None:
+                self._draw_state._parent.invalidate_by_obj(
+                    obj=self, note=Note(name="file_reload", tint=(1, 0.6, 0.1)))
+            request_render()
+
         # FRAME PRECEDENCE (all O(1) - no content comparison). Is there a GENUINE pending
         # local edit, newer than the source it round-trips to? Each cross-thread round-trip
         # adds a frame of lag, and rendering the held value writes reconstructed children
@@ -323,8 +346,7 @@ class RenderHost(dict):
                 self._materialize(input_value)
                 self._awaiting_inbound = False
 
-        from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
-        renderer = self.renderer or draw_any
+        renderer = self.settings_renderer or RenderFuncs.draw_blank
         render_kwargs = {k: v for k, v in kwargs.items() if k != "routed"}
         render_kwargs.setdefault("name", f"{self.name}##held")
         result = renderer(self._held(), **render_kwargs)
@@ -449,7 +471,7 @@ class RenderHost(dict):
             # re-parse never happens and the change is lost (an intermittent bug).
             for ds in (None, self._wrapper_draw_state):
                 if ds is not None:
-                    note = Note(name="Renderhost _last_resolved", tint=(1, 0.5, 0), draw_state=ds)
+                    note = Note(name="Renderhost _last_resolved", tint=(1, 0.0, 0.0), draw_state=ds)
                     ds.invalidate(note=note)
                     ds.invalidate_by_obj(obj=self, note=note)
 
@@ -462,6 +484,7 @@ class RenderHost(dict):
 
         RenderHost._active.append(self)
         try:
+            win_kwargs['tint'] = (1, 0, 1)
             result = render_host_view(iv, **win_kwargs)
         finally:
             RenderHost._active.pop()
@@ -470,7 +493,7 @@ class RenderHost(dict):
         return self._last_return[1]
 
     def __repr__(self):
-        w = getattr(self.wrapper, "__name__", self.wrapper)
+        w = getattr(self.io_function, "__name__", self.io_function)
         flags = [f for f in ("hidden" if self.hidden else "", "dirty" if self._external_change else "",
                              "" if self.standalone else "embedded") if f]
         tail = f" [{', '.join(flags)}]" if flags else ""
@@ -499,7 +522,7 @@ def render_host_view(input_value, external_change=False, draw_state=None, name=N
     host._draw_state = draw_state
 
     # data-bag (no wrapper): just render the dict itself.
-    if host.wrapper is None:
+    if host.io_function is None:
         from src.lsd.gl_gui.view.core_views.new_core_view import draw_collection
         return draw_collection(host, name=host.name)
 
@@ -513,7 +536,7 @@ def render_host_view(input_value, external_change=False, draw_state=None, name=N
     # wrapper actually re-runs instead of replaying its blit cache. NOTE: reset
     # _pending_external AFTER the wrapper - _internal_view_func reads it (during this
     # call) to tell a genuine upstream change from the wrapper's own per-keystroke pulse.
-    result = host.wrapper(input_value=input_value, view_func=host._internal_view_func,
+    result = host.io_function(input_value=input_value, view_func=host._internal_view_func,
                           external_change=ext, return_extras=True, **host.child_kwargs)
     host._pending_external = False
     if isinstance(result, tuple) and len(result) == 3:

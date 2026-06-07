@@ -2,7 +2,7 @@ import imgui
 
 from src.lsd.gl_gui.modes import Modes
 from src.lsd.gl_gui.render_funcs import RenderFuncs
-from src.lsd.gl_gui.utils.glfw_utils import request_render
+from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.view.core_conversion.new_converters import (
     code_file_io, convert_in_and_out_value, string_to_cst_module, cst_module_to_string,
     cst_module_to_dict, dict_to_cst_module)
@@ -24,19 +24,19 @@ class ModifiesPlayground:
 
 
 class InCode:
-    value = 2
-    is_tree = True
+    value = 949
+    is_tree = False
     name = "Unset"
     show_bg = True
-    use_cache = True
-    some_val = 78888
-    some_list = [-106,19,27,1]
-    om_val2  =109
+    use_cache = False
+    some_val = 0
+    some_list = [-152,69,45,-22]
+    om_val2  =0
 
 
- # [tint=(0.7813953, 0.5462583, 0.30892375111579895)]
+ # [tint=(0.0923043042421341, 0.041103292256593704, 0.23255813121795654)]
     class Nested:
-        inner_value = [137,152,0]
+        inner_value = [110,172,28]
 
 # Two chained proxies. Each WRAPS a stateful func (stateful_work → view_func(value) →
 # stateful_work) and HOLDS the value that func hands its view_func - so each is "just a
@@ -55,11 +55,12 @@ class InCode:
 # Both are standalone, so draw_main calls draw() on each and renders it in its own
 # window (string_proxy first, so its source is fresh when dict_proxy reads it).
 
-string_proxy = RenderHost(wrapper=code_file_io, input_value=InCode, name="String Proxy",
-                          renderer=RenderFuncs.draw_blank)   # held value is source string
+string_proxy = RenderHost(io_function=code_file_io, input_value=Toggles, name="String Proxy",
+                          renderer=RenderFuncs.draw_blank,  # held value is source code
+                          child_kwargs={"auto_load_edits": True})   # auto-reload on external file change
 
 dict_proxy = RenderHost(
-    wrapper=convert_in_and_out_value, input_value=string_proxy, name="Tree Proxy", renderer=RenderFuncs.draw_blank,
+    io_function=convert_in_and_out_value, input_value=string_proxy, name="Tree Proxy", renderer=RenderFuncs.draw_blank,
     child_kwargs={
         "chain_in": [string_to_cst_module, cst_module_to_dict],
         "chain_out": [dict_to_cst_module, cst_module_to_string],
@@ -84,3 +85,5 @@ def draw_modifies_playground(_, draw_state):
     imgui.separator()
     imgui.text("Tree Proxy — {value: <GeneralParse>}")
     changed, value = draw_collection(dict_proxy, name="Tree Proxy Dict", column=1, disable_scroll=False)
+
+    myval = InCode.show_bg

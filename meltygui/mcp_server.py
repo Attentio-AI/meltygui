@@ -238,8 +238,15 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
 
     @logged_tool()
     def status() -> str:
-        """Report the launcher PID and whether a studio session is running."""
-        return model_server.mcp_status()
+        """Report the launcher PID, whether a studio session is running, and —
+        if it isn't — why the last session stopped (user_quit / restart / crash).
+
+        Use the reason to tell an expected exit (the user closed or restarted the
+        window) from a crash worth investigating, instead of treating every idle
+        studio as a bug.
+        """
+        from src.lsd.gl_gui import session_status
+        return f"{model_server.mcp_status()}; {session_status.summary()}"
 
     @logged_tool()
     def last_error() -> str:

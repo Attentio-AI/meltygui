@@ -10,6 +10,7 @@ from pathlib import Path
 from src.lsd.gl_gui.view.core_conversion.address import Address, _evict_linecache, shift_sibling_linenos, is_editable_source
 from src.lsd.gl_gui.view.core_conversion.chain_converters import (
     _ensure_import_lines, _resolve_call_address, _split_span_at_call)
+from src.lsd.gl_gui.view.core_conversion.bubbling import base_of_bubbling
 from src.lsd.gl_gui.view.core_conversion.file_converters import _detect_newline
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
 
@@ -110,7 +111,8 @@ class TypeCodec(Codec):
     @staticmethod
     def resolve_address(input_value, draw_state=None, **kwargs):
         if isinstance(input_value, type) and input_value.__module__ not in ('builtins', '_collections_abc'):
-            unwrapped = input_value
+            # A runtime-generated bubbling subclass has no source - resolve its base.
+            unwrapped = base_of_bubbling(input_value)
             try:
                 source_file = inspect.getfile(unwrapped)
             except TypeError:
@@ -137,7 +139,7 @@ class TypeCodec(Codec):
         try:
             source_lines, start_lineno = inspect.getsourcelines(unwrapped)
         except (OSError, TypeError, tokenize.TokenError, SyntaxError) as e:
-            if draw_state._addr_cache is not None:
+            if hasattr(draw_state, '_addr_cache') and draw_state._addr_cache is not None:
                 return draw_state._addr_cache[2]
 
             print(f"[editable_source] could not resolve {getattr(input_value, '__name__', input_value)}: {e}")
@@ -145,7 +147,7 @@ class TypeCodec(Codec):
 
         address = Address(Path(source_file), start_lineno - 1,
                           start_lineno - 1 + len(source_lines),
-                          source=input_value, watcher_ds=draw_state)
+                          source=unwrapped, watcher_ds=draw_state)
         draw_state._addr_cache = (input_value, mtime, address)
         return address
 
@@ -464,7 +466,8 @@ class DecorationsCodec(TypeCodec):
     def resolve_address(input_value, draw_state=None, **kwargs):
         if not isinstance(input_value, Decorations):
             return None
-        target = input_value.target
+        # A runtime-generated bubbling subclass has no source; resolve its base.
+        target = base_of_bubbling(input_value.target)
         if not isinstance(target, (type, types.FunctionType)):
             return None
         try:
