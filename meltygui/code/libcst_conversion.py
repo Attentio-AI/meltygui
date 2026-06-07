@@ -487,6 +487,36 @@ DISABLE_JEDI = False
 
 from concurrent.futures import ProcessPoolExecutor as _PPE
 _jedi_pool: _PPE | None = None
+_jedi_mp_ctx = None
+
+
+def _get_jedi_mp_ctx():
+    """The multiprocessing context the jedi pool forks workers from — `forkserver`,
+    NOT the default `fork`.
+
+    With `fork`, ProcessPoolExecutor forks its 4 workers straight from THIS process.
+    The pool is built lazily (first autocomplete) and rebuilt on every restart-in-place
+    — both AFTER the ~4.6 GB Mistral model is resident — so each worker COW-inherits the
+    whole model-laden address space: 4 × 4.6 GB ≈ 18 GB of RSS the jedi workers never
+    touch (and which slowly faults to real RAM as refcounts dirty the shared pages).
+    That is the per-restart "memory overhead": almost entirely phantom model pages.
+
+    `forkserver` re-execs a clean, minimal server process (no model — verified ~0.4 GB,
+    torch but no CUDA context) and forks workers from THAT. The server is clean no matter
+    when the pool is built, so restarts don't reintroduce the model. We preload this
+    module so the server imports the worker fns' dependencies once and the 4 workers
+    COW-share that ~0.4 GB base instead of each re-importing it. Built once and cached:
+    the server persists across restarts, so rebuilt pools fork from the same clean base."""
+    global _jedi_mp_ctx
+    if _jedi_mp_ctx is None:
+        import multiprocessing as _mp
+        ctx = _mp.get_context("forkserver")
+        try:
+            ctx.set_forkserver_preload([__name__])
+        except Exception:
+            pass
+        _jedi_mp_ctx = ctx
+    return _jedi_mp_ctx
 
 
 def _get_jedi_pool() -> _PPE:
@@ -502,7 +532,7 @@ def _get_jedi_pool() -> _PPE:
     if stale:
         _cfp._global_shutdown = False
     if _jedi_pool is None or stale or getattr(_jedi_pool, "_shutdown_thread", False):
-        _jedi_pool = _PPE(max_workers=4)
+        _jedi_pool = _PPE(max_workers=4, mp_context=_get_jedi_mp_ctx())
     return _jedi_pool
 
 
@@ -870,8 +900,11 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int) -> dict:
     owning = mod_map.get(resolved)
     if owning is None:
         return {}
+    text = Melty.read_code(resolved)
+    if text is None:
+        return {}
     try:
-        file_tree = ast.parse(resolved.read_text())
+        file_tree = ast.parse(text)
     except Exception:
         return {}
     obj_targets, mem_targets, obj_by_name, sites, def_lines = _collect_targets(
@@ -950,10 +983,10 @@ def compute_symbol_usages_for_address(address) -> dict:
     start = (getattr(address, "start", 0) or 0) + 1     # address.start is a 0-indexed lower bound
     end = getattr(address, "end", None)
     if end is None:                                     # whole-file span
-        try:
-            end = resolved.read_text().count("\n") + 1
-        except OSError:
+        text = Melty.read_code(resolved)
+        if text is None:
             return {}
+        end = text.count("\n") + 1
     return _compute_symbol_usages(resolved, start, end)
 
 
@@ -1101,31 +1134,31 @@ def _collect_usages(
     }
 
 
-def populate_usages(gp: GeneralParse) -> None:
-    """Populate cross-file UsageRefs on a GeneralParse and its children.
+# def populate_usages(gp: GeneralParse) -> None:
+#     """Populate cross-file UsageRefs on a GeneralParse and its children.
+#
+#     Intra-module usages are already populated during construction
+#     (cst_module_to_dict / cst_classdef_to_dict).  This adds cross-file
+#     references via jedi (cached per-file by mtime).
+#
+#     Safe to call from a background thread - does not touch imgui
+#     or Melty state.  Call this OUTSIDE the stateful converter chain:
+#
+#         Background.run(populate_usages,
+#                        func_kwargs={"gp": result},
+#                        stateful=False)
+#     """
+#     print("Populating cross-file usages for", gp.file_path)
+#     file_path = gp.file_path
+#     if file_path is not None:
+#         _populate_xrefs(gp, file_path)
+#     # Per-symbol caller/definition index for the symbols referenced in this view
+#     # (the data behind caller lists). Cached per file mtime → once per view.
+#     populate_symbol_usages(gp)
 
-    Intra-module usages are already populated during construction
-    (cst_module_to_dict / cst_classdef_to_dict).  This adds cross-file
-    references via jedi (cached per-file by mtime).
 
-    Safe to call from a background thread — does not touch imgui
-    or Melty state.  Call this OUTSIDE the stateful converter chain:
-
-        Background.run(populate_usages,
-                       func_kwargs={"gp": result},
-                       stateful=False)
-    """
-    print("Populating cross-file usages for", gp.file_path)
-    file_path = gp.file_path
-    if file_path is not None:
-        _populate_xrefs(gp, file_path)
-    # Per-symbol usage/definition index for the symbols referenced in this view
-    # (the data behind caller shortcuts). Cached per file mtime → reset per save.
-    populate_symbol_usages(gp)
-
-
-# Keep old name as alias
-populate_cross_file_usages = populate_usages
+# # Keep old name as alias
+# populate_cross_file_usages = populate_usages
 
 
 def _populate_xrefs(gp, file_path: _Path) -> None:
@@ -1232,7 +1265,7 @@ def _clean_float(value):
 
     # Float32-representable: find shortest string that preserves it
     full = repr(value)
-    for sig in range(1, 8):
+    for sig in range(2, 8):
         short = f"{value:.{sig}g}"
         if len(short) >= len(full):
             break  # not getting shorter

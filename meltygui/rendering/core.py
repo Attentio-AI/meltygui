@@ -510,12 +510,14 @@ def render_func(*args, **o_kwargs):
                     Melty.cache.invalidate_by_obj(Melty.registered_windows)
 
             if draw_state.closed and not input_value == Melty.registered_windows:
+
+                if draw_state._is_nested:
+                    draw_state.dlt_count = 0
                 if closable:
                     Melty.root_draw_states[draw_state.id] = []
                 if return_extras:
                     return False, None, draw_state
-                if draw_state._is_nested:
-                    draw_state.dlt_count = 0
+
                 return False, None
             elif draw_state.closed and input_value == Melty.registered_windows:
                 draw_state.closed = False
@@ -625,14 +627,10 @@ def render_func(*args, **o_kwargs):
             for item_name, initial_value in initial_values.items():
 
                 if isinstance(getattr(draw_state, item_name, None), int):
-                    if item_name == "closed":
-                        print(f"is int Initial closed state for {name}: {initial_value}")
                     if getattr(draw_state, item_name) == 0 or kwargs.get("force_initial", False):
-                        print(f"Setting int {item_name} to initial value {initial_value} for {name}")
                         setattr(draw_state, item_name, initial_value)
                 else:
-                    if item_name == "closed":
-                        print(f"Initial closed state for {name}: {initial_value}")
+
                     if hasattr(draw_state, item_name) and (getattr(draw_state, item_name) is None or kwargs.get(
                             "force_initial", False)):
                         initial_values["forced"] = initial_values.get("forced", "") + item_name + f"{draw_state.frame_count}"

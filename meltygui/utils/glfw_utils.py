@@ -896,6 +896,17 @@ _needs_render = threading.Event()
 frames_left = 0
 
 def request_render(for_frames:int | None=None):
+    # Can be called from ANY thread - including worker threads (PTY readers, or
+    # claude-session poller) that start at import, before glfw.init() and the main
+    # window exist. The glfw.get_current_context() guard below itself calls INTO glfw,
+    # which raises GLFWError "The GLFW library is not initialized" when called before
+    # init - i.e. the guard check is what produces the error. So gate on the GLFW
+    # window FIRST, a pure-Python object-attr check (None until create_window), no glfw
+    # call. Lazy import because melty imports this module (circular at top level); melty
+    # is fully loaded by the time any thread calls request_render at start.
+    from src.lsd.gl_gui.melty import Melty
+    if Melty.glfw_window is None:
+        return
     # Check if glfw initialized before requesting render, as this can be called from any thread
     if glfw.get_current_context() is None:
         return

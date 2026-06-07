@@ -68,7 +68,7 @@ class RenderHost(dict):
     debug_changes = False
 
     def __init__(self, io_function=None, *args, input_value=None, child_kwargs=None,
-                 renderer=None, name=None, hidden=False, window=True, standalone=True,
+                 renderer=None, name=None, hidden=False, window=False, standalone=True,
                  value_key="value", **extra):
         super().__init__(*args)
         self.io_function = io_function
@@ -500,7 +500,7 @@ class RenderHost(dict):
         return f"RenderHost({self.name!r} -> {w}{tail}, {dict.__repr__(self)})"
 
 
-@render_func(use_cache=True, selectable=False)
+@render_func(use_cache=True, selectable=False, temp=True)
 def render_host_view(input_value, external_change=False, draw_state=None, name=None, **kwargs):
     """Window envelope + wrapper driver for a RenderHost (draw_main → host.draw()).
 

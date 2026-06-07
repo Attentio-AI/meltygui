@@ -95,7 +95,7 @@ class Tint:
     highlight_outline_thickness = 3.0   # outline line thickness
     highlight_outline_rounding = 7.868    # corner radius of the outline boxes
     highlight_outline_alpha = 0.472      # outline opacity
-    highlight_bg_alpha = 0.114           # parent fill opacity
+    highlight_bg_alpha = 0.0           # parent fill opacity
 
     # Selection rect (child views)
     select_outline_thickness = 2.0       # selection outline line thickness
@@ -136,13 +136,13 @@ class Swoosh:
                                 # within this fraction of the parent's shorter side (else stay flat)
 
 
-@window(tint=(0.9, 0.3, 0.0))
+@window(tint=(0.93, 0.5, 0.0))
 class Toggles:
 
     @defaults(tint=(1.0, 1.0, 1.0))
     class TextEditor:
         enable_spell_check = False
-    @defaults(tint=(0.9,0.5,0.5))
+    @defaults(tint=(0.9,0.4,0.4))
     class InvalidateTracker:
         keep_for_frames = 13
         enable = False
@@ -159,7 +159,7 @@ class Toggles:
         scroll_speed = 2e+03
         # A single wheel tick never jumps more than this fraction of the vie
         # (clipped) height, so small views don't overshoot.
-        max_increment_fraction = 0.5
+        max_increment_fraction = 0.48
         # Used for time-based scroll acceleration: wheel ticks arriving within
         # this window count as a continuous gesture. Not yet wired into the cap.
         acceleration_threshold = 200  # ms
@@ -189,8 +189,8 @@ class Toggles:
     show_line_break = False
 
     # Filter SettingS
-    brightness = 0.374
-    contrast = 1.66
+    brightness = 0.333
+    contrast = 1.527
     saturation = -0.4
     prefered_header_width = 17
     max_preferred_header_width = 153
@@ -209,8 +209,7 @@ class Toggles:
 
     show_full_call_stack = False
     ignore_call_from = ("draw", "_run_visualization", "run", "_bootstrap",
-                        "_bootstrap_inner", "convert_in_and_out", "draw_melty_windows",
-                        "draw_main", "end_frame", "render", "draw_inner",
+                        "_bootstrap_inner", "convert_in_and_out", "draw_melty_windows", "end_frame", "render", "draw_inner",
                         "draw_inner_main", "__call__", "draw_collection", "draw_with_view_funcs")
     # Screenshot output directory (used by screenshot.py / context menu capture)
     screenshots = "/home/lukas/melty/screenshots"

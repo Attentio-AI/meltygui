@@ -365,7 +365,7 @@ LOADING = object()
 def run_in_background(input_value, loading_state: LoadingState, unique,
                       draw_state, child_kwargs, start=False, timeout=20,
                       debounce_ms=0, **kwargs):
-    if Melty.frame_count < 5:
+    if Melty.frame_count < 10:
         debounce_ms = 0
     if start:
         loading_state._run_next = input_value, child_kwargs
@@ -426,8 +426,9 @@ def run_in_background(input_value, loading_state: LoadingState, unique,
                     Melty.cache.invalidate(draw_state._tile_id, note=note)
                     request_render()
 
-            if Melty.frame_count < 1:
+            if draw_state.frame_count < 2:
                 run(run_next_inner=loading_state._run_next)
+                loading_state._run_next = None
             else:
                 run_next = loading_state._run_next
                 if not loading_state._loading:
@@ -631,6 +632,7 @@ def _run_convert(chain, value, route=None, routed=None, **extra):
         try:
             result = inner(**call)
         except Exception as e:
+
             return e, routed
         if isinstance(result, tuple) and len(result) == 2:
             _, value = result

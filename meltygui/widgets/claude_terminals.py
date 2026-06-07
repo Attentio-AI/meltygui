@@ -31,6 +31,7 @@ from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
 from src.lsd.gl_gui.view.core_views.core_render import render_func
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.playground.terminal_playground import Terminal, draw_terminal_screen
 
@@ -61,12 +62,14 @@ def _kill_session(session):
     """Kill a claude-d tmux session off-thread. This ends the `claude-d` process
     running it (its EXIT/HUP trap fires) → the gnome window closes, and the session
     leaves the tmux server so the poller drops it from `_live_sessions`."""
+
     def go():
         try:
             subprocess.run(["tmux", "kill-session", "-t", session],
                            stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL, timeout=2)
         except Exception:
             pass
+
     threading.Thread(target=go, daemon=True).start()
 
 
@@ -113,7 +116,7 @@ def claude_terminals_io(input_value, draw_state, view_func=None, external_change
     for k, term in list(store.items()):
         if getattr(term, "is_dead", None) and term.is_dead():
             store.pop(k)
-    seen &= set(live) | set(store)   # forget sessions that are neither live nor still held
+    seen &= set(live) | set(store)  # drop sessions that are neither live nor still held
 
     # ── VIEW: hand the dict to the host's view_func (it materializes + renders) ──
     edited, value = view_func(input_value=store, external_change=False, **kwargs)
@@ -131,7 +134,7 @@ claude_proxy = RenderHost(io_function=claude_terminals_io, input_value=None,
 
 
 # ── the renderer: draw each discovered terminal stacked in the host window ──────
-@window(input_value=claude_proxy, tint=(0.944186,0.9,0.8300053))
+@window(input_value=claude_proxy, tint=(0.944186, 0.9, 0.8300053))
 @render_func(show_bg=False, use_cache=True, selectable=False)
 def draw_claude_terminals(input_value, draw_state, **kwargs):
     # input_value is the proxy. The {session: Terminal} dict is held ONE LEVEL DOWN
@@ -141,7 +144,6 @@ def draw_claude_terminals(input_value, draw_state, **kwargs):
     windows = input_value.get("value") if isinstance(input_value, dict) else {}
     if windows is None:
         windows = {}
-
 
     # Each Terminal mutates in place (stable identity), so the wrapper's cache won't
     # see new output on its own - the terminal's reader thread must invalidate THIS
@@ -153,7 +155,6 @@ def draw_claude_terminals(input_value, draw_state, **kwargs):
     for term in windows.values():
         term._ds = draw_state
 
-
     imgui.text(f"Terminal Windows: {len(windows)}")
 
     # draw_collection makes each terminal a value-key draw_state; view_func renders each
@@ -161,9 +162,12 @@ def draw_claude_terminals(input_value, draw_state, **kwargs):
     # rather than relying on is_default_for=Terminal → draw_terminal, because the
     # default is the @window bound to terminal_screen with a hardcoded screen name so
     # every terminal would collide on one draw_state and show the wrong content.
-    dict_changed, new_val, draw_state = RenderFuncs.draw_collection(windows, return_extras=True, show_add_delete=True, close_triggers_delete=True,
-                                                        name="Claude Sessions", disable_scroll=True, new_item_type=Terminal, temp=True,
-                                child_kwargs={"mode": Modes.TERMINAL_WINDOW, "disable_scroll":True})
+    dict_changed, new_val, draw_state = RenderFuncs.draw_collection(windows, return_extras=True, show_add_delete=True,
+                                                                    close_triggers_delete=True,
+                                                                    name="Claude Sessions", disable_scroll=True,
+                                                                    new_item_type=Terminal, temp=True,
+                                                                    child_kwargs={"mode": Modes.TERMINAL_WINDOW,
+                                                                                  "disable_scroll": True})
 
     for window_ds in draw_state._children.values():
         imgui.text(f"{window_ds.name} {window_ds.closed} {window_ds._kwargs.get('initial', {})}")
@@ -171,19 +175,20 @@ def draw_claude_terminals(input_value, draw_state, **kwargs):
     return False, None
 
 
-
 # ── discovery poller: the wrapper's body is blit-cached, so it wouldn't notice a
 # session that appeared/vanished with no output to invalidate it. Poll tmux and,
 # on a CHANGE to the session set, re-run the io_function (discovery) AND re-render
 # the @window so a new/removed terminal shows up.
 _live_sessions = []
-_window_ds = None      # draw_claude_terminals' draw_state, stashed on render
+_window_ds = None  # draw_claude_terminals' draw_state, stashed each render
 
 
 def _poll_loop():
     global _live_sessions
     last = None
     while True:
+        if Core.melty.frame_count < 4:
+            time.sleep(2)
         # Resilient: this thread starts at startup - BEFORE GLFW is initialized - so an
         # early request_render() raises "GLFW library is not initialized" and (without
         # this guard) the whole poller thread exits, locking _live_sessions so new

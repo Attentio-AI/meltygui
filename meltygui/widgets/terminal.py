@@ -16,6 +16,7 @@ import os
 import re
 import select
 import shlex
+import shutil
 import struct
 import subprocess
 import termios
@@ -163,6 +164,12 @@ def _make_history_screen(pyte, cols, rows):
 # across restarts and immune to pid reuse.
 _OWNED_SESSION_PREFIX = "claude-d-"
 
+# Full path to tmux so subprocess can use posix_spawn (vfork) instead of fork()ing the
+# studio's huge CUDA/GL/torch address space - a fork stalls the render thread (kernel
+# mmap_lock + GIL held across the fork). Full path + close_fds=False is what triggers the
+# posix_spawn path on this Python. See claude_terminals._list_claude_sessions.
+_TMUX = shutil.which("tmux") or "/usr/bin/tmux"
+
 
 def _attach_argv(session):
     """Argv that attaches an in-app PTY to an existing tmux session (a shared client).
@@ -172,31 +179,62 @@ def _attach_argv(session):
             "exec tmux attach-session -t " + shlex.quote(session)]
 
 
-def _new_owned_session():
-    """Create a fresh tmux session running a shell, in its OWN gnome-terminal window —
-    the same thing the claude-d script does. The gnome window owns the session: its
-    trap kills the session on close (so a melty-close ↔ gnome-close stay in sync).
+def _new_owned_session_name():
+    """Just the NAME for a brand-new owned session. Nothing is created here — the
+    in-app PTY creates the session itself when it starts (see _owned_launch_argv), so
+    a "+" click never blocks the UI thread on a synchronous `tmux new-session`."""
+    return _OWNED_SESSION_PREFIX + uuid.uuid4().hex[:8]
 
-    Created synchronously (`new-session -d`) so the session EXISTS before the in-app
-    PTY or the studio poller go looking for it. Returns the session name. Run claude-d
-    (which detects $TMUX and won't nest) or anything else inside it."""
-    session = _OWNED_SESSION_PREFIX + uuid.uuid4().hex[:8]
-    shell = os.environ.get("SHELL", "/bin/bash")
-    try:
-        subprocess.run(["tmux", "new-session", "-d", "-s", session, shell],
-                       stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL, timeout=3)
-    except Exception:
-        pass
+
+def _owned_launch_argv(session):
+    """Argv for the in-app PTY of a brand-new OWNED terminal: it CREATES the session
+    (`new-session -A` = create-or-attach) directly in the PTY fork. This is the speed
+    win — no separate blocking `tmux new-session -d` round-trip on the UI thread first;
+    the terminal launches the process itself and the session exists as soon as the PTY
+    is up. The gnome window is handed the session afterwards (see _handoff_to_gnome)."""
+    return ["bash", "-c",
+            "tmux set -g window-size latest 2>/dev/null; "
+            "exec tmux new-session -A -s " + shlex.quote(session)]
+
+
+def _handoff_to_gnome(session):
+    """Open a gnome-terminal that attaches to an OWNED session the in-app PTY already
+    created, and OWNS its lifetime: its trap kills the session on window close, so
+    melty-close ↔ gnome-close stay in sync. Non-blocking (Popen). `new-session -A` (not
+    plain attach) is race-safe — whoever loses the create just attaches — though the PTY
+    forks first so it normally wins. No `exec`, or the trap is skipped (see claude-d).
+    `env -u TMUX` so it attaches even if the studio itself was launched inside tmux."""
     q = shlex.quote(session)
-    # No `exec`, or the trap is lost (see claude-d). `env -u TMUX` so it attaches
-    # even when the studio itself is inside tmux.
     inner = ('trap "tmux kill-session -t ' + q + ' 2>/dev/null" EXIT HUP TERM INT; '
-             'env -u TMUX tmux attach-session -t ' + q)
+             'env -u TMUX tmux new-session -A -s ' + q)
     try:
         subprocess.Popen(["gnome-terminal", "--", "bash", "-c", inner])
     except Exception:
         pass
-    return session
+
+
+def _disable_mouse(session):
+    """Turn tmux mouse mode OFF for ONE session (session-scoped via -t, NOT -g, so the
+    user's other tmux sessions keep their mouse settings). With mouse mode ON, a
+    click-drag in the gnome window is grabbed by tmux's copy-mode and the selection is
+    cleared the instant you release — you can't select/copy text. Off, gnome-terminal
+    does its own native selection. `mouse` is a session option shared by every client
+    attached to the session, so setting it once fixes BOTH the gnome window and the
+    in-app view. Run off-thread with a short retry: an owned session is created by the
+    in-app PTY's `new-session -A` and may not exist the instant we ask."""
+    def go():
+        for _ in range(20):
+            try:
+                # Full path + close_fds=False → posix_spawn, not fork (see _TMUX).
+                r = subprocess.run([_TMUX, "set", "-t", session, "mouse", "off"],
+                                   stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                   timeout=2, close_fds=False)
+                if r.returncode == 0:
+                    return
+            except Exception:
+                pass
+            time.sleep(0.1)
+    threading.Thread(target=go, daemon=True).start()
 
 
 @defaults(tint=(0.2, 0.2, 0.3))
@@ -209,12 +247,14 @@ class Terminal:
 
     def __init__(self, launch_cmd=None, tmux_session=None):
         # No args (the "+" add button calls Terminal()) -> create a brand-new OWNED
-        # terminal: a fresh tmux session running a shell in its own gnome-terminal
-        # window (claude-d style), attached to in-app. With a launch_cmd/session args
-        # (main/lsd/discovered claude-d) we just spawn them as before.
-        if launch_cmd is None and tmux_session is None:
-            tmux_session = _new_owned_session()
-            launch_cmd = _attach_argv(tmux_session)
+        # terminal: the in-app PTY itself creates the tmux session (new-session -A) when
+        # it starts, then hands it off to its own gnome-terminal window (claude-d style).
+        # No blocking `tmux new-session -d` on the UI thread first. With a launch_cmd/
+        # session given (main/lsd/discovered claude-d) we just attach, as before.
+        owned = launch_cmd is None and tmux_session is None
+        if owned:
+            tmux_session = _new_owned_session_name()
+            launch_cmd = _owned_launch_argv(tmux_session)
         self.launch_cmd = launch_cmd or [os.environ.get("SHELL", "/bin/bash"), "-i"]
         self.tmux_session = tmux_session   # session name (if tmux attached)
         # add_to_collection keys a dict by `.id`, so a "+"-added terminal lands in the
@@ -236,6 +276,10 @@ class Terminal:
         self._last_sig = None      # content signature at the last render - the reader
                                    # only invalidates/wakes when this actually changes
         self._reader_alive = False  # True while the reader thread runs; is_dead() reads it
+        # For a brand-new OWNED terminal: the session the PTY creates, handed off to its
+        # own gnome-terminal window once the PTY is up (in start()). None = attach-only.
+        self._owned_session = tmux_session if owned else None
+        self._appeared = False     # set text focus once, on the terminal's first render
 
     def is_dead(self):
         """True once the reader thread has exited — the PTY (and thus its tmux session)
@@ -248,31 +292,55 @@ class Terminal:
             return
         self.started = True
         self.size = (cols, rows)
+        # Spawn the PTY + tmux attach OFF the main thread. Launching the studio with many
+        # discovered terminals would spawn a the processes (bash → tmux attach) plus
+        # openpty on a SINGLE render frame - a big launch hitch that scales with the
+        # number of sessions. Claim _reader_alive now so is_dead() can't fire in the gap
+        # before the bg thread runs; the thread clears it on exit / spawn failure. screen
+        # stays None until ready, so draw_terminal_screen shows a placeholder meanwhile.
+        self._reader_alive = True
+        threading.Thread(target=self._start_and_read, args=(cols, rows), daemon=True).start()
+
+    def _start_and_read(self, cols, rows):
         try:
             import pyte
         except ImportError:
             self.error = "pyte not installed — run: pip install pyte"
+            self._reader_alive = False
             return
         try:
-            self.screen = _make_history_screen(pyte, cols, rows)
-            self.stream = pyte.ByteStream(self.screen)
+            screen = _make_history_screen(pyte, cols, rows)
+            stream = pyte.ByteStream(screen)
             master, slave = os.openpty()
-            self.master_fd = master
             _set_winsize(master, rows, cols)
             # Unset TMUX so a `tmux attach` child can launch even when the studio is
             # itself launched inside tmux (otherwise tmux refuses to nest).
             env = dict(os.environ, TERM="xterm-256color",
                        COLUMNS=str(cols), LINES=str(rows))
             env.pop("TMUX", None)
-            self.proc = subprocess.Popen(
+            proc = subprocess.Popen(
                 self.launch_cmd, stdin=slave, stdout=slave, stderr=slave,
                 cwd=os.getcwd(), env=env, preexec_fn=_preexec, close_fds=True)
             os.close(slave)
-            self._reader_alive = True   # set BEFORE the reader starts so is_dead() never
-                                        # spuriously fires in the gap before it runs
-            threading.Thread(target=self._read_loop, daemon=True).start()
+            # Publish the live objects under the lock so the render thread either sees a
+            # fully-wired terminal or still-None (placeholder), never a half-built one.
+            with self.lock:
+                self.screen = screen
+                self.stream = stream
+                self.master_fd = master
+                self.proc = proc
+            # The PTY has forked (owned sessions: created via new-session -A): hand off to
+            # its own gnome-terminal window (a second client that owns the lifetime), and
+            # disable tmux mouse for claude-d sessions so normal text selection works.
+            if self._owned_session is not None:
+                _handoff_to_gnome(self._owned_session)
+            if self.tmux_session and self.tmux_session.startswith(_OWNED_SESSION_PREFIX):
+                _disable_mouse(self.tmux_session)
         except Exception as e:  # surface a spawn failure in the render
             self.error = f"pty start failed: {e}"
+            self._reader_alive = False
+            return
+        self._read_loop()
 
     def _screen_signature(self):
         """A hash of everything we DRAW — every cell (text + colors), the cursor, and
@@ -290,6 +358,14 @@ class Terminal:
 
     def _read_loop(self):
         fd = self.master_fd
+        # Force a first paint. Guarded: this runs BEFORE the try below, so a None _ds
+        # (a brand-new terminal whose screen hasn't rendered yet) would raise here and
+        # kill the thread without the finally clearing _reader_alive, leaving a frozen,
+        # never-drawn terminal. draw_terminal_screen sets _ds before start(), so it's
+        # normally set, but stay defensive.
+        if self._ds is not None:
+            self._ds.invalidate()
+
         try:
           while True:
             try:
@@ -582,6 +658,25 @@ def draw_terminal_screen(input_value: Terminal, draw_state, view_state: Terminal
                          left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
                          left_mouse_clicked=False):
     term, ds, vs = input_value, draw_state, view_state
+    # Point the reader thread's invalidator at the tile that actually re-renders this
+    # terminal. In the claude-terminals path this screen IS the blit-cached child window
+    # (TERMINAL_WINDOW mode → closable=True), so THIS draw_state is what must be
+    # invalidated on new output - set it BEFORE term.start() so the reader (launched
+    # inside start()) always has the right target. In the main/lsd path
+    # draw_terminal_screen is nested inside draw_terminal's @window (not closable) and
+    # _draw_terminal_window already pointed term._ds at that window tile - don't clobber
+    # that with this non-cached text screen. Without this the claude reader invalidated
+    # the PARENT window while each child's cached blit was unchanged (terminals stopped
+    # refreshing on "+" or on characters typed in a gnome-side client).
+    if ds.closable:
+        term._ds = ds
+        # Grab text focus the first time this terminal appears, so a freshly-opened
+        # ("+" or just-discovered) terminal is typeable immediately without a click.
+        # Scoped to the closable (claude) tiles so the main/lsd ones don't steal
+        # focus on studio startup. Same mechanism as the click-to-focus below.
+        if not term._appeared:
+            term._appeared = True
+            Melty.text_focused_ds = ds
     left, top, right, bottom = ds.abs_left, ds.abs_top, ds.abs_left + ds.width, ds.abs_top+ ds.height
     pad = 4.0
 
@@ -593,14 +688,20 @@ def draw_terminal_screen(input_value: Terminal, draw_state, view_state: Terminal
         rows = max(2, int((bottom - top - 2 * pad) / line_px))
 
         term.start(cols, rows)
-        term.request_resize(cols, rows)
-        # Prefer to coalesce the resize to frame-end, but _resize_screen keeps every
-        # dimension correct, so this is just churn reduction, not correctness.
-        term.apply_pending_resize(defer=_mouse_held())
         if term.error:
             imgui.set_cursor_screen_pos((x0, y0))
             imgui.text_colored(term.error, _COL_ERR[0], _COL_ERR[1], _COL_ERR[2], 1.0)
             return False, term
+        # start() now spawns the PTY on a bg thread, so screen is None until it's wired.
+        # Show a placeholder and bail (the reader invalidates this tile when ready).
+        if term.screen is None:
+            imgui.set_cursor_screen_pos((x0, y0))
+            imgui.text_colored("starting…", 0.55, 0.55, 0.55, 1.0)
+            return False, term
+        term.request_resize(cols, rows)
+        # Prefer to coalesce the resize to frame-end, but _resize_screen keeps every
+        # dimension correct, so this is just churn reduction, not correctness.
+        term.apply_pending_resize(defer=_mouse_held())
 
         is_focused = Melty.text_focused_ds is ds
         io = imgui.get_io()
@@ -642,11 +743,16 @@ def draw_terminal_screen(input_value: Terminal, draw_state, view_state: Terminal
         over = left <= io.mouse_pos.x <= right and top <= io.mouse_pos.y <= bottom
         if over and io.mouse_wheel:
             lines = _wheel_lines(bottom - top, line_px)   # speed = Toggles.ScrollSettings
-            if _MOUSE_MODES & modes:
-                # The program wants the mouse (e.g. tmux/less/vim) - forward the wheel
-                # so it scrolls ITS scrollback instead of our (empty, only-the-screen)
-                # pyte history. Button 64 = wheel up, 65 = wheel down. tmux scrolls
-                # _TMUX_WHEEL_LINES per escape, so send enough escapes to hit `lines`.
+            if (_MOUSE_MODES & modes) and (_ALT_SCREEN_MODES & modes):
+                # Forward the wheel to the program ONLY when it's an ALT-SCREEN program
+                # that owns the grid (vim/Claude/emacs) - it has its own scrollback and
+                # our pyte history is unused there. Crucially NOT for a plain shell under
+                # tmux `mouse on`: forwarding a wheel-up there makes tmux enter copy-mode
+                # (`[0/0]` when there's no content selection) and swallow keystrokes on copy-mode
+                # nav - "can't copy" when you press q. A plain shell falls to the else
+                # branch and scrolls OUR pyte history instead (clipped, so a no-log
+                # terminal simply doesn't scroll). Button 64 = wheel up, 65 = wheel down;
+                # tmux scrolls _TMUX_WHEEL_LINES per escape, so send enough to hit `lines`.
                 col = max(0, min(int((io.mouse_pos.x - x0) / char_w), scols - 1))
                 row = max(0, min(int((io.mouse_pos.y - y0) / line_px), srows - 1))
                 btn = 64 if io.mouse_wheel > 0 else 65
@@ -767,7 +873,7 @@ def draw_terminal_screen(input_value: Terminal, draw_state, view_state: Terminal
                 uy = y0 + r * line_px + line_px - 1.0
                 dl.add_line(x0 + lo_c * char_w, uy, x0 + hi_c * char_w, uy, lc, th)
 
-        if is_focused and at_bottom and not cur_hidden and 0 <= cursor_vy < srows and int(time.time() * 2) % 2 == 0:
+        if is_focused and at_bottom and not cur_hidden and 0 <= cursor_vy < srows:
             cx, cy = x0 + cur_x * char_w, y0 + cursor_vy * line_px
             dl.add_rect_filled(cx, cy, cx + char_w, cy + line_px, 0x88FFFFFF)
         dl.pop_clip_rect()

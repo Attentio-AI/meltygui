@@ -168,6 +168,12 @@ class FileWatch:
     def _on_event(cls, event):
         if Melty.frame_count < 2:
             return
+        # Invalidate any cached file text for the changed path so the next read
+        # re-reads from disk. Done before the no-draw_states early-return so a
+        # sibling file in a watched dir (cached by the symbol index but with no
+        # view of its own) is still invalidated. Keyed the same as
+        # path_to_draw_states - str(path.resolve) - so event.src_path matches.
+        Melty.code_cache.pop(event.src_path, None)
         draw_states = cls.path_to_draw_states.get(event.src_path)
         if not draw_states:
             return
@@ -470,6 +476,11 @@ class Melty:
     frame_count = 0
     last_print_invalidate = 0
 
+    # File-text cache keyed by resolved path name. Populated by read_code,
+    # invalidated by FileWatch on external change. Lets the symbol-usage index
+    # avoid re-reading the same source on every index pass.
+    code_cache = {}
+
     blocker_hovered = False
 
     all_uniques = set()
@@ -544,6 +555,21 @@ class Melty:
     _overlay_channel_ranges: list = []
     _overlay_probe_logged = False
     _debug_overlay_test = True  # controlled sub-top overlay to verify masking
+
+    @classmethod
+    def read_code(cls, path):
+        """File text via code_cache, invalidated by FileWatch on change. Returns
+        None on read error. Use for repeated reads of the same source (e.g. the
+        symbol-usage index) so an unchanged file isn't re-read every pass."""
+        key = str(Path(path).resolve())
+        text = cls.code_cache.get(key)
+        if text is None:                       # absent (not an empty file)
+            try:
+                text = Path(key).read_text()
+            except OSError:
+                return None
+            cls.code_cache[key] = text
+        return text
 
     @classmethod
     def get_default_view_function(cls, draw_state=None, real_type=None, collection_type=None, attrib_key=None):
@@ -1527,10 +1553,6 @@ class Melty:
 
         Melty.mode_stack = []
 
-        from src.lsd.gl_gui.modes import Modes
-        from src.lsd.gl_gui.view.core_views.new_core_view import draw_with_modes
-        draw_with_modes(Counters, name="counters", modes=(Modes.CODE_UI, Modes.CODE_PLAIN_TEXT), mode=Modes.WINDOW)
-
         if Toggles.debug_z_depth:
             draw_state = list(cls.selected)[-1] if len(cls.selected) > 0 else None
             if draw_state is not None:
@@ -1669,6 +1691,8 @@ class Melty:
                     # first-level nested view) so the line/outline aren't masked
                     # by the nested window. cls.draw may also have moved the channel.
                     rounding = draw_state.corner_radius
+
+
                     overlay_dl.channels_set_current(min(draw_state.window_index, Melty.max_layer -1))
 
                     overlay_dl.add_rect(draw_state.abs_left, draw_state.abs_top,
@@ -1676,6 +1700,8 @@ class Melty:
                                         draw_state.abs_top + draw_state.height,
                                         outline_col, rounding=rounding,
                                         thickness=Tint.highlight_outline_thickness)
+
+                    overlay_dl.channels_set_current(min(Melty.max_layer - 1, offset_ds.window_index))
 
                     Melty._draw_swoosh(
                         overlay_dl,
@@ -2039,6 +2065,7 @@ class Melty:
         Background.shutdown()
         Monitor.shutdown()
         FileWatch.shutdown()
+        cls.glfw_window = None
 
     @classmethod
     def get_channel(cls, depth=None):
