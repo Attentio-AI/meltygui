@@ -153,6 +153,7 @@ def draw_claude_terminals(input_value, draw_state, **kwargs):
     for term in windows.values():
         term._ds = draw_state
 
+
     imgui.text(f"Terminal Windows: {len(windows)}")
 
     # draw_collection makes each terminal a value-key draw_state; view_func renders each
@@ -160,9 +161,12 @@ def draw_claude_terminals(input_value, draw_state, **kwargs):
     # rather than relying on is_default_for=Terminal → draw_terminal, because the
     # default is the @window bound to terminal_screen with a hardcoded screen name so
     # every terminal would collide on one draw_state and show the wrong content.
-    dict_changed, new_val = RenderFuncs.draw_collection(windows, show_add_delete=True, close_triggers_delete=True,
-                                                        name="Claude Sessions", disable_scroll=True, new_item_type=Terminal,
-                                child_kwargs={"mode": Modes.TERMINAL_WINDOW, "swoosh":True})
+    dict_changed, new_val, draw_state = RenderFuncs.draw_collection(windows, return_extras=True, show_add_delete=True, close_triggers_delete=True,
+                                                        name="Claude Sessions", disable_scroll=True, new_item_type=Terminal, temp=True,
+                                child_kwargs={"mode": Modes.TERMINAL_WINDOW, "disable_scroll":True})
+
+    for window_ds in draw_state._children.values():
+        imgui.text(f"{window_ds.name} {window_ds.closed} {window_ds._kwargs.get('initial', {})}")
 
     return False, None
 

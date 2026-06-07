@@ -1615,7 +1615,7 @@ class Melty:
                         # any higher-layer window (matches the renderer's mask).
                         layer_index = draw_state.window_index
 
-                        overlay_dl.channels_set_current(min(Melty.max_layer - 1, offset_ds.window_index - 5))
+                        overlay_dl.channels_set_current(min(Melty.max_layer - 1, offset_ds.window_index))
 
                         # Color the highlight using the *parent* window's tint:
                         # the nested view doesn't always carry a tint of its own.

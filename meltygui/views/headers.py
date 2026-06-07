@@ -468,6 +468,7 @@ def draw_header_end(input_value=None, name="", key=None, melty=None, parent_show
             if draw_state.parent_window is not None:
                 draw_state.parent_window.invalidate_up()
 
+            draw_state.dlt_count = 0
             # if draw_state.parent_window is not None:
             #     Melty.cache.invalidate_up(draw_state.parent_window._tile_id, max_depth=10)
     else:

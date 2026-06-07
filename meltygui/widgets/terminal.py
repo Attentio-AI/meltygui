@@ -12,7 +12,6 @@ The shell owns line-editing, history, cd, prompts, job control — so this file 
 just a PTY pump + a screen renderer + a key encoder, plus selection/copy on top.
 """
 import fcntl
-import itertools
 import os
 import re
 import select
@@ -22,6 +21,7 @@ import subprocess
 import termios
 import threading
 import time
+import uuid
 
 import glfw
 import imgui
@@ -155,11 +155,13 @@ def _make_history_screen(pyte, cols, rows):
 
 
 # A new "owned" terminal names its session claude-d-<pid>-<n> so the studio's
-# claude_terminals poller discovers + uses it just like an externally-launched
-# claude-d session. Unique per studio run (pid) + counter; distinct prefix from
-# claude-d's own `claude-d-<pid>`, so no collisions.
+# claude_terminals poller discovers + manages it just like an externally-launched
+# claude-d session. The suffix is a random uuid, NOT pid+counter: the studio restarts
+# IN-PLACE (same pid) and a module reload would reset any module-level counter to 1, so
+# pid+counter handed out `claude-d-<samepid>-1` after every restart → the new window
+# collided with the previous run's draw_state (stale `closed` etc.). A uuid is unique
+# across restarts and immune to pid reuse.
 _OWNED_SESSION_PREFIX = "claude-d-"
-_owned_counter = itertools.count(1)
 
 
 def _attach_argv(session):
@@ -178,7 +180,7 @@ def _new_owned_session():
     Created synchronously (`new-session -d`) so the session EXISTS before the in-app
     PTY or the studio poller go looking for it. Returns the session name. Run claude-d
     (which detects $TMUX and won't nest) or anything else inside it."""
-    session = "%s%d-%d" % (_OWNED_SESSION_PREFIX, os.getpid(), next(_owned_counter))
+    session = _OWNED_SESSION_PREFIX + uuid.uuid4().hex[:8]
     shell = os.environ.get("SHELL", "/bin/bash")
     try:
         subprocess.run(["tmux", "new-session", "-d", "-s", session, shell],
@@ -575,12 +577,12 @@ def _find_links(grid, scols):
 
 
 @render_func(is_default_for=(Terminal), show_bg=False, show_header=False, show_name=False, is_tree=False,
-             selectable=False, disable_scroll=True)
+             selectable=False, disable_scroll=True, initial={"closed": False})
 def draw_terminal_screen(input_value: Terminal, draw_state, view_state: TerminalScreenState,
                          left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
                          left_mouse_clicked=False):
     term, ds, vs = input_value, draw_state, view_state
-    left, top, right, bottom = ds.abs_clip_rect
+    left, top, right, bottom = ds.abs_left, ds.abs_top, ds.abs_left + ds.width, ds.abs_top+ ds.height
     pad = 4.0
 
     pushed = _push_mono()
@@ -891,7 +893,7 @@ def _draw_terminal_window(term, ds, name):
 # thread invalidate()s the window on PTY output; the render below invalidate()s whe
 # focused (for the blinking cursor + input responsiveness). Idle/unfocused terminals
 # cost nothing.
-@window(tint=(0.68, 0.798, 0.9), bg_offset=-1, input_value=terminal_instance)
+@window(tint=(0.68, 0.798, 0.9), bg_offset=-1, disable_scroll=True, input_value=terminal_instance)
 @render_func(is_default_for=Terminal)
 def draw_terminal(input_value: Terminal, draw_state):
     return _draw_terminal_window(input_value, draw_state, "terminal_screen")
