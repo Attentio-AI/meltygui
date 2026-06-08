@@ -984,6 +984,7 @@ class TileCacheMasked:
 
     def invalidate(self, k: str, force=False, do_store=True, frame_delta=0, note=None,
                    stop_at_filled: bool = False) -> None:
+
         draw_state = self.key_to_draw_state.get(k, None)
 
         # if draw_state is not None and not draw_state.inside_clip:

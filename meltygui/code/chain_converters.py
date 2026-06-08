@@ -859,6 +859,19 @@ def call_stack_frames(frames):
     return [(entry[0], entry[1], entry[2]) for entry in reversed(frames)]
 
 
+def caller_func_name(call_stack):
+    """The func_name of the nearest real caller in a cached _call_stack (the
+    innermost non-dispatch frame) — the function whose body holds the draw_x(...)
+    call, matching caller_site's (filename, lineno). None if no real caller.
+
+    Operates on the already-cached _call_stack tuples (filename, lineno,
+    func_name), so it never touches the live stack."""
+    for filename, lineno, func_name in call_stack:
+        if not _is_dispatch_frame(filename, func_name):
+            return func_name
+    return None
+
+
 def _first_call(module):
     """The outermost cst.Call in a parsed statement (don't descend into nested
     calls), or None."""

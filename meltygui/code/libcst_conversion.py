@@ -1217,13 +1217,24 @@ def _float_decimal_places(s):
     return len(s.split(".")[1])
 
 
-def _ensure_float_str(s):
-    """Ensure a numeric string is a valid CST float (must contain a decimal point).
+def _ensure_float_str(s, min_dp=2):
+    """Ensure a numeric string is a valid CST float with at least `min_dp`
+    decimal places.
 
-    '3' → '3.0', '100' → '100.0', '0.5' → '0.5' (unchanged)
+    Adds a decimal point if one is missing and pads trailing zeros so the
+    result always shows at least `min_dp` decimals (default 2). Strings with
+    more precision than `min_dp` are left untouched. Scientific notation
+    ('1e10') is returned unchanged.
+
+    '3' → '3.00', '100' → '100.00', '0.5' → '0.50', '3.14159' → '3.14159'
     """
-    if "." not in s and "e" not in s.lower():
-        s += ".0"
+    if "e" in s.lower():
+        return s
+    if "." not in s:
+        s += "."
+    decimals = len(s.split(".", 1)[1])
+    if decimals < min_dp:
+        s += "0" * (min_dp - decimals)
     return s
 
 
@@ -1255,7 +1266,7 @@ def _clean_float(value):
     if not math.isfinite(value):
         return repr(value)  # 'inf', 'nan' - caller must handle
     if value == 0.0:
-        return repr(value)
+        return _ensure_float_str(repr(value))
 
     # First check: does this value survive float32 round-trip?
     f32_bytes = _F32_PACK.pack(value)

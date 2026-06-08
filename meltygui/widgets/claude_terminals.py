@@ -133,10 +133,18 @@ claude_proxy = RenderHost(io_function=claude_terminals_io, input_value=None,
                           name="Claude Terminals")
 
 
+terminal_loop_running = False
+
 # ── the renderer: draw each discovered terminal stacked in the host window ──────
 @window(input_value=claude_proxy, tint=(0.306977,0.09673172,0.04568956))
 @render_func(show_bg=False, use_cache=True, selectable=False)
 def draw_claude_terminals(input_value, draw_state, **kwargs):
+    global terminal_loop_running
+    if not terminal_loop_running:
+        threading.Thread(target=_poll_loop, daemon=True, name="claude-sessions-poller").start()
+        terminal_loop_running = True
+
+
     # input_value is the proxy. The {session: Terminal} dict is held ONE LEVEL DOWN
     # under value_key ("value") - draw_collection on the proxy itself would only see
     # the single {"value": ...} key (and render that _BubblingDict, not the
@@ -209,4 +217,3 @@ def _poll_loop():
         time.sleep(1.0)
 
 
-threading.Thread(target=_poll_loop, daemon=True, name="claude-sessions-poller").start()

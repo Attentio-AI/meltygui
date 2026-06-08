@@ -10,6 +10,7 @@ from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.core_views.new_core_view import draw_any, draw_collection
+from src.lsd.gl_gui.view.core_views.text_editor import draw_text
 from src.lsd.gl_gui.view.invalidation_tracker import Note
 from src.lsd.gl_gui.view.mode import Mode
 
@@ -55,12 +56,12 @@ class InCode:
 # Both are standalone, so draw_main calls draw() on each and renders it in its own
 # window (string_proxy first, so its source is fresh when dict_proxy reads it).
 
-string_proxy = RenderHost(io_function=code_file_io, input_value=Toggles, name="String Proxy",
-                          renderer=RenderFuncs.draw_blank,  # held value is source code
-                          child_kwargs={"auto_load_edits": True})   # auto-reload on external file change
+string_proxy = RenderHost(io_function=code_file_io, input_value=Toggles, name="String Proxy test",
+                          settings_renderer=draw_text,
+                          child_kwargs={"auto_load_edits": True, "auto_load":True})   # auto-reload on external file change
 
 dict_proxy = RenderHost(
-    io_function=convert_in_and_out_value, input_value=string_proxy, name="Tree Proxy", renderer=RenderFuncs.draw_blank,
+    io_function=convert_in_and_out_value, input_value=string_proxy, name="Tree Proxy",
     child_kwargs={
         "chain_in": [string_to_cst_module, cst_module_to_dict],
         "chain_out": [dict_to_cst_module, cst_module_to_string],
@@ -69,7 +70,7 @@ dict_proxy = RenderHost(
 
 
 @window
-@render_func(tint=(0.0923043042421341, 0.041103292256593704, 0.23255813121795654), auto_resize=True)
+@render_func(tint=(0.2288972, 0.11768523, 0.372093), auto_resize=True)
 def draw_modifies_playground(_, draw_state):
     # Both proxies show themselves in their own windows (draw_main → draw()). This
     # window just inspects them AS ordinary dicts - the framework has no idea they're
@@ -84,6 +85,11 @@ def draw_modifies_playground(_, draw_state):
         # request_render()
     imgui.separator()
     imgui.text("Tree Proxy — {value: <GeneralParse>}")
+    # New trick: `.deep.unwrap()` skips the redundant wrapper rungs (value / module /
+    # function name) and hands draw_collection the meaningful content dict with its keys
+    # intact - no manual ["value"][...] indexing or "if key in d" guards.
+    # tree = dict_proxy.deep.unwrap()
+    # if tree:
     changed, value = draw_collection(dict_proxy, name="Tree Proxy Dict", column=1, disable_scroll=False)
 
     myval = InCode.show_bg

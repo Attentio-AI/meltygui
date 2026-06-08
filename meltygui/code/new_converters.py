@@ -88,8 +88,9 @@ from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
 from src.lsd.gl_gui.view.core_conversion.new_codecs import Codec, CallSite, Decorations, type_to_codec, \
     extension_to_codec
 from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import no_save_exclude
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import no_save_exclude, no_save
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
+from src.lsd.gl_gui.view.core_views.headers import draw_header
 from src.lsd.gl_gui.view.invalidation_tracker import Note
 
 
@@ -454,6 +455,7 @@ def run_in_background(input_value, loading_state: LoadingState, unique,
 
 
 @no_save_exclude()
+@no_save("text_cache", "code_tree_cache", "address")
 class CodeState(DictConversion):
     def __init__(self):
         super().__init__()
@@ -1088,7 +1090,7 @@ def code_file_footer(input_value, code_state, **kwargs):
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  editable_source - the whole round-trip, one function                        ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
-@render_func(use_cache=True, selectable=False, searchable=False, disable_scroll=True)
+@render_func(use_cache=True, selectable=False, with_header=draw_header, searchable=False, disable_scroll=True)
 def code_file_io(input_value, code_state: CodeState, codec=None, view_func=RenderFuncs.draw_text, auto_load=True,
                  auto_load_edits=False, min_height=20,
                  child_kwargs=None, draw_state=None, auto_save=True, auto_recompile_edits=False, save=False, load=False,
@@ -1275,7 +1277,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
         time = datetime.now().strftime("%H:%M:%S")
         if save_start:
             note = Note(name="Code_file_io save start", tint=(1, 0.5, 0))
-            Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=4, note=note)
+            # Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=4, note=note)
 
         saved, result = run_in_background(save_file,
                                           child_kwargs={"address": address,
@@ -1294,8 +1296,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             code_state.mark_file_current()
             code_state._pending_save = False
             note = Note(name="On saved, code_file_io", tint=(0.5, 1.0, 1.0), draw_state=draw_state)
-
-            Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=4, note=note)
+            # Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=4, note=note)
 
         # Recompile (hot reload, no disk write): button, Ctrl+Enter, or recompile=True
         # on edit. Same runner, its own loading_state.

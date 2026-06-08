@@ -97,8 +97,8 @@ def draw_module(input_value: types.ModuleType, draw_state, **kwargs):
     imgui.text(f"Module: {input_value.__name__}")
 
 
-@render_func(is_default_for=(type), tint=(0.2, 0.1, 0.0), use_cache=True,
-             header_single_line=True, show_name=True, temp=True,
+@render_func(is_default_for=(type), tint=(0.93, 0.56, 0.23, 0.4), use_cache=True,
+             header_single_line=True, show_name=True, temp=True, is_tree=False, shadow=False,
              show_bg=True, with_header=draw_header)
 def draw_type_name(input_value, **kwargs):
     try:
@@ -360,7 +360,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
         return False, input_value
     if keys is None:
         if isinstance(input_value,
-                      (dict, list, tuple, set, defaultdict, MutableMapping, types.MappingProxyType, deque)):
+                      (dict, list, tuple, set, defaultdict, MutableMapping, types.MappingProxyType, _DeepPath, deque)):
             apply_change = True
             parent_type = input_value.__class__
             if isinstance(input_value, types.MappingProxyType):
@@ -1132,7 +1132,7 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     # Self-registering RenderHost objects (view/core_conversion/render_host.py): each
     # drives a stateful view and draws into its own window. Snapshot the values - a
     # host may register/remove during drawing (re-entrant mutation).
-    for host in list(Core.melty.render_hosts.values()):
+    for h_idx, host in enumerate(list(Core.melty.render_hosts.values())):
         host.draw()
 
     from src.lsd.gl_gui.model.app_model import TensorView
@@ -1661,12 +1661,18 @@ def draw_managed_window(input_value, name, draw_state, mouse_down=False, selecta
     _search_match = kwargs.get("search_match", False)
     _search_current = kwargs.get("search_current", False)
     if window_draw_state.closed:
-        if button(f"{name}", color=window_tint, z_offset=-2, tint_value=0.1, factor=0.95, text_value=0.3,
-                  saturation=1.2, width=draw_state.content_width - target_spacing, height=button_height,
+        if button(f"{name}", color=window_tint, z_offset=-4, tint_value=0.028, factor=0.836, text_value=0.397,
+                  saturation=1.511, width=draw_state.content_width - target_spacing, height=button_height,
                   search_match=_search_match, search_current=_search_current)[0]:
             window_draw_state.closed = False
+            this_window_right = draw_state.abs_left + draw_state.width
+            from_zero_x = window_draw_state.abs_left - window_draw_state.window_pos[0]
+            from_zero_y = window_draw_state.abs_top - window_draw_state.window_pos[1]
+            window_draw_state.window_pos = (this_window_right + 10 - from_zero_x, draw_state.abs_top - from_zero_y)
+            Core.melty.move_window_to_front(window_draw_state)
+            Core.melty.cache.invalidate_up_by_obj(input_value)
     else:
-        if button(f"{name}", saturation=1.5, z_offset=0, color=window_tint, factor=0.6, value=0.2, text_value=1.0,
+        if button(f"{name}", saturation=1.315, z_offset=4, color=window_tint, factor=0.659, value=-0.205, text_value=1.357,
                   width=draw_state.content_width - target_spacing, height=button_height,
                   search_match=_search_match, search_current=_search_current)[0]:
             window_draw_state.closed = True
@@ -1677,10 +1683,11 @@ def draw_managed_window(input_value, name, draw_state, mouse_down=False, selecta
         print(window_tint.__class__.__name__)
         window_tint = (2.558, 0.5, 0.5)
 
+    imgui.set_cursor_screen_pos((draw_state.abs_left + draw_state.content_width-20, draw_state.abs_top))
     target_icon = ""  # Target icon (FontAwesome Unicode)
-    if  button(f"{target_icon}##{name}", height=button_height, color=window_tint, z_offset=-2, tint_value=target_tint_value,
-           factor=0.9,
-           saturation=0.2, shadow=False)[0]:
+    if  button(f"{target_icon}##{name}", height=button_height, color=window_tint, z_offset=2, tint_value=target_tint_value,
+           factor=0.799,
+           saturation=0.764, shadow=False)[0]:
         this_window_right = draw_state.abs_left + draw_state.width
         from_zero_x = window_draw_state.abs_left - window_draw_state.window_pos[0]
         from_zero_y = window_draw_state.abs_top - window_draw_state.window_pos[1]
@@ -3203,7 +3210,7 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, unique=None, class_to
 
     if cm_state.render_func_str is None:
         cm_state.render_func_str = RenderHost(io_function=code_file_io, input_value=input_value._view_func,
-                                                name=f"##{unique}render_func",
+                                                name=f"##{unique}render_func", settings_renderer=draw_text,
                                                 child_kwargs={"auto_load_edits": True})
 
         cm_state.render_func_dict = RenderHost(
@@ -3253,28 +3260,32 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, unique=None, class_to
 
     imgui.text(f"{input_value._call_site}")
 
-    render_func = cm_state.render_func_dict.parameters()
+    render_func = cm_state.render_func_dict.deep.parameters()
     if render_func:
-        changed, value = draw_collection(render_func, tint=(0.3, 0.1, 0.6), name=f"{input_value._view_func.__name__}##{unique}", disable_scroll=True)
+        changed, value = draw_collection(render_func, tint=(0.30, 0.36, 0.47, 0.5), name=f"{input_value._view_func.__name__}##{unique}", disable_scroll=True)
 
     call_site_dict = cm_state.call_site_dict.deep.unwrap() if cm_state.call_site_dict else None
     if call_site_dict:
-        changed, value = draw_collection(call_site_dict, tint=(0.828,0.8,0.285), name=f"Call site##{unique}",
+        from src.lsd.gl_gui.view.core_conversion.chain_converters import caller_func_name
+        caller_name = caller_func_name(input_value._call_stack) or "Call site"
+        changed, value = draw_collection(call_site_dict, is_tree=True, tint=(0.76,0.48,0.35, 0.3), name=f"{caller_name}##call_site{unique}",
                                          disable_scroll=True)
 
 
-    render_func = cm_state.render_func_dict.decorators.render_func()
+    render_func = cm_state.render_func_dict.deep.decorators.render_func()
     if render_func:
-        changed, value = draw_collection(render_func, tint=(0.9,0.9,0.9), name=f"render_func##{unique}", disable_scroll=True)
+    
+        changed, value = draw_collection(render_func, tint=(0.007843138,0.05490196,0.03137255, 0.7
+        ), name=f"render_func##{unique}", disable_scroll=True)
 
-    window_decoration = cm_state.render_func_dict.decorators.window()
+    window_decoration = cm_state.render_func_dict.deep.decorators.window()
     if window_decoration:
         changed, value = draw_collection(window_decoration, tint=(1.00,0.00,1.00), name=f"@window##{unique}",
                                          disable_scroll=True)
 
-    class_defaults = cm_state.class_dict.decorators.defaults()
+    class_defaults = cm_state.class_dict.deep.decorators.defaults()
     if class_defaults:
-        changed, value = draw_collection(class_defaults, tint=(0.00,0.00,0.00), name=f"defaults##{unique}",
+        changed, value = draw_collection(class_defaults, tint=(0.02,0.22,0.40), name=f"defaults##{unique}",
                                          disable_scroll=True)
     else:
         imgui.text("No @defaults decoration found on this class or its parents")

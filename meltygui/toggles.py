@@ -142,29 +142,29 @@ class Toggles:
     @defaults(tint=(1.0, 1.0, 1.0))
     class TextEditor:
         enable_spell_check = False
-    @defaults(tint=(0.9,0.5,0.1))
+    @defaults(tint=(0.77,0.50,0.23))
     class InvalidateTracker:
         keep_for_frames = 13
         enable = False
         draw_bvh = False
 
-    @defaults(tint=(0.0607, 0.3,0.5))
+    @defaults(tint=(0.0354, 0.27,0.59))
     class Debug:
         slow_frame_rate = False
 
-    @defaults(tint=(0.7, 0.7, 0.7))
+    @defaults(tint=(0.79, 0.52, 0.52))
     class ScrollSettings:
         # Base speed (px per wheel-tick event) when the view is large enough that
         # the dynamic cap doesn't bind.
-        scroll_speed = 2e+03
+        scroll_speed = 99.154
         # A single wheel tick never jumps more than this fraction of the vie
         # (clipped) height, so small views don't overshoot.
         max_increment_fraction = 0.48
         # Used for time-based scroll acceleration: wheel ticks arriving within
         # this window count as a continuous gesture. Not yet wired into the cap.
-        acceleration_threshold = 200  # ms
+        acceleration_threshold = 203  # ms
 
-    @defaults(tint=(0.2, 0.1, 0.3))
+    @defaults(tint=(0.67, 0.58, 0.19))
     class InputHandlerToggles:
         show_debug = True
 
@@ -203,14 +203,14 @@ class Toggles:
      # Shadow Settings
     shadow_downscale = 2
 
-    shadow_edge_sharpness = 50.0
+    shadow_edge_sharpness = 49.833
     draw_legacy = False
 
 
     show_full_call_stack = False
     ignore_call_from = ("draw", "_run_visualization", "run", "_bootstrap",
                         "_bootstrap_inner", "convert_in_and_out", "draw_melty_windows", "end_frame", "render", "draw_inner",
-                        "draw_inner_main", "draw_collection", "draw_with_view_funcs")
+                        "draw_inner_main", "draw_with_view_funcs")
     # Screenshot output directory (used by screenshot.py / context menu capture)
     screenshots = "/home/lukas/melty/screenshots"
 
