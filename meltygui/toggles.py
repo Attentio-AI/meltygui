@@ -97,12 +97,12 @@ class Tint:
 
     # Context menu tints
     context_select_tint = (1.0, 0.7, 0.2)
-    context_select_outline_alpha = -0.12
+    context_select_outline_alpha = -0.242
     context_select_bg_alpha = 0.592
     context_select_rounding = 4.988
 
     # Background constants
-    context_menu_bg_offset = -1.0
+    context_menu_bg_offset = -7.529
 
     # Highlight outline boxes (parent + child views)
     highlight_outline_thickness = 3.0   # outline line thickness
@@ -149,7 +149,7 @@ class Swoosh:
                                 # within this fraction of the parent's shorter side (else stay flat)
 
 
-@window(tint=(0.39, 0.43, 0.50))
+@window(tint=(0.50, 0.54, 0.62))
 
 class Toggles:
 
@@ -170,7 +170,7 @@ class Toggles:
     class InputHandlerToggles:
         show_debug = False
 
-    @defaults(tint=(0.81, 0.81, 0.75))
+    @defaults(tint=(0.86, 0.76, 0.61))
     class ScrollSettings:
         # Base speed (px per wheel-tick event) when the view is large enough that
         # the dynamic cap doesn't bind.
@@ -200,7 +200,7 @@ class Toggles:
     slow_down_threads = False
     render_depth = False
     ds_invalidate_stack = False
-    profile_mode = ProfileMode.OFF
+    profile_mode = ProfileMode.LIGHT
     debug_stale_tint = False
     show_line_break = False
 

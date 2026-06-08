@@ -200,7 +200,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         if _font_handle is not None:
             imgui.push_font(_font_handle)
             _font_pushed = True
-    
+
     # Depth-driven name brightness
     depth_scale       = 0.06
     depth_offset      = -30.0
@@ -208,8 +208,8 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     # Depth drives text saturation falloff
     sat_depth_factor  = -0.004
     sat_depth_offset  = -1.773
-    
-    
+
+
     spinner_icon_0 = ""
     spinner_icon_1 = ""
 
@@ -225,9 +225,9 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
     # Name text (value is the base offset, updated to depth below)
     name_style = {
-        'value': 1.034, 'saturation': 0.715,
+        'value': 1.188, 'saturation': 0.778,
         'alpha': 0.174, 'max_value': 3.921,
-        'depth_factor': 0.741
+        'depth_factor': 0.729
     }
     name_rounding       = 2.696
     max_name_chars      = 40
@@ -241,7 +241,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
     name_style['value'] = depth_intensity * name_style['depth_factor'] + name_style['value']
     name_style['saturation'] = name_style['saturation'] + sat_shift
-    
+
     if name_color is not None:
         name_color = style_manager.make_color_style_rgb(*name_color, input=name_style, factor=0.1)
     else:
@@ -357,7 +357,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         else:
             text_width = imgui.calc_text_size(clipped_name)[0]
 
-        
+
 
         if icon is not None:
             imgui.align_text_to_frame_padding()
@@ -367,7 +367,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         push_style_var(imgui.STYLE_FRAME_ROUNDING, name_rounding)
 
         if not draw_state._name_edit:
-        
+
             draw_list: _DrawList = imgui.get_window_draw_list()
             cursor_pos = imgui.get_cursor_screen_pos()
             # Search-match highlight behind the key name (drawn before the text

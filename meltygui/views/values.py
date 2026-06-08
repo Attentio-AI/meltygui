@@ -2429,10 +2429,10 @@ def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=F
 
     imgui.dummy(0, 4)
     depth = max(0.0, Core.melty.bg_depth)
-    depth_scale = 0.088
+    depth_scale = 0.067
     name_style = {
-        'value': -0.479, 'saturation': 1.172,
-        'alpha': 0.014, 'max_value': 3.921,
+        'value': 0.143, 'saturation': 0.92,
+        'alpha': 0.014, 'max_value': 0.787,
         'depth_factor': 0.741
     }
     depth_intensity = float(depth) * depth_scale
@@ -2756,6 +2756,9 @@ def draw_tab_bar(input_value: list, tab_height=30, names=None, tint_value=0.235,
     avoid the mutable-default-arg pitfall; behaves identically to an empty list.)"""
     if collection is None:
         return False, input_value
+        
+    imgui.dummy(0,0)
+    imgui.same_line()
 
     io = imgui.get_io()
     changed = False
@@ -2793,24 +2796,24 @@ def draw_tab_bar(input_value: list, tab_height=30, names=None, tint_value=0.235,
         if tinted:
             tab_color = tints[i]
 
-        value = 0.3 if not tinted else 0.1
+        new_value = 0.15 if not tinted else 0.1
 
         # make_color_rgb mixes `color` toward the theme color by `factor`; factor=1.0 (button's
         # default) discards `color` entirely. Drop factor for tinted tabs so the tint shows, and
         # give inactive tinted tabs a faint fill (the default alpha=0.0 draws no rect at all).
-        tab_factor = 0.50 if tinted else 1.0
+        tab_factor = 0.30 if tinted else 1.2
 
         tab_width = imgui.calc_text_size(label.split("##")[0]).x + button_padding
 
         if active:
-            selected_value = 0.204
+            selected_value = 0.23
             clicked = button(label, z_offset=2, name=f"tab_{i}_{unique}",
-                             height=tab_height - 3, value=value + selected_value,
+                             height=tab_height - 3, tint_value=new_value + selected_value - 0.03,
                              color=tab_color, factor=tab_factor, draw=True)[0]
         else:
             saturation = 1.0 if tinted else 0.3
             clicked = button(label, indent_size=0, height=tab_height, draw=True, z_offset=0.0,
-                             alpha=0.0 if tinted else 0.0, value=value if not tinted else 0.1, saturation=saturation,
+                             alpha=0.0 if tinted else 0.0, tint_value=new_value if not tinted else 0.1, saturation=saturation,
                              name=f"tab_{i}_{unique}_deactivated", color=tab_color, factor=tab_factor,
                              text_value=1.0 if not tinted else 0.9,
                              shadow=False)[0]
@@ -3372,8 +3375,8 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     imgui.same_line()
     imgui.text_colored(f"{context_menu_offset}", 1, 1, 1, 0.3)
     imgui.same_line()
-    
-    
+
+
     # Screenshot this menu's parent view, top of the menu below the nav arrows.
     # Deferred so the menu isn't in the shot: front the owning window (so the
     # view is visible), queue the view capture, hide this menu (asking to reopen
@@ -3467,8 +3470,8 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
         class_tab = f" {class_name}"
 
     # Static tint colors for the fixed Config / Info tabs; remaining tabs use the neutral grey.
-    config_tint = (0., 0.2, 0.5)  # steel blue
-    info_tint = (1.0, 0.64, 0.113)  # teal
+    config_tint = (0.0, 0.2, 0.5) 
+    info_tint = (0.545, 0.469, 0.012) 
 
     tab_names = []
     tab_tints = []
@@ -3513,7 +3516,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
                                          collection=indices, tints=tab_tints, as_toggles=False)
     if tab_changed:
         tab_state.selected_tabs = new_tabs
-        
+
     imgui.dummy(0,2)
 
     for t_idx, static_tab in enumerate(tab_state.selected_tabs):
