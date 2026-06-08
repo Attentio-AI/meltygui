@@ -7,6 +7,7 @@ from collections import defaultdict
 from copy import copy
 from enum import Enum
 from functools import wraps
+from math import ceil
 from typing import Any
 
 import glfw
@@ -1121,7 +1122,7 @@ def render_func(*args, **o_kwargs):
                     draw_state._initial_window_size = None
                     draw_state._initial_window_pos_resize = None
 
-            left_mouse_up = draw_state.on_action("non_blocking_left_mouse_down", "clear_focus", priority_delta=1)
+            left_mouse_up = draw_state.on_action("non_blocking_left_mouse_down", "clear_focus", priority_delta=512)
             if left_mouse_up:
                 ds_under_mouse = Melty.bvh_query(*imgui.get_mouse_pos())
                 Melty.clear_focus(not_this=(*ds_under_mouse, draw_state))
@@ -3223,7 +3224,15 @@ def render_func(*args, **o_kwargs):
             needs_scroll = False
 
         draw_state.scroll_visible = needs_scroll
-        if not needs_scroll:
+        # Only zero the offset when the content GENUINELY fits - never while the
+        # content height is still unmeasured (invalid_content_height). On the
+        # first frame(s) after a view loads from a saved state, its children
+        # haven't registered yet, so abs_content_height (and thus needs_scroll)
+        # reads stale/0; zeroing then would wipe the restored scroll_offset
+        # before the content kicks in. invalid_content_height isn't persisted, so a
+        # freshly loaded view starts True and turns False once draw_collection
+        # has actually measured the content.
+        if not needs_scroll and draw_state.frame_count > 3:
             draw_state.scroll_offset = (0, 0)
         scroll_y_changed = None
         if needs_scroll:
@@ -3252,7 +3261,7 @@ def render_func(*args, **o_kwargs):
                     draw_state._parent.abs_clipped_height)
             else:
                 scroll_speed = Toggles.ScrollSettings.scroll_speed
-            new_offset_y = current_y + scroll_delta * direction * scroll_speed
+            new_offset_y = ceil(current_y + scroll_delta * direction * scroll_speed)
 
             if scroll_y_changed:
                 Melty.last_scroll_time = time.time()

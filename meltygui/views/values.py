@@ -2511,6 +2511,7 @@ def draw_color_picker(input_value, wrap=True, draw_state=None, **kwargs):
     (changed, new_tuple). Entirely stateless — HSV is derived from the value each
     frame and the edit written straight back (imgui's own is_item_active tracks
     the drag), so it can be dropped anywhere; draw_tuple wraps it in Mode.POPOVER."""
+    imgui.dummy(0,3)
     vals = list(input_value)
     has_alpha = len(vals) >= 4
     r, g, b = float(vals[0]), float(vals[1]), float(vals[2])
@@ -2519,57 +2520,86 @@ def draw_color_picker(input_value, wrap=True, draw_state=None, **kwargs):
 
     SQ, BAR_W, GAP = 180, 18, 8
     dl = imgui.get_window_draw_list()
-    ox, oy = imgui.get_cursor_screen_pos()
-    sx0, sy0, sx1, sy1 = ox, oy, ox + SQ, oy + SQ
-
-    # SV square: white->hue across, transparent->black down.
-    hr, hg, hb = imgui.color_convert_hsv_to_rgb(h, 1.0, 1.0)
     white = imgui.get_color_u32_rgba(1, 1, 1, 1)
-    hue = imgui.get_color_u32_rgba(hr, hg, hb, 1)
     black = imgui.get_color_u32_rgba(0, 0, 0, 1)
     trans = imgui.get_color_u32_rgba(0, 0, 0, 0)
-    dl.add_rect_filled_multicolor(sx0, sy0, sx1, sy1, white, hue, hue, white)
-    dl.add_rect_filled_multicolor(sx0, sy0, sx1, sy1, trans, trans, black, black)
-
     changed = False
-    imgui.set_cursor_screen_pos((sx0, sy0))
+    hsv_changed = False  # only convert HSV->RGB when the square/hue is actually changed
+
+    # Everything renders in NATURAL imgui flow (invisible_button advances the
+    # cursor, same_line for the hue bar, plain widgets below). That keeps imgui's
+    # content-size tracking honest so the auto-resized popover grows to match the
+    # square + channel rows + hex.
+
+    # --- SV square: white->hue across, transparent->black down ---
+    sx0, sy0 = imgui.get_cursor_screen_pos()
+    hr, hg, hb = imgui.color_convert_hsv_to_rgb(h, 1.0, 1.0)
+    hue = imgui.get_color_u32_rgba(hr, hg, hb, 1)
+    dl.add_rect_filled_multicolor(sx0, sy0, sx0 + SQ, sy0 + SQ, white, hue, hue, white)
+    dl.add_rect_filled_multicolor(sx0, sy0, sx0 + SQ, sy0 + SQ, trans, trans, black, black)
     imgui.invisible_button("##sv", SQ, SQ)
     if imgui.is_item_active():
         mx, my = imgui.get_mouse_pos()
         s = min(max((mx - sx0) / SQ, 0.0), 1.0)
         v = 1.0 - min(max((my - sy0) / SQ, 0.0), 1.0)
-        changed = True
+        hsv_changed = True
 
-    # Hue bar (vertical), drawn as 6 linear segments.
-    hx0, hx1 = sx1 + GAP, sx1 + GAP + BAR_W
+    # --- Hue bar to its right, 6 gradient segments ---
+    imgui.same_line(spacing=GAP)
+    hx0, hy0 = imgui.get_cursor_screen_pos()
     for i in range(6):
         t0, t1 = i / 6.0, (i + 1) / 6.0
         r0, g0, b0 = imgui.color_convert_hsv_to_rgb(t0, 1, 1)
         r1, g1, b1 = imgui.color_convert_hsv_to_rgb(t1, 1, 1)
         c0 = imgui.get_color_u32_rgba(r0, g0, b0, 1)
         c1 = imgui.get_color_u32_rgba(r1, g1, b1, 1)
-        dl.add_rect_filled_multicolor(hx0, sy0 + SQ * t0, hx1, sy0 + SQ * t1, c0, c0, c1, c1)
-    imgui.set_cursor_screen_pos((hx0, sy0))
+        dl.add_rect_filled_multicolor(hx0, hy0 + SQ * t0, hx0 + BAR_W, hy0 + SQ * t1, c0, c0, c1, c1)
     imgui.invisible_button("##hue", BAR_W, SQ)
     if imgui.is_item_active():
-        h = min(max((imgui.get_mouse_pos()[1] - sy0) / SQ, 0.0), 1.0)
-        changed = True
+        h = min(max((imgui.get_mouse_pos()[1] - hy0) / SQ, 0.0), 1.0)
+        hsv_changed = True
 
-    # Markers (after input, so they sit at the updated position).
+    # --- Markers (after input, at the current position) ---
     cx, cy = sx0 + s * SQ, sy0 + (1.0 - v) * SQ
     dl.add_circle(cx, cy, 6, black, thickness=1.0)
     dl.add_circle(cx, cy, 5, white, thickness=1.5)
-    hmy = sy0 + h * SQ
-    dl.add_rect(hx0 - 1, hmy - 2, hx1 + 1, hmy + 2, white, thickness=1.5)
+    hmy = hy0 + h * SQ
+    dl.add_rect(hx0 - 1, hmy - 2, hx0 + BAR_W + 1, hmy + 2, white, thickness=1.5)
 
-    # Leave the cursor below the widget so the auto-resizing window sizes to it.
-    imgui.set_cursor_screen_pos((sx0, sy1 + 4))
-    imgui.dummy(SQ + GAP + BAR_W, 1)
+    # Fold the SV/hue edit back to RGB only when the square or hue bar was just
+    # dragged. Otherwise keep the original input RGB untouched - round-tripping
+    # RGB->HSV->RGB every frame accumulates conversion error and feeds it back as
+    # next frame's input, which is what made the RGB sliders jitter.
+    if hsv_changed:
+        r, g, b = imgui.color_convert_hsv_to_rgb(h, s, v)
+        changed = True
+
+    # --- RGBA drag floats (natural flow, below the square row). Dragging a
+    # channel edits RGB directly, overriding the HSV-derived value this frame. ---
+    imgui.dummy(0, 4)
+    imgui.push_item_width(SQ + GAP + BAR_W)
+    out = []
+    for lbl, cur in ([("R", r), ("G", g), ("B", b)] + ([("A", a)] if has_alpha else [])):
+        imgui.set_next_item_width(draw_state.content_width - 30)
+        ch, nv = imgui.drag_float(f"{lbl}##cp_{lbl}", cur, 0.004, 0.0, 1.0, "%.3f")
+        if ch:
+            changed = True
+        out.append(min(max(nv, 0.0), 1.0))
+        imgui.dummy(0,1)
+    imgui.pop_item_width()
+    r, g, b = out[0], out[1], out[2]
+    if has_alpha:
+        a = out[3]
+
+    # --- Hex code label (#rrggbb, +a with alpha) ---
+    ri, gi, bi = (int(round(c * 255)) for c in (r, g, b))
+    hex_str = (f"#{ri:02x}{gi:02x}{bi:02x}{int(round(a * 255)):02x}"
+               if has_alpha else f"#{ri:02x}{gi:02x}{bi:02x}")
+    imgui.text(hex_str)
 
     if changed:
-        nr, ng, nb = imgui.color_convert_hsv_to_rgb(h, s, v)
         request_render()
-        return True, ((nr, ng, nb, a) if has_alpha else (nr, ng, nb))
+        return True, ((r, g, b, a) if has_alpha else (r, g, b))
     return False, input_value
 
 
@@ -2599,9 +2629,14 @@ def draw_tuple(input_value: tuple, name, unique, draw_state):
             request_render()
         is_open = Melty.popover_focused_ds is draw_state  # reflect the update this frame
 
+        # The picker popover is closable and fixed size (auto-resize is off for
+        # closable windows), and the content is raw imgui (not child render_funcs)
+        # so the framework can't measure it. Size the window to fit the SV square
+        # (180) + the N RGBA drag-float rows + the hex label, so nothing clips.
+        picker_h = 180 + 14 + len(input_value) * 26 + 26
         color_changed, new_color = draw_color_picker(input_value, name=f"color_picker{unique}",
                                                 closed=not is_open, window_pos=(0, 10),
-                                                layer_offset=4, width=208, height=200, mode=Mode.POPOVER)
+                                                layer_offset=4, width=216, height=picker_h, mode=Mode.POPOVER)
         if is_open:
             if color_changed:
                 input_value = tuple(new_color)
@@ -3413,12 +3448,12 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, unique=No
 
     render_func = cm_state.render_func_dict.deep.decorators.render_func()
     if render_func:
-        changed, value = draw_collection(render_func, tint=(0.00956193,0.1581395,0.03996849, 0.7),
+        changed, value = draw_collection(render_func, bg_offset=-20, tint=(0.00956193,0.1581395,0.03996849, 0.7),
                                          name=f"render_func##{unique}", disable_scroll=True)
 
     window_decoration = cm_state.render_func_dict.deep.decorators.window()
     if window_decoration:
-        changed, value = draw_collection(window_decoration, tint=(1.00,0.00,1.00), name=f"@window##{unique}",
+        changed, value = draw_collection(window_decoration, bg_offset=-20, tint=(1.00,0.00,1.00), name=f"@window##{unique}",
                                          disable_scroll=True)
 
     class_defaults = cm_state.class_dict.deep.decorators.defaults()

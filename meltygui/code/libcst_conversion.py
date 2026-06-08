@@ -123,7 +123,7 @@ class CodeLine(str):
     """
 
 
-@defaults(tint=(0.7, 0.406749, 0.0264792, 0.09), shadow=True, child_kwargs={"editable":False}, z_offset=-0.5, name_color=(1.0, 0.479, 0.0), font=Font.JETBRAINS_MONO_19,
+@defaults(tint=(0.7, 0.406749, 0.0264792, 0.09), shadow=True, child_kwargs={"editable":False}, z_offset=0, name_color=(1.0, 0.479, 0.0), font=Font.JETBRAINS_MONO_19,
  is_tree=False, bg_offset=1, header_same_line=True)
 class Conditional(dict):
     """An if/elif/else block's contents, as a dict subclass.

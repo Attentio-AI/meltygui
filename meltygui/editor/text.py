@@ -565,15 +565,19 @@ def _scroll_into_view(ds, top_abs, bottom_abs, margin=40.0):
             if top_abs < view_top + margin:
                 current_x = node.scroll_offset[0]
                 new_offset = sy - (view_top + margin - top_abs)
+                __old_scroll = node.scroll_offset
                 node.scroll_offset = (current_x,
                                       max(0, min(new_offset, node._max_scroll_y)))
+                node._debug_log_scroll(node, __old_scroll, node.scroll_offset, "scroll_into_view top")
 
                 request_render()
             elif bottom_abs > view_bottom - margin:
                 current_x = node.scroll_offset[0]
                 new_offset = sy + (bottom_abs - (view_bottom - margin))
+                __old_scroll = node.scroll_offset
                 node.scroll_offset = (current_x,
                                       max(0, min(new_offset, node._max_scroll_y)))
+                node._debug_log_scroll(node, __old_scroll, node.scroll_offset, "scroll_into_view bottom")
 
                 request_render()
             return
@@ -1402,10 +1406,12 @@ def draw_text(input_value: str,
     else:
         text_height = (input_value.count('\n') + 1) * line_px + 2
 
-    imgui.dummy(draw_state.content_width, text_height)
 
     if _font_pushed:
-        imgui.pop_font()
+    
+            imgui.pop_font()
+    imgui.dummy(draw_state.content_width - 1
+    , text_height)
 
     if changed:
         rebuilt_text = text + '\n'.join(original_input.split('\n')[max_lines:])

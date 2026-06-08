@@ -759,6 +759,12 @@ class Melty:
             if ds.closed or ds.abs_closed:
                 stale.append(ds)
                 continue
+            # The index stores full, UNCLIPPED bboxes, so a view scrolled partly
+            # out of its parent still matches over its hidden region. Reject the
+            # hit when the point lies outside the view's visible (clipped) region.
+            cl, ct, cr, cb = ds.abs_clip_rect
+            if not (cl <= x <= cr and ct <= y <= cb):
+                continue
             hits.append(ds)
 
         for ds in stale:
