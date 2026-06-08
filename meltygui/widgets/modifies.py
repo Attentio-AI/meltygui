@@ -70,8 +70,8 @@ dict_proxy = RenderHost(
 
 
 @window
-@render_func(tint=(0.2288972, 0.11768523, 0.372093), auto_resize=True)
-def draw_modifies_playground(_, draw_state):
+@render_func(tint=(0.365442, 0.3386046, 0.40), auto_resize=True)
+def test_code_ui(_, draw_state):
     # Both proxies show themselves in their own windows (draw_main → draw()). This
     # window just inspects them AS ordinary dicts - the framework has no idea they're
     # proxies; it's rendering ordinary dicts whose single value was materialized by

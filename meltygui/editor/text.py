@@ -4,6 +4,7 @@ import glfw
 import imgui
 
 from src.lsd.gl_gui.model.core_model.draw_state import Anchor, Pin
+from src.lsd.gl_gui.toggles import Tint
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import CodeLine
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.headers import draw_header, draw_footer
@@ -644,7 +645,7 @@ def draw_text(input_value: str,
               left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
               horizontal_scroll_drag=False, search_text="",
               single_line=False, is_search_box=False,
-              draw_state=None, request_focus=True,
+              draw_state=None, request_focus=False,
               line_height=1.149, font=Font.JETBRAINS_MONO_19, jump_to=None,
               code_tree=None, error=None):
     ds = draw_state
@@ -1355,11 +1356,18 @@ def draw_text(input_value: str,
     # Cursor. Drawn at the caret even while a selection exists, so the active
     # (moving) edge of a drag or shift-selection shows where delete and arrow
     # keys will act from - text_cursor_pos already tracks that location.
+    blink_cursor = False
     if is_focused:
-        if (time.time() - ds.text_cursor_blink_time) % 1.0 < 0.5:
+        if not blink_cursor or (time.time() - ds.text_cursor_blink_time) % 1.0 < 0.5:
             cx, cy = _char_pos_to_xy(text, ds.text_cursor_pos, origin_x, origin_y, line_px)
-            cursor_color = 0xFFFFFFFF  # white
-            draw_list.add_line(cx, cy, cx, cy + line_px, cursor_color, 1.0)
+            current_line_rect = (int(origin_x), int(cy + 1), int(origin_x + visible_width), int(cy + line_px + 1))
+            line_highlight_color = imgui.get_color_u32_rgba(*Tint.cursor_tint()[:3], 0.1)
+            draw_list.add_rect_filled(*current_line_rect, line_highlight_color)
+
+            imgui_color = imgui.get_color_u32_rgba(*Tint.cursor_tint()[:3], 1.0)
+            draw_list.add_line(cx, cy, cx, cy + line_px, imgui_color, 2.0)
+            # Highlight selection
+
 
     draw_list.pop_clip_rect()
 

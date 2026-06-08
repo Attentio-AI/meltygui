@@ -377,8 +377,7 @@ class RenderHost(_DeepAttrMixin, dict):
         # echo re-surfaces the just-materialized value every cycle → chain_out → save in
         # a self-sustaining loop. r_changed (the renderer's own edit) always surfaces.
         if self._external_change:
-            self._wrapper_draw_state._parent.invalidate(obj=input_value)
-
+            self._wrapper_draw_state._parent.invalidate()
             self._draw_state._parent.invalidate_by_obj(obj=input_value)
             self._draw_state._parent.invalidate_by_obj(obj=self)
 
@@ -493,13 +492,14 @@ class RenderHost(_DeepAttrMixin, dict):
             win_kwargs.setdefault("mode", Mode.HOST_WINDOW)
             win_kwargs["active_layer"] = 1
             win_kwargs["unmanaged"] = True
+            win_kwargs["closed"] = False
 
         win_kwargs.update(extra)
 
         RenderHost._active.append(self)
         try:
             win_kwargs['tint'] = (0.3, 0, 0.7, 0.1)
-            win_kwargs['height'] = 20
+            # win_kwargs['height'] = 40
 
             result = render_host_view(iv, **win_kwargs)
         finally:

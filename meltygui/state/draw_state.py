@@ -106,6 +106,10 @@ class DropDownState(DictConversion):
         self.search = ""
         self._focus_search = 0
         self._search_box_tile = None
+        # True once the search box has held text focus this open. Lets us tell a
+        # brand-new open (still acquiring focus) from focus genuinely leaving the
+        # dropdown; the latter closes us, keeping text focus and open in lock-step.
+        self._had_focus = False
         # The committed selection's key-path + text label (the trigger shows the
         # label, e.g. "red", not the raw value). _picked_path is stamped by the row
         # click / Enter so the path survives the close that resets cursor_path.

@@ -941,6 +941,7 @@ class Melty:
                     cls.cache.invalidate_up(pop.parent_window._tile_id, force=True)
                 cls.cache.invalidate_up(pop._tile_id, force=True)
 
+
                 request_render()
 
         mouse_pos = imgui.get_mouse_pos()

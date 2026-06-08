@@ -1100,10 +1100,11 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     # doesn't eat it; only subscribes while open, so it doesn't swallow Esc from
     # a per-view search otherwise.
     _gs = Core.melty.find_window("GlobalSearch")
-    if _gs is not None and not _gs.closed and draw_state.on_action("non_blocking_escape_key_down_inverted"):
+    if _gs is not None and not _gs.closed and draw_state.on_action("non_blocking_escape_key_down_inverted", priority_delta=512):
         _gs.closed = True
         Core.melty.text_focused_ds = None
         Core.melty.focused_ds = None
+
         request_render()
 
     draw_any(Core.melty.registered_windows, name="Dock", with_header=draw_header,
@@ -1144,8 +1145,9 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
                               "show_name":False, "show_header":False, "show_bg":False, "horizontal":True})
 
     global drop_down_selection
-    changed, selection = draw_dropdown(drop_down_selection, collection=vis.root.lora_collection.loras,
+    changed, selection = draw_dropdown(drop_down_selection, collection=dropdown_demo_data,
                                        name="Dropdown Demo", mode=Mode.WINDOW, tint=(0.180984, 0.2, 0.2))
+
     if changed:
         drop_down_selection = selection
         print("Drop down change", str(selection))
@@ -2158,11 +2160,12 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
     return False, bg_color
 
 
+
 @render_func(use_cache=True, selectable=False, disable_scroll=True, indent_size=0, show_bg=False, min_width=10,
              min_height=10, wrap=True)
 def button(input_value="", draw_state=None, alpha=1.0, left_mouse_held=False, shadow=True, left_mouse_down=False,
            color=(0.533, 0.068, 0.5), hovered=False, width=None, height=None, style_manager=None, show_button_bg=True,
-           factor=1.0, tint_value=0.32, text_value=1.023, saturation=0.8, unique=0, text_align="center",
+           factor=1.0, tint_value=0.32, text_value=1.023, saturation=0.8, text_saturation=0.4, unique=0, text_align="center",
            search_match=False, search_current=False, tint=None, rounding=None):
     if color is not None:
         if not isinstance(color, tuple) or len(color) < 3:
@@ -2182,7 +2185,7 @@ def button(input_value="", draw_state=None, alpha=1.0, left_mouse_held=False, sh
             mixed_color = style_manager.make_color_rgb(color[0], color[1], color[2], value=tint_value,
                                                        factor=factor, saturation_scale=saturation, alpha=1.0)
         text_color = style_manager.make_color_rgb(color[0], color[1], color[2], value=text_value,
-                                                  factor=factor, saturation_scale=0.4, alpha=1.0)
+                                                  factor=factor, saturation_scale=text_saturation, alpha=1.0)
     else:
         text_color = (1.0, 1.0, 1.0)
         mixed_color = (0, 0, 0)
@@ -2242,6 +2245,8 @@ def button(input_value="", draw_state=None, alpha=1.0, left_mouse_held=False, sh
         request_render()
         return True, input_value
 
+    return False, input_value
+    return False, input_value
     return False, input_value
 
 
@@ -2418,7 +2423,7 @@ def draw_usage(input_value: UsageRef):
 
 
 @render_func(is_default_for=(Comment), shadow=False, indent_size=4, selectable=False, use_cache=True,
-             show_bg=True, with_header=None, is_tree=True, temp=True)
+             show_bg=False, with_header=None, is_tree=True, temp=True)
 def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=False):
     changed, value = False, input_value
 
@@ -3671,6 +3676,7 @@ def draw_dropdown(input_value, collection, name, draw_state, drop_down_state: Dr
             drop_down_state.open_path = _sp[:-1] if _sp else ()
             drop_down_state._kbd_mode = False
             drop_down_state._last_mouse = None
+            drop_down_state._had_focus = False
         if not is_open:
             _dd_close(drop_down_state)
             draw_state.invalidate()
@@ -3712,12 +3718,18 @@ def draw_dropdown(input_value, collection, name, draw_state, drop_down_state: Dr
             request_render()
             return True, new_item
 
-        # Keyboard: Esc closes the popover, arrows move the highlight, Enter picks
-        # the highlighted leaf. The search term (published by the root menu's
-        # text box) filters key-nav the same way it filters the rows. Keys are
-        # delivered without hover because Melty.begin_frame force-invalidates this
-        # view on any keypress while it's popover_focused_ds.
-        search = getattr(drop_down_state, "search", "") or ""
+        # The dropdown owns the keyboard while open: its search box holds text
+        # focus (taken on open, released on close), so OTHER text editors gate off
+        # (they all check Melty.text_focused_ds) and never act on the same keys. We
+        # only handle nav keys while we actually hold that focus - that's what
+        # keeps the arrow/Enter/Esc collisions with whatever editor was active.
+        box_tile = getattr(drop_down_state, "_search_box_tile", None)
+        text_focused = (Melty.text_focused_ds is not None and box_tile is not None
+                        and getattr(Melty.text_focused_ds, "_tile_id", None) == box_tile)
+
+        # Esc dismisses the open dropdown (and releases its text focus via
+        # _dd_close). Ungated: the global text box Esc handler may have already
+        # cleared the box's focus this same frame, so we don't require it here.
         if any(k == glfw.KEY_ESCAPE for k, _ in Core.melty.frame_key_events):
             Melty.popover_focused_ds = None
             _dd_close(drop_down_state)
@@ -3725,24 +3737,21 @@ def draw_dropdown(input_value, collection, name, draw_state, drop_down_state: Dr
             request_render()
             return False, input_value
 
-        # While the search box holds text focus, Left/Right belong to the text
-        # cursor, not menu nav (Up/Down/Enter still drive the menu - the box is
-        # single-line so they ignores them).
-        box_tile = getattr(drop_down_state, "_search_box_tile", None)
-        text_focused = (Melty.text_focused_ds is not None and box_tile is not None
-                        and getattr(Melty.text_focused_ds, "_tile_id", None) == box_tile)
-        picked = _dd_handle_keys(collection, drop_down_state, search=search,
-                                 text_focused=text_focused)
-        if picked is not UNSET_VALUE:
-            _p = _dd_as_tuple(getattr(drop_down_state, "_picked_path", ()))
-            drop_down_state.selected_path = _p
-            drop_down_state.selected_label = _dd_label_for_path(collection, _p)
-            Melty.popover_focused_ds = None
-            _dd_close(drop_down_state)
-            draw_state.invalidate()
-
-            request_render()
-            return True, picked
+        # Arrows / Enter only while we own the keyboard, so they don't also drive
+        # whatever editor was active when the dropdown opened.
+        if text_focused:
+            search = getattr(drop_down_state, "search", "") or ""
+            picked = _dd_handle_keys(collection, drop_down_state, search=search,
+                                     text_focused=text_focused)
+            if picked is not UNSET_VALUE:
+                _p = _dd_as_tuple(getattr(drop_down_state, "_picked_path", ()))
+                drop_down_state.selected_path = _p
+                drop_down_state.selected_label = _dd_label_for_path(collection, _p)
+                Melty.popover_focused_ds = None
+                _dd_close(drop_down_state)
+                draw_state.invalidate()
+                request_render()
+                return True, picked
 
         # Click-outside dismissal: a fresh left click landing on neither the
         # trigger nor anywhere inside the popover subtree closes it (matches
@@ -3920,6 +3929,7 @@ def _dd_close(root_state):
     root_state.search_query = ""
     root_state.search = ""
     root_state._focus_search = 0
+    root_state._had_focus = False
     box_tile = getattr(root_state, "_search_box_tile", None)
     tf = Melty.text_focused_ds
     if tf is not None and box_tile is not None and getattr(tf, "_tile_id", None) == box_tile:
@@ -3944,6 +3954,10 @@ def _dd_handle_keys(collection, root_state, search="", text_focused=False):
     right = pressed(glfw.KEY_RIGHT)
     left = pressed(glfw.KEY_LEFT)
     enter = pressed(glfw.KEY_ENTER, glfw.KEY_KP_ENTER)
+    # While typing a query, Left/Right are the search box's text cursor, not tree
+    # navigation, so the dropdown doesn't double-act on them.
+    if text_focused and search:
+        left = right = False
     if not (down or up or right or left or enter):
         return UNSET_VALUE
 
@@ -4101,21 +4115,23 @@ def _dd_menu_row(input_value, draw_state, label="", is_branch=False, row_path=()
     is on the open path (`sub_open`). Hovering the row points the cursor here (so
     mouse and keyboard share one highlight). The highlight is painted over the
     row box when this row is hovered or is the keyboard cursor."""
+
     hovered = draw_state._bounding_hovered
     # Colour the row by its value's embedded tint (e.g. a Lora's .tint), falling
     # back to the menu tint for plain values.
     tint = _dd_obj_tint(input_value, tint)
     fa_chrevron_right = f"\uf054"
 
+
     chevron = f"  {fa_chrevron_right}" if is_branch else "    "  # fa-chevron-right
     if is_branch:
         clicked, _ = button(f"{label}{chevron}", name=f"{label}_ddrow", width=draw_state.content_width,
-                            height=_DD_ROW_H, hovered=hovered, text_value=0.3,
+                            height=_DD_ROW_H, hovered=hovered, text_value=0.36, text_saturation=0.799,
                           z_offset=0, rounding=0, show_button_bg=False,
                             text_align="right", tint=tint)
     else:
         clicked, _ = button(f"{label}{chevron}", name=f"{label}_ddrow", show_button_bg=False,
-                            width=draw_state.content_width, height=_DD_ROW_H, hovered=hovered, z_offset=0, shadow=False,
+                            width=draw_state.content_width, height=_DD_ROW_H, hovered=hovered,text_saturation=0.716, z_offset=0, shadow=False,
                             text_align="right", tint=tint)
 
     # In keyboard nav mode the arrow keys move the highlight; hover neither
@@ -4124,9 +4140,12 @@ def _dd_menu_row(input_value, draw_state, label="", is_branch=False, row_path=()
     if hovered and not kbd_mode:
         _dd_set_cursor(root_state, row_path, is_branch)
 
-    # Highlight straight onto the window draw list, framed to this row's box, when
-    # this row is under the mouse (mouse mode) or is the keyboard cursor.
-    if (hovered and not kbd_mode) or is_cursor:
+    # ONE highlight, painted to the row's box. Mouse mode keys off the live hover;
+    # keyboard mode keys off the cursor. Using a single source per mode (rather
+    # than hover OR cursor) avoids briefly painting both the stale-cursor row and
+    # the newly-hovered row, which doubled the wash and looked inconsistent.
+    active = is_cursor if kbd_mode else hovered
+    if active:
         dl = imgui.get_window_draw_list()
         dl.add_rect_filled(draw_state.abs_left, draw_state.abs_top,
                            draw_state.abs_left + draw_state.width,

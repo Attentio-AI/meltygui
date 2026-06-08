@@ -80,14 +80,27 @@ class Tint:
                       min(max(active_hsv[2] * value_factor, 0), Tint.max_value))
         return hsv_to_rgb(*active_hsv)
 
+    @staticmethod
+    @defaults(tint=(0.1, 0.1, 0))
+    def cursor_tint():
+        style_manager: ImGuiStyleManager = Core.melty.style_manager
+        active_hsv = style_manager.hsv
 
+        hue_delta = 0.00
+        saturation_factor = 0.958
+        value_factor = 2.194
+
+        active_hsv = ((active_hsv[0] + hue_delta),
+                      min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
+                      min(max(active_hsv[2] * value_factor, 0), Tint.max_value))
+        return hsv_to_rgb(*active_hsv)
 
     # Context menu tints
     context_select_tint = (1.0, 0.7, 0.2)
     context_select_outline_alpha = -0.12
     context_select_bg_alpha = 0.592
     context_select_rounding = 4.988
-    
+
     # Background constants
     context_menu_bg_offset = -1.0
 
@@ -136,25 +149,28 @@ class Swoosh:
                                 # within this fraction of the parent's shorter side (else stay flat)
 
 
-@window(tint=(0.62, 0.63, 0.65))
+@window(tint=(0.39, 0.43, 0.50))
 
 class Toggles:
 
-    @defaults(tint=(1.0, 1.0, 1.0))
+    @defaults(tint=(1.00, 0.59, 0.00))
     class TextEditor:
         enable_spell_check = False
-    @defaults(tint=(0.83,0.22,0.22))
+    @defaults(tint=(0.75,0.65,0.23))
     class InvalidateTracker:
         keep_for_frames = 101
         enable = False
         draw_bvh = False
         draw_rect = True
 
-    @defaults(tint=(0.11, 0.11,0.57))
+    @defaults(tint=(0.08, 0.08,0.08))
     class Debug:
         slow_frame_rate = True
+    @defaults(tint=(0.31, 0.19, 0.67))
+    class InputHandlerToggles:
+        show_debug = False
 
-    @defaults(tint=(0.73, 0.73, 0.73))
+    @defaults(tint=(0.81, 0.81, 0.75))
     class ScrollSettings:
         # Base speed (px per wheel-tick event) when the view is large enough that
         # the dynamic cap doesn't bind.
@@ -167,9 +183,6 @@ class Toggles:
         # this window count as a continuous gesture. Not yet wired into the cap.
         acceleration_threshold = 0.036  # seconds
 
-    @defaults(tint=(0.31, 0.19, 0.67))
-    class InputHandlerToggles:
-        show_debug = False
 
     debug_scroll = False
     show_filled_tiles = False
