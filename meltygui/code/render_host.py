@@ -493,6 +493,9 @@ class RenderHost(_DeepAttrMixin, dict):
             win_kwargs["active_layer"] = 1
             win_kwargs["unmanaged"] = True
             win_kwargs["closed"] = False
+            win_kwargs['height'] = 40
+            win_kwargs['width'] = 40
+            win_kwargs["window_pos"] = (100, 100)
 
         win_kwargs.update(extra)
 

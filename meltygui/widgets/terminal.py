@@ -170,6 +170,20 @@ _OWNED_SESSION_PREFIX = "claude-d-"
 # posix_spawn path on this Python. See claude_terminals._list_claude_sessions.
 _TMUX = shutil.which("tmux") or "/usr/bin/tmux"
 
+# OWNED claude-d sessions run on a DEDICATED tmux server (`-L claude-d`) started with
+# `-f /dev/null` so it ignores ~/.tmux.conf (which sets `mouse on` + rebinds the arrows).
+# That isolation lets the handed-off gnome window scroll/copy like a plain terminal
+# without disturbing the user's `main`/`lsd` sessions - see bin/claude-d. `main`/`lsd`
+# themselves run on the DEFAULT server (see _tmux_launch). `_CD_TMUX` is the common prefix
+# for any claude-d tmux call; `_CD_SETUP` reapplies the plain default config (idempotent
+# global `set -g`) in case the client cold-started the server.
+_CD_TMUX = "tmux -f /dev/null -L claude-d"
+_CD_SETUP = (
+    f"{_CD_TMUX} set -g mouse off 2>/dev/null; "
+    f"{_CD_TMUX} set -g status off 2>/dev/null; "
+    f"{_CD_TMUX} set -g window-size latest 2>/dev/null; "
+    f"{_CD_TMUX} set -g terminal-overrides ',*:smcup@:rmcup@' 2>/dev/null; ")
+
 
 def _attach_argv(session):
     """Argv that attaches an in-app PTY to an existing tmux session (a shared client).
@@ -193,8 +207,8 @@ def _owned_launch_argv(session):
     the terminal launches the process itself and the session exists as soon as the PTY
     is up. The gnome window is handed the session afterwards (see _handoff_to_gnome)."""
     return ["bash", "-c",
-            "tmux set -g window-size latest 2>/dev/null; "
-            "exec tmux new-session -A -s " + shlex.quote(session)]
+            _CD_SETUP +
+            "exec " + _CD_TMUX + " new-session -A -s " + shlex.quote(session)]
 
 
 def _handoff_to_gnome(session):
@@ -205,8 +219,9 @@ def _handoff_to_gnome(session):
     forks first so it normally wins. No `exec`, or the trap is skipped (see claude-d).
     `env -u TMUX` so it attaches even if the studio itself was launched inside tmux."""
     q = shlex.quote(session)
-    inner = ('trap "tmux kill-session -t ' + q + ' 2>/dev/null" EXIT HUP TERM INT; '
-             'env -u TMUX tmux new-session -A -s ' + q)
+    inner = (_CD_SETUP +
+             'trap "' + _CD_TMUX + ' kill-session -t ' + q + ' 2>/dev/null" EXIT HUP TERM INT; '
+             'env -u TMUX ' + _CD_TMUX + ' new-session -A -s ' + q)
     try:
         subprocess.Popen(["gnome-terminal", "--", "bash", "-c", inner])
     except Exception:
@@ -214,19 +229,21 @@ def _handoff_to_gnome(session):
 
 
 def _disable_mouse(session):
-    """Turn tmux mouse mode OFF for ONE session (session-scoped via -t, NOT -g, so the
-    user's other tmux sessions keep their mouse settings). With mouse mode ON, a
-    click-drag in the gnome window is grabbed by tmux's copy-mode and the selection is
-    cleared the instant you release — you can't select/copy text. Off, gnome-terminal
-    does its own native selection. `mouse` is a session option shared by every client
-    attached to the session, so setting it once fixes BOTH the gnome window and the
-    in-app view. Run off-thread with a short retry: an owned session is created by the
+    """Belt-and-suspenders `mouse off` for an owned session. The dedicated `-L claude-d`
+    server already runs with mouse off globally (it skips ~/.tmux.conf via `-f /dev/null`
+    and _CD_SETUP reasserts it), so this is mostly redundant now — but it cheaply covers
+    any ordering race before _CD_SETUP lands. With mouse mode ON, a click-drag in the
+    gnome window is grabbed by tmux's copy-mode and the selection is cleared the instant
+    you release — you can't select/copy text. Off, gnome-terminal does its own native
+    selection. Run off-thread with a short retry: an owned session is created by the
     in-app PTY's `new-session -A` and may not exist the instant we ask."""
     def go():
         for _ in range(20):
             try:
-                # Full path + close_fds=False → posix_spawn, not fork (see _TMUX).
-                r = subprocess.run([_TMUX, "set", "-t", session, "mouse", "off"],
+                # Full path + close_fds=False → posix_spawn, not fork (see _TMUX). The
+                # `-f /dev/null -L claude-d` flags target the dedicated server (see _CD_TMUX).
+                r = subprocess.run([_TMUX, "-f", "/dev/null", "-L", "claude-d",
+                                    "set", "-t", session, "mouse", "off"],
                                    stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                    timeout=2, close_fds=False)
                 if r.returncode == 0:

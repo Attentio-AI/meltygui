@@ -149,7 +149,7 @@ class Swoosh:
                                 # within this fraction of the parent's shorter side (else stay flat)
 
 
-@window(tint=(0.75, 0.83, 0.87))
+@window(tint=(0.01, 0.11, 0.19))
 
 class Toggles:
 
@@ -163,12 +163,14 @@ class Toggles:
         draw_bvh = False
         draw_rect = True
 
+
     @defaults(tint=(0.08, 0.08,0.08))
     class Debug:
         slow_frame_rate = True
     @defaults(tint=(0.60, 0.41, 0.96))
     class InputHandlerToggles:
         show_debug = False
+
 
     @defaults(tint=(0.86, 0.76, 0.61))
     class ScrollSettings:
@@ -200,7 +202,7 @@ class Toggles:
     slow_down_threads = False
     render_depth = False
     ds_invalidate_stack = False
-    profile_mode = ProfileMode.ON
+    profile_mode = ProfileMode.LIGHT
     debug_stale_tint = False
     show_line_break = False
 

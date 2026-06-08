@@ -369,7 +369,7 @@ LOADING = object()
 @render_func(use_cache=True, selectable=False, temp=True)
 def run_in_background(input_value, loading_state: LoadingState, unique,
                       draw_state, child_kwargs, start=False, timeout=20,
-                      debounce_ms=0, wait_for_drag=False, **kwargs):
+                      debounce_ms=400, wait_for_drag=False, **kwargs):
     if Melty.frame_count < 10:
         debounce_ms = 0
     if start:
@@ -464,7 +464,7 @@ def run_in_background(input_value, loading_state: LoadingState, unique,
         loading_state._pending_change = False
         note = Note(name="run in background complete, new conv", tint=(0.5, 0.5, 1.0))
 
-        draw_state.invalidate_up(max_depth=4, note=note)
+        # draw_state.invalidate_up(max_depth=4, note=note)
         request_render()
         return True, loading_state.cached_result
     else:
@@ -858,7 +858,7 @@ def draw_with_view_funcs(input_value, view_funcs, route, routed, route_to_kwargs
         if len(tab_state.selected_tabs) == 1:
             column = None
         m_changed, m_out = view_func(input_value=view_input, excluded=["__cst__"],
-                                     show_system=True, draw=draw,
+                                     show_system=True, draw=draw, max_width=draw_state.content_width - 10,
                                      disable_scroll=False, show_header=False,
                                      column=idx, column_width=column_width,
                                      show_add_delete=False, name=f"{view_func.__name__}##{unique}",
@@ -963,7 +963,7 @@ def convert_in_and_out(input_value, draw_state, view_func=None, chain_in=None, c
     raw_changed, raw_value = view_func(input_value=input_value, **child_kwargs)
     if raw_changed:
         out_changed, out_value = True, raw_value
-        draw_state.invalidate_up(max_depth=3)
+        # draw_state.invalidate_up(max_depth=3)
 
     converted_edit = routed.pop('converted_edit', UNSET)
 

@@ -1,9 +1,11 @@
+import keyword
+import re
 import time
 
 import glfw
 import imgui
 
-from src.lsd.gl_gui.model.core_model.draw_state import Anchor, Pin
+from src.lsd.gl_gui.model.core_model.draw_state import Anchor, Pin, DropDownState
 from src.lsd.gl_gui.toggles import Tint
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import CodeLine
 from src.lsd.gl_gui.view.core_views.core_render import render_func
@@ -50,6 +52,83 @@ OPERATOR_WORDS = {'and', 'or', 'not', 'in', 'is'}
 BUILTIN_PSEUDO = {'self', 'cls'}
 
 WORD_DELIMITERS = ' \t\n\r,.;:!?()[]{}\'\"=+-*/<>@#$%^&|~`\\'
+
+# --- Code-suggestion (autocomplete) --------------------------------------------
+# Drives the dropdown popup (draw_dd_menu) anchored at the caret. The actual
+# symbol intelligence lives in libcst_conversion.completions_at - it reads the
+# routed code_tree (the digest + parsed dict + span/line index + libcst tree +
+# jedi symbol data) and returns scope-aware, kind-tagged candidates ranked
+# best-first. Here we just thread the caret context, supplement with a plain
+# buffer scan (covers freshly-typed locals the parse hasn't caught up to yet),
+# and filter by the half-typed prefix.
+#
+# Still NOT type-aware: after `somevar.` we can't resolve what `somevar` IS, so
+# the dot-trigger offers the same scoped name pool as bare-identifier typing.
+# Resolving attribute members (via jedi on the fly) is the next step.
+
+_IDENT_RE = re.compile(r'[A-Za-z_]\w*')
+# Identifier immediately to the left of a position - the half-typed word the
+# popup filters by (and the span an accepted suggestion replaces).
+_PREFIX_RE = re.compile(r'[A-Za-z_]\w*$')
+_PY_KEYWORDS = frozenset(keyword.kwlist)
+_AC_MAX_ROWS = 40  # cap so a huge file can't render a million-row popup
+
+
+def _completion_context(text, cursor):
+    """The completion site at `cursor`: the identifier `prefix` being typed, the
+    `anchor` index where it starts (== cursor when there's no prefix yet), and
+    whether the char just before the prefix is a `.` (attribute access). The
+    anchor is the span an accepted suggestion overwrites."""
+    left = text[:cursor]
+    m = _PREFIX_RE.search(left)
+    prefix = m.group(0) if m else ""
+    anchor = cursor - len(prefix)
+    dot_trigger = anchor > 0 and text[anchor - 1] == "."
+    return prefix, anchor, dot_trigger
+
+
+def _completion_pool(code_tree, text, line):
+    """Ordered (name, kind) candidate pool for a caret on 0-indexed `line`,
+    best-first. The scope-aware names from the parsed `code_tree` lead (params,
+    locals, members, module, imports, jedi symbols — see `completions_at`); a
+    plain identifier scan of the live buffer is appended at low priority so
+    just-typed locals that haven't round-tripped through libcst yet still show.
+    De-duplicated keeping the first (highest-ranked) occurrence of each name."""
+    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import completions_at
+    pool, seen = [], set()
+
+    def add(name, kind):
+        if name and name not in seen and len(name) > 1 and name not in _PY_KEYWORDS:
+            seen.add(name)
+            pool.append((name, kind))
+
+    if code_tree is not None:
+        try:
+            for name, kind in completions_at(code_tree, line):
+                add(name, kind)
+        except Exception:
+            pass  # never let a parse hiccup kill typing
+    for name in _IDENT_RE.findall(text):
+        add(name, "name")
+    return pool
+
+
+def _filter_completions(pool, prefix):
+    """Filter the ordered (name, kind) `pool` by `prefix`, returning just names.
+    Prefix matches (case-insensitive) come before looser substring matches; the
+    pool's own scope ranking is preserved within each group. Empty prefix (right
+    after a `.`) keeps the pool order. The exact word already fully typed is
+    dropped so we never suggest what's on screen."""
+    rows = [(n, k) for (n, k) in pool if n != prefix]
+    if not prefix:
+        ranked = [n for n, _ in rows]
+    else:
+        p = prefix.lower()
+        starts = [n for n, _ in rows if n.lower().startswith(p)]
+        contains = [n for n, _ in rows if p in n.lower() and not n.lower().startswith(p)]
+        ranked = starts + contains
+    return ranked[:_AC_MAX_ROWS]
+
 
 # GLFW key to character mappings (unshifted, shifted)
 _KEY_CHAR_MAP = {
@@ -654,6 +733,13 @@ def draw_text(input_value: str,
               code_tree=None, error=None):
     ds = draw_state
 
+    # Per-editor state for the code-suggestions popup. Lives here (not gated on
+    # focus) because the popup's menu window is latched and must be drawn EVERY
+    # frame with closed_state toggled, even when the editor is unfocused.
+    if getattr(ds, '_ac_state', None) is None:
+        ds._ac_state = DropDownState()
+    ac_state = ds._ac_state
+
     # Imported in-function to avoid a module-load import cycle (toggles pulls in
     # decoration/window machinery). For the spell-check button + squiggles below.
     from src.lsd.gl_gui.toggles import Toggles
@@ -667,9 +753,11 @@ def draw_text(input_value: str,
     _err_markers += _exception_errors(error)
 
     # Jump-to-source button drawn inline at the top (before the monospace font
-    # push, so it uses the normal UI font), before the text body. The first error
-    # message (if any) rides into the header, beside the filename, in red.
+    # push, so it uses the normal UI font), above the text body. The first error
+    # message (if any) is no longer shown inline here - it floats in a bar pinned
+    # to the bottom of the view (see the error footer after the body is drawn).
     bar_height = 0.0
+    _err_msg = None
     if jump_to is not None:
         _err_msg = _err_markers[0][1] if _err_markers else None
         # Float the jump-to/error bar at the top of the visible viewport instead
@@ -682,7 +770,7 @@ def draw_text(input_value: str,
         _bx, _by = imgui.get_cursor_screen_pos()
         float_dy = max(0.0, draw_state.abs_clip_rect[1] - _by)
         imgui.set_cursor_screen_pos((_bx, _by + float_dy))
-        draw_jump_to(jump_to, error_msg=_err_msg)
+        draw_jump_to(jump_to)
         bar_height = imgui.get_cursor_screen_pos()[1] - (_by + float_dy)
         # Resume body layout at the real (unscrolled) content position so the code
         # lines keep their normal positions; only the bar was floated. The text
@@ -843,7 +931,7 @@ def draw_text(input_value: str,
     # held (left_mouse_held) once a drag is underway - so holding the cursor
     # past the top/bottom edge keeps auto-scrolling and selecting more text,
     # not just while the mouse is moving.
-    if left_mouse_drag or (left_mouse_held and ds.text_drag_mode):
+    if left_mouse_drag:
         mx = left_mouse_drag.x if left_mouse_drag else io.mouse_pos.x
         my = left_mouse_drag.y if left_mouse_drag else io.mouse_pos.y
         # Auto-scroll when the cursor hs/passes the view's top or bottom edge
@@ -886,8 +974,54 @@ def draw_text(input_value: str,
         shift = io.key_shift
         ctrl = io.key_ctrl
 
+        # --- Code-suggestion popup: navigation & accept ---
+        # Real editors don't suggest in the find box or inline single-line
+        # value fields, so gate that out. (ac_state was set up at the top.)
+        ac_enabled = not single_line and not is_search_box
+        if not ac_enabled:
+            ds._ac_open = False
+        # These run BEFORE the normal Arrow/Enter/Tab handlers and eat their
+        # keys (discard from `_fired`) when the popup is open, so the same press
+        # controls the suggestion list instead of moving the caret / inserting a
+        # newline. Driven off LAST frame's open state + candidate list, i.e. the
+        # popup the user is actually looking at this keypress.
+        if ac_enabled and getattr(ds, '_ac_open', False):
+            _ac_cands = getattr(ds, '_ac_candidates', None) or []
+            _ac_idx = getattr(ds, '_ac_index', 0)
+            if pressed(glfw.KEY_ESCAPE):
+                # Dismiss and remember this site so it doesn't re-open
+                # while the caret stays put (cleared once the caret moves on).
+                ds._ac_open = False
+                ds._ac_suppress_anchor = getattr(ds, '_ac_anchor', -1)
+                _fired.discard(glfw.KEY_ESCAPE)
+            elif (pressed(glfw.KEY_UP) or pressed(glfw.KEY_DOWN)) and _ac_cands:
+                step = 1 if pressed(glfw.KEY_DOWN) else -1
+                _ac_idx = (_ac_idx + step) % len(_ac_cands)
+                ds._ac_index = _ac_idx
+                ac_state._kbd_mode = True
+                ac_state.cursor_path = (_ac_cands[_ac_idx],)
+                _fired.discard(glfw.KEY_UP)
+                _fired.discard(glfw.KEY_DOWN)
+                request_render()
+            elif (pressed(glfw.KEY_ENTER) or pressed(glfw.KEY_KP_ENTER)
+                  or pressed(glfw.KEY_TAB)) and _ac_cands and not ctrl:
+                chosen = _ac_cands[min(_ac_idx, len(_ac_cands) - 1)]
+                anchor = getattr(ds, '_ac_anchor', ds.text_cursor_pos)
+                # Replace the half-typed identifier [anchor, caret) with the pick.
+                text = text[:anchor] + chosen + text[ds.text_cursor_pos:]
+                ds.text_cursor_pos = anchor + len(chosen)
+                ds.text_selection_start = ds.text_cursor_pos
+                ds.text_selection_end = ds.text_cursor_pos
+                ds.text_cursor_blink_time = time.time()
+                ds._ac_open = False
+                changed = True
+                _fired.discard(glfw.KEY_ENTER)
+                _fired.discard(glfw.KEY_KP_ENTER)
+                _fired.discard(glfw.KEY_TAB)
+
         # --- Typed characters --- drained in order, using each key event's own
         # modifiers so fast shift-typing across a slow frame stays shifted.
+        typed_ident_this_frame = False
         for _fk, _fmods in _frame_keys:
             if _fmods & glfw.MOD_CONTROL:
                 continue
@@ -902,6 +1036,10 @@ def draw_text(input_value: str,
             ds.text_cursor_pos += len(ch)
             ds.text_selection_start = ds.text_cursor_pos
             ds.text_selection_end = ds.text_cursor_pos
+            # Typing an identifier char is what opens the popup as you go (a bare
+            # caret move shouldn't). '.' opens it too via the dot handler below.
+            if ch.isalnum() or ch == '_':
+                typed_ident_this_frame = True
             changed = True
 
         # --- Tab / Shift+Tab ---
@@ -1117,6 +1255,51 @@ def draw_text(input_value: str,
             ds.text_selection_end = new_hi
             ds.text_cursor_pos = new_hi
             changed = True
+
+        # --- Code-suggestion popup: toggle visibility + rebuild candidates ---
+        # Runs after every text-mutating key so the prefix reflects the final
+        # buffer. Produces the list THIS frame's render draws and next frame's
+        # nav reads. `_ac_anchor` is the span an accepted pick overwrites.
+        if ac_enabled:
+            prefix, anchor, dot_trigger = _completion_context(text, ds.text_cursor_pos)
+            sup = getattr(ds, '_ac_suppress_anchor', -1)
+            if sup != -1 and sup != anchor:
+                ds._ac_suppress_anchor = sup = -1  # caret moved on; allow reopen
+            suppressed = sup != -1 and sup == anchor
+            was_open = getattr(ds, '_ac_open', False)
+            # Open after a '.' (attribute access) or while actively typing a name
+            # (>=1 char). A bare caret move never opens it, but it stays open as
+            # the prefix shifts (was_open) until the list empties or closes.
+            want = not suppressed and (dot_trigger
+                                       or (len(prefix) >= 1 and (was_open or typed_ident_this_frame)))
+            if want:
+                # The candidate POOL depends on the tree + the caret's line (its
+                # scope), NOT the prefix - so cache it and only rebuild when those
+                # change. The body re-runs every frame while the popup is open
+                # (the keep-alive invalidate), so without this we'd re-walk the
+                # parse + rebuild the SymMap each frame just to filter by prefix.
+                _ac_line = _index_to_line_col(text, ds.text_cursor_pos)[0]
+                _pool_key = (id(code_tree), _ac_line, len(text))
+                if getattr(ds, '_ac_pool_key', None) != _pool_key:
+                    ds._ac_pool = _completion_pool(code_tree, text, _ac_line)
+                    ds._ac_pool_key = _pool_key
+                cands = _filter_completions(ds._ac_pool, prefix)
+            else:
+                cands = []
+            if cands:
+                if prefix != getattr(ds, '_ac_prefix', None) or not was_open:
+                    ds._ac_index = 0  # list changed shape, restart at the top match
+                    if not was_open:
+                        request_render()
+                ds._ac_index = min(getattr(ds, '_ac_index', 0), len(cands) - 1)
+                ds._ac_open = True
+                ds._ac_anchor = anchor
+                ds._ac_prefix = prefix
+                ds._ac_candidates = cands
+                ac_state.cursor_path = (cands[ds._ac_index],)
+                ac_state.open_path = ()
+            else:
+                ds._ac_open = False
 
     # Clamp
     ds.text_cursor_pos = max(0, min(ds.text_cursor_pos, len(text)))
@@ -1406,12 +1589,99 @@ def draw_text(input_value: str,
     else:
         text_height = (input_value.count('\n') + 1) * line_px + 2
 
+    # --- Code-suggest popup (dropdown menu anchored to the caret) ---
+    # Rendered after the body (and after the monospace font is popped, so its
+    # rows use the normal UI font) so it floats above the code. We reuse the
+    # dropdown's menu render with its own search box suppressed - the editor
+    # owns text focus and the half-typed identifier IS the filter. A flat
+    # name->name dict makes each leaf return the chosen identifier; a mouse click
+    # bubbles back as (changed, pick) and we splice it in like the keyboard accept.
+    # Mode.WINDOW menus are LATCHED - once drawn they persist until explicitly
+    # closed, so we must call draw_dd_menu EVERY frame and toggle `closed=` rather
+    # than gating the call (a gated call would leave the last-open frame painted).
+    # Only the open state feeds real items / drives the keep-alive repaint.
+    from src.lsd.gl_gui.view.core_views.new_core_view import draw_dd_menu
+    _ac_show = (Melty.text_focused_ds is draw_state and getattr(ds, '_ac_open', False)
+                and bool(getattr(ds, '_ac_candidates', None)))
+    _ac_cands = ds._ac_candidates if _ac_show else []
+    _ac_items = {n: n for n in _ac_cands}
+    _ac_anchor = getattr(ds, '_ac_anchor', ds.text_cursor_pos)
+    _ac_x, _ac_y = _char_pos_to_xy(text, _ac_anchor, origin_x, origin_y, line_px)
+    if _ac_show:
+        # A mouse move hands the highlight back to hover after keyboard nav stole
+        # it (matches draw_dropdown); the menu rows only follow the mouse while
+        # _kbd_mode is False.
+        _mp = imgui.get_mouse_pos()
+        _lm = getattr(ac_state, "_last_mouse", None)
+        if _lm is not None and (abs(_mp[0] - _lm[0]) > 0.5 or abs(_mp[1] - _lm[1]) > 0.5):
+            ac_state._kbd_mode = False
+        ac_state._last_mouse = (_mp[0], _mp[1])
+
+    if _ac_show:
+        # draw_text is cached, but draw_dd_menu lives inside this body - if the
+        # body is invalidated the menu vanishes. Keep the body re-running while the
+        # popup is open so hover/keyboard nav stay live frame to frame.
+        ac_changed, ac_pick = draw_dd_menu(
+            _ac_items, name=f"{ds.name}_ac_menu", tint=draw_state.tint, view_offset=False,
+            temp=True, show_search=False, swoosh=False, closed=not _ac_show, max_height=300,
+            window_pos=(_ac_x - draw_state.abs_left, _ac_y - draw_state.abs_top + line_px), disable_scroll=False, text_align="left",
+            parent_window=draw_state, root_state=ac_state, path_prefix=())
+        ds.invalidate()
+        request_render()
+        if ac_changed and isinstance(ac_pick, str):
+            anchor = ds._ac_anchor
+            text = text[:anchor] + ac_pick + text[ds.text_cursor_pos:]
+            ds.text_cursor_pos = anchor + len(ac_pick)
+            ds.text_selection_start = ds.text_cursor_pos
+            ds.text_selection_end = ds.text_cursor_pos
+            ds._ac_open = False
+            changed = True
+
 
     if _font_pushed:
-    
+
             imgui.pop_font()
-    imgui.dummy(draw_state.content_width - 1
-    , text_height)
+
+    # --- Floating error box pinned to the bottom of the view ---
+    # The first error message used to ride inline in the jump-to header at the
+    # top of the view; instead float it in a box along the bottom edge of the
+    # visible viewport so it stays put while the code scrolls and never pushes
+    # the header down. Drawn after the body (and after the monospace font pop, so
+    # it uses the normal UI font) so it paints over the code. Save the cursor,
+    # paint at the bottom, then restore it so the rest of the layout is untouched.
+    if jump_to is not None and _err_msg:
+        _save_cursor = imgui.get_cursor_screen_pos()
+        clip_l, _clip_t, clip_r, clip_b = draw_state.abs_clip_rect
+        pad_x, pad_y, margin = 8, 5, 6
+        box_h = imgui.get_text_line_height() + pad_y * 2
+        bx0 = clip_l + margin
+        bx1 = clip_r - margin
+        by1 = clip_b - margin
+        by0 = by1 - box_h
+        # Same red-tinted fill + outline as the (hidden) header error row. Packed
+        # ABGR per the codebase idiom.
+        fill_col = (235 << 24) | (40 << 16) | (30 << 8) | 70
+        line_col = (255 << 24) | (70 << 16) | (60 << 8) | 150
+        err_draw_list = imgui.get_window_draw_list()
+        err_draw_list.add_rect_filled(bx0, by0, bx1, by1, fill_col, 4.0)
+        err_draw_list.add_rect(bx0, by0, bx1, by1, line_col, 4.0)
+        # Truncate to the box width so a long message can't overflow.
+        msg = str(_err_msg).split('\n', 1)[0]
+        avail = max(0, (bx1 - bx0) - 2 * pad_x)
+        if imgui.calc_text_size(msg).x > avail:
+            ch_w = max(1.0, imgui.calc_text_size("x").x)
+            keep = max(3, int(avail / ch_w) - 1)
+            msg = msg[:keep] + "…"
+        imgui.set_cursor_screen_pos((bx0 + pad_x, by0 + pad_y))
+        imgui.text_colored(msg, 1.0, 0.5, 0.46, 1.0)
+        imgui.set_cursor_screen_pos(_save_cursor)
+
+    # window_pos is an offset from the parent window's absolute origin. The menu
+    # window carries an intrinsic ~one-row top offset (draw_dropdown back-compensates
+    # the same way), so anchor at the caret's line top minus a line to sit it snug
+    # under the insertion site instead of a line too low.
+
+    imgui.dummy(draw_state.content_width - 1, text_height)
 
     if changed:
         rebuilt_text = text + '\n'.join(original_input.split('\n')[max_lines:])

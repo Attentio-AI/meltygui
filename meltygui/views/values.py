@@ -332,7 +332,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
     """
     if excluded is None:
         excluded = set()
-
+        
     if included is None:
         included = set()
 
@@ -2635,8 +2635,13 @@ def draw_tuple(input_value: tuple, name, unique, draw_state):
         # so the framework can't measure it. Size the window to fit the SV square
         # (180) + the N RGBA drag-float rows + the hex label, so nothing clips.
         picker_h = 180 + 14 + len(input_value) * 26 + 26
+        # parent_window=draw_state anchors the popover under the swatch AND makes
+        # the tuple the picker's ancestor, so clear_focus (which searches the
+        # clicked view's ancestor closure) keeps the popover open when you click
+        # inside it, and dismisses it when you click anywhere else.
         color_changed, new_color = draw_color_picker(input_value, name=f"color_picker{unique}",
                                                 closed=not is_open, window_pos=(0, 10),
+                                                parent_window=draw_state,
                                                 layer_offset=4, width=216, height=picker_h, mode=Mode.POPOVER)
         if is_open:
             if color_changed:
@@ -3437,7 +3442,7 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, unique=No
 
     render_func = cm_state.render_func_dict.deep.parameters()
     if render_func:
-        changed, value = draw_collection(render_func, tint=(0.04, 0.53, 0.77, 0.676), name=f"{input_value._view_func.__name__}##{unique}", disable_scroll=True)
+        changed, value = draw_collection(render_func, tint=(0.05, 0.13, 0.16, 0.284), name=f"{input_value._view_func.__name__}##{unique}", disable_scroll=True)
 
     call_site_dict = cm_state.call_site_dict.deep.unwrap() if cm_state.call_site_dict else None
     if call_site_dict:
@@ -3449,7 +3454,7 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, unique=No
 
     render_func = cm_state.render_func_dict.deep.decorators.render_func()
     if render_func:
-        changed, value = draw_collection(render_func, bg_offset=-20, tint=(0.00956193,0.1581395,0.03996849, 0.7),
+        changed, value = draw_collection(render_func, bg_offset=-20, tint=(0.00956193,0.1581395,0.03996849, 0.212),
                                          name=f"render_func##{unique}", disable_scroll=True)
 
     window_decoration = cm_state.render_func_dict.deep.decorators.window()
@@ -3485,9 +3490,12 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, unique=No
 
 
 @render_func(use_cache=True, show_bg=False, show_header=False, show_name=False, selectable=False)
-def draw_class_tab(input_value, class_to_show=None, class_is_parent=False, class_name='', **kwargs):
+def draw_class_tab(input_value, class_to_show=None, class_is_parent=False, class_name='',  **kwargs):
     """Editable class source. For a primitive field this is the parent object's
     class (e.g. Lora for a Lora.rank float) -- labelled so the source is clear."""
+
+
+
     from src.lsd.gl_gui.view.mode import Mode
     if class_is_parent:
         text(f"Parent type of {class_name}", name="Source",
@@ -4192,7 +4200,8 @@ _DD_ROW_H = 24
 @render_func(use_cache=False, show_bg=True, shadow=True, selectable=False, temp=True,
              closable=True, melty_window=False, auto_resize=True, with_header=None,
              disable_scroll=True, min_width=300, swoosh=False)
-def draw_dd_menu(input_value, draw_state, root_state=None, path_prefix=(), tint=None, **kwargs):
+def draw_dd_menu(input_value, draw_state, root_state=None, path_prefix=(), tint=None,
+                 show_search=True, text_align="right", **kwargs):
     """One level of the dropdown, drawn as its own temp popover window. Iterates
     the level's entries and renders each as a row (`_dd_menu_row`); a leaf click
     or a pick inside a nested sub-menu bubbles back up as (changed, value).
@@ -4203,9 +4212,14 @@ def draw_dd_menu(input_value, draw_state, root_state=None, path_prefix=(), tint=
     open per level and hidden siblings can never resurface. `path_prefix` is this
     level's key chain from the root; each row's full path is prefix + its key.
 
+    `show_search` draws the root-level filter box. Autocomplete (the code editor's
+    suggestion popup) passes False: the editor itself owns text focus and the
+    half-typed identifier IS the filter, so a second focus-stealing search box
+    would fight it. The caller pre-filters the rows in that case.
+
     Intentionally un-cached: the popover re-renders every frame while open (the
     root drives request_render), so hover/search changes take effect live."""
-    if not path_prefix and root_state is not None:
+    if show_search and not path_prefix and root_state is not None:
         # Root owns the search box. Single-line so Up/Down/Enter pass through to
         # menu nav; it auto-focuses once when the menu opens (_focus_search).
         q = getattr(root_state, "search_query", "") or ""
@@ -4266,7 +4280,7 @@ def draw_dd_menu(input_value, draw_state, root_state=None, path_prefix=(), tint=
         changed, picked = _dd_menu_row(value, name=f"ddrow_{idx}_{key}", label=label,
                                        is_branch=is_branch, row_path=row_path,
                                        sub_open=on_path, is_cursor=is_cursor,
-                                       root_state=root_state, tint=tint)
+                                       root_state=root_state, tint=tint, text_align=text_align)
         if changed:
             result = (True, picked)
     return result
@@ -4274,7 +4288,7 @@ def draw_dd_menu(input_value, draw_state, root_state=None, path_prefix=(), tint=
 
 @render_func(use_cache=False, show_bg=False, shadow=False, selectable=False, temp=True,
              with_header=None, disable_scroll=True, min_width=300, swoosh=False)
-def _dd_menu_row(input_value, draw_state, label="", is_branch=False, row_path=(),
+def _dd_menu_row(input_value, draw_state, label="", text_align="right", is_branch=False, row_path=(),
                  sub_open=False, is_cursor=False, root_state=None,
                  tint=None, **kwargs):
     """A single menu row. `input_value` is the row's VALUE. Leaves are a button
@@ -4296,11 +4310,11 @@ def _dd_menu_row(input_value, draw_state, label="", is_branch=False, row_path=()
         clicked, _ = button(f"{label}{chevron}", name=f"{label}_ddrow", width=draw_state.content_width,
                             height=_DD_ROW_H, hovered=hovered, text_value=0.36, text_saturation=0.799,
                           z_offset=0, rounding=0, show_button_bg=False,
-                            text_align="right", tint=tint)
+                            text_align=text_align, tint=tint)
     else:
         clicked, _ = button(f"{label}{chevron}", name=f"{label}_ddrow", show_button_bg=False,
                             width=draw_state.content_width, height=_DD_ROW_H, hovered=hovered,text_saturation=0.716, z_offset=0, shadow=False,
-                            text_align="right", tint=tint)
+                            text_align=text_align, tint=tint)
 
     # In keyboard nav mode the arrow keys move the highlight; hover neither
     # moves the cursor nor paints, until the mouse moves (draw_dropdown clears it).

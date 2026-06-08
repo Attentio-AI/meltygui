@@ -1616,6 +1616,174 @@ class LineMap:
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║   Code completion - scope-aware candidates from the parsed dict + spans      ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+# Drives the editor's suggestion popup (draw_text). Uses the SAME data the editor
+# already holds - the digest of scope dicts (names as keys, nested function/class
+# scopes, `parameters`/`locals` sub-dicts), the `.span`/LineMap line→node index,
+# the raw libcst tree under `__cst__` (for imports the dict doesn't surface), and,
+# when jedi has run, the cross-project `symbol_usage` data. No reparse, no network.
+
+import keyword as _keyword
+
+_KW = frozenset(_keyword.kwlist)
+# Structural keys in scope dict children that are NOT user symbols.
+_NON_SYMBOL_KEYS = frozenset({"decorators", "parameters", "locals"})
+
+
+def _is_symbol_key(k):
+    """A dict key that names a real user symbol (not a dunder, structural key,
+    control-flow heading like 'if x', comment, or keyword)."""
+    return (isinstance(k, str) and k.isidentifier()
+            and not k.startswith("__") and k not in _NON_SYMBOL_KEYS and k not in _KW)
+
+
+def _classify(value):
+    """Completion `kind` for a module/class member by its dict value."""
+    if isinstance(value, dict):
+        node = value.get("__cst__")
+        if isinstance(node, cst.FunctionDef):
+            return "func"
+        if isinstance(node, cst.ClassDef):
+            return "class"
+        return "member"
+    return "var"
+
+
+def _is_scope_node(d):
+    """True for the dict nodes that introduce a Python scope (module / def /
+    class) — NOT the intermediate `parameters`/`locals`/control-flow sub-dicts."""
+    return isinstance(d, dict) and isinstance(
+        d.get("__cst__"), (cst.FunctionDef, cst.ClassDef, cst.Module))
+
+
+def _flatten_local_names(locals_dict):
+    """(name, 'local') for every assignment in a function's `locals` sub-dict,
+    descending through control-flow blocks (keyed by non-identifier headings like
+    'if cond:') but never into a nested data value or scope."""
+    for k, v in locals_dict.items():
+        if _is_symbol_key(k):
+            yield k, "local"
+        elif (isinstance(k, str) and not k.isidentifier()
+              and isinstance(v, dict) and "__cst__" not in v):
+            yield from _flatten_local_names(v)
+
+
+def _direct_member_names(scope):
+    """(name, kind) for the symbols a module or class scope defines directly."""
+    return [(k, _classify(v)) for k, v in scope.items() if _is_symbol_key(k)]
+
+
+def _scope_local_names(scope):
+    """(name, kind) the given scope dict introduces. Functions expose their
+    `parameters` + `locals`; module/class scopes expose their direct members."""
+    params, locs = scope.get("parameters"), scope.get("locals")
+    if isinstance(params, dict) or isinstance(locs, dict):  # function scope
+        out = []
+        if isinstance(params, dict):
+            out += [(k, "param") for k in params if _is_symbol_key(k)]
+        if isinstance(locs, dict):
+            out += list(_flatten_local_names(locs))
+        return out
+    return _direct_member_names(scope)
+
+
+def _scope_chain_for_line(root, rel_line):
+    """The scope dicts enclosing relative (1-indexed) `rel_line`, outermost
+    first: [module, …, innermost def/class]. Falls back to [root] if the line
+    can't be located (e.g. unsaved edits shifted it past the parsed spans)."""
+    chain = [root]
+    try:
+        ref = LineMap(root).node_at_line(rel_line)
+    except Exception:
+        return chain
+    if ref is None:
+        return chain
+    node = root
+    for k in ref.path:
+        try:
+            node = node[k]
+        except (KeyError, IndexError, TypeError):
+            break
+        if _is_scope_node(node):
+            chain.append(node)
+    return chain
+
+
+class _ImportNameCollector(cst.CSTVisitor):
+    """Bound names introduced by import statements anywhere in the tree:
+    `import a.b as c` → c; `import a.b` → a; `from x import y, z` → y, z."""
+
+    def __init__(self):
+        self.names = []
+
+    @staticmethod
+    def _bound(alias):
+        if alias.asname is not None and isinstance(alias.asname.name, cst.Name):
+            return alias.asname.name.value
+        node = alias.name
+        while isinstance(node, cst.Attribute):
+            node = node.value
+        return node.value if isinstance(node, cst.Name) else None
+
+    def visit_Import(self, node):
+        for alias in node.names:
+            self.names.append(self._bound(alias))
+
+    def visit_ImportFrom(self, node):
+        if isinstance(node.names, cst.ImportStar):
+            return
+        for alias in node.names:
+            self.names.append(self._bound(alias))
+
+
+def _imported_names(module_cst):
+    if not isinstance(module_cst, cst.CSTNode):
+        return []
+    try:
+        v = _ImportNameCollector()
+        module_cst.visit(v)
+        return [n for n in v.names if n]
+    except Exception:
+        return []
+
+
+def completions_at(code_tree, line):
+    """Ranked completion candidates for a caret on 0-indexed `line` within
+    `code_tree.source`. Returns an ordered list of (name, kind), best first:
+
+        enclosing scope (params/locals, innermost out) → class members →
+        module-level names → imports → jedi-resolved cross-project symbols
+
+    `kind` ∈ {param, local, member, func, class, var, import, symbol}. Pure read
+    over the digestible dict tree + line/span index + `__cst__` imports + (when
+    present) `symbol_usage`; cheap enough to call per keystroke. Returns [] for a
+    non-dict tree so the caller can fall back to a plain identifier scan."""
+    if not isinstance(code_tree, dict):
+        return []
+    out, seen = [], set()
+
+    def add(name, kind):
+        if isinstance(name, str) and name and name not in seen and _is_symbol_key(name):
+            seen.add(name)
+            out.append((name, kind))
+
+    chain = _scope_chain_for_line(code_tree, line + 1)  # spans are 1-indexed
+    for scope in reversed(chain[1:]):                   # innermost enclosing first
+        for name, kind in _scope_local_names(scope):
+            add(name, kind)
+    for name, kind in _direct_member_names(code_tree):  # module level
+        add(name, kind)
+    for name in _imported_names(code_tree.get("__cst__")):
+        add(name, "import")
+    symbols = getattr(code_tree, "symbol_usage", None)  # jedi, only if indexed
+    if isinstance(symbols, dict):
+        for name in symbols:
+            add(name, "symbol")
+    return out
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  cst.Module ↔ dict                                                         ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 

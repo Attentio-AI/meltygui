@@ -194,11 +194,14 @@ def draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height):
     grab_rect = (track_x1, grab_y1, track_x2, grab_y2)
     hovered = draw_state.on_action("cursor_hover", view_id="scrollbar_grab",
                                    rect=grab_rect, priority_delta=15) is not None
+    held = draw_state.on_action("left_mouse_held", view_id="scrollbar_grab",
+                                rect=grab_rect, priority_delta=30)
+    drag = draw_state.on_action("left_mouse_down", view_id="scrollbar_grab",
+                                rect=grab_rect, priority_delta=30)
+    drag = draw_state.on_action("left_mouse_clicked", view_id="scrollbar_grab",
+                                rect=grab_rect, priority_delta=30)
     drag = draw_state.on_action("left_mouse_drag", view_id="scrollbar_grab",
-                                rect=grab_rect, priority_delta=15)
-
-
-
+                                rect=grab_rect, priority_delta=30)
     active = drag is not None
     if active and travel > 0.0 and Melty.frame_count > 2:
         # Map grab pixel motion back into scroll-offset motion.
@@ -483,9 +486,13 @@ def render_func(*args, **o_kwargs):
             # scroll, making abs_left react to mid-frame scroll deltas instead
             # of waiting for this view to re-render with a new cursor pos.
             anc_sx, anc_sy = draw_state._ancestor_scroll()
-            draw_state.left_offset, draw_state.top_offset = (
-                imgui.get_cursor_screen_pos()[0] - draw_state.parent_window.abs_left + anc_sx,
-                imgui.get_cursor_screen_pos()[1] - draw_state.parent_window.abs_top + anc_sy)
+            if kwargs.get("view_offset", True):
+                draw_state.left_offset, draw_state.top_offset = (
+                    imgui.get_cursor_screen_pos()[0] - draw_state.parent_window.abs_left + anc_sx,
+                    imgui.get_cursor_screen_pos()[1] - draw_state.parent_window.abs_top + anc_sy)
+            else:
+                draw_state.left_offset, draw_state.top_offset = (0,0)
+
 
         if closable:
 

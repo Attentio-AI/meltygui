@@ -37,12 +37,27 @@ from src.lsd.gl_gui.view.playground.terminal_playground import Terminal, draw_te
 
 _SESSION_PREFIX = "claude-d-"
 
+# claude-d runs on a DEDICATED tmux server (`-L claude-d`) started with `-f /dev/null`
+# so it ignores ~/.tmux.conf (which sets `mouse on` + rebinds the arrows). This isolation
+# is what lets the gnome window scroll/copy like a plain terminal without touching the
+# tm's `main`/`lsd` server - only bash/claude-d. EVERY tmux call here must target that
+# same server or it would look at the wrong (default) server and find nothing.
+_TMUX = "tmux -f /dev/null -L claude-d"
+_TMUX_ARGS = ["tmux", "-f", "/dev/null", "-L", "claude-d"]  # list form for subprocess argv
+# Reapply the plain terminal config from any client (idempotent global `set -g`); needed
+# in case THIS client cold-starts the server before gnome/claude-d does.
+_TMUX_SETUP = (
+    f"{_TMUX} set -g mouse off 2>/dev/null; "
+    f"{_TMUX} set -g status off 2>/dev/null; "
+    f"{_TMUX} set -g window-size latest 2>/dev/null; "
+    f"{_TMUX} set -g terminal-overrides ',*:smcup@:rmcup@' 2>/dev/null; ")
+
 
 def _list_claude_sessions():
     """The live tmux sessions started by `claude-d` (by name prefix). [] on any
     failure (no tmux server, none running)."""
     try:
-        out = subprocess.run(["tmux", "list-sessions", "-F", "#{session_name}"],
+        out = subprocess.run(_TMUX_ARGS + ["list-sessions", "-F", "#{session_name}"],
                              capture_output=True, text=True, timeout=2).stdout
     except Exception:
         return []
@@ -54,8 +69,8 @@ def _attach_cmd(session):
     shared client — the session was created by `claude-d`, we just view/drive it).
     `window-size latest` makes our view the active client so output wraps to us."""
     return ["bash", "-c",
-            "tmux set -g window-size latest 2>/dev/null; "
-            "exec tmux attach-session -t " + shlex.quote(session)]
+            _TMUX_SETUP +
+            "exec " + _TMUX + " attach-session -t " + shlex.quote(session)]
 
 
 def _kill_session(session):
@@ -65,7 +80,7 @@ def _kill_session(session):
 
     def go():
         try:
-            subprocess.run(["tmux", "kill-session", "-t", session],
+            subprocess.run(_TMUX_ARGS + ["kill-session", "-t", session],
                            stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL, timeout=2)
         except Exception:
             pass

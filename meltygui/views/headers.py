@@ -195,24 +195,23 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
     # Text
     _font_pushed = False
+    
     if font is not None and Melty.font_mgr is not None:
         _font_handle = Melty.font_mgr.get(font)
         if _font_handle is not None:
             imgui.push_font(_font_handle)
             _font_pushed = True
 
+    input_value
+    
     # Depth-driven name brightness
     depth_scale       = 0.06
     depth_offset      = -30.0
-
     # Depth drives text saturation falloff
     sat_depth_factor  = -0.004
     sat_depth_offset  = -1.773
-
-
     spinner_icon_0 = ""
     spinner_icon_1 = ""
-
     draw_list = imgui.get_window_draw_list()
     spinner_icon_idx = Melty.frame_count % 2
     spinner_icon = [spinner_icon_0, spinner_icon_1][spinner_icon_idx]
@@ -222,7 +221,6 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     depth_intensity = float(depth + depth_offset) * depth_scale
 
     sat_shift = float(depth + sat_depth_offset) * sat_depth_factor
-
     # Name text (value is the base offset, updated to depth below)
     name_style = {
         'value': 1.188, 'saturation': 0.778,
@@ -238,7 +236,6 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     unique_label_tint = (-1.535, 0.0, 0.9, 1.0)
 
     # Depth-driven color computation
-
     name_style['value'] = depth_intensity * name_style['depth_factor'] + name_style['value']
     name_style['saturation'] = name_style['saturation'] + sat_shift
 
@@ -254,6 +251,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     arrow_style['value'] = depth_intensity * arrow_style['depth_factor'] + arrow_style['value']
     arrow_style['saturation'] = arrow_style['saturation'] + sat_shift
     arrow_color = style_manager.make_color_style_value(input=arrow_style)
+      
 
     # ── Tree arrow ─────────────────────────────────────────────
     imgui.dummy(5, 0)
@@ -303,6 +301,230 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
     from src.lsd.gl_gui.view.core_views.new_core_view import draw_tuple
 
+    
+    # ── Tint widget ────────────────────────────────────────────
+    # A dict can carry its tint in __overrides__ (read from a `# [tint=(...)]`
+    # comment); edit the store directly so the change round-trips to source.
+    # The override comment is itself the opt-in, so this isn't gated on
+    # show_tint (which is only used for top-level windows, not nested classes).
+    _overrides = input_value.get("__overrides__") if isinstance(input_value, dict) else None
+    if isinstance(_overrides, dict) and _overrides.get("tint") is not None:
+        draw_state._has_popup = True
+        tint_changed, tint_value = draw_tuple(_overrides["tint"], show_name=False, show_header=False)
+        if tint_changed:
+            _overrides["tint"] = tint_value
+            on_change = True
+            return_val = input_value
+        same_line()
+    elif hasattr(input_value, "tint") and input_value.tint is not None and show_tint:
+        draw_state._has_popup = True
+        tint_changed, tint_value = draw_tuple(input_value.tint, show_name=False, show_header=False)
+        if tint_changed:
+            input_value.tint = tint_value
+            on_change = True
+            return_val = input_value
+        same_line()
+    elif show_tint and draw_state.tint is not None:
+        draw_state._has_popup = True
+        tint_changed, tint_value = draw_tuple(draw_state.tint, show_name=False, show_header=False)
+        if tint_changed:
+            draw_state.tint = tint_value
+            on_change = True
+            return_val = input_value
+        same_line()
+
+    # ── Add button ─────────────────────────────────────────────
+    if show_add_delete and (isinstance(input_value, (list, dict, _BubblingDict)) or hasattr(input_value, "__dict__")):
+        if show_add_delete:
+            if RenderFuncs.button(f"\uf067##add{unique}", name=f"\uf067##add{unique}")[0]:
+                hinted_type = new_item_type
+                if meta is not None and meta.field_type is not None and hasattr(meta.field_type, "__args__"):
+                    if len(meta.field_type.__args__) == 2:
+                        hinted_type = meta.field_type.__args__[1]
+                add_to_collection(input_value, hinted_type())
+                on_change = True
+                return_val = input_value
+            same_line()
+
+    # ── Name label / edit ──────────────────────────────────────
+    has_visible_name = show_name and name not in ("", None, "None")
+
+    if has_visible_name:
+        clipped_name = name.split("##")[0][:max_name_chars] + " "
+        if header_same_line:
+            text_width = imgui.calc_text_size(clipped_name)[0] - 4
+        else:
+            text_width = imgui.calc_text_size(clipped_name)[0]
+
+
+
+        if icon is not None:
+            imgui.align_text_to_frame_padding()
+            imgui.text_colored(icon, *Tint.icon_tint())
+            imgui.same_line()
+
+        push_style_var(imgui.STYLE_FRAME_ROUNDING, name_rounding)
+
+        if not draw_state._name_edit:
+
+            draw_list: _DrawList = imgui.get_window_draw_list()
+            cursor_pos = imgui.get_cursor_screen_pos()
+            # Search-match highlight behind the key name (drawn before the text
+            # so glyphs stay readable). Strong fill + outline for the active
+            # (global-current) match; a faint fill for the rest. The flags are
+            # passed by draw_collection when the header's key matches the query.
+            if kwargs.get("search_match", False):
+                pad = 0.0
+                hx0, hy0 = cursor_pos[0] - pad, cursor_pos[1] 
+                hx1 = cursor_pos[0] + text_width + pad
+                hy1 = cursor_pos[1] + imgui.get_text_line_height()
+                if kwargs.get("search_current", False):
+                    draw_list.add_rect_filled(hx0, hy0, hx1, hy1, (150 << 24) | (60 << 16) | (170 << 8) | 240)
+                    draw_list.add_rect(hx0, hy0, hx1, hy1, (255 << 24) | (90 << 16) | (200 << 8) | 255)
+                else:
+                    draw_list.add_rect_filled(hx0, hy0, hx1, hy1, (89 << 24) | (80 << 16) | (200 << 8) | 230)
+            packed_name_color = imgui.get_color_u32_rgba(*name_color[:3], 1.0)
+            draw_list.add_text(cursor_pos[0], cursor_pos[1], packed_name_color, clipped_name)
+            imgui.dummy(text_width, imgui.get_frame_height())
+            pop_style_var(1)
+        else:
+            name_width = min(text_width, min_name_text_width)
+            imgui.set_next_item_width(name_width)
+            edit_flags = imgui.INPUT_TEXT_ENTER_RETURNS_TRUE | imgui.INPUT_TEXT_AUTO_SELECT_ALL
+            changed, new_name = imgui.input_text(f"##edit{name}_{unique}", name, flags=edit_flags)
+            pop_style_var(1)
+
+            if changed or imgui.is_key_pressed(imgui.KEY_ESCAPE) or not imgui.is_item_active():
+                draw_state._name_edit = False
+
+        same_line(spacing=0)
+
+    if draw_state.closable and show_tint:
+        spinner_color = imgui.get_color_u32_rgba(1, 1, 1, 0.1)
+        draw_list.add_text(imgui.get_cursor_screen_pos()[0] - icon_width + 10,
+                           imgui.get_cursor_screen_pos()[1], spinner_color, spinner_icon)
+        imgui.dummy(15, 15)
+        imgui.same_line()
+
+    end_x = imgui.get_cursor_screen_pos()[0]
+
+    # ── Profiler ───────────────────────────────────────────────
+    is_profiling = Toggles.profile_mode == ProfileMode.ON
+    if is_profiling:
+        from src.lsd.gl_gui.view.core_views.new_core_view import render_profiler_time
+        render_profiler_time(
+            input_value=draw_state.render_time, brief=True,
+            style_manager=style_manager,
+        )
+        same_line(spacing=3)
+
+    pop_style_var(1)
+
+    if _font_pushed:
+        imgui.pop_font()
+    # Track the natural (pre-padding) header width so core_render can fold it into
+    # the parent window's running max for the next frame.
+    draw_state.header_natural_width = end_x - start_x
+    if kwargs.get("align_header", True) and show_name:
+        # Pad to the widest header in this window (tracked per-window), or the
+        # preferred width as a floor. Falls back to the floor when no window.
+        parent_window = draw_state.parent_window
+        pad_target = Toggles.prefered_header_width
+        if parent_window is not None:
+            pad_target = max(pad_target, parent_window.max_header_width)
+        if end_x - start_x < pad_target:
+            imgui.dummy(pad_target - (end_x - start_x), 1)
+            imgui.same_line(8)
+
+    return on_change, return_val
+
+    depth = max(0.0, Melty.bg_depth)
+    depth_intensity = float(depth + depth_offset) * depth_scale
+
+    sat_shift = float(depth + sat_depth_offset) * sat_depth_factor
+
+    # Name text (value is the base offset, adjusted by depth below)
+    name_style = {
+        'value': 1.188, 'saturation': 0.778,
+        'alpha': 0.174, 'max_value': 3.921,
+        'depth_factor': 0.729
+    }
+    name_rounding       = 2.696
+    max_name_chars      = 40
+    min_name_text_width = 62
+
+    # Type / unique label colors
+    type_label_tint   = (3.672, 1.944, 2.861, 1.0)
+    unique_label_tint = (-1.535, 0.0, 0.9, 1.0)
+
+    # Depth-driven color computation
+
+    name_style['value'] = depth_intensity * name_style['depth_factor'] + name_style['value']
+    name_style['saturation'] = name_style['saturation'] + sat_shift
+
+    if name_color is not None:
+        name_color = style_manager.make_color_style_rgb(*name_color, input=name_style, factor=0.1)
+    else:
+        name_color = style_manager.make_color_style_value(input=name_style, value=0.5)
+    arrow_style = {
+        'value': 7.788, 'saturation': 1.559,
+        'alpha': 0.071, 'max_value': 1.601,
+        'depth_factor': 0.332
+    }
+    arrow_style['value'] = depth_intensity * arrow_style['depth_factor'] + arrow_style['value']
+    arrow_style['saturation'] = arrow_style['saturation'] + sat_shift
+    arrow_color = style_manager.make_color_style_value(input=arrow_style)
+      
+
+    # ── Tree arrow ─────────────────────────────────────────────
+    imgui.dummy(5, 0)
+    start_x = imgui.get_cursor_screen_pos()[0]
+
+    on_change = False
+    return_val = on_action
+    push_style_var(imgui.STYLE_ALPHA, opacity)
+    if display_name is not None:
+        name = display_name
+    imgui.align_text_to_frame_padding()
+
+    if is_tree:
+        push_style_color(imgui.COLOR_TEXT, *arrow_color[:3])
+        imgui.set_cursor_screen_pos(imgui.get_cursor_screen_pos())
+        imgui.dummy(0, 0)
+        imgui.same_line(spacing=0)
+
+        imgui.push_style_color(imgui.COLOR_BUTTON, 0.0, 0.0, 0.0, 0.0)
+        imgui.push_style_color(imgui.COLOR_BUTTON_HOVERED, 0.0, 0.0, 0.0, 0.0)
+        imgui.push_style_var(imgui.STYLE_ALPHA, arrow_style['alpha'])
+        imgui.set_item_allow_overlap()
+
+        arrow_dir = imgui.DIRECTION_DOWN if draw_state.expanded else imgui.DIRECTION_RIGHT
+        if imgui.arrow_button("##tree", arrow_dir):
+            draw_state.expanded = not draw_state.expanded
+            draw_state.content_height = 0
+            draw_state.invalid_content_height = True
+            request_render()
+        imgui.pop_style_var(1)
+        imgui.pop_style_color(2)
+        pop_style_color(1)
+        same_line()
+    else:
+        imgui.same_line(spacing=0)
+
+    # ── Type / unique labels ───────────────────────────────────
+    if show_type:
+        imgui.text_colored(f"({input_value.__class__.__name__})", *type_label_tint)
+        same_line()
+    if show_unique:
+        imgui.text_colored(f"({str(Melty.get_tile_id())})", *unique_label_tint)
+        same_line()
+    if show_name and name != "":
+        same_line(spacing=0)
+        imgui.set_item_allow_overlap()
+
+    from src.lsd.gl_gui.view.core_views.new_core_view import draw_tuple
+
+    
     # ── Tint widget ────────────────────────────────────────────
     # A dict can carry its tint in __overrides__ (parsed from a `# [tint=(...)]`
     # comment); edit that value directly so the change round-trips to source.
