@@ -311,6 +311,10 @@ class Melty:
     focused_ds = None
     text_focused_ds = None
     popover_focused_ds = None
+    # id() of the front-most draw_state under the cursor within the open popover,
+    # last frame - so begin_frame only re-runs the popover when the hovered row
+    # changes (not every frame the pointer sits over one).
+    _last_popover_hover = None
 
     # Previous frame's imgui io.want_text_input - used to detect when an imgui
     # input widget newly captures the keyboard (rising edge), so a Melty text
@@ -612,62 +616,85 @@ class Melty:
 
         return default_view_function
 
-    # rtree.delete only removes an entry when given the EXACT bbox it was
-    # inserted with. So _bvh_bbox always mirrors what's currently in the rtree
-    # for that draw_state - register/update/unregister keep them in lockstep,
-    # and every delete uses _bvh_bbox (not the live, possibly-changed bbox).
+    # Single source of truth for a draw_state's presence in the rtree.
+    #
+    # Invariant: each draw_state owns AT MOST ONE BOX in the index, under a rid
+    # assigned once for its lifetime (never reused, never dropped). `_bvh_bbox`
+    # always mirrors EXACTLY the box currently stored under that rid, or None
+    # when the draw_state has no box in the index. bvh_sync is the only writer,
+    # so the mirror can't drift: it deletes the current box (matched by the rid,
+    # which is why rtree.delete - which needs an exact inserted box - always
+    # hits) before adding the new one, and records the new box.
+    #
+    # This replaces the old register/update/unregister trio, whose fresh-rid-
+    # per-register and "set _bvh_bbox without inserting" paths let a single
+    # draw_state accumulate several boxes (rtree allows duplicate ids), which
+    # appeared as duplicated hits in bvh_query.
     @classmethod
-    def bvh_register(cls, draw_state):
-        bbox = draw_state.bbox
-        if bbox is None:
-            return None
-        rid = cls._bvh_next_id
-        cls._bvh_next_id += 1
-        draw_state._bvh_id = rid
-        cls._bvh_id_to_ds[rid] = draw_state
-        if bbox[0] < bbox[2] and bbox[1] < bbox[3]:
-            cls._bvh.insert(rid, bbox)
-            cls._bvh_gen += 1
-        draw_state._bvh_bbox = bbox
-        return rid
+    def bvh_sync(cls, draw_state):
+        """Make the index hold exactly the draw_state's current box, or nothing.
 
-    @classmethod
-    def bvh_unregister(cls, draw_state):
+        Idempotent and cheap: when the desired box equals what's already stored
+        it returns without touching the index, so calling this every render only
+        does work when abs_left/abs_top/width/height (i.e. `bbox`) — or the
+        view's visibility — actually changed.
+
+        The box is dropped (desired = None) when the view is off-screen
+        (`inside_clip` False), closed (`closed`), or its rect is degenerate. So
+        a closed or scrolled-out view clears itself the next time it syncs.
+
+        Only `closed` (a cheap bool) is checked here, not `abs_closed`: a view
+        hidden by a COLLAPSED ANCESTOR isn't rendered, so pos_changed never
+        fires for it and this couldn't clear it regardless. bvh_query handles
+        that case by filtering and lazily evicting abs_closed hits. Keeping the
+        per-render path off the abs_closed parent-chain walk matters — this runs
+        for every view every frame."""
+        desired = draw_state.bbox
+        if (desired is not None
+                and draw_state.inside_clip
+                and not draw_state.closed
+                and desired[0] < desired[2] and desired[1] < desired[3]):
+            pass  # keep desired
+        else:
+            desired = None
+
+        current = draw_state._bvh_bbox
+        if desired == current:
+            return
+
         rid = draw_state._bvh_id
         if rid is None:
-            return
-        bbox = draw_state._bvh_bbox
-        if bbox is not None:
-            try:
-                cls._bvh.delete(rid, bbox)
-                cls._bvh_gen += 1
-            except Exception:
-                pass
-        cls._bvh_id_to_ds.pop(rid, None)
-        draw_state._bvh_id = None
-        draw_state._bvh_bbox = None
+            rid = cls._bvh_next_id
+            cls._bvh_next_id += 1
+            draw_state._bvh_id = rid
 
-    @classmethod
-    def bvh_update(cls, draw_state):
-        rid = draw_state._bvh_id
-        if rid is None:
-            return
-        old_bbox = draw_state._bvh_bbox
-        if old_bbox is not None:
-            try:
-                cls._bvh.delete(rid, old_bbox)
-                cls._bvh_gen += 1
-            except Exception:
-                pass
-        new_bbox = draw_state.bbox
-        if new_bbox is not None:
-            cls._bvh.insert(rid, new_bbox)
-            cls._bvh_gen += 1
-            draw_state._bvh_bbox = new_bbox
+        if current is not None:
+            cls._bvh.delete(rid, current)
+        if desired is not None:
+            cls._bvh.insert(rid, desired)
+            cls._bvh_id_to_ds[rid] = draw_state
         else:
             cls._bvh_id_to_ds.pop(rid, None)
-            draw_state._bvh_id = None
+        draw_state._bvh_bbox = desired
+        cls._bvh_gen += 1
+
+    @classmethod
+    def bvh_evict(cls, draw_state):
+        """Drop a draw_state's box from the index immediately, keeping its rid.
+
+        Lazy GC for views that vanish WITHOUT re-rendering (a collapsed parent
+        stops descending its children, so those children never sync themselves
+        out). bvh_query calls this when it encounters such a hit. The rid is
+        retained, so the view re-syncs cleanly if it ever reappears.
+
+        Deliberately does NOT bump _bvh_gen: the caller only evicts hits it has
+        already filtered out (closed/abs_closed), so removing them changes no
+        query's result — and leaving gen alone keeps the query memo this frame
+        valid instead of forcing a re-scan on the next identical query."""
+        if draw_state._bvh_bbox is not None:
+            cls._bvh.delete(draw_state._bvh_id, draw_state._bvh_bbox)
             draw_state._bvh_bbox = None
+        cls._bvh_id_to_ds.pop(draw_state._bvh_id, None)
 
     @classmethod
     def _resolve_channel_command_ranges(cls, overlay, idx_boundaries):
@@ -714,21 +741,33 @@ class Melty:
         if key in cls._bvh_query_cache:
             return cls._bvh_query_cache[key]
 
-        hits = [
-            cls._bvh_id_to_ds[rid]
-            for rid in cls._bvh.intersection((x, y, x, y))
-            if rid in cls._bvh_id_to_ds and (not cls._bvh_id_to_ds[rid].closed or not cls._bvh_id_to_ds[rid].closable)
-        ]
-        unique_hits = []
-        for ds in hits:
-            if ds in unique_hits:
+        # bvh_sync's one-box-per-rid invariant means intersection won't return a
+        # rid twice - but dedup by rid anyways as a cheap, exact safety net (a
+        # plain set, not the old O(n^2) `ds in hits` scan).
+        hits = []
+        stale = []
+        seen_rids = set()
+        for rid in cls._bvh.intersection((x, y, x, y)):
+            if rid in seen_rids:
                 continue
-            unique_hits.append(ds)
+            seen_rids.add(rid)
+            ds = cls._bvh_id_to_ds.get(rid)
+            if ds is None:
+                continue
+            # A view that closed/collapsed without re-rendering still has a stale
+            # box here. Filter it out, and lazily evict so it stops being hit.
+            if ds.closed or ds.abs_closed:
+                stale.append(ds)
+                continue
+            hits.append(ds)
 
-        unique_hits.sort(key=lambda ds: ds.z_pos or 0, reverse=True)
+        for ds in stale:
+            cls.bvh_evict(ds)
 
-        cls._bvh_query_cache[key] = unique_hits
-        return unique_hits
+        hits.sort(key=lambda ds: ds.z_pos or 0, reverse=True)
+
+        cls._bvh_query_cache[key] = hits
+        return hits
 
     @classmethod
     def _sync_gl_error_checking(cls):
@@ -872,6 +911,37 @@ class Melty:
                         cls.cache.invalidate(focused._tile_id, force=True, note=note)
                         request_render()
                         break
+
+        # Open dropdown popover: re-run its owning view on the EVENTS it responds to
+        # rather than every frame - (a) a navigation key is down (Esc/arrows/Enter,
+        # delivered with no delay), or (b) the text view under the cursor inside
+        # the popover changed (the pointer moved to a different row, so a sub-menu
+        # should open/close). The cached owner wouldn't otherwise re-descend into
+        # its un-cached menu. A still pointer + no keys repaints nothing. (Typing
+        # into the search box is handled by the text-focus block above, which
+        # invalidates up to this view through the box's parent.)
+        if cls.popover_focused_ds is not None and cls.glfw_window is not None:
+            pop = cls.popover_focused_ds
+            _need = False
+            _nav_keys = (glfw.KEY_ESCAPE, glfw.KEY_UP, glfw.KEY_DOWN,
+                         glfw.KEY_LEFT, glfw.KEY_RIGHT, glfw.KEY_ENTER, glfw.KEY_KP_ENTER)
+            # Work off the GLFW windowed key QUEUE (frame_key_events) - the same
+            # source the popover reads - not glfw.get_key level state. A fast Esc /
+            # Enter key is pressed-and-released between frames, so the level check
+            # misses it and the popover never re-runs to handle it (arrows survive
+            # only/c they're held); the queue keeps every press. glfw.get_key
+            # stays as a fallback so a held key keeps re-rendering.
+            if any(k in _nav_keys for k, _ in cls.frame_key_events):
+                _need = True
+            elif any(glfw.get_key(cls.glfw_window, k) == glfw.PRESS for k in _nav_keys):
+                _need = True
+
+            if _need:
+                if pop.parent_window is not None:
+                    cls.cache.invalidate_up(pop.parent_window._tile_id, force=True)
+                cls.cache.invalidate_up(pop._tile_id, force=True)
+
+                request_render()
 
         mouse_pos = imgui.get_mouse_pos()
         ds_under_mouse = Melty.bvh_query(mouse_pos[0], mouse_pos[1])

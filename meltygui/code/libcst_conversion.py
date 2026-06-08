@@ -245,7 +245,7 @@ class GeneralParse(dict):
     #     return self._bg_hash_cache
 
 
-@defaults(tint=(0.04, 0.17, 0.25, 0.016), bg_offset=2, font=Font.JETBRAINS_MONO_19, is_tree=False, shadow=False, z_offset=1, child_kwargs={"font":Font.JETBRAINS_MONO_19})
+@defaults(tint=(0.04, 0.17, 0.25, 0.016), bg_offset=2, font=Font.JETBRAINS_MONO_16, is_tree=False, shadow=False, z_offset=1, child_kwargs={"font":Font.JETBRAINS_MONO_19})
 class CallParse(GeneralParse):
     """A function call's arguments, as a GeneralParse subclass.
 
@@ -269,7 +269,7 @@ class CallParse(GeneralParse):
         self.func_name = func_name
 
 
-@defaults(tint=(0.8139535, 0.6953772, 0.3, 0.7), icon="@", disable_scroll=True)
+@defaults(tint=(0.86, 0.3345581, 0.07, 0.7), icon="@", disable_scroll=True)
 class DecorationParse(CallParse):
     """A decorator application (`@name(...)`), as a CallParse subclass.
 

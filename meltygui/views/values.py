@@ -1144,7 +1144,7 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
                               "show_name":False, "show_header":False, "show_bg":False, "horizontal":True})
 
     global drop_down_selection
-    changed, selection = draw_dropdown(drop_down_selection, collection=dropdown_demo_data,
+    changed, selection = draw_dropdown(drop_down_selection, collection=vis.root.lora_collection.loras,
                                        name="Dropdown Demo", mode=Mode.WINDOW, tint=(0.180984, 0.2, 0.2))
     if changed:
         drop_down_selection = selection
@@ -1618,7 +1618,7 @@ def draw_managed_window(input_value, name, draw_state, mouse_down=False, selecta
     name = window_draw_state.name
 
     start_cursor = imgui.get_cursor_screen_pos()
-    imgui.dummy(5, 20)
+    imgui.dummy(4, 20)
     imgui.same_line()
 
     if not window_draw_state.persistent and not window_draw_state.seen and window_draw_state.closed:
@@ -1661,8 +1661,8 @@ def draw_managed_window(input_value, name, draw_state, mouse_down=False, selecta
     _search_match = kwargs.get("search_match", False)
     _search_current = kwargs.get("search_current", False)
     if window_draw_state.closed:
-        if button(f"{name}", color=window_tint, z_offset=-4, tint_value=0.028, factor=0.836, text_value=0.397,
-                  saturation=1.511, width=draw_state.content_width - target_spacing, height=button_height,
+        if button(f"{name}", color=window_tint, z_offset=-4, tint_value=0.035, factor=0.92, text_value=0.305,
+                  saturation=0.872, width=draw_state.content_width - target_spacing, height=button_height,
                   search_match=_search_match, search_current=_search_current)[0]:
             window_draw_state.closed = False
             this_window_right = draw_state.abs_left + draw_state.width
@@ -2715,17 +2715,25 @@ def draw_debug_label(input_value: str):
 @render_func(is_default_for=Enum, is_tree=False, shadow=False, align_header=False,
              selectable=False, header_same_line=True,
              parent_show_add_delete=False, with_header=draw_header, temp=True)
-def draw_enum(input_value: Enum, draw_state=None, style_manager=None, enum_tint=(0.3, 0.3, 0.3)):
+def draw_enum(input_value: Enum, draw_state=None, unique=0, style_manager=None, enum_tint=(0.3, 0.3, 0.3)):
     # Delegate to draw_tab_bar so enums get its wrapping + styling for free.
     # Enums are single-select: pass the current value as the lone selection and
     # render every member as a tab; names are the prettified member names.
     options = list(input_value.__class__)
 
-    names = [opt.name.replace("_", " ").capitalize() for opt in options]
-    changed, selected = draw_tab_bar([input_value], collection=options, names=names, wrap=True,
-                                      z_offset=-1, unique="enum", rounding=5, as_toggles=False, bg_offset=-3)
-    if changed and selected:
-        return True, selected[0]
+    if len(options) > 4:
+        changed, selection = draw_dropdown(input_value, collection=options, show_header=False,
+                                           name=f"{input_value.__class__.__name__}##{unique}enum")
+
+        if changed:
+            return True, selection
+    else:
+
+        names = [opt.name.replace("_", " ").capitalize() for opt in options]
+        changed, selected = draw_tab_bar([input_value], collection=options, names=names, wrap=True,
+                                          z_offset=-1, unique="enum", rounding=5, as_toggles=False, bg_offset=-3)
+        if changed and selected:
+            return True, selected[0]
     return False, input_value
 
 
@@ -3269,7 +3277,7 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, unique=No
 
     render_func = cm_state.render_func_dict.deep.decorators.render_func()
     if render_func:
-        changed, value = draw_collection(render_func, tint=(0.007843138,0.05490196,0.03137255, 0.7),
+        changed, value = draw_collection(render_func, tint=(0.00956193,0.1581395,0.03996849, 0.7),
                                          name=f"render_func##{unique}", disable_scroll=True)
 
     window_decoration = cm_state.render_func_dict.deep.decorators.window()
@@ -3279,7 +3287,7 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, unique=No
 
     class_defaults = cm_state.class_dict.deep.decorators.defaults()
     if class_defaults:
-        changed, value = draw_collection(class_defaults, tint=(0.02,0.22,0.40), name=f"defaults##{unique}",
+        changed, value = draw_collection(class_defaults, tint=(0.01,0.03,0.10), name=f"defaults##{unique}",
                                          disable_scroll=True)
 
     if draw_state.frame_count < 10 and Melty.frame_count > 5:
@@ -3627,37 +3635,48 @@ def draw_dropdown(input_value, collection, name, draw_state, drop_down_state: Dr
 
     # Label shows the last pick (sticky across frames via drop_down_state),
     # falling back to the raw input value.
-    current = drop_down_state.selected if drop_down_state.selected is not None else input_value
-    caret = " " if is_open else ""  # fa-chevron-down / fa-chevron-right
-    drop_down_display_str = f"{caret}  {name}: {str(current)[:30]}"
+    # Title shows the LABEL/key of the current selection (e.g. "red"), not the raw
+    # value (which may be a tuple/number); selected_label is stamped at pick-time.
+    _sel_label = getattr(drop_down_state, "selected_label", "") or ""
+    current = _sel_label if _sel_label else (str(input_value) if input_value is not None else "")
+    caret = "" if is_open else ""  # fa-chevron-down / fa-chevron-right
+
+    drop_down_display_str = f"{caret} {str(current)[:30]}"
     bg_offset = 4 if is_open else 7
 
     trigger_w = draw_state.content_width - 10
     trigger_h = 25
+    # Colour the trigger by the selected item's embedded tint (input_value is the
+    # current selection passed by the caller), falling back to the view's tint.
+    trigger_tint = _dd_obj_tint(input_value, draw_state.tint)
     clicked, _ = button(drop_down_display_str, name=f"{name}_dd_trigger",
-                        show_bg=T
-                        rue, show_button_bg=False, shadow=False, 
+                        show_bg=True, show_button_bg=False, shadow=False, tint=trigger_tint,
                         z_offset=1, text_align="left", bg_offset=bg_offset, width=trigger_w, height=trigger_h)
 
-    # Hover highlight: a translucent white wash painted straight onto the window
-    # draw list, over the trigger fill, so the row lights up under the cursor
-    # (and stays lit while the popover is open).
-    # if draw_state._bounding_hovered or is_open:
-    #     dl = imgui.get_window_draw_list()
-    #     x0, y0 = draw_state.abs_left, draw_state.abs_top
-    #     alpha = 0.14 if is_open else 0.08
-        # dl.add_rect_filled(x0, y0, x0 + trigger_w, y0 + trigger_h,
-        #                    imgui.get_color_u32_rgba(1, 1, 1, alpha),
-        #                    rounding=draw_state.corner_radius)
 
-    # Trigger click toggles this popover. Assigning the slot to us opens us and
-    # closes any other open dropdown; clearing it closes us.
     if clicked:
+        was_open = is_open
         Melty.popover_focused_ds = None if is_open else draw_state
         is_open = Melty.popover_focused_ds is draw_state
+        if is_open and not was_open:
+            # Fresh open: start with an empty query and give the search box a few
+            # frames to grab text focus so the user can type to filter immediately.
+            drop_down_state.search_query = ""
+            drop_down_state.search = ""
+            drop_down_state._focus_search = 8
+            # Start the highlight on the last-selected item (expanded to it) rather
+            # than the top, so re-opening starts where you left off.
+            _sp = _dd_as_tuple(getattr(drop_down_state, "selected_path", ()))
+            drop_down_state.cursor_path = _sp
+            drop_down_state.open_path = _sp[:-1] if _sp else ()
+            drop_down_state._kbd_mode = False
+            drop_down_state._last_mouse = None
         if not is_open:
-            drop_down_state.open_path = ()  # collapse all sub-menus on close
+            _dd_close(drop_down_state)
+            draw_state.invalidate()
+
         request_render()
+
 
     # The popover is a latching window -- the first call registers it and it
     # stays alive, so we always call it and toggle visibility with `closed`
@@ -3667,6 +3686,15 @@ def draw_dropdown(input_value, collection, name, draw_state, drop_down_state: Dr
     # off as a free-floating draggable; temp keeps it ephemeral. root_state
     # carries the single open-path the recursion expands; path_prefix starts
     # empty at the root. A pick bubbles back as (changed, value).
+    if is_open:
+        # A mouse move switches back to hover mode so the highlight follows the
+        # pointer again (until the next arrow key locks keyboard mode).
+        _mp = imgui.get_mouse_pos()
+        _lm = getattr(drop_down_state, "_last_mouse", None)
+        if _lm is not None and (abs(_mp[0] - _lm[0]) > 0.5 or abs(_mp[1] - _lm[1]) > 0.5):
+            drop_down_state._kbd_mode = False
+        drop_down_state._last_mouse = (_mp[0], _mp[1])
+
     changed, new_item = draw_dd_menu(collection, tint=draw_state.tint,
                                      name=f"{draw_state.name}_menu",
                                      closed=not is_open, temp=True,
@@ -3675,12 +3703,46 @@ def draw_dropdown(input_value, collection, name, draw_state, drop_down_state: Dr
                                      root_state=drop_down_state, path_prefix=())
     if is_open:
         if changed:
-            drop_down_state.selected = new_item
-            drop_down_state.open_path = ()
+            _p = _dd_as_tuple(getattr(drop_down_state, "_picked_path", ()))
+            drop_down_state.selected_path = _p
+            drop_down_state.selected_label = _dd_label_for_path(collection, _p)
             Melty.popover_focused_ds = None  # picking dismisses the popover
+            _dd_close(drop_down_state)
             draw_state.invalidate()
             request_render()
             return True, new_item
+
+        # Keyboard: Esc closes the popover, arrows move the highlight, Enter picks
+        # the highlighted leaf. The search term (published by the root menu's
+        # text box) filters key-nav the same way it filters the rows. Keys are
+        # delivered without hover because Melty.begin_frame force-invalidates this
+        # view on any keypress while it's popover_focused_ds.
+        search = getattr(drop_down_state, "search", "") or ""
+        if any(k == glfw.KEY_ESCAPE for k, _ in Core.melty.frame_key_events):
+            Melty.popover_focused_ds = None
+            _dd_close(drop_down_state)
+            draw_state.invalidate()
+            request_render()
+            return False, input_value
+
+        # While the search box holds text focus, Left/Right belong to the text
+        # cursor, not menu nav (Up/Down/Enter still drive the menu - the box is
+        # single-line so they ignores them).
+        box_tile = getattr(drop_down_state, "_search_box_tile", None)
+        text_focused = (Melty.text_focused_ds is not None and box_tile is not None
+                        and getattr(Melty.text_focused_ds, "_tile_id", None) == box_tile)
+        picked = _dd_handle_keys(collection, drop_down_state, search=search,
+                                 text_focused=text_focused)
+        if picked is not UNSET_VALUE:
+            _p = _dd_as_tuple(getattr(drop_down_state, "_picked_path", ()))
+            drop_down_state.selected_path = _p
+            drop_down_state.selected_label = _dd_label_for_path(collection, _p)
+            Melty.popover_focused_ds = None
+            _dd_close(drop_down_state)
+            draw_state.invalidate()
+
+            request_render()
+            return True, picked
 
         # Click-outside dismissal: a fresh left click landing on neither the
         # trigger nor anywhere inside the popover subtree closes it (matches
@@ -3691,14 +3753,20 @@ def draw_dropdown(input_value, collection, name, draw_state, drop_down_state: Dr
             under = Core.melty.bvh_query(mx, my)
             if not any(_ds_in_subtree(ds, draw_state) for ds in under):
                 Melty.popover_focused_ds = None
-                drop_down_state.open_path = ()
+                _dd_close(drop_down_state)
+                draw_state.invalidate()
                 request_render()
 
-        # While the popover is open, keep re-running this view every frame so the
-        # un-cached menu re-evaluates hover live (sub-menus open/close as the
-        # pointer moves). draw_dropdown is cached, so invalidate self to re-enter.
-        Melty.cache.invalidate(draw_state._tile_id, force=True)
-        request_render()
+        # Focus settle (bounded, NOT a permanent repaint loop): right after open
+        # the search box asks for text focus, but the trigger window's
+        # move-to-front blocks it the same frame (the box's parent window isn't
+        # the front window). While the box hasn't confirmed focus and we're still
+        # within the small retry budget, re-run so it asks again; it lands within
+        # a frame or two and this stops. Steady-state focus repaints nothing -
+        # hover changes invalidate via _dd_set_cursor, keys via begin_frame.
+        if getattr(drop_down_state, "_focus_search", 0) > 0:
+            Melty.cache.invalidate(draw_state._tile_id, force=True)
+            request_render()
 
     return False, input_value
 
@@ -3718,13 +3786,221 @@ def _ds_in_subtree(node, ancestor, max_depth=64):
     return False
 
 
-def _dd_menu_row_hovered_path(root_state, row_path, is_branch):
-    """Set the single open path when a row is hovered: a branch opens exactly its
-    own path (collapsing any sibling branch at this level); a leaf collapses back
-    to its parent level (so a sub-menu closes when you slide onto a plain row)."""
+def _dd_entries(container):
+    """Normalized (key, value, label, is_branch) rows for one level. Dict rows
+    read by their key (small/medium); list/tuple rows by their value
+    (left/center/right) since the index isn't meaningful to the user."""
+    if isinstance(container, dict):
+        items = list(container.items())
+        labelled = [(k, v, str(k)) for k, v in items]
+    else:
+        labelled = [(i, v, str(v)) for i, v in enumerate(container)]
+    return [(k, v, lbl, isinstance(v, (dict, list))) for k, v, lbl in labelled]
+
+
+def _dd_subtree_matches(value, search):
+    """True if `search` (already lowercased) appears anywhere in this value's
+    subtree, so a branch stays visible while searching when a descendant matches."""
+    if not search:
+        return True
+    if isinstance(value, dict):
+        return any(search in str(k).lower() or _dd_subtree_matches(v, search)
+                   for k, v in value.items())
+    if isinstance(value, list):
+        return any(_dd_subtree_matches(v, search) for v in value)
+    return search in str(value).lower()
+
+
+def _dd_visible_entries(container, search=""):
+    """Rows shown for a level under `search`: a leaf whose label matches, or a
+    branch matching by label OR holding a matching descendant. Empty `search`
+    keeps everything."""
+    if not isinstance(container, (dict, list)):
+        return []
+    rows = _dd_entries(container)
+    if not search:
+        return rows
+    return [(k, v, lbl, br) for (k, v, lbl, br) in rows
+            if search in lbl.lower() or (br and _dd_subtree_matches(v, search))]
+
+
+def _dd_walk(collection, path):
+    """Descend `collection` along a key/index `path`, returning the node there or
+    None if the path no longer resolves (e.g. after a search prunes it)."""
+    node = collection
+    for k in path:
+        try:
+            node = node[k]
+        except (KeyError, IndexError, TypeError):
+            return None
+    return node
+
+
+def _dd_rows_at(collection, path, search):
+    """Visible rows at `path`, applying the once-a-branch-matches-by-label rule:
+    if any ancestor key on `path` matched the search by its own label, that whole
+    subtree counts as a match, so deeper levels are shown unfiltered."""
+    container = _dd_walk(collection, path)
+    ancestor_matched = bool(search) and any(search in str(k).lower() for k in path)
+    return _dd_visible_entries(container, "" if ancestor_matched else search)
+
+
+def _dd_first_match_leaf(container, search, prefix=()):
+    """DFS for the path to the first selectable leaf the search reveals, so the
+    cursor can jump straight to it (auto-expanding the branches above). A branch
+    that matches by its own label contributes its first leaf unfiltered."""
+    for key, value, label, is_branch in _dd_visible_entries(container, search):
+        path = tuple(prefix) + (key,)
+        if not is_branch:
+            return path
+        sub_search = "" if (search and search in label.lower()) else search
+        sub = _dd_first_match_leaf(value, sub_search, path)
+        if sub is not None:
+            return sub
+    return None
+
+
+def _dd_as_tuple(x):
+    """Coerce a stored path-state to a tuple. The states are meant to be key
+    tuples, but DropDownState is a DictConversion and its machinery can alias a
+    complex stored value (e.g. a Lora) across fields; this keeps the dropdown
+    robust to any input type by never iterating a non-sequence."""
+    if isinstance(x, tuple):
+        return x
+    if isinstance(x, list):
+        return tuple(x)
+    return ()
+
+
+def _dd_obj_tint(obj, fallback=None):
+    """An object's embedded tint (a 3+-tuple `.tint`, e.g. on a Lora), else
+    `fallback`. Used to colour each row by its value and the trigger by the
+    selected value."""
+    t = getattr(obj, "tint", None)
+    if isinstance(t, (tuple, list)) and len(t) >= 3:
+        return tuple(t)
+    return fallback
+
+
+def _dd_label_for_path(collection, path):
+    """Display label for a selected leaf path: the KEY for a dict entry (e.g.
+    "red"), the VALUE for a list entry (e.g. "left"). Used for the trigger title
+    so it reads as a name, not a raw value (which may be a tuple/number)."""
+    if not path:
+        return ""
+    parent = _dd_walk(collection, tuple(path[:-1]))
+    if isinstance(parent, dict):
+        return str(path[-1])
+    return str(_dd_walk(collection, tuple(path)))
+
+
+def _dd_set_cursor(root_state, cursor_path, is_branch):
+    """Point the highlight at `cursor_path` and derive the open path from it: a
+    branch expands its own sub-menu, a leaf collapses back to its parent level.
+    This is the single writer for both hover and keyboard, so they stay in sync."""
     if root_state is None:
         return
-    root_state.open_path = tuple(row_path) if is_branch else tuple(row_path[:-1])
+    new_cursor = tuple(cursor_path)
+    new_open = tuple(cursor_path) if is_branch else tuple(cursor_path[:-1])
+    if (new_cursor == _dd_as_tuple(root_state.cursor_path)
+            and new_open == _dd_as_tuple(root_state.open_path)):
+        return
+    root_state.cursor_path = new_cursor
+    root_state.open_path = new_open
+
+
+
+def _dd_close(root_state):
+    """Reset popover state on close: collapse the open/cursor paths, clear the
+    search query, and release the search box's text focus if it held it."""
+    if root_state is None:
+        return
+    root_state.open_path = ()
+    root_state.cursor_path = ()
+    root_state.search_query = ""
+    root_state.search = ""
+    root_state._focus_search = 0
+    box_tile = getattr(root_state, "_search_box_tile", None)
+    tf = Melty.text_focused_ds
+    if tf is not None and box_tile is not None and getattr(tf, "_tile_id", None) == box_tile:
+        Melty.text_focused_ds = None
+
+
+def _dd_handle_keys(collection, root_state, search="", text_focused=False):
+    """Arrow-key navigation while the popover is open. Up/Down move within the
+    current level, Right (or Enter on a branch) descends, Left collapses to the
+    parent, Enter on a leaf picks it. Returns the picked leaf value, or
+    UNSET_VALUE when nothing was chosen this frame. Reads the GLFW-callback key
+    queue so it works without the menu being hovered."""
+    if root_state is None:
+        return UNSET_VALUE
+    keys = list(Core.melty.frame_key_events)
+
+    def pressed(*codes):
+        return any(k in codes for k, _ in keys)
+
+    down = pressed(glfw.KEY_DOWN)
+    up = pressed(glfw.KEY_UP)
+    right = pressed(glfw.KEY_RIGHT)
+    left = pressed(glfw.KEY_LEFT)
+    enter = pressed(glfw.KEY_ENTER, glfw.KEY_KP_ENTER)
+    if not (down or up or right or left or enter):
+        return UNSET_VALUE
+
+    # A nav key fired: switch to keyboard-select mode so hover stops moving the
+    # cursor until the mouse actually moves again (cleared in draw_dropdown).
+    root_state._kbd_mode = True
+
+    # Navigation level = the cursor's parent; rows = its (search-filtered)
+    # siblings. Fall back to the root level if the cursor path went stale.
+    cursor = _dd_as_tuple(getattr(root_state, "cursor_path", ()))
+    level = cursor[:-1]
+    rows = _dd_rows_at(collection, level, search)
+    if not rows:
+        level = ()
+        rows = _dd_rows_at(collection, level, search)
+        cursor = ()
+    if not rows:
+        return UNSET_VALUE
+
+    level_keys = [r[0] for r in rows]
+    had_cursor = bool(cursor) and cursor[-1] in level_keys
+    idx = level_keys.index(cursor[-1]) if had_cursor else 0
+
+    # Left collapses the current sub-menu and highlights its parent row.
+    if left and level:
+        root_state.cursor_path = tuple(level)
+        root_state.open_path = tuple(level[:-1])
+        request_render()
+        return UNSET_VALUE
+
+    # From no selection, the first Up/Down just focuses on the first row; otherwise
+    # it steps (wrapping). Right/Enter act on whatever row is current.
+    if had_cursor:
+        if down:
+            idx = (idx + 1) % len(rows)
+        elif up:
+            idx = (idx - 1) % len(rows)
+    key, value, label, is_branch = rows[idx]
+    new_cursor = tuple(level) + (key,)
+
+    # Right / Enter on a branch descends into its first visible child.
+    if (right or enter) and is_branch:
+        kids = _dd_rows_at(collection, new_cursor, search)
+        if kids:
+            ck, cv, _cl, cbr = kids[0]
+            _dd_set_cursor(root_state, new_cursor + (ck,), cbr)
+            request_render()
+            return UNSET_VALUE
+
+    if enter and not is_branch:
+        _dd_set_cursor(root_state, new_cursor, False)
+        root_state._picked_path = tuple(new_cursor)
+        return value
+
+    _dd_set_cursor(root_state, new_cursor, is_branch)
+    request_render()
+    return UNSET_VALUE
 
 
 _DD_MENU_W = 170
@@ -3733,7 +4009,7 @@ _DD_ROW_H = 24
 
 @render_func(use_cache=False, show_bg=True, shadow=True, selectable=False, temp=True,
              closable=True, melty_window=False, auto_resize=True, with_header=None,
-             disable_scroll=True, min_width=200, swoosh=False)
+             disable_scroll=True, min_width=300, swoosh=False)
 def draw_dd_menu(input_value, draw_state, root_state=None, path_prefix=(), tint=None, **kwargs):
     """One level of the dropdown, drawn as its own temp popover window. Iterates
     the level's entries and renders each as a row (`_dd_menu_row`); a leaf click
@@ -3746,48 +4022,94 @@ def draw_dd_menu(input_value, draw_state, root_state=None, path_prefix=(), tint=
     level's key chain from the root; each row's full path is prefix + its key.
 
     Intentionally un-cached: the popover re-renders every frame while open (the
-    root drives request_render), so hover changes to open_path take effect live."""
-    open_path = tuple(getattr(root_state, "open_path", ()) or ())
-    if isinstance(input_value, dict):
-        entries = list(input_value.items())
-    else:
-        entries = list(enumerate(input_value))
+    root drives request_render), so hover/search changes take effect live."""
+    if not path_prefix and root_state is not None:
+        # Root owns the search box. Single-line so Up/Down/Enter pass through to
+        # menu nav; it auto-focuses once when the menu opens (_focus_search).
+        q = getattr(root_state, "search_query", "") or ""
+        box = draw_text(q, name="dd_search", show_name=False, searchable=False,
+                        single_line=True, is_search_box=True, is_tree=False,
+                        with_header=None, with_footer=None, show_bg=True, shadow=False,
+                        request_focus=getattr(root_state, "_focus_search", 0) > 0,
+                        font=Font.JETBRAINS_MONO_19,
+                        tint=tint, return_extras=True)
+        q_changed, new_q = box[0], box[1]
+        box_ds = box[2] if len(box) > 2 else None
+        if box_ds is not None:
+            root_state._search_box_tile = box_ds._tile_id
+            # Focus retry is a bounded countdown: the first popover's
+            # move-to-front clears text focus the frame the box first grabs it
+            # (apply_move_to_front(): parent != front window), so a one-shot
+            # request is lost. Re-request for a few frames until it lands, then
+            # clear (0). Draw_dropdown drives the re-runs while this is > 0.
+            if Melty.text_focused_ds is box_ds:
+                root_state._focus_search = 0
+            elif getattr(root_state, "_focus_search", 0) > 0:
+                root_state._focus_search -= 1
+        new_search = str(new_q or "").strip().lower()
+        if q_changed:
+            root_state.search_query = new_q
+            # Jump the cursor onto the first matching leaf, auto-expanding all
+            # branches above it, so the leaf is visible and one Enter selects it
+            # (instead of Enter-to-open-then-Enter-to-pick).
+            if new_search:
+                leaf = _dd_first_match_leaf(input_value, new_search)
+                if leaf is not None:
+                    _dd_set_cursor(root_state, leaf, False)
+                else:
+                    root_state.cursor_path = ()
+                    root_state.open_path = ()
+            else:
+                root_state.cursor_path = ()
+                root_state.open_path = ()
+        root_state.search = new_search
+
+    search = str(getattr(root_state, "search", "") or "")
+    open_path = _dd_as_tuple(getattr(root_state, "open_path", ()))
+    cursor_path = _dd_as_tuple(getattr(root_state, "cursor_path", ()))
+
+    ancestor_matched = bool(search) and any(search in str(k).lower() for k in path_prefix)
+    rows = _dd_visible_entries(input_value, "" if ancestor_matched else search)
+    if not rows and search:
+        imgui.dummy(180, 6)
+        text("  no matches", width=180, height=_DD_ROW_H, name="dd_nomatch",
+             text_color=(1, 1, 1))
+        return False, input_value
 
     result = (False, input_value)
-    for idx, (key, value) in enumerate(entries):
-        is_branch = isinstance(value, (dict, list, tuple))
-        # Dict rows read by their key (small/medium); list rows by their value
-        # (left/center/right) since the index isn't meaningful to the user.
-        label = str(key) if isinstance(input_value, dict) else str(value)
+    for idx, (key, value, label, is_branch) in enumerate(rows):
         row_path = tuple(path_prefix) + (key,)
         on_path = open_path[:len(row_path)] == row_path
+        is_cursor = cursor_path == row_path
         changed, picked = _dd_menu_row(value, name=f"ddrow_{idx}_{key}", label=label,
                                        is_branch=is_branch, row_path=row_path,
-                                       sub_open=on_path, root_state=root_state, tint=tint)
+                                       sub_open=on_path, is_cursor=is_cursor,
+                                       root_state=root_state, tint=tint)
         if changed:
             result = (True, picked)
     return result
 
 
 @render_func(use_cache=False, show_bg=False, shadow=False, selectable=False, temp=True,
-             with_header=None, disable_scroll=True, min_width=200, swoosh=False)
+             with_header=None, disable_scroll=True, min_width=300, swoosh=False)
 def _dd_menu_row(input_value, draw_state, label="", is_branch=False, row_path=(),
-                 sub_open=False, root_state=None, tint=None, **kwargs):
+                 sub_open=False, is_cursor=False, root_state=None,
+                 tint=None, **kwargs):
     """A single menu row. `input_value` is the row's VALUE. Leaves are a button
     that returns the value on click. Branch rows show a chevron and own a nested
     `draw_dd_menu` to their right; that sub-menu is shown only while this branch
-    is on the open path (`sub_open`). Hovering the row rewrites the open path, so
-    sibling sub-menus collapse. The hover highlight is painted over the row box."""
+    is on the open path (`sub_open`). Hovering the row points the cursor here (so
+    mouse and keyboard share one highlight). The highlight is painted over the
+    row box when this row is hovered or is the keyboard cursor."""
     hovered = draw_state._bounding_hovered
+    # Colour the row by its value's embedded tint (e.g. a Lora's .tint), falling
+    # back to the menu tint for plain values.
+    tint = _dd_obj_tint(input_value, tint)
     fa_chrevron_right = f"\uf054"
 
     chevron = f"  {fa_chrevron_right}" if is_branch else "    "  # fa-chevron-right
-    # clicked, _ = button(f"{label}{chevron}", name=f"{label}_ddrow", show_button_bg=False,
-    #                     width=draw_state.content_width, height=_DD_ROW_H, hovered=hovered,
-    #                     text_align="right", tint=tint, shadow=False, z_offset=0)
-
     if is_branch:
-        clicked, _ = button(f"{label}{chevron}", name=f"{label}_ddrow", width=draw_state.content_width, 
+        clicked, _ = button(f"{label}{chevron}", name=f"{label}_ddrow", width=draw_state.content_width,
                             height=_DD_ROW_H, hovered=hovered, text_value=0.3,
                           z_offset=0, rounding=0, show_button_bg=False,
                             text_align="right", tint=tint)
@@ -3796,16 +4118,21 @@ def _dd_menu_row(input_value, draw_state, label="", is_branch=False, row_path=()
                             width=draw_state.content_width, height=_DD_ROW_H, hovered=hovered, z_offset=0, shadow=False,
                             text_align="right", tint=tint)
 
+    # In keyboard nav mode the arrow keys move the highlight; hover neither
+    # moves the cursor nor paints, until the mouse moves (draw_dropdown clears it).
+    kbd_mode = getattr(root_state, "_kbd_mode", False)
+    if hovered and not kbd_mode:
+        _dd_set_cursor(root_state, row_path, is_branch)
 
-    # Hover highlight straight onto the window draw list, framed to this row's box.
-    if hovered:
+    # Highlight straight onto the window draw list, framed to this row's box, when
+    # this row is under the mouse (mouse mode) or is the keyboard cursor.
+    if (hovered and not kbd_mode) or is_cursor:
         dl = imgui.get_window_draw_list()
         dl.add_rect_filled(draw_state.abs_left, draw_state.abs_top,
                            draw_state.abs_left + draw_state.width,
                            draw_state.abs_top + draw_state.height,
                            imgui.get_color_u32_rgba(1, 1, 1, 0.16),
                            rounding=draw_state.corner_radius)
-        _dd_menu_row_hovered_path(root_state, row_path, is_branch)
 
     if is_branch:
         # Always call the sub-menu (so off-path ones stay registered but hidden
@@ -3814,11 +4141,12 @@ def _dd_menu_row(input_value, draw_state, label="", is_branch=False, row_path=()
         changed, picked = draw_dd_menu(input_value, name=f"{label}_submenu", tint=tint,
                                        closed=not sub_open, temp=True,
                                        window_pos=(draw_state.width + 2, -_DD_ROW_H),
-                                       parent_window=draw_state, 
+                                       parent_window=draw_state,
                                        root_state=root_state, path_prefix=row_path)
         if changed:
             return True, picked
     elif clicked:
+        root_state._picked_path = tuple(row_path)
         return True, input_value
 
     return False, input_value

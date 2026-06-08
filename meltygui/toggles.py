@@ -137,6 +137,7 @@ class Swoosh:
 
 
 @window(tint=(0.62, 0.63, 0.65))
+
 class Toggles:
 
     @defaults(tint=(1.0, 1.0, 1.0))
@@ -186,7 +187,7 @@ class Toggles:
     slow_down_threads = False
     render_depth = False
     ds_invalidate_stack = False
-    profile_mode = ProfileMode.LIGHT
+    profile_mode = ProfileMode.OFF
     debug_stale_tint = False
     show_line_break = False
 

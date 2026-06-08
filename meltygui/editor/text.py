@@ -644,8 +644,8 @@ def draw_text(input_value: str,
               left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
               horizontal_scroll_drag=False, search_text="",
               single_line=False, is_search_box=False,
-              draw_state=None, request_focus=False,
-              line_height=1.12, font: Font = Font.JETBRAINS_MONO_19, jump_to=None,
+              draw_state=None, request_focus=True,
+              line_height=1.149, font=Font.JETBRAINS_MONO_19, jump_to=None,
               code_tree=None, error=None):
     ds = draw_state
 

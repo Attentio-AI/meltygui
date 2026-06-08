@@ -85,7 +85,7 @@ class TabState(DictConversion):
         self.selected_tabs = []
 
 
-@no_save_exclude()
+@no_save_exclude("selected", "open_path", "cursor_path", "search_query", "search", "_focus_search",)
 class DropDownState(DictConversion):
     def __init__(self):
         super().__init__()
@@ -93,6 +93,29 @@ class DropDownState(DictConversion):
         # The single chain of branch labels currently expanded, e.g. ("color",
         # "rgb"). One path only - guarantees at most one sub-menu open per level.
         self.open_path = ()
+        # Full key-path of the keyboard/hover-highlighted row (includes the leaf),
+        # e.g. ("color", "rgb", "red"). Drives arrow-key navigation + the
+        # highlight; open_path is derived from it (branch -> itself, leaf -> parent).
+        self.cursor_path = ()
+        # Live search box state (our own, not the framework search). search_query
+        # is the raw text the root menu's draw_text edits; search is its lowercased
+        # form, propagated to each level for filtering. _focus_search asks the box
+        # to grab text focus once (set when the menu opens); _search_box_tile is
+        # the box's tile id so key-nav can tell when the box holds focus.
+        self.search_query = ""
+        self.search = ""
+        self._focus_search = 0
+        self._search_box_tile = None
+        # The committed selection's key-path + text label (the trigger shows the
+        # label, e.g. "red", not the raw value). _picked_path is stamped by the row
+        # click / Enter so the path survives the close that resets cursor_path.
+        self.selected_path = ()
+        self.selected_label = ""
+        self._picked_path = ()
+        # Keyboard-select mode: once an arrow key is pressed, we keep moving the
+        # highlight until the mouse moves. _last_mouse detects that movement.
+        self._kbd_mode = False
+        self._last_mouse = None
 
 
 @exclude("zoom", "center_u", "center_v", "brightness", "contrast", "hue", "saturation")
@@ -680,21 +703,13 @@ class DrawState(DictConversion):
             pass
 
     def pos_changed(self):
-        """Update BVH index after position/size changes. Call from render_func.
+        """Reconcile this view's BVH box with its current geometry/visibility.
 
-        register/update/unregister own `_bvh_bbox` (it must mirror what's in the
-        rtree for deletes to match), so don't touch it here."""
-        new_bbox = self.bbox
-        if new_bbox == self._bvh_bbox:
-            return
-
-        if self._bvh_id is None:
-            if new_bbox is not None and self.inside_clip:
-                Core.melty.bvh_register(self)
-        elif not self.inside_clip:
-            Core.melty.bvh_unregister(self)
-        else:
-            Core.melty.bvh_update(self)
+        Called at the end of every render. bvh_sync is the single source of
+        truth — it no-ops unless `bbox` (abs_left/abs_top/width/height) or
+        visibility (inside_clip/closed/abs_closed) actually changed, and owns
+        `_bvh_id`/`_bvh_bbox` so they stay in lockstep with the rtree."""
+        Core.melty.bvh_sync(self)
 
     # @property
     # def inner_cursor(self):

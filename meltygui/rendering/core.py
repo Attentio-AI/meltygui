@@ -1,6 +1,7 @@
 import difflib
 import inspect
 import time
+import types
 import zlib
 from collections import defaultdict
 from copy import copy
@@ -403,7 +404,7 @@ def render_func(*args, **o_kwargs):
             Melty.channels_split = True
 
         if name == "" and is_root:
-            kwargs["name"] = "Unnamed" + func.__name__ + input_value.__class__.__name__
+            kwargs["name"] = "Unnamed" + func.__name__ + kwargs.get("collection", None).__class__.__name__
             name = kwargs["name"]
 
         name_func = kwargs.get("name_func", None)
@@ -421,9 +422,9 @@ def render_func(*args, **o_kwargs):
                 str_input = str(input_value)
                 short = str_input[:10] + "..." if len(str_input) > 10 else str_input
                 sanitize = short.replace(" ", "_").replace("\n", "_").replace("%", "_").replace("/", "_")
-                name = sanitize + input_value.__class__.__name__
+                name = sanitize + kwargs.get("collection", None).__class__.__name__
             else:
-                name = str(key) + input_value.__class__.__name__
+                name = str(key) + kwargs.get("collection", None).__class__.__name__
 
         if Melty.depth > Melty.max_depth:
             if return_extras:
@@ -439,10 +440,8 @@ def render_func(*args, **o_kwargs):
         column = str(kwargs.get("column", ""))
 
         # Keep original behavior of always appending name (even if empty)
-        if hasattr(input_value, 'id'):
-            suffix = f"{suffix}_{str(getattr(input_value, 'id'))}"
-        else:
-            suffix = f"{old_suffix}_{suffix}_{unique_name}_{key}"
+
+        suffix = f"{old_suffix}_{suffix}_{unique_name}_{key}"
 
         if "layer_unique" in kwargs:
             unique = kwargs.pop("layer_unique")
