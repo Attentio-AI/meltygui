@@ -7,7 +7,7 @@ import imgui
 import libcst as cst
 
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.toggles import shadow_depth_at
+from src.lsd.gl_gui.toggles import shadow_depth_at, Toggles
 from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace
 from src.lsd.gl_gui.view.core_conversion.cache_tree import CacheTree, UNSET_VALUE
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import no_save, exclude, deep_refresh, no_save_exclude, \
@@ -90,6 +90,9 @@ class DropDownState(DictConversion):
     def __init__(self):
         super().__init__()
         self.selected = None
+        # The single chain of branch labels currently expanded, e.g. ("color",
+        # "rgb"). One path only - guarantees at most one sub-menu open per level.
+        self.open_path = ()
 
 
 @exclude("zoom", "center_u", "center_v", "brightness", "contrast", "hue", "saturation")
@@ -346,6 +349,7 @@ class DrawState(DictConversion):
         self.persistent = True
         self.child_selected = None
         self.just_shadow = False
+        self._event_names = set()
 
         self._queued_windows = []
         self.drag_window_pos_x = None
@@ -634,7 +638,6 @@ class DrawState(DictConversion):
         Core.melty.cache.invalidate_by_obj(obj=obj, frame_delta=frame_delta, note=note)
 
     def invalidate_up_by_obj(self, obj=None, max_depth=3, frame_delta=0, note=None):
-        print(self._raw_input_value.__class__.__name__)
         Core.melty.cache.invalidate_up_by_obj(obj, max_depth=max_depth, frame_delta=frame_delta, note=note)
 
     @property
@@ -655,7 +658,7 @@ class DrawState(DictConversion):
         l, t, w, h = self.abs_left, self.abs_top, self.width, self.height
         if l is None or t is None or not w or not h:
             return None
-        return (l, t, l + w, t + h)
+        return (l, t, l + w, t + h - 2)
 
     def is_file_stale(self):
         if self._address is None:
@@ -1527,6 +1530,10 @@ class DrawState(DictConversion):
             setattr(self, f, v)
 
     def on_action(self, event_names, view_id=None, priority=None, priority_delta=0, rect=None):
+        if self.parent_window is None and not self.closable:
+            priority_delta -= 1
+
+
         if not Core.melty.inside_clip(draw_state=self):
             return None
         if self.just_shadow:
@@ -1549,8 +1556,37 @@ class DrawState(DictConversion):
 
             Core.melty.event_handler.register_hovered(view_id, event_names,
                                                       priority=priority - priority_delta,
-                                                      tile_id=self._tile_id,
-                                                      )
+                                                      tile_id=self._tile_id)
+
+            overlay = imgui.get_overlay_draw_list()
+            overlay.channels_set_current(Core.melty.max_layer - 1)
+            if Toggles.InputHandlerToggles.show_debug:
+                for name in event_names:
+                    self._event_names.add(name)
+
+                ds = self
+                color = (1,1,1)
+                text = f"zpos:{self.layer} priority:{priority} priority_delta:{priority_delta} | {str(self._event_names)}"
+                invalidation_rect = (ds.abs_left, ds.abs_top,
+                                     ds.abs_left + (ds.width or 0),
+                                     ds.abs_top + (ds.height or 0))
+                text_size = imgui.calc_text_size(text)
+                overlay.add_rect_filled(invalidation_rect[0] + ds.width - text_size.x, invalidation_rect[1],
+                                        invalidation_rect[0] + ds.width,
+                                        invalidation_rect[1] + text_size.y,
+                                        imgui.get_color_u32_rgba(*color[:3],
+                                                                 1))
+
+                overlay.add_text(invalidation_rect[0] + ds.width - text_size.x, invalidation_rect[1],
+                                 imgui.get_color_u32_rgba(*(0, 0, 0),
+                                                          1),
+                                 text)
+
+                overlay.add_rect(invalidation_rect[0], invalidation_rect[1], invalidation_rect[2],
+                                 invalidation_rect[3],
+                                 imgui.get_color_u32_rgba(*color[:3],
+                                                          1),
+                                 thickness=1.0)
 
         if single_event:
             if view_id in Core.melty.events:

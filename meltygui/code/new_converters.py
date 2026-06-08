@@ -35,7 +35,11 @@ a one-shot worker keyed by a distinct `name=` so they never clobber each other.
 Load is effectively cached (re-offered only on disk change); save auto-fires on
 edit but is debounced (`save_debounce_ms`) so a burst of keystrokes collapses
 into one write — a one-shot timer wakes the loop at the deadline instead of
-spinning `request_render`. An explicit Save / Ctrl+S bypasses the debounce.
+spinning `request_render`. An explicit Save / Ctrl+S bypasses the debounce. The
+auto-save also passes `wait_for_drag` so the debounce additionally holds the
+launch while a mouse button is down — a slow/paused drag (a tint slider) can
+outlast the time deadline, and we don't want the O(buffer) write firing mid-
+gesture; it lands once the button releases.
 
 Syntax-error feedback belongs to the editor, not this file. chain_in parses the
 buffer on its background thread every time the text changes; the route hands that
@@ -365,7 +369,7 @@ LOADING = object()
 @render_func(use_cache=True, selectable=False, temp=True)
 def run_in_background(input_value, loading_state: LoadingState, unique,
                       draw_state, child_kwargs, start=False, timeout=20,
-                      debounce_ms=0, **kwargs):
+                      debounce_ms=0, wait_for_drag=False, **kwargs):
     if Melty.frame_count < 10:
         debounce_ms = 0
     if start:
@@ -401,6 +405,19 @@ def run_in_background(input_value, loading_state: LoadingState, unique,
             note = Note(name="new converters, Deadline", tint=(1, 0.5, 1.0), draw_state=draw_state)
 
             draw_state.invalidate(note=note)
+        elif wait_for_drag and (imgui.is_mouse_down(0) or imgui.is_mouse_down(1)):
+            # Past the time deadline, but a mouse button is still held - the user
+            # is mid-drag (a tint slider, a value drag). The time debounce only
+            # collapses a BURST of edits; it can still elapse during a slow or
+            # paused drag, firing the O(n) save in the middle of the gesture.
+            # Hold the launch until the button releases. No one-shot timer can wake
+            # us on mouse-up, so re-check every frame via request_render is cheap,
+            # because an active drag is already generating frames. The _run_next
+            # snapshot keeps tracking the latest input, so the eventual single run
+            # still uses the final dragged value.
+            # note = Note(name="new converters, wait for drag", tint=(1, 0.7, 0.2), draw_state=draw_state)
+            # draw_state.invalidate(note=note)
+            request_render()
         else:
             loading_state._debounce_deadline = None
             if loading_state._debounce_timer is not None:
@@ -1037,8 +1054,6 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
             note = Note(name="Convert in and out, chain in finished", tint=(1, 0.5, 1.0), draw_state=draw_state)
             draw_state._parent.invalidate(note=note)
 
-
-
     out_changed, out_value = False, input_value
 
     recompile_error = kwargs.get('error')
@@ -1096,6 +1111,8 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                  child_kwargs=None, draw_state=None, auto_save=True, auto_recompile_edits=False, save=False, load=False,
                  recompile=False, run_jedi=False, save_debounce_ms=600,
                  ensure_import=None, s_key_pressed=None, enter_key_pressed=None, unique=None, **kwargs):
+    edited = False
+
     try:
         imgui.dummy(0, 0)
 
@@ -1286,7 +1303,8 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                                                         "ensure_import": ensure_import,
                                                         "parent_ds": draw_state},
                                           name=f"save{draw_state.name}", start=save_start,
-                                          debounce_ms=save_debounce)
+                                          debounce_ms=save_debounce,
+                                          wait_for_drag=not explicit_save)
         if result == LOADING:
             code_state.mark_file_current()
 
@@ -1296,7 +1314,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             code_state.mark_file_current()
             code_state._pending_save = False
             note = Note(name="On saved, code_file_io", tint=(0.5, 1.0, 1.0), draw_state=draw_state)
-            # Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=4, note=note)
+            Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=4, note=note)
 
         # Recompile (hot reload, no disk write): button, Ctrl+Enter, or recompile=True
         # on edit. Same runner, its own loading_state.
@@ -1350,4 +1368,4 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
         print_stack_trace(exception=e)
 
     # This is the root function, end of the line.
-    return False, None
+    return edited, code_state.text_cache

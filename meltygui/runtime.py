@@ -310,6 +310,8 @@ class Melty:
 
     focused_ds = None
     text_focused_ds = None
+    popover_focused_ds = None
+
     # Previous frame's imgui io.want_text_input - used to detect when an imgui
     # input widget newly captures the keyboard (rising edge), so a Melty text
     # editor and an imgui input_text never hold focus at once. See begin_frame.
@@ -331,6 +333,7 @@ class Melty:
     on_drag = False
     on_scroll = False
     on_scroll_buffer = deque(maxlen=5)
+    last_scroll_time = 0
 
     mode_stack = []
     search_stack = []
@@ -952,6 +955,7 @@ class Melty:
         cls.on_scroll_buffer.append("scroll_y_changed" in cls.events_by_type and "view_scroll" in concat_names)
         cls.on_scroll = any(cls.on_scroll_buffer)
 
+
         # for view_id, evts in cls.events.items():
         #     for e in evts:
         #         print(f"  {view_id}: {e.input_id}:{e.action}")
@@ -1479,9 +1483,9 @@ class Melty:
             if return_val[0]:
                 note=Note(name="delayed return", reason=f"{draw_state.name}", tint=(0, 1, 1))
                 if draw_state.parent_window is not None:
-                    Melty.cache.invalidate_up(draw_state.parent_window._tile_id,max_depth=2, frame_delta=2, note=note)
+                    Melty.cache.invalidate_up(draw_state.parent_window._tile_id, max_depth=6, frame_delta=1, note=note)
                 else:
-                    Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=2, force=True, frame_delta=2, note=note)
+                    Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=6, force=True, frame_delta=1, note=note)
 
                 request_render()
         else:
@@ -1552,6 +1556,10 @@ class Melty:
             imgui.get_overlay_draw_list().channels_set_current(cls.max_depth - 1)
 
         Melty.mode_stack = []
+
+        from src.lsd.gl_gui.modes import Modes
+        from src.lsd.gl_gui.view.core_views.new_core_view import draw_with_modes
+        draw_with_modes(Counters, name="counters", modes=(Modes.CODE_UI, Modes.CODE_PLAIN_TEXT), mode=Modes.WINDOW)
 
         if Toggles.debug_z_depth:
             draw_state = list(cls.selected)[-1] if len(cls.selected) > 0 else None
@@ -1833,17 +1841,26 @@ class Melty:
 
                 frames_past = Melty.frame_count - note.frame
                 alpha_from_frame_past = max(0, 1.0 - (frames_past / Toggles.InvalidateTracker.keep_for_frames))
+                alpha_from_note = note.tint[3] if len(note.tint) > 3 else 1.0
 
                 invalidation_rect = (ds.abs_left, ds.abs_top,
                                      ds.abs_left + (ds.width or 0),
                                      ds.abs_top + (ds.height or 0))
+                text_size = imgui.calc_text_size(f"{note.name} | {note.reason}")
+                overlay.add_rect_filled(invalidation_rect[0] + ds.width - text_size.x, invalidation_rect[1],
+                                        invalidation_rect[0] + ds.width,
+                                        invalidation_rect[1] + text_size.y,
+                                        imgui.get_color_u32_rgba(*color[:3], alpha_from_frame_past * alpha_from_note))
 
-                overlay.add_text(invalidation_rect[0], invalidation_rect[1] - 15, imgui.get_color_u32_rgba(*color,
-                                                                                                           alpha_from_frame_past),
-                                    f"{note.name} |{note.reason}")
+                overlay.add_text(invalidation_rect[0] + ds.width - text_size.x, invalidation_rect[1], imgui.get_color_u32_rgba(*(0,0,0),
+                                                                                                           alpha_from_frame_past * alpha_from_note),
+                                 f"{note.name} |{note.reason}")
 
-                overlay.add_rect(invalidation_rect[0], invalidation_rect[1], invalidation_rect[2], invalidation_rect[3],
-                                    imgui.get_color_u32_rgba(*color, alpha_from_frame_past), thickness=1.0)
+                if Toggles.InvalidateTracker.draw_rect:
+                    overlay.add_rect(invalidation_rect[0], invalidation_rect[1], invalidation_rect[2], invalidation_rect[3],
+                                        imgui.get_color_u32_rgba(*color[:3], alpha_from_frame_past / 2.0 * alpha_from_note), thickness=1.0)
+
+
 
         if Toggles.InvalidateTracker.draw_bvh:
             for key, note in InvalidateTracker.invalidations.items():
@@ -1859,6 +1876,7 @@ class Melty:
                     overlay.add_text(invalidation_rect[0], invalidation_rect[1] - 15, imgui.get_color_u32_rgba(*color,
                                                                                                                alpha_from_frame_past),
                                      f"{note.name} |{note.reason}")
+
 
                     overlay.add_rect(invalidation_rect[0], invalidation_rect[1], invalidation_rect[2], invalidation_rect[3],
                                      imgui.get_color_u32_rgba(*color, alpha_from_frame_past), thickness=1.0)

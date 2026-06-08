@@ -1394,7 +1394,7 @@ def draw_text(input_value: str,
     else:
         text_height = (input_value.count('\n') + 1) * line_px + 2
 
-    imgui.dummy(draw_state.width, text_height)
+    imgui.dummy(draw_state.content_width, text_height)
 
     if _font_pushed:
         imgui.pop_font()

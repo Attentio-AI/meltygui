@@ -669,7 +669,7 @@ def render_func(*args, **o_kwargs):
                 else:
                     # Managed windows are not nested, so we check the registry directly to find their layer
                     # Indicates this is not a nested window
-                    window_z_pos = (1 + list(Melty.registered_windows.keys()).index(window_key)) \
+                    window_z_pos = list(Melty.registered_windows.keys()).index(window_key) \
                         if window_key in Melty.registered_windows else None
                     if window_z_pos is not None:
                         window_z_pos = max(window_z_pos, Melty.active_layer)
@@ -764,7 +764,8 @@ def render_func(*args, **o_kwargs):
                 if isinstance(input_value, (type(None), int, float, str, bool, tuple, set)):
                     if draw_state._raw_input_value != input_value:
                         if kwargs.get("collection", None) is not None:
-                            Melty.cache.invalidate_up_by_obj(collection, name=name, max_depth=5)
+                            note = Note(name=f"Untracked value changed: {input_value}", draw_state=draw_state, tint=(0.1, 0.1, 0.4))
+                            Melty.cache.invalidate_up_by_obj(collection, name=name, max_depth=5, note=note)
                             Melty.last_attr = draw_state.name
                             request_render()
                         else:
@@ -1475,7 +1476,7 @@ def render_func(*args, **o_kwargs):
                 if (not Melty.on_drag and not imgui.is_mouse_dragging(2) and not imgui.is_mouse_dragging(1)) and not someone_elses_scroll:
                     if not draw_state.just_shadow:
                         Melty.cache.invalidate(tile_id, force=True, note=Note(name="hover change",
-                                                                                              tint=(1,1,0),
+                                                                                              tint=(1,1,0, 0.1),
                                                                                               reason="unhovered" if not draw_state._bounding_hovered else "hovered",
                                                                                               frame=Melty.frame_count,
                                                                                               draw_state=draw_state))
@@ -1864,8 +1865,11 @@ def render_func(*args, **o_kwargs):
                     input_changed = input_hash != cached_hash
 
                     if input_changed:
-                        Melty.cache.invalidate_up(draw_state._tile_id)
-                        Melty.cache.invalidate_up(draw_state._parent._tile_id)
+                        note = Note(name=f"Input changed: {input_value}", draw_state=draw_state,
+                                    tint=(0.1, 0.1, 0.4))
+
+                        Melty.cache.invalidate_up(draw_state._tile_id, note=note)
+                        Melty.cache.invalidate_up(draw_state._parent._tile_id, note=note)
                         request_render()
 
                     if draw_state._apply_load is not None or draw_state._pending_convert:
@@ -2245,45 +2249,48 @@ def render_func(*args, **o_kwargs):
                     # priority resolution should pick the topmost subscriber, but
                     # this guards the case where the front window isn't itself a
                     # right-click subscriber and therefore doesn't consume the event.)
-                    right_click = draw_state.on_action("right_mouse_clicked")
-                    if right_click and draw_state._bounding_hovered:
-                        draw_state.context_menu_open = not draw_state.context_menu_open
-                        if draw_state.context_menu_ds is not None:
-                            draw_state.context_menu_ds.closed = not draw_state.context_menu_open
-                    if draw_state.context_menu_open:
-                        # (Call-site frames are captured in the inline pass - see the
-                        # `active_layer is None` block - not here in the full-render
-                        # pass, where the stack is Melty.draw's pre backpatch.)
-                        # if draw_state._is_nested:
-                        #     bg_offset = 0
-                        # Melty.bg_depth += bg_offset
-                        tint = style_manager.get_tint()
+                    is_root_view = draw_state.parent_window is None and not draw_state.closable
 
-                        mixed_color = style_manager.make_color_rgb(tint[0], tint[1], tint[2],
-                                                                   value=0.03, factor=0.2,
-                                                                   saturation_scale=0.5,
-                                                                   alpha=1.0)
-                        returned_val = draw_context_menu(input_value=draw_state, mode=Mode.WINDOW_NO_HEADER, func=func,
-                                                         tint=mixed_color, show_tint=False, show_add_delete=False,
-                                                         min_width=100, min_height=100, pin_to_clip=Pin.PARENT,
-                                                         persistent=False, anchor=Anchor.TOP_LEFT, parent_anchor=Anchor.TOP_RIGHT,
-                                                         bg_offset=Tint.context_menu_bg_offset,
-                                                         with_footer=None, use_cache=True,
-                                                         name=f"{name}##context_menu_{unique}", auto_resize=False,
-                                                         return_extras=True)
+                    if not is_root_view:
+                        right_click = draw_state.on_action("right_mouse_clicked")
+                        if right_click and draw_state._bounding_hovered:
+                            draw_state.context_menu_open = not draw_state.context_menu_open
+                            if draw_state.context_menu_ds is not None:
+                                draw_state.context_menu_ds.closed = not draw_state.context_menu_open
+                        if draw_state.context_menu_open:
+                            # (The depth menus are pushed in the inline pass - see the
+                            # `active_window is None` block - not here in the full-render
+                            # pass, where the stack is Melty.draw's re-dispatch.)
+                            # if draw_state._is_nested:
+                            #     bg_offset = 0
+                            # Melty.bg_depth += bg_offset
+                            tint = style_manager.get_tint()
 
-                        ctx_ds = returned_val[2]
-                        ctx_ds.tint = tint
-                        # Melty.bg_depth -= bg_offset
-                        draw_state.context_menu_ds = ctx_ds
-                        # ctx_ds.parent_window = Melty.melty_window_stack[-1] if len(Melty.melty_window_stack) > 0 else None
-                        if Melty.frame_count > 2:
-                            if ctx_ds.last_seen is None:
-                                ctx_ds.closed = False
-                                # ctx_ds.window_pos = (snap_int(draw_state.width) - 20, 0)
+                            mixed_color = style_manager.make_color_rgb(tint[0], tint[1], tint[2],
+                                                                       value=0.03, factor=0.2,
+                                                                       saturation_scale=0.5,
+                                                                       alpha=1.0)
+                            returned_val = draw_context_menu(input_value=draw_state, mode=Mode.WINDOW_NO_HEADER, func=func,
+                                                             tint=mixed_color, show_tint=False, show_add_delete=False,
+                                                             min_width=100, min_height=100, pin_to_clip=Pin.PARENT,
+                                                             persistent=False, anchor=Anchor.TOP_LEFT, parent_anchor=Anchor.TOP_RIGHT,
+                                                             bg_offset=Tint.context_menu_bg_offset,
+                                                             with_footer=None, use_cache=True,
+                                                             name=f"{name}##context_menu_{unique}", auto_resize=False,
+                                                             return_extras=True)
 
-                        if ctx_ds.closed:
-                            draw_state.context_menu_open = False
+                            ctx_ds = returned_val[2]
+                            ctx_ds.tint = tint
+                            # Melty.bg_depth -= bg_offset
+                            draw_state.context_menu_ds = ctx_ds
+                            # ctx_ds.parent_window = Melty.melty_window_stack[-1] if len(Melty.melty_window_stack) > 0 else None
+                            if Melty.frame_count > 2:
+                                if ctx_ds.last_seen is None:
+                                    ctx_ds.closed = False
+                                    # ctx_ds.window_pos = (snap_int(draw_state.width) + 20, 0)
+
+                            if ctx_ds.closed:
+                                draw_state.context_menu_open = False
 
                 if kwargs.get("show_bg", False):
                     outline_margin = 3
@@ -2459,6 +2466,7 @@ def render_func(*args, **o_kwargs):
                 imgui.begin_group()
 
                 is_hovered = draw_state.on_action("cursor_hover", view_id="hover", priority_delta=-1) is not None
+                draw_state._hovered = is_hovered
 
                 if draw_state._bounding_hovered:
                     draw_state._parent.child_selected = draw_state
@@ -2884,7 +2892,8 @@ def render_func(*args, **o_kwargs):
                     is_popup_open = Melty.imgui_popup_open
 
                     if is_popup_open != draw_state._imgui_popover_open and not is_popup_open:
-                        Melty.cache.invalidate_up_by_obj(input_value, max_depth=4)
+                        note = Note(name=f"popover close {draw_state.name}", tint=(0,1,1))
+                        Melty.cache.invalidate_up_by_obj(input_value, max_depth=4, note=note)
                     if is_popup_open:
                         Melty.report_imgui_active()
                     draw_state._imgui_popover_open = Melty.imgui_popup_open
@@ -3228,11 +3237,19 @@ def render_func(*args, **o_kwargs):
             # tick jump more than max_increment_fraction of the visible (clipped)
             # height, so small views don't overshoot. Larger views fall back to
             # the constant increment.
-            scroll_speed = min(
-                Toggles.ScrollSettings.scroll_speed,
-                Toggles.ScrollSettings.max_increment_fraction *
-                draw_state.abs_clipped_height)
+            time_since_scroll = time.time() - Melty.last_scroll_time
+            if time_since_scroll > Toggles.ScrollSettings.acceleration_threshold:
+
+                scroll_speed = min(
+                    Toggles.ScrollSettings.scroll_speed,
+                    Toggles.ScrollSettings.max_increment_fraction *
+                    draw_state._parent.abs_clipped_height)
+            else:
+                scroll_speed = Toggles.ScrollSettings.scroll_speed
             new_offset_y = current_y + scroll_delta * direction * scroll_speed
+
+            if scroll_y_changed:
+                Melty.last_scroll_time = time.time()
 
             min_scroll_y = 0
             max_scroll_y = max(0, draw_state.abs_content_height -
@@ -3261,7 +3278,8 @@ def render_func(*args, **o_kwargs):
                                             max(min_scroll_y, min(target_y, max_scroll_y)))
 
             if scroll_y_changed is not None:
-                Melty.cache.invalidate_up(draw_state._tile_id, max_depth=7)
+                note=Note(name=f"scroll change {draw_state.name}", tint=(1, 0, 1))
+                Melty.cache.invalidate_up(draw_state._tile_id, max_depth=3, note=note)
                 Melty.cache.invalidate_scrolled_in(draw_state, on_change=False)
 
             if not draw_state.closed:
@@ -3270,15 +3288,15 @@ def render_func(*args, **o_kwargs):
         do_scroll = needs_scroll
         scroll_offset = draw_state.scroll_offset if do_scroll else (0, 0)
 
-        if draw_state.abs_content_height > draw_state.height + draw_state.header_height + draw_state.footer_height or draw_state.closable:
-            current_cursor = imgui.get_cursor_screen_pos()
-            imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
-            from src.lsd.gl_gui.view.core_views.new_core_view import empty
-
-            empty(name=f"header_shadow{unique}", z_offset=0.0,
-                  tile_mode=TileMode.MAX, width=draw_state.width,
-                  height=draw_state.header_height)
-            imgui.set_cursor_screen_pos(current_cursor)
+        # if draw_state.abs_content_height > draw_state.height + draw_state.header_height + draw_state.footer_height or draw_state.closable:
+        #     current_cursor = imgui.get_cursor_screen_pos()
+        #     imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
+        #     from src.lsd.gl_gui.view.core_views.new_core_view import empty
+        #     #
+        #     # empty(name=f"header space{unique}", z_offset=0.0,
+        #     #       tile_mode=TileMode.MAX, width=draw_state.width,
+        #     #       height=draw_state.header_height)
+        #     imgui.set_cursor_screen_pos(current_cursor)
 
         if do_scroll:
             header_height = draw_state.header_height

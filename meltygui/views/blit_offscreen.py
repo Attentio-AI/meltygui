@@ -991,7 +991,7 @@ class TileCacheMasked:
         #     return
 
         if note is None:
-            note = Note(name="Unnamed invalidate", reason="", tint=(1, 0, 0),
+            note = Note(name="Unnamed invalidate", reason="", tint=(1, 0, 0, 0.1),
                         frame=Melty.frame_count, draw_state=draw_state)
             if Melty.frame_count > 100 and Melty.frame_count % 30 == 0:
                 if Toggles.InvalidateTracker.enable:
@@ -1791,7 +1791,7 @@ class TileCacheMasked:
                 reason = f"New size old_size{old_size} new_size{ctx.size}" if old_size else "New tile"
                 reason = "t None" if t is None else reason
 
-                self.invalidate(ctx.key, note=Note(name="New Tile", reason=reason, tint=(1, 0.5, 0)))
+                self.invalidate_up(ctx.key, max_depth=4, note=Note(name="New Tile", reason=reason, tint=(1, 0.5, 0)))
                 self._tiles[ctx.key] = t
 
             if self._is_dirty(t) and (ctx.key not in self._enq_copy_keys):

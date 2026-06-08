@@ -307,12 +307,14 @@ class RenderHost(_DeepAttrMixin, dict):
                 and input_value is not self._held() and not pre_dirty):
             self._input_change_frame = Melty.frame_count
             self._awaiting_inbound = True
+
+
             # The file changed on disk - the wrapper/blit cache won't know to re-render
             # the reloaded value, so invalidate this proxy's view explicitly (same path
             # as the initial fill below).
             if self._draw_state is not None and self._draw_state._parent is not None:
-                self._draw_state._parent.invalidate_by_obj(
-                    obj=self, note=Note(name="file_reload", tint=(1, 0.6, 0.1)))
+                self._draw_state._parent.invalidate_up_by_obj(
+                    obj=self, note=Note(name="file_reload", tint=(1, 0.6, 0.1)), max_depth=8)
             request_render()
 
         # FRAME PRECEDENCE (all O(1) - no content comparison). Is there a GENUINE pending
@@ -331,7 +333,9 @@ class RenderHost(_DeepAttrMixin, dict):
                 self._materialize(input_value)
                 note = Note(name="_materialize", tint=(1, 1.0, 1.0))
                 # Needed for initial load
-                self._draw_state._parent.invalidate_by_obj(obj=self, note=note)
+                self._draw_state._parent.invalidate_up_by_obj(obj=self, note=note, max_depth=7)
+                self._draw_state._parent.invalidate_up(note=note, max_depth=7)
+
                 request_render()
 
                 # initial fill
@@ -476,7 +480,7 @@ class RenderHost(_DeepAttrMixin, dict):
             # so its blit-cached body actually re-executes (re-parses) - invalidating
             # only the envelope re-calls a wrapper that just replays its cache, so the
             # re-parse never happens and the change is lost (an intermittent bug).
-            for ds in (None, self._wrapper_draw_state):
+            for ds in (self._draw_state, self._wrapper_draw_state):
                 if ds is not None:
                     note = Note(name="Renderhost _last_resolved", tint=(1, 0.0, 0.0), draw_state=ds)
                     ds.invalidate(note=note)
@@ -556,8 +560,10 @@ def render_host_view(input_value, external_change=False, draw_state=None, name=N
     else:
         edited, out = result
 
+
     # Cross-proxy write-back: the wrapper's output (e.g. convert's new source string)
     # lands on the upstream proxy, which goes dirty and saves one frame later.
     if edited and isinstance(host.input_value, RenderHost):
         host.input_value._set_held(out)
+
     return edited, out

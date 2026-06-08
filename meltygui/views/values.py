@@ -68,7 +68,7 @@ def draw_frame(input_value: types.FrameType, draw_state, **kwargs):
     file_name_truncated = Path(input_value.f_code.co_filename).name
     imgui.text(f"{file_name_truncated}:{input_value.f_lineno} in {input_value.f_code.co_name}")
 
-    # Jump-to button: open this frame's source file at the failing line. Same
+    # Jump-to-error: open the frame's source file at the failing line. Same
     # threaded open_in_intellij pattern the jump-to-caller button uses.
     if button(f"{file_name_truncated}:{input_value.f_lineno}",
               height=30, value=0.4, saturation=1.5, name="jump_to_frame")[0]:
@@ -228,7 +228,7 @@ def go_to_search_result(ds, win=None):
     if target is not None and target is not win:
         target.closed = False
         # Summon it (move + raise) to where the search is, so it comes to you
-        # instead of staying at its old, maybe off-screen, spot.
+        # instead of opening at its old, maybe off-screen, spot.
         gs = Core.melty.find_window("GlobalSearch")
         if gs is not None and gs.abs_left is not None:
             Core.melty.summon_window(target, gs.abs_left, gs.abs_top)
@@ -325,7 +325,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
                     mode=None, keys=None, get_attr=None, set_attr=None, show_excluded=False,
                     child_kwargs=None, show_bg=False, show_search=True, align_header=False,
                     on_collapse=False, search_text="", return_item=False, close_triggers_delete=False,
-                    on_expand=False, show_add_delete=False, item_spacing_y=1, show_system=False, included=None,
+                    on_expand=False, show_add_delete=False, item_spacing_y=2, show_system=False, included=None,
                     horizontal=False, show_indices=False, excluded=None, **kwargs):
     """
     Universal collection renderer
@@ -348,12 +348,12 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
     else:
         imgui.dummy(1, 1)
 
-    # --- Setup per collection type ---
+    # --- configure per collection type ---
     collection = input_value
     # When the value *is* a class (e.g. an @window-registered class drawn
-    # directly), its meta-attribute `{field}_meta` overrides live on the class
+    # directly), its per-attribute `{field}_meta` overrides live on the class
     # itself, not on its metaclass. Use the class as parent_type so get_child_meta
-    # can find them; otherwise fall back to the instance when type.
+    # can find them; otherwise fall back to the instance's class.
     parent_type = input_value if isinstance(input_value, type) else input_value.__class__
     if isinstance(input_value, (str, int, float, bool, Enum, NoneType)):
         imgui.text("No view for type: " + str(type(input_value)))
@@ -390,10 +390,10 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
         keys = list(keys)[:]
 
     # --- search (key matching) ---
-    # The dual resolution like the text editor: a forwarded SearchTerm carries
+    # Same dual resolution as the text editor: a forwarded SearchTerm carries
     # the shared cross-view session, or the owner's own session when this
-    # collection hosts the find UI. We claim one highlight per matching key, in
-    # visual order interleaved with the children (claimed below) so the
+    # collection hosts the find UI. We claim one slot per matching key, in
+    # visual order interleaved with the children (claimed below), so the
     # combined next/prev sequence reads top-to-bottom. The current key is
     # latched so incidental repaints don't shift the highlight.
     _search_term = search_text or (draw_state.search_text if draw_state.search_active else "")
@@ -407,16 +407,16 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
     search_current_y = None  # screen-Y of the current key's row (for scroll)
     search_current_h = None
     # On a full-search frame (term change / nav) render every row — even ones
-    # the off-screen detection would skip - until the row holding the current
+    # the off-screen optimization would skip — so the row holding the current
     # match is reached and can scroll into view.
     _search_full_render = search_session is not None and search_session.scroll_to
 
-    # Stash a matcher so the search owner's tree walk (DrawState.descend /
+    # Stash a matcher so the search owner's tree walk (DrawState.descendants /
     # melty.search_walk) can count this collection's key matches without
-    # rendering. It counts only this collection's key keys (the whole key list,
+    # rendering. It counts only this collection's own keys (the whole key list,
     # not just the rows the loop below draws); child collections / text editors
     # are separate tree nodes with their own matchers, so the walk sums them
-    # without double-counting. Keys are recomputed lazily on call (only on
+    # without double-counting. Keys are re-derived lazily on call (only on
     # counting frames), so an unsearched render pays nothing for it.
     def _search_matcher(term, session, _iv=input_value, _keys=keys,
                         _excl=excluded, _se=show_excluded):
@@ -429,9 +429,9 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
     draw_state._search_matcher = _search_matcher
 
     # The owner's pre-body walk picked the global-current match and stashed its
-    # local index on us (_search_active_local) when one of OUR keys holds it -
-    # the same walk also computed the count, so index and count agree.
-    # Translate that index (over our full matches, in visual order) to the key
+    # local index on us (_search_active_local) when one of OUR keys holds it —
+    # the same walk that produced the count, so selection and count agree.
+    # Resolve that ordinal (over our matching keys, in key order) to the key
     # index the loop should highlight + scroll to. None when the current match
     # lives in a child instead (that child carries its own mark).
     _current_key_idx = None
@@ -461,9 +461,9 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
     true_left = draw_state.left - scroll_offset[0]
     true_top = draw_state.top - scroll_offset[1]
 
-    # remove excluded from keys
+    # Remove excluded from keys
     item_to_return = None
-    # Keys of children whose close (delete button was clicked this frame - collected during the
+    # Keys of children whose close (X) was clicked this frame — collected during the
     # loop and removed from the collection AFTER it (never mutate keys mid-iteration).
     to_delete = set()
 
@@ -540,8 +540,8 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
                 continue
 
         # ----- SEARCH (key match) -----
-        # Whether this key is the search-current match was decided by the
-        # owner's pre-loop walk (resolved to _current_key_idx above); we just
+        # Whether this key is the global-current match was decided by the
+        # owner's pre-body walk (resolved to _current_key_idx above); we just
         # flag it and record its row Y so the post-loop block scrolls to it.
         key_is_match = bool(search_q) and _fuzzy_key_match(search_q, key_str.lower())
         key_is_current = key_is_match and idx == _current_key_idx
@@ -579,9 +579,9 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
             }
 
             # Per-field overrides: a `# [tint=...]` comment above a primitive
-            # field is stored on the parent under __overrides__['__<field>__'].
+            # field is stored on the parent as __overrides__['__<field>__'].
             # Feed those into the child's kwargs (the child has no dict of its
-            # own to store them). Skip dunder keys defensively.
+            # own to carry them). Skip dunder keys defensively.
             if isinstance(input_value, dict):
                 _parent_ov = input_value.get("__overrides__")
                 if isinstance(_parent_ov, dict):
@@ -632,7 +632,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
                     imgui.dummy(0, item_spacing_y)
 
             if isinstance(out_val, CollectionAction):
-                # perform the move; this should mutate the plain dicts you supply
+                # perform the move; this should mutate the plain dicts you attached
                 result = Core.melty.to_apply(out_val)
                 item_changed, out_val = False, None
 
@@ -674,7 +674,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
     # Apply removals for children closed via their X this frame (collected above, so the
     # collection is never mutated mid-iteration). Only dict-like / list collections are
     # safely key-deletable here; tuples/sets/object-__dict__ are left untouched. Sets
-    # `changed` so the edit propagates to the owner (e.g. via RenderHost io_callback).
+    # `changed` so the edit propagates to the owner (e.g. a RenderHost io_function).
     if to_delete:
         print(f"Deleting keys {to_delete} {input_value.__class__.__name__}")
         if isinstance(input_value, (dict, defaultdict, MutableMapping, _BubblingDict)):
@@ -694,9 +694,9 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
 
 
     # When navigation just happened, scroll the current key into view.
-    # draw_collection disables its own scroll, so _scroll_into_view walks up fo
+    # draw_collection disables its own scroll, so _scroll_into_view walks up to
     # the real scroll container. (A current match inside a child is scrolled by
-    # the child itself.) _current_key_idx came from the owner's index.
+    # that child itself.) _current_key_idx came from the owner's walk.
     if search_session is not None and search_session.scroll_to:
         draw_state._search_current_key = _current_key_idx
         if search_current_y is not None:
@@ -729,7 +729,7 @@ def main_header(input_value, name, **kwargs):
 def draw_property(input_value: property, draw_state, **kwargs):
     imgui.text_colored(f"Property: {input_value.fget.__name__}", 1.0, 0.5, 0.0, 1.0)
     # value = input_value.fget(input_value)
-    # draw_any(value, name="value", show_bg=True, draw_state=draw_state)
+    # draw_any(value, name="Value", show_bg=True, draw_state=draw_state)
 
 
 
@@ -779,12 +779,12 @@ def draw_global_search(input_value, draw_state=None, **kwargs):
     from the draw_state tree draw_main registered on us. Results are recomputed
     only when the query changes (the walk is the expensive part)."""
     # Expose our own window draw_state + honour a focus request from draw_main's
-    # Ctrl+Shift+F shortcut (one-shot: give the window's text focus this frame).
+    # Ctrl+Shift+F shortcut (one-shot: grab the box's text focus this frame).
     input_value.window_ds = draw_state
     _focus = input_value._focus_requested
     input_value._focus_requested = False
     # return_extras gives the box's draw_state so we can tell when it holds text
-    # focus (that is when our arrow/enter result-navigation should be live).
+    # focus (and thus when our arrow/enter result-navigation should be live).
     box = draw_text(input_value.query, name="Search", show_name=False, searchable=False, header_same_line=False,
                     font=Font.JETBRAINS_MONO_50, request_focus=_focus, is_tree=False, align_header=False,
                     return_extras=True, tint=(1, 1, 1))
@@ -798,20 +798,20 @@ def draw_global_search(input_value, draw_state=None, **kwargs):
         input_value._last_query = q
         input_value.results = (global_search_results(input_value.root, q, exclude=draw_state)
                                if input_value.root is not None and len(q) >= 2 else [])
-        input_value.selected = 0  # reset highlight to the top result on a new query
+        input_value.selected = 0  # reset highlight to the top match on a new query
 
-    # Flatten the grouped results to their on-screen order, what the highlight
-    # moves through and what each index value refers to.
+    # Flatten the grouped results to their on-screen order — what the highlight
+    # moves through and what each index below refers to.
     groups = group_results_by_window(input_value.results, input_value.root)
     flat = [(label, ds, win) for win, items in groups.items() for (label, ds) in items]
     n = len(flat)
     input_value.selected = (input_value.selected % n) if n else 0
 
     # While the box holds text focus (single-line, so Up/Down/Enter don't touch
-    # it): Up/Down move the highlight by result, Ctrl+Up/Down jump between window
+    # it): Up/Down move the highlight one result, Ctrl+Up/Down jump between window
     # sections (group starts), and Enter launches the highlighted result.
     if n and box_ds is not None and Core.melty.text_focused_ds is box_ds:
-        # Flat indices where each window group begins (for Ctrl jumps).
+        # Flat indices where each window group begins (for section jumps).
         starts = [i for i in range(n) if i == 0 or flat[i][2] is not flat[i - 1][2]]
 
         def _group_idx():  # index into `starts` of the group holding `selected`
@@ -843,9 +843,9 @@ def draw_global_search(input_value, draw_state=None, **kwargs):
 
     w = (draw_state.content_width - 10) if draw_state and draw_state.content_width else 200
     # Group by owning window; header + rows are coloured by the window's real
-    # tint (from the ManagedWindow) and the highlighted row stands out. A row
+    # tint (from its ManagedWindow), and the highlighted row stands out. A row
     # that names a window (a Dock entry) is tinted by that window, not its
-    # container, so it matches the window it represents.
+    # container, so it matches the window it launches.
     idx = 0
     for win, items in groups.items():
         win_label = str(getattr(win, 'name', '') or '').split("##")[0] or "?"
@@ -873,8 +873,8 @@ def draw_global_search(input_value, draw_state=None, **kwargs):
 @defaults(tint=(0.15076258778572083, 0.2957677, 0.4697674512863159))
 class GlobalSearch:
     query = ""
-    root = None  # draw_main's draw_state, updated each frame
-    window_ds = None  # this window's own draw_state (for the escape shortcut)
+    root = None  # draw_main's draw_state, registered each frame
+    window_ds = None  # this window's own draw_state (for the show shortcut)
     _focus_requested = False
     _last_query = None
     results = []  # cached [(label, draw_state)] for the current query
@@ -1073,9 +1073,9 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     GlobalSearch.root = draw_state
 
     # Ctrl+Shift+F: reveal the GlobalSearch window and focus its box. A
-    # non_blocking action handler - so it survives a window blocker stacked in
+    # non_blocking root handler — so it survives a window blocker stacked in
     # front (instead of needing an extreme priority that would consume events
-    # from everything else) and doesn't eat the key from other views.
+    # from everything else) and doesn't swallow the key from other views.
     if draw_state.on_action("non_blocking_ctrl_shift_f_down", priority_delta=512):
         gs = Core.melty.open_window("GlobalSearch")
         if gs is not None:
@@ -1097,7 +1097,7 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     # Esc dismisses the GlobalSearch window while it's open. Handled here on the
     # root (always hover-eligible) rather than on the window itself, so it works
     # no matter where the cursor is. non_blocking so the front window's blocker
-    # doesn't eat Esc; only subscribes while open, so it doesn't swallow Esc from
+    # doesn't eat it; only subscribes while open, so it doesn't swallow Esc from
     # a per-view search otherwise.
     _gs = Core.melty.find_window("GlobalSearch")
     if _gs is not None and not _gs.closed and draw_state.on_action("non_blocking_escape_key_down_inverted"):
@@ -1130,8 +1130,8 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
             window_func(window_cls, **kwargs)
 
     # Self-registering RenderHost objects (view/core_conversion/render_host.py): each
-    # drives a stateful view and draws into its own window. Snapshot the values - a
-    # host may register/remove during drawing (re-entrant mutation).
+    # drives a stateful wrapper and draws into its own window. Snapshot the values — a
+    # host may register/remove during render (re-entrant mutation).
     for h_idx, host in enumerate(list(Core.melty.render_hosts.values())):
         host.draw()
 
@@ -1457,7 +1457,7 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
 
     if forced_zoom > 0:
         zoom_state.zoom = forced_zoom
-        # Recalculate uv_size immediately for consistent bounding this frame
+        # Recalculate uv sizes immediately for consistent bounding this frame
         if view_aspect > tex_aspect:
             uv_height_size = 1.0 / zoom_state.zoom
             uv_width_size = uv_height_size * (view_aspect / tex_aspect)
@@ -1502,7 +1502,7 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
             curr_uv_w = uv_width_size
             curr_uv_h = uv_height_size
 
-            # Recalculate new UV dimensions
+            # Recalculate NEW UV dimensions
             if view_aspect > tex_aspect:
                 new_uv_h = 1.0 / new_zoom
                 new_uv_w = new_uv_h * (view_aspect / tex_aspect)
@@ -1518,7 +1518,7 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
 
             zoom_state.zoom = new_zoom
 
-            # Use these for Step 5
+            # Update these for Step 5
             uv_width_size = new_uv_w
             uv_height_size = new_uv_h
 
@@ -1559,7 +1559,7 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
     uv_a = (uv_x_min, uv_y_max)
     uv_b = (uv_x_max, uv_y_min)
 
-    # 6. Project and Draw
+    # 6. Clip and Draw
     scale_u_px = view_width / uv_width_size
     scale_v_px = view_height / uv_height_size
 
@@ -1655,8 +1655,8 @@ def draw_managed_window(input_value, name, draw_state, mouse_down=False, selecta
                saturation=1.3, width=130, height=button_height)[0]
         return
 
-    # Pass the search-match flags (set by draw_header for this key) through
-    # to the name button so it can draw the find highlight - the visible row is
+    # Pass the search-match flags (set by draw_collection for this key) through
+    # to the name button so it can draw the find highlight — the visible row is
     # this button, not a header.
     _search_match = kwargs.get("search_match", False)
     _search_current = kwargs.get("search_current", False)
@@ -1680,7 +1680,6 @@ def draw_managed_window(input_value, name, draw_state, mouse_down=False, selecta
     imgui.same_line()
 
     if window_tint is None or not isinstance(window_tint, tuple) or len(window_tint) < 3:
-        print(window_tint.__class__.__name__)
         window_tint = (2.558, 0.5, 0.5)
 
     imgui.set_cursor_screen_pos((draw_state.abs_left + draw_state.content_width-20, draw_state.abs_top))
@@ -1958,7 +1957,7 @@ def draw_vertical_scrollbar(content_height: float,
     track_h = track_y2 - track_y1
     dl.add_rect_filled(track_x1, track_y1, track_x2, track_y2, col_track, rounding)
     # Core.melty.cache.mask_mark_rect(Core.melty.depth, track_x1, track_y1, track_w, track_h,
-    #                            key=str(Core.melty.unique_stack[-1]) + "scroll_track")
+    #                            key=str(Core.melty.unique_stack[-1]) + "scrollbar")
 
     dl.add_rect(track_x1, track_y1, track_x2, track_y2, col_border, rounding)
     # Grab
@@ -2055,11 +2054,11 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
     outline_depth_mul = 0.786
     outline_sat = {'default': 1.1, 'nested': 1.473}
 
-    # More constant
+    # More text
     bleed_mix = {'nested': 0.501, 'default': 0.446}
     bleed_style = {'value': -0.111, 'alpha': 1.12, 'saturation': 7.045}
     outline_bleed_mix = 0.272
-    # Hover offset per interaction state
+    # Hover offsets per interaction state
     hover_offset_by_state = {
         'default': -1.807,
         'selected': -1.401,
@@ -2129,7 +2128,7 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
         *bleed_base, input=bg_style, **bleed_style,
     )
 
-    # ── Outline rendering ────────────────────────────────────
+    # ── Outline rendering ──────────────────────────────────────
     outline_value = max(0, depth_intensity * depth_mul + outline_base + hover_offset)
     outline_color = style_manager.make_color_style_value(
         input=bg_style, saturation=sat, value=outline_value,
@@ -2162,7 +2161,7 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
 @render_func(use_cache=True, selectable=False, disable_scroll=True, indent_size=0, show_bg=False, min_width=10,
              min_height=10, wrap=True)
 def button(input_value="", draw_state=None, alpha=1.0, left_mouse_held=False, shadow=True, left_mouse_down=False,
-           color=(0.533, 0.068, 0.5), hovered=False, width=None, height=None, style_manager=None,
+           color=(0.533, 0.068, 0.5), hovered=False, width=None, height=None, style_manager=None, show_button_bg=True,
            factor=1.0, tint_value=0.32, text_value=1.023, saturation=0.8, unique=0, text_align="center",
            search_match=False, search_current=False, tint=None, rounding=None):
     if color is not None:
@@ -2197,24 +2196,24 @@ def button(input_value="", draw_state=None, alpha=1.0, left_mouse_held=False, sh
 
     bx0, by0 = draw_state.abs_left, draw_state.abs_top
     bx1, by1 = bx0 + width, by0 + height
-    # `rounding` lets callers round the corners (e.g. the search results, which
-    # read as a flat wall of buttons) - else use the view's default radius.
+    # `rounding` lets callers square the corners (e.g. the search results, which
+    # read as a flat list of items) — else use the view's default radius.
     if rounding is not None:
         draw_state.corner_radius = rounding
     rnd = (draw_state.corner_radius) if rounding is None else rounding
 
-    if alpha > 0.0:
+    if alpha > 0.0 and show_button_bg:
         draw_list.add_rect_filled(bx0, by0, bx1, by1,
                                   imgui.get_color_u32_rgba(*mixed_color[:3], alpha), rounding=rnd)
 
-    # Tint fill: button dilutes `color` into a dark bg, so to show a window's tint
-    # we paint the raw color over it - at low alpha so it stays a subtle wash.
-    if tint is not None:
+    # Tint fill: button mutes `color` into a dark bg, so to show a window's tint
+    # we paint the raw colour over it — at low alpha so it stays a subtle wash.
+    elif tint is not None and show_button_bg:
         draw_list.add_rect_filled(bx0, by0, bx1, by1,
                                   imgui.get_color_u32_rgba(tint[0], tint[1], tint[2], 0.33),
                                   rounding=rnd)
 
-    # Selection/search match highlight: translucent WHITE fill so the tint still reads
+    # Selection / match highlight: translucent WHITE, so the tint still reads
     # through it instead of being covered. The active row is brighter + outlined.
     if search_match:
         _a = 64 if search_current else 26
@@ -2404,7 +2403,7 @@ def unsort_dict_alphabetically(input_value, ref=None, changed=False):
         imgui.text("Original order not available")
         return False, input_value
     else:
-        # ref is the original dict
+        # Ref is the original dict
         ref.update(input_value)
         return changed, ref
 
@@ -2717,7 +2716,7 @@ def draw_debug_label(input_value: str):
              selectable=False, header_same_line=True,
              parent_show_add_delete=False, with_header=draw_header, temp=True)
 def draw_enum(input_value: Enum, draw_state=None, style_manager=None, enum_tint=(0.3, 0.3, 0.3)):
-    # Delegate to draw_tab_bar so enums get its wrapping and styling for free.
+    # Delegate to draw_tab_bar so enums get its wrapping + styling for free.
     # Enums are single-select: pass the current value as the lone selection and
     # render every member as a tab; names are the prettified member names.
     options = list(input_value.__class__)
@@ -2909,10 +2908,10 @@ def run_scoped_eval(code, view_func, draw_state, local_vars):
     from src.lsd.gl_gui.mcp_eval import _run_code
     ns = {}
     if view_func is not None:
-        # Any free names the function body resolves.
+        # Same free names the function body resolves.
         ns.update(getattr(view_func, "__globals__", {}))
     if local_vars:
-        ns.update(local_vars)  # The view function's call-time locals
+        ns.update(local_vars)  # the view function's call-time locals
     ns.setdefault("draw_state", draw_state)
     ns.setdefault("ds", ns.get("draw_state"))
     ns.setdefault("value", ns.get("input_value"))
@@ -2928,9 +2927,9 @@ def run_scoped_eval(code, view_func, draw_state, local_vars):
 
 
 # ── Context menu tabs ────────────────────────────────────────────────────────
-# Each tab view is its own render_func. draw_context_menu places one per selected
+# Each tab body is its own render_func. draw_context_menu places one per selected
 # column by calling it with column=t_idx; the tab then owns a single-column
-# layout, so the inner views inside it no longer pass column themselves.
+# region, so the inner views inside it no longer pass column themselves.
 
 @render_func(use_cache=True, show_bg=False, show_header=False, disable_scroll=False, searchable=True, show_name=False, selectable=False)
 def draw_info_tab(input_value, search_text='', unique=None, **kwargs):
@@ -3020,7 +3019,7 @@ def draw_config_tab(input_value, **kwargs):
     raw_func = getattr(view_func, '__wrapped__', view_func)
     sig = inspect.signature(raw_func)
     ds_kwargs = input_value._kwargs or {}
-    # Framework-injected params the user can't configure.
+    # Framework-injected params the user doesn't configure.
     skip_params = {"input_value", "draw_state", "args", "o_kwargs",
                    "kwargs", "meta", "viewstate", "self"}
     for param_name, param in sig.parameters.items():
@@ -3078,7 +3077,7 @@ def draw_live_tab(input_value, **kwargs):
     # imgui.text_colored(f"Top, Left {input_value.abs_top}, {input_value.abs_left}", *(0.5, 0.5, 0.0))
     # imgui.dummy(0, 2)
     #
-    # # Width, Height
+    # #Width, height
     # imgui.text_colored(f"Width, Height {input_value.width}, {input_value.height}", *(0.5, 0.01, 0.6))
     # imgui.dummy(0, 2)
     #
@@ -3096,9 +3095,6 @@ def draw_func_tab(input_value, **kwargs):
     if view_func is not None:
         view_func_name = view_func.__name__ if hasattr(view_func, '__name__') else str(view_func)
         change, new_view_func = draw_any(view_func, mode=Mode.NEW_CODE, name=view_func_name)
-        if change:
-            print(f"Changing view function from {view_func.__name__} to {new_view_func.__name__}")
-            input_value._view_func = new_view_func
     else:
         draw_str("No view function specified", name="View Function", editable=False)
     return False, input_value
@@ -3119,11 +3115,11 @@ def draw_eval_tab(input_value, draw_state, unique=None, enter_key_down=None,
     code = getattr(target, '_eval_code', None)
     if code is None:
         code = "input_value"
-    # Single-line editor: enter never enters the editor as a newline (its newline
+    # Single-line editor: Enter never reaches the editor as a newline (its newline
     # handler is gated on `not single_line`); instead the menu claims the
     # enter-down event via its on_enter_key_down param and uses it to fire the
     # eval below.
-    # return_extras gives the text box's draw_state so we can tell when it holds
+    # return_extras gives the code box's draw_state so we can tell when it holds
     # text focus (and thus when Enter should fire the eval -- see below).
     box = draw_text(
         code, name=f"eval_code##{unique}", padding_right=100,
@@ -3137,7 +3133,7 @@ def draw_eval_tab(input_value, draw_state, unique=None, enter_key_down=None,
 
     def _fire_eval():
         # Stash the snippet + arm the trigger, then force the target to actually
-        # re-render (bypassing its cache), so its wrapper calls func() -- including our
+        # re-render (bypassing its cache) so its wrapper runs func() -- and our
         # eval hook -- this/next frame.
         target._eval_code = code
         target._eval_pending = True
@@ -3148,8 +3144,8 @@ def draw_eval_tab(input_value, draw_state, unique=None, enter_key_down=None,
 
     run_clicked = button("Run", height=30, name=f"eval_run##{unique}",
                          color=(0.2, 0.7, 0.3), factor=0.8)[0]
-    # Enter fires the eval. Check for it ourselves (the way draw_text reads keys
-    # off the event queue) rather than relying on the menu to claim it: while the
+    # Enter fires the eval. Listen for it directly (the way draw_text reads keys
+    # off the frame queue) instead of relying on the menu to forward it: while the
     # single-line code box holds text focus, Enter never reaches it as a newline,
     # so we claim it here when that box is the focused editor.
     enter_pressed = (code_ds is not None and Core.melty.text_focused_ds is code_ds
@@ -3160,7 +3156,7 @@ def draw_eval_tab(input_value, draw_state, unique=None, enter_key_down=None,
 
     # The eval lands in the target's wrapper, a separate render pass. Until the
     # requested generation is served, keep THIS tab (and the owning menu) live so
-    # we re-run and re-read the fresh result rather than using a stale cache.
+    # we re-run and re-read the fresh result rather than serving a stale cache.
     if getattr(target, '_eval_generation', 0) < getattr(target, '_eval_request_gen', 0):
         draw_state.invalidate()  # this tab's own draw_state
         if menu_draw_state is not None:
@@ -3192,7 +3188,7 @@ class ContextMenuState:
 
 
 @render_func(use_cache=True, show_bg=False, show_header=False, show_name=False, selectable=False, disable_scroll=False, temp=True)
-def draw_input_tab(input_value, cm_state:ContextMenuState, unique=None, class_to_show=None, **kwargs):
+def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, unique=None, class_to_show=None, **kwargs):
     """The three editable sources behind this view, in dispatch order:
 
       1. RENDER FUNCTION — the render_func whose body produced the view, edited
@@ -3235,7 +3231,6 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, unique=None, class_to
                 "route": {cst_module_to_dict: ("code_dict", "jump_to", "run_jedi", "drive")},
             })
 
-
     if cm_state.call_site is None:
         call_site = getattr(input_value, "_call_site", None)
         if call_site is not None:
@@ -3262,7 +3257,7 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, unique=None, class_to
 
     render_func = cm_state.render_func_dict.deep.parameters()
     if render_func:
-        changed, value = draw_collection(render_func, tint=(0.30, 0.36, 0.47, 0.5), name=f"{input_value._view_func.__name__}##{unique}", disable_scroll=True)
+        changed, value = draw_collection(render_func, tint=(0.87, 0.38, 0.17, 0.5), name=f"{input_value._view_func.__name__}##{unique}", disable_scroll=True)
 
     call_site_dict = cm_state.call_site_dict.deep.unwrap() if cm_state.call_site_dict else None
     if call_site_dict:
@@ -3274,9 +3269,8 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, unique=None, class_to
 
     render_func = cm_state.render_func_dict.deep.decorators.render_func()
     if render_func:
-    
-        changed, value = draw_collection(render_func, tint=(0.007843138,0.05490196,0.03137255, 0.7
-        ), name=f"render_func##{unique}", disable_scroll=True)
+        changed, value = draw_collection(render_func, tint=(0.007843138,0.05490196,0.03137255, 0.7),
+                                         name=f"render_func##{unique}", disable_scroll=True)
 
     window_decoration = cm_state.render_func_dict.deep.decorators.window()
     if window_decoration:
@@ -3287,8 +3281,10 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, unique=None, class_to
     if class_defaults:
         changed, value = draw_collection(class_defaults, tint=(0.02,0.22,0.40), name=f"defaults##{unique}",
                                          disable_scroll=True)
-    else:
-        imgui.text("No @defaults decoration found on this class or its parents")
+
+    if draw_state.frame_count < 10 and Melty.frame_count > 5:
+        input_value._parent.invalidate_up(max_depth=5)
+        request_render()
 
     # common = dict(mode=Modes.NEW_CODE, min_width=100, max_height=300, fill_height=False)
     #
@@ -3299,7 +3295,7 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, unique=None, class_to
     # call_site = getattr(input_value, "_call_site", None)
     # if call_site is not None:
     #     filename, lineno = call_site
-    #     draw_any(CallSite(filename, lineno), name=f"caller {lineno}##caller_{unique}", **common)
+    #     draw_any(CallSite(filename, lineno), name=f"caller:{lineno}##caller_{unique}", **common)
     #
     # if isinstance(class_to_show, type):
     #     draw_any(Decorations(class_to_show),
@@ -3368,7 +3364,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     # Screenshot this menu's parent view, top of the menu below the nav arrows.
     # Deferred so the menu isn't in the shot: front the owning window (so the
     # view is visible), queue the view capture, hide this menu (asking to reopen
-    # it afterward), then let screenshot.process_window_screenshot_flags grab the
+    # it afterward), then let screenshot.process_take_screenshot_flags grab the
     # view's rect a few frames later and reopen the menu.
     if button(f" ", height=30, tint=(0,0,0,1.0), name=f"screenshot_window##{unique}")[0]:
         from src.lsd.gl_gui.screenshot import request_view_capture
@@ -3388,9 +3384,9 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
             break
         offset_ds = offset_ds._parent
 
-    # The user walked up to an ancestor (offset > 0). That ancestor never had its
+    # The menu walked up to an ancestor (offset > 0). That ancestor never had its
     # OWN context menu open, so the context_menu_open capture gate never ran for
-    # it and its _call_site is None - caller lenses come up empty. Ask its next
+    # it and its _call_site is None — caller lenses come up empty. Ask its next
     # inline render to capture the site (lazy, one-shot), and invalidate it so it
     # re-renders fresh rather than from cache (where the capture line is skipped).
     if (offset_ds is not input_value and not offset_ds._call_site_captured
@@ -3415,24 +3411,24 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     eval_tab_name = f"{terminal_icon} Eval"
     keyboard_icon = f"\uf11c"  # fa-keyboard
     input_tab_name = f"{keyboard_icon} Input"
-    # lightning bolt
+    # Lightning bolt
     live_icon = f"\uf0e7"
     live_tab = f"{live_icon} Live"
 
-    # Find which class's source to show in the class tab.
+    # Resolve which class's source to show in the class tab.
     # For a non-primitive value that's just the value's own class. For a
-    # primitive field (e.g. a float `rank`) the field itself has no source,
-    # so walk up the parent chain to the first object that does have source
+    # primitive field (e.g. a float `rank`) the value itself has no source,
+    # so walk up the parent chain to the nearest object that does have source
     # code -- so e.g. Lora.rank still shows Lora's class, labelled as parent.
     raw_value = input_value._raw_input_value
     class_to_show = None
     class_is_parent = False
-    # A bubbling tree node's type is a runtime-generated `Bubbling<Base>` with no source
-    # - resolve its real base (e.g. GeneralItem) so the Class/Decorations tabs resolve
+    # A bubbling tree node's type is a runtime-generated `Bubbling_<Base>` with no source
+    # — resolve its real base (e.g. GeneralParse) so the Class/Decorations tabs resolve
     # rather than erroring.
     from src.lsd.gl_gui.view.core_conversion.bubbling import base_of_bubbling
-    # Use exact-type matching, not subclass: a subclass of a primitive
-    # (e.g. CodeString(str)) DOES have its own source, so it should show its
+    # Use exact-type matching, not isinstance: a subclass of a primitive
+    # (e.g. CodeLine(str)) DOES have its own source, so it should show its
     # own class tab rather than being treated as a bare primitive.
     if type(raw_value) not in (int, float, str, bool):
         class_to_show = base_of_bubbling(type(raw_value))
@@ -3457,9 +3453,9 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     else:
         class_tab = f" {class_name}"
 
-    # Static tint colors for the fixed Config / Info tabs; other tabs use the neutral grey.
+    # Static tint colors for the fixed Config / Info tabs; remaining tabs use the neutral grey.
     config_tint = (0., 0.2, 0.5)  # steel blue
-    info_tint = (1.0, 0.64, 0.113)  # orange
+    info_tint = (1.0, 0.64, 0.113)  # teal
 
     tab_names = []
     tab_tints = []
@@ -3492,7 +3488,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     if current_mode is not None:
         tab_names.append(mode_tab)
 
-    # Tab list
+    # Indices list
 
     imgui.dummy(0,1)
     imgui.same_line()
@@ -3511,13 +3507,13 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
         if static_tab >= len(tab_names):
             continue
         this_tab = tab_names[static_tab]
-        # Each tab has its own render_func placed at column=t_idx; the tab owns a
-        # single-column row so its inner views don't need column themselves.
+        # Each tab is its own render_func placed at column=t_idx; the tab owns a
+        # single-column region so its inner views don't pass column themselves.
         if this_tab == tint_tab_name:
             draw_tint_context(input_value, name=f"Context Tint##{unique}", column=t_idx)
 
         elif this_tab == info_icon_fa:
-            # Use the effective search term (menu kwarg, else its search box).
+            # Resolve the effective search term (menu kwarg, else its search box).
             info_search = search_text if search_text != "" else draw_state.search_text
             draw_info_tab(input_value, search_text=info_search, unique=unique,
                           name=f"info_tab_{t_idx}##{unique}", column=t_idx)
@@ -3587,41 +3583,243 @@ def draw_undo_manager(input_value, **kwargs):
     return False, input_value
 
 
-@render_func(use_cache=True)
-def draw_drop_down_item(input_value, name="", unique=0, shadow=False, **kwargs):
-    if button(name, name=f"{unique}{name}_dd_item", show_bg=True, height=25, shadow=False)[0]:
+@render_func(use_cache=True, temp=True)
+def draw_drop_down_item(input_value, name="", unique=0, shadow=False, draw_state=None, **kwargs):
+    hovered = draw_state._bounding_hovered
+    clicked, _ = button(name, name=f"{unique}{name}_dd_item", show_bg=True, height=25,
+                        shadow=False, hovered=hovered)
+
+    # Hover highlight: paint a translucent wash over this item's own box (its
+    # draw_state is the row, so abs_left/abs_top + width/height frame it exactly)
+    # straight onto the window draw list so it sits over the button fill.
+    if hovered:
+        dl = imgui.get_window_draw_list()
+        dl.add_rect_filled(draw_state.abs_left, draw_state.abs_top,
+                           draw_state.abs_left + draw_state.width,
+                           draw_state.abs_top + draw_state.height,
+                           imgui.get_color_u32_rgba(1, 1, 1, 0.16),
+                           rounding=draw_state.corner_radius)
+
+    if clicked:
         return True, name
 
     return False, input_value
 
 
-@render_func(use_cache=True, show_bg=True, shadow=False, selectable=False,
+@render_func(use_cache=True, show_bg=True, shadow=True, selectable=False,
              is_tree=False, show_name=True, with_header=draw_header)
 def draw_dropdown(input_value, collection, name, draw_state, drop_down_state: DropDownState, **kwargs):
     """Root of a recursive dropdown. Renders a trigger button showing the current
     selection; clicking it opens the (click-to-open) root popover. Nested dict
     rows inside the popover open their own sub-menus on hover. Returns
-    (changed, selected_leaf) when the user picks a value."""
-    arrow_icon = ""
-    drop_down_display_str = f"{arrow_icon} {name}: {str(input_value)[:30]}"
-    arrow_icon = ""
-    text(arrow_icon)
-    clicked, selected = button(drop_down_display_str, name=f"{name}_dd_trigger",
-                               show_bg=True, width=draw_state.content_width - 10, height=25)
-    if clicked:
-        print(f"Dropdown trigger clicked for {name}, opening popover")
+    (changed, selected_leaf) when the user picks a value.
 
-    # clicked, selected = draw_drop_down_item(input_value, name=f"{str(input_value)[:20]}")
-    # if clicked:
-    #     return True, selected
-
+    Open/closed is a single global slot -- ``Melty.popover_focused_ds`` holds the
+    draw_state of whichever dropdown's popover is currently shown. Each dropdown
+    decides it's open by identity (``popover_focused_ds is draw_state``), so
+    opening one popover implicitly closes every other (they all fail the test).
+    ``drop_down_state`` is the per-view scratch object the framework re-injects
+    every frame; we stash the last picked leaf on it for the trigger label."""
     from src.lsd.gl_gui.view.mode import Mode
-    changed, new_item = draw_any(collection, tint=draw_state.tint,
-                                 name=f"{draw_state.name}_nested",
-                                 mode=Mode.DROPDOWN_WINDOW)
-    if changed:
-        # print(f"Dropdown changed: returning {new_item}")
-        return True, new_item
+
+    # Is THIS dropdown the one whose popover is showing?
+    is_open = Melty.popover_focused_ds is draw_state
+
+    # Label shows the last pick (sticky across frames via drop_down_state),
+    # falling back to the raw input value.
+    current = drop_down_state.selected if drop_down_state.selected is not None else input_value
+    caret = " " if is_open else ""  # fa-chevron-down / fa-chevron-right
+    drop_down_display_str = f"{caret}  {name}: {str(current)[:30]}"
+    bg_offset = 4 if is_open else 7
+
+    trigger_w = draw_state.content_width - 10
+    trigger_h = 25
+    clicked, _ = button(drop_down_display_str, name=f"{name}_dd_trigger",
+                        show_bg=T
+                        rue, show_button_bg=False, shadow=False, 
+                        z_offset=1, text_align="left", bg_offset=bg_offset, width=trigger_w, height=trigger_h)
+
+    # Hover highlight: a translucent white wash painted straight onto the window
+    # draw list, over the trigger fill, so the row lights up under the cursor
+    # (and stays lit while the popover is open).
+    # if draw_state._bounding_hovered or is_open:
+    #     dl = imgui.get_window_draw_list()
+    #     x0, y0 = draw_state.abs_left, draw_state.abs_top
+    #     alpha = 0.14 if is_open else 0.08
+        # dl.add_rect_filled(x0, y0, x0 + trigger_w, y0 + trigger_h,
+        #                    imgui.get_color_u32_rgba(1, 1, 1, alpha),
+        #                    rounding=draw_state.corner_radius)
+
+    # Trigger click toggles this popover. Assigning the slot to us opens us and
+    # closes any other open dropdown; clearing it closes us.
+    if clicked:
+        Melty.popover_focused_ds = None if is_open else draw_state
+        is_open = Melty.popover_focused_ds is draw_state
+        if not is_open:
+            drop_down_state.open_path = ()  # collapse all sub-menus on close
+        request_render()
+
+    # The popover is a latching window -- the first call registers it and it
+    # stays alive, so we always call it and toggle visibility with `closed`
+    # rather than skipping the call (skipping would leave the last-open frame
+    # painted). closed=True hides the whole subtree. window_pos pins it just
+    # under the trigger (relative to this dropdown window) so it doesn't drift
+    # off as a free-floating draggable; temp keeps it ephemeral. root_state
+    # carries the single open-path the recursion expands; path_prefix starts
+    # empty at the root. A pick bubbles back as (changed, value).
+    changed, new_item = draw_dd_menu(collection, tint=draw_state.tint,
+                                     name=f"{draw_state.name}_menu",
+                                     closed=not is_open, temp=True,
+                                     window_pos=(0, trigger_h -_DD_ROW_H),
+                                     parent_window=draw_state, swoosh=False,
+                                     root_state=drop_down_state, path_prefix=())
+    if is_open:
+        if changed:
+            drop_down_state.selected = new_item
+            drop_down_state.open_path = ()
+            Melty.popover_focused_ds = None  # picking dismisses the popover
+            draw_state.invalidate()
+            request_render()
+            return True, new_item
+
+        # Click-outside dismissal: a fresh left click landing on neither the
+        # trigger nor anywhere inside the popover subtree closes it (matches
+        # native popover behaviour). Selection clicks already returned above, and
+        # sub-menus open on hover, so this only fires for genuine outside clicks.
+        if imgui.is_mouse_clicked(0) and not clicked:
+            mx, my = imgui.get_mouse_pos()
+            under = Core.melty.bvh_query(mx, my)
+            if not any(_ds_in_subtree(ds, draw_state) for ds in under):
+                Melty.popover_focused_ds = None
+                drop_down_state.open_path = ()
+                request_render()
+
+        # While the popover is open, keep re-running this view every frame so the
+        # un-cached menu re-evaluates hover live (sub-menus open/close as the
+        # pointer moves). draw_dropdown is cached, so invalidate self to re-enter.
+        Melty.cache.invalidate(draw_state._tile_id, force=True)
+        request_render()
+
+    return False, input_value
+
+
+def _ds_in_subtree(node, ancestor, max_depth=64):
+    """True if ``node`` is ``ancestor`` or a descendant of it. Walks the
+    ``_parent`` chain, stopping on the root's self-loop (root._parent is root)."""
+    seen = 0
+    while node is not None and seen < max_depth:
+        if node is ancestor:
+            return True
+        parent = getattr(node, "_parent", None)
+        if parent is None or parent is node:
+            break
+        node = parent
+        seen += 1
+    return False
+
+
+def _dd_menu_row_hovered_path(root_state, row_path, is_branch):
+    """Set the single open path when a row is hovered: a branch opens exactly its
+    own path (collapsing any sibling branch at this level); a leaf collapses back
+    to its parent level (so a sub-menu closes when you slide onto a plain row)."""
+    if root_state is None:
+        return
+    root_state.open_path = tuple(row_path) if is_branch else tuple(row_path[:-1])
+
+
+_DD_MENU_W = 170
+_DD_ROW_H = 24
+
+
+@render_func(use_cache=False, show_bg=True, shadow=True, selectable=False, temp=True,
+             closable=True, melty_window=False, auto_resize=True, with_header=None,
+             disable_scroll=True, min_width=200, swoosh=False)
+def draw_dd_menu(input_value, draw_state, root_state=None, path_prefix=(), tint=None, **kwargs):
+    """One level of the dropdown, drawn as its own temp popover window. Iterates
+    the level's entries and renders each as a row (`_dd_menu_row`); a leaf click
+    or a pick inside a nested sub-menu bubbles back up as (changed, value).
+
+    Expansion is driven by `root_state.open_path` (a single chain of keys, see
+    DropDownState) — NOT by each row testing its own hover. A row renders its
+    sub-menu only when `open_path` runs through it, so at most one sub-menu is
+    open per level and hidden siblings can never resurface. `path_prefix` is this
+    level's key chain from the root; each row's full path is prefix + its key.
+
+    Intentionally un-cached: the popover re-renders every frame while open (the
+    root drives request_render), so hover changes to open_path take effect live."""
+    open_path = tuple(getattr(root_state, "open_path", ()) or ())
+    if isinstance(input_value, dict):
+        entries = list(input_value.items())
+    else:
+        entries = list(enumerate(input_value))
+
+    result = (False, input_value)
+    for idx, (key, value) in enumerate(entries):
+        is_branch = isinstance(value, (dict, list, tuple))
+        # Dict rows read by their key (small/medium); list rows by their value
+        # (left/center/right) since the index isn't meaningful to the user.
+        label = str(key) if isinstance(input_value, dict) else str(value)
+        row_path = tuple(path_prefix) + (key,)
+        on_path = open_path[:len(row_path)] == row_path
+        changed, picked = _dd_menu_row(value, name=f"ddrow_{idx}_{key}", label=label,
+                                       is_branch=is_branch, row_path=row_path,
+                                       sub_open=on_path, root_state=root_state, tint=tint)
+        if changed:
+            result = (True, picked)
+    return result
+
+
+@render_func(use_cache=False, show_bg=False, shadow=False, selectable=False, temp=True,
+             with_header=None, disable_scroll=True, min_width=200, swoosh=False)
+def _dd_menu_row(input_value, draw_state, label="", is_branch=False, row_path=(),
+                 sub_open=False, root_state=None, tint=None, **kwargs):
+    """A single menu row. `input_value` is the row's VALUE. Leaves are a button
+    that returns the value on click. Branch rows show a chevron and own a nested
+    `draw_dd_menu` to their right; that sub-menu is shown only while this branch
+    is on the open path (`sub_open`). Hovering the row rewrites the open path, so
+    sibling sub-menus collapse. The hover highlight is painted over the row box."""
+    hovered = draw_state._bounding_hovered
+    fa_chrevron_right = f"\uf054"
+
+    chevron = f"  {fa_chrevron_right}" if is_branch else "    "  # fa-chevron-right
+    # clicked, _ = button(f"{label}{chevron}", name=f"{label}_ddrow", show_button_bg=False,
+    #                     width=draw_state.content_width, height=_DD_ROW_H, hovered=hovered,
+    #                     text_align="right", tint=tint, shadow=False, z_offset=0)
+
+    if is_branch:
+        clicked, _ = button(f"{label}{chevron}", name=f"{label}_ddrow", width=draw_state.content_width, 
+                            height=_DD_ROW_H, hovered=hovered, text_value=0.3,
+                          z_offset=0, rounding=0, show_button_bg=False,
+                            text_align="right", tint=tint)
+    else:
+        clicked, _ = button(f"{label}{chevron}", name=f"{label}_ddrow", show_button_bg=False,
+                            width=draw_state.content_width, height=_DD_ROW_H, hovered=hovered, z_offset=0, shadow=False,
+                            text_align="right", tint=tint)
+
+
+    # Hover highlight straight onto the window draw list, framed to this row's box.
+    if hovered:
+        dl = imgui.get_window_draw_list()
+        dl.add_rect_filled(draw_state.abs_left, draw_state.abs_top,
+                           draw_state.abs_left + draw_state.width,
+                           draw_state.abs_top + draw_state.height,
+                           imgui.get_color_u32_rgba(1, 1, 1, 0.16),
+                           rounding=draw_state.corner_radius)
+        _dd_menu_row_hovered_path(root_state, row_path, is_branch)
+
+    if is_branch:
+        # Always call the sub-menu (so off-path ones stay registered but hidden
+        # via closed=True, never leaving a stale painted frame); only the on-path
+        # branch actually draws. Pinned to the right of this row with window_pos.
+        changed, picked = draw_dd_menu(input_value, name=f"{label}_submenu", tint=tint,
+                                       closed=not sub_open, temp=True,
+                                       window_pos=(draw_state.width + 2, -_DD_ROW_H),
+                                       parent_window=draw_state, 
+                                       root_state=root_state, path_prefix=row_path)
+        if changed:
+            return True, picked
+    elif clicked:
+        return True, input_value
 
     return False, input_value
 
@@ -3734,8 +3932,8 @@ def draw_any(input_value: any = None, view_func=None, mode: any = None, chain=No
         main_mode = mode
 
     # --- Search: forward the active search term to searchable child views ---
-    # The term in Core.melty.search_stack so it reaches the whole subtree. We
-    # simply hand it to each searchable view via its "search_text` param and
+    # The term rides Core.melty.search_stack so it reaches the whole subtree. We
+    # simply hand it to each searchable view via its `search_text` param and
     # let the view decide what to do with it (the text editor highlights
     # matches in place). No value conversion or filtering happens here.
     # if (len(Core.melty.search_stack) > 0

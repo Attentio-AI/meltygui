@@ -136,37 +136,39 @@ class Swoosh:
                                 # within this fraction of the parent's shorter side (else stay flat)
 
 
-@window(tint=(0.9, 0.9, 0.9))
+@window(tint=(0.62, 0.63, 0.65))
 class Toggles:
 
     @defaults(tint=(1.0, 1.0, 1.0))
     class TextEditor:
         enable_spell_check = False
-    @defaults(tint=(0.77,0.50,0.23))
+    @defaults(tint=(0.83,0.22,0.22))
     class InvalidateTracker:
-        keep_for_frames = 13
+        keep_for_frames = 101
         enable = False
         draw_bvh = False
+        draw_rect = True
 
-    @defaults(tint=(0.0354, 0.27,0.59))
+    @defaults(tint=(0.11, 0.11,0.57))
     class Debug:
-        slow_frame_rate = False
+        slow_frame_rate = True
 
-    @defaults(tint=(0.79, 0.52, 0.52))
+    @defaults(tint=(0.73, 0.73, 0.73))
     class ScrollSettings:
         # Base speed (px per wheel-tick event) when the view is large enough that
         # the dynamic cap doesn't bind.
-        scroll_speed = 99.154
+        scroll_speed = 600
         # A single wheel tick never jumps more than this fraction of the vie
         # (clipped) height, so small views don't overshoot.
-        max_increment_fraction = 0.48
+        max_increment_fraction = 0.35
+
         # Used for time-based scroll acceleration: wheel ticks arriving within
         # this window count as a continuous gesture. Not yet wired into the cap.
-        acceleration_threshold = 203  # ms
+        acceleration_threshold = 0.036  # seconds
 
-    @defaults(tint=(0.67, 0.58, 0.19))
+    @defaults(tint=(0.31, 0.19, 0.67))
     class InputHandlerToggles:
-        show_debug = True
+        show_debug = False
 
     debug_scroll = False
     show_filled_tiles = False
