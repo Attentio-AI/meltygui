@@ -97,7 +97,7 @@ def draw_module(input_value: types.ModuleType, draw_state, **kwargs):
     imgui.text(f"Module: {input_value.__name__}")
 
 
-@render_func(is_default_for=(type), tint=(0.93, 0.56, 0.23, 0.4), use_cache=True,
+@render_func(is_default_for=(type), tint=(0.93, 0.56, 0.23, 0.308), use_cache=True,
              header_single_line=True, show_name=True, temp=True, is_tree=False, shadow=False,
              show_bg=True, with_header=draw_header)
 def draw_type_name(input_value, **kwargs):
@@ -2624,8 +2624,9 @@ def draw_tuple(input_value: tuple, name, unique, draw_state):
         flags = imgui.COLOR_EDIT_NO_TOOLTIP
         if imgui.color_button(f"##swatch{unique}{name}", col[0], col[1], col[2], alpha,
                               flags=flags, width=0, height=18):
-            # Melty.clear_focus(not_this=draw_state)
             Melty.popover_focused_ds = None if is_open else draw_state
+            if not is_open:
+                Melty._popover_open_frame = Melty.frame_count  # grace the opening click
             request_render()
         is_open = Melty.popover_focused_ds is draw_state  # reflect the update this frame
 
@@ -3436,7 +3437,7 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, unique=No
 
     render_func = cm_state.render_func_dict.deep.parameters()
     if render_func:
-        changed, value = draw_collection(render_func, tint=(0.02, 0.09, 0.13, 0.5), name=f"{input_value._view_func.__name__}##{unique}", disable_scroll=True)
+        changed, value = draw_collection(render_func, tint=(0.04, 0.53, 0.77, 0.676), name=f"{input_value._view_func.__name__}##{unique}", disable_scroll=True)
 
     call_site_dict = cm_state.call_site_dict.deep.unwrap() if cm_state.call_site_dict else None
     if call_site_dict:
@@ -3830,6 +3831,7 @@ def draw_dropdown(input_value, collection, name, draw_state, drop_down_state: Dr
         Melty.popover_focused_ds = None if is_open else draw_state
         is_open = Melty.popover_focused_ds is draw_state
         if is_open and not was_open:
+            Melty._popover_open_frame = Melty.frame_count  # grace the opening click
             # Fresh open: start with an empty query and give the search box a few
             # frames to grab text focus so the user can type to filter immediately.
             drop_down_state.search_query = ""

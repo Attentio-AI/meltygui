@@ -102,7 +102,7 @@ class Tint:
     context_select_rounding = 4.988
 
     # Background constants
-    context_menu_bg_offset = -7.529
+    context_menu_bg_offset = -1.0
 
     # Highlight outline boxes (parent + child views)
     highlight_outline_thickness = 3.0   # outline line thickness
@@ -149,7 +149,7 @@ class Swoosh:
                                 # within this fraction of the parent's shorter side (else stay flat)
 
 
-@window(tint=(0.80, 0.85, 0.94))
+@window(tint=(0.75, 0.83, 0.87))
 
 class Toggles:
 
@@ -200,7 +200,7 @@ class Toggles:
     slow_down_threads = False
     render_depth = False
     ds_invalidate_stack = False
-    profile_mode = ProfileMode.LIGHT
+    profile_mode = ProfileMode.ON
     debug_stale_tint = False
     show_line_break = False
 

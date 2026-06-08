@@ -315,6 +315,9 @@ class Melty:
     # last frame - so begin_frame only re-runs the popover when the hovered row
     # changes (not every frame the pointer sits over one).
     _last_popover_hover = None
+    # frame_count when a popover last opened - clear_focus grants it a one-frame
+    # pass so the opening click can't immediately dismiss it.
+    _popover_open_frame = 0
 
     # Previous frame's imgui io.want_text_input - used to detect when an imgui
     # input widget newly captures the keyboard (rising edge), so a Melty text
@@ -810,9 +813,19 @@ class Melty:
                 if pwin is not None and pwin is not node:
                     stack.append(pwin)
 
+        # A just-opened popover gets a one-frame grace: the very click that opens
+        # it also fires clear_focus, and the opener (e.g. a tiny colour swatch) may
+        # not be the bvh hit, so it wouldn't be in `protect`. Without the grace the
+        # popover would close on the same click that opened it. We do NOT protect a
+        # popover owner's _parent (its containing window) - that kept popovers open when
+        # clicking the parent window, defeating click-outside-to-dismiss.
+        popover_grace = (cls.frame_count - getattr(cls, "_popover_open_frame", -99)) <= 1
+
         for ds in (cls.focused_ds, cls.text_focused_ds, cls.popover_focused_ds):
 
-            if ds is None or ds.id in protect or ds._parent.id in protect:
+            if ds is None or ds.id in protect:
+                continue
+            if ds is cls.popover_focused_ds and popover_grace:
                 continue
             if Toggles.text_focus_stack_trace:
                 print_stack_trace(size=5)
