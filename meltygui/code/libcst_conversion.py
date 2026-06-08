@@ -245,7 +245,7 @@ class GeneralParse(dict):
     #     return self._bg_hash_cache
 
 
-@defaults(tint=(0.04, 0.17, 0.25, 0.016), bg_offset=2, font=Font.JETBRAINS_MONO_16, is_tree=False, shadow=False, z_offset=1, child_kwargs={"font":Font.JETBRAINS_MONO_19})
+@defaults(tint=(0.04, 0.17, 0.25, 0.016), bg_offset=2, font=Font.FONTAWESOME_MONO_19, is_tree=False, shadow=False, z_offset=1, child_kwargs={"font":Font.JETBRAINS_MONO_19})
 class CallParse(GeneralParse):
     """A function call's arguments, as a GeneralParse subclass.
 

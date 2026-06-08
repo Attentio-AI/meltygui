@@ -1623,6 +1623,9 @@ class TileCacheMasked:
                 uv_a = (0.0, 1.0)
                 uv_b = (1.0, 0.0)
 
+                draw_list: _DrawList = imgui.get_window_draw_list()
+                draw_list.add_rect_filled(*a, *b, col=imgui.get_color_u32_rgba(*draw_state.bg_color[:3], 1.0), rounding=draw_state.corner_radius)
+
                 imgui.get_window_draw_list().add_image_rounded(t.tex,
                                                                a=a,
                                                                b=b,
@@ -1631,14 +1634,6 @@ class TileCacheMasked:
                                                                rounding=draw_state.corner_radius)
                 imgui.dummy(size[0], size[1])
 
-                # imgui.image(
-                #     t.tex,
-                #     snap_int(size[0]),
-                #     snap_int(size[1]),
-                #     uv0=(0.0, 1.0),
-                #     uv1=(1.0, 0.0),
-                # )
-                # imgui.set_item_allowOverlap()
                 imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top + draw_state.content_height))
                 self._stack.append(
                     _Ctx(

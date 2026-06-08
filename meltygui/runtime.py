@@ -770,6 +770,62 @@ class Melty:
         return hits
 
     @classmethod
+    def clear_focus(cls, not_this=None):
+        # Clear all focus slots (text / popover / general) EXCEPT any owner that is
+        # an ancestor of `not_this`. `not_this` is the view(s) just interacted with
+        # (e.g. the bvh hit-stack under the cursor on mouse-up). We protect each
+        # seed's full ANCESTOR CLOSURE - including both _parent and parent_window -
+        # so clicking anywhere inside a focus owner's subtree keeps it focused even
+        # when the seed is several windows up (a dropdown's search box lives in its
+        # menu window, whose parent_window is the dropdown trigger that holds the
+        # true focus). Protecting only the direct parents dropped that owner,
+        # which closed the dropdown / killed search search + arrow input on any click.
+        if isinstance(not_this, (list, tuple)):
+            seeds = [n for n in not_this if n is not None]
+        elif not_this is not None:
+            seeds = [not_this]
+        else:
+            seeds = []
+
+        protect = set()
+        for seed in seeds:
+            stack = [seed]
+            guard = 0
+            while stack and guard < 256:
+                guard += 1
+                node = stack.pop()
+                if node is None or getattr(node, "id", None) in protect:
+                    continue
+                protect.add(node.id)
+                parent = getattr(node, "_parent", None)
+                pwin = getattr(node, "parent_window", None)
+                if parent is not None and parent is not node:
+                    stack.append(parent)
+                if pwin is not None and pwin is not node:
+                    stack.append(pwin)
+
+        for ds in (cls.focused_ds, cls.text_focused_ds, cls.popover_focused_ds):
+
+            if ds is None or ds.id in protect or ds._parent.id in protect:
+                continue
+            if Toggles.text_focus_stack_trace:
+                print_stack_trace(size=5)
+
+            ds.search_active = False
+            ds.search_text = ""
+            ds._search_was_active = False
+            ds.invalidate_up()
+
+            if cls.focused_ds is ds:
+                cls.focused_ds = None
+            if cls.text_focused_ds is ds:
+                cls.text_focused_ds = None
+            if cls.popover_focused_ds is ds:
+                cls.popover_focused_ds = None
+
+
+
+    @classmethod
     def _sync_gl_error_checking(cls):
         """Honor Toggles.gl_check_error, disabling PyOpenGL's per-call
         glGetError round-trip when off (a render-thread hotspot).
@@ -875,35 +931,27 @@ class Melty:
         # end_frame: end_frame invalidation lands one frame too late, after the
         # key edge has already passed, which is why typing only worked while
         # hovering (the hover path keeps the tile dirty before each draw).
+        focused = None
         if cls.text_focused_ds is not None and cls.glfw_window is not None:
             focused = cls.text_focused_ds
             # Esc releases text focus globally - no more needed. Re-render the
             # (now-)focused text view so its cursor disappears this frame, then
             # clear focus, which also unblocks global hotkeys via is_key_pressed.
-            if glfw.get_key(cls.glfw_window, glfw.KEY_ESCAPE) == glfw.PRESS:
-                # Close any active search globally - no hover required. This must
-                # clear search_active (not just text focus): otherwise the search
-                # box's re-grab-when-unfocused logic would immediately reclaim
-                # focus and the find bar would never dismiss off-hover.
-                owner = cls.focused_ds
-                if owner is not None and getattr(owner, 'search_active', False):
-                    owner.search_active = False
-                    owner.search_text = ""
-                    owner._search_was_active = False
-                    if owner.parent_window is not None:
-                        cls.cache.invalidate_up(owner.parent_window._tile_id, force=True)
-                    cls.cache.invalidate(owner._tile_id, force=True)
-                    cls.focused_ds = None
-                if focused.parent_window is not None:
-                    cls.cache.invalidate_up(focused.parent_window._tile_id, force=True)
-                cls.cache.invalidate(focused._tile_id, force=True)
-                cls.text_focused_ds = None
-                if Toggles.text_focus_stack_trace:
-                    print_stack_trace()
-                request_render()
-            else:
-                for k in range(32, 349):  # GLFW_KEY_SPACE through GLFW_KEY_LAST
-                    if glfw.get_key(cls.glfw_window, k) == glfw.PRESS:
+        if glfw.get_key(cls.glfw_window, glfw.KEY_ESCAPE) == glfw.PRESS:
+            # Close any active search globally - no hover required. We must
+            # clear search_active (not just text focus): otherwise the search
+            # box's Esc-grab-when-unfocused logic would immediately reclaim
+            # focus and the find bar would never dismiss off-screen.
+
+            cls.clear_focus()
+
+            if Toggles.text_focus_stack_trace:
+                print_stack_trace()
+            request_render()
+        else:
+            for k in range(32, 349):  # GLFW_KEY_SPACE through GLFW_KEY_LAST
+                if glfw.get_key(cls.glfw_window, k) == glfw.PRESS:
+                    if focused is not None:
                         note = Note(name="Melty, on glfw key press", tint=(1, 0.5, 0), rect=(0, 0, 100, 20))
                         if focused.parent_window is not None:
                             cls.cache.invalidate_up(focused.parent_window._tile_id, force=True, note=note)
@@ -2275,10 +2323,7 @@ class Melty:
             if window_key in Melty.registered_windows:
                 draw_state.last_seen = None
                 del Melty.registered_windows[window_key]
-                if cls.text_focused_ds is not None and cls.text_focused_ds.parent_window is draw_state:
-                    cls.text_focused_ds = None
-                    if Toggles.text_focus_stack_trace:
-                        print_stack_trace()
+
                 print(f"Deleted window {window_key}")
                 Melty.cache.invalidate_by_obj(Melty.registered_windows)
                 Melty.cache.invalidate_up(draw_state._tile_id, max_depth=4, force=True)
@@ -2294,15 +2339,6 @@ class Melty:
             return
 
         if not cls.imgui_active:
-            # for widx, window in enumerate(Melty.registered_windows.values()):
-            #     if widx == len(Melty.registered_windows) - 1:
-            #         break
-            #     wds = window.draw_state
-            #     wds.layer = wds.abs_layer
-            #
-            # for root_window in Melty.root_draw_states:
-            #     for ds in Melty.root_draw_states[root_window]:
-            #         ds.layer = ds.abs_layer
 
             window_key = cls.pending_move_to_front[0]
             window_z_pos = len(Melty.registered_windows) + Melty.top_layer_boost
@@ -2310,16 +2346,6 @@ class Melty:
                 cls.pending_move_to_front[1].layer = window_z_pos
                 draw_state = cls.pending_move_to_front[1]
                 draw_state.active_layer = window_z_pos
-
-                # if cls.pending_move_to_front[1]._is_nested:
-                #     draw_state.layer += Melty.nested_layer_boost + 3
-                    # draw_state.z_pos = (draw_state.layer * Melty.max_depth) + draw_state.depth
-
-                if cls.text_focused_ds is not None and cls.text_focused_ds.parent_window is not draw_state:
-                    cls.text_focused_ds = None
-                    if Toggles.text_focus_stack_trace:
-                        print_stack_trace()
-
                 if window_key in Melty.registered_windows:
                     # Remove and re-insert to move to end (top)
                     window = Melty.registered_windows.pop(window_key)

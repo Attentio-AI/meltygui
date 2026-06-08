@@ -233,7 +233,7 @@ class TileMode(Enum):
  "scrolled", "is_hovered_last", "frame_count", "z_pos", "corner_radius",
          "text_search_current", "text_search_count")
 @no_save_exclude('render_time',  "total_z_offset", 'closable', 'has_full_tile', 'invalid_content_height',
-                  "parent_window", "pressed", "bbox", "", "child_selected",
+                  "parent_window", "pressed", "bbox", "", "child_selected", "bg_color",
                  'hover_rects', 'nested_window', 'use_cache', "header_top", "header_left", "left_offset",
                  "top_offset", 'kwargs', "just_shadow", "header_width", "header_end_width",
                  "header_natural_width", "max_header_width", "pin_to_clip", "pin_clip_rect", "pin_clamp",
@@ -294,6 +294,7 @@ class DrawState(DictConversion):
         self.total_z_offset = 0
         self.shadow_margin = 0
         self.bg_depth = 0
+        self.bg_color = (0, 0, 0, 0)
         self.pressed = False
         self.closable = False
         self.has_full_tile = False

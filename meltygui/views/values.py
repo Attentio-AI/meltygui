@@ -263,7 +263,7 @@ def _dismiss_global_search():
     GlobalSearch.query = ""
     GlobalSearch._last_query = None
     GlobalSearch.selected = 0
-    Core.melty.text_focused_ds = None
+    Core.melty.clear_focus()
     request_render()
 
 
@@ -320,12 +320,12 @@ def draw_symbol_usage(input_value):
 @render_func(is_default_for=(dict, MutableMapping, defaultdict, tuple, list, GeneralParse, CallParse, _BubblingDict, _DeepPath), use_cache=True,
              header_same_line=False, show_bg=True, show_instance_vars=False, align_header=False,
              manual_content_height=True, shadow=True, selectable=False, show_add_delete=False,
-             wrap=False, with_header=draw_header, indent_size=4, searchable=True)
+             wrap=False, with_header=draw_header, indent_size=2, searchable=True)
 def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=None,
                     mode=None, keys=None, get_attr=None, set_attr=None, show_excluded=False,
                     child_kwargs=None, show_bg=False, show_search=True, align_header=False,
                     on_collapse=False, search_text="", return_item=False, close_triggers_delete=False,
-                    on_expand=False, show_add_delete=False, item_spacing_y=2, show_system=False, included=None,
+                    on_expand=False, show_add_delete=False, item_spacing_y=1, show_system=False, included=None,
                     horizontal=False, show_indices=False, excluded=None, **kwargs):
     """
     Universal collection renderer
@@ -769,7 +769,6 @@ def draw_type(input_value: type, **kwargs):
                     imgui.text(f"Error setting attribute {k} on class {input_value.__name__}: {e}")
     except Exception as e:
         imgui.text(f"Error rendering type {input_value}: {e}")
-        imgui.text(str(input_value))
 
 
 @render_func(show_bg=True, use_cache=True, selectable=False, header_single_line=False, align_header=False,
@@ -2033,6 +2032,58 @@ def test_func():
                  "key_2": 2.421
                  }
 
+def compute_bg_color(bg_offset=0, tint=None, nested_bg=False):
+    depth_wrap = 34
+    depth_scale = 1.629
+    intensity_factor = 0.021
+    intensity_offset = -0.336
+    outline_depth_mul = 0.786
+    # More text
+    bleed_style = {'value': -0.111, 'alpha': 1.12, 'saturation': 7.045}
+
+    bg_style = {
+        'value': -0.004, 'saturation': 1.101,
+        'alpha': 0.504, 'max_value': 1.8,
+    }
+
+    def mix_colors(color_a, color_b, factor):
+        return (
+            color_a[0] * (1 - factor) + color_b[0] * factor,
+            color_a[1] * (1 - factor) + color_b[1] * factor,
+            color_a[2] * (1 - factor) + color_b[2] * factor,
+        )
+
+    # -- Depth calculation -------------------
+    max_depth = 15
+    bg_depth = Core.melty.bg_depth if Core.melty.bg_depth is not None else 0
+    bg_offset = bg_offset if bg_offset is not None else 0
+    wrapped_depth = min(max_depth, (bg_depth % depth_wrap) + bg_offset)
+    scaled_depth = wrapped_depth * depth_scale
+    depth_intensity = (scaled_depth + intensity_offset) * intensity_factor
+    max_depth_intensity = 0.652
+    depth_intensity = min(depth_intensity, max_depth_intensity)
+
+
+    # ── Outline color ──────────────────────────────────────────
+    depth_mul = outline_depth_mul
+    if not nested_bg:
+        depth_mul *= 1.00
+
+    # ── Background bleed color ─────────────────────────────────
+    bleed_factor = 0.501 if nested_bg else 0.446
+
+    bleed_base = Core.melty.get_bg_color(-1)
+    bleed_color = Melty.style_manager.make_custom_styled(
+        *bleed_base, input=bg_style, **bleed_style,
+    )
+
+    # ── Fill rendering ─────────────────────────────────────────
+    bg_color = Melty.style_manager.make_color_style_value(input=bg_style, value=max(0.0, depth_intensity))
+    bg_color = mix_colors(bg_color, bleed_color, bleed_factor)
+
+    return bg_color
+
+
 
 def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset=0,
             outline=True, bg_color=None, opacity=0.0,
@@ -2100,7 +2151,6 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
         snap_int(right) - border_inset, snap_int(bottom) - border_inset,
     )
     outline_rect = (
-
         snap_int(left) + border_inset_half, snap_int(top) + border_inset_half,
         snap_int(right) - border_inset_half, snap_int(bottom) - border_inset_half,
     )
@@ -2147,8 +2197,7 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
 
     # ── Fill rendering ─────────────────────────────────────────
     if bg_color is None:
-        bg_color = style_manager.make_color_style_value(input=bg_style, value=max(0, depth_intensity))
-        bg_color = mix_colors(bg_color, bleed_color, bleed_factor)
+        bg_color = compute_bg_color(bg_offset=bg_offset, tint=tint, nested_bg=nested_bg)
 
     packed_fill = imgui.get_color_u32_rgba(bg_color[0], bg_color[1], bg_color[2], 1.0)
     if tint is not None:
@@ -2455,54 +2504,133 @@ def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=F
         return True, value
 
 
+@render_func(use_cache=False, show_bg=True, shadow=False, selectable=False, with_header=None)
+def draw_color_picker(input_value, wrap=True, draw_state=None, **kwargs):
+    """Large immediate-mode HSV colour picker: a saturation/value square plus a
+    hue bar. `input_value` is a 3- or 4-float RGB(A) tuple in 0..1; returns
+    (changed, new_tuple). Entirely stateless — HSV is derived from the value each
+    frame and the edit written straight back (imgui's own is_item_active tracks
+    the drag), so it can be dropped anywhere; draw_tuple wraps it in Mode.POPOVER."""
+    vals = list(input_value)
+    has_alpha = len(vals) >= 4
+    r, g, b = float(vals[0]), float(vals[1]), float(vals[2])
+    a = float(vals[3]) if has_alpha else 1.0
+    h, s, v = imgui.color_convert_rgb_to_hsv(r, g, b)
+
+    SQ, BAR_W, GAP = 180, 18, 8
+    dl = imgui.get_window_draw_list()
+    ox, oy = imgui.get_cursor_screen_pos()
+    sx0, sy0, sx1, sy1 = ox, oy, ox + SQ, oy + SQ
+
+    # SV square: white->hue across, transparent->black down.
+    hr, hg, hb = imgui.color_convert_hsv_to_rgb(h, 1.0, 1.0)
+    white = imgui.get_color_u32_rgba(1, 1, 1, 1)
+    hue = imgui.get_color_u32_rgba(hr, hg, hb, 1)
+    black = imgui.get_color_u32_rgba(0, 0, 0, 1)
+    trans = imgui.get_color_u32_rgba(0, 0, 0, 0)
+    dl.add_rect_filled_multicolor(sx0, sy0, sx1, sy1, white, hue, hue, white)
+    dl.add_rect_filled_multicolor(sx0, sy0, sx1, sy1, trans, trans, black, black)
+
+    changed = False
+    imgui.set_cursor_screen_pos((sx0, sy0))
+    imgui.invisible_button("##sv", SQ, SQ)
+    if imgui.is_item_active():
+        mx, my = imgui.get_mouse_pos()
+        s = min(max((mx - sx0) / SQ, 0.0), 1.0)
+        v = 1.0 - min(max((my - sy0) / SQ, 0.0), 1.0)
+        changed = True
+
+    # Hue bar (vertical), drawn as 6 linear segments.
+    hx0, hx1 = sx1 + GAP, sx1 + GAP + BAR_W
+    for i in range(6):
+        t0, t1 = i / 6.0, (i + 1) / 6.0
+        r0, g0, b0 = imgui.color_convert_hsv_to_rgb(t0, 1, 1)
+        r1, g1, b1 = imgui.color_convert_hsv_to_rgb(t1, 1, 1)
+        c0 = imgui.get_color_u32_rgba(r0, g0, b0, 1)
+        c1 = imgui.get_color_u32_rgba(r1, g1, b1, 1)
+        dl.add_rect_filled_multicolor(hx0, sy0 + SQ * t0, hx1, sy0 + SQ * t1, c0, c0, c1, c1)
+    imgui.set_cursor_screen_pos((hx0, sy0))
+    imgui.invisible_button("##hue", BAR_W, SQ)
+    if imgui.is_item_active():
+        h = min(max((imgui.get_mouse_pos()[1] - sy0) / SQ, 0.0), 1.0)
+        changed = True
+
+    # Markers (after input, so they sit at the updated position).
+    cx, cy = sx0 + s * SQ, sy0 + (1.0 - v) * SQ
+    dl.add_circle(cx, cy, 6, black, thickness=1.0)
+    dl.add_circle(cx, cy, 5, white, thickness=1.5)
+    hmy = sy0 + h * SQ
+    dl.add_rect(hx0 - 1, hmy - 2, hx1 + 1, hmy + 2, white, thickness=1.5)
+
+    # Leave the cursor below the widget so the auto-resizing window sizes to it.
+    imgui.set_cursor_screen_pos((sx0, sy1 + 4))
+    imgui.dummy(SQ + GAP + BAR_W, 1)
+
+    if changed:
+        nr, ng, nb = imgui.color_convert_hsv_to_rgb(h, s, v)
+        request_render()
+        return True, ((nr, ng, nb, a) if has_alpha else (nr, ng, nb))
+    return False, input_value
+
+
 @render_func(is_default_for=('tint', 'help_yellow_tint', 'context_select_tint', "text_color"), has_popup=True,
              indent_size=2, is_tree=False, align_header=False, header_same_line=True, wrap=True,
              show_name=True, selectable=False, max_width=100, min_width=33, use_cache=False, with_header=draw_header)
-def draw_tuple(input_value: tuple, name, unique):
-    if len(input_value) > 0 and isinstance(input_value[0], (float, int)):
+def draw_tuple(input_value: tuple, name, unique, draw_state):
+    changed = False
+    is_color = (len(input_value) in (3, 4)
+                and all(isinstance(c, (float, int)) for c in input_value))
+    if is_color:
+        # A swatch trigger that opens our own colour-picker popover (replacing
+        # imgui's built-in popup). Same popover pattern as the dropdown: identity
+        # in Melty.popover_focused_ds is the open state; click toggles it; the
+        # picker window is anchored under the swatch and dismissed on outside
+        # click / Esc. The picker itself is stateless and returns the new colour.
+        from src.lsd.gl_gui.view.mode import Mode
+        is_open = Melty.popover_focused_ds is draw_state
+        col = list(input_value)
+        alpha = col[3] if len(col) == 4 else 1.0
         imgui.same_line(spacing=4)
-        if len(input_value) == 4:
-            # imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (4, 0))
-            # imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (4, 0))
+        flags = imgui.COLOR_EDIT_NO_TOOLTIP
+        if imgui.color_button(f"##swatch{unique}{name}", col[0], col[1], col[2], alpha,
+                              flags=flags, width=0, height=18):
+            # Melty.clear_focus(not_this=draw_state)
+            Melty.popover_focused_ds = None if is_open else draw_state
+            request_render()
+        is_open = Melty.popover_focused_ds is draw_state  # reflect the update this frame
 
-            color_list = list(input_value)
-            color_flags = (imgui.COLOR_EDIT_NO_INPUTS | imgui.COLOR_EDIT_NO_LABEL | imgui.COLOR_EDIT_FLOAT |
-                           imgui.COLOR_EDIT_NO_TOOLTIP)
-            changed, color = imgui.color_edit4(
-                f"##picker_edit{unique}{name}",
-                color_list[0], color_list[1], color_list[2], color_list[3],
-                flags=color_flags)
-
-            # imgui.pop_style_var(2)
-            if changed:
-                input_value = (color[0], color[1], color[2], color[3])
-        elif len(input_value) == 3:
-            # imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (4, 0))
-            # imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (4, 0))
-
-            color_list = list(input_value)
-            color_flags = (imgui.COLOR_EDIT_NO_INPUTS | imgui.COLOR_EDIT_NO_LABEL |
-                           imgui.COLOR_EDIT_NO_ALPHA | imgui.COLOR_EDIT_FLOAT |
-                           imgui.COLOR_EDIT_NO_TOOLTIP)
-            changed, color = imgui.color_edit3(
-                f"##picker_edit{unique}{name}",
-                color_list[0], color_list[1], color_list[2],
-                flags=color_flags)
-
-            # imgui.pop_style_var(2)
-            if changed:
-                input_value = (color[0], color[1], color[2])
-        else:
-            str_value = ", ".join([str(v) for v in input_value])
-            changed, input_str = imgui.input_text("##tuple", str_value)
-            if changed:
-                try:
-                    new_tuple = eval(f"({input_str},)")
-                    if isinstance(new_tuple, tuple):
-                        input_value = new_tuple
-                except Exception as e:
-                    print(f"Error parsing tuple: {e}")
-                    pass
+        color_changed, new_color = draw_color_picker(input_value, name=f"color_picker{unique}",
+                                                closed=not is_open, window_pos=(0, 10),
+                                                layer_offset=4, width=208, height=200, mode=Mode.POPOVER)
+        if is_open:
+            if color_changed:
+                input_value = tuple(new_color)
+                changed = True
+            # Dismiss on a click outside the swatch/popover, or on Esc.
+            # if imgui.is_mouse_clicked(0):
+            #     mx, my = imgui.get_mouse_pos()
+            #     if not any(_ds_in_subtree(d, draw_state) for d in Core.melty.bvh_query(mx, my)):
+            #         Melty.popover_focused_ds = None
+            #         request_render()
+            if any(k == glfw.KEY_ESCAPE for k, _ in Core.melty.frame_key_events):
+                Melty.popover_focused_ds = None
+                request_render()
+            # Keep re-rendering while a bar/square is being dragged so the live
+            # imgui interaction (is_item_active) updates each frame.
+            if Melty.imgui_any_item_active or imgui.is_mouse_down(0):
+                Melty.cache.invalidate(draw_state._tile_id, force=True)
+                request_render()
+    elif len(input_value) > 0 and isinstance(input_value[0], (float, int)):
+        str_value = ", ".join([str(v) for v in input_value])
+        ch, input_str = imgui.input_text("##tuple", str_value)
+        if ch:
+            try:
+                new_tuple = eval(f"({input_str},)")
+                if isinstance(new_tuple, tuple):
+                    input_value = new_tuple
+                    changed = True
+            except Exception:
+                pass
     else:
         changed, input_value = draw_collection(input_value=input_value)
 
@@ -3273,13 +3401,13 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, unique=No
 
     render_func = cm_state.render_func_dict.deep.parameters()
     if render_func:
-        changed, value = draw_collection(render_func, tint=(0.87, 0.38, 0.17, 0.5), name=f"{input_value._view_func.__name__}##{unique}", disable_scroll=True)
+        changed, value = draw_collection(render_func, tint=(0.02, 0.09, 0.13, 0.5), name=f"{input_value._view_func.__name__}##{unique}", disable_scroll=True)
 
     call_site_dict = cm_state.call_site_dict.deep.unwrap() if cm_state.call_site_dict else None
     if call_site_dict:
         from src.lsd.gl_gui.view.core_conversion.chain_converters import caller_func_name
         caller_name = caller_func_name(input_value._call_stack) or "Call site"
-        changed, value = draw_collection(call_site_dict, is_tree=True, tint=(0.76,0.48,0.35, 0.3), name=f"{caller_name}##call_site{unique}",
+        changed, value = draw_collection(call_site_dict, is_tree=True, tint=(0.05,0.14,0.20, 0.3), name=f"{caller_name}##call_site{unique}",
                                          disable_scroll=True)
 
 

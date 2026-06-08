@@ -206,7 +206,7 @@ class Toggles:
 
     # Filter SettingS
     brightness = 0.425
-    contrast = 1.762
+    contrast = 1.736
     saturation = -0.4
     prefered_header_width = 17
     max_preferred_header_width = 153

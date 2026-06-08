@@ -78,7 +78,7 @@ def render_search(search_ds, draw_state, unique=None, ):
     imgui.same_line()
     search_change, new_search = draw_text(search_ds.search_text, searchable=False,
                                           is_search_box=True,
-                                          shadow=False,
+                                          shadow=False, max_height=40,
                                           name=search_icon + str(unique), with_header=None,
                                           with_header_end=None, width=draw_state.content_width-50,
                                           with_footer=None, header_same_line=True, tint=search_ds.tint,
@@ -105,7 +105,7 @@ def render_search(search_ds, draw_state, unique=None, ):
     imgui.set_cursor_screen_pos((draw_state.abs_left + draw_state.content_width-17, imgui.get_cursor_screen_pos()[1]))
     # imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0], imgui.get_cursor_screen_pos()[1] + 2))
     if button(fa_x_icon, name=f"{unique}##fa_x_icon", show_bg=False,
-              use_cache=True, height=23, shadow=True, z_offset=3,
+              use_cache=True, height=23, shadow=True, z_offset=3, max_height=40,
               tile_mode=TileMode.MAX, color=(9, 1, 1, 0))[0]:
         search_ds.search_active = False
         search_ds._search_was_active = False

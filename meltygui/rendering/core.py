@@ -1121,10 +1121,16 @@ def render_func(*args, **o_kwargs):
                     draw_state._initial_window_size = None
                     draw_state._initial_window_pos_resize = None
 
-            if draw_state.window_pos is not None and closable:
+            left_mouse_up = draw_state.on_action("non_blocking_left_mouse_down", "clear_focus", priority_delta=1)
+            if left_mouse_up:
+                ds_under_mouse = Melty.bvh_query(*imgui.get_mouse_pos())
+                Melty.clear_focus(not_this=(*ds_under_mouse, draw_state))
+
+            if draw_state.window_pos is not None and closable and kwargs.get("window_pos", None) is None:
                 on_held = draw_state.on_action("left_mouse_held", "window_move", priority_delta=-2)
                 on_drag = draw_state.on_action("left_mouse_drag", "window_move")
                 left_mouse_down = draw_state.on_action("left_mouse_down", "window_move", priority_delta=-1)
+
 
                 if left_mouse_down:
                     # draw_state is the window that just won the click
@@ -1133,6 +1139,7 @@ def render_func(*args, **o_kwargs):
                     # a child window move_window_to_front walks up to the
                     # registered root, for a root window it's a no-op resolve.
                     Melty.move_window_to_front(draw_state)
+
                 if on_drag and not imgui_active and not "window_pos" in kwargs:
                     if draw_state._initial_window_pos is None:
                         draw_state._initial_window_pos = (draw_state.window_pos[0],
@@ -1585,7 +1592,7 @@ def render_func(*args, **o_kwargs):
                     # # enough - the next searchable view did reclaim it, which
                     # # left the box un-focused after Ctrl+F).
                     # draw_state._search_focus_pending = True
-                    Melty.text_focused_ds = None
+                    Melty.clear_focus(not_this=draw_state)
                     Melty.focused_ds = draw_state
 
                 if draw_state.search_active:
@@ -2107,6 +2114,10 @@ def render_func(*args, **o_kwargs):
                     previous_tint = style_manager.get_tint()
                     style_manager.set_imgui_tint(*draw_state.tint)
 
+                nested_bg = not closable and kwargs.get("bg_offset", 0) >= 0
+                from src.lsd.gl_gui.view.core_views.new_core_view import compute_bg_color
+                draw_state.bg_color = compute_bg_color(bg_offset=kwargs.get("bg_offset", None), nested_bg=True)
+
                 if converted_input:
                     # reformat icon wrench
                     converted_icon_text = f"\uf0ad"
@@ -2143,7 +2154,9 @@ def render_func(*args, **o_kwargs):
                         if bg_return is not None:
                             bg_color = bg_return[1]
 
+
                     Melty.bg_color_stack.append(bg_color)
+
 
                 ########################
 
@@ -2163,16 +2176,10 @@ def render_func(*args, **o_kwargs):
                         Melty.selected = set()
                         Melty.selected.add(draw_state)
                         Melty.last_selected = draw_state
-                        if Melty.text_focused_ds is not None and Melty.text_focused_ds is not draw_state:
-                            Melty.text_focused_ds = None
-                            if Toggles.text_focus_stack_trace:
-                                print_stack_trace()
+                        Melty.clear_focus(not_this=draw_state)
 
                     elif click and not Melty.imgui_active:
-                        if Melty.text_focused_ds is not None and Melty.text_focused_ds is not draw_state:
-                            Melty.text_focused_ds = None
-                            if Toggles.text_focus_stack_trace:
-                                print_stack_trace()
+                        Melty.clear_focus(not_this=draw_state)
                         Melty.previous_select = copy(Melty.selected)
                         if not click.modifiers:
                             if len(Melty.selected) == 1 and draw_state in Melty.selected:

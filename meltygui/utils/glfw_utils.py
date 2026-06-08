@@ -566,14 +566,20 @@ def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
     # Drop repetitive plumbing frames, but never the error frame itself.
     if ignore_functions:
         error_frame = frames[error_frame_idx] if error_frame_idx is not None else None
-        frames = [
-            frame for k, frame in enumerate(frames)
-            if k == error_frame_idx or frame[2] not in ignore_functions
-        ]
+        near_error = False
         error_frame_idx = (
             next((k for k, frame in enumerate(frames) if frame is error_frame), None)
             if error_frame is not None else None
         )
+
+        if error_frame_idx is None:
+            error_frame_idx = len(frames) - 1
+
+        frames = [
+            frame for k, frame in enumerate(frames)
+            if (k == error_frame_idx) or abs(k - error_frame_idx) < 5 or frame[2] not in ignore_functions
+        ]
+
 
     for i, (filename, lineno, funcname, line_text, local_vars) in enumerate(frames):
         rel = filename

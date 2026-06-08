@@ -68,7 +68,6 @@ class ImGuiStyleManager:
 
     def make_custom_styled(self, r, g, b, input, alpha=1.0, value=0.5, saturation=None):
         h, s, v = colorsys.rgb_to_hsv(r, g, b)
-        modified_rgb = colorsys.hsv_to_rgb(h, s * saturation, value)
         value = input["value"] + value
 
         if saturation is not None:

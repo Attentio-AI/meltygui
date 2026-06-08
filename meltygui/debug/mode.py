@@ -239,6 +239,19 @@ class Mode(Enum):
         )
     }
 
+    # Lightweight anchored popover: a small auto-fitting, header-less, non-draggable
+    # temp window (like the dropdown menu). The caller sets closed / window_pos /
+    # parent_anchor to anchor it to a trigger and toggle visibility.
+    POPOVER = {
+        Any: ModeOverrides(
+            kwargs={"show_bg": True, "selectable": False, "use_cache": False, "melty_window": False,
+                    "closable": True, "auto_resize": True, "draggable": False, "shadow": True,
+                    "show_tint": False, "show_header": False, "with_header": None, "disable_scroll": True,
+                    "temp": True, "swoosh": False, "indent_size": 2},
+            recursive=False
+        )
+    }
+
     HOST_WINDOW = {
         Any: ModeOverrides(
             kwargs={"show_bg": True, "selectable": False, "use_cache": True, "melty_window": False, "closable": True,
