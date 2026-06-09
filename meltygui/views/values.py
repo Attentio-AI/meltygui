@@ -3481,9 +3481,16 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, unique=No
         changed, value = draw_collection(class_defaults, tint=(0.02,0.06,0.10), name=f"defaults##{unique}",
                                          disable_scroll=True)
 
-    if draw_state.frame_count < 10 and Melty.frame_count > 5:
-        input_value._parent.invalidate_up(max_depth=5)
-        request_render()
+    # Each *_dict RenderHost parses its source on a background worker in its OWN draw
+    # loop; this tab merely READS the materialized value (h.deep....) and draws it. When
+    # a parse lands, the host's after_render() runs the loop but can't reach this
+    # cached subtree - so register this tab's draw_state as a listener and the host
+    # invalidates us when its value changes. Replaces the old "invalidate for the first
+    # 10ms" guess, which expired before the ~400ms chain_in debounce, leaving the
+    # dict blank until a manual mouse-over.
+    for _h in (cm_state.render_func_dict, cm_state.class_dict, cm_state.call_site_dict):
+        if _h is not None:
+            _h.notify_on_change(draw_state)
 
     # common = dict(mode=Modes.NEW_CODE, min_width=100, max_height=300, fill_height=False)
     #
@@ -3723,7 +3730,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
             draw_config_tab(input_value, name=f"config_tab_{t_idx}##{unique}", column=t_idx)
 
         elif this_tab == func_tab:
-            draw_func_tab(input_value, name=f"func_tab_{t_idx}##{unique}", column=t_idx)
+            draw_func_tab(input_value, name=f"func_tab_{t_idx}##{unique}", disable_scroll=True, column=t_idx)
 
         elif this_tab == eval_tab_name:
             draw_eval_tab(input_value, unique=unique, enter_key_down=enter_key_down,
@@ -3854,10 +3861,11 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
     # current selection passed by the caller), falling back to the view's tint.
     trigger_tint = _dd_obj_tint(input_value, draw_state.tint)
     clicked, _ = button(drop_down_display_str, name=f"{name}_dd_trigger", show_bg=False, width=trigger_w,
-                         show_button_bg=False, shadow=False, tint=trigger_tint,
-                        z_offset=1, text_align=text_align, bg_offset=bg_offset)
+                         show_button_bg=True, shadow=True, tint=trigger_tint, height=22, disable_scroll=True,
+                        z_offset=3, text_align=text_align, bg_offset=bg_offset)
 
     if clicked:
+    
         was_open = is_open
         Melty.popover_focused_ds = None if is_open else draw_state
         is_open = Melty.popover_focused_ds is draw_state

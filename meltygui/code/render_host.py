@@ -105,6 +105,13 @@ class RenderHost(_DeepAttrMixin, dict):
         self._local_edit_frame = 0      # frame the held value was last LOCALLY edited
         self._last_return = None
         self._registered = False
+        # Draw_states that READ this host's value from OUTSIDE its own draw loop (e.g.
+        # draw_input_tab renders host.deep.parameters() inside the context menu). The
+        # host parses on a background worker in its own main window; when the value
+        # finally materializes, request_render() wakes the loop but doesn't reach the
+        # external cached subtrees - so they'd show nothing until an unrelated manual
+        # invalidation. They register here and _materialize invalidates them on change.
+        self._consumers = []
 
         # Bubble nested changes: upgrade existing contents + a non-self input tree so
         # a deep edit (held['cfg']['rank'] = 16, or a grabbed GeneralParse) marks the
@@ -125,6 +132,14 @@ class RenderHost(_DeepAttrMixin, dict):
             self._registered = True
 
         return self
+
+    def notify_on_change(self, draw_state):
+        """Register an EXTERNAL consumer's draw_state to be invalidated when this host's
+        held value next materializes/changes. Idempotent. For code that reads the host's
+        value (e.g. host.deep.parameters()) and draws it OUTSIDE the host's own draw loop
+        — without this its cached subtree never re-runs when a background parse lands."""
+        if draw_state is not None and draw_state not in self._consumers:
+            self._consumers.append(draw_state)
 
     def remove(self):
         Melty.render_hosts.pop(id(self), None)
@@ -420,6 +435,16 @@ class RenderHost(_DeepAttrMixin, dict):
         dict.clear(self)
         dict.update(self, new)
         _reinstall_children(self, self)
+        # The held value just CHANGED - invalidate any external consumer subtrees so they
+        # re-run and pick it up (the background-parse-lands-into-a-cached-context-menu
+        # case). Climb their ancestors (invalidate_up) since the consumer is usually a
+        # nested cached view that doesn't re-run unless its parents do.
+        for cds in self._consumers:
+            tid = getattr(cds, "_tile_id", None)
+            if tid is not None:
+                Melty.cache.invalidate_up(tid, force=True,
+                                          note=Note(name="RenderHost value materialized",
+                                                    tint=(0.4, 1.0, 0.6), draw_state=cds))
         request_render()
 
     def _held(self):

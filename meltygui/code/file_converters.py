@@ -624,6 +624,19 @@ def _recompile(func: types.FunctionType, source: str,
         # or the edited decoration will never reach the function the app renders.
         _redirect_function_decorations(new_wrapper, new_func, func, unwrapped)
 
+        # And carry the freshly-evaluated @render_func decoration state (closure
+        # config + instance attrs) onto the live wrapper, so editing a decorator
+        # line takes effect without rebinding anything (see _transfer_wrapper_state).
+        if new_wrapper is not None and getattr(new_wrapper, "__render_func__", False):
+            _lw = unwrapped.__globals__.get(unwrapped.__name__)
+            if not (callable(_lw) and _lw is not new_wrapper
+                    and getattr(_lw, "__render_func__", False)
+                    and inspect.unwrap(_lw) is unwrapped):
+                _lw = func if (func is not new_wrapper
+                               and getattr(func, "__render_func__", False)) else None
+            if _lw is not None:
+                _transfer_wrapper_state(_lw, new_wrapper, new_func)
+
         def _restore(u=unwrapped, prev=_prev):
             u.__code__, u.__defaults__, u.__kwdefaults__, ann, u.__doc__ = prev
             u.__annotations__ = dict(ann)
@@ -868,12 +881,21 @@ def _redirect_class_registrations(old_cls: type, new_cls: type) -> None:
 
 
 # Registries the function decorators (@render_func is_default_for / converter /
-# interrupt_source_for, @window) add to. Snapshotted before a recompile's exec
-# and restored after, so the re-run decorators don't leave a throwaway wrapper
-# registered.
+# interrupt_source_for / is_lens_for, @window) write to. Snapshotted before a
+# recompile's exec and restored after, so the re-run decorators don't leave a
+# throwaway wrapper registered. render_funcs_by_name matters too: that's what
+# RenderFuncs.<name> default handles resolve through - left pointing at the
+# throwaway, every handle resolved after one recompile would freeze on it
+# (later edits patch the original raw, never the throwaway).
 _FUNC_REGISTRY_NAMES = ("default_funcs_by_type", "default_funcs_by_name",
                         "type_interrupts", "_converters",
-                        "annotated_window_classes")
+                        "annotated_window_classes",
+                        "render_funcs_by_name", "default_lenses_by_type")
+
+# Registries KEYED BY the wrapper object (reverse of the above). The re-run
+# decorator files the fresh entry under the throwaway key; move it onto the
+# original wrapper so edited converter flags/types take effect.
+_FUNC_KEYED_REGISTRY_NAMES = ("_converter_to_type", "converter_flags")
 
 
 def _snapshot_func_registrations() -> dict:
@@ -990,6 +1012,64 @@ def _redirect_function_registrations(pre_snapshot: dict, new_wrapper,
                     reg.pop(key, None)
             elif _is_live(cur):
                 reg.pop(key, None)
+
+    # Non-registereded registries: the fresh entry sits under the throwaway key;
+    # re-key it onto the live wrapper so edited flags/types take effect.
+    for reg_name in _FUNC_KEYED_REGISTRY_NAMES:
+        reg = getattr(Melty, reg_name, None)
+        if isinstance(reg, dict) and new_wrapper in reg:
+            reg[live_wrapper] = reg.pop(new_wrapper)
+
+
+def _transfer_wrapper_state(live_wrapper, new_wrapper, new_raw) -> None:
+    """Copy decoration-time state from the freshly-exec'd wrapper onto the LIVE one.
+
+    @render_func computes its config ONCE at decoration time — o_kwargs,
+    header_defaults, wanted_params, the param-injection tables — into the
+    wrapper's closure cells and a few wrapper attributes. Hotswap patches the
+    raw function's __code__ in place and keeps the ORIGINAL wrapper canonical,
+    so without this transfer an edited decorator line
+    (`@render_func(tint=..., use_cache=...)`) or a changed signature default
+    re-runs onto the throwaway wrapper only and never reaches the wrapper the
+    app actually calls — "decorations aren't rerun".
+
+    Both wrappers are instances of the SAME core_render `wrapper` code object,
+    so their co_freevars align cell-for-cell. Copy every cell EXCEPT the
+    identity ones: a cell holding the throwaway raw (`func`) must keep pointing
+    at the live raw we patch in place, and a self-reference cell (`wrapper`)
+    must keep pointing at the live wrapper."""
+    lc = getattr(live_wrapper, "__closure__", None)
+    nc = getattr(new_wrapper, "__closure__", None)
+    if (live_wrapper.__code__ is not new_wrapper.__code__
+            or lc is None or nc is None or len(lc) != len(nc)):
+        return
+    for live_cell, new_cell in zip(lc, nc):
+        try:
+            content = new_cell.cell_contents
+        except ValueError:
+            continue
+        if content is new_raw or content is new_wrapper:
+            continue
+        try:
+            live_cell.cell_contents = content
+        except ValueError:
+            pass
+
+    # Decorator-set wrapper ATTRIBUTES (not closure): chain-dispatch handles,
+    # search flag, header defaults. Copy fresh values; drop ones the edit
+    # removed. NEVER __wrapped__ - it must keep pointing at the live raw.
+    for attr in ("_load_data", "_save_data", "_searchable",
+                 "__header_defaults__", "__params__"):
+        if hasattr(new_wrapper, attr):
+            try:
+                setattr(live_wrapper, attr, getattr(new_wrapper, attr))
+            except (AttributeError, TypeError):
+                pass
+        elif attr in ("_load_data", "_save_data", "_searchable"):
+            try:
+                delattr(live_wrapper, attr)
+            except AttributeError:
+                pass
 
 
 def _redirect_function_decorations(new_wrapper, new_raw,

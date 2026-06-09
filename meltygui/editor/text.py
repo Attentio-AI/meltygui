@@ -495,7 +495,7 @@ from src.lsd.gl_gui.view.core_views.fa_icons import FA_ICONS, FA_GLYPH_SET
 ICON_COLLECTION = FA_ICONS
 
 
-@render_func(use_cache=True, show_bg=True, shadow=True, tint=(0.77,0.66,0.20,1.00), z_offset=2, bg_offset=4, with_header=None,
+@render_func(use_cache=True, show_bg=True, shadow=True, tint=(0.77,0.66,0.20,1.00), z_offset=2, bg_offset=4, with_header=None, disable_scroll=True,
              show_name=False, selectable=False, max_height=30)
 def draw_icon_selector(input_value, draw_state=None,
                        left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
@@ -520,7 +520,7 @@ def draw_icon_selector(input_value, draw_state=None,
     coll = ICON_COLLECTION if (not cur or cur in FA_GLYPH_SET) else {cur: cur, **ICON_COLLECTION}
     name = f"{getattr(draw_state, 'name', 'icon')}_dropdown"
     changed, picked = draw_dropdown(cur, collection=coll, name=name+"drop_down", show_header=False, text_align="center",
-                                    width=max(21, draw_state.width), max_height=30, tint=draw_state.tint)
+                                    width=max(21, draw_state.width), max_height=22, tint=draw_state.tint)
     return (True, picked) if (changed and isinstance(picked, str)) else (False, cur)
 
 

@@ -239,19 +239,19 @@ def _recompile_caller(call_site, stmt_str, file_path, address):
 
 class TestClass:
     some_val = 102
-    some_other_val = 76
+    some_other_val = 20
     some = []
-    tint=(0.52,0.80,0.688)
+    tint=(0.52, 0.80, 0.688)
 
     # [tint=(0.7722222, 0.5336913466453552, 0.17589502036571503)]
-    def some_func(a=97, b=-70):
+    def some_func(a=84, b=-153):
         imgui.set_cursor_pos((0,0))
     some_line = 87
     myflot = 5
     tint = (0.52, 0.80, 0.688)
     some_tuple = (101, 1)
-    
-    
+
+
 
     list_new = [1,1,1]
     # [tint=(0.80, 0.3665185570716858, 0.11555557698011398)]
@@ -1045,8 +1045,6 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
         if external_change:
             note = Note(name="convert_in_out, chain in start", tint=(1, 0.5, 0))
             draw_state._parent.invalidate(note=note)
-            print(f"[CIOV start] ds={id(draw_state):x} fc={draw_state.frame_count} "
-                  f"gfc={Melty.frame_count} unique={unique}")
         external_change = False
         if finished and isinstance(payload, dict):
             modes_state.last_error = payload.get("error")
@@ -1056,11 +1054,15 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
 
             chain_in_error = modes_state.last_error
             external_change = True
+            # chain_in just finished on the worker - the fresh parse is now in `routed` /
+            # `last_good`, but the view_func is a SEPARATE cached subtree that
+            # run_in_background's completion never reached: its tile invalidation only
+            # climbs to shared ANCESTORS (Blit->screen.invalidate), not across into the
+            # view_func's descendant tiles. So invalidate our OWN subtree (up) - that
+            # dirties the view_func, so next frame it re-runs with the latest value
+            # instead of replaying a stale blit until some unrelated manual invalidation.
             note = Note(name="Convert in and out, chain in finished", tint=(1, 0.5, 1.0), draw_state=draw_state)
-            draw_state._parent.invalidate(note=note)
-            print(f"[CIOV finish] ds={id(draw_state):x} fc={draw_state.frame_count} "
-                  f"gfc={Melty.frame_count} unique={unique} "
-                  f"routed_keys={list(payload['routed'].keys())}")
+            Melty.cache.invalidate_up(draw_state._tile_id, force=True, note=note)
 
     out_changed, out_value = False, input_value
 
@@ -1080,11 +1082,6 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
     primary = routed.get(primary_key) if primary_key is not None else None
 
     child_kwargs['routed'] = routed
-    if external_change:
-        # edge frame: chain_in just finished -> what are we handing the user?
-        print(f"[CIOV->view] ds={id(draw_state):x} fc={draw_state.frame_count} "
-              f"primary_key={primary_key} primary={type(primary).__name__} "
-              f"is_none={primary is None}")
     edited, edited_value = view_func(input_value=primary, external_change=external_change,
                                      **child_kwargs)
     converted_edit = edited_value if (edited and edited_value is not None) else UNSET

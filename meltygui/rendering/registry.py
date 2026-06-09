@@ -34,14 +34,23 @@ class _LazyRenderFunc:
         self._fn = None
 
     def _resolve(self):
-        if self._fn is None:
-            fn = Core.melty.render_funcs_by_name.get(self.__name__)
-            if fn is None:
-                print(f"Registered render funcs: {list(Core.melty.render_funcs_by_name)}")
-                raise AttributeError(
-                    f"No @render_func named {self.__name__!r} is registered")
+        # Always re-read the registry - never serve a pinned static resolution.
+        # A recompile/hotload re-registers the name (and the reconcile pass
+        # redirected the entry point at the live wrapper, see
+        # _redirect_function_registrations); a static cache here would pin
+        # whatever object happened to be registered at first call and keep
+        # serving its stale address after later recompiles. One dict get per call
+        # is noise next to a render. _fn exists only as a fallback for a
+        # transient gap (mid-recompile) where the name is momentarily missing.
+        fn = Core.melty.render_funcs_by_name.get(self.__name__)
+        if fn is not None:
             self._fn = fn
-        return self._fn
+            return fn
+        if self._fn is not None:
+            return self._fn
+        print(f"Registered render funcs: {list(Core.melty.render_funcs_by_name)}")
+        raise AttributeError(
+            f"No @render_func named {self.__name__!r} is registered")
 
     def __call__(self, *args, **kwargs):
         return self._resolve()(*args, **kwargs)

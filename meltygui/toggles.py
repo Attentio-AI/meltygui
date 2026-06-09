@@ -149,10 +149,10 @@ class Swoosh:
                                 # within this fraction of the parent's shorter side (else stay flat)
 
 
-@window(tint=(0.82, 0.87, 0.89))
+@window(tint=(0.81, 0.88, 0.91))
 class Toggles:
 
-    @defaults(tint=(0.4, 0.17, 0.071))
+    @defaults(tint=(0.5, 0.188, 0.053))
     class TextEditor:
         enable_spell_check = False
     @defaults(tint=(0.75,0.65,0.23))
@@ -170,7 +170,7 @@ class Toggles:
     class InputHandlerToggles:
         show_debug = False
 
-    @defaults(tint=(0.06, 0.07, 0.08))
+    @defaults(tint=(0.007, 0.01, 0.017), bg_offset=-9)
     class TerminalSettings:
         # Minimum LOGICAL terminal size, in pixels - independent of the window size.
         # When a terminal window is dragged smaller than this, the emulated grid (PTY)
