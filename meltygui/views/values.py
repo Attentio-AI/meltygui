@@ -2089,7 +2089,7 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
             style_manager=None, tint=None, outline_tint=None, selected=False,
             hovered=False, pressed=False, nested_bg=False, **kwargs):
     # -- Constants ---------------------------------
-    min_value = -0.59
+    min_value = -0.31
     depth_wrap = 300
     depth_scale = 2.633
     # [tint=(1,1,1)]
@@ -2219,9 +2219,9 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
 
 
 
-@render_func(use_cache=True, selectable=False, disable_scroll=True, indent_size=0, show_bg=False, min_width=10,
+@render_func(use_cache=True, selectable=False, disable_scroll=True, indent_size=0, show_bg=False, min_width=5,
              min_height=10, wrap=True)
-def button(input_value="", width=10, height=10, draw_state=None, alpha=1.0, left_mouse_held=False, shadow=True, left_mouse_down=False,
+def button(input_value="", width=5, height=10, draw_state=None, alpha=1.0, left_mouse_held=False, shadow=True, left_mouse_down=False,
            color=(0.533, 0.068, 0.5), highlight_hovered=True, hovered=False, style_manager=None, show_button_bg=True,
            factor=1.0, tint_value=0.32, text_value=1.023, saturation=0.8, text_saturation=0.4, text_align="center",
            search_match=False, search_current=False, tint=None, rounding=None):
@@ -2297,7 +2297,7 @@ def button(input_value="", width=10, height=10, draw_state=None, alpha=1.0, left
                            draw_state.abs_top + (height - min_size[1]) / 2.0 - 1,
                            imgui.get_color_u32_rgba(*text_color[:3], 1.0), button_txt)
     else:
-        draw_list.add_text(draw_state.abs_left + (width - min_size[0]) / 2.0,
+        draw_list.add_text(draw_state.abs_left + (width - min_size[0]) / 2.0 + 2,
                            draw_state.abs_top + (height - min_size[1]) / 2.0 - 1,
                            imgui.get_color_u32_rgba(*text_color[:3], 1.0), button_txt)
 
@@ -3539,18 +3539,18 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0] - 1, imgui.get_cursor_screen_pos()[1] - 18))
     if up_key_pressed:
         print("Up key pressed")
-
+        
     fa_up_arrow = ""
     fa_down_arrow = ""
     if input_value._parent.id is not None:
-        if button(fa_up_arrow, height=30)[0] or up_key_pressed:
+        if button(fa_up_arrow, height=50)[0] or up_key_pressed:
             input_value.context_menu_offset += 1
             Core.melty.cache.invalidate_up(draw_state._tile_id, max_depth=5)
             Core.melty.cache.invalidate_up(input_value._tile_id, max_depth=5)
 
         imgui.same_line()
     if input_value.context_menu_offset > 0:
-        if button(fa_down_arrow, height=30)[0] or down_key_pressed:
+        if button(fa_down_arrow, height=50)[0] or down_key_pressed:
             input_value.context_menu_offset = max(0, input_value.context_menu_offset - 1)
             Core.melty.cache.invalidate_up(draw_state._tile_id, max_depth=5)
             Core.melty.cache.invalidate_up(input_value._tile_id, max_depth=5)
@@ -3655,7 +3655,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
         class_tab = f" {class_name}"
 
     # Static tint colors for the fixed Config / Info tabs; remaining tabs use the neutral grey.
-    config_tint = (0.0, 0.2, 0.5) 
+    config_tint = (0.12, 0.38, 0.772) 
     info_tint = (0.545, 0.469, 0.012) 
 
     tab_names = []
@@ -4346,6 +4346,16 @@ def _dd_menu_row(input_value, draw_state, text_align="right", path_prefix=(),
     sub_open = open_path[:len(row_path)] == row_path
     is_cursor = cursor_path == row_path
     tag = row_tags.get(value) if row_tags else None
+
+    # [TEMP DEBUG] record AC-menu row executions
+    if not path_prefix and getattr(root_state, '_kbd_mode', None) is not None:
+        _rr = getattr(Melty, '_rowrun_trace', None)
+        if _rr is None:
+            _rr = Melty._rowrun_trace = []
+        _rr.append({'frame': Melty.frame_count, 'label': str(label)[:24],
+                    'is_cursor': is_cursor, 'kbd_mode': getattr(root_state, '_kbd_mode', None),
+                    'cursor_path': list(cursor_path)})
+        del _rr[:-120]
 
     hovered = draw_state._bounding_hovered
     # Colour the row by its value's embedded tint (e.g. a Lora's .tint), falling

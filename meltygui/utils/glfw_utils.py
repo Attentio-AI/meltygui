@@ -480,7 +480,7 @@ def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
                       max_str_len=200, max_items=5, max_depth=2, max_output=200,
                       exception=None, e=None, section=None, group=None, file=None,
                       print_args=True,
-                      ignore_functions=("wrapper", "draw_any", "draw_inner_main")):
+                      ignore_functions=("wrapper", "draw_any", "draw_state._view_func", "draw_inner_main")):
     """
     Print a stack trace with optional variable watching.
 

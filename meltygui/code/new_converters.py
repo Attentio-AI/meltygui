@@ -793,7 +793,7 @@ def compute_height(draw_state):
 
 
 @render_func(use_cache=True, show_bg=False, selectable=False, disable_scroll=True,
-             shadow=False, indent_size=0, with_footer=None, fill_height=True)
+             shadow=False, indent_size=0, with_footer=None, fill_height=False)
 def draw_with_view_funcs(input_value, view_funcs, route, routed, route_to_kwargs,
                          tab_state: TabState, unique, column_widths=None,
                          draw=False, draw_state=None, **kwargs):
@@ -883,7 +883,7 @@ def draw_with_view_funcs(input_value, view_funcs, route, routed, route_to_kwargs
 
 
 @render_func(use_cache=True, show_bg=False, selectable=False, disable_scroll=True,
-             shadow=False, indent_size=0, with_footer=None, fill_height=True, temp=True)
+             shadow=False, indent_size=0, with_footer=None, fill_height=False, temp=True)
 def convert_in_and_out(input_value, draw_state, view_func=None, chain_in=None, chain_out=None,
                        run_chain_kwargs=None, route=None, modes_state: ModesState = None,
                        external_change=False, child_kwargs=None, unique=0, **kwargs):

@@ -30,7 +30,8 @@ def _hex(h):
 COLORS = {
     'default': _hex('#a9b7c6'),  # Token (from Darcula)
     'keyword': _hex('#cc7832'),  # Keyword
-    'keyword_const': _hex('#cc7832'),  # Keyword.Constant (True/False/None)
+    'keyword_const': _hex('#cc7832'),  # Keyword.Constant (None)
+    'bool': _hex('#cc7832'),  # True/False - own key so color highlighting can target them
     'operator_word': _hex('#cc7832'),  # Operator.Word (and, or, not, in, is)
     'builtin_pseudo': _hex('#94558d'),  # Name.Builtin.Pseudo (self, cls)
     'decorator': _hex('#bbb529'),  # Name.Decorator
@@ -38,6 +39,7 @@ COLORS = {
     'string_doc': _hex('#629755'),  # String.Doc (docstrings)
     'comment': _hex('#808080'),  # Comment
     'number': _hex('#6897bb'),  # Number
+    'color3': _hex('#6897bb'),  # merged float 3-tuple `(r, g, b)` (for text color)
     'icon': _hex('#56b6c2'),  # Font Awesome / Pango glyph (cyan, distinct from strings)
 }
 
@@ -465,6 +467,19 @@ DEFAULT_TOKEN_VIEWS = None
 #    char and reports the edit, so it round-trips/saves like a keystroke. The
 #    visual-column map (vcols) keeps it ONE source character for caret/click even
 #    though it spans char_width cells.
+#    With `"whole_token": True` the renderer is called ONCE per matched token
+#    (e.g. "True", "3.14") instead of per char - input_value is the full token
+#    text and a changed return splices the whole token. Two layouts:
+#      REPLACE (default): the widget IS the token - exactly token-width
+#      (len(token) cells, 1 cell per source char), it sits in the text grid
+#      like the text it replaces; vcols stays identity. char_width is then
+#      only the inline flag.
+#      ACCESSORY (`"lead_cells": N`): the editor draws the token by itself,
+#      normally - fully editable as text - shifted N cells right, and the
+#      renderer gets only the N-cell lead area to the text's LEFT (e.g. the
+#      color3 swatch). The line grows by N cells; vcols carries the shift so
+#      caret/click/selection stay exact. This is THE pattern for widgets that
+#      ride beside the text instead of replacing it.
 #  - type key → matched (isinstance) against nodes in the routed code_tree
 #    (Conditional/Loop/...); positioned by the node's `.span`. With `char_width=None`
 #    it's a non-inline OVERLAY drawing callback (floats over/by the code, doesn't
@@ -482,30 +497,224 @@ ICON_COLLECTION = FA_ICONS
 
 @render_func(use_cache=True, show_bg=True, shadow=True, tint=(0.77,0.66,0.20,1.00), z_offset=2, bg_offset=4, with_header=None,
              show_name=False, selectable=False, max_height=30)
-def draw_icon_selector(input_value, draw_state=None, **kwargs):
+def draw_icon_selector(input_value, draw_state=None,
+                       left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
+                       **kwargs):
     """Inline Font Awesome icon picker — the reference token_views inline renderer.
 
     Shaped like every other renderer: `(input_value) -> (changed, icon_str)`. It
     draws an inline dropdown (core_view's `draw_dropdown`) whose trigger shows the
     current glyph; picking a different glyph returns (True, new_glyph). Wire it via
     `token_views={"icon": {"renderer": draw_icon_selector, "char_width": N}}` and
-    draw_text splices the chosen glyph back into the source on change."""
+    draw_text splices the chosen glyph back into the source on change.
+
+    The left_mouse_* params are declared but never read: declaring them subscribes
+    this view to those events, so a press that starts on the widget resolves to IT
+    (topmost subscriber, blocking) and the InputHandler latches the whole drag
+    here — the surrounding editor never sees the gesture, so it won't move the
+    caret or grow a selection. imgui drives the actual widget from raw input."""
     from src.lsd.gl_gui.view.core_views.new_core_view import draw_dropdown
     cur = input_value if isinstance(input_value, str) else ""
     # Always include the current glyph so the dropdown can display/round-trip it
     # even if it isn't one of the defaults.
     coll = ICON_COLLECTION if (not cur or cur in FA_GLYPH_SET) else {cur: cur, **ICON_COLLECTION}
     name = f"{getattr(draw_state, 'name', 'icon')}_dropdown"
-    changed, picked = draw_dropdown(cur, collection=coll, name=name, show_header=False, text_align="center",
-                                    width=max(18, draw_state.width), max_height=30, tint=draw_state.tint)
+    changed, picked = draw_dropdown(cur, collection=coll, name=name+"drop_down", show_header=False, text_align="center",
+                                    width=max(21, draw_state.width), max_height=30, tint=draw_state.tint)
     return (True, picked) if (changed and isinstance(picked, str)) else (False, cur)
 
 
+@render_func(use_cache=True, show_bg=True, shadow=True, with_header=None, tint=(0.8, 0.318, 0.04),
+             show_name=False, selectable=False, z_offset=2, bg_offset=3)
+def draw_bool_token(input_value, draw_state=None, **kwargs):
+    """Inline True/False word — whole-token token_views renderer for 'bool'
+    tokens. Renders the literal exactly as the editor would (same font, grid
+    position and keyword color) so it reads as code. Deliberately NO imgui item
+    and NO left_mouse_* subscription: single clicks and drags fall through to
+    the editor, so the caret lands anywhere inside the word and selections
+    sweep it like plain text. A DOUBLE-click flips the literal — hover shows an
+    underline as the hint. (Single-click toggling proved too easy to trip.)"""
+    word = input_value if input_value in ("True", "False") else "True"
+    x, y = imgui.get_cursor_screen_pos()
+    w = max(1.0, draw_state.width)
+    h = max(1.0, draw_state.height)
+    io = imgui.get_io()
+    hovered = x <= io.mouse_pos.x < x + w and y <= io.mouse_pos.y < y + h
+    draw_list = imgui.get_window_draw_list()
+    color = COLORS['bool']
+    if hovered:
+        draw_list.add_line(x, y + h - 1.5, x + w, y + h - 1.5, color, 1.0)
+    draw_list.add_text(x, y, color, word)
+    if hovered and imgui.is_mouse_double_clicked(0):
+        return True, ("False" if word == "True" else "True")
+    return False, input_value
+
+
+def _parse_number_token(s):
+    """Classify a numeric literal token. Returns (kind, value, fmt_back, disp)
+    where kind is 'int' | 'float' | None (unparseable — render as plain text),
+    fmt_back turns the dragged value back into source text matching the
+    literal's original shape, and disp is the drag widget's printf format:
+    - hex/oct/bin ints keep their base
+    - e-notation floats round-trip through '%g' to keep the exponent form
+    - plain floats keep the original number of decimal places (min 1, max 6)
+    The token may carry a merged unary sign (`-5`, `+0.5` — see tokenize), so
+    base-prefix detection looks past it; int()/float()/hex() all take signs."""
+    low = s.lower()
+    body = low[1:] if low[:1] in '+-' else low
+    try:
+        if body.startswith(('0x', '0o', '0b')):
+            return 'int', int(s, 0), {'0x': hex, '0o': oct, '0b': bin}[body[:2]], '%d'
+        if 'e' in body:
+            return 'float', float(s), lambda v: '%g' % v, '%g'
+        if '.' in s:
+            prec = min(6, max(1, len(s.split('.', 1)[1])))
+            return 'float', float(s), lambda v, p=prec: f"{v:.{p}f}", f'%.{prec}f'
+        return 'int', int(s), str, '%d'
+    except (ValueError, KeyError):
+        return None, None, None, None
+
+
+@render_func(use_cache=True, show_bg=False, shadow=False, with_header=None, z_offset=3,
+             show_name=False, selectable=False, tint=(0.0, 0.2, 0.552), wrap=True)
+def draw_number_token(input_value, draw_state=None,
+                      left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
+                      **kwargs):
+    """Inline drag widget for a numeric literal — whole-token token_views renderer
+    for 'number' tokens. Ints get drag_int, floats drag_float (unbounded: min=max=0);
+    the dragged value is formatted back preserving the literal's shape (base,
+    e-notation, decimal places) and spliced into the source like a keystroke.
+    A unary sign is merged into the token by tokenize(), so the widget owns it
+    and a drag crosses zero in one gesture. In binary-minus contexts (`a - 5`)
+    the widget sees only the magnitude; dragging it negative splices `a - -1`,
+    which is still valid Python.
+    left_mouse_* are declared (never read) to win the event latch over the editor —
+    a drag that starts on the widget latches here, so the editor doesn't grow a
+    text selection while a value is being dragged. See draw_icon_selector."""
+    from src.lsd.gl_gui.utils.custom_views import (push_style_var, pop_style_var,
+                                                   push_style_color, pop_style_color)
+    s = input_value if isinstance(input_value, str) else str(input_value)
+    kind, val, fmt_back, disp = _parse_number_token(s)
+    if kind is None:
+        imgui.text(s)
+        return False, s
+
+    # The call site hands us pad_px of slack per side (the view - or its clip -
+    # is that much wider than the token cells), so the frame fills the digits.
+    # Editor-look colors: number-blue lettering on a dark frame, like the bool
+    # word, with only a subtle hover/active lift instead of imgui's bright blue.
+    push_style_var(imgui.STYLE_FRAME_PADDING, (0, 1))
+    push_style_color(imgui.COLOR_TEXT, 0.41, 0.59, 0.73)              # number blue
+    push_style_color(imgui.COLOR_FRAME_BACKGROUND, 0.10, 0.11, 0.13)
+    push_style_color(imgui.COLOR_FRAME_BACKGROUND_HOVERED, 0.14, 0.16, 0.19)
+    push_style_color(imgui.COLOR_FRAME_BACKGROUND_ACTIVE, 0.17, 0.19, 0.23)
+    imgui.set_next_item_width(draw_state.width)
+    if kind == 'int':
+        speed = max(0.2, abs(val) * 0.01)
+        changed, new = imgui.drag_int("##num_tv", val, change_speed=speed,
+                                      min_value=0, max_value=0)
+    else:
+        speed = max(0.01, abs(val) * 0.005)
+        changed, new = imgui.drag_float("##num_tv", val, change_speed=speed,
+                                        min_value=0, max_value=0, format=disp)
+    pop_style_color(4)
+    pop_style_var()
+    if changed and new != val:
+        return True, fmt_back(new)
+    return False, s
+
+
+def _fmt_color_channel(v):
+    """Format a 0..1 channel back into source keeping it a FLOAT literal (a bare
+    `1` would break the all-floats tuple pattern and unmerge the token)."""
+    s = f"{max(0.0, min(1.0, v)):.3f}".rstrip('0')
+    return s + '0' if s.endswith('.') else s
+
+
+@render_func(use_cache=True, show_bg=False, shadow=False, with_header=None,
+             show_name=False, selectable=False, z_offset=3)
+def draw_color3_token(input_value, draw_state=None,
+                      left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
+                      **kwargs):
+    """Inline color swatch for a float 3-tuple — ACCESSORY (lead_cells) renderer
+    for 'color3' tokens (`(1.0, 0.5, 0.2)` merged by tokenize). The editor draws
+    the tuple TEXT itself, normally — fully editable, caret/selection like any
+    code — and this widget only gets the lead area to its LEFT, where it draws a
+    swatch. Clicking the swatch opens the MELTY color-picker popover (same
+    pattern as draw_tuple's swatch: popover_focused_ds identity is the open
+    state, the picker window is latched — drawn every frame with closed=
+    toggled — anchored under the swatch, dismissed by outside click / Esc).
+    NEVER imgui's built-in popup: melty windowing has diverged (shadows,
+    z-order, cached render tiles) and they don't compose. Edits splice the
+    reformatted tuple back; channels stay float literals so the token re-merges.
+    Draws nothing if the tuple doesn't parse (the text is still there).
+    left_mouse_* declared (never read) for the event latch — see draw_icon_selector."""
+    from src.lsd.gl_gui.view.mode import Mode
+    from src.lsd.gl_gui.view.core_views.new_core_view import draw_color_picker
+    s = input_value if isinstance(input_value, str) else str(input_value)
+    try:
+        r, g, b = (float(p) for p in s.strip('()').split(','))
+    except ValueError:
+        return False, s
+
+    # Square-ish swatch inset in the lead area, vertically centered on the line;
+    # the extra cell width to its right is the gap before the text.
+    _sw = max(6.0, min(draw_state.width - 3, draw_state.height - 4))
+    _cx, _cy = imgui.get_cursor_screen_pos()
+    imgui.set_cursor_screen_pos((_cx, _cy + (draw_state.height - _sw) * 0.5))
+    is_open = Melty.popover_focused_ds is draw_state
+    if imgui.color_button("##color3_tv", r, g, b, 1.0,
+                          flags=imgui.COLOR_EDIT_NO_TOOLTIP,
+                          width=_sw, height=_sw):
+        Melty.popover_focused_ds = None if is_open else draw_state
+        if not is_open:
+            Melty._popover_open_frame = Melty.frame_count  # grace the opening click
+        request_render()
+    is_open = Melty.popover_focused_ds is draw_state  # reflect the close this frame
+
+    # Fixed-size popover (closable windows can't auto-resize, the picker body is
+    # raw imgui the framework can't measure): SV square + 3 channel rows + title.
+    picker_h = 180 + 14 + 3 * 26 + 26
+    color_changed, new_color = draw_color_picker(
+        (r, g, b), name=f"{draw_state.name}_picker", closed=not is_open,
+        window_pos=(0, 10), parent_window=draw_state, width=216, height=picker_h,
+        mode=Mode.POPOVER)
+    if is_open:
+        if any(k == glfw.KEY_ESCAPE for k, _ in Melty.frame_key_events):
+            Melty.popover_focused_ds = None
+            request_render()
+        # Keep re-rendering while a picker slider/square is being dragged so the
+        # live imgui interaction updates each frame despite the editor's cache.
+        if Melty.imgui_any_item_active or imgui.is_mouse_down(0):
+            Melty.cache.invalidate_up(draw_state._tile_id, max_depth=10, force=True)
+            request_render()
+        if color_changed:
+            return True, (f"({_fmt_color_channel(new_color[0])}, "
+                          f"{_fmt_color_channel(new_color[1])}, "
+                          f"{_fmt_color_channel(new_color[2])})")
+    return False, s
+
+
 # The default callback-widget set: when draw_text is called with no token_views,
-# Font Awesome glyphs ("icon" tokens) become inline icon-picker dropdowns. Add
-# more entries here to make other token kinds interactive by default.
+# Font Awesome glyphs ("icon" tokens) become inline icon-picker dropdowns,
+# True/False become double-click-to-toggle words, numeric literals become drag
+# widgets, and float 3-tuples become color swatches. Add more entries here to
+# make other token kinds interactive by default.
+# For whole_token entries char_width is also the "this is inline" flag - the
+# widget REPLACES the text at exactly token-width (len(token) cells), unless
+# lead_cells=N makes it an ACCESSORY: the text draws normally (shifted N cells
+# right) and the widget gets only the N-cell lead area beside it. owns_mouse
+# marks widgets that consume clicks (they subscribe to the left_mouse_*
+# events); for REPLACE widgets draw_text then emulates the caret placement a
+# text click would have given. pad_px widens a REPLACE widget's view N px per
+# side past the token cells (visual breathing room; the grid stays exact).
 DEFAULT_TOKEN_VIEWS = {
     "icon": {"renderer": draw_icon_selector, "char_width": 3},
+    "bool": {"renderer": draw_bool_token, "char_width": 1, "whole_token": True},
+    "number": {"renderer": draw_number_token, "char_width": 1, "whole_token": True,
+               "owns_mouse": True, "pad_px": 2},
+    "color3": {"renderer": draw_color3_token, "char_width": 1, "whole_token": True,
+               "owns_mouse": True, "lead_cells": 2},
 }
 
 
@@ -567,8 +776,9 @@ def _split_icons(s, base):
         yield s[start:], ('icon' if run_icon else base)
 
 
-def tokenize(text):
-    """Yields (text, color_key) tuples with Darcula-style token categories."""
+def _tokenize_raw(text):
+    """Yields (text, color_key) tuples with Darcula-style token categories.
+    Raw pass — see tokenize() below for the unary-sign merge."""
     i = 0
     n = len(text)
 
@@ -657,7 +867,7 @@ def tokenize(text):
             word = text[i:end]
 
             if word in KEYWORD_CONSTS:
-                yield word, 'keyword_const'
+                yield word, 'bool' if word in ('True', 'False') else 'keyword_const'
             elif word in OPERATOR_WORDS:
                 yield word, 'operator_word'
             elif word in KEYWORDS:
@@ -694,6 +904,123 @@ def tokenize(text):
         else:
             yield text[i], 'icon' if _is_icon_char(text[i]) else 'default'
             i += 1
+
+
+def _unary_sign_context(prev):
+    """True when a `+`/`-` in front of a number literal reads as a SIGN rather
+    than binary arithmetic, judged by the last significant token: nothing yet,
+    a keyword (`return -5`), a word operator (`x and -5`), or a single
+    operator/punctuation char (`= ( [ { , : ;` …). Identifiers, literals and
+    closing brackets mean binary (`a - 5`, `5 - 3`, `f() - 5`)."""
+    if prev is None:
+        return True
+    tok, kind = prev
+    if kind in ('keyword', 'operator_word'):
+        return True
+    if kind == 'default':
+        # 'default' covers identifiers AND single operator/punctuation chars.
+        return len(tok) == 1 and tok in '=+-*/%<>&|^~,([{:;@'
+    return False
+
+
+def _merge_unary_signs(stream):
+    """Merge pass: a unary `+`/`-` attached directly to a numeric literal is
+    merged INTO the 'number' token (`-5`, `+0.5`) when the preceding
+    significant token says it's a sign, not binary arithmetic. The inline number
+    drag widget then owns the sign, so a drag can cross zero in one gesture.
+    Whitespace arrives as its own raw tokens, so a held sign only merges when
+    the digits follow immediately (`- 5` stays two tokens)."""
+    prev = None   # last significant (non-whitespace, non-comment) token
+    held = None   # '+'/'-' waiting to see if a number follows it
+    for tok, kind in stream:
+        if held is not None:
+            if kind == 'number':
+                merged = (held[0] + tok, 'number')
+                yield merged
+                prev = merged
+                held = None
+                continue
+            yield held
+            prev = held
+            held = None
+        if kind == 'default' and tok in ('+', '-') and _unary_sign_context(prev):
+            held = (tok, kind)
+            continue
+        yield tok, kind
+        if not tok.isspace() and kind != 'comment':
+            prev = (tok, kind)
+    if held is not None:
+        yield held
+
+
+def _is_float_literal(tok):
+    """True for a decimal float literal token (after sign merge): has a '.' or
+    exponent, and isn't a hex/oct/bin int (whose digits can contain 'e')."""
+    t = tok.lstrip('+-').lower()
+    return not t.startswith(('0x', '0o', '0b')) and ('.' in t or 'e' in t)
+
+
+def _merge_color_tuples(stream):
+    """Merge pass: `(f, f, f)` — an open paren, exactly three FLOAT literals
+    separated by commas (spaces allowed), closed on the same line — becomes one
+    'color3' token, rendered by the inline color-picker widget. Only fires in
+    tuple-literal positions (`x = (...)`, `tint=(...)`, `return (...)`), judged
+    by the token before the '(' via _unary_sign_context — an identifier or
+    closing bracket there means a CALL's argument list (`f(0.1, 0.5, 1.0)`),
+    which stays untouched."""
+    prev = None  # last significant token, for the call-vs-tuple judgement
+    buf = []     # tokens collected since a candidate '('
+    nfloats = 0
+    expect = None  # 'num' | 'comma' - alternates while buffering
+    for tok, kind in stream:
+        while True:
+            if not buf:
+                if tok == '(' and kind == 'default' and _unary_sign_context(prev):
+                    buf = [(tok, kind)]
+                    nfloats, expect = 0, 'num'
+                else:
+                    yield tok, kind
+                    if not tok.isspace() and kind != 'comment':
+                        prev = (tok, kind)
+                break
+            if tok == ' ':
+                buf.append((tok, kind))
+                break
+            if kind == 'number' and expect == 'num' and nfloats < 3 and _is_float_literal(tok):
+                buf.append((tok, kind))
+                nfloats += 1
+                expect = 'comma'
+                break
+            if tok == ',' and kind == 'default' and expect == 'comma' and nfloats < 3:
+                buf.append((tok, kind))
+                expect = 'num'
+                break
+            if tok == ')' and kind == 'default' and expect == 'comma' and nfloats == 3:
+                buf.append((tok, kind))
+                merged = (''.join(t for t, _ in buf), 'color3')
+                yield merged
+                prev = merged
+                buf = []
+                break
+            # Failed match: flush the buffer and re-process this token from
+            # scratch (it may itself open a new candidate '(').
+            for b in buf:
+                yield b
+                if not b[0].isspace():
+                    prev = b
+            buf = []
+            continue
+    for b in buf:
+        yield b
+
+
+def tokenize(text):
+    """Yields (text, color_key) tuples with Darcula-style token categories.
+
+    Full pipeline: raw scan → unary-sign merge (`-5` is one number token, so
+    the drag widget can cross zero) → color-tuple merge (`(1.0, 0.5, 0.2)` is
+    one 'color3' token, rendered as an inline color picker)."""
+    return _merge_color_tuples(_merge_unary_signs(_tokenize_raw(text)))
 
 
 def _index_to_line_col(text, index):
@@ -737,9 +1064,16 @@ def _build_vcols(text, tokens, token_views):
     char_width-N inline widget thus reserves N cells visually while staying ONE
     source character for editing/caret. Returns None when no inline views apply
     (the fast path: 1 char == 1 cell everywhere)."""
+    # Whole-token widgets are exactly token-width (1 cell per token char), so
+    # they don't disturb the column map - except lead_cells accessory views,
+    # which shift the token's text right by the lead. Only per-char views with
+    # a widened char_width and lead_cells views need vcols at all.
+    def _bends_grid(v):
+        if not isinstance(v, dict) or v.get("char_width") is None:
+            return False
+        return bool(v.get("lead_cells")) if v.get("whole_token") else True
     if not token_views or not any(
-            isinstance(k, str) and isinstance(v, dict) and v.get("char_width") is not None
-            for k, v in token_views.items()):
+            isinstance(k, str) and _bends_grid(v) for k, v in token_views.items()):
         return None
     n = len(text)
     vcols = [0.0] * (n + 1)
@@ -748,6 +1082,12 @@ def _build_vcols(text, tokens, token_views):
     for tok, ck in tokens:
         view = token_views.get(ck) if isinstance(ck, str) else None
         cw = view.get("char_width") if (view and view.get("char_width") is not None) else None
+        if cw is not None and view.get("whole_token"):
+            # Token text is 1 cell per char; an accessory view's lead_cells
+            # shift where the text starts (the widget takes in the lead area).
+            if tok and '\n' not in tok:
+                col += view.get("lead_cells", 0)
+            cw = None
         for ch in tok:
             if i >= n:
                 break
@@ -1433,6 +1773,23 @@ def draw_text(input_value: str,
         shift = io.key_shift
         ctrl = io.key_ctrl
 
+        # [TEMP DEBUG] record arrow-key frames while focused to diagnose AC nav
+        if pressed(glfw.KEY_UP) or pressed(glfw.KEY_DOWN):
+            _dbg = getattr(Melty, '_ac_debug', None)
+            if _dbg is None:
+                _dbg = Melty._ac_debug = []
+            _dbg.append({
+                'frame': Melty.frame_count,
+                'key': 'UP' if pressed(glfw.KEY_UP) else 'DOWN',
+                'ac_enabled': (not single_line and not is_search_box),
+                'ac_open': getattr(ds, '_ac_open', None),
+                'ncands': len(getattr(ds, '_ac_candidates', None) or []),
+                'ac_index': getattr(ds, '_ac_index', None),
+                'focused_is_self': Melty.text_focused_ds is ds,
+                'name': getattr(ds, 'name', None),
+            })
+            del _dbg[:-40]
+
         # --- Code-suggestion popup: navigation & accept ---
         # Real editors don't suggest in the find box or inline single-line
         # value fields, so gate that out. (ac_state was set up at the top.)
@@ -1614,6 +1971,9 @@ def draw_text(input_value: str,
 
         # --- Up ---
         if pressed(glfw.KEY_UP):
+            _dbg = getattr(Melty, '_ac_debug', None)
+            if _dbg:
+                _dbg[-1]['cursor_moved'] = True
             ds.text_cursor_blink_time = time.time()
             line, col = _index_to_line_col(text, ds.text_cursor_pos)
             if line > 0:
@@ -1628,6 +1988,9 @@ def draw_text(input_value: str,
 
         # --- Down ---
         if pressed(glfw.KEY_DOWN):
+            _dbg = getattr(Melty, '_ac_debug', None)
+            if _dbg:
+                _dbg[-1]['cursor_moved'] = True
             ds.text_cursor_blink_time = time.time()
             line, col = _index_to_line_col(text, ds.text_cursor_pos)
             total_lines = text.count('\n')
@@ -2007,6 +2370,7 @@ def draw_text(input_value: str,
                        # order stays stable frame-to-frame (so each view keeps its
                        # state), unlike source/line position which shifts on edits.
     _tv_edit = None    # (src_index, src_len, new_value) from an inline view that changed
+    _tv_click = None   # (src_index, src_len, right_half) - press landed on a whole-token widget
     for token, color_key in tokens:
         color = COLORS[color_key]
         # Inline token view: a str-keyed token_views entry with a char_width draws
@@ -2015,6 +2379,58 @@ def draw_text(input_value: str,
         # overlay pass after the body.
         _view = token_views.get(color_key) if token_views else None
         _inline = _view is not None and _view.get("char_width") is not None
+        # Whole-token inline view: one widget for the entire token (e.g. a
+        # clickable "True" word, a drag for "3.14") rather than one per char.
+        # These tokens never contain '\n', so no segment loop is needed. Two
+        # layouts, picked by the spec's lead_cells:
+        #  - REPLACE (lead_cells absent): the widget IS the token - exactly
+        #    len(token) cells, identity vcols, sits in the grid like the
+        #    literal it replaces.
+        #  - ACCESSORY (lead_cells=N): the editor draws the token TEXT itself,
+        #    normally (same color/grid, fully editable as text), shifted right
+        #    by N cells; the widget gets only the N-cell lead area to its left
+        #    (e.g. a color swatch). vcols reflects the shift for caret/click.
+        # Either way a changed return splices the whole token.
+        if _inline and _view.get("whole_token") and token and '\n' not in token:
+            _lead = _view.get("lead_cells", 0)
+            _cells = _lead + len(token)
+            if y + line_px >= rect_min_y and y <= rect_max_y:
+                _name = f"{ds.name}_tv{_tv_idx}"
+                _tv_idx += 1
+                _save_cur = imgui.get_cursor_screen_pos()
+                # pad_px widens a REPLACE widget's view - and so its clip rect -
+                # a few px past the token cells on both sides, giving the frame
+                # breathing room around the glyphs. (Expanding inside the
+                # renderer doesn't work: drawing clips at the view boundary.)
+                # The cells the token reserves in the grid stay exact.
+                _pad = 0 if _lead else _view.get("pad_px", 0)
+                imgui.set_cursor_screen_pos((x - _pad, y))
+                _w = (_lead * char_w) if _lead else (len(token) * char_w + 2 * _pad)
+                try:
+                    _res = _view["renderer"](token, width=_w, height=line_px, name=_name)
+                except Exception:
+                    _res = None
+                imgui.set_cursor_screen_pos(_save_cur)
+                if _lead:
+                    draw_list.add_text(x + _lead * char_w, y, color, token)
+                if (isinstance(_res, tuple) and len(_res) >= 2 and _res[0]
+                        and isinstance(_res[1], str) and _res[1] != token):
+                    _tv_edit = (src_i, len(token), _res[1])
+                # owns_mouse REPLACE widgets consume the melty mouse events, so
+                # a press on them never reaches the editor's click handling -
+                # read the raw press and place the caret beside the literal
+                # instead. Replace REPLACE widgets (bool) and ACCESSORY widgets
+                # skip this: the toggle takes normal editor clicks, and a press
+                # on an accessory (opening its popover) shouldn't move the caret.
+                if (_view.get("owns_mouse") and not _lead
+                        and imgui.is_mouse_clicked(0)
+                        and x <= io.mouse_pos.x < x + _cells * char_w
+                        and y <= io.mouse_pos.y < y + line_px):
+                    _tv_click = (src_i, len(token),
+                                 io.mouse_pos.x >= x + _cells * char_w * 0.5)
+            x += _cells * char_w
+            src_i += len(token)
+            continue
         start = 0
         while True:
             nl = token.find('\n', start)
@@ -2072,6 +2488,20 @@ def draw_text(input_value: str,
         ds.text_cursor_pos = _es + len(_ev)
         ds.text_selection_start = ds.text_selection_end = ds.text_cursor_pos
         changed = True
+
+    # A press on a whole-token widget also places the editor caret beside the
+    # literal: left half → before it, right half → after it - and focuses the
+    # editor, so typing after a widget interaction feels like editing text.
+    # Applied after the splice so it overrides its caret-at-end default; if the
+    # same widget changed the value (bool toggle), use the new token's length.
+    if _tv_click is not None:
+        _cs, _cl, _right = _tv_click
+        if _tv_edit is not None and _tv_edit[0] == _cs:
+            _cl = len(_tv_edit[2])
+        Melty.text_focused_ds = ds
+        ds.text_cursor_pos = _cs + _cl if _right else _cs
+        ds.text_selection_start = ds.text_selection_end = ds.text_cursor_pos
+        ds.text_cursor_blink_time = time.time()
 
     # Token views keyed by libcST node TYPE (e.g. Conditional) - overlay pass,
     # positioned by each node's span. Runs after the main text so widgets paint
@@ -2244,6 +2674,22 @@ def draw_text(input_value: str,
                 if _k.startswith(_pref):
                     ds._ac_menu_tile = _k
                     break
+    # [TEMP DEBUG] record popup repaint state
+    if _ac_show:
+        _rt = getattr(Melty, '_repaint_trace', None)
+        if _rt is None:
+            _rt = Melty._repaint_trace = []
+        _mt2 = getattr(ds, '_ac_menu_tile', None)
+        _rt.append({
+            'frame': Melty.frame_count,
+            'menu_tile': _mt2,
+            'tile_in_cache': (_mt2 in Melty.cache._tiles) if _mt2 else None,
+            'cursor_path': list(ac_state.cursor_path) if isinstance(ac_state.cursor_path, tuple) else ac_state.cursor_path,
+            'kbd_mode': getattr(ac_state, '_kbd_mode', None),
+            'ac_index': getattr(ds, '_ac_index', None),
+        })
+        del _rt[:-60]
+
     # Hover may have moved the menu's cursor (when the mouse is over it); mirror
     # that back into our selection index so Enter/arrows continue from the hovered row.
     if _ac_show and not ac_state._kbd_mode:

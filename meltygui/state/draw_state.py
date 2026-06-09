@@ -789,8 +789,6 @@ class DrawState(DictConversion):
 
     @property
     def abs_content_height(self):
-        if self.frame_count < 2:
-            return 0
 
         content_height = 0
         f = Core.melty.frame_count
@@ -1377,9 +1375,7 @@ class DrawState(DictConversion):
 
     @property
     def abs_top(self):
-        # return int(self.abs_top_true)
-        # if self.pin_to_clip:
-        #     return self._abs_top()
+
         f = Core.melty.frame_count
         _, ancestor_sy = self._ancestor_scroll()
         key = (f, self.top_offset, self.window_pos,

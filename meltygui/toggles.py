@@ -152,7 +152,7 @@ class Swoosh:
 @window(tint=(0.82, 0.87, 0.89))
 class Toggles:
 
-    @defaults(tint=(1.00, 0.59, 0.00))
+    @defaults(tint=(0.4, 0.17, 0.071))
     class TextEditor:
         enable_spell_check = False
     @defaults(tint=(0.75,0.65,0.23))
@@ -160,17 +160,17 @@ class Toggles:
         keep_for_frames = 101
         enable = False
         draw_bvh = False
-        draw_rect = True
+        draw_rect = False
 
-
-    @defaults(tint=(0.30, 0.56,0.76))
+    @defaults(tint=(0.172, 0.706, 0.653))
     class Debug:
         slow_frame_rate = True
-    @defaults(tint=(0.60, 0.41, 0.96))
+
+    @defaults(tint=(0.174, 0.425, 0.844))
     class InputHandlerToggles:
         show_debug = False
 
-    @defaults(tint=(0.09, 0.11, 0.10))
+    @defaults(tint=(0.06, 0.07, 0.08))
     class TerminalSettings:
         # Minimum LOGICAL terminal size, in pixels - independent of the window size.
         # When a terminal window is dragged smaller than this, the emulated grid (PTY)
@@ -182,21 +182,10 @@ class Toggles:
 
     @defaults(tint=(0.42, 0.78, 0.55))
     class Collection:
-        # Cap on how many BRAND-NEW (never-rendered) child views draw_collection
-        # will fully render in a single frame. The first frame a large collection
-        # appears, only this many children render for real; the rest get a
-        # lightweight placeholder draw_state (assumed `placeholder_height` tall)
-        # via the draw_render skip_render code path and fill in over subsequent
-        # frames as they scroll into view. This bounds the cost of the first
-        # frame instead of paying for every item up front.
         pre_load_items = 30
-        # Assumed height (px) of a not-yet-rendered placeholder child. Only used to
-        # give the parent's off-screen clip + scroll math something to measure; the
-        # real height replaces it once the child renders. The scrollbar will jump a
-        # little as estimates are corrected - that's expected.
         placeholder_height = 30.0
 
-    @defaults(tint=(0.86, 0.76, 0.61))
+    @defaults(tint=(0.878, 0.762, 0.692))
     class ScrollSettings:
         # Base speed (px per wheel-tick event) when the view is large enough that
         # the dynamic cap doesn't bind.
