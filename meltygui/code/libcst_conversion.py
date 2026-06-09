@@ -5618,7 +5618,7 @@ class SymbolIndexCache:
     """Keeps the fast caller-index cache warm on a background thread, so the
     editor's Index button is instant. Flip `auto` off to stop the periodic
     refresh; call rebuild() for a one-shot. Status fields below are live."""
-    auto = False              # keep the cache warm in the background
+    auto = True              # keep the cache fresh in the background
     interval_s = 15.0        # seconds between background refresh passes
     startup_delay_s = 0.2    # wait for src modules to finish importing first
     # ── status (written by the worker) ──

@@ -77,6 +77,7 @@ class _Modes:
     CODE_UI = _LazyMode("CODE_UI")
     DROPDOWN_WINDOW = _LazyMode("DROPDOWN_WINDOW")
     FILE_META = _LazyMode("FILE_META")
+    FILE_TREE = _LazyMode("FILE_TREE")
     FLOATING = _LazyMode("FLOATING")
     MODE_WINDOW = _LazyMode("MODE_WINDOW")
     RUNNING = _LazyMode("RUNNING")

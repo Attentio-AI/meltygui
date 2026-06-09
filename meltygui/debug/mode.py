@@ -414,6 +414,26 @@ class Mode(Enum):
         ),
     }
 
+    # ── File tree ────────────────────────────────────────────
+    #
+    # A folder rendered as a nested dict (playground.get_files): subfolder →
+    # nested dict, file → Path leaf. Each Path leaf routes to code_file_io,
+    # whose extension codec (TextFileCodec) owns that file's whole-file
+    # load/edit/save round-trip. Recursive so the route survives any depth of
+    # folder nesting.
+
+    FILE_TREE = {
+        Path: ModeOverrides(
+            func=code_file_io,
+            # Pin the text editor: draw_any forwards a mode's func override as
+            # the `view_func` kwarg, which would otherwise hand code_file_io
+            # ITSELF as its nested view (str → "No codec"). Mode kwargs win
+            # over call kwargs (`kwargs | override_kwargs`), so this corrects it.
+            kwargs={"auto_load_edits": True, "view_func": draw_text},
+            recursive=True,
+        ),
+    }
+
     # ── Inner modes for draw_with_modes children ────────────
     # Each operates on a GeneralParse and wraps a simple renderer in just
     # the converter chain it needs. Used as the `modes` arg to

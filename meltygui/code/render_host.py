@@ -287,6 +287,18 @@ class RenderHost(_DeepAttrMixin, dict):
         pre_dirty = self._external_change
         self._external_change = False
 
+        # convert_in_and_out_value tags each finished chain_in with the GENERATION (the
+        # origin local-edit frame) of the source it parsed - the echo of our own edit
+        # carries that edit's frame, a genuine external change carries "now". Use it as
+        # the frame-precedence baseline below (not the frame the parse happens to LAND),
+        # so a re-parse of an OLDER edit lands strictly before a newer local edit and
+        # can't clobber it - that race is the value-flicker. None on non-finish frames and
+        # for the code_file_io path (which doesn't pass it). Pop so it never reaches the
+        # renderer's kwargs.
+        inbound_gen = kwargs.pop("inbound_gen", None)
+        if inbound_gen is not None:
+            self._input_change_frame = inbound_gen
+
         # INBOUND. The HELD value is AUTHORITATIVE: it was set via __setitem__ (the
         # user's draw_text string) and flows OUT to the wrapper. We do NOT materialize
         # the wrapper's value (code_file_io's text_cache, which LAGS the latest
@@ -320,7 +332,10 @@ class RenderHost(_DeepAttrMixin, dict):
         # treats the source as fresh, arm awaiting); the pull below then materializes it.
         if (external_change and input_value is not None and input_value is not self
                 and input_value is not self._held() and not pre_dirty):
-            self._input_change_frame = Melty.frame_count
+            # Keep the inbound generation when convert provided one (above); only the
+            # code_file_io path (inbound_gen=None) falls back to "now".
+            if inbound_gen is None:
+                self._input_change_frame = Melty.frame_count
             self._awaiting_inbound = True
 
 
@@ -332,15 +347,15 @@ class RenderHost(_DeepAttrMixin, dict):
                     obj=self, note=Note(name="file_reload", tint=(1, 0.6, 0.1)), max_depth=8)
             request_render()
 
-        # FRAME PRECEDENCE (all O(1) - no content comparison). Is there a GENUINE pending
-        # local edit, newer than the source it round-trips to? Each cross-thread round-trip
-        # adds a frame of lag, and rendering the held value writes reconstructed children
-        # back (draw_collection) a frame later - a local 1-frame "edit" echo. So a diff
-        # of ≤1 is NOT genuine; only a local edit MORE than 1 frame ahead of the source
-        # counts (a live drag, whose source lags by the whole debounced save round-trip,
-        # many frames). This single predicate drives BOTH directions and replaces the
-        # `not pre_dirty` gate, which the echo tripped every cycle (the catch-up ed
-        # re-surfacing → re-saving forever).
+        # FRAME PRECEDENCE (all O(1) — no content comparison). Is there a GENUINE pending
+        # local edit, newer than the source this inbound represents? `_input_change_frame`
+        # is the source's ORIGIN generation: for convert it's the edit-frame the parse
+        # round-trips from (tagged by convert_in_and_out_value, NOT the frame the parse
+        # landed - that distinction is what stops the flicker), and for code_file_io it's
+        # the frame its external source changed. Rendering the held value writes
+        # reconstructed children back (draw_collection) a frame later - a benign 1-frame
+        # "edit" echo - so a diff of ≤1 is NOT genuine; only a local edit MORE than 1
+        # frame ahead of what the inbound represents counts, and it WINS (inbound rejected).
         local_ahead = self._local_edit_frame > self._input_change_frame + 1
 
         if input_value is not None and input_value is not self:

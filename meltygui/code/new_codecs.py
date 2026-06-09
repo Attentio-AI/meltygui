@@ -528,6 +528,36 @@ class ModuleCodec(TypeCodec):
         return Address(source_file, source=input_value, watcher_ds=draw_state)
 
 
+@register_codec(ext=(".py", ".md", ".txt", ".json", ".toml", ".yaml", ".yml",
+                     ".sh", ".cfg", ".ini", ".glsl", ".frag", ".vert"))
+class TextFileCodec(TypeCodec):
+    """Whole-file editing for a plain text Path — the no-span Address case.
+
+    A spanless Address (start/end None) already means "the whole file" to the
+    inherited TypeCodec load/save, so this codec is just address resolution:
+    point at the file, register the watcher, cache by mtime."""
+    name = "Text File"
+
+    @staticmethod
+    def resolve_address(input_value, draw_state=None, **kwargs):
+        path = Path(str(input_value))
+        if not _is_editable_source(path) or not path.is_file():
+            return None
+        if draw_state is not None:
+            FileWatch.register_draw_state(draw_state, path)
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            mtime = None
+        cached = getattr(draw_state, '_addr_cache', None)
+        if cached is not None and cached[0] == input_value and cached[1] == mtime:
+            return cached[2]
+        address = Address(path, source=input_value, watcher_ds=draw_state)
+        if draw_state is not None:
+            draw_state._addr_cache = (input_value, mtime, address)
+        return address
+
+
 @register_codec(ext="png")
 class PngCodec(Codec):
 

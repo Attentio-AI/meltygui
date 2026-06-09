@@ -149,7 +149,7 @@ class Swoosh:
                                 # within this fraction of the parent's shorter side (else stay flat)
 
 
-@window(tint=(0.81, 0.88, 0.91))
+@window(tint=(0.10, 0.11, 0.14))
 class Toggles:
 
     @defaults(tint=(0.5, 0.188, 0.053))
@@ -162,22 +162,22 @@ class Toggles:
         draw_bvh = False
         draw_rect = False
 
-    @defaults(tint=(0.172, 0.706, 0.653))
+    @defaults(tint=(0.011, 0.124, 0.211))
     class Debug:
         slow_frame_rate = True
 
-    @defaults(tint=(0.174, 0.425, 0.844))
+    @defaults(tint=(0.211, 0.041, 0.467))
     class InputHandlerToggles:
         show_debug = False
 
-    @defaults(tint=(0.007, 0.01, 0.017), bg_offset=-9)
+    @defaults(tint=(0.089, 0.08, 0.069), bg_offset=30)
     class TerminalSettings:
         # Minimum LOGICAL terminal size, in pixels - independent of the window size.
         # When a terminal window is dragged smaller than this, the emulated grid (PTY)
         # stays frozen at this minimum so line wrapping stops re-flowing; the screen
         # clips into the window instead (a "crop in" behavior). Larger windows grow
         # the smaller as usual. Consumed by draw_terminal_screen.
-        min_width = 720.0
+        min_width = 98.634
         min_height = 480.0
 
     @defaults(tint=(0.42, 0.78, 0.55))
@@ -187,15 +187,8 @@ class Toggles:
 
     @defaults(tint=(0.878, 0.762, 0.692))
     class ScrollSettings:
-        # Base speed (px per wheel-tick event) when the view is large enough that
-        # the dynamic cap doesn't bind.
         scroll_speed = 600
-        # A single wheel tick never jumps more than this fraction of the vie
-        # (clipped) height, so small views don't overshoot.
         max_increment_fraction = 0.35
-
-        # Used for time-based scroll acceleration: wheel ticks arriving within
-        # this window count as a continuous gesture. Not yet wired into the cap.
         acceleration_threshold = 0.036  # seconds
 
     debug_scroll = False

@@ -611,8 +611,11 @@ def draw_number_token(input_value, draw_state=None,
     imgui.set_next_item_width(draw_state.width)
     if kind == 'int':
         speed = max(0.2, abs(val) * 0.01)
-        changed, new = imgui.drag_int("##num_tv", val, change_speed=speed,
-                                      min_value=0, max_value=0)
+        try:
+            changed, new = imgui.drag_int("##num_tv", val, change_speed=speed,
+                                          min_value=0, max_value=0)
+        except Exception:
+            return False, s
     else:
         speed = max(0.01, abs(val) * 0.005)
         changed, new = imgui.drag_float("##num_tv", val, change_speed=speed,
@@ -752,6 +755,110 @@ def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, c
             walk(v, depth + 1)
 
     walk(code_tree)
+
+
+# --- Symbol usages: highlight + double-click jump-to-caller -------------------
+# The parse pipeline attaches {name: SymbolUsage} maps to GeneralParse nodes
+# under "__symbol_usages__" (see libcst_conversion.populate_symbol_usages /
+# _distribute_by_name). Every SymbolUsage carries `sites` - file-absolute
+# (line, col) coordinates of the symbol within this view's source - and
+# `callers` - cross-project UsageRefs. The editor washes a slight background
+# behind every site whose symbol has callers, and a double-click on one jumps
+# to its first caller in IntelliJ (the same opener as the jump-to button).
+
+def _collect_usage_spans(code_tree, text, line_offset=0):
+    """[(start_index, end_index, SymbolUsage)] — buffer-index spans for every
+    occurrence of a symbol that has callers, from the code_tree's nested
+    __symbol_usages__ maps. Sites are file-absolute; `line_offset` (the file
+    line, 0-based, of buffer line 0 — usually jump_to.start) maps them into the
+    buffer. A site whose text no longer matches the symbol name (buffer edited
+    since the background usage pass ran) is dropped rather than highlighting
+    the wrong characters."""
+    spans = []
+    seen_nodes, seen_sites = set(), set()
+
+    def walk(node, depth=0):
+        if not isinstance(node, dict) or depth > 64 or id(node) in seen_nodes:
+            return
+        seen_nodes.add(id(node))
+        su_map = node.get("__symbol_usages__")
+        if isinstance(su_map, dict):
+            for name, su in su_map.items():
+                if not getattr(su, 'callers', None):
+                    continue
+                for site in getattr(su, 'sites', None) or ():
+                    ln, col = site
+                    if site in seen_sites:
+                        continue
+                    seen_sites.add(site)
+                    buf_line = ln - 1 - line_offset
+                    if buf_line < 0:
+                        continue
+                    idx = _line_col_to_index(text, buf_line, col)
+                    end = idx + len(name)
+                    if text[idx:end] != name:
+                        # The fast import-index records the STATEMENT start col
+                        # (e.g. the `class` keyword), not the symbol's own col -
+                        # and the buffer may have drifted since the pass ran.
+                        # Recover by finding the name (word-bounded) in the
+                        # site's line; give up on that site if it's not there.
+                        ls = _get_line_start(text, min(idx, len(text)))
+                        le = _get_line_end(text, ls)
+                        p = text.find(name, ls, le)
+                        while p != -1:
+                            b_ok = p == 0 or not (text[p - 1].isalnum() or text[p - 1] == '_')
+                            a = p + len(name)
+                            a_ok = a >= len(text) or not (text[a].isalnum() or text[a] == '_')
+                            if b_ok and a_ok:
+                                break
+                            p = text.find(name, p + 1, le)
+                        if p == -1:
+                            continue
+                        idx, end = p, p + len(name)
+                    spans.append((idx, end, su))
+        for k, v in node.items():
+            if k not in ("__cst__", "__symbol_usages__"):
+                walk(v, depth + 1)
+
+    walk(code_tree)
+    spans.sort(key=lambda s: s[0])
+    return spans
+
+
+def _usage_spans(ds, text, code_tree, line_offset=0):
+    """Cached-per-(code_tree, text) wrapper around _collect_usage_spans. The
+    top-level __symbol_usages__ map's identity rides in the key: the background
+    usage pass fills it in-place on an already-rendered code_tree (fresh dict
+    per compute), so its arrival must bust the cache even though the tree and
+    text are unchanged."""
+    if code_tree is None:
+        return ()
+    su_top = code_tree.get("__symbol_usages__") if isinstance(code_tree, dict) else None
+    key = (id(code_tree), id(su_top), line_offset, text)
+    if getattr(ds, '_usage_spans_key', None) != key:
+        try:
+            ds._usage_spans = _collect_usage_spans(code_tree, text, line_offset)
+        except Exception:
+            ds._usage_spans = ()
+        ds._usage_spans_key = key
+    return ds._usage_spans
+
+
+def _jump_to_usage(su) -> bool:
+    """Open the symbol's first caller (falling back to its definition) in
+    IntelliJ — the same opener the jump-to header button uses. Async (daemon
+    thread), True if a target existed."""
+    callers = getattr(su, 'callers', None)
+    target = callers[0] if callers else getattr(su, 'definition', None)
+    if target is None or getattr(target, 'path', None) is None:
+        return False
+    import threading
+    from src.lsd.gl_gui.utils.jump_to_code import open_in_intellij
+    threading.Thread(target=open_in_intellij,
+                     args=(str(target.path),),
+                     kwargs={"line_number": getattr(target, 'line', None)},
+                     daemon=True).start()
+    return True
 
 
 def _is_icon_char(c):
@@ -1498,7 +1605,7 @@ def _describe_code_tree(code_tree):
     return name
 
 
-@render_func(is_default_for=(CodeLine), show_bg=True, wrap=False, use_cache=True, disable_scroll=False,
+@render_func(is_default_for=(CodeLine), show_bg=True, wrap=False, use_cache=True, disable_scroll=False, z_offset=1,
              with_header=draw_header, shadow=True, show_name=False, with_footer=draw_footer, determines_height=True,
              selectable=False, searchable=True, bg_offset=-7)
 def draw_text(input_value: str,
@@ -1507,10 +1614,20 @@ def draw_text(input_value: str,
               single_line=False, is_search_box=False,
               draw_state=None, request_focus=False,
               line_height=1.149, font=Font.JETBRAINS_MONO_19, jump_to=None,
-              code_tree=None, error=None, token_views=None):
+              code_tree=None, code_dict=None, error=None, token_views=None):
     ds = draw_state
     if token_views is None:
         token_views = DEFAULT_TOKEN_VIEWS   # global experiment fallback (see top)
+
+    # Symbol-usage source: the parse arrives as `code_tree` in the
+    # address_to_general_parse routes, as `code_dict` in the CODE_UI routes
+    # (cst_module_to_dict - which is also where the run_jedi() pass attaches
+    # __symbol_usages__). Links are file-absolute, so the buffer's file offset
+    # comes from the parse's line_offset when set, else from the jump_to span.
+    _usage_tree = code_tree if code_tree is not None else code_dict
+    _usage_off = getattr(_usage_tree, 'line_offset', 0) or 0
+    if not _usage_off and jump_to is not None:
+        _usage_off = getattr(jump_to, 'start', 0) or 0
 
     # Per-editor state for the code-suggestions popup. Lives here (not gated on
     # focus) because the popup's menu window is latched and must be drawn EVERY
@@ -1698,12 +1815,26 @@ def draw_text(input_value: str,
         ds.text_last_click_pos = click_pos
 
         if ds.text_click_count == 2:
-            ds.text_drag_mode = 'word'
-            ds.text_selection_start = _select_unit_left(text, click_pos)
-            ds.text_selection_end = _select_unit_right(text, click_pos)
-            ds.text_cursor_pos = ds.text_selection_end
-            ds.text_drag_anchor_lo = ds.text_selection_start
-            ds.text_drag_anchor_hi = ds.text_selection_end
+            # Double-click on a symbol that has users → jump to the first
+            # caller like IntelliJ instead of word-selecting (the washed
+            # background is the affordance). Anywhere else, word-select.
+            _jumped = False
+            for _us, _ue, _su in _usage_spans(ds, text, _usage_tree, _usage_off):
+                if _us <= click_pos < _ue:
+                    _jumped = _jump_to_usage(_su)
+                    break
+            if _jumped:
+                ds.text_drag_mode = 'char'
+                ds.text_cursor_pos = click_pos
+                ds.text_selection_start = ds.text_selection_end = click_pos
+                ds.text_drag_anchor_lo = ds.text_drag_anchor_hi = click_pos
+            else:
+                ds.text_drag_mode = 'word'
+                ds.text_selection_start = _select_unit_left(text, click_pos)
+                ds.text_selection_end = _select_unit_right(text, click_pos)
+                ds.text_cursor_pos = ds.text_selection_end
+                ds.text_drag_anchor_lo = ds.text_selection_start
+                ds.text_drag_anchor_hi = ds.text_selection_end
         elif ds.text_click_count >= 3:
             ds.text_drag_mode = 'line'
             line_start = _get_line_start(text, click_pos)
@@ -2318,6 +2449,23 @@ def draw_text(input_value: str,
                     ex = origin_x + _colx(line_abs_end, line_start=line_abs_start) + char_w
                 draw_list.add_rect_filled(sx, sy, ex, sy + line_px, sel_color)
             line_abs_start = line_abs_end + 1
+
+    # Symbol-usage washes: a slight background behind every occurrence of a
+    # symbol that has callers elsewhere - the affordance that a double-click
+    # jumps to its first caller (see the mouse handler). Drawn before (under)
+    # the search highlights and the glyphs.
+    _uspans = _usage_spans(ds, text, _usage_tree, _usage_off)
+    if _uspans:
+        usage_bg = (52 << 24) | (190 << 16) | (150 << 8) | 95  # faint light blue
+        for _us, _ue, _su in _uspans:
+            u_line, _ = _index_to_line_col(text, _us)
+            sy = origin_y + u_line * line_px
+            ey = sy + line_px
+            if ey < rect_min_y or sy > rect_max_y:
+                continue
+            sx = origin_x + _colx(_us)
+            ex = origin_x + _colx(_ue)
+            draw_list.add_rect_filled(sx - 1, sy + 1, ex + 1, ey - 1, usage_bg, 3.0)
 
     # Search match highlights (drawn behind the text so glyphs stay readable).
     # The active match gets a stronger fill plus an outline; the others are faint.

@@ -731,24 +731,30 @@ def _compile_check(text):
         return None
 
 
-def _run_chain_in(input_value, chain=None, **extra):
+def _run_chain_in(input_value, chain=None, _src_gen=None, **extra):
     """Background entry point for the forward (chain_in) conversion.
 
     A plain module-level function (NOT a @render_func) so run_in_background can
     call it directly on its worker thread without touching any imgui/Melty global
     state. Runs the whole chain via _run_convert and returns the full `routed`
     dict — every column's input in one shared payload. The result/exception is
-    folded back into ModesState on the main thread when the worker completes."""
+    folded back into ModesState on the main thread when the worker completes.
+
+    `_src_gen` (the origin-edit generation of the source being parsed) is pulled out
+    of the kwargs so it isn't forwarded to the chain nodes, then echoed back in the
+    payload — bound to THIS worker's input snapshot, so the caller learns which
+    generation the finished parse actually reflects (not whatever the source is by the
+    time the worker returns)."""
     result, routed = _run_convert(chain, input_value, **extra)
     error = result if isinstance(result, Exception) else None
     # cst parsed clean - run the compiler check, to surface the syntax errors libcst
     # is too lenient to flag (duplicate args/kwargs, ...). Same red-highlight path.
     if error is None and isinstance(input_value, str):
         error = _compile_check(input_value)
-    return {"routed": routed, "error": error}
+    return {"routed": routed, "error": error, "_src_gen": _src_gen}
 
 
-def _run_chain_out(input_value, chain=None, **extra):
+def _run_chain_out(input_value, chain=None, _out_gen=None, **extra):
     """Background entry point for the reverse (chain_out) conversion.
 
     The mirror of _run_chain_in: a plain module-level function (NOT a
@@ -762,11 +768,16 @@ def _run_chain_out(input_value, chain=None, **extra):
 
     `**extra` (e.g. `indent`) is forwarded to every node so cst_module_to_string
     can re-apply the snippet's leading indent stripped by string_to_cst_module —
-    nodes without a matching param ignore it (_run_convert filters by signature)."""
+    nodes without a matching param ignore it (_run_convert filters by signature).
+
+    `_out_gen` (the origin-edit generation of the structured edit being serialized) is
+    pulled out so it isn't forwarded to the nodes, then echoed back in the payload —
+    bound to this worker's snapshot, so the produced source string can be tagged with the
+    edit frame that made it (used to recognize and order its chain_in echo)."""
     result, _ = _run_convert(chain, input_value, **extra)
     if isinstance(result, Exception):
-        return {"error": result}
-    return {"value": result}
+        return {"error": result, "_out_gen": _out_gen}
+    return {"value": result, "_out_gen": _out_gen}
 
 
 class ModesState:
@@ -785,6 +796,14 @@ class ModesState:
     def __init__(self):
         self.last_good = {}
         self.last_error = None
+        # Round-trip generation tracking (kills the value-flicker). Every conversion
+        # carries the Melty.frame_count of the LOCAL EDIT that originated it, so a
+        # chain-in result can be ordered against the host's latest edit and a stale parse
+        # rejected. `echo_str` is the exact string object our LOCAL chain_out produced;
+        # when it comes back as the_in's input (by identity) we know the parse reflects
+        # `echo_gen` (that edit's frame) - anything else is an external change (as of now).
+        self.echo_str = None
+        self.echo_gen = 0
 
 
 def compute_height(draw_state):
@@ -1035,9 +1054,15 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
     routed.update(forwarded)
 
     chain_in_error = modes_state.last_error
+    inbound_gen = None
     if chain_in:
+        # Tag this parse with the generation of the source it consumes. If the source is
+        # the echo of our OWN last chain_out (same string object), it reflects that edit's
+        # frame (echo_gen); otherwise it's an external change as of now. Threaded through
+        # the worker snapshot so the result is tagged with the gen actually parsed.
+        src_gen = modes_state.echo_gen if (input_value is modes_state.echo_str) else Melty.frame_count
         chain_in_kwargs = {**forwarded, "input_value": input_value,
-                           "chain": chain_in, "route": route}
+                           "chain": chain_in, "route": route, "_src_gen": src_gen}
         finished, payload = run_in_background(
             _run_chain_in,
             child_kwargs=chain_in_kwargs,
@@ -1047,6 +1072,10 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
             draw_state._parent.invalidate(note=note)
         external_change = False
         if finished and isinstance(payload, dict):
+            # The generation this finished parse reflects (origin edit frame, or "now" for
+            # an external change) - pass to the view_func so its accept/reject ordering
+            # compares against the user's latest LOCAL edit and drops a stale parse.
+            inbound_gen = payload.get("_src_gen")
             modes_state.last_error = payload.get("error")
             for name, val in payload["routed"].items():
                 modes_state.last_good[name] = val
@@ -1083,7 +1112,7 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
 
     child_kwargs['routed'] = routed
     edited, edited_value = view_func(input_value=primary, external_change=external_change,
-                                     **child_kwargs)
+                                     inbound_gen=inbound_gen, **child_kwargs)
     converted_edit = edited_value if (edited and edited_value is not None) else UNSET
     if edited:
         draw_state.invalidate(note=Note(name="convert_in_out, view func edit", tint=(1.0, 0.5, 0), draw_state=draw_state))
@@ -1092,16 +1121,26 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
     if chain_out:
         co_start = converted_edit is not UNSET
         indent = _common_indent(input_value)
+        # The edit that produced converted_edit is this frame's (the view_func reported it
+        # now, same frame bubbling stamped the held value), so its generation is the
+        # current frame. Threaded through the worker snapshot so the output string is
+        # tagged with the edit frame - its chain_in echo is then recognized + ordered.
+        out_gen = Melty.frame_count
         co_changed, co_payload = run_in_background(
             _run_chain_out,
             child_kwargs={"input_value": converted_edit if co_start else None,
-                          "chain": chain_out, "indent": indent},
+                          "chain": chain_out, "indent": indent, "_out_gen": out_gen},
             name=f"chain_out{unique}", start=co_start)
         if co_changed and isinstance(co_payload, dict):
             if co_payload.get("error") is not None:
                 imgui.text_colored(f" chain_out: {co_payload['error']}", 1.0, 0.5, 0.0)
             elif "value" in co_payload:
                 out_changed, out_value = True, co_payload["value"]
+                # Remember our own output by ID, + the edit gen it carries, so when it
+                # round-trips back as chain_in's source we recognize the echo and tag the
+                # re-parse with that gen (above) instead of treating it as "new now".
+                modes_state.echo_str = co_payload["value"]
+                modes_state.echo_gen = co_payload.get("_out_gen", out_gen)
 
     return out_changed, out_value
 

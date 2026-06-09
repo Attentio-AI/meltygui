@@ -1121,7 +1121,7 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
         is_render_func = hasattr(window_cls, "__render_func__")
         if is_render_func:
             kwargs.setdefault('mode', Mode.MODE_WINDOW)
-            kwargs['disable_scroll'] = True
+            kwargs.setdefault("disable_scroll", True)
             window_cls(**kwargs)
         else:
             kwargs['disable_scroll'] = True
