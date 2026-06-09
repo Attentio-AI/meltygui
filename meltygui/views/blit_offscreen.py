@@ -1624,7 +1624,7 @@ class TileCacheMasked:
                 uv_b = (1.0, 0.0)
 
                 draw_list: _DrawList = imgui.get_window_draw_list()
-                draw_list.add_rect_filled(*a, *b, col=imgui.get_color_u32_rgba(*draw_state.bg_color[:3], 1.0), rounding=draw_state.corner_radius)
+                # draw_list.add_rect_filled(*a, *b, color=imgui.get_color_u32_rgba(*draw_state.bg_color[:3], 1.0), rounding=draw_state.corner_radius + 3)
 
                 imgui.get_window_draw_list().add_image_rounded(t.tex,
                                                                a=a,

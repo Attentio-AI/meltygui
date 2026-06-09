@@ -2289,7 +2289,7 @@ def button(input_value="", draw_state=None, alpha=1.0, left_mouse_held=False, sh
                            draw_state.abs_top + (height - min_size[1]) / 2.0 - 1,
                            imgui.get_color_u32_rgba(*text_color[:3], 1.0), button_txt)
     else:
-        draw_list.add_text(draw_state.abs_left + (width - min_size[0]) / 2.0 + 2,
+        draw_list.add_text(draw_state.abs_left + (width - min_size[0]) / 2.0,
                            draw_state.abs_top + (height - min_size[1]) / 2.0 - 1,
                            imgui.get_color_u32_rgba(*text_color[:3], 1.0), button_txt)
 
@@ -3533,8 +3533,8 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     if up_key_pressed:
         print("Up key pressed")
 
-    fa_up_arrow = ""
-    fa_down_arrow = ""
+    fa_up_arrow = ""
+    fa_down_arrow = ""
     if input_value._parent.id is not None:
         if button(fa_up_arrow, height=30)[0] or up_key_pressed:
             input_value.context_menu_offset += 1
@@ -3802,7 +3802,7 @@ def draw_drop_down_item(input_value, name="", unique=0, shadow=False, draw_state
 
 @render_func(use_cache=True, show_bg=True, shadow=True, selectable=False,
              is_tree=False, show_name=True, with_header=draw_header)
-def draw_dropdown(input_value, collection, name, draw_state, drop_down_state: DropDownState, **kwargs):
+def draw_dropdown(input_value, collection, name, draw_state, drop_down_state: DropDownState, text_align="left", **kwargs):
     """Root of a recursive dropdown. Renders a trigger button showing the current
     selection; clicking it opens the (click-to-open) root popover. Nested dict
     rows inside the popover open their own sub-menus on hover. Returns
@@ -3827,18 +3827,26 @@ def draw_dropdown(input_value, collection, name, draw_state, drop_down_state: Dr
     current = _sel_label if _sel_label else (str(input_value) if input_value is not None else "")
     caret = "" if is_open else ""  # fa-chevron-down / fa-chevron-right
 
-    drop_down_display_str = f"{caret} {str(current)[:30]}"
+    # Compact mode: in a very narrow slot (e.g. an inline table cell) there's no room
+    # for the caret + button chrome, so show NOTHING but the selected value. Still a
+    # real (bg-less) button, so it stays clickable to open the popover. Threshold is
+    # tunable via compact_below (px).
+    compact = draw_state.content_width < kwargs.get("compact_below", 50)
+    if compact:
+        drop_down_display_str = str(current)[:30]
+    else:
+        drop_down_display_str = f"{caret} {str(current)[:30]}"
     bg_offset = 4 if is_open else 7
 
-    trigger_w = draw_state.content_width - 10
-    trigger_h = 25
+    trigger_w = max(18, draw_state.width if compact else draw_state.content_width)
+
+    trigger_h = (getattr(draw_state, "content_height", 0) or 25) if compact else 25
     # Colour the trigger by the selected item's embedded tint (input_value is the
     # current selection passed by the caller), falling back to the view's tint.
     trigger_tint = _dd_obj_tint(input_value, draw_state.tint)
-    clicked, _ = button(drop_down_display_str, name=f"{name}_dd_trigger",
-                        show_bg=True, show_button_bg=False, shadow=False, tint=trigger_tint,
-                        z_offset=1, text_align="left", bg_offset=bg_offset, width=trigger_w, height=trigger_h)
-
+    clicked, _ = button(drop_down_display_str, name=f"{name}_dd_trigger", show_bg=False, width=trigger_w,
+                         show_button_bg=False, shadow=False, tint=trigger_tint,
+                        z_offset=1, text_align=text_align, bg_offset=bg_offset)
 
     if clicked:
         was_open = is_open

@@ -486,8 +486,8 @@ _ICON_GLYPHS = (
 ICON_COLLECTION = {g: g for g in _ICON_GLYPHS}
 
 
-@render_func(use_cache=True, show_bg=False, shadow=False, with_header=None,
-             show_name=False, selectable=False)
+@render_func(use_cache=True, show_bg=True, shadow=True, tint=(1,1,0.3,1), z_offset=2, bg_offset=3, with_header=None,
+             show_name=False, selectable=False, max_height=30)
 def draw_icon_selector(input_value, draw_state=None, **kwargs):
     """Inline Font Awesome icon picker — the reference token_views inline renderer.
 
@@ -502,7 +502,8 @@ def draw_icon_selector(input_value, draw_state=None, **kwargs):
     # even if it isn't one of the defaults.
     coll = ICON_COLLECTION if (not cur or cur in ICON_COLLECTION) else {cur: cur, **ICON_COLLECTION}
     name = f"{getattr(draw_state, 'name', 'icon')}_dropdown"
-    changed, picked = draw_dropdown(cur, collection=coll, name=name, tint=draw_state.tint)
+    changed, picked = draw_dropdown(cur, collection=coll, name=name, show_header=False, text_align="center",
+                                    width=max(18, draw_state.width), max_height=30, tint=draw_state.tint)
     return (True, picked) if (changed and isinstance(picked, str)) else (False, cur)
 
 
@@ -510,7 +511,7 @@ def draw_icon_selector(input_value, draw_state=None, **kwargs):
 # Font Awesome glyphs ("icon" tokens) become inline icon-picker dropdowns. Add
 # more entries here to make other token kinds interactive by default.
 DEFAULT_TOKEN_VIEWS = {
-    "icon": {"renderer": draw_icon_selector, "char_width": 4},
+    "icon": {"renderer": draw_icon_selector, "char_width": 3},
 }
 
 

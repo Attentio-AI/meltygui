@@ -928,7 +928,6 @@ def convert_in_and_out(input_value, draw_state, view_func=None, chain_in=None, c
     routed.update(forwarded)
 
     chain_in_error = modes_state.last_error
-    finished = False
     if chain_in:
         # Fresh dict per run (run_in_background snapshots it as _run_kwargs): never
         # reuse it for chain_out below, or a deferred chain_in run reads back
@@ -963,13 +962,7 @@ def convert_in_and_out(input_value, draw_state, view_func=None, chain_in=None, c
     # view_kwargs = {**child_kwargs, 'route': route, 'routed': routed}
     child_kwargs['routed'] = routed
 
-    # Force the child view to bypass its (never-invalidated) cache the frame the
-    # chain_in trigger arrives AND the frame it finishes - its tile is a sibling
-    # subtree of run_in_background, so the completion's invalidate-up never
-    # reaches it, and the cache is frame-based (not input_value based), so a fresh
-    # `routed` here won't redraw it. Mirrors code_file_io's `draw=trigger`.
-    raw_changed, raw_value = view_func(input_value=input_value,
-                                       draw=external_change or finished, **child_kwargs)
+    raw_changed, raw_value = view_func(input_value=input_value, **child_kwargs)
     if raw_changed:
         out_changed, out_value = True, raw_value
         # draw_state.invalidate_up(max_depth=3)
@@ -1051,6 +1044,8 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
         if external_change:
             note = Note(name="convert_in_out, chain in start", tint=(1, 0.5, 0))
             draw_state._parent.invalidate(note=note)
+            print(f"[CIOV start] ds={id(draw_state):x} fc={draw_state.frame_count} "
+                  f"gfc={Melty.frame_count} unique={unique}")
         external_change = False
         if finished and isinstance(payload, dict):
             modes_state.last_error = payload.get("error")
@@ -1062,6 +1057,9 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
             external_change = True
             note = Note(name="Convert in and out, chain in finished", tint=(1, 0.5, 1.0), draw_state=draw_state)
             draw_state._parent.invalidate(note=note)
+            print(f"[CIOV finish] ds={id(draw_state):x} fc={draw_state.frame_count} "
+                  f"gfc={Melty.frame_count} unique={unique} "
+                  f"routed_keys={list(payload['routed'].keys())}")
 
     out_changed, out_value = False, input_value
 
@@ -1081,14 +1079,13 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
     primary = routed.get(primary_key) if primary_key is not None else None
 
     child_kwargs['routed'] = routed
-    # `draw=` is the one-shot cache bypass (core_render turns it into
-    # _bypass_cache; `external_change` alone does NOT bypass the child's cache).
-    # On the frame chain_in finishes, external_change is set True above, so the
-    # child re-renders with the fresh `primary` instead of blitting the stale
-    # sentinel render from the load frame. The tile is a sibling of
-    # run_in_background, so the completion's invalidate-up never reaches it.
+    if external_change:
+        # edge frame: chain_in just finished -> what are we handing the user?
+        print(f"[CIOV->view] ds={id(draw_state):x} fc={draw_state.frame_count} "
+              f"primary_key={primary_key} primary={type(primary).__name__} "
+              f"is_none={primary is None}")
     edited, edited_value = view_func(input_value=primary, external_change=external_change,
-                                     draw=external_change, **child_kwargs)
+                                     **child_kwargs)
     converted_edit = edited_value if (edited and edited_value is not None) else UNSET
     if edited:
         draw_state.invalidate(note=Note(name="convert_in_out, view func edit", tint=(1.0, 0.5, 0), draw_state=draw_state))
