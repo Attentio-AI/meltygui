@@ -86,8 +86,11 @@ def _completion_context(text, cursor):
     m = _PREFIX_RE.search(left)
     prefix = m.group(0) if m else ""
     anchor = cursor - len(prefix)
-    dot_trigger = anchor > 0 and text[anchor - 1] == "."
-    return prefix, anchor, dot_trigger
+    if anchor - 1 >= 0 and len(text) > anchor - 1:
+        dot_trigger = anchor > 0 and text[anchor - 1] == "."
+        return prefix, anchor, dot_trigger
+    else:
+        return prefix, anchor, False
 
 
 def _completion_pool(code_tree, text, line):
@@ -525,7 +528,7 @@ def draw_icon_selector(input_value, draw_state=None,
 
 
 @render_func(use_cache=True, show_bg=True, shadow=True, with_header=None, tint=(0.8, 0.318, 0.04),
-             show_name=False, selectable=False, z_offset=2, bg_offset=3)
+             show_name=False, selectable=False, z_offset=3, bg_offset=5)
 def draw_bool_token(input_value, draw_state=None, **kwargs):
     """Inline True/False word — whole-token token_views renderer for 'bool'
     tokens. Renders the literal exactly as the editor would (same font, grid
@@ -543,7 +546,9 @@ def draw_bool_token(input_value, draw_state=None, **kwargs):
     draw_list = imgui.get_window_draw_list()
     color = COLORS['bool']
     if hovered:
-        draw_list.add_line(x, y + h - 1.5, x + w, y + h - 1.5, color, 1.0)
+         draw_list.add_line(x, y + h - 1.5, x + w, y + h - 1.5, color, 1.0)
+    
+    
     draw_list.add_text(x, y, color, word)
     if hovered and imgui.is_mouse_double_clicked(0):
         return True, ("False" if word == "True" else "True")
@@ -760,11 +765,12 @@ def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, c
 # --- Symbol usages: highlight + double-click jump-to-caller -------------------
 # The parse pipeline attaches {name: SymbolUsage} maps to GeneralParse nodes
 # under "__symbol_usages__" (see libcst_conversion.populate_symbol_usages /
-# _distribute_by_name). Every SymbolUsage carries `sites` - file-absolute
-# (line, col) coordinates of the symbol within this view's source - and
-# `callers` - cross-project UsageRefs. The editor washes a slight background
-# behind every site whose symbol has callers, and a double-click on one jumps
-# to its first caller in IntelliJ (the same opener as the jump-to button).
+# _distribute_by_name). Each SymbolUsage carries `sites` — file-absolute
+# (line, col) occurrences of the symbol within this view's source — and
+# `callers` — cross-project UsageRefs. The editor washes a slight background
+# behind every site whose symbol HAS callers; a double-click jumps in IntelliJ
+# (the same behavior as the jump-to button) - to the first caller when the
+# definition is in this view, back to the definition from a caller site.
 
 def _collect_usage_spans(code_tree, text, line_offset=0):
     """[(start_index, end_index, SymbolUsage)] — buffer-index spans for every
@@ -788,9 +794,12 @@ def _collect_usage_spans(code_tree, text, line_offset=0):
                     continue
                 for site in getattr(su, 'sites', None) or ():
                     ln, col = site
-                    if site in seen_sites:
+                    # Key includes the name: a bare-name target (`Window`) and a
+                    # dot target (`Mode.WINDOW`) share the same (line, col).
+                    skey = (ln, col, name)
+                    if skey in seen_sites:
                         continue
-                    seen_sites.add(site)
+                    seen_sites.add(skey)
                     buf_line = ln - 1 - line_offset
                     if buf_line < 0:
                         continue
@@ -844,13 +853,34 @@ def _usage_spans(ds, text, code_tree, line_offset=0):
     return ds._usage_spans
 
 
-def _jump_to_usage(su) -> bool:
-    """Open the symbol's first caller (falling back to its definition) in
-    IntelliJ — the same opener the jump-to header button uses. Async (daemon
-    thread), True if a target existed."""
-    callers = getattr(su, 'callers', None)
-    target = callers[0] if callers else getattr(su, 'definition', None)
-    if target is None or getattr(target, 'path', None) is None:
+def _jump_to_usage(su, view_path=None, view_span=None) -> bool:
+    """Open the symbol's counterpart in IntelliJ — the same opener the jump-to
+    header button uses. Direction depends on where we are:
+      • the symbol's DEFINITION lives inside this view (view_path + 1-based
+        file-line range view_span) → we're at the definition: jump to the
+        first caller ("who uses this?").
+      • otherwise we're at a USAGE site → jump back to the definition.
+    Async (daemon thread), True if a target existed."""
+    d = getattr(su, 'definition', None)
+    if d is not None and getattr(d, 'path', None) is None:
+        d = None
+    callers = [c for c in (getattr(su, 'callers', None) or ())
+               if getattr(c, 'path', None) is not None]
+
+    def_here = False
+    if d is not None and view_path is not None and view_span:
+        try:
+            import os
+            def_here = (os.path.realpath(str(d.path)) == os.path.realpath(str(view_path))
+                        and view_span[0] <= (getattr(d, 'line', 0) or 0) <= view_span[1])
+        except OSError:
+            def_here = False
+
+    if def_here:
+        target = callers[0] if callers else None
+    else:
+        target = d or (callers[0] if callers else None)
+    if target is None:
         return False
     import threading
     from src.lsd.gl_gui.utils.jump_to_code import open_in_intellij
@@ -1668,9 +1698,18 @@ def draw_text(input_value: str,
         # collapsing once the content top passes above the viewport.
         _bx, _by = imgui.get_cursor_screen_pos()
         float_dy = max(0.0, draw_state.abs_clip_rect[1] - _by)
+        # The pin only holds while there's enough view above the clip top: once
+        # the view's bottom edge rises to meet the bar, the bar follows that edge
+        # up and scrolls away like everything else. The bar's natural position
+        # is the view top, so its maximum downward shift before its bottom
+        # passes the view bottom is height - bar_height (last frame's measure).
+        _bar_h = getattr(draw_state, "_float_bar_height", None) or 34.0
+        if draw_state.height:
+            float_dy = max(0.0, min(float_dy, draw_state.height - _bar_h))
         imgui.set_cursor_screen_pos((_bx, _by + float_dy))
         draw_jump_to(jump_to)
         bar_height = imgui.get_cursor_screen_pos()[1] - (_by + float_dy)
+        draw_state._float_bar_height = bar_height
         # Resume body layout at the real (unscrolled) content position so the code
         # lines keep their normal positions; only the bar was floated. The text
         # clip below is raised by bar_height so glyphs never paint over the bar.
@@ -1821,7 +1860,10 @@ def draw_text(input_value: str,
             _jumped = False
             for _us, _ue, _su in _usage_spans(ds, text, _usage_tree, _usage_off):
                 if _us <= click_pos < _ue:
-                    _jumped = _jump_to_usage(_su)
+                    _jumped = _jump_to_usage(
+                        _su,
+                        view_path=getattr(jump_to, 'path', None) if jump_to is not None else None,
+                        view_span=(_usage_off + 1, _usage_off + text.count('\n') + 1))
                     break
             if _jumped:
                 ds.text_drag_mode = 'char'

@@ -139,6 +139,12 @@ class RenderHost(_DeepAttrMixin, dict):
         value (e.g. host.deep.parameters()) and draws it OUTSIDE the host's own draw loop
         — without this its cached subtree never re-runs when a background parse lands."""
         if draw_state is not None and draw_state not in self._consumers:
+            # Cached root hosts (code_hosts.py) live for the session while
+            # consumers (e.g. context-menu tabs) come and go - drop closed ones
+            # so the list doesn't grow without bound across menu opens.
+            if len(self._consumers) > 32:
+                self._consumers = [c for c in self._consumers
+                                   if not getattr(c, 'closed', False)]
             self._consumers.append(draw_state)
 
     def remove(self):

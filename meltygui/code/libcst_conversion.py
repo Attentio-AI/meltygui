@@ -923,11 +923,47 @@ def _collect_refs(tree) -> list:
     return out
 
 
+def _imported_name_objects(tree) -> dict:
+    """{local_name: live object} for every import statement in `tree` —
+    INCLUDING function-local imports (the codebase lazy-imports heavily to
+    break cycles, so names like `Mode` often never reach the module dict).
+    Resolution is via sys.modules only — nothing is ever imported here."""
+    out = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if node.level:
+                continue                      # relative import; not used in src
+            mod = sys.modules.get(node.module or "")
+            if mod is None:
+                continue
+            for a in node.names:
+                if a.name == "*":
+                    continue
+                obj = getattr(mod, a.name, None)
+                if obj is not None:
+                    out.setdefault(a.asname or a.name, obj)
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                mod = sys.modules.get(a.name)
+                if mod is None:
+                    continue
+                if a.asname:
+                    out.setdefault(a.asname, mod)
+                else:
+                    top = a.name.split(".", 1)[0]
+                    tm = sys.modules.get(top)
+                    if tm is not None:
+                        out.setdefault(top, tm)
+    return out
+
+
 def _file_index_refs(path, module) -> list:
     """Resolved references in one src file, cached by mtime:
       ("name", id(obj)|None, line, col, scope)         -- bare name -> object id
       ("attr", (id(base)|None, attr)|None, ...)        -- base.attr -> (base id, attr)
-    Resolution is via the file's module namespace (no triggering)."""
+    Resolution is via the file's module namespace, falling back to the file's
+    own import statements (incl. function-local lazy imports — see
+    _imported_name_objects). Nothing is ever triggered/imported."""
     try:
         mtime = path.stat().st_mtime
     except OSError:
@@ -939,12 +975,19 @@ def _file_index_refs(path, module) -> list:
     refs = []
     if od is not None:
         try:
-            for (kind, payload, line, col, scope) in _collect_refs(ast.parse(path.read_text())):
+            tree = ast.parse(path.read_text())
+            imports = _imported_name_objects(tree)
+
+            def look(n):
+                v = od.get(n)
+                return v if v is not None else imports.get(n)
+
+            for (kind, payload, line, col, scope) in _collect_refs(tree):
                 if kind == "name":
-                    obj = od.get(payload)
+                    obj = look(payload)
                     refs.append(("name", id(obj) if obj is not None else None, line, col, scope))
                 else:
-                    base = od.get(payload[0])
+                    base = look(payload[0])
                     key = (id(base), payload[1]) if base is not None else None
                     refs.append(("attr", key, line, col, scope))
         except Exception:
@@ -995,6 +1038,40 @@ def _collect_targets(file_tree, module, s: int, e: int):
     return obj_targets, mem_targets, obj_by_name, sites, def_lines
 
 
+def _member_def_site(base, attr):
+    """Best-effort (file, line) where member `attr` of class/module `base` is
+    DEFINED. Functions/classes resolve via inspect; plain class vars and enum
+    members (no source info of their own) fall back to scanning the base's
+    source for the `attr = ...` / `attr: ...` assignment line."""
+    try:
+        val = inspect.unwrap(getattr(base, attr))
+        return inspect.getsourcefile(val), inspect.getsourcelines(val)[1]
+    except Exception:
+        pass
+    try:
+        lines, start = inspect.getsourcelines(base)
+        for i, ln in enumerate(lines):
+            s = ln.lstrip()
+            if s.startswith(attr) and len(s) > len(attr) and s[len(attr)] in ' =:(':
+                return inspect.getsourcefile(base), start + i
+    except Exception:
+        pass
+    return None, 0
+
+
+def _is_src_object(base, mod_map) -> bool:
+    """True when `base` (a module, or a class/object) is defined in one of the
+    loaded src files the index covers — keeps reverse attr-targets scoped to
+    project symbols rather than every `imgui.x` / stdlib access."""
+    _ModuleType = type(sys)
+    if isinstance(base, _ModuleType):
+        f = getattr(base, '__file__', None)
+        return f is not None and _Path(f).resolve() in mod_map
+    bm = sys.modules.get(getattr(base, '__module__', '') or '')
+    f = getattr(bm, '__file__', None) if bm is not None else None
+    return f is not None and _Path(f).resolve() in mod_map
+
+
 def _symbol_refs_index(file_path: str, start_line: int, end_line: int) -> dict:
     """jedi-free fast path. Resolve the span's symbols (module-level + class
     members) against live objects, then find callers across loaded src files —
@@ -1014,18 +1091,43 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int) -> dict:
         return {}
     obj_targets, mem_targets, obj_by_name, sites, def_lines = _collect_targets(
         file_tree, owning, start_line, end_line)
-    # Also target module-level names REFERENCED (not defined) in the span -
-    # decorators (@window/@defaults), used imports (WindowMode) - so they're
-    # clickable too. Member accesses (foo.attr) are already covered by mem_targets.
+    # Also target objects REFERENCED (not defined) in the span, so usage sites
+    # link back too (the REVERSE direction):
+    #  - bare names - decorators (@window/@defaults), used enums (ProfileMode)
+    #  - attr accesses on src objects - `Mode.WINDOW`, `Toggles.scroll_speed` -
+    #    targeted as (id(base), attr), the same key the reverse scan matches, and
+    #    named "Base.attr" so the editor washes/clicks the full dotted access.
+    #    Their definition resolves into the BASE's source (see _member_def_site).
     od = getattr(owning, "__dict__", None) or {}
+    _file_imports = _imported_name_objects(file_tree)
+
+    def _lookup(n):
+        v = od.get(n)
+        return v if v is not None else _file_imports.get(n)
+
+    member_bases = {}                       # dotted name -> base object
     for (kind, payload, line, col, scope) in _collect_refs(file_tree):
-        if kind == "name" and start_line <= line <= end_line:
-            obj = od.get(payload)
+        if not (start_line <= line <= end_line):
+            continue
+        if kind == "name":
+            obj = _lookup(payload)
             if obj is not None and id(obj) not in obj_targets:
                 obj_targets[id(obj)] = payload
                 obj_by_name.setdefault(payload, obj)
                 sites.setdefault(payload, []).append((line, col))
                 def_lines.setdefault(payload, line)
+        elif kind == "attr":
+            base_name, attr = payload
+            base = _lookup(base_name)
+            if base is None or not _is_src_object(base, mod_map):
+                continue
+            key = (id(base), attr)
+            if key in mem_targets:          # span-defined member: already covered
+                continue
+            nm = f"{base_name}.{attr}"
+            mem_targets[key] = nm
+            member_bases.setdefault(nm, base)
+            sites.setdefault(nm, []).append((line, col))
     if not obj_targets and not mem_targets:
         return {}
 
@@ -1044,6 +1146,7 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int) -> dict:
     out = {}
     for nm in sites:                              # every target name has sites
         obj = obj_by_name.get(nm)
+        base = member_bases.get(nm)
         if obj is not None:                       # module-level: real source via inspect
             try:
                 df = inspect.getsourcefile(obj)
@@ -1051,6 +1154,12 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int) -> dict:
                 dm = getattr(obj, "__module__", "") or mod_name
             except (TypeError, OSError):
                 df, dl, dm = rp_str, def_lines.get(nm, 0), mod_name
+        elif base is not None:                    # reverse ref: member on an
+            df, dl = _member_def_site(base, nm.split('.', 1)[1])   # external base
+            dm = (getattr(base, '__module__', None)
+                  or getattr(base, '__name__', '') or '')
+            if df is None:
+                df, dl = rp_str, def_lines.get(nm, 0)
         else:                                     # class member: defined in this file
             df, dl, dm = rp_str, def_lines.get(nm, 0), mod_name
         out[nm] = {
@@ -1061,18 +1170,29 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int) -> dict:
     return out
 
 
-def _distribute_by_name(gp, flat: dict) -> None:
+def _distribute_by_name(gp, flat: dict, _matched=None) -> None:
     """Attach each symbol's usage to the GeneralParse node that DIRECTLY contains
     it (its immediate parent), recursing into nested GeneralParse children. A
-    symbol never lands on a grandparent — each node owns only its own keys."""
+    symbol never lands on a grandparent — each node owns only its own keys.
+    Symbols matching NO node key — the reverse references ("Mode.WINDOW" used in
+    this span but defined elsewhere) — attach to the TOP node so the editor's
+    site walk still finds them."""
+    top = _matched is None
+    if top:
+        _matched = set()
     own = {}
     for k, v in list(gp.items()):
         if k == "__cst__":
             continue
         if isinstance(v, GeneralParse):
-            _distribute_by_name(v, flat)
+            _distribute_by_name(v, flat, _matched)
         if isinstance(k, str) and k in flat:
             own[k] = flat[k]
+            _matched.add(k)
+    if top:
+        for k, v in flat.items():
+            if k not in _matched:
+                own.setdefault(k, v)
     if own:
         gp["__symbol_usages__"] = own
 

@@ -1,5 +1,7 @@
 import ast
+import difflib
 import inspect
+import sys
 import textwrap
 import tokenize
 import types
@@ -70,6 +72,41 @@ class Decorations:
     codec slices out the decorator lines for editing and re-runs the decorators by
     recompiling the WHOLE object (see `_recompile_decorations`)."""
     target: object
+
+
+def _resync_module_linenos(address, old_lines, new_lines):
+    """After a WHOLE-FILE save, shift live co_firstlineno's to match the new text.
+
+    A SPANNED save knows its single (after_lineno, delta) and calls
+    shift_sibling_linenos directly; a whole-file edit can change line counts
+    anywhere, so walk the old→new diff and apply one shift per line-count
+    change, bottom-up so earlier shifts don't disturb later regions. Without
+    this, views rendering LIVE objects from this file (FunctionCodec /
+    TypeCodec) resolve stale spans after the save and snap to the nearest def.
+
+    The same file can be materialized under several module names (src.lsd.…
+    and lsd.… import roots both exist here), each with its OWN function
+    objects — shift every matching module, deduped by identity."""
+    opcodes = [(i2, (j2 - j1) - (i2 - i1))
+               for tag, i1, i2, j1, j2 in
+               difflib.SequenceMatcher(None, old_lines, new_lines, autojunk=False).get_opcodes()
+               if tag != "equal" and (j2 - j1) != (i2 - i1)]
+    if not opcodes:
+        return
+    seen, modules = set(), []
+    for m in list(sys.modules.values()):
+        f = getattr(m, "__file__", None)
+        try:
+            if f and id(m) not in seen and Path(f).resolve() == address.path:
+                seen.add(id(m))
+                modules.append(m)
+        except (OSError, ValueError):
+            continue
+    for module in modules:
+        for after_lineno, delta in sorted(opcodes, reverse=True):
+            shift_sibling_linenos(module, address.path,
+                                  after_lineno=after_lineno, delta=delta,
+                                  include_saved=True)
 
 
 def register_codec(cls=None, **kwargs):
@@ -200,6 +237,7 @@ class TypeCodec(Codec):
 
         old_start, old_end = address.start, address.end
         if old_start is None:  # whole-file (module) address
+            old_lines = lines  # pre-splice contents, for the lineno resync below
             lines = new_lines
         else:
             lines[old_start:old_end] = new_lines
@@ -210,11 +248,16 @@ class TypeCodec(Codec):
             lines, inserted, insert_idx = _ensure_import_lines(lines, ensure_import[0], ensure_import[1])
 
         final_text = newline.join(lines)
-        # Stamp a watch hash BEFORE writing so our own write isn't read back as a
-        # stale external change.
-        FileWatch.set_hash_from_content(address.path, final_text, draw_state=address._watcher_ds)
-        address.path.write_text(final_text, encoding="utf-8")
 
+        # Patch live co_firstlineno's BEFORE the write, not after. Other views of
+        # this file reload on the mtime bump (FileWatch dispatch / auto_load_edits
+        # on the render thread) and re-resolve our span - resolve_address caches
+        # per (input, mtime), so a resolve that races a post-write shift sees the
+        # NEW file with the OLD linenos, walks findsource back to the wrong def,
+        # and pins that wrong span for the new mtime (nothing busts it until the
+        # NEXT save). Pre-write updates are safe in the other direction: until the
+        # write below bumps mtime, the resolve is pulled from the cache, so the
+        # transient "old file + new linenos" state is never observed.
         if old_start is not None:
             resolved_old_end = old_end if old_end is not None else old_start + len(new_lines)
             new_end = old_start + len(new_lines)
@@ -223,7 +266,6 @@ class TypeCodec(Codec):
             if inserted:  # import landed above our span
                 address.start = old_start + inserted
                 address.end = new_end + inserted
-            address._hash = address._compute_hash()
             # Shift siblings below for the body span change (original coords)...
             shift_sibling_linenos(address.source, address.path,
                                   after_lineno=resolved_old_end, delta=delta)
@@ -235,7 +277,15 @@ class TypeCodec(Codec):
                                       after_lineno=insert_idx, delta=inserted,
                                       include_saved=True)
         else:
-            address._hash = address._compute_hash()
+            # Whole-file address: the splice gave us a single delta, so resync
+            # live line numbers from the old→new diff (see the helper).
+            _resync_module_linenos(address, old_lines, lines)
+
+        # Stamp the watch hash BEFORE writing so our own write doesn't read back as a
+        # stale external change.
+        FileWatch.set_hash_from_content(address.path, final_text, draw_state=address._watcher_ds)
+        address.path.write_text(final_text, encoding="utf-8")
+        address._hash = address._compute_hash()
         return False
 
 @register_codec(for_type=types.FunctionType)

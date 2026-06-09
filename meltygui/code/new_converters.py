@@ -1416,5 +1416,64 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                                     mode=Modes.WINDOW, tint=(0.9, 0.4, 0.1))
         print_stack_trace(exception=e)
 
-    # This is the root function, end of the line.
-    return edited, code_state.text_cache
+    # This is the root node, end of the line: code_file_io will load/edit/save
+    # itself, so it returns the ORIGINAL input, never the edited text. When a
+    # collection applies a changed child value back into its hosts; text
+    # here would replace the held Path/class with a string. Consumers that want
+    # the edited value (RenderHost) inject themselves as view_func and receive
+    # it through that channel instead.
+    return edited, input_value
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  CodeHost cache - shared source/cst hosts per function/class/module          ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+# (source_ref | CallSite) -> (str_host, dict_host). Process-wide; entries are
+# created lazily on first request and live for the session. Hotswap keeps
+# function/class/module identities stable (the original wrapper/raw stay
+# canonical), so reference keys survive recompiles; CallSite is a frozen
+# value-equality key. Each host watches its own file (auto_load_edits), so a
+# cached entry stays current when the file changes on disk.
+_code_host_cache: dict = {}
+
+
+def code_hosts_for(ref):
+    """The shared (source_str_host, cst_dict_host) RenderHost pair for a
+    function / class / module / CallSite — the same wiring draw_input_tab used
+    to build per menu-open, now built ONCE per distinct reference and reused:
+
+        str_host   code_file_io <- ref          (the editable source text)
+        dict_host  convert_in_and_out_value     (source <-> cst dict via the
+                   <- str_host                   NEW_CODE chain, "code_dict"
+                                                 routed to the editor)
+
+    Lazy: nothing loads until the first consumer draws the host. Consumers that
+    read the value outside the host's own draw loop must still register via
+    host.notify_on_change(draw_state), exactly as before."""
+    key = ("callsite", ref.filename, ref.lineno) if isinstance(ref, CallSite) else ref
+    try:
+        pair = _code_host_cache.get(key)
+    except TypeError:           # unhashable ref; fall back to uncached
+        pair = None
+        key = None
+    if pair is None:
+        from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
+        n = len(_code_host_cache)
+        label = getattr(ref, "__name__", None) or type(ref).__name__
+        str_host = RenderHost(io_function=code_file_io, input_value=ref,
+                              name=f"##code_cache_{label}_{n}_str",
+                              settings_renderer=RenderFuncs.draw_text,
+                              child_kwargs={"auto_load_edits": True})
+        dict_host = RenderHost(
+            io_function=convert_in_and_out_value, input_value=str_host,
+            name=f"##code_cache_{label}_{n}_dict",
+            child_kwargs={
+                "chain_in": [string_to_cst_module, cst_module_to_dict],
+                "chain_out": [dict_to_cst_module, cst_module_to_string],
+                "route": {cst_module_to_dict: ("code_dict", "jump_to", "run_jedi", "drive")},
+            })
+        pair = (str_host, dict_host)
+        if key is not None:
+            _code_host_cache[key] = pair
+    return pair

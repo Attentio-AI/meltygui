@@ -156,7 +156,6 @@ def draw_folder_files(input_value, draw_state, **kwargs):
         _poller_running = True
     _window_ds = draw_state
 
-    imgui.dummy(1, 20)
     # The tree is held one LEVEL UP under value name ("value") - same as
     # claude_terminals: draw_collection on the proxy itself would render the
     # single {"value": tree} key, not the files.

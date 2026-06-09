@@ -14,7 +14,6 @@ from src.lsd.gl_gui.view.core_views.text_editor import draw_text
 from src.lsd.gl_gui.view.invalidation_tracker import Note
 from src.lsd.gl_gui.view.mode import Mode
 
-
 class ModifiesPlayground:
 
     def __init__(self, playground):
@@ -22,7 +21,6 @@ class ModifiesPlayground:
 
     def modify(self, modification):
         self.playground.modify(modification)
-
 
 class InCode:
     value = 949
@@ -68,9 +66,8 @@ dict_proxy = RenderHost(
         "route": {cst_module_to_dict: ("code_dict", "jump_to", "run_jedi", "drive")},
     })
 
-
 @window
-@render_func(tint=(0.84, 0.50, 0.05), auto_resize=True)
+@render_func(tint=(0.10, 0.188, 0.31), auto_resize=True)
 def test_code_ui(_, draw_state):
     # Both proxies show themselves in their own windows (draw_main → draw()). This
     # window just inspects them AS ordinary dicts - the framework has no idea they're
@@ -83,8 +80,6 @@ def test_code_ui(_, draw_state):
 
 
         # request_render()
-    imgui.separator()
-    imgui.text("Tree Proxy — {value: <GeneralParse>}")
     # New trick: `.deep.unwrap()` skips the redundant wrapper rungs (value / module /
     # function name) and hands draw_collection the meaningful content dict with its keys
     # intact - no manual ["value"][...] indexing or "if key in d" guards.

@@ -34,7 +34,7 @@ from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment, Gener
     SymbolUsage, cst_module_to_dict, dict_to_cst_module
 from src.lsd.gl_gui.view.core_conversion.new_codecs import CallSite
 from src.lsd.gl_gui.view.core_conversion.new_converters import code_file_io, convert_in_and_out_value, \
-    cst_module_to_string, string_to_cst_module
+    cst_module_to_string, string_to_cst_module, code_hosts_for
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
@@ -848,9 +848,9 @@ def draw_global_search(input_value, draw_state=None, **kwargs):
     idx = 0
     for win, items in groups.items():
         win_label = str(getattr(win, 'name', '') or '').split("##")[0] or "?"
-        imgui.dummy(2, 10)
-        text(win_label, height=26, indent_size=10, text_color=Core.melty.window_tint(getattr(win, 'name', None)),
-             wrap=True, name=f"gsg_{idx}", width=w, font=Font.DEJAVU_SANS_22)
+
+        # text(win_label, height=26, indent_size=10, text_color=Core.melty.window_tint(getattr(win, 'name', None)),
+        #      wrap=True, name=f"gsg_{idx}", width=w, font=Font.DEJAVU_SANS_22)
         for label, ds in items:
             sel = (idx == input_value.selected)
             entry = Core.melty.find_window(getattr(ds, 'name', None))
@@ -864,6 +864,7 @@ def draw_global_search(input_value, draw_state=None, **kwargs):
                       search_match=sel, search_current=sel, rounding=0)[0]:
                 go_to_search_result(ds, win)
                 _dismiss_global_search()
+            imgui.dummy(0,00)
             idx += 1
     return False, input_value
 
@@ -2476,6 +2477,77 @@ def unsort_dict_alphabetically(input_value, ref=None, changed=False):
         return changed, ref
 
 
+def param_source_matrix(input_value, keys=None, func=None, include_unmatched=False, **kwargs):
+    """Pivot a render function's possible INPUTS into a parameter × source
+    table — the inputs-tab aggregator. `input_value` is the collected sources,
+    a {source_name: {param: value}} mapping (caller kwargs, @defaults on the
+    model class, mode kwargs, @render_func decorator kwargs, signature
+    defaults, …); `keys` is the function's parameter-name list (rows) — pass it
+    directly, or pass `func` and they're derived via inspect (unwrapped, minus
+    the catch-all params). Returns {param: {source_name: value}}:
+
+        rows     one per parameter, in parameter order — an EMPTY row means no
+                 source sets it (still shown: the point is mapping the full
+                 input surface in one spot)
+        columns  one per source that sets the param, in source order
+
+    Cells alias the source values (no copies). With include_unmatched, keys a
+    source sets that are NOT parameters append as extra rows at the end —
+    typos and **kwargs ride-throughs stay visible instead of vanishing.
+    Shaped like sort_dict_alphabetically: a plain (changed, value) chain node;
+    apply_param_source_matrix below is the unsort-style reverse."""
+    changed = False
+    if isinstance(input_value, dict):
+        items = list(input_value.items())
+    else:
+        items = [(f"source_{i}", s) for i, s in enumerate(input_value or ())]
+    items = [(str(n), s) for n, s in items if isinstance(s, dict)]
+
+    if keys is None and func is not None:
+        try:
+            keys = [p for p in inspect.signature(inspect.unwrap(func)).parameters
+                    if p not in ("args", "kwargs", "o_kwargs", "next_kwargs")]
+        except (TypeError, ValueError):
+            keys = []
+    keys = list(keys or [])
+
+    matrix = {}
+    for k in keys:
+        row = {}
+        for sname, sdict in items:
+            if k in sdict:
+                row[sname] = sdict[k]
+        matrix[k] = row
+    if include_unmatched:
+        for sname, sdict in items:
+            for k in sdict:
+                if k not in matrix or (k not in keys and sname not in matrix[k]):
+                    matrix.setdefault(k, {})[sname] = sdict[k]
+    return changed, matrix
+
+
+@render_func()
+def apply_param_source_matrix(input_value, ref=None, changed=False):
+    """Reverse of param_source_matrix — the unsort_dict_alphabetically analog.
+    `ref` is the ORIGINAL {source_name: dict} sources mapping; every edited
+    cell writes back into the source dict it came from (a tint edited under
+    the 'caller' column lands in the caller-kwargs dict), so each source's own
+    save path can persist it. Sources absent from ref are left untouched."""
+    if ref is None:
+        imgui.text("Original sources not available")
+        return False, input_value
+    for param, row in input_value.items():
+        if not isinstance(row, dict):
+            continue
+        for sname, val in row.items():
+            src = ref.get(sname) if isinstance(ref, dict) else None
+            # Skip already-equal cells: bubbling-wrapped source dicts mark
+            # their host dirty on each write, so only real edits write back.
+            if isinstance(src, dict) and (param not in src or src[param] is not val):
+                src[param] = val
+    return changed, ref
+
+
 @render_func(is_default_for=UsageRef, use_cache=True, shadow=True, z_offset=2, show_bg=True, with_header=draw_header,
              is_tree=True, tint=(0.11, 0.1, 0.16))
 def draw_usage(input_value: UsageRef):
@@ -3366,10 +3438,9 @@ def draw_eval_tab(input_value, draw_state, unique=None, enter_key_down=None,
     if eval_result:
         draw_text(eval_result, name=f"eval_result##{unique}",
                   show_bg=True, show_header=True,
-                  show_name=True, editable=False, wrap_text=True,
+                  show_name=True, editable=False,
                   wrap=False, bg_offset=-100, width=draw_state.content_width,
-                  height=300, min_width=600,
-                  
+              
                   tint=(0.0, 0.0, 0.0))
     return False, input_value
 
@@ -3403,49 +3474,20 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, unique=No
          value's own class, or the nearest parent with source for a primitive
          field); only classes carry decorations, so it's skipped otherwise."""
 
+    # Source/cst hosts come from the process-wide code-host cache, keyed by the
+    # live reference - every menu opened on the same render_func/class/call
+    # site shares ONE host pair, so the code isn't re-loaded and re-parsed per
+    # open (code_hosts_for in new_converters; earlier like this tab used to
+    # build inline).
     if cm_state.render_func_str is None:
-        cm_state.render_func_str = RenderHost(io_function=code_file_io, input_value=input_value._view_func,
-                                                name=f"##{unique}render_func", settings_renderer=draw_text,
-                                                child_kwargs={"auto_load_edits": True})
-
-        cm_state.render_func_dict = RenderHost(
-            io_function=convert_in_and_out_value, input_value=cm_state.render_func_str,
-            name=f"##{unique}render_func_dict",
-            child_kwargs={
-                "chain_in": [string_to_cst_module, cst_module_to_dict],
-                "chain_out": [dict_to_cst_module, cst_module_to_string],
-                "route": {cst_module_to_dict: ("code_dict", "jump_to", "run_jedi", "drive")},
-            })
-
-        cm_state.class_str = RenderHost(io_function=code_file_io, input_value=class_to_show,
-                                                name=f"##{unique}class_proxy",
-                                                child_kwargs={
-                                                    "auto_load_edits": True})
-        cm_state.class_dict = RenderHost(
-            io_function=convert_in_and_out_value, input_value=cm_state.class_str,
-            name=f"##{unique}class_dict",
-            child_kwargs={
-                "chain_in": [string_to_cst_module, cst_module_to_dict],
-                "chain_out": [dict_to_cst_module, cst_module_to_string],
-                "route": {cst_module_to_dict: ("code_dict", "jump_to", "run_jedi", "drive")},
-            })
+        cm_state.render_func_str, cm_state.render_func_dict = code_hosts_for(input_value._view_func)
+        cm_state.class_str, cm_state.class_dict = code_hosts_for(class_to_show)
 
     if cm_state.call_site is None:
         call_site = getattr(input_value, "_call_site", None)
         if call_site is not None:
             filename, lineno = call_site
-            cm_state.call_site = RenderHost(io_function=code_file_io, input_value=CallSite(filename, lineno),
-                                            name=f"##{unique}call_site",
-                                            child_kwargs={
-                                                "auto_load_edits": True})
-            cm_state.call_site_dict = RenderHost(
-                io_function=convert_in_and_out_value, input_value=cm_state.call_site,
-                name=f"##{unique}call_site_dict",
-                child_kwargs={
-                    "chain_in": [string_to_cst_module, cst_module_to_dict],
-                    "chain_out": [dict_to_cst_module, cst_module_to_string],
-                    "route": {cst_module_to_dict: ("code_dict", "jump_to", "run_jedi", "drive")},
-                })
+            cm_state.call_site, cm_state.call_site_dict = code_hosts_for(CallSite(filename, lineno))
 
 
     # changed, value = draw_text(cm_state.render_func_str.value, name=f"View Function##{unique}", column=0, disable_scroll=False)

@@ -149,7 +149,7 @@ class Swoosh:
                                 # within this fraction of the parent's shorter side (else stay flat)
 
 
-@window(tint=(0.10, 0.11, 0.14))
+@window(tint=(0.85, 0.78, 0.65))
 class Toggles:
 
     @defaults(tint=(0.5, 0.188, 0.053))
@@ -166,7 +166,7 @@ class Toggles:
     class Debug:
         slow_frame_rate = True
 
-    @defaults(tint=(0.211, 0.041, 0.467))
+    @defaults(tint=(0.256, 0.082, 0.511))
     class InputHandlerToggles:
         show_debug = False
 

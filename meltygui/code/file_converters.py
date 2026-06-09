@@ -52,7 +52,12 @@ def _snapshot_class(cls: type) -> type:
     `_hotswap_class(cls, snapshot)`, which writes these members back over cls."""
     members = {}
     for name, val in list(vars(cls).items()):
-        if name in ("__dict__", "__weakref__"):
+        if name in ("__dict__", "__weakref__", "__slots__"):
+            continue
+        if isinstance(val, types.MemberDescriptorType):
+            # Slot descriptors: copying one alongside __slots__ means type()
+            # raises "conflicts with class variable", and the original class
+            # keeps its own descriptors anyway - nothing to snapshot.
             continue
         if isinstance(val, types.FunctionType):
             clone = types.FunctionType(val.__code__, val.__globals__, val.__name__,
