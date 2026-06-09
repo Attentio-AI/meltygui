@@ -472,21 +472,15 @@ DEFAULT_TOKEN_VIEWS = None
 #
 # `draw_icon_selector` (below) is the reference inline renderer: an icon picker.
 
-# A small palette of Font Awesome glyphs the icon selector offers. {glyph: glyph}
-# so the dropdown rows & trigger show the icon itself (the UI font has the PUA
-# range). Extend freely.
-_ICON_GLYPHS = (
-    "\uf078", "\uf077", "\uf053", "\uf054",
-    "\uf067", "\uf068", "\uf00d", "\uf00c",
-    "\uf030", "\uf062", "\uf063", "\uf060",
-    "\uf061", "\uf002", "\uf013", "\uf015",
-    "\uf021", "\uf0c9", "\uf005", "\uf004",
-    "\uf1f8", "\uf040", "\uf07b", "\uf15b",
-)
-ICON_COLLECTION = {g: g for g in _ICON_GLYPHS}
+# The full Font Awesome set: {icon-name: glyph} read from the bundled font's cmap
+# (see fa_icons.py - generated, do not hand-edit). The dropdown lists the NAMES
+# (searchable, e.g. type "arrow") and picks the glyph value. FA_GLYPH_SET gives an
+# O(1) "is this a known glyph?" check for the current-value fallback below.
+from src.lsd.gl_gui.view.core_views.fa_icons import FA_ICONS, FA_GLYPH_SET
+ICON_COLLECTION = FA_ICONS
 
 
-@render_func(use_cache=True, show_bg=True, shadow=True, tint=(1,1,0.3,1), z_offset=2, bg_offset=3, with_header=None,
+@render_func(use_cache=True, show_bg=True, shadow=True, tint=(0.77,0.66,0.20,1.00), z_offset=2, bg_offset=4, with_header=None,
              show_name=False, selectable=False, max_height=30)
 def draw_icon_selector(input_value, draw_state=None, **kwargs):
     """Inline Font Awesome icon picker — the reference token_views inline renderer.
@@ -500,7 +494,7 @@ def draw_icon_selector(input_value, draw_state=None, **kwargs):
     cur = input_value if isinstance(input_value, str) else ""
     # Always include the current glyph so the dropdown can display/round-trip it
     # even if it isn't one of the defaults.
-    coll = ICON_COLLECTION if (not cur or cur in ICON_COLLECTION) else {cur: cur, **ICON_COLLECTION}
+    coll = ICON_COLLECTION if (not cur or cur in FA_GLYPH_SET) else {cur: cur, **ICON_COLLECTION}
     name = f"{getattr(draw_state, 'name', 'icon')}_dropdown"
     changed, picked = draw_dropdown(cur, collection=coll, name=name, show_header=False, text_align="center",
                                     width=max(18, draw_state.width), max_height=30, tint=draw_state.tint)

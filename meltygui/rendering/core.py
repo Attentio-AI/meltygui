@@ -3266,7 +3266,7 @@ def render_func(*args, **o_kwargs):
                 scroll_speed = min(
                     Toggles.ScrollSettings.scroll_speed,
                     Toggles.ScrollSettings.max_increment_fraction *
-                    draw_state._parent.abs_clipped_height)
+                    draw_state.abs_clipped_height)
             else:
                 scroll_speed = Toggles.ScrollSettings.scroll_speed
             new_offset_y = ceil(current_y + scroll_delta * direction * scroll_speed)
