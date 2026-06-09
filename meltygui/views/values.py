@@ -24,7 +24,7 @@ from src.lsd.gl_gui.model.core_model.draw_state import ZoomState, TileMode, Draw
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.modes import Modes
 from src.lsd.gl_gui.render_funcs import RenderFuncs
-from src.lsd.gl_gui.toggles import Toggles, Tint
+from src.lsd.gl_gui.toggles import Toggles, Tint, mix
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_style_var, \
     pop_style_var, end, begin
 from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace, request_render
@@ -1607,7 +1607,7 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
 
 @render_func(is_default_for=ManagedWindow, is_tree=False, show_name=False, use_cache=True,
              shadow=False, show_bg=False, selectable=False, show_add_delete=False,
-             show_tint=False, wrap=False, with_header=draw_header)
+             show_tint=False, wrap=False, with_header=draw_header, temp=True)
 def draw_managed_window(input_value, name, draw_state, mouse_down=False, selectable=False, **kwargs):
     try:
         window_draw_state = input_value.draw_state
@@ -2083,15 +2083,15 @@ def compute_bg_color(bg_offset=0, tint=None, nested_bg=False):
 
     return bg_color
 
-
-
+@window
 def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset=0,
             outline=True, bg_color=None, opacity=0.0,
             style_manager=None, tint=None, outline_tint=None, selected=False,
             hovered=False, pressed=False, nested_bg=False, **kwargs):
     # -- Constants ---------------------------------
-    depth_wrap = 34
-    depth_scale = 1.629
+    min_value = -0.59
+    depth_wrap = 300
+    depth_scale = 2.633
     # [tint=(1,1,1)]
     corner_radius = rounding
     border_inset = 2.802
@@ -2108,8 +2108,8 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
     outline_sat = {'default': 1.1, 'nested': 1.473}
 
     # More text
-    bleed_mix = {'nested': 0.501, 'default': 0.446}
-    bleed_style = {'value': -0.111, 'alpha': 1.12, 'saturation': 7.045}
+    bleed_mix = {'nested': 0.472, 'default': 0.526}
+    bleed_style = {'value': -0.035, 'alpha': 1.112, 'saturation': 6.592}
     outline_bleed_mix = 0.272
     # Hover offsets per interaction state
     hover_offset_by_state = {
@@ -2135,8 +2135,12 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
         )
 
     # -- Depth calculation -------------------
-    max_depth = 15
-    wrapped_depth = min(max_depth, (Core.melty.bg_depth % depth_wrap) + bg_offset)
+    max_depth = 30
+    if Core.melty.bg_depth + bg_offset < 2:
+        wrapped_depth = min(max_depth, (Core.melty.bg_depth) + bg_offset)
+    else:
+        wrapped_depth = min(max_depth, (Core.melty.bg_depth % depth_wrap) + bg_offset)
+
     scaled_depth = wrapped_depth * depth_scale
     depth_intensity = (scaled_depth + intensity_offset) * intensity_factor
     max_depth_intensity = 0.652
@@ -2175,13 +2179,17 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
     # ── Background bleed color ─────────────────────────────────
     bleed_factor = bleed_mix['nested'] if nested_bg else bleed_mix['default']
 
-    bleed_base = Core.melty.get_bg_color(-1)
+    bleed_base = Core.melty.get_bg_color(-2)
+    bleed_color = style_manager.make_custom_styled(
+        *bleed_base, input=bg_style, **bleed_style,
+    )
+    bleed_base = mix(*Core.melty.get_bg_color(-1)[:3], *bleed_color[:3], 0.32)
     bleed_color = style_manager.make_custom_styled(
         *bleed_base, input=bg_style, **bleed_style,
     )
 
     # ── Outline rendering ──────────────────────────────────────
-    outline_value = max(0, depth_intensity * depth_mul + outline_base + hover_offset)
+    outline_value = max(min_value, depth_intensity * depth_mul + outline_base + hover_offset)
     outline_color = style_manager.make_color_style_value(
         input=bg_style, saturation=sat, value=outline_value,
     )
@@ -2197,7 +2205,8 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
 
     # ── Fill rendering ─────────────────────────────────────────
     if bg_color is None:
-        bg_color = compute_bg_color(bg_offset=bg_offset, tint=tint, nested_bg=nested_bg)
+        bg_color = style_manager.make_color_style_value(input=bg_style, value=max(min_value, depth_intensity))
+        bg_color = mix_colors(bg_color, bleed_color, bleed_factor)
 
     packed_fill = imgui.get_color_u32_rgba(bg_color[0], bg_color[1], bg_color[2], 1.0)
     if tint is not None:
@@ -2213,7 +2222,7 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
 @render_func(use_cache=True, selectable=False, disable_scroll=True, indent_size=0, show_bg=False, min_width=10,
              min_height=10, wrap=True)
 def button(input_value="", draw_state=None, alpha=1.0, left_mouse_held=False, shadow=True, left_mouse_down=False,
-           color=(0.533, 0.068, 0.5), hovered=False, width=None, height=None, style_manager=None, show_button_bg=True,
+           color=(0.533, 0.068, 0.5), highlight_hovered=True, hovered=False, width=None, height=None, style_manager=None, show_button_bg=True,
            factor=1.0, tint_value=0.32, text_value=1.023, saturation=0.8, text_saturation=0.4, unique=0, text_align="center",
            search_match=False, search_current=False, tint=None, rounding=None):
     if color is not None:
@@ -2227,7 +2236,7 @@ def button(input_value="", draw_state=None, alpha=1.0, left_mouse_held=False, sh
         else:
             draw_state.z_offset = 0.0
 
-        if hovered:
+        if hovered and highlight_hovered:
             mixed_color = style_manager.make_color_rgb(color[0], color[1], color[2], value=tint_value + 0.05,
                                                        factor=factor, saturation_scale=saturation, alpha=1.0)
         else:
@@ -2294,8 +2303,6 @@ def button(input_value="", draw_state=None, alpha=1.0, left_mouse_held=False, sh
         request_render()
         return True, input_value
 
-    return False, input_value
-    return False, input_value
     return False, input_value
 
 
@@ -2641,8 +2648,7 @@ def draw_tuple(input_value: tuple, name, unique, draw_state):
         # inside it, and dismisses it when you click anywhere else.
         color_changed, new_color = draw_color_picker(input_value, name=f"color_picker{unique}",
                                                 closed=not is_open, window_pos=(0, 10),
-                                                parent_window=draw_state,
-                                                layer_offset=4, width=216, height=picker_h, mode=Mode.POPOVER)
+                                                parent_window=draw_state, width=216, height=picker_h, mode=Mode.POPOVER)
         if is_open:
             if color_changed:
                 input_value = tuple(new_color)
@@ -2659,8 +2665,9 @@ def draw_tuple(input_value: tuple, name, unique, draw_state):
             # Keep re-rendering while a bar/square is being dragged so the live
             # imgui interaction (is_item_active) updates each frame.
             if Melty.imgui_any_item_active or imgui.is_mouse_down(0):
-                Melty.cache.invalidate(draw_state._tile_id, force=True)
+                Melty.cache.invalidate_up(draw_state._tile_id, max_depth=10, force=True)
                 request_render()
+                
     elif len(input_value) > 0 and isinstance(input_value[0], (float, int)):
         str_value = ", ".join([str(v) for v in input_value])
         ch, input_str = imgui.input_text("##tuple", str_value)
@@ -3454,17 +3461,17 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, unique=No
 
     render_func = cm_state.render_func_dict.deep.decorators.render_func()
     if render_func:
-        changed, value = draw_collection(render_func, bg_offset=-20, tint=(0.00956193,0.1581395,0.03996849, 0.212),
+        changed, value = draw_collection(render_func, bg_offset=-20, tint=(0.00956193,0.1581395,0.03996849, 0.308),
                                          name=f"render_func##{unique}", disable_scroll=True)
 
     window_decoration = cm_state.render_func_dict.deep.decorators.window()
     if window_decoration:
-        changed, value = draw_collection(window_decoration, bg_offset=-20, tint=(1.00,0.00,1.00), name=f"@window##{unique}",
+        changed, value = draw_collection(window_decoration, bg_offset=-20, tint=(0.03,0.31,0.60), name=f"@window##{unique}",
                                          disable_scroll=True)
 
     class_defaults = cm_state.class_dict.deep.decorators.defaults()
     if class_defaults:
-        changed, value = draw_collection(class_defaults, tint=(0.01,0.03,0.10), name=f"defaults##{unique}",
+        changed, value = draw_collection(class_defaults, tint=(0.02,0.06,0.10), name=f"defaults##{unique}",
                                          disable_scroll=True)
 
     if draw_state.frame_count < 10 and Melty.frame_count > 5:
@@ -3489,7 +3496,7 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, unique=No
     return False, input_value
 
 
-@render_func(use_cache=True, show_bg=False, show_header=False, show_name=False, selectable=False)
+@render_func(use_cache=True, show_bg=False, show_header=False, disable_scroll=True, show_name=False, selectable=False)
 def draw_class_tab(input_value, class_to_show=None, class_is_parent=False, class_name='',  **kwargs):
     """Editable class source. For a primitive field this is the parent object's
     class (e.g. Lora for a Lora.rank float) -- labelled so the source is clear."""
@@ -3540,10 +3547,9 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
             input_value.context_menu_offset = max(0, input_value.context_menu_offset - 1)
             Core.melty.cache.invalidate_up(draw_state._tile_id, max_depth=5)
             Core.melty.cache.invalidate_up(input_value._tile_id, max_depth=5)
-
     else:
         imgui.dummy(30, 30)
-
+        
     imgui.same_line()
     imgui.text_colored(f"{context_menu_offset}", 1, 1, 1, 0.3)
     imgui.same_line()
@@ -3850,7 +3856,7 @@ def draw_dropdown(input_value, collection, name, draw_state, drop_down_state: Dr
             _sp = _dd_as_tuple(getattr(drop_down_state, "selected_path", ()))
             drop_down_state.cursor_path = _sp
             drop_down_state.open_path = _sp[:-1] if _sp else ()
-            drop_down_state._kbd_mode = False
+            drop_down_state._kbd_mode = True
             drop_down_state._last_mouse = None
             drop_down_state._had_focus = False
         if not is_open:
@@ -4201,7 +4207,7 @@ _DD_ROW_H = 24
              closable=True, melty_window=False, auto_resize=True, with_header=None,
              disable_scroll=True, min_width=300, swoosh=False)
 def draw_dd_menu(input_value, draw_state, root_state=None, path_prefix=(), tint=None,
-                 show_search=True, text_align="right", **kwargs):
+                 show_search=True, text_align="right", row_tags=None, **kwargs):
     """One level of the dropdown, drawn as its own temp popover window. Iterates
     the level's entries and renders each as a row (`_dd_menu_row`); a leaf click
     or a pick inside a nested sub-menu bubbles back up as (changed, value).
@@ -4280,7 +4286,8 @@ def draw_dd_menu(input_value, draw_state, root_state=None, path_prefix=(), tint=
         changed, picked = _dd_menu_row(value, name=f"ddrow_{idx}_{key}", label=label,
                                        is_branch=is_branch, row_path=row_path,
                                        sub_open=on_path, is_cursor=is_cursor,
-                                       root_state=root_state, tint=tint, text_align=text_align)
+                                       root_state=root_state, tint=tint, text_align=text_align,
+                                       tag=(row_tags.get(value) if row_tags else None))
         if changed:
             result = (True, picked)
     return result
@@ -4290,13 +4297,17 @@ def draw_dd_menu(input_value, draw_state, root_state=None, path_prefix=(), tint=
              with_header=None, disable_scroll=True, min_width=300, swoosh=False)
 def _dd_menu_row(input_value, draw_state, label="", text_align="right", is_branch=False, row_path=(),
                  sub_open=False, is_cursor=False, root_state=None,
-                 tint=None, **kwargs):
+                 tint=None, tag=None, **kwargs):
     """A single menu row. `input_value` is the row's VALUE. Leaves are a button
     that returns the value on click. Branch rows show a chevron and own a nested
     `draw_dd_menu` to their right; that sub-menu is shown only while this branch
     is on the open path (`sub_open`). Hovering the row points the cursor here (so
     mouse and keyboard share one highlight). The highlight is painted over the
-    row box when this row is hovered or is the keyboard cursor."""
+    row box when this row is hovered or is the keyboard cursor.
+
+    `tag` (optional) is a short dim string drawn right-aligned in the row — the
+    code editor's completion popup uses it for the kind label (func/class/var/…)
+    while the name itself is left-aligned."""
 
     hovered = draw_state._bounding_hovered
     # Colour the row by its value's embedded tint (e.g. a Lora's .tint), falling
@@ -4304,28 +4315,10 @@ def _dd_menu_row(input_value, draw_state, label="", text_align="right", is_branc
     tint = _dd_obj_tint(input_value, tint)
     fa_chrevron_right = f"\uf054"
 
-
-    chevron = f"  {fa_chrevron_right}" if is_branch else "    "  # fa-chevron-right
-    if is_branch:
-        clicked, _ = button(f"{label}{chevron}", name=f"{label}_ddrow", width=draw_state.content_width,
-                            height=_DD_ROW_H, hovered=hovered, text_value=0.36, text_saturation=0.799,
-                          z_offset=0, rounding=0, show_button_bg=False,
-                            text_align=text_align, tint=tint)
-    else:
-        clicked, _ = button(f"{label}{chevron}", name=f"{label}_ddrow", show_button_bg=False,
-                            width=draw_state.content_width, height=_DD_ROW_H, hovered=hovered,text_saturation=0.716, z_offset=0, shadow=False,
-                            text_align=text_align, tint=tint)
-
-    # In keyboard nav mode the arrow keys move the highlight; hover neither
-    # moves the cursor nor paints, until the mouse moves (draw_dropdown clears it).
-    kbd_mode = getattr(root_state, "_kbd_mode", False)
+    kbd_mode = getattr(root_state, "_kbd_mode", True)
     if hovered and not kbd_mode:
         _dd_set_cursor(root_state, row_path, is_branch)
 
-    # ONE highlight, painted to the row's box. Mouse mode keys off the live hover;
-    # keyboard mode keys off the cursor. Using a single source per mode (rather
-    # than hover OR cursor) avoids briefly painting both the stale-cursor row and
-    # the newly-hovered row, which doubled the wash and looked inconsistent.
     active = is_cursor if kbd_mode else hovered
     if active:
         dl = imgui.get_window_draw_list()
@@ -4334,6 +4327,37 @@ def _dd_menu_row(input_value, draw_state, label="", text_align="right", is_branc
                            draw_state.abs_top + draw_state.height,
                            imgui.get_color_u32_rgba(1, 1, 1, 0.16),
                            rounding=draw_state.corner_radius)
+
+    chevron = f"  {fa_chrevron_right}" if is_branch else "    "  # fa-chevron-right
+    if is_branch:
+        clicked, _ = button(f"{label}{chevron}", name=f"{label}_ddrow", width=draw_state.content_width,
+                            height=_DD_ROW_H, hovered=hovered, text_value=0.36, text_saturation=0.799,
+                            z_offset=0, rounding=0, show_button_bg=False, show_bg=False, use_cache=False,
+                            text_align=text_align, tint=tint)
+    else:
+        clicked, _ = button(f"{label}{chevron}", name=f"{label}_ddrow", show_button_bg=False,
+                            width=draw_state.content_width, height=_DD_ROW_H, hovered=hovered,
+                            text_saturation=0.716, z_offset=0, shadow=False, show_bg=False, use_cache=False,
+                            text_align=text_align, tint=tint)
+
+    # In keyboard-select mode the arrow keys paint the highlight; hover neither
+    # moves the cursor nor paints, until the mouse moves (draw_dropdown clears it).
+
+
+    # ONE highlight, framed to this row's box. Mouse mode keys off the live hover;
+    # keyboard mode keys off the cursor. Using a separate source per mode (rather
+    # than hover OR cursor) avoids briefly painting both the stale-cursor row and
+    # the freshly-hovered row, which doubled the wash and looked inconsistent.
+
+
+    # Dim kind tag, right-aligned over the row (drawn last so it sits above the
+    # highlight). The label is left-aligned per the caller's text_align.
+    if tag:
+        dl = imgui.get_window_draw_list()
+        tw = imgui.calc_text_size(tag).x
+        tx = draw_state.abs_left + draw_state.width - tw - 10
+        ty = draw_state.abs_top + (draw_state.height - imgui.get_text_line_height()) * 0.5
+        dl.add_text(tx, ty, imgui.get_color_u32_rgba(0.55, 0.6, 0.72, 0.85), tag)
 
     if is_branch:
         # Always call the sub-menu (so off-path ones stay registered but hidden

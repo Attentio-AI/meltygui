@@ -38,6 +38,7 @@ COLORS = {
     'string_doc': _hex('#629755'),  # String.Doc (docstrings)
     'comment': _hex('#808080'),  # Comment
     'number': _hex('#6897bb'),  # Number
+    'icon': _hex('#56b6c2'),  # Font Awesome / Pango glyph (cyan, distinct from strings)
 }
 
 KEYWORDS = {'def', 'class', 'if', 'else', 'elif', 'for', 'while',
@@ -113,21 +114,285 @@ def _completion_pool(code_tree, text, line):
     return pool
 
 
+# Internal completion `kind` → short display tag shown dim on the right of each
+# row. "name" (a bare buffer identifier we couldn't classify) maps to "" so no
+# tag is drawn for it.
+_KIND_TAGS = {"param": "param", "local": "local", "var": "var", "func": "fn",
+              "class": "class", "member": "attr", "module": "mod",
+              "import": "import", "symbol": "sym", "instance": "var",
+              "kw": "kw", "path": "path", "name": ""}
+
+
+def _kind_tag(kind):
+    return _KIND_TAGS.get(kind, kind)
+
+
 def _filter_completions(pool, prefix):
-    """Filter the ordered (name, kind) `pool` by `prefix`, returning just names.
-    Prefix matches (case-insensitive) come before looser substring matches; the
-    pool's own scope ranking is preserved within each group. Empty prefix (right
-    after a `.`) keeps the pool order. The exact word already fully typed is
-    dropped so we never suggest what's on screen."""
+    """Filter the ordered (name, kind) `pool` by `prefix`, returning the matching
+    (name, kind) rows. Prefix matches (case-insensitive) come before looser
+    substring matches; the pool's own scope ranking is preserved within each
+    group. Empty prefix (right after a `.`) keeps the pool order. The exact word
+    already fully typed is dropped so we never suggest what's on screen."""
     rows = [(n, k) for (n, k) in pool if n != prefix]
     if not prefix:
-        ranked = [n for n, _ in rows]
+        # Empty prefix only happens right after a '.', where a pile of dunders is
+        # noise - hide them (typing a leading '_' brings them back via the else).
+        ranked = [(n, k) for n, k in rows if not n.startswith("_")]
     else:
         p = prefix.lower()
-        starts = [n for n, _ in rows if n.lower().startswith(p)]
-        contains = [n for n, _ in rows if p in n.lower() and not n.lower().startswith(p)]
+        starts = [(n, k) for n, k in rows if n.lower().startswith(p)]
+        contains = [(n, k) for n, k in rows if p in n.lower() and not n.lower().startswith(p)]
         ranked = starts + contains
     return ranked[:_AC_MAX_ROWS]
+
+
+# jedi completion `.type` → our kind mapping.
+_JEDI_KIND = {"module": "module", "class": "class", "function": "func",
+              "instance": "var", "statement": "var", "param": "param",
+              "property": "member", "keyword": "kw", "path": "path"}
+
+
+def _wake_on_future(fut, ds):
+    """Wake the render loop ONCE when an async jedi `fut` resolves on its worker
+    thread. The worker can't drive a render itself (`request_render` no-ops off
+    the main thread — no GL context), and the loop is parked in `glfw.wait_events`
+    until an event arrives, so without this the popup stays blank until an
+    unrelated event (a click) happens to wake it. We invalidate the editor tile
+    exactly once and post a GLFW event (both thread-safe) — no per-frame polling
+    while the job is in flight. Returns `fut` for call-site chaining."""
+    if fut is None:
+        return None
+    tile = getattr(ds, '_tile_id', None)
+
+    def _cb(_f, tile=tile):
+        try:
+            from src.lsd.gl_gui.melty import Melty
+            if tile is not None:
+                Melty.cache.invalidate(tile)
+        except Exception:
+            pass
+        try:
+            from src.lsd.gl_gui.utils import glfw_utils
+            glfw_utils._needs_render.set()   # survive the training-branch render gate
+        except Exception:
+            pass
+        try:
+            glfw.post_empty_event()          # wake glfw.wait_events from any thread
+        except Exception:
+            pass
+
+    fut.add_done_callback(_cb)
+    return fut
+
+
+def _ensure_member_completions(ds, text, anchor):
+    """Type-aware member candidates for the dotted receiver ending at `anchor`
+    (index just past the '.'), via jedi (async). Submits ONE job per receiver
+    context to the background pool, polls it without blocking, and returns
+    (members, pending): `members` is an ordered [(name, kind)] once ready (else
+    None); `pending` is True while a job is in flight, so the caller keeps the
+    body repainting to poll it. The receiver key is anchored at the '.', so it's
+    stable while the user types the member stem — one jedi call, local filtering."""
+    line0, col = _index_to_line_col(text, anchor)
+    line_start = _get_line_start(text, anchor)
+    key = (line0, text[line_start:anchor])   # the receiver expression on this line
+
+    if getattr(ds, '_ac_jedi_done_key', None) == key:
+        return ds._ac_jedi_members, False
+
+    if getattr(ds, '_ac_jedi_req_key', None) != key:
+        # Receiver changed - request new completions (drops any stale future).
+        # The done-callback wakes us once when it lands; no per-frame polling.
+        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import submit_member_completion
+        ds._ac_jedi_future = _wake_on_future(submit_member_completion(text, line0, col), ds)
+        ds._ac_jedi_req_key = key
+
+    fut = getattr(ds, '_ac_jedi_future', None)
+    if fut is None:
+        return None, False        # pool e
+    if not fut.done():
+        return None, True         # still computing - the done-callback will wake us
+    try:
+        raw = fut.result()
+    except Exception:
+        raw = []
+    ds._ac_jedi_members = [(name, _JEDI_KIND.get(jtype, jtype)) for name, jtype in raw]
+    ds._ac_jedi_done_key = key
+    ds._ac_jedi_future = None
+
+    ds.invalidate_up()
+    return ds._ac_jedi_members, False
+
+
+def _call_context(text, cursor):
+    """For the innermost call whose parens enclose `cursor`, return
+    (open_paren_index, arg_index); else (None, 0). arg_index counts top-level
+    commas between the '(' and the caret. Bracket/brace literals at the cursor's
+    level (a list/dict, not a call) return None. Scan is bounded for big buffers."""
+    depth = 0
+    commas = 0
+    i = cursor - 1
+    limit = max(0, cursor - 4000)
+    while i >= limit:
+        c = text[i]
+        if c in ")]}":
+            depth += 1
+        elif c in "([{":
+            if depth == 0:
+                return (i, commas) if c == "(" else (None, 0)
+            depth -= 1
+        elif c == "," and depth == 0:
+            commas += 1
+        i -= 1
+    return (None, 0)
+
+
+def _callee_at(text, open_paren):
+    """The call expression directly before `open_paren` (e.g. 'imgui.text'),
+    or '' if a non-identifier precedes the paren (a grouping paren, not a call)."""
+    k = open_paren - 1
+    while k >= 0 and (text[k].isalnum() or text[k] in "_."):
+        k -= 1
+    return text[k + 1:open_paren]
+
+
+def _param_name(s):
+    """Reduce a jedi param string to just its name, across the two formats jedi
+    emits: python 'name: ann=default' / '*args' and C-style (pyimgui) 'type name'
+    / 'Type name=default'. We show names only, so strip annotations/defaults."""
+    s = s.split("=", 1)[0].strip()
+    if ":" in s:                       # python: 'name: annotation'
+        return s.split(":", 1)[0].strip().lstrip("*")
+    parts = s.split()                  # C-style 'type name' (or a bare name)
+    return (parts[-1] if parts else s).lstrip("*")
+
+
+def _param_type(s):
+    """The type annotation from a jedi param string, or '' if none. Mirror of
+    _param_name for the two formats: python 'name: ann' → ann; C-style 'type
+    name' → type; bare 'name' → ''."""
+    s = s.split("=", 1)[0].strip()
+    if ":" in s:                       # python: 'name: annotation'
+        return s.split(":", 1)[1].strip()
+    parts = s.split()                  # C-style 'type name'
+    return " ".join(parts[:-1]) if len(parts) > 1 else ""
+
+
+def _ensure_signature_help(ds, text, open_paren, cursor):
+    """Signature of the call whose '(' is at `open_paren`, via jedi (async, same
+    pool/synthetic-module trick as completion). Submits ONE job per callee
+    (keyed at the paren, stable while typing args), polls without blocking, and
+    returns (name, [param_names]) once ready, else None."""
+    callee = _callee_at(text, open_paren)
+    if not callee:
+        return None
+    key = (open_paren, callee)
+    if getattr(ds, '_ac_sig_done_key', None) == key:
+        return ds._ac_sig_data
+    if getattr(ds, '_ac_sig_req_key', None) != key:
+        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import submit_signature_help
+        line0, col = _index_to_line_col(text, cursor)
+        ds._ac_sig_future = _wake_on_future(submit_signature_help(text, line0, col), ds)
+        ds._ac_sig_req_key = key
+    fut = getattr(ds, '_ac_sig_future', None)
+    if fut is None:
+        return None
+    if not fut.done():
+        return None           # still computing - the done-callback will wake us
+    try:
+        raw = fut.result()
+    except Exception:
+        raw = []
+    # Names for every param (compact), plus the parallel type list so the hint
+    # can annotate just the ACTIVE param with its type. The job hands back
+    # richer 'type name=default' strings; we split them here.
+    if raw:
+        _ps = raw[0][1]
+        ds._ac_sig_data = (raw[0][0], [_param_name(p) for p in _ps],
+                           [_param_type(p) for p in _ps])
+    else:
+        ds._ac_sig_data = None
+    ds._ac_sig_done_key = key
+    ds._ac_sig_future = None
+    return ds._ac_sig_data
+
+
+def _draw_signature_hint(ds, draw_state, text, origin_x, origin_y, line_px, vcols=None):
+    """Float the active call's signature (name + comma-separated param names) just
+    above the call line, with the current argument highlighted (and its type).
+    The hint's function name is aligned horizontally with the call's function name
+    in the code, so the parameters line up over the call and it's obvious at a
+    glance which argument you're on. Overflow clips on the right (name stays put);
+    no room above → drop below. Non-interactive; mono font assumed active."""
+    if not getattr(ds, '_ac_sig_show', False):
+        return
+    sig = getattr(ds, '_ac_sig_data', None)
+    if not sig:
+        return
+    name, params, types = sig
+    active = getattr(ds, '_ac_sig_active', 0)
+    if params:
+        active = max(0, min(active, len(params) - 1))   # extra args ride the last (*args)
+
+    name_col = imgui.get_color_u32_rgba(0.55, 0.78, 1.0, 1.0)
+    dim = imgui.get_color_u32_rgba(0.72, 0.76, 0.84, 1.0)
+    acc = imgui.get_color_u32_rgba(1.0, 0.84, 0.42, 1.0)
+    type_col = imgui.get_color_u32_rgba(0.55, 0.72, 0.55, 1.0)   # muted green for the type
+
+    # Lay out out with their x-offsets (so we can clip to the active one).
+    segs = []          # (string, color, x_offset, is_active)
+    x = 0.0
+    def add(s, col, is_active=False):
+        nonlocal x
+        segs.append((s, col, x, is_active))
+        x += imgui.calc_text_size(s).x
+    add(name + "(", name_col)
+    for i, p in enumerate(params):
+        if i:
+            add(", ", dim)
+        add(p, acc if i == active else dim, i == active)
+        # Annotate ONLY the active arg with its type (when jedi knew one).
+        if i == active and i < len(types) and types[i]:
+            add(": " + types[i], type_col)
+    add(")", dim)
+    total = x
+
+    th = imgui.get_text_line_height()
+    clip = draw_state.abs_clip_rect          # (left, top, right, bottom)
+    cx, cy = _char_pos_to_xy(text, ds.text_cursor_pos, origin_x, origin_y, line_px, vcols=vcols)
+
+    # Align the hint's function name with the call's function name in the code:
+    # walk back from the '(' over the trailing identifier (the displayed name) and
+    # anchor there, so the param list lines up over the call.
+    op = getattr(ds, '_ac_sig_open_paren', None)
+    if op is None or op > len(text):
+        name_start = ds.text_cursor_pos
+    else:
+        k = op
+        while k > 0 and (text[k - 1].isalnum() or text[k - 1] == '_'):
+            k -= 1
+        name_start = k
+    nx, ny = _char_pos_to_xy(text, name_start, origin_x, origin_y, line_px, vcols=vcols)
+    base_x = max(origin_x, nx)               # never slide under the gutter
+
+    # Sit one line above the call's line (drop below if that's clipped at the top).
+    hy = ny - line_px - 5
+    if hy < clip[1] + 2:
+        hy = ny + line_px + 4
+
+    pad = 7
+    x0 = base_x - pad
+    x1 = min(clip[2] - 2, base_x + total + pad)   # overflow clips on the right
+    bg = imgui.get_color_u32_rgba(0.11, 0.12, 0.15, 0.97)
+    border = imgui.get_color_u32_rgba(0.30, 0.33, 0.42, 0.9)
+    dl = imgui.get_window_draw_list()
+    dl.add_rect_filled(x0, hy - 3, x1, hy + th + 3, bg, rounding=4)
+    dl.add_rect(x0, hy - 3, x1, hy + th + 3, border, rounding=4)
+
+    dl.push_clip_rect(x0, hy - 3, x1, hy + th + 3, True)
+    for s, col, off, _a in segs:
+        dl.add_text(base_x + off, hy, col, s)
+    dl.pop_clip_rect()
 
 
 # GLFW key to character mappings (unshifted, shifted)
@@ -173,6 +438,140 @@ _REPEATABLE_KEYS = set(_KEY_CHAR_MAP) | {
 }
 
 
+# Global fallback for `draw_text(token_views=...)`: when a caller passes no
+# token_views, the editor uses this DEFAULT SET of callback widgets. A per-call
+# token_views always wins; set this to None to disable widgets everywhere.
+# The real value is assigned just below draw_icon_selector (it references that
+# renderer, which is defined later in the file) - keep this forward-declaration so
+# anything importing the module before then sees the value.
+DEFAULT_TOKEN_VIEWS = None
+
+
+# --- Token views: draw widgets in place of (or above) tokenized code ----------
+# `draw_text(..., token_views=...)` maps a token kind to a renderer that draws a
+# widget instead of / on top of the code. Two kinds of key, dispatched by type:
+#
+#   token_views = {
+#       "icon":      {"renderer": draw_icon_selector,   "char_width": 4},
+#       Conditional: {"renderer": draw_floating_window, "char_width": None},
+#   }
+#
+#  - str key  → matched against the syntax tokenizer's color_key ("icon",
+#    "string", "keyword", ...). INLINE + EDITABLE: each matched source char is
+#    replaced by a render_func drawn in `char_width` cells. The renderer is called
+#    like any other - `renderer(input_value) -> (changed, new_value)` - positioned
+#    at the cell (the editor moves the cursor first; pass width=/height=/name=).
+#    When it returns changed=True, the editor splices new_value in for that source
+#    char and reports the edit, so it round-trips/saves like a keystroke. The
+#    visual-column map (vcols) keeps it ONE source character for caret/click even
+#    though it spans char_width cells.
+#  - type key → matched (isinstance) against nodes in the routed code_tree
+#    (Conditional/Loop/...); positioned by the node's `.span`. With `char_width=None`
+#    it's a non-inline OVERLAY drawing callback (floats over/by the code, doesn't
+#    edit text): `renderer(x, y, w, h, draw_state=, char_w=, line_px=, node=, span=)`.
+#
+# `draw_icon_selector` (below) is the reference inline renderer: an icon picker.
+
+# A small palette of Font Awesome glyphs the icon selector offers. {glyph: glyph}
+# so the dropdown rows & trigger show the icon itself (the UI font has the PUA
+# range). Extend freely.
+_ICON_GLYPHS = (
+    "\uf078", "\uf077", "\uf053", "\uf054",
+    "\uf067", "\uf068", "\uf00d", "\uf00c",
+    "\uf030", "\uf062", "\uf063", "\uf060",
+    "\uf061", "\uf002", "\uf013", "\uf015",
+    "\uf021", "\uf0c9", "\uf005", "\uf004",
+    "\uf1f8", "\uf040", "\uf07b", "\uf15b",
+)
+ICON_COLLECTION = {g: g for g in _ICON_GLYPHS}
+
+
+@render_func(use_cache=True, show_bg=False, shadow=False, with_header=None,
+             show_name=False, selectable=False)
+def draw_icon_selector(input_value, draw_state=None, **kwargs):
+    """Inline Font Awesome icon picker — the reference token_views inline renderer.
+
+    Shaped like every other renderer: `(input_value) -> (changed, icon_str)`. It
+    draws an inline dropdown (core_view's `draw_dropdown`) whose trigger shows the
+    current glyph; picking a different glyph returns (True, new_glyph). Wire it via
+    `token_views={"icon": {"renderer": draw_icon_selector, "char_width": N}}` and
+    draw_text splices the chosen glyph back into the source on change."""
+    from src.lsd.gl_gui.view.core_views.new_core_view import draw_dropdown
+    cur = input_value if isinstance(input_value, str) else ""
+    # Always include the current glyph so the dropdown can display/round-trip it
+    # even if it isn't one of the defaults.
+    coll = ICON_COLLECTION if (not cur or cur in ICON_COLLECTION) else {cur: cur, **ICON_COLLECTION}
+    name = f"{getattr(draw_state, 'name', 'icon')}_dropdown"
+    changed, picked = draw_dropdown(cur, collection=coll, name=name, tint=draw_state.tint)
+    return (True, picked) if (changed and isinstance(picked, str)) else (False, cur)
+
+
+# The default callback-widget set: when draw_text is called with no token_views,
+# Font Awesome glyphs ("icon" tokens) become inline icon-picker dropdowns. Add
+# more entries here to make other token kinds interactive by default.
+DEFAULT_TOKEN_VIEWS = {
+    "icon": {"renderer": draw_icon_selector, "char_width": 4},
+}
+
+
+def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, char_w, ds):
+    """Overlay pass for the TYPE-keyed entries of `token_views`: walk the code_tree
+    for nodes matching a key type and call its renderer positioned at the node's
+    span. Lines are 1-indexed relative to the editor's source (== code_tree.source),
+    so span line 1 sits at origin_y. Runs after the text body."""
+    if not token_views or not isinstance(code_tree, dict):
+        return
+    type_specs = [(k, v) for k, v in token_views.items() if isinstance(k, type)]
+    if not type_specs:
+        return
+    seen = set()
+
+    def walk(node, depth=0):
+        if not isinstance(node, dict) or depth > 64 or id(node) in seen:
+            return
+        seen.add(id(node))
+        span = getattr(node, 'span', None)
+        if span is not None:
+            for ktype, spec in type_specs:
+                if isinstance(node, ktype):
+                    y = origin_y + (span.start_line - 1) * line_px
+                    h = (span.end_line - span.start_line + 1) * line_px
+                    x = origin_x + getattr(span, 'start_col', 0) * char_w
+                    try:
+                        spec["renderer"](x=x, y=y, w=max(0.0, ds.content_width - (x - origin_x)),
+                                         h=h, draw_state=ds, char_w=char_w, line_px=line_px,
+                                         node=node, span=span)
+                    except Exception:
+                        pass
+                    break
+        for v in node.values():
+            walk(v, depth + 1)
+
+    walk(code_tree)
+
+
+def _is_icon_char(c):
+    """True for a Font Awesome / Private Use Area glyph (BMP PUA, U+E000–U+F8FF).
+    These are the icon code points the UI embeds in strings (e.g. "\\uf054")."""
+    return '\ue000' <= c <= '\uf8ff'
+
+
+def _split_icons(s, base):
+    """Split `s` into (substr, color_key) runs so PUA icon glyphs paint as 'icon'
+    while the surrounding text keeps `base` — lets an icon embedded in a string
+    token (the common case) stand out without recolouring the whole literal."""
+    start, run_icon = 0, None
+    for j, c in enumerate(s):
+        ic = _is_icon_char(c)
+        if run_icon is None:
+            run_icon = ic
+        elif ic != run_icon:
+            yield s[start:j], ('icon' if run_icon else base)
+            start, run_icon = j, ic
+    if start < len(s):
+        yield s[start:], ('icon' if run_icon else base)
+
+
 def tokenize(text):
     """Yields (text, color_key) tuples with Darcula-style token categories."""
     i = 0
@@ -199,7 +598,7 @@ def tokenize(text):
             quote = text[i:i + 3]
             end = text.find(quote, i + 3)
             end = end + 3 if end != -1 else n
-            yield text[i:end], 'string_doc'
+            yield from _split_icons(text[i:end], 'string_doc')
             i = end
 
         # --- String prefixes (f", r", b", rb", etc.) ---
@@ -231,7 +630,7 @@ def tokenize(text):
                         end += 1
                         break
                     end += 1
-            yield text[i:end], 'string'
+            yield from _split_icons(text[i:end], 'string')
             i = end
 
         # --- Strings ---
@@ -252,7 +651,7 @@ def tokenize(text):
                     end += 1
                     break
                 end += 1
-            yield text[i:end], 'string'
+            yield from _split_icons(text[i:end], 'string')
             i = end
 
         # --- Words ---
@@ -295,8 +694,10 @@ def tokenize(text):
             i = end
 
         # --- Everything else (operators, punctuation, whitespace) ---
+        # A bare PUA glyph (an icon not inside a string literal) lands here too -
+        # colour it as an icon rather than default.
         else:
-            yield text[i], 'default'
+            yield text[i], 'icon' if _is_icon_char(text[i]) else 'default'
             i += 1
 
 
@@ -334,28 +735,69 @@ def _mono_char_w():
     return imgui.calc_text_size("0").x
 
 
-def _char_pos_to_xy(text, index, origin_x, origin_y, line_px):
+def _build_vcols(text, tokens, token_views):
+    """Per-source-char VISUAL-COLUMN map for inline token-view widths. Returns a
+    list `vcols` (len = len(text)+1) where vcols[i] = the visual column (in cells,
+    line-relative — reset after each '\\n') at which source char i starts. A
+    char_width-N inline widget thus reserves N cells visually while staying ONE
+    source character for editing/caret. Returns None when no inline views apply
+    (the fast path: 1 char == 1 cell everywhere)."""
+    if not token_views or not any(
+            isinstance(k, str) and isinstance(v, dict) and v.get("char_width") is not None
+            for k, v in token_views.items()):
+        return None
+    n = len(text)
+    vcols = [0.0] * (n + 1)
+    col = 0.0
+    i = 0
+    for tok, ck in tokens:
+        view = token_views.get(ck) if isinstance(ck, str) else None
+        cw = view.get("char_width") if (view and view.get("char_width") is not None) else None
+        for ch in tok:
+            if i >= n:
+                break
+            vcols[i] = col
+            col = 0.0 if ch == '\n' else col + (cw if cw is not None else 1.0)
+            i += 1
+    vcols[n] = col
+    return vcols
+
+
+def _char_pos_to_xy(text, index, origin_x, origin_y, line_px, vcols=None):
     line, col = _index_to_line_col(text, index)
-    x = origin_x + col * _mono_char_w()
+    vx = vcols[index] if (vcols is not None and 0 <= index < len(vcols)) else col
+    x = origin_x + vx * _mono_char_w()
     y = origin_y + line * line_px
     return x, y
 
 
-def _xy_to_char_index(text, mx, my, origin_x, origin_y, line_px):
+def _xy_to_char_index(text, mx, my, origin_x, origin_y, line_px, vcols=None):
     lines = text.split('\n')
     line_num = int((my - origin_y) / line_px)
     line_num = max(0, min(line_num, len(lines) - 1))
 
     line_text = lines[line_num]
     char_w = _mono_char_w()
-    col = round((mx - origin_x) / char_w) if char_w else 0
-    col = max(0, min(col, len(line_text)))
-
-    abs_idx = 0
+    abs_start = 0
     for l in range(line_num):
-        abs_idx += len(lines[l]) + 1
-    abs_idx += col
-    return min(abs_idx, len(text))
+        abs_start += len(lines[l]) + 1
+
+    if vcols is None:
+        col = round((mx - origin_x) / char_w) if char_w else 0
+    else:
+        # Pick the source col on the line whose visual position is closest to the
+        # click, so a wide inline widget reads as a single caret location.
+        target = (mx - origin_x) / char_w if char_w else 0.0
+        best_col, best_d = 0, float('inf')
+        for c in range(len(line_text) + 1):
+            d = abs(vcols[abs_start + c] - target)
+            if d < best_d:
+                best_d, best_col = d, c
+            elif vcols[abs_start + c] - target > 1.0:
+                break
+        col = best_col
+    col = max(0, min(col, len(line_text)))
+    return min(abs_start + col, len(text))
 
 
 def _word_boundary_left(text, pos):
@@ -723,15 +1165,17 @@ def _describe_code_tree(code_tree):
 
 @render_func(is_default_for=(CodeLine), show_bg=True, wrap=False, use_cache=True, disable_scroll=False,
              with_header=draw_header, shadow=True, show_name=False, with_footer=draw_footer, determines_height=True,
-             selectable=False, searchable=True, bg_offset=-100)
+             selectable=False, searchable=True, bg_offset=-7)
 def draw_text(input_value: str,
               left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
               horizontal_scroll_drag=False, search_text="",
               single_line=False, is_search_box=False,
               draw_state=None, request_focus=False,
               line_height=1.149, font=Font.JETBRAINS_MONO_19, jump_to=None,
-              code_tree=None, error=None):
+              code_tree=None, error=None, token_views=None):
     ds = draw_state
+    if token_views is None:
+        token_views = DEFAULT_TOKEN_VIEWS   # global experiment fallback (see top)
 
     # Per-editor state for the code-suggestions popup. Lives here (not gated on
     # focus) because the popup's menu window is latched and must be drawn EVERY
@@ -751,6 +1195,9 @@ def draw_text(input_value: str,
     _ct_errors = _code_tree_errors(code_tree) if code_tree is not None else None
     _err_markers = list(_ct_errors) if _ct_errors else []
     _err_markers += _exception_errors(error)
+    # Suppression (clearing _err_markers and _err_msg while keyboard editing) is
+    # applied AFTER the keyboard recompute below, so it can read this frame's
+    # popup state and the freshly-stamped edit time - see _ERR_SUPPRESS_SEC.
 
     # Jump-to-source button drawn inline at the top (before the monospace font
     # push, so it uses the normal UI font), above the text body. The first error
@@ -797,6 +1244,23 @@ def draw_text(input_value: str,
     text = input_value
     io = imgui.get_io()
     line_px = imgui.get_text_line_height() * line_height
+
+    # Visual-column map for inline token view widths (None on the fast path).
+    # Wide token widgets reserve char_width cells visually but stay one source
+    # char for the caret; every c->x conversion below routes through this.
+    # Built lazily + cached by `text` (which mutates as keys are processed), so a
+    # click (pre-edit text) and the cursor render (post-edit text) each get a map
+    # matching their state, reusing the syntax token cache.
+    def _get_vcols():
+        if not token_views:
+            return None
+        if getattr(ds, '_vcols_text', None) == text and getattr(ds, '_vcols_tv', None) is token_views:
+            return ds._vcols
+        toks = ds._tok_cache if getattr(ds, '_tok_cache_text', None) == text else list(tokenize(text))
+        ds._vcols = _build_vcols(text, toks, token_views)
+        ds._vcols_text = text
+        ds._vcols_tv = token_views
+        return ds._vcols
 
     left = imgui.get_cursor_screen_pos()[0]
     top = imgui.get_cursor_screen_pos()[1]
@@ -889,7 +1353,7 @@ def draw_text(input_value: str,
         is_focused = True
         ds.text_cursor_blink_time = time.time()
         click_pos = _xy_to_char_index(text, io.mouse_pos.x, io.mouse_pos.y,
-                                      origin_x, origin_y, line_px)
+                                      origin_x, origin_y, line_px, vcols=_get_vcols())
 
         now = time.time()
         within_window = (now - ds.text_double_click_time < 0.3
@@ -939,7 +1403,7 @@ def draw_text(input_value: str,
         # cursor is comfortably inside.
         _scroll_into_view(ds, my, my)
         drag_pos = _xy_to_char_index(text, mx, my,
-                                     origin_x, origin_y, line_px)
+                                     origin_x, origin_y, line_px, vcols=_get_vcols())
         anchor_lo = ds.text_drag_anchor_lo
         anchor_hi = ds.text_drag_anchor_hi
         if ds.text_drag_mode in ('word', 'line') and (anchor_lo != anchor_hi):
@@ -1272,12 +1736,24 @@ def draw_text(input_value: str,
             # the prefix shifts (was_open) until the list empties or closes.
             want = not suppressed and (dot_trigger
                                        or (len(prefix) >= 1 and (was_open or typed_ident_this_frame)))
-            if want:
-                # The candidate POOL depends on the tree + the caret's line (its
-                # scope), NOT the prefix - so cache it and only rebuild when those
-                # change. The body re-runs every frame while the popup is open
-                # (the keep-alive invalidate), so without this we'd re-walk the
-                # parse + rebuild the SymMap each frame just to filter by prefix.
+            if want and dot_trigger:
+                # Member access (`imgui.`, `foo.bar`) - resolve the receiver's
+                # REAL members with jedi (async, off-thread). Until they arrive,
+                # keep the popup closed (scoped names aren't members) and keep the
+                # body repainting so the future gets polled. Unresolvable
+                # receivers (a bare local, `self.`) just return nothing.
+                members, pending = _ensure_member_completions(ds, text, anchor)
+                if members is not None:
+                    cands = _filter_completions(members, prefix)
+                else:
+                    cands = []   # jedi still resolving; its done-callback wakes us once
+            elif want:
+                # Bare identifier: scope-aware names from the parsed tree. The
+                # POOL depends on the tree + the caret's line (its scope), NOT the
+                # prefix, so cache it + only rebuild when those change. The body
+                # re-runs every frame while the popup is open (keep-alive
+                # invalidate); without this we'd re-walk the parse and build the
+                # LineMap each frame just to filter by prefix.
                 _ac_line = _index_to_line_col(text, ds.text_cursor_pos)[0]
                 _pool_key = (id(code_tree), _ac_line, len(text))
                 if getattr(ds, '_ac_pool_key', None) != _pool_key:
@@ -1287,24 +1763,73 @@ def draw_text(input_value: str,
             else:
                 cands = []
             if cands:
+                # cands is [(name, kind)]. Names drive nav/scroll/highlight; the
+                # kind becomes a dim per-row tag (func/class/var/...) via kind_tags.
+                names = [n for n, _ in cands]
                 if prefix != getattr(ds, '_ac_prefix', None) or not was_open:
                     ds._ac_index = 0  # list changed shape, restart at the top match
+                    # Assert keyboard-select mode so the top match is highlighted
+                    # immediately (the dropdown only paints the cursor_path row
+                    # when _kbd_mode is set; otherwise it waits for hover). A mouse
+                    # press flips back to hover (handled in the popup render).
+                    ac_state._kbd_mode = True
                     if not was_open:
                         request_render()
-                ds._ac_index = min(getattr(ds, '_ac_index', 0), len(cands) - 1)
+                ds._ac_index = min(getattr(ds, '_ac_index', 0), len(names) - 1)
                 ds._ac_open = True
                 ds._ac_anchor = anchor
                 ds._ac_prefix = prefix
-                ds._ac_candidates = cands
-                ac_state.cursor_path = (cands[ds._ac_index],)
+                ds._ac_candidates = names
+                ds._ac_kinds = {n: _kind_tag(k) for n, k in cands}
+                ac_state.cursor_path = (names[ds._ac_index],)
                 ac_state.open_path = ()
             else:
                 ds._ac_open = False
+
+        # --- Function call parameter hints (signature help) ---
+        # Independent of the completion popup - when the caret sits inside a
+        # call's parens, resolve the callee's signature (jedi, async) and show it
+        # with the current argument highlighted. The active arg index is recomputed
+        # locally each frame (cheap); jedi is only re-queried when the call
+        # changes. `_ac_sig_show` gates the render below.
+        if ac_enabled:
+            _open_paren, _arg_index = _call_context(text, ds.text_cursor_pos)
+            if _open_paren is not None and _ensure_signature_help(
+                    ds, text, _open_paren, ds.text_cursor_pos) is not None:
+                ds._ac_sig_active = _arg_index
+                ds._ac_sig_open_paren = _open_paren   # lets the hint align under the call name
+                ds._ac_sig_show = True
+            else:
+                ds._ac_sig_show = False
 
     # Clamp
     ds.text_cursor_pos = max(0, min(ds.text_cursor_pos, len(text)))
     ds.text_selection_start = max(0, min(ds.text_selection_start, len(text)))
     ds.text_selection_end = max(0, min(ds.text_selection_end, len(text)))
+
+    # Visual-column map over the render region (text is final now). `_colx(idx)`
+    # gives the line-relative visual x (px) of a source index, honouring all
+    # token-view widths; with no views it's just the plain character column.
+    vcols = _get_vcols()
+    def _colx(idx, line_start=None):
+        # Line-relative visual x (px) of source `idx`. With inline views, read the
+        # vcols map; otherwise it's just the character column - passing line_start
+        # (when the caller has it already makes the fast path O(1) instead of O(idx).
+        if vcols is not None:
+            return (vcols[idx] if 0 <= idx < len(vcols) else 0.0) * char_w
+        col = (idx - line_start) if line_start is not None else _index_to_line_col(text, idx)[1]
+        return col * char_w
+
+    # Hide the parse-error display while it's STALE: the buffer has been edited
+    # since this error/code_tree was parsed (the reparse runs in the body),
+    # so its line numbers are out of date or it may already be fixed. The stale
+    # flag is set + cleared at the end of the body (see "Parse-error staleness").
+    # Also hide while a completion/signature popup is up (code mid-edit).
+    if (getattr(ds, '_err_stale', False)
+            or (is_focused and (getattr(ds, '_ac_open', False)
+                                or getattr(ds, '_ac_sig_show', False)))):
+        _err_markers = []
+        _err_msg = None
 
     # --- Find-in-text search ---
     # The term arrives either forwarded from an ancestor search owner (as a
@@ -1369,9 +1894,8 @@ def draw_text(input_value: str,
 
         # Horizontal: default back to the line start (h_scroll 0) while paging
         # through results, scrolling to only when the match wouldn't fit.
-        line_start = _get_line_start(text, ms)
-        match_x = (ms - line_start) * char_w
-        match_x_end = (me - line_start) * char_w
+        match_x = _colx(ms)
+        match_x_end = _colx(me)
         edge_padding = 20.0
         if text_visible_width > 0:
             if match_x_end <= text_visible_width - edge_padding:
@@ -1387,8 +1911,7 @@ def draw_text(input_value: str,
     # are not snapped back. Brings the cursor into view on a single line.
     visible_width = text_visible_width
     if ds.text_cursor_pos != ds.text_prev_cursor_pos and visible_width > 0:
-        line_start = _get_line_start(text, ds.text_cursor_pos)
-        cursor_logical_x = (ds.text_cursor_pos - line_start) * char_w
+        cursor_logical_x = _colx(ds.text_cursor_pos)
         edge_padding = 20.0
         if cursor_logical_x - ds.text_h_scroll < edge_padding:
             ds.text_h_scroll = max(0.0, cursor_logical_x - edge_padding)
@@ -1396,8 +1919,10 @@ def draw_text(input_value: str,
             ds.text_h_scroll = cursor_logical_x - visible_width + edge_padding
     ds.text_prev_cursor_pos = ds.text_cursor_pos
 
-    # Clamp h_scroll to content bounds; the longest line drives the limit.
-    max_line_width = max((len(l) for l in text.split('\n')), default=0) * char_w
+    # Clamp h_scroll to sensible bounds - the longest line drives the limit
+    # (visual width, so inline widgets count toward it).
+    max_line_width = (max(vcols) if vcols else
+                      max((len(l) for l in text.split('\n')), default=0)) * char_w
     max_h_scroll = max(0.0, max_line_width - visible_width + 50.0)
     ds.text_h_scroll = max(0.0, min(ds.text_h_scroll, max_h_scroll))
     origin_x = left + gutter_w - ds.text_h_scroll
@@ -1428,10 +1953,11 @@ def draw_text(input_value: str,
                     and sy + line_px >= rect_min_y and sy <= rect_max_y):
                 sel_start_in_line = max(0, lo - line_abs_start)
                 sel_end_in_line = min(len(line_text), hi - line_abs_start)
-                sx = origin_x + sel_start_in_line * char_w
-                ex = origin_x + sel_end_in_line * char_w
+                sx = origin_x + _colx(line_abs_start + sel_start_in_line, line_start=line_abs_start)
+                ex = origin_x + _colx(line_abs_start + sel_end_in_line, line_start=line_abs_start)
                 if hi > line_abs_end and line_abs_end >= lo:
-                    ex = origin_x + (len(line_text) + 1) * char_w  # +1 for trailing newline
+                    # selection runs past the newline → extend one cell past EOL
+                    ex = origin_x + _colx(line_abs_end, line_start=line_abs_start) + char_w
                 draw_list.add_rect_filled(sx, sy, ex, sy + line_px, sel_color)
             line_abs_start = line_abs_end + 1
 
@@ -1443,9 +1969,8 @@ def draw_text(input_value: str,
         cur_border = (255 << 24) | (90 << 16) | (200 << 8) | 255  # active outline
         for m_idx, (ms, me) in enumerate(search_matches):
             m_line, _ = _index_to_line_col(text, ms)
-            m_ls = _get_line_start(text, ms)
-            sx = origin_x + (ms - m_ls) * char_w
-            ex = origin_x + (me - m_ls) * char_w
+            sx = origin_x + _colx(ms)
+            ex = origin_x + _colx(me)
             sy = origin_y + m_line * line_px
             ey = sy + line_px
             if ey < rect_min_y or sy > rect_max_y:
@@ -1482,20 +2007,82 @@ def draw_text(input_value: str,
 
     x = origin_x
     y = origin_y
+    src_i = 0          # source index at the start of the current token
+    _tv_idx = 0        # Nth inline view drawn this frame - its STABLE name. Render
+                       # order stays stable frame-to-frame (so each view keeps its
+                       # state), unlike source/line position which shifts on edits.
+    _tv_edit = None    # (src_index, src_len, new_value) from an inline view that changed
     for token, color_key in tokens:
         color = COLORS[color_key]
+        # Inline token view: a str-keyed token_views entry with a char_width draws
+        # a widget INSTEAD of this token's text, occupying char_width cells (see
+        # the token-views note above). type-keyed entries are handled by the
+        # overlay pass after the body.
+        _view = token_views.get(color_key) if token_views else None
+        _inline = _view is not None and _view.get("char_width") is not None
         start = 0
         while True:
             nl = token.find('\n', start)
             seg = token[start:nl] if nl != -1 else token[start:]
             if seg and y + line_px >= rect_min_y and y <= rect_max_y:
-                draw_list.add_text(x, y, color, seg)
+                if _inline:
+                    # Inline view: a render_func drawn char-by-source-char, each in
+                    # a char_width cell (source stays one char per glyph, matching
+                    # the vcols map). Called like any widget - (input_value)→
+                    # (changed, new_value) - positioned into the cell via the cursor;
+                    # a changed result splices the new value into the source below.
+                    _cw = _view["char_width"]
+                    _ix = x
+                    for _ci, _ch in enumerate(seg):
+                        _src = src_i + start + _ci         # source pos (for the edit splice)
+                        _name = f"{ds.name}_tv{_tv_idx}"   # render-order index (stable name)
+                        _tv_idx += 1
+                        _save_cur = imgui.get_cursor_screen_pos()
+                        imgui.set_cursor_screen_pos((_ix, y))
+                        try:
+                            _res = _view["renderer"](_ch, width=_cw * char_w, height=line_px, name=_name)
+                        except Exception:
+                            _res = None
+                        imgui.set_cursor_screen_pos(_save_cur)
+                        if (isinstance(_res, tuple) and len(_res) >= 2 and _res[0]
+                                and isinstance(_res[1], str) and _res[1] != _ch):
+                            _tv_edit = (_src, 1, _res[1])
+                        _ix += _cw * char_w
+                elif color_key == 'icon':
+                    # Font Awesome glyphs aren't monospaced - their natural width
+                    # differs from char_w. Draw each in its own standard-width cell
+                    # (so surrounding code stays grid-aligned) and nudge it 1px left
+                    # to sit better in the cell.
+                    ix = x
+                    for ch in seg:
+                        draw_list.add_text(ix - 1, y, color, ch)
+                        ix += char_w
+                else:
+                    draw_list.add_text(x, y, color, seg)
             if nl == -1:
-                x += len(seg) * char_w
+                # Inline views: each char occupies char_width cells; else 1 cell.
+                x += len(seg) * (_view["char_width"] if _inline else 1) * char_w
                 break
             x = origin_x
             y += line_px
             start = nl + 1
+        src_i += len(token)
+
+    # An inline view (e.g. the icon dropdown) changed its value - splice the new
+    # text in for the view's source char and report the edit, so the framework
+    # reparses/saves exactly as if it were typed.
+    if _tv_edit is not None:
+        _es, _el, _ev = _tv_edit
+        text = text[:_es] + _ev + text[_es + _el:]
+        ds.text_cursor_pos = _es + len(_ev)
+        ds.text_selection_start = ds.text_selection_end = ds.text_cursor_pos
+        changed = True
+
+    # Token views keyed by libcST node TYPE (e.g. Conditional) - overlay pass,
+    # positioned by each node's span. Runs after the main text so widgets paint
+    # on top of the code they represent.
+    if token_views and code_tree is not None:
+        _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, char_w, ds)
 
     # --- Spell-check squiggles -------------------------------------------------
     # Red wavy lines under unknown words. Gated behind the global toggle and
@@ -1521,9 +2108,8 @@ def draw_text(input_value: str,
         amp = 1.6      # px above/below the baseline
         for ws, we, _word in ds._spell_errors:
             e_line, _ = _index_to_line_col(text, ws)
-            e_ls = _get_line_start(text, ws)
-            sx = origin_x + (ws - e_ls) * char_w
-            ex = origin_x + (we - e_ls) * char_w
+            sx = origin_x + _colx(ws)
+            ex = origin_x + _colx(we)
             base_y = origin_y + e_line * line_px + line_px - 2.0
             if base_y < rect_min_y or base_y > rect_max_y:
                 continue
@@ -1546,7 +2132,7 @@ def draw_text(input_value: str,
     blink_cursor = False
     if is_focused:
         if not blink_cursor or (time.time() - ds.text_cursor_blink_time) % 1.0 < 0.5:
-            cx, cy = _char_pos_to_xy(text, ds.text_cursor_pos, origin_x, origin_y, line_px)
+            cx, cy = _char_pos_to_xy(text, ds.text_cursor_pos, origin_x, origin_y, line_px, vcols=vcols)
             current_line_rect = (int(origin_x), int(cy + 1), int(origin_x + visible_width), int(cy + line_px + 1))
             line_highlight_color = imgui.get_color_u32_rgba(*Tint.cursor_tint()[:3], 0.1)
             draw_list.add_rect_filled(*current_line_rect, line_highlight_color)
@@ -1555,6 +2141,10 @@ def draw_text(input_value: str,
             draw_list.add_line(cx, cy, cx, cy + line_px, imgui_color, 2.0)
             # Highlight selection
 
+    # Function call parameter hint, floated over the code (within the body clip so
+    # it never rides up onto the header). Only for the focused editor.
+    if Melty.text_focused_ds is ds:
+        _draw_signature_hint(ds, draw_state, text, origin_x, origin_y, line_px, vcols=vcols)
 
     draw_list.pop_clip_rect()
 
@@ -1606,41 +2196,77 @@ def draw_text(input_value: str,
     _ac_cands = ds._ac_candidates if _ac_show else []
     _ac_items = {n: n for n in _ac_cands}
     _ac_anchor = getattr(ds, '_ac_anchor', ds.text_cursor_pos)
-    _ac_x, _ac_y = _char_pos_to_xy(text, _ac_anchor, origin_x, origin_y, line_px)
+    _ac_x, _ac_y = _char_pos_to_xy(text, _ac_anchor, origin_x, origin_y, line_px, vcols=vcols)
     if _ac_show:
-        # A mouse move hands the highlight back to hover after keyboard nav stole
-        # it (matches draw_dropdown); the menu rows only follow the mouse while
-        # _kbd_mode is False.
+        # Keyboard-vs-hover highlight. The menu paints the keyboard cursor only in
+        # _kbd_mode, else the hovered row - so we keep _kbd_mode True while the
+        # mouse is NOT over the popup (selection always shown, never goes
+        # blank) and ONLY drop to hover if the mouse actually MOVES over it. A
+        # resting pointer never drives the highlight, so arrow nav keeps working
+        # even with the mouse parked over the popup.
         _mp = imgui.get_mouse_pos()
-        _lm = getattr(ac_state, "_last_mouse", None)
-        if _lm is not None and (abs(_mp[0] - _lm[0]) > 0.5 or abs(_mp[1] - _lm[1]) > 0.5):
-            ac_state._kbd_mode = False
+        _lm = getattr(ac_state, '_last_mouse', None)
+        _pop_x0, _pop_y0 = _ac_x, _ac_y + line_px
+        _pop_h = min(len(_ac_cands) * 24 + 10, 312)        # ~row height, capped
+        _over = (_pop_x0 - 4 <= _mp[0] <= _pop_x0 + 400
+                 and _pop_y0 - 2 <= _mp[1] <= _pop_y0 + _pop_h)
+        _moved = _lm is not None and (abs(_mp[0] - _lm[0]) > 0.5 or abs(_mp[1] - _lm[1]) > 0.5)
+        if not _over:
+            ac_state._kbd_mode = True       # mouse away → keyboard selection shown
+        elif _moved:
+            ac_state._kbd_mode = False      # actively moving over it → hover drives
+        # over + resting → leave as-is (so an arrow's _kbd_mode=True persists)
         ac_state._last_mouse = (_mp[0], _mp[1])
 
+        # The popup is a CACHED latched window - re-calling draw_dd_menu does NOT
+        # repaint it (verified: the highlight sticks on the row it first opened on).
+        # Force its tile dirty here so the current selection/hover row actually
+        # paints. This body only re-runs on events (keys/hover), so it's one
+        # invalidate per event, not a per-frame spin. The tile id (found by
+        # name below) carries a hash, so look it up rather than hard-code it.
+        _mt = getattr(ds, '_ac_menu_tile', None)
+        if _mt is not None:
+            Melty.cache.invalidate(_mt, force=True)
+
+    imgui.dummy(draw_state.content_width - 1, text_height)
+
+    # draw_dd_menu is a LATCHED window: called every frame with closed=not _ac_show
+    # so it persists when this (slow) body is skipped. Hover/keys wake the loop;
+    # background results wake it via the future's done-callback (_ac_on_future).
+    ac_changed, ac_pick = draw_dd_menu(
+        _ac_items, name=f"{ds.name}_ac_menu", tint=draw_state.tint, view_offset=False,
+        temp=True, show_search=False, swoosh=False, closed=not _ac_show, height=300, auto_resize=False,
+        window_pos=(_ac_x - draw_state.abs_left, _ac_y - draw_state.abs_top + line_px), text_align="left",
+        row_tags=(getattr(ds, '_ac_kinds', None) if _ac_show else None),
+        parent_window=draw_state, root_state=ac_state, path_prefix=())
+    # Cache the popup window's tile id (it carries a hash) so the invalidate above
+    # can find it next frame. Scanned once; updates if the tile is rebuilt.
     if _ac_show:
-        # draw_text is cached, but draw_dd_menu lives inside this body - if the
-        # body is invalidated the menu vanishes. Keep the body re-running while the
-        # popup is open so hover/keyboard nav stay live frame to frame.
-        ac_changed, ac_pick = draw_dd_menu(
-            _ac_items, name=f"{ds.name}_ac_menu", tint=draw_state.tint, view_offset=False,
-            temp=True, show_search=False, swoosh=False, closed=not _ac_show, max_height=300,
-            window_pos=(_ac_x - draw_state.abs_left, _ac_y - draw_state.abs_top + line_px), disable_scroll=False, text_align="left",
-            parent_window=draw_state, root_state=ac_state, path_prefix=())
-        ds.invalidate()
-        request_render()
-        if ac_changed and isinstance(ac_pick, str):
-            anchor = ds._ac_anchor
-            text = text[:anchor] + ac_pick + text[ds.text_cursor_pos:]
-            ds.text_cursor_pos = anchor + len(ac_pick)
-            ds.text_selection_start = ds.text_cursor_pos
-            ds.text_selection_end = ds.text_cursor_pos
-            ds._ac_open = False
-            changed = True
+        _mt = getattr(ds, '_ac_menu_tile', None)
+        if _mt is None or _mt not in Melty.cache._tiles:
+            _pref = f"{ds.name}_ac_menu##"
+            for _k in Melty.cache._tiles:
+                if _k.startswith(_pref):
+                    ds._ac_menu_tile = _k
+                    break
+    # Hover may have moved the menu's cursor (when the mouse is over it); mirror
+    # that back into our selection index so Enter/arrows continue from the hovered row.
+    if _ac_show and not ac_state._kbd_mode:
+        _cp = ac_state.cursor_path
+        if isinstance(_cp, tuple) and len(_cp) == 1 and _cp[0] in _ac_cands:
+            ds._ac_index = _ac_cands.index(_cp[0])
+    if ac_changed and isinstance(ac_pick, str):
+        anchor = ds._ac_anchor
+        text = text[:anchor] + ac_pick + text[ds.text_cursor_pos:]
+        ds.text_cursor_pos = anchor + len(ac_pick)
+        ds.text_selection_start = ds.text_cursor_pos
+        ds.text_selection_end = ds.text_cursor_pos
+        ds._ac_open = False
+        changed = True
 
 
     if _font_pushed:
-
-            imgui.pop_font()
+        imgui.pop_font()
 
     # --- Floating error box pinned to the bottom of the view ---
     # The first error message used to ride inline in the jump-to header at the
@@ -1681,7 +2307,28 @@ def draw_text(input_value: str,
     # the same way), so anchor at the caret's line top minus a line to sit it snug
     # under the insertion site instead of a line too low.
 
-    imgui.dummy(draw_state.content_width - 1, text_height)
+    # --- Parse-error staleness tracking
+    # The error messages come from a BACKGROUND reparse, so the moment the buffer
+    # changes they describe an OLD buffer - wrong line numbers (esp. after adding
+    # / removing lines) or an error that's already been fixed. Mark them stale the
+    # moment the editable text changes, and keep them stale until a FRESH parse
+    # result arrives - detected as a new `error` / `code_tree` object pair
+    # (the chain hands back the same cached object until it reparses). This holds
+    # the message off for exactly the reparse gap, with no timing guess, and the
+    # text-compare catches every edit including pure newline insertions.
+    _parse_pair = (error, code_tree)
+    _prev_text = getattr(ds, '_err_prev_text', None)
+    if _prev_text is None:
+        ds._err_prev_text = text                  # baseline on first render
+    elif text != _prev_text:
+        ds._err_prev_text = text
+        if not getattr(ds, '_err_stale', False):
+            ds._err_stale = True
+            ds._err_stale_pair = _parse_pair       # this parse is now outdated
+    elif getattr(ds, '_err_stale', False):
+        _sp = getattr(ds, '_err_stale_pair', (None, None))
+        if not (error is _sp[0] and code_tree is _sp[1]):
+            ds._err_stale = False                  # a fresh parse landed
 
     if changed:
         rebuilt_text = text + '\n'.join(original_input.split('\n')[max_lines:])

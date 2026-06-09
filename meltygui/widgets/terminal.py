@@ -41,23 +41,6 @@ from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
 
 _COL_ERR = (1.0, 0.45, 0.40)
 
-# Wait this long after the cursor size change before actually resizing the PTY. A
-# window drag sweeps through many sizes; each TIOCSWINSZ sends SIGWINCH and the
-# shell reprints its prompt, so resizing per-frame stacks duplicate prompts. We
-# coalesce to a single resize once the size settles.
-_RESIZE_SETTLE = 0.12
-
-
-def _mouse_held():
-    """True while either mouse button is physically down — a window-resize drag in
-    progress (left = corner handle, right = right-drag resize). Read straight from
-    GLFW rather than imgui.io, which isn't reliably populated under Melty's input."""
-    w = Melty.glfw_window
-    if w is None:
-        return False
-    return (glfw.get_mouse_button(w, glfw.MOUSE_BUTTON_LEFT) == glfw.PRESS
-            or glfw.get_mouse_button(w, glfw.MOUSE_BUTTON_RIGHT) == glfw.PRESS)
-
 # 16-colour ANSI palette (pyte hands us names for the basic colours, 6-hex strings
 # for 256/true-colour). Tuned to read well on the dark window background.
 _PALETTE = {
@@ -88,6 +71,27 @@ _PTY_KEYS = {
 # keys (arrows, backspace, enter, ...). Used to synthesize repeats from imgui since
 # GLFW doesn't emit REPEAT actions on its own - same approach as draw_text.
 _TERM_REPEATABLE_KEYS = set(_KEY_CHAR_MAP) | set(_PTY_KEYS)
+
+# Navigation keys that take the xterm "modified" form when ctrl/alt/shift is held:
+# plain `\x1b[<final>`, modified `\x1b[1;<mod><final>` (mod from _xterm_mod). This is
+# how a terminal distinguishes Ctrl+Right (word-forward) from a bare Right arrow.
+_CSI_FINAL = {
+    glfw.KEY_UP: "A", glfw.KEY_DOWN: "B", glfw.KEY_RIGHT: "C", glfw.KEY_LEFT: "D",
+    glfw.KEY_HOME: "H", glfw.KEY_END: "F",
+}
+# Editing/paging keys in the tilde form: plain `\x1b[<n>~`, modified `\x1b[<n>;<mod>~`.
+_CSI_TILDE = {
+    glfw.KEY_INSERT: 2, glfw.KEY_DELETE: 3,
+    glfw.KEY_PAGE_UP: 5, glfw.KEY_PAGE_DOWN: 6,
+}
+
+
+def _xterm_mod(shift, alt, ctrl):
+    """The xterm modifier parameter: 1 + a bitmask (shift=1, alt=2, ctrl=4). Returns 0
+    when no modifier is held, signalling the caller to emit the plain sequence instead
+    of the `;<mod>` parameterized one. E.g. Ctrl+Right -> mod 5 -> `\\x1b[1;5C`."""
+    bits = (1 if shift else 0) | (2 if alt else 0) | (4 if ctrl else 0)
+    return bits + 1 if bits else 0
 
 
 def _set_winsize(fd, rows, cols):
@@ -254,7 +258,7 @@ def _disable_mouse(session):
     threading.Thread(target=go, daemon=True).start()
 
 
-@defaults(tint=(0.2, 0.2, 0.3))
+@defaults(tint=(0.31, 0.37, 0.66))
 class Terminal:
     """A PTY-backed terminal session plus its pyte screen.
     `launch_cmd` is the argv spawned in the PTY — by default a `tmux attach`/create,
@@ -285,8 +289,6 @@ class Terminal:
         self.lock = threading.Lock()
         self.started = False
         self.size = (0, 0)         # (cols, rows) currently applied to the PTY
-        self.pending_size = None   # last requested size, applied when it settles
-        self.pending_at = 0.0
         self.error = None
         self._ds = None            # this terminal's window draw_state (set by render)
                                    # so the reader thread can invalidate it on new output
@@ -458,26 +460,12 @@ class Terminal:
         except OSError:
             pass
 
-    def request_resize(self, cols, rows):
-        """Note a desired size; the actual resize is deferred (see _RESIZE_SETTLE)."""
+    def resize(self, cols, rows):
+        """Resize the PTY + emulated screen immediately — no coalescing, so every size
+        the window sweeps through during a drag is applied as fast as it changes.
+        _resize_screen keeps each individual resize correct."""
         if cols < 2 or rows < 2 or (cols, rows) == self.size:
-            self.pending_size = None
             return
-        if (cols, rows) != self.pending_size:
-            self.pending_size = (cols, rows)
-            self.pending_at = time.monotonic()
-
-    def apply_pending_resize(self, defer=False):
-        """Apply a pending resize once it settles. `defer` (a mouse button held =
-        resize drag in progress) holds it off until release; the settle timer is the
-        fallback. This is only an optimization to cut churn — _resize_screen makes
-        every individual resize correct, so it doesn't matter if a few fire mid-drag."""
-        if self.pending_size is None:
-            return
-        if defer or time.monotonic() - self.pending_at < _RESIZE_SETTLE:
-            return
-        cols, rows = self.pending_size
-        self.pending_size = None
         self.size = (cols, rows)
         with self.lock:
             if self.screen is not None:
@@ -701,8 +689,16 @@ def draw_terminal_screen(input_value: Terminal, draw_state, view_state: Terminal
     try:
         char_w, line_px = max(1.0, imgui.calc_text_size("0").x), imgui.get_text_line_height() * 1.25
         x0, y0 = left + pad, top + pad
-        cols = max(2, int((right - left - 2 * pad) / char_w))
-        rows = max(2, int((bottom - top - 2 * pad) / line_px))
+        # Logical terminal size is the available body, but never SMALLER than the
+        # configured minimum (Toggles.TerminalSettings, in px). Below that floor the PTY
+        # grid stays frozen at the minimum - line wrapping stops re-flowing - and the
+        # clip is pushed before the draw call crops any overflow instead of rewrapping
+        # to an unusably narrow grid.
+        ts = Toggles.TerminalSettings
+        avail_w = max(right - left - 2 * pad, ts.min_width)
+        avail_h = max(bottom - top - 2 * pad, ts.min_height)
+        cols = max(2, int(avail_w / char_w))
+        rows = max(2, int(avail_h / line_px))
 
         term.start(cols, rows)
         if term.error:
@@ -715,10 +711,7 @@ def draw_terminal_screen(input_value: Terminal, draw_state, view_state: Terminal
             imgui.set_cursor_screen_pos((x0, y0))
             imgui.text_colored("starting…", 0.55, 0.55, 0.55, 1.0)
             return False, term
-        term.request_resize(cols, rows)
-        # Prefer to coalesce the resize to frame-end, but _resize_screen keeps every
-        # dimension correct, so this is just churn reduction, not correctness.
-        term.apply_pending_resize(defer=_mouse_held())
+        term.resize(cols, rows)   # immediate - applied every time the drag changes size
 
         is_focused = Melty.text_focused_ds is ds
         io = imgui.get_io()
@@ -731,6 +724,13 @@ def draw_terminal_screen(input_value: Terminal, draw_state, view_state: Terminal
             modes = set(screen.mode)
             hist = list(screen.history.top)               # lines scrolled off the top
             buf_rows = [screen.buffer[y] for y in range(srows)]
+
+        # When the grid is taller than the window body (window dragged below min_height,
+        # so `rows` are frozen), crop from the TOP rather than the BOTTOM: shift the
+        # origin up so the last grid rows - the live prompt + cursor - stay pinned to the
+        # window's bottom edge, and the blank rows above slide out of the clip. No
+        # overflow -> the min() keeps the normal top-anchored origin.
+        y0 = min(top + pad, (bottom - pad) - srows * line_px)
 
         # Compose history-above + the live screen. We read history.top directly rather
         # than driving pyte's pop_page/next_page, which rewrites the live screen and
@@ -848,9 +848,10 @@ def draw_terminal_screen(input_value: Terminal, draw_state, view_state: Terminal
                 term._ds.invalidate()
 
         # --- render: per-row style runs, selection highlight, block cursor ---
-        # Clip to the body rect: while a resize drag is deferred the PTY is still at
-        # the old (possibly larger) size, so its grid can overrun the shrinking
-        # window - the clip keeps it from painting over neighbouring windows.
+        # Clip to the body rect: when the grid is frozen at the min-size (window dragged
+        # below min_width/min_height) the PTY is larger than the window, so the grid can
+        # overrun the shrinking window - the clip keeps it from painting over neighbouring
+        # windows.
         lo, hi = _norm(vs.sel_anchor, vs.sel_active)
         dl = imgui.get_window_draw_list()
         dl.push_clip_rect(left, top, right, bottom, True)
@@ -933,6 +934,7 @@ def _forward_keys(term, vs):
     for fk, fmods in frame_keys:
         ctrl = fmods & glfw.MOD_CONTROL
         shift = fmods & glfw.MOD_SHIFT
+        alt = fmods & glfw.MOD_ALT
         # Ctrl+Shift+C / V are copy / paste (Ctrl+C alone is SIGINT, sent as ^C below).
         if ctrl and shift and fk == glfw.KEY_C:
             _copy_selection(term, vs)
@@ -942,8 +944,21 @@ def _forward_keys(term, vs):
             if clip:
                 send(clip.encode())
             continue
-        if fk in _PTY_KEYS:
-            send(_PTY_KEYS[fk])
+        # Navigation keys carry their modifiers in the xterm "modified" CSI form, so the
+        # program sees Ctrl+Arrow (word jump), Alt+Arrow, Shift+Arrow as distinct from a
+        # bare arrow; mod==0 (no modifier) falls back to the plain sequence.
+        mod = _xterm_mod(shift, alt, ctrl)
+        if fk in _CSI_FINAL:
+            final = _CSI_FINAL[fk]
+            send((f"\x1b[1;{mod}{final}" if mod else f"\x1b[{final}").encode())
+            continue
+        if fk in _CSI_TILDE:
+            n = _CSI_TILDE[fk]
+            send((f"\x1b[{n};{mod}~" if mod else f"\x1b[{n}~").encode())
+            continue
+        if fk in _PTY_KEYS:   # enter, tab, backspace, escape: Alt adds ESC (meta),
+            seq = _PTY_KEYS[fk]   # so e.g. Alt+Backspace = `\x1b\x7f` (delete word).
+            send(b"\x1b" + seq if alt else seq)
             continue
         cm = _KEY_CHAR_MAP.get(fk)
         if cm is None:
@@ -952,9 +967,15 @@ def _forward_keys(term, vs):
         if ctrl:
             o = ord(ch.upper())
             if 64 <= o <= 95:        # Ctrl+@..Ctrl+_ -> control byte (Ctrl+C=^C, Ctrl+D=^D, ...)
-                send(bytes([o - 64]))
+                b = bytes([o - 64])
             elif ch == ' ':
-                send(b"\x00")
+                b = b"\x00"
+            else:
+                continue
+            send(b"\x1b" + b if alt else b)   # Ctrl+Alt+key -> ESC + control byte
+            continue
+        if alt:                              # Alt+key -> ESC prefix (meta), e.g. Alt+f /
+            send(b"\x1b" + ch.encode())      # Alt+b for readline-like navigation.
             continue
         send(ch.encode())
 

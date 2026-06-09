@@ -109,29 +109,45 @@ def claude_terminals_io(input_value, draw_state, view_func=None, external_change
     seen = getattr(draw_state, "_seen_sessions", None)
     if seen is None:
         seen = draw_state._seen_sessions = set()
+    # Sessions we've already DEALT WITH (PTY ended on its own, or we just killed one) and
+    # are now waiting for the ~1s poller to drop from `live`. The live loop skips these so
+    # a session lingering in a stale snapshot is neither re-killed every frame nor
+    # re-attached as "new" - both spin a loop, visible (since the relauncher restarts a
+    # killed session under a new pid → new name) and as windows "added over and over".
+    dead = getattr(draw_state, "_dead_sessions", None)
+    if dead is None:
+        dead = draw_state._dead_sessions = set()
+
+    # ── Drop a Terminal when its PTY actually ENDED (reader EOF) - immediate, not tied to
+    # the poller snapshot, so a just-created "+" terminal isn't briefly dropped. A PTY
+    # that ended on its OWN is not a user event: forget it in `seen` (so the live loop
+    # below does NOT mistake it for a closed window and kill it) and park it in `dead`.
+    for k, term in list(store.items()):
+        if getattr(term, "is_dead", None) and term.is_dead():
+            store.pop(k)
+            seen.discard(k)
+            dead.add(k)
+
     for k in store:
         seen.add(k)
     live = _live_sessions
     for s in live:
-        if s not in store:
-            if s in seen:
-                # OUT (change by reference): the user closed this terminal's window, so
-                # it's gone from the held dict but its tmux session is still alive. Kill
-                # the session (ends claude-d → closes the gnome window); the poller then
-                # drops it from `live`, so we do NOT re-add the store here.
-                _kill_session(s)
-            else:
-                # New external session -> add a Terminal (PTY/reader start on render).
-                store[s] = Terminal(_attach_cmd(s), tmux_session=s)
-                seen.add(s)
-    # Drop the terminal when its PTY has ENDED (reader EOF) - immediate, and not tied
-    # to the ~1s poller loop, so a just-created "+" terminal whose session the poller
-    # hasn't scanned yet isn't briefly dropped (the flicker). `is_dead` is False until
-    # the reader has started and then exited.
-    for k, term in list(store.items()):
-        if getattr(term, "is_dead", None) and term.is_dead():
-            store.pop(k)
-    seen &= set(live) | set(store)  # drop sessions that are neither live nor still held
+        if s in store or s in dead:
+            continue            # held, or already dealt with - wait for the poller drop
+        if s in seen:
+            # OUT (change by reference): the user closed this terminal's window, so it's
+            # missing from the held dict but its tmux session is still alive. Kill the session
+            # (ends claude-d → closes the gnome window) and park it in `dead` so we don't
+            # re-fire the kill every frame until the poller drops it from `live`.
+            _kill_session(s)
+            dead.add(s)
+        else:
+            # New external session -> add a Terminal (writer/reader start on render).
+            store[s] = Terminal(_attach_cmd(s), tmux_session=s)
+            seen.add(s)
+    live_set = set(live)
+    seen &= live_set | set(store)   # forget sessions that are neither live nor still held
+    dead &= live_set                # forget dealt-with sessions once the poller drops them
 
     # ── VIEW: hand the dict to the host's view_func (it materializes + renders) ──
     edited, value = view_func(input_value=store, external_change=False, **kwargs)
@@ -151,14 +167,15 @@ claude_proxy = RenderHost(io_function=claude_terminals_io, input_value=None,
 terminal_loop_running = False
 
 # ── the renderer: draw each discovered terminal stacked in the host window ──────
-@window(input_value=claude_proxy, tint=(0.306977,0.09673172,0.04568956))
+@window(input_value=claude_proxy, tint=(0.112029,0.04592592,0.267), width=300, height=100)
 @render_func(show_bg=False, use_cache=True, selectable=False)
-def draw_claude_terminals(input_value, draw_state, **kwargs):
+def draw_claude_terminals(input_value, draw_state,  **kwargs):
     global terminal_loop_running
     if not terminal_loop_running:
         threading.Thread(target=_poll_loop, daemon=True, name="claude-sessions-poller").start()
         terminal_loop_running = True
 
+    imgui.dummy(1, 20)
 
     # input_value is the proxy. The {session: Terminal} dict is held ONE LEVEL DOWN
     # under value_key ("value") - draw_collection on the proxy itself would only see
@@ -178,7 +195,7 @@ def draw_claude_terminals(input_value, draw_state, **kwargs):
     for term in windows.values():
         term._ds = draw_state
 
-    imgui.text(f"Terminal Windows: {len(windows)}")
+
 
     # draw_collection makes each terminal a value-key draw_state; view_func renders each
     # VALUE with draw_terminal_screen (the inline screen renderer). We pass view_func
@@ -186,14 +203,21 @@ def draw_claude_terminals(input_value, draw_state, **kwargs):
     # default is the @window bound to terminal_screen with a hardcoded screen name so
     # every terminal would collide on one draw_state and show the wrong content.
     dict_changed, new_val, draw_state = RenderFuncs.draw_collection(windows, return_extras=True, show_add_delete=True,
-                                                                    close_triggers_delete=True,
-                                                                    name="Claude Sessions", disable_scroll=True,
-                                                                    new_item_type=Terminal, temp=True,
-                                                                    child_kwargs={"mode": Modes.TERMINAL_WINDOW,
+                                                                    close_triggers_delete=True, is_tree=False, wrap=True,
+                                                                    name="New Terminal", disable_scroll=True,
+                                                                    new_item_type=Terminal, temp=True, shadow=False,
+                                                                    child_kwargs={"mode": Modes.TERMINAL_WINDOW, "swoosh":False,
                                                                                   "disable_scroll": True})
 
-    for window_ds in draw_state._children.values():
-        imgui.text(f"{window_ds.name} {window_ds.closed} {window_ds._kwargs.get('initial', {})}")
+    imgui.same_line()
+    imgui.text(f"{len(windows)} windows")
+
+    # for window_ds in draw_state._children.values():
+    #     imgui.text(f"{window_ds.name} {window_ds.closed} {window_ds._kwargs.get('initial', {})}")
+
+
+    # for window_ds in draw_state._children.values():
+    #     imgui.text(f"{window_ds.name} {window_ds.closed} {window_ds._kwargs.get('initial', {})}")
 
     return False, None
 

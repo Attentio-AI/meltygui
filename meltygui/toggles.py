@@ -149,8 +149,7 @@ class Swoosh:
                                 # within this fraction of the parent's shorter side (else stay flat)
 
 
-@window(tint=(0.01, 0.11, 0.19))
-
+@window(tint=(0.82, 0.87, 0.89))
 class Toggles:
 
     @defaults(tint=(1.00, 0.59, 0.00))
@@ -171,6 +170,15 @@ class Toggles:
     class InputHandlerToggles:
         show_debug = False
 
+    @defaults(tint=(0.30, 0.66, 0.62))
+    class TerminalSettings:
+        # Minimum LOGICAL terminal size, in pixels - independent of the window size.
+        # When a terminal window is dragged smaller than this, the emulated grid (PTY)
+        # stays frozen at this minimum so line wrapping stops re-flowing; the screen
+        # clips into the window instead (a "crop in" behavior). Larger windows grow
+        # the smaller as usual. Consumed by draw_terminal_screen.
+        min_width = 720.0
+        min_height = 480.0
 
     @defaults(tint=(0.86, 0.76, 0.61))
     class ScrollSettings:
@@ -184,7 +192,6 @@ class Toggles:
         # Used for time-based scroll acceleration: wheel ticks arriving within
         # this window count as a continuous gesture. Not yet wired into the cap.
         acceleration_threshold = 0.036  # seconds
-
 
     debug_scroll = False
     show_filled_tiles = False
@@ -223,7 +230,6 @@ class Toggles:
 
     shadow_edge_sharpness = 49.833
     draw_legacy = False
-
 
     show_full_call_stack = False
     ignore_call_from = ("draw", "_run_visualization", "run", "_bootstrap",

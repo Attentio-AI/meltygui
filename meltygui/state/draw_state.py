@@ -224,7 +224,7 @@ class TileMode(Enum):
          "imgui_is_item_activated", "frame_count", "text_search_current", "text_search_count")
 @exclude("current_tint", "overhead_time", "premature_break", "drag_mode",
          "clip_rect", "_input_value", "flow_spacing", "expanded_rect", 'max_column', 'text_selection_start', 'text_selection_end',
-         'width', "height", "size_change", 'left', 'top', "clipped", "fully_clipped", "melty_window", "text_double_click_time", "text_cursor_blink_time",
+         'width', "size_change", 'left', 'top', "clipped", "fully_clipped", "melty_window", "text_double_click_time", "text_cursor_blink_time",
          "hovered", "wrapped_top", "params", "scroll_visible", "depth_and_layer", "clipped_by_rect", "multi_line", "text_prev_cursor_pos",
          "text_cursor_pos", "text_h_scroll", "text_selection_start", "text_selection_end", "text_is_focused", "text_cursor_blink_time",
          "premature_break", "wrapped_left", "_did_use_cache", "hover_rects", "window_pos", "content_width", "code_state",

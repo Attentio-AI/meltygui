@@ -13,6 +13,7 @@ import builtins
 import dis
 import inspect
 import json
+import re as _re
 import textwrap
 import time
 import types
@@ -87,7 +88,29 @@ def _register_hotswap(source, restore, code, line_base=0):
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
 def _detect_newline(data: bytes) -> str:
-    return "\r\n" if b"\r\n" in data else "\n"
+    """The file's DOMINANT line ending, used as the OUTPUT newline when re-joining
+    spliced lines. Count-based (not "CRLF if any CRLF") so a stray CRLF doesn't
+    flip a mostly-LF file. Splitting uses `_split_lines` (universal), not this — so
+    detection only decides the join, never the line boundaries."""
+    crlf = data.count(b"\r\n")
+    lone_lf = data.count(b"\n") - crlf
+    return "\r\n" if crlf > lone_lf else "\n"
+
+
+_LINE_SPLIT_RE = _re.compile(r"\r\n|\r|\n")
+
+
+def _split_lines(text: str):
+    """Split on UNIVERSAL newlines (CRLF / CR / LF), matching `str.split('\\n')`'s
+    element model (a trailing newline yields a final "" element). The span
+    load/save splice MUST split this way: a single detected newline (`_detect_newline`)
+    can mismatch the line boundaries when the file has mixed endings OR when the
+    libcst-emitted `code_str` uses a different newline than the file — and
+    `code_str.split("\\r\\n")` over LF content does NOT split, collapsing a whole
+    function span onto one line (the reported comment/code merge). Universal split
+    can never fail to break a real line, and it matches the true line numbers that
+    getsourcelines/co_firstlineno produce."""
+    return _LINE_SPLIT_RE.split(text)
 
 
 def load_file_bytes(ref: Address) -> bytes:
@@ -101,7 +124,7 @@ def load_text(ref: Address) -> str:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
         text = data.decode("latin-1")
-    lines = text.split(newline)
+    lines = _split_lines(text)
     return newline.join(lines[ref.start:ref.end])
 
 
@@ -112,7 +135,7 @@ def load_span_text(ref: Address) -> str:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
         text = data.decode("latin-1")
-    lines = text.split(newline)
+    lines = _split_lines(text)
     return newline.join(lines[ref.start:ref.end])
 
 
@@ -257,8 +280,8 @@ def recompile_fn(input_value, ref=None, function_ref=None):
         text = full_data.decode("utf-8")
     except UnicodeDecodeError:
         text = full_data.decode("latin-1")
-    lines = text.split(newline)
-    new_lines = input_value.split(newline)
+    lines = _split_lines(text)
+    new_lines = _split_lines(input_value)
     lines[ref.start:ref.end] = new_lines
     ref.path.write_text(newline.join(lines), encoding="utf-8")
     invalidate_usage_cache(ref.path)
@@ -359,8 +382,8 @@ def recompile_cls_fn(input_value, ref=None, class_ref=None,
         text = full_data.decode("utf-8")
     except UnicodeDecodeError:
         text = full_data.decode("latin-1")
-    lines = text.split(newline)
-    new_lines = input_value.split(newline)
+    lines = _split_lines(text)
+    new_lines = _split_lines(input_value)
     lines[ref.start:ref.end] = new_lines
     ref.path.write_text(newline.join(lines), encoding="utf-8")
     invalidate_usage_cache(ref.path)
@@ -410,8 +433,8 @@ def save_span_fn(input_value, ref=None):
         text = full_data.decode("utf-8")
     except UnicodeDecodeError:
         text = full_data.decode("latin-1")
-    lines = text.split(newline)
-    new_lines = input_value.split(newline)
+    lines = _split_lines(text)
+    new_lines = _split_lines(input_value)
     lines[ref.start:ref.end] = new_lines
     ref.path.write_text(newline.join(lines), encoding="utf-8")
     yellow = "\033[93m"

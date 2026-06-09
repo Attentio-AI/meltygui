@@ -70,7 +70,7 @@ dict_proxy = RenderHost(
 
 
 @window
-@render_func(tint=(0.03, 0.13, 0.23), auto_resize=True)
+@render_func(tint=(0.84, 0.50, 0.05), auto_resize=True)
 def test_code_ui(_, draw_state):
     # Both proxies show themselves in their own windows (draw_main → draw()). This
     # window just inspects them AS ordinary dicts - the framework has no idea they're

@@ -32,7 +32,7 @@ from src.lsd.gl_gui.view.core_conversion.address import (
     shift_sibling_linenos,
 )
 from src.lsd.gl_gui.view.core_conversion.file_converters import (
-    _detect_newline, _recompile, _recompile_class, _recompile_module,
+    _detect_newline, _split_lines, _recompile, _recompile_class, _recompile_module,
 )
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
     cst_module_to_dict, dict_to_cst_module, GeneralParse,
@@ -54,7 +54,7 @@ def _load_span(ref: Address) -> str:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
         text = data.decode("latin-1")
-    lines = text.split(newline)
+    lines = _split_lines(text)
     return newline.join(lines[ref.start:ref.end])
 
 
@@ -247,9 +247,9 @@ def class_to_address_incl_overrides(input_value: type, draw_state, changed=False
         data = Path(source_file).read_bytes()
         newline = _detect_newline(data)
         try:
-            file_lines = data.decode("utf-8").split(newline)
+            file_lines = _split_lines(data.decode("utf-8"))
         except UnicodeDecodeError:
-            file_lines = data.decode("latin-1").split(newline)
+            file_lines = _split_lines(data.decode("latin-1"))
         ext_start = start0
         j = start0 - 1
         while j >= 0 and _parse_override_comment(file_lines[j].strip()) is not None:
@@ -406,8 +406,8 @@ def _do_save(input_value, code_str, ensure_import=None):
         text = full_data.decode("utf-8")
     except UnicodeDecodeError:
         text = full_data.decode("latin-1")
-    lines = text.split(newline)
-    new_lines = code_str.split(newline)
+    lines = _split_lines(text)
+    new_lines = _split_lines(code_str)
 
     old_start = input_value.start
     old_end = input_value.end
@@ -1015,7 +1015,7 @@ def _resolve_call_address(input_value):
             # save and independent of when load runs. They're intra-line fragments
             # (no newline), so the '\n' split is newline-agnostic.
             try:
-                span_lines = src_text.split('\n')[s - 1:e]
+                span_lines = _split_lines(src_text)[s - 1:e]
                 pre, _call, suf = _split_span_at_call(
                     span_lines, best_node.col_offset, best_node.end_col_offset, '\n')
                 address._call_prefix = pre
@@ -1126,7 +1126,7 @@ def address_to_call_parse(input_value, draw_state=None, changed=False, load=Fals
             text = data.decode("utf-8")
         except UnicodeDecodeError:
             text = data.decode("latin-1")
-        span_lines = text.split(newline)[address.start:address.end]
+        span_lines = _split_lines(text)[address.start:address.end]
         cols = getattr(address, "_call_cols", None)
         if cols is not None and span_lines:
             call_prefix, call_text, call_suffix = _split_span_at_call(

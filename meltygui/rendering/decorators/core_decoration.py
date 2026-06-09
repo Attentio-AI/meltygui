@@ -143,6 +143,7 @@ def defaults(*args, **kwargs):
         kwargs.pop("attrib", None)
 
     def decorator(cls):
+
         # from src.lsd.gl_gui.views.core_views.core_meta import Meta
         if attr is None:
             # DecorationManager.melty.type_defaults[cls] = Meta(**kwargs)
@@ -155,7 +156,6 @@ def defaults(*args, **kwargs):
                 for key in kwargs:
                     Core.melty.default_kwargs_by_attrib_type[cls][name][key] = kwargs[key]
                     print(f"Registered default for {cls.__name__}.{name}: {key}={kwargs[key]}")
-
                     if key == "view_function" or key == "func":
                         Core.melty.default_funcs_by_name_type[cls][name] = kwargs[key]
 
@@ -267,7 +267,7 @@ class auto_eval:
                 from src.lsd.gl_gui.view.invalidation_tracker import Note
                 if do_deep_refresh:
                     note = Note(name="Core decoration", reason="invalidate_up_by_obj", tint=(0, 0, 1))
-                    Core.melty.cache.invalidate_up_by_obj(obj=obj, name=self.name, max_depth=3, force=True, note=note)
+                    Core.melty.cache.invalidate_up_by_obj(obj=obj, name=self.name, max_depth=6, force=True, note=note)
                     request_render()
 
                     if hasattr(self, "context_menu_ds"):

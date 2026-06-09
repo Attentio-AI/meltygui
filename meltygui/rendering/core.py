@@ -3049,6 +3049,7 @@ def render_func(*args, **o_kwargs):
                                       group=g, watch=watch)
                     print_stack_trace(exception=e, section="Exception",
                                       group=g, watch=watch)
+                    print_stack_trace(exception=e, ignore_functions=[])
             else:
                 print(f"Exception in {func.__name__}: {e}")
 

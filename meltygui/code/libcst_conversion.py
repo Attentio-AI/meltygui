@@ -224,7 +224,7 @@ class Except(dict):
         return f"Except:{self.header}:{keys}"
 
 
-@defaults(included="__symbol_usages__", disable_scroll=True)
+@defaults(included="__symbol_usages__", disable_scroll=True, bg_offset=-1.206, tint=(0.009,0.2495,0.39, 0.172))
 class GeneralParse(dict):
     def __init__(self, *args, source="", file_path=None, line_offset=0, **kwargs):
         super().__init__(*args, **kwargs)
@@ -635,6 +635,111 @@ def _jedi_subprocess(file_path_str: str,
             for t in tuples
         ]
     return result
+
+
+# ── Type-aware member completion (jedi, async) ────────────────
+# Powers the editor's `imgui.` & an attribute popup. Two obstacles, one answer:
+#   1. The editor holds only a function's SPAN, so `import imgui` lives above
+#      it - jedi parsing the span alone never sees the name.
+#   2. imgui (and torch, numpy) are compiled C-extension modules: jedi's STATIC
+#      analysis finds no names in them (it works for pure-python like `os.`).
+# `jedi.Interpreter` solves both - it completes against live objects via real
+# introspection, so we hand it a namespace binding the names it interest
+# (the live modules) and it resolves `imgui.<790 real members>`. To support
+# another module, add it to _COMPLETION_MODULES. The span is dedented to column 0
+# first (a method body is indented) so it parses as a module.
+_COMPLETION_MODULES = {
+    "imgui": "imgui",
+    "glfw": "glfw",
+    "np": "numpy",
+    "torch": "torch",
+}
+_completion_ns_cache = None
+
+
+def _completion_namespace():
+    """{alias: live module} for Interpreter completion, imported once per worker.
+    A module that fails to import is simply omitted (no completion for it)."""
+    global _completion_ns_cache
+    if _completion_ns_cache is None:
+        import importlib
+        ns = {}
+        for alias, mod in _COMPLETION_MODULES.items():
+            try:
+                ns[alias] = importlib.import_module(mod)
+            except Exception:
+                pass
+        _completion_ns_cache = ns
+    return _completion_ns_cache
+
+
+def _jedi_complete_worker(code: str, line: int, col: int):
+    """Child-process worker: jedi.Interpreter completions at (1-indexed `line`,
+    0-indexed `col`) in `code`, resolving names against the live module namespace.
+    Returns picklable [(name, type), ...] (type ∈ jedi's
+    module/class/function/instance/param/keyword/statement/property/path)."""
+    import jedi
+    try:
+        comps = jedi.Interpreter(code, [_completion_namespace()]).complete(line, col)
+    except Exception:
+        return []
+    return [(c.name, c.type) for c in comps if c.name]
+
+
+def _completion_common_indent(text: str) -> int:
+    """Smallest leading-space count among non-blank lines — the block indent that
+    dedenting the span removes (so the caret column can be shifted to match)."""
+    indents = [len(l) - len(l.lstrip(" ")) for l in text.split("\n") if l.strip()]
+    return min(indents) if indents else 0
+
+
+def submit_member_completion(text: str, line0: int, col: int):
+    """Submit a jedi member-completion job for a caret at 0-indexed (`line0`,
+    `col`) within editor `text` (a function/class span). Dedents the span to
+    column 0, maps the caret into it, and returns a Future of [(name, type), ...]
+    — or None if the pool is unavailable. Non-blocking; poll Future.done() from
+    the render loop."""
+    try:
+        ci = _completion_common_indent(text)
+        dedented = "\n".join(l[ci:] if len(l) >= ci else l for l in text.split("\n"))
+        return _get_jedi_pool().submit(
+            _jedi_complete_worker, dedented, line0 + 1, max(0, col - ci))
+    except Exception:
+        return None
+
+
+def _jedi_signatures_worker(code: str, line: int, col: int):
+    """Child-process worker: jedi.Interpreter signature help at (1-indexed `line`,
+    0-indexed `col`) — the callee whose parens enclose the caret. Returns
+    picklable [(call_name, [param_string, ...]), ...] (param strings like
+    'x', 'y=0', '*args')."""
+    import jedi
+    try:
+        sigs = jedi.Interpreter(code, [_completion_namespace()]).get_signatures(line, col)
+    except Exception:
+        return []
+    out = []
+    for s in sigs:
+        try:
+            params = [p.to_string() for p in s.params]
+        except Exception:
+            params = []
+        out.append((s.name, params))
+    return out
+
+
+def submit_signature_help(text: str, line0: int, col: int):
+    """Submit a jedi signature-help job for a caret at 0-indexed (`line0`, `col`)
+    inside a call's parens within editor `text`. Same synthetic-module trick as
+    member completion (dedent + live-module namespace), so `imgui.text(` resolves.
+    Returns a Future of [(call_name, [params]), ...] or None. Non-blocking."""
+    try:
+        ci = _completion_common_indent(text)
+        dedented = "\n".join(l[ci:] if len(l) >= ci else l for l in text.split("\n"))
+        return _get_jedi_pool().submit(
+            _jedi_signatures_worker, dedented, line0 + 1, max(0, col - ci))
+    except Exception:
+        return None
 
 
 # ── Intra-module usage collection (off-GIL) ───────────────────

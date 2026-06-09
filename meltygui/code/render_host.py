@@ -555,6 +555,7 @@ def render_host_view(input_value, external_change=False, draw_state=None, name=N
     # wrapper actually re-runs instead of replaying its blit cache. NOTE: reset
     # _pending_external AFTER the wrapper - _internal_view_func reads it (during this
     # call) to tell a genuine upstream change from the wrapper's own per-keystroke pulse.
+    host.child_kwargs['temp'] = True
     result = host.io_function(input_value=input_value, view_func=host._internal_view_func,
                           external_change=ext, return_extras=True, **host.child_kwargs)
     host._pending_external = False

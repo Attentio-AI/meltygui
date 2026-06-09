@@ -478,7 +478,7 @@ stacks_printed_this_frame = 0
 this_frame_number = 0
 def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
                       max_str_len=200, max_items=5, max_depth=2, max_output=200,
-                      exception=None, section=None, group=None, file=None,
+                      exception=None, e=None, section=None, group=None, file=None,
                       print_args=True,
                       ignore_functions=("wrapper", "draw_any", "draw_inner_main")):
     """
@@ -505,6 +505,9 @@ def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
     """
     global stacks_printed_this_frame
     global this_frame_number
+    if e is not None and exception is None:
+        exception = e
+
     if this_frame_number != Core.melty.frame_count:
         this_frame_number = Core.melty.frame_count
         stacks_printed_this_frame = 0
@@ -580,62 +583,90 @@ def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
             if (k == error_frame_idx) or abs(k - error_frame_idx) < 5 or frame[2] not in ignore_functions
         ]
 
+    if frames:
+        for i, (filename, lineno, funcname, line_text, local_vars) in enumerate(frames):
+            rel = filename
+            is_mine = _is_user_code(filename)
+            is_error_frame = i == error_frame_idx
 
-    for i, (filename, lineno, funcname, line_text, local_vars) in enumerate(frames):
-        rel = filename
-        is_mine = _is_user_code(filename)
-        is_error_frame = i == error_frame_idx
-
-        if is_mine:
-            if is_error_frame:
-                file_line = (
-                    f"{_RED}File \"{rel}\", line {lineno},"
-                    f" in {_BOLD}{funcname}{_RESET}"
-                )
+            if is_mine:
+                if is_error_frame:
+                    file_line = (
+                        f"{_RED}File \"{rel}\", line {lineno},"
+                        f" in {_BOLD}{funcname}{_RESET}"
+                    )
+                else:
+                    file_line = (
+                        f"{_DIM}File \"{rel}\", line {lineno},"
+                        f" in {_RESET}{_BOLD}{_WHITE}{funcname}{_RESET}"
+                    )
             else:
                 file_line = (
                     f"{_DIM}File \"{rel}\", line {lineno},"
-                    f" in {_RESET}{_BOLD}{_WHITE}{funcname}{_RESET}"
+                    f" in {funcname}{_RESET}"
                 )
-        else:
-            file_line = (
-                f"{_DIM}File \"{rel}\", line {lineno},"
-                f" in {funcname}{_RESET}"
-            )
 
-        code_line = ""
-        if line_text:
-            if is_mine:
-                code_line = _highlight(line_text.strip(), None)
+            code_line = ""
+            if line_text:
+                if is_mine:
+                    code_line = _highlight(line_text.strip(), None)
+                else:
+                    code_line = f"{_DIM}{line_text.strip()}{_RESET}"
+
+            # Resolve watch
+            table_rows = []
+            if is_mine and local_vars is not None:
+                # Build effective watch list: auto args + explicit watches
+                effective_watches = []
+                if print_args:
+                    func_args = _get_func_args(filename, lineno, funcname, local_vars)
+                    existing_roots = {_get_root_name(_parse_watch(w)[1]) for w in watch_paths}
+                    for arg in func_args:
+                        if arg not in existing_roots:
+                            effective_watches.append(arg)
+                effective_watches.extend(watch_paths)
+
+                for expr in effective_watches:
+                    row = _resolve_watch(expr, filename, lineno, local_vars,
+                                         max_str_len, max_items, max_depth, max_output)
+                    if row is not None:
+                        table_rows.append(row)
+
+            if table_rows:
+                buf.write(_render_watch_table(file_line, code_line, table_rows,
+                                              error=is_error_frame))
             else:
-                code_line = f"{_DIM}{line_text.strip()}{_RESET}"
+                buf.write(f"  {file_line}\n")
+                if code_line:
+                    buf.write(f"    {code_line}\n")
 
-        # Variable watches
-        table_rows = []
-        if is_mine and local_vars is not None:
-            # Build effective watch list: auto args + explicit watches
-            effective_watches = []
-            if print_args:
-                func_args = _get_func_args(filename, lineno, funcname, local_vars)
-                existing_roots = {_get_root_name(_parse_watch(w)[1]) for w in watch_paths}
-                for arg in func_args:
-                    if arg not in existing_roots:
-                        effective_watches.append(arg)
-            effective_watches.extend(watch_paths)
-
-            for expr in effective_watches:
-                row = _resolve_watch(expr, filename, lineno, local_vars,
-                                     max_str_len, max_items, max_depth, max_output)
-                if row is not None:
-                    table_rows.append(row)
-
-        if table_rows:
-            buf.write(_render_watch_table(file_line, code_line, table_rows,
-                                          error=is_error_frame))
-        else:
-            buf.write(f"  {file_line}\n")
-            if code_line:
-                buf.write(f"    {code_line}\n")
+    # Compilation errors (SyntaxError and friends) store the real error location
+    # on the exception itself, rather in the traceback frames - append it.
+    if isinstance(exception, SyntaxError) and exception.filename and exception.lineno:
+        err_file = exception.filename
+        err_line = exception.lineno
+        text = exception.text
+        if text is None:
+            text = linecache.getline(err_file, err_line)
+        is_mine = _is_user_code(err_file)
+        file_line = (
+            f"{_RED}File \"{err_file}\", line {err_line}{_RESET}"
+            if is_mine else
+            f"{_DIM}File \"{err_file}\", line {err_line}{_RESET}"
+        )
+        buf.write(f"  {file_line}\n")
+        if text:
+            stripped = text.rstrip("\n")
+            code_line = (
+                _highlight(stripped.strip(), None) if is_mine
+                else f"{_DIM}{stripped.strip()}{_RESET}"
+            )
+            buf.write(f"    {code_line}\n")
+            # Caret pointing at the error column, mirroring Python's own format.
+            if exception.offset:
+                indent = len(stripped) - len(stripped.lstrip())
+                caret_col = max(exception.offset - 1 - indent, 0)
+                buf.write(f"    {' ' * caret_col}{_RED}^{_RESET}\n")
 
     if exception is not None:
         buf.write(f"  {_RED}{_BOLD}{type(exception).__name__}: {exception}{_RESET}\n")

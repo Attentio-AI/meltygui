@@ -240,23 +240,25 @@ class TestClass:
     some_val = 102
     some_other_val = 76
     some = []
+    tint=(0.52,0.80,0.688)
 
-    # [tint=(0.38801515102386475, 0.45181113481521606, 0.7069768)]
-    def some_func(a=108, b=-49):
-        print(a, b)
 
-    some_func(77, -25)
+    # [tint=(0.7722222, 0.5336913466453552, 0.17589502036571503)]
+    def some_func(a=97, b=-70):
 
+        imgui.set_cursor_pos((0,0))
     some_line = 87
     myflot = 5
-    tint = (0.02146025, 0.2325083, 0.2883721)
-    some_tuple = (105, 1)
+    tint = (0.52, 0.80, 0.688)
+    some_tuple = (101, 1)
 
-    # [tint=(0.9069767594337463, 0.5192674398422241, 0.029529478400945663)]
+    list_new = [1,1,1]
+    # [tint=(0.80, 0.3665185570716858, 0.11555557698011398)]
     class NestedClass:
-        so = 31
+        so = 31    
 
-    some_val = 102
+    some_nested = NestedClass()
+
     new_bool = True
     a_dict = {"x": -40, "y": 53}
 
@@ -880,7 +882,7 @@ def draw_with_view_funcs(input_value, view_funcs, route, routed, route_to_kwargs
 
 
 @render_func(use_cache=True, show_bg=False, selectable=False, disable_scroll=True,
-             shadow=False, indent_size=0, with_footer=None, fill_height=True)
+             shadow=False, indent_size=0, with_footer=None, fill_height=True, temp=True)
 def convert_in_and_out(input_value, draw_state, view_func=None, chain_in=None, chain_out=None,
                        run_chain_kwargs=None, route=None, modes_state: ModesState = None,
                        external_change=False, child_kwargs=None, unique=0, **kwargs):
@@ -926,6 +928,7 @@ def convert_in_and_out(input_value, draw_state, view_func=None, chain_in=None, c
     routed.update(forwarded)
 
     chain_in_error = modes_state.last_error
+    finished = False
     if chain_in:
         # Fresh dict per run (run_in_background snapshots it as _run_kwargs): never
         # reuse it for chain_out below, or a deferred chain_in run reads back
@@ -960,7 +963,13 @@ def convert_in_and_out(input_value, draw_state, view_func=None, chain_in=None, c
     # view_kwargs = {**child_kwargs, 'route': route, 'routed': routed}
     child_kwargs['routed'] = routed
 
-    raw_changed, raw_value = view_func(input_value=input_value, **child_kwargs)
+    # Force the child view to bypass its (never-invalidated) cache the frame the
+    # chain_in trigger arrives AND the frame it finishes - its tile is a sibling
+    # subtree of run_in_background, so the completion's invalidate-up never
+    # reaches it, and the cache is frame-based (not input_value based), so a fresh
+    # `routed` here won't redraw it. Mirrors code_file_io's `draw=trigger`.
+    raw_changed, raw_value = view_func(input_value=input_value,
+                                       draw=external_change or finished, **child_kwargs)
     if raw_changed:
         out_changed, out_value = True, raw_value
         # draw_state.invalidate_up(max_depth=3)
@@ -994,9 +1003,9 @@ def convert_in_and_out(input_value, draw_state, view_func=None, chain_in=None, c
 
 
 @render_func(use_cache=True, show_bg=False, selectable=False, disable_scroll=True,
-             shadow=False, indent_size=0, with_footer=None )
+             shadow=False, indent_size=0, with_footer=None, temp=True)
 def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=None, chain_out=None,
-                             run_chain_kwargs=None, route=None, modes_state: ModesState = None,
+                             run_chain_kwargs=None, route=None, modes_state: ModesState = None, temp=True,
                              external_change=False, child_kwargs=None, unique=0, **kwargs):
     """Like `convert_in_and_out`, but hands the view_func the chain_in OUTPUT directly.
 
@@ -1072,8 +1081,14 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
     primary = routed.get(primary_key) if primary_key is not None else None
 
     child_kwargs['routed'] = routed
+    # `draw=` is the one-shot cache bypass (core_render turns it into
+    # _bypass_cache; `external_change` alone does NOT bypass the child's cache).
+    # On the frame chain_in finishes, external_change is set True above, so the
+    # child re-renders with the fresh `primary` instead of blitting the stale
+    # sentinel render from the load frame. The tile is a sibling of
+    # run_in_background, so the completion's invalidate-up never reaches it.
     edited, edited_value = view_func(input_value=primary, external_change=external_change,
-                                     **child_kwargs)
+                                     draw=external_change, **child_kwargs)
     converted_edit = edited_value if (edited and edited_value is not None) else UNSET
     if edited:
         draw_state.invalidate(note=Note(name="convert_in_out, view func edit", tint=(1.0, 0.5, 0), draw_state=draw_state))
