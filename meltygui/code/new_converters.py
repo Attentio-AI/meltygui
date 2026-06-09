@@ -96,6 +96,7 @@ from src.lsd.gl_gui.view.core_views.decoration.core_decoration import no_save_ex
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.core_views.headers import draw_header
 from src.lsd.gl_gui.view.invalidation_tracker import Note
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -242,15 +243,15 @@ class TestClass:
     some = []
     tint=(0.52,0.80,0.688)
 
-
     # [tint=(0.7722222, 0.5336913466453552, 0.17589502036571503)]
     def some_func(a=97, b=-70):
-
         imgui.set_cursor_pos((0,0))
     some_line = 87
     myflot = 5
     tint = (0.52, 0.80, 0.688)
     some_tuple = (101, 1)
+    
+    
 
     list_new = [1,1,1]
     # [tint=(0.80, 0.3665185570716858, 0.11555557698011398)]

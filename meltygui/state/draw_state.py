@@ -259,6 +259,7 @@ class DrawState(DictConversion):
 
         # Chain cache, split based on type, UNSET_VALUE as a default
         self._chain_stack = CacheTree()
+        self._cursor_start_pos = None
 
         self._children = {}
         self._view_children = {}
@@ -357,7 +358,10 @@ class DrawState(DictConversion):
         self._abs_left_key = None
         self._abs_left_cache = 0
         self._abs_top_key = None
+        self._abs_top_true_key = None
+
         self._abs_top_cache = 0
+        self._abs_top_true_cache = 0
         self._abs_content_height_cache = 0
         self._abs_content_height_key = None
         # pin_rect/clip_anchor_base keys widen over frame_count too: the wrapper
@@ -423,6 +427,10 @@ class DrawState(DictConversion):
         self.depth_and_layer = (0, 0)
         self.content_height = 0
         self.invalid_content_height = True
+        # True while this view is holding a placeholder height from the
+        # core_render.content_height fast path (never fully rendered yet). Cleared
+        # the frame it renders for real.
+        self._skipped_render = False
         self.auto_resize = True
         self._tile_id = None
         self.imgui_is_toggled_open = False
@@ -447,6 +455,11 @@ class DrawState(DictConversion):
         self.left = None
         self.left_offset = 0
         self.top_offset = 0
+
+        self.left_offset_true = 0
+        self.top_offset_true = 0
+
+
         self._draggable = False
         self.search_text = ""
         self.search_active = False
@@ -776,6 +789,8 @@ class DrawState(DictConversion):
 
     @property
     def abs_content_height(self):
+        if self.frame_count < 2:
+            return 0
 
         content_height = 0
         f = Core.melty.frame_count
@@ -1078,6 +1093,37 @@ class DrawState(DictConversion):
                          + self.parent_anchor_offset[0] + anchor[0])
         return int(this_left)
 
+    def _abs_top_true(self):
+        parent_top = 0
+        if self._parent is not None and self._parent is not self:
+            parent_top = self._parent._abs_top_true()
+            parent_scroll = self._parent.scroll_offset[1] if self._parent.scroll_offset is not None else 0
+            parent_top -= parent_scroll
+
+        anchor = self.anchor_offset
+        window_pos_y = self.window_pos[1] if self.window_pos is not None else 0
+
+        base = self.clip_anchor_base if self.pin_to_clip else None
+        if base is not None:
+            # Pin to the clip rect corner rather than the scrolled position of
+            # the declaring view (which top_offset tracks).
+            this_top = window_pos_y + base[1] + anchor[1]
+            if (self.pin_to_clip is Pin.CLIP and self.height is not None
+                    and self.parent_window is not None and self.parent_window is not self):
+                # Box-level clamp: see _abs_left. Keeps the bottom edge from
+                # hanging below the window (favoring the top edge if the box
+                # is taller than the window).
+                win = self.parent_window
+                win_top = win.abs_top
+                this_top = min(this_top, win_top + win.height - self.height)
+                this_top = max(this_top, win_top)
+        else:
+            # See _abs_left for why this subtracts the live ancestor scroll.
+            this_top = (window_pos_y + parent_top + self.top_offset_true
+                        + self.parent_anchor_offset[1] + anchor[1])
+        return int(this_top)
+
+
     def _abs_top(self):
         parent_top = 0
         if self.parent_window is not None and self.parent_window is not self:
@@ -1331,6 +1377,7 @@ class DrawState(DictConversion):
 
     @property
     def abs_top(self):
+        # return int(self.abs_top_true)
         # if self.pin_to_clip:
         #     return self._abs_top()
         f = Core.melty.frame_count
@@ -1342,6 +1389,20 @@ class DrawState(DictConversion):
         self._abs_top_key = key
         val = self._abs_top()
         self._abs_top_cache = val
+        return val
+
+    @property
+    def abs_top_true(self):
+        # if self.pin_to_clip:
+        #     return self._abs_top()
+        f = Core.melty.frame_count
+        key = (f, self.top_offset_true, self.window_pos,
+               self.anchor_pos, self.parent_anchor_pos, self.height)
+        if self._abs_top_true_key == key:
+            return self._abs_top_true_cache
+        self._abs_top_true_key = key
+        val = self._abs_top_true()
+        self._abs_top_true_cache = val
         return val
 
     def mark_column(self, column):

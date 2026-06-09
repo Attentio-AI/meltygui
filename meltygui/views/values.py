@@ -2221,10 +2221,11 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
 
 @render_func(use_cache=True, selectable=False, disable_scroll=True, indent_size=0, show_bg=False, min_width=10,
              min_height=10, wrap=True)
-def button(input_value="", draw_state=None, alpha=1.0, left_mouse_held=False, shadow=True, left_mouse_down=False,
-           color=(0.533, 0.068, 0.5), highlight_hovered=True, hovered=False, width=None, height=None, style_manager=None, show_button_bg=True,
-           factor=1.0, tint_value=0.32, text_value=1.023, saturation=0.8, text_saturation=0.4, unique=0, text_align="center",
+def button(input_value="", width=10, height=10, draw_state=None, alpha=1.0, left_mouse_held=False, shadow=True, left_mouse_down=False,
+           color=(0.533, 0.068, 0.5), highlight_hovered=True, hovered=False, style_manager=None, show_button_bg=True,
+           factor=1.0, tint_value=0.32, text_value=1.023, saturation=0.8, text_saturation=0.4, text_align="center",
            search_match=False, search_current=False, tint=None, rounding=None):
+
     if color is not None:
         if not isinstance(color, tuple) or len(color) < 3:
             color = (2.558, 0.5, 0.5)
@@ -2250,12 +2251,19 @@ def button(input_value="", draw_state=None, alpha=1.0, left_mouse_held=False, sh
 
     button_txt = str(input_value).split("##")[0]
     min_size = imgui.calc_text_size(button_txt)
-
-    width = max(min_size[0] + 15, width or 10)
-    height = max(min_size[1], height or 10)
+    width = max(width, min_size[0] + 15)
+    height = max(height, min_size[1])
     draw_list: _DrawList = imgui.get_window_draw_list()
+    bx0, by0 = imgui.get_cursor_screen_pos()
 
-    bx0, by0 = draw_state.abs_left, draw_state.abs_top
+    imgui.dummy(width, height)
+    draw_state.width = width
+    draw_state.height = height
+
+    # draw_state.width = btn_size[0]
+    # draw_state.height = btn_size[1]
+
+
     bx1, by1 = bx0 + width, by0 + height
     # `rounding` lets callers square the corners (e.g. the search results, which
     # read as a flat list of items) — else use the view's default radius.
@@ -2297,13 +2305,12 @@ def button(input_value="", draw_state=None, alpha=1.0, left_mouse_held=False, sh
         draw_list.add_rect(bx0, by0, bx1, by1, (200 << 24) | (255 << 16) | (255 << 8) | 255,
                            rounding=rnd, thickness=1.5)
 
-    imgui.dummy(width, height)
 
     if left_mouse_down:
         request_render()
         return True, input_value
 
-    return False, input_value
+    return False, None
 
 
 def render_profiler_time(input_value=None, brief=False, style_manager=None):
@@ -2911,8 +2918,8 @@ def draw_enum(input_value: Enum, draw_state=None, unique=0, style_manager=None, 
     else:
 
         names = [opt.name.replace("_", " ").capitalize() for opt in options]
-        changed, selected = draw_tab_bar([input_value], collection=options, names=names, wrap=True,
-                                          z_offset=-1, unique="enum", rounding=5, as_toggles=False, bg_offset=-3)
+        changed, selected = draw_tab_bar([input_value], collection=options, names=names, name=f"{unique}_enum", wrap=True,
+                                          z_offset=-1, rounding=5, as_toggles=False, bg_offset=-3)
         if changed and selected:
             return True, selected[0]
     return False, input_value
@@ -3249,7 +3256,7 @@ def draw_live_tab(input_value, **kwargs):
     current values (kwarg override, else signature default)."""
     imgui.text("Re-renders view frequently, bad for performance but good for debugging")
 
-    params_to_view = ["unique", ("abs_left", "abs_top"), ("width", "height"), ("content_width", "content_height"), "layer", "z_offset"]
+    params_to_view = ["unique", ("abs_left"), ("abs_top", "top_offset"), "scroll_offset", ("abs_top_true", "top_offset_true"), ("width", "height"), ("content_width", "content_height"), "layer", "z_offset"]
     for to_view in params_to_view:
         if isinstance(to_view, str):
             value = getattr(input_value, to_view, 'N/A')
@@ -3549,7 +3556,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
             Core.melty.cache.invalidate_up(input_value._tile_id, max_depth=5)
     else:
         imgui.dummy(30, 30)
-        
+
     imgui.same_line()
     imgui.text_colored(f"{context_menu_offset}", 1, 1, 1, 0.3)
     imgui.same_line()
@@ -3802,7 +3809,7 @@ def draw_drop_down_item(input_value, name="", unique=0, shadow=False, draw_state
 
 @render_func(use_cache=True, show_bg=True, shadow=True, selectable=False,
              is_tree=False, show_name=True, with_header=draw_header)
-def draw_dropdown(input_value, collection, name, draw_state, drop_down_state: DropDownState, text_align="left", **kwargs):
+def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_state: DropDownState, text_align="left", **kwargs):
     """Root of a recursive dropdown. Renders a trigger button showing the current
     selection; clicking it opens the (click-to-open) root popover. Nested dict
     rows inside the popover open their own sub-menus on hover. Returns
@@ -3894,8 +3901,8 @@ def draw_dropdown(input_value, collection, name, draw_state, drop_down_state: Dr
         drop_down_state._last_mouse = (_mp[0], _mp[1])
 
     changed, new_item = draw_dd_menu(collection, tint=draw_state.tint,
-                                     name=f"{draw_state.name}_menu",
-                                     closed=not is_open, temp=True,
+                                     name=f"{unique}_menu",
+                                     closed=not is_open, temp=True, shadow=False,
                                      window_pos=(0, trigger_h -_DD_ROW_H), max_height=500,
                                      parent_window=draw_state, swoosh=False, disable_scroll=False,
                                      root_state=drop_down_state, path_prefix=())
@@ -4246,7 +4253,7 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
         # Root owns the search box. Single-line so Up/Down/Enter pass through to
         # menu nav; it auto-focuses once when the menu opens (_focus_search).
         q = getattr(root_state, "search_query", "") or ""
-        box = draw_text(q, name="dd_search", show_name=False, searchable=False,
+        box = draw_text(q, name=f"dd_search{unique}", show_name=False, searchable=False,
                         single_line=True, is_search_box=True, is_tree=False,
                         with_header=None, with_footer=None, show_bg=True, shadow=False,
                         request_focus=getattr(root_state, "_focus_search", 0) > 0,
@@ -4284,14 +4291,20 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
         root_state.search = new_search
 
     search = str(getattr(root_state, "search", "") or "")
+    # Cursor/open paths are passed down as ROW INPUTS (not read by the row's
+    # root_state): a row is a use_cache=True tile, so its highlight only repaints
+    # when an input changes. Throwing the paths through makes keyboard nav and the
+    # default-selection-on-open repaint (hover repaints via a separate hook).
+    open_path = _dd_as_tuple(getattr(root_state, "open_path", ()))
+    cursor_path = _dd_as_tuple(getattr(root_state, "cursor_path", ()))
 
     ancestor_matched = bool(search) and any(search in str(k).lower() for k in path_prefix)
     rows = _dd_visible_entries(input_value, "" if ancestor_matched else search)
-    if not rows and search:
-        imgui.dummy(180, 6)
-        text("  no matches", width=180, height=_DD_ROW_H, name="dd_nomatch",
-             text_color=(1, 1, 1))
-        return False, input_value
+    # if not rows and search:
+    #     imgui.dummy(180, 6)
+    #     text("  No matches", width=180, height=_DD_ROW_H, name="dd_nomatch",
+    #          text_colour=(1, 1, 1))
+    #     return False, None
 
     # Render the level's rows through draw_collection so it scrolls + virtualizes
     # (off-screen culling) for free - the old manual loop rendered EVERY row each
@@ -4303,32 +4316,33 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
     changed, picked = draw_collection(
         rows, name=f"dd_rows_{unique}", show_search=False, show_bg=False,
         with_header=None, mode=None, return_item=True, set_attr=_dd_noop_set,
-        item_spacing_y=0,
-        child_kwargs={"view_func": _dd_menu_row, "path_prefix": tuple(path_prefix),
-                      "root_state": root_state, "tint": tint, "text_align": text_align,
-                      "row_tags": row_tags})
+        item_spacing_y=0, use_cache=True,
+        child_kwargs={"view_func": _dd_menu_row, 'show_bg':False, 'shadow':False, "path_prefix": tuple(path_prefix),
+                      "root_state": root_state, "tint": tint, "text_align": text_align, 'z_offset':0,
+                      "row_tags": row_tags, "cursor_path": cursor_path, "open_path": open_path})
     return (True, picked) if changed else (False, input_value)
 
 
 @render_func(use_cache=True, show_bg=False, shadow=False, selectable=False, temp=True,
-             with_header=None, disable_scroll=True, min_width=300, swoosh=False)
+             with_header=None, disable_scroll=True, min_width=300, swoosh=False, z_offset=0)
 def _dd_menu_row(input_value, draw_state, text_align="right", path_prefix=(),
-                 root_state=None, tint=None, row_tags=None, **kwargs):
+                 root_state=None, tint=None, row_tags=None, cursor_path=(), open_path=(), **kwargs):
     """A single menu row. `input_value` is the row TUPLE (key, value, label,
     is_branch) — draw_collection hands each level's rows in one at a time (so it
-    can scroll / virtualize the level for free), and the row derives its own path /
-    cursor / open-state HERE from `path_prefix` + `root_state` rather than each
-    being passed in separately. Leaves are a button returning the VALUE on click;
-    branch rows show a chevron and own a nested `draw_dd_menu` to their right,
-    shown only while on the open path. Hovering points the shared cursor here; the
-    highlight is painted over the row box when hovered / keyboard-current.
+    can scroll / virtualize the level for free). `cursor_path` / `open_path` are
+    passed IN (not read from root_state) so they're cache-key inputs: a row is a
+    use_cache=True tile, so its keyboard highlight / open chevron only repaint when
+    an input changes. Leaves are a button returning the VALUE on click; branch rows
+    show a chevron and own a nested `draw_dd_menu` to their right, shown only while
+    on the open path. Hovering points the shared cursor here; the highlight is
+    painted over the row box when hovered / keyboard-current.
 
     `row_tags` (optional) maps a value -> short dim string drawn right-aligned —
     the code editor's completion popup uses it for the kind label (func/class/…)."""
     key, value, label, is_branch = input_value
     row_path = tuple(path_prefix) + (key,)
-    open_path = _dd_as_tuple(getattr(root_state, "open_path", ()))
-    cursor_path = _dd_as_tuple(getattr(root_state, "cursor_path", ()))
+    open_path = _dd_as_tuple(open_path)
+    cursor_path = _dd_as_tuple(cursor_path)
     sub_open = open_path[:len(row_path)] == row_path
     is_cursor = cursor_path == row_path
     tag = row_tags.get(value) if row_tags else None
@@ -4354,13 +4368,13 @@ def _dd_menu_row(input_value, draw_state, text_align="right", path_prefix=(),
 
     chevron = f"  {fa_chrevron_right}" if is_branch else "    "  # fa-chevron-right
     if is_branch:
-        clicked, _ = button(f"{label}{chevron}", name=f"{label}_ddrow", width=draw_state.content_width,
-                            height=_DD_ROW_H, hovered=hovered, text_value=0.36, text_saturation=0.799,
-                            z_offset=0, rounding=0, show_button_bg=False, show_bg=False, use_cache=True,
+        clicked, _ = button(f"{label}{chevron}", name=f"{label}_ddrow", width=draw_state.content_width - 10,
+                            height=_DD_ROW_H, hovered=hovered, text_value=0.36, text_saturation=0.799, shadow=False,
+                             rounding=0, show_button_bg=False, show_bg=False, use_cache=True,
                             text_align=text_align, tint=tint)
     else:
         clicked, _ = button(f"{label}{chevron}", name=f"{label}_ddrow", show_button_bg=False,
-                            width=draw_state.content_width, height=_DD_ROW_H, hovered=hovered,
+                            width=draw_state.content_width - 10, height=_DD_ROW_H, hovered=hovered,
                             text_saturation=0.716, z_offset=0, shadow=False, show_bg=False, use_cache=True,
                             text_align=text_align, tint=tint)
 
@@ -4388,9 +4402,9 @@ def _dd_menu_row(input_value, draw_state, text_align="right", path_prefix=(),
         # via closed=True, never leaving a stale painted frame); only the on-path
         # branch actually draws. Pinned to the right of this row with window_pos.
         changed, picked = draw_dd_menu(value, name=f"{label}_submenu", tint=tint,
-                                       closed=not sub_open, temp=True,
-                                       window_pos=(draw_state.width + 2, -_DD_ROW_H),
-                                       parent_window=draw_state,
+                                       closed=not sub_open, temp=True, use_cache=True,
+                                       window_pos=(draw_state.width, -_DD_ROW_H),
+                                       parent_window=draw_state, disable_scroll=False,
                                        root_state=root_state, path_prefix=row_path)
         if changed:
             return True, picked

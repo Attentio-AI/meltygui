@@ -1616,7 +1616,7 @@ class TileCacheMasked:
                          and (not draw_state.size_change))
 
             if use_image:
-                imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
+                # imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
 
                 a = draw_state.abs_left, draw_state.abs_top
                 b = draw_state.abs_left + size[0], draw_state.abs_top + size[1]
@@ -1634,7 +1634,7 @@ class TileCacheMasked:
                                                                rounding=draw_state.corner_radius)
                 imgui.dummy(size[0], size[1])
 
-                imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top + draw_state.content_height))
+                # imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0], draw_state.abs_top + draw_state.content_height))
                 self._stack.append(
                     _Ctx(
                         draw_state=draw_state,

@@ -34,6 +34,7 @@ def live(cls):
         else:
             original_setattr(self, name, value)
 
+
         if Core.melty.silence_invalidate or Core.melty.frame_count < 2:
             return
 
@@ -46,7 +47,9 @@ def live(cls):
         do_deep_refresh = name in deep_refresh_names
         visible = name not in excluded
         visible = visible or do_deep_refresh
-        #
+
+
+
         if name in invalidate_all:
             if Core.melty.init_complete():
                 print(f"Invalidate all called due to change in {name}")
