@@ -104,7 +104,7 @@ class Comment(str):
         return hash(("__comment__", str(self), self.inline))
 
 
-@defaults(tint=(0.0, 0.1706498, 0.2930232286453247, 0.0), shadow=False, is_tree=False, use_cache=True, show_bg=False,
+@defaults(tint=(0.83, 0.58, 0.20, 0.0), shadow=False, is_tree=False, use_cache=True, show_bg=False,
  view_func=RenderFuncs.draw_text, align_header=False)
 class CodeLine(str):
     """A raw line/expression of code that couldn't be reduced to a Python value,

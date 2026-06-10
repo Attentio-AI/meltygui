@@ -594,6 +594,12 @@ class Melty:
             collection_type = draw_state._kwargs.get("type_collection", type(draw_state._collection))
             attrib_key = draw_state._kwargs.get("key", draw_state._kwargs.get("name", None))
 
+        # Names often carry an imgui id suffix ("tint##caller_3"); the default
+        # registries are keyed by the bare attribute name, so match on the
+        # part before the ## tag.
+        if isinstance(attrib_key, str) and "##" in attrib_key:
+            attrib_key = attrib_key.split("##", 1)[0]
+
         default_view_function = None
 
         # Most specific: a per-(collection_type, attribute) override registered

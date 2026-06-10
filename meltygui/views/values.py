@@ -34,7 +34,8 @@ from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment, Gener
     SymbolUsage, cst_module_to_dict, dict_to_cst_module
 from src.lsd.gl_gui.view.core_conversion.new_codecs import CallSite
 from src.lsd.gl_gui.view.core_conversion.new_converters import code_file_io, convert_in_and_out_value, \
-    cst_module_to_string, string_to_cst_module, code_hosts_for
+    cst_module_to_string, string_to_cst_module, code_hosts_for, host_code_state, \
+    recompile_button, recompile_status, run_recompile
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
@@ -1085,6 +1086,35 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
             Core.melty.summon_window(gs, mx, my - 65)
         GlobalSearch._focus_requested = True
         request_render()
+
+    # Ctrl+F root fallback: the per-view Ctrl+F (core_render's searchable
+    # block) only registers while the view actually RENDERS - a fully
+    # cache-blitted window (an idle code/index pane) never registers, so the
+    # key would go nowhere. The root always renders: resolve the hovered
+    # searchable view via the BVH (parent-most, matching the per-view inverted
+    # logic) and activate its search exactly as the per-view path would.
+    # non_blocking, so a front view that DID register still gets the event -
+    # both then act on the same parent-most view, which is idempotent.
+    if draw_state.on_action("non_blocking_ctrl_f_down", priority_delta=512):
+        mx, my = imgui.get_mouse_pos()
+        target = None
+        for ds in Core.melty.bvh_query(mx, my):
+            kw = getattr(ds, '_kwargs', None) or {}
+            if not (kw.get('searchable')
+                    or getattr(kw.get('render_func'), '_searchable', False)):
+                continue
+            if target is None or getattr(ds, 'z_pos', 0) < getattr(target, 'z_pos', 0):
+                target = ds
+        if target is not None:
+            if Core.melty.focused_ds is not None and Core.melty.focused_ds is not target:
+                Core.melty.focused_ds.search_active = False
+                Core.melty.cache.invalidate(Core.melty.focused_ds._tile_id, force=True)
+            target.search_active = True
+            target._search_was_active = False     # find box re-claims focus
+            Core.melty.clear_focus(not_this=target)
+            Core.melty.focused_ds = target
+            Core.melty.cache.invalidate_up(target._tile_id, force=True, max_depth=12)
+            request_render()
 
     if draw_state.on_action("non_blocking_ctrl_z_down"):
         UndoManager.undo()
@@ -2536,6 +2566,32 @@ def param_source_matrix(input_value, keys=None, func=None, include_unmatched=Fal
     return changed, matrix
 
 
+# Attributes pinned into the signature section of the inputs matrix even
+# though they come from the @render_func machinery, not the view function's
+# own signature.
+MATRIX_DEFAULT_PRIORITY = ("tint",)
+
+# Framework-injected parameters: present in most view-function signatures but
+# never user-tunable, so they don't belong in the signature section.
+_MATRIX_FRAMEWORK_PARAMS = {"input_value", "draw_state", "args", "kwargs",
+                            "o_kwargs", "next_kwargs", "meta", "viewstate",
+                            "self", "unique", "changed"}
+
+
+def signature_param_names(func):
+    """The view function's OWN tunable parameters (unwrapped signature minus
+    the framework-injected names) plus MATRIX_DEFAULT_PRIORITY — the rows
+    pinned to the top section of the inputs matrix. For draw_float that's
+    min_value/max_value/speed/…; tint rides along from the default list."""
+    try:
+        params = inspect.signature(inspect.unwrap(func)).parameters
+    except (TypeError, ValueError):
+        return []
+    names = [p for p in params if p not in _MATRIX_FRAMEWORK_PARAMS]
+    names += [k for k in MATRIX_DEFAULT_PRIORITY if k not in names]
+    return names
+
+
 @render_func()
 def apply_param_source_matrix(input_value, ref=None, changed=False):
     """Reverse of param_source_matrix — the unsort_dict_alphabetically analog.
@@ -2559,8 +2615,9 @@ def apply_param_source_matrix(input_value, ref=None, changed=False):
 
 
 @render_func(use_cache=True, show_bg=False, shadow=False, with_header=None,
-             show_name=False, selectable=False, is_tree=True, temp=True)
-def draw_param_matrix(input_value, draw_state=None, source_tints=None, unique=None, **kwargs):
+             show_name=False, selectable=False, is_tree=True, temp=True, searchable=True)
+def draw_param_matrix(input_value, search_text="", draw_state=None, source_tints=None, unique=None,
+                      priority_params=(), view_draw_state=None, **kwargs):
     """The inputs-tab matrix view: rows = parameters, cells = the sources that
     set them. Cells are parse FRAGMENTS (leaves pulled out of their codec's
     parse), so they can't naturally adopt the codec tint the way a whole
@@ -2569,46 +2626,77 @@ def draw_param_matrix(input_value, draw_state=None, source_tints=None, unique=No
     every cell, alpha-boosted, so the data source is highly visible at a
     glance. Empty rows are skipped here — this is the provenance view; the
     full parameter surface is the matrix dict itself. Cell edits mutate the
-    row in place and report changed, for apply_param_source_matrix write-back."""
+    row in place and report changed, for apply_param_source_matrix write-back.
+
+    `priority_params` (see signature_param_names) pins those rows into a top
+    section — the view function's own signature params plus the default list —
+    divided from the remaining machinery/unmatched rows by a separator."""
     changed = False
     tints = source_tints or {}
     font = Font.JETBRAINS_MONO_22
     _hdr_font = Core.melty.font_mgr.get(font) if Core.melty.font_mgr else None
-    for param, row in input_value.items():
-        if not isinstance(row, dict) or not row:
-            continue
-        if param.startswith('_'):
-            continue
 
-        # One SECTION per attribute name: the name once, in a slightly larger
-        # font, with every source's value grouped & indented beneath it.
-        imgui.dummy(0, 2)
-        if _hdr_font is not None:
-            imgui.push_font(_hdr_font)
-        imgui.text_colored(param, 1,1,1,1.1)
-        if _hdr_font is not None:
-            imgui.pop_font()
-            
+    def _shown(param, row):
+        return isinstance(row, dict) and row and not param.startswith('_')
 
-        imgui.dummy(0, 4)
-        indent_size = 1
-        imgui.indent(indent_size)
-        for sname, val in row.items():
-            tint = tints.get(sname)
+    prio_set = set(priority_params or ())
+    prio_items = [(p, input_value[p]) for p in (priority_params or ())
+                  if p in input_value and _shown(p, input_value[p])]
+    rest_items = [(p, r) for p, r in input_value.items()
+                  if p not in prio_set and _shown(p, r)]
 
-            ch, nv = draw_any(val, name=f"{sname}##{param}_{unique}",
-                              width=draw_state.content_width - 24,
-                              tint=tint, show_bg=True, expanded=True,
-                              show_name=True, wrap=False,
-                              align_header=True, bg_offset=2, z_offset=-1,
-                              show_add_delete=False, disable_scroll=True,
-                              shadow=True)
-            if ch:
-                row[sname] = nv
-                changed = True
+    def _draw_rows(items, name_alpha=1.0):
+        nonlocal changed
+        for param, row in items:
+            # One row per attribute name: the name once, in a slightly larger
+            # font, with every source's value grouped & indented beneath it.
+            imgui.dummy(0, 2)
+            if _hdr_font is not None:
+                imgui.push_font(_hdr_font)
+                
+            param = param[:min(len(param), 17)]
 
-            imgui.dummy(0, 4)
-        imgui.unindent(indent_size)
+            imgui.text_colored(param, 1,1,1, name_alpha)
+            if _hdr_font is not None:
+                imgui.pop_font()
+
+            imgui.same_line()
+            indent_size = 174
+            imgui.indent(indent_size)
+            for sname, val in row.items():
+                tint = tints.get(sname)
+
+                # key routes the cell by ATTRIBUTE name (a tint cell gets the
+                # swatch/picker, not draw_collection); name displays the SOURCE
+                # as the visible label.
+                ch, nv = draw_any(val, name=f"{sname}##{param}_{unique}",
+                                  key=param, header_same_line=True,
+                                  width=draw_state.content_width - 24,
+                                  tint=tint, show_bg=True, expanded=True,
+                                  show_name=True, wrap=False,
+                                  align_header=True
+                                  , bg_offset=2, z_offset=-1,
+                                  show_add_delete=False, disable_scroll=True,
+                                  shadow=True)
+                if ch:
+                    row[sname] = nv
+                    changed = True
+
+                imgui.dummy(0, 1)
+            imgui.unindent(indent_size)
+
+    draw_text(f"def {view_draw_state._view_func.__name__}",
+                is_tree=False, editable=False,
+                font=Font.JETBRAINS_MONO_30)
+    _draw_rows(prio_items, name_alpha=1.0)
+    if prio_items and rest_items:
+        imgui.dummy(0, 16)
+        imgui.dummy(0, 16)
+
+    draw_text(f"core_render.py", 
+            is_tree=False, editable=False,
+            font=Font.JETBRAINS_MONO_30)
+    _draw_rows(rest_items, name_alpha=0.2)
     return changed, input_value
 
 
@@ -3521,10 +3609,16 @@ class ContextMenuState:
         self.class_dict = None
         self.call_site = None
         self.call_site_dict = None
+        # What the cached hosts above were built FOR. This menu's up/down nav
+        # retargets the same tab draw_state (and thus this same cm_state) at an
+        # ancestor view, so the hosts must rebuild when the target changes.
+        self.host_key = None
+        self.call_site_key = None
 
 
 @render_func(use_cache=True, show_bg=False, show_header=False, show_name=False, selectable=False, disable_scroll=False, temp=True)
-def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, unique=None, class_to_show=None, **kwargs):
+def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, unique=None, class_to_show=None,
+                   enter_key_pressed=None, **kwargs):
     """The three editable sources behind this view, in dispatch order:
 
       1. RENDER FUNCTION — the render_func whose body produced the view, edited
@@ -3545,22 +3639,42 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, unique=No
     # site shares ONE host pair, so the code isn't re-loaded and re-parsed per
     # open (code_hosts_for in new_converters; earlier like this tab used to
     # build inline).
-    if cm_state.render_func_str is None:
+    host_key = (input_value._view_func, class_to_show)
+    if cm_state.host_key != host_key:
+        cm_state.host_key = host_key
         cm_state.render_func_str, cm_state.render_func_dict = code_hosts_for(input_value._view_func)
         cm_state.class_str, cm_state.class_dict = code_hosts_for(class_to_show)
+        # The nav retargeted us at a new view; its call site differs (and
+        # may not be captured yet - see the lazy capture in draw_context_menu).
+        cm_state.call_site = None
+        cm_state.call_site_dict = None
+        cm_state.call_site_key = None
 
-    if cm_state.call_site is None:
-        call_site = getattr(input_value, "_call_site", None)
-        if call_site is not None:
-            filename, lineno = call_site
-            cm_state.call_site, cm_state.call_site_dict = code_hosts_for(CallSite(filename, lineno))
+    # _call_site can remain a frame or two after retargeting (lazy one-shot
+    # capture on the ancestor's next render), so check it every pass.
+    call_site = getattr(input_value, "_call_site", None)
+    if call_site is not None and call_site != cm_state.call_site_key:
+        cm_state.call_site_key = call_site
+        filename, lineno = call_site
+        cm_state.call_site, cm_state.call_site_dict = code_hosts_for(CallSite(filename, lineno))
 
-
-    # changed, value = draw_text(cm_state.render_func_str.value, name=f"View Function##{unique}", column=0, disable_scroll=False)
-    # if changed:
-    #     cm_state.render_func_str.value = value
-
-    # imgui.text(f"{input_value._call_site}")
+    # ── Recompile (hotswap) - the same Run path code_file_io draws on a file
+    # leaf (menu_files / FILE_TREE). A matrix edit saves SOURCE to disk via
+    # the hosts' chain_out, but the live render function keeps its old defaults
+    # until a hotswap. The button/runner work against the str_host's own
+    # CodeState, so Run compiles the host's live buffer (the edit already
+    # merged in), not a possibly-stale disk read. None until the lazy host is
+    # drawn/loaded so the button appears a beat after the menu opens.
+    code_state = host_code_state(cm_state.render_func_str)
+    if code_state is not None and code_state.address is not None:
+        clicked = recompile_button(code_state, unique=unique)
+        recompile_status(code_state, draw_state)
+        # Alt+Enter (or the editor's usual Ctrl+Enter) while hovering the tab -
+        # enter_key_pressed is the auto-subscribed Enter-down InputEvent, same
+        # mechanism as code_file_io's hotkey; modifiers ride on the event.
+        hotkey = bool(enter_key_pressed and (enter_key_pressed.alt or enter_key_pressed.ctrl))
+        run_recompile(input_value._view_func, code_state, draw_state,
+                      start=clicked or hotkey, name=f"recompile{unique}")
 
     # ── Every input in one table: parameter × source matrix ───────────────
     # Collect each parsed source dict (columns), pivot against the render
@@ -3605,7 +3719,8 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, unique=No
     if sources:
         _, matrix = param_source_matrix(sources, func=input_value._view_func,
                                         include_unmatched=True)
-        changed, value = draw_param_matrix(matrix, source_tints=source_tints,
+        changed, value = draw_param_matrix(matrix, source_tints=source_tints, view_draw_state=input_value,
+                                           priority_params=tuple(signature_param_names(input_value._view_func)),
                                            name=f"{input_value._view_func.__name__} inputs##matrix{unique}",
                                            disable_scroll=True)
         if changed and isinstance(value, dict):
@@ -3677,7 +3792,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0] - 1, imgui.get_cursor_screen_pos()[1] - 18))
     if up_key_pressed:
         print("Up key pressed")
-        
+
     fa_up_arrow = ""
     fa_down_arrow = ""
     if input_value._parent.id is not None:
@@ -3694,11 +3809,12 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
             Core.melty.cache.invalidate_up(input_value._tile_id, max_depth=5)
     else:
         imgui.dummy(30, 30)
+  
+    
 
     imgui.same_line()
     imgui.text_colored(f"{context_menu_offset}", 1, 1, 1, 0.3)
     imgui.same_line()
-
 
     # Screenshot this menu's parent view, top of the menu below the nav arrows.
     # Deferred so the menu isn't in the shot: front the owning window (so the
@@ -4386,8 +4502,12 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
     half-typed identifier IS the filter, so a second focus-stealing search box
     would fight it. The caller pre-filters the rows in that case.
 
-    Intentionally un-cached: the popover re-renders every frame while open (the
-    root drives request_render), so hover/search changes take effect live."""
+    The popover and its rows are CACHED tiles; cursor/open paths live in
+    root_state (mutated in place), which cache keys can't see. Repaints are
+    driven by explicit invalidation: hover via _dd_set_cursor, keys via the
+    begin_frame popover hook (or the code editor's per-event invalidate_up) —
+    invalidate_up specifically, since it cascades to the row tiles; a plain
+    invalidate leaves the inner dd_rows collection clean and it blit-skips."""
     if show_search and not path_prefix and root_state is not None:
         # Root owns the search box. Single-line so Up/Down/Enter pass through to
         # menu nav; it auto-focuses once when the menu opens (_focus_search).
@@ -4485,16 +4605,6 @@ def _dd_menu_row(input_value, draw_state, text_align="right", path_prefix=(),
     sub_open = open_path[:len(row_path)] == row_path
     is_cursor = cursor_path == row_path
     tag = row_tags.get(value) if row_tags else None
-
-    # [TEMP DEBUG] record AC-menu row executions
-    if not path_prefix and getattr(root_state, '_kbd_mode', None) is not None:
-        _rr = getattr(Melty, '_rowrun_trace', None)
-        if _rr is None:
-            _rr = Melty._rowrun_trace = []
-        _rr.append({'frame': Melty.frame_count, 'label': str(label)[:24],
-                    'is_cursor': is_cursor, 'kbd_mode': getattr(root_state, '_kbd_mode', None),
-                    'cursor_path': list(cursor_path)})
-        del _rr[:-120]
 
     hovered = draw_state._bounding_hovered
     # Colour the row by its value's embedded tint (e.g. a Lora's .tint), falling

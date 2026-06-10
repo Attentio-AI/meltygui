@@ -1582,14 +1582,14 @@ def render_func(*args, **o_kwargs):
                                                                                               draw_state=draw_state))
 
             if draw_state.width > 0 and draw_state.height > 0:
-                inside_clip = Melty.fully_inside_clip(rect=(draw_state.abs_left, draw_state.abs_left,
+                inside_clip = Melty.fully_inside_clip(rect=(draw_state.abs_left, draw_state.abs_top,
                                                             draw_state.width, draw_state.height))
                 needs_invalidate = False
                 if inside_clip != draw_state.fully_clipped and inside_clip:
                     needs_invalidate = True
                 draw_state.fully_clipped = inside_clip
 
-                inside_clip = Melty.inside_clip(rect=(draw_state.abs_left, draw_state.abs_top,
+                inside_clip = Melty.inside_clip(rect=(draw_state.abs_left, draw_state.abs_top + draw_state.header_height,
                                                       draw_state.width, draw_state.height))
                 if inside_clip != draw_state.inside_clip and inside_clip:
                     needs_invalidate = True

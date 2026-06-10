@@ -85,6 +85,8 @@ def _kill_session(session):
             pass
 
     threading.Thread(target=go, daemon=True).start()
+    
+    
 
 
 # ── the stateful wrapper: discover -> view_func(dict) -> apply ──────────────────
@@ -116,6 +118,7 @@ def claude_terminals_io(input_value, draw_state, view_func=None, external_change
     dead = getattr(draw_state, "_dead_sessions", None)
     if dead is None:
         dead = draw_state._dead_sessions = set()
+        
 
     # ── Drop a Terminal when its PTY actually ENDED (reader EOF) - immediate, not tied to
     # the poller snapshot, so a just-created "+" terminal isn't briefly dropped. A PTY
@@ -176,6 +179,7 @@ def draw_claude_terminals(input_value, draw_state,  **kwargs):
 
     imgui.dummy(1, 20)
 
+
     # input_value is the proxy. The {session: Terminal} dict is held ONE LEVEL DOWN
     # under value_key ("value") - draw_collection on the proxy itself would only see
     # the single {"value": ...} key (and render that _BubblingDict, not the
@@ -195,7 +199,6 @@ def draw_claude_terminals(input_value, draw_state,  **kwargs):
         term._ds = draw_state
 
 
-
     # draw_collection makes each terminal a value-key draw_state; view_func renders each
     # VALUE with draw_terminal_screen (the inline screen renderer). We pass view_func
     # rather than relying on is_default_for=Terminal → draw_terminal, because the
@@ -207,10 +210,9 @@ def draw_claude_terminals(input_value, draw_state,  **kwargs):
                                                                     new_item_type=Terminal, temp=True, shadow=False,
                                                                     child_kwargs={"mode": Modes.TERMINAL_WINDOW, "swoosh":False,
                                                                                   "disable_scroll": True})
-
-    imgui.same_line()
+    
     imgui.text(f"{len(windows)} windows")
-
+    
     # for window_ds in draw_state._children.values():
     #     imgui.text(f"{window_ds.name} {window_ds.closed} {window_ds._kwargs.get('initial', {})}")
 

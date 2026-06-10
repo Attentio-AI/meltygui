@@ -155,7 +155,7 @@ class Toggles:
     @defaults(tint=(0.5, 0.188, 0.053))
     class TextEditor:
         enable_spell_check = False
-    @defaults(tint=(0.75,0.65,0.23))
+    @defaults(tint=(0.739, 0.44, 0.349))
     class InvalidateTracker:
         keep_for_frames = 101
         enable = False

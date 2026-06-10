@@ -146,7 +146,7 @@ _window_ds = None       # draw_folder_files' draw_state, stashed each render
 
 
 # ── the renderer: draw the held tree; user leaves edit via Mode.FILE_TREE ───────
-@window(input_value=files_proxy, tint=(0.69, 0.80, 0.92), disable_scroll=False, mode=Modes.WINDOW)
+@window(input_value=files_proxy, tint=(0.18, 0.72, 0.74), disable_scroll=False, mode=Modes.WINDOW)
 @render_func(show_bg=False, use_cache=True, selectable=False)
 def draw_folder_files(input_value, draw_state, **kwargs):
     global _poller_running, _window_ds

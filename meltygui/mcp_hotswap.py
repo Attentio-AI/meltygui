@@ -85,9 +85,14 @@ def hotswap_file(path, source=None):
         except Exception as e:
             return (f"hotswapped {module.__name__} live, but FAILED to persist to disk: {e} "
                     f"— change will be lost on restart")
-        invalidate_usage_cache(p)
-        import linecache
-        linecache.checkcache(str(p))
+
+    # Refresh the line caches in BOTH paths - a from-disk reload means the file
+    # was just changed by an external editor, so linecache may still hold the
+    # pre-save content. Stale lines make getsourcelines-based span resolution
+    # (and thus the in-process editor's next save) splice at wrong offsets.
+    invalidate_usage_cache(p)
+    import linecache
+    linecache.checkcache(str(p))
 
     # Wake the render loop so the new code runs on the next frame.
     try:

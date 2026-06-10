@@ -5,6 +5,7 @@ from enum import Enum
 import imgui
 
 from src.lsd.gl_gui.model.model_enums import RelaxedEnum
+from src.lsd.gl_gui.modes import Modes
 from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
@@ -61,7 +62,7 @@ class UndoManager:
     # could be aliased and mutated after the fact, so undo would restore the
     # wrong value. Start with types that are safe to keep by reference; widen
     # as snapshotting for richer types is implemented.
-    APPROVED_TYPES = (float, int, str, bool, tuple, Enum)
+    APPROVED_TYPES = (float, int, str, bool, tuple, Enum, RelaxedEnum)
 
     # Global timeline of every Change in the order it happened. This is the
     # companion that bounds total size: when this grows past MAX_HISTORY the

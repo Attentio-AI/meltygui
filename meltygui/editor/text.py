@@ -527,7 +527,7 @@ def draw_icon_selector(input_value, draw_state=None,
     return (True, picked) if (changed and isinstance(picked, str)) else (False, cur)
 
 
-@render_func(use_cache=True, show_bg=True, shadow=True, with_header=None, tint=(0.8, 0.318, 0.04),
+@render_func(use_cache=False, show_bg=True, shadow=True, with_header=None, tint=(0.8, 0.318, 0.04),
              show_name=False, selectable=False, z_offset=3, bg_offset=5)
 def draw_bool_token(input_value, draw_state=None, **kwargs):
     """Inline True/False word — whole-token token_views renderer for 'bool'
@@ -593,6 +593,13 @@ def draw_number_token(input_value, draw_state=None,
     and a drag crosses zero in one gesture. In binary-minus contexts (`a - 5`)
     the widget sees only the magnitude; dragging it negative splices `a - -1`,
     which is still valid Python.
+    Typing mode (ctrl+click / double-click) is OURS, not imgui's: the drag is
+    drawn with SLIDER_FLAGS_NO_INPUT and we swap in an input_text whose buffer
+    lives on the draw_state. imgui's built-in temp input keeps its buffer
+    private (and sets NoMarkEdited), so "the buffer is empty" is unobservable
+    from outside — owning the buffer is what lets backspace/delete on an
+    already-empty buffer delete the literal itself (splice '', widget gone),
+    matching what the text caret would do.
     left_mouse_* are declared (never read) to win the event latch over the editor —
     a drag that starts on the widget latches here, so the editor doesn't grow a
     text selection while a value is being dragged. See draw_icon_selector."""
@@ -613,20 +620,75 @@ def draw_number_token(input_value, draw_state=None,
     push_style_color(imgui.COLOR_FRAME_BACKGROUND, *(0.029, 0.039, 0.061))
     push_style_color(imgui.COLOR_FRAME_BACKGROUND_HOVERED, 0.14, 0.16, 0.19)
     push_style_color(imgui.COLOR_FRAME_BACKGROUND_ACTIVE, *(0.058, 0.07, 0.094))
+
+    def _pop_styles():
+        pop_style_color(4)
+        pop_style_var()
+
     imgui.set_next_item_width(draw_state.width)
+    if getattr(draw_state, '_num_edit', False):
+        # --- Typing mode -----------------------------------------------------
+        # _num_edit_buf is LAST frame's buffer (buffer at the start of this
+        # frame's input processing), so the keystroke that empties the buffer
+        # doesn't itself fire the delete - only the next backspace/delete does.
+        prev_buf = getattr(draw_state, '_num_edit_buf', s)
+        _del_keys = (glfw.KEY_BACKSPACE, glfw.KEY_DELETE)
+        del_pressed = (any(k in _del_keys for k, _ in Melty.frame_key_events)
+                       or any(imgui.is_key_pressed(k, repeat=True) for k in _del_keys))
+        if del_pressed and not prev_buf.strip():
+            draw_state._num_edit = False
+            _pop_styles()
+            return True, ''
+        if not getattr(draw_state, '_num_edit_started', False):
+            imgui.set_keyboard_focus_here()
+        _, buf = imgui.input_text("##num_tv_edit", prev_buf,
+                                  flags=imgui.INPUT_TEXT_AUTO_SELECT_ALL)
+        draw_state._num_edit_buf = buf
+        if imgui.is_item_active():
+            draw_state._num_edit_started = True
+        elif getattr(draw_state, '_num_edit_started', False):
+            draw_state._num_edit = False   # Enter / Esc / click-away ends this
+        # The editor's tile is cached; keep it re-rendering while we hold the
+        # input so the caret blinks and keystrokes land the frame they occur.
+        Melty.cache.invalidate_up(draw_state._tile_id, max_depth=10, force=True)
+        request_render()
+        _pop_styles()
+        # Live-apply parseable edits like imgui's temp input did: a same-kind
+        # value keeps the literal's shape via fmt_back; a kind change (int text
+        # typed over a float) splices the typed text verbatim.
+        typed = buf.strip()
+        nk, nv, _nf, _nd = _parse_number_token(typed) if typed else (None, None, None, None)
+        if nk is not None:
+            out = fmt_back(nv) if nk == kind else typed
+            if out != s:
+                return True, out
+        return False, s
+
     if kind == 'int':
         speed = max(0.2, abs(val) * 0.01)
         try:
             changed, new = imgui.drag_int("##num_tv", val, change_speed=speed,
-                                          min_value=0, max_value=0)
+                                          min_value=0, max_value=0,
+                                          flags=imgui.SLIDER_FLAGS_NO_INPUT)
         except Exception:
+            _pop_styles()
             return False, s
     else:
         speed = max(0.01, abs(val) * 0.005)
         changed, new = imgui.drag_float("##num_tv", val, change_speed=speed,
-                                        min_value=0, max_value=0, format=disp)
-    pop_style_color(4)
-    pop_style_var()
+                                        min_value=0, max_value=0, format=disp,
+                                        flags=imgui.SLIDER_FLAGS_NO_INPUT)
+    # Ctrl+click / double-click enters typing mode (imgui's own temp input is
+    # disabled above): seed the buffer with the literal; the editor draws - and
+    # grabs keyboard focus - next frame in this widget's place.
+    if (imgui.is_item_hovered()
+            and (imgui.is_mouse_double_clicked(0)
+                 or (imgui.is_mouse_clicked(0) and imgui.get_io().key_ctrl))):
+        draw_state._num_edit = True
+        draw_state._num_edit_buf = s
+        draw_state._num_edit_started = False
+        request_render()
+    _pop_styles()
     if changed and new != val:
         return True, fmt_back(new)
     return False, s
@@ -1550,7 +1612,7 @@ def _scroll_into_view(ds, top_abs, bottom_abs, margin=40.0):
     while node is not None and id(node) not in seen:
         seen.add(id(node))
         if getattr(node, 'scroll_visible', False):
-            view_top = node.abs_top
+            view_top = node.abs_top + node.header_height
             view_bottom = node.abs_top + (node.height or 0)
             sx, sy = node.scroll_offset
             # No clamping here - _ancestor_scroll enforces the scroll bound at
@@ -1582,16 +1644,22 @@ def _code_tree_errors(code_tree):
     """(line, message) parse-error markers carried by the routed code_tree, if
     any. code_tree is the GeneralParse round-tripped in via the chain; a failed
     parse may surface as a ParseError (a dict subclass) exposing .line/.error or
-    __line__/__error__ keys. Duck-typed to dodge an import cycle with
-    libcst_conversion."""
+    __line__/__error__ keys, and the background lint pass (code_checks) ships a
+    whole LIST under __errors__ (draw_text_from_code_cache builds it: the parse
+    error, if any, plus every undefined-name / call-signature finding).
+    Duck-typed to dodge an import cycle with libcst_conversion."""
     if code_tree is None:
         return []
     line = getattr(code_tree, 'line', None)
     err = getattr(code_tree, 'error', None)
     if line and err:
         return [(int(line), str(err))]
-    if isinstance(code_tree, dict) and code_tree.get('__error__'):
-        return [(int(code_tree.get('__line__') or 1), str(code_tree['__error__']))]
+    if isinstance(code_tree, dict):
+        markers = code_tree.get('__errors__')
+        if markers:
+            return [(int(ln or 1), str(msg)) for ln, msg in markers]
+        if code_tree.get('__error__'):
+            return [(int(code_tree.get('__line__') or 1), str(code_tree['__error__']))]
     return []
 
 
@@ -1637,7 +1705,7 @@ def _describe_code_tree(code_tree):
 
 @render_func(is_default_for=(CodeLine), show_bg=True, wrap=False, use_cache=True, disable_scroll=False, z_offset=1,
              with_header=draw_header, shadow=True, show_name=False, with_footer=draw_footer, determines_height=True,
-             selectable=False, searchable=True, bg_offset=-7)
+             selectable=False, searchable=True, bg_offset=-11)
 def draw_text(input_value: str,
               left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
               horizontal_scroll_drag=False, search_text="",
@@ -1794,6 +1862,7 @@ def draw_text(input_value: str,
     # text_h_scroll since the framework only manages vertical scroll.
     if horizontal_scroll_drag:
         ds.text_h_scroll -= horizontal_scroll_drag.dx
+        ds.text_h_scroll -= horizontal_scroll_drag.dx
         sx, sy = ds.scroll_offset
         ds.scroll_offset = (sx, sy - horizontal_scroll_drag.dy)
 
@@ -1946,23 +2015,6 @@ def draw_text(input_value: str,
         shift = io.key_shift
         ctrl = io.key_ctrl
 
-        # [TEMP DEBUG] record arrow-key frames while focused to diagnose AC nav
-        if pressed(glfw.KEY_UP) or pressed(glfw.KEY_DOWN):
-            _dbg = getattr(Melty, '_ac_debug', None)
-            if _dbg is None:
-                _dbg = Melty._ac_debug = []
-            _dbg.append({
-                'frame': Melty.frame_count,
-                'key': 'UP' if pressed(glfw.KEY_UP) else 'DOWN',
-                'ac_enabled': (not single_line and not is_search_box),
-                'ac_open': getattr(ds, '_ac_open', None),
-                'ncands': len(getattr(ds, '_ac_candidates', None) or []),
-                'ac_index': getattr(ds, '_ac_index', None),
-                'focused_is_self': Melty.text_focused_ds is ds,
-                'name': getattr(ds, 'name', None),
-            })
-            del _dbg[:-40]
-
         # --- Code-suggestion popup: navigation & accept ---
         # Real editors don't suggest in the find box or inline single-line
         # value fields, so gate that out. (ac_state was set up at the top.)
@@ -1982,6 +2034,7 @@ def draw_text(input_value: str,
                 # while the caret stays put (cleared once the caret moves on).
                 ds._ac_open = False
                 ds._ac_suppress_anchor = getattr(ds, '_ac_anchor', -1)
+                ds._ac_request_anchor = -1
                 _fired.discard(glfw.KEY_ESCAPE)
             elif (pressed(glfw.KEY_UP) or pressed(glfw.KEY_DOWN)) and _ac_cands:
                 step = 1 if pressed(glfw.KEY_DOWN) else -1
@@ -2003,6 +2056,7 @@ def draw_text(input_value: str,
                 ds.text_selection_end = ds.text_cursor_pos
                 ds.text_cursor_blink_time = time.time()
                 ds._ac_open = False
+                ds._ac_request_anchor = -1
                 changed = True
                 _fired.discard(glfw.KEY_ENTER)
                 _fired.discard(glfw.KEY_KP_ENTER)
@@ -2010,7 +2064,7 @@ def draw_text(input_value: str,
 
         # --- Typed characters --- drained in order, using each key event's own
         # modifiers so fast shift-typing across a slow frame stays shifted.
-        typed_ident_this_frame = False
+        typed_dot_this_frame = False
         for _fk, _fmods in _frame_keys:
             if _fmods & glfw.MOD_CONTROL:
                 continue
@@ -2025,10 +2079,10 @@ def draw_text(input_value: str,
             ds.text_cursor_pos += len(ch)
             ds.text_selection_start = ds.text_cursor_pos
             ds.text_selection_end = ds.text_cursor_pos
-            # Typing an identifier char is what opens the popup as you go (a bare
-            # caret move shouldn't). '.' opens it too via the dot handler below.
-            if ch.isalnum() or ch == '_':
-                typed_ident_this_frame = True
+            # Only a typed '.' (attribute access) opens the popup as you go;
+            # plain identifier typing doesn't - Ctrl+P requests it explicitly.
+            if ch == '.':
+                typed_dot_this_frame = True
             changed = True
 
         # --- Tab / Shift+Tab ---
@@ -2260,13 +2314,21 @@ def draw_text(input_value: str,
             sup = getattr(ds, '_ac_suppress_anchor', -1)
             if sup != -1 and sup != anchor:
                 ds._ac_suppress_anchor = sup = -1  # caret moved on; allow reopen
+            # Explicit-trigger model: the popup only opens on a TYPED '.'
+            # (attribute access) or Ctrl+P. The trigger pins the completion site
+            # (`_ac_request_anchor`); the popup stays up there - re-filtering as
+            # the prefix grows/shrinks - until the caret leaves the site, Esc, or
+            # an accepted pick. A bare caret move (e.g. clicking right after an
+            # attribute) never opens it.
+            if typed_dot_this_frame or (ctrl and pressed(glfw.KEY_P)):
+                ds._ac_request_anchor = anchor
+                ds._ac_suppress_anchor = sup = -1  # explicit ask overrides a prior Esc
+            req = getattr(ds, '_ac_request_anchor', -1)
+            if req != -1 and req != anchor:
+                ds._ac_request_anchor = req = -1  # caret left the trigger site
             suppressed = sup != -1 and sup == anchor
             was_open = getattr(ds, '_ac_open', False)
-            # Open after a '.' (attribute access) or while actively typing a name
-            # (>=1 char). A bare caret move never opens it, but it stays open as
-            # the prefix shifts (was_open) until the list empties or closes.
-            want = not suppressed and (dot_trigger
-                                       or (len(prefix) >= 1 and (was_open or typed_ident_this_frame)))
+            want = req != -1 and req == anchor and not suppressed
             if want and dot_trigger:
                 # Member access (`imgui.`, `foo.bar`) - resolve the receiver's
                 # REAL members with jedi (async, off-thread). Until they arrive,
@@ -2612,8 +2674,12 @@ def draw_text(input_value: str,
                 # instead. Replace REPLACE widgets (bool) and ACCESSORY widgets
                 # skip this: the toggle takes normal editor clicks, and a press
                 # on an accessory (opening its popover) shouldn't move the caret.
+                # Skipped while an imgui input owns the keyboard (want_text_input):
+                # that press belongs to the widget's typing mode (caret moves,
+                # select) and refocusing the editor would double-feed keystrokes.
                 if (_view.get("owns_mouse") and not _lead
                         and imgui.is_mouse_clicked(0)
+                        and not io.want_text_input
                         and x <= io.mouse_pos.x < x + _cells * char_w
                         and y <= io.mouse_pos.y < y + line_px):
                     _tv_click = (src_i, len(token),
@@ -2677,6 +2743,13 @@ def draw_text(input_value: str,
         text = text[:_es] + _ev + text[_es + _el:]
         ds.text_cursor_pos = _es + len(_ev)
         ds.text_selection_start = ds.text_selection_end = ds.text_cursor_pos
+        if not _ev:
+            # The widget deleted ITSELF (e.g. the number input's buffer was
+            # emptied and backspace pressed again) - hand the keyboard back to
+            # the editor at the literal's position so deletion keeps feeling
+            # like normal text editing.
+            Melty.text_focused_ds = ds
+            ds.text_cursor_blink_time = time.time()
         changed = True
 
     # A press on a whole-token widget also places the editor caret beside the
@@ -2836,12 +2909,16 @@ def draw_text(input_value: str,
         # The popup is a CACHED latched window - re-calling draw_dd_menu does NOT
         # repaint it (verified: the highlight sticks on the row it first opened on).
         # Force its tile dirty here so the current selection/hover row actually
-        # paints. This body only re-runs on events (keys/hover), so it's one
-        # invalidate per event, not a per-frame spin. The tile id (found by
-        # name below) carries a hash, so look it up rather than hard-code it.
+        # paints. Must be invalidate_up (it cascades to CHILD tiles below): a plain
+        # invalidate leaves the dd_menu collection inside the window clip, so it
+        # blit-skips and the rows never re-render with the new cursor pos - same
+        # mechanism the begin_frame popover code uses for regular dropdowns. This
+        # body only re-runs on events (keys/hover), so it's one invalidate per
+        # interaction, not a per-frame spin. The tile id (found by name below)
+        # carries a hash, so look it up rather than hard-code it.
         _mt = getattr(ds, '_ac_menu_tile', None)
         if _mt is not None:
-            Melty.cache.invalidate(_mt, force=True)
+            Melty.cache.invalidate_up(_mt, force=True)
 
     imgui.dummy(draw_state.content_width - 1, text_height)
 
@@ -2864,22 +2941,6 @@ def draw_text(input_value: str,
                 if _k.startswith(_pref):
                     ds._ac_menu_tile = _k
                     break
-    # [TEMP DEBUG] record popup repaint state
-    if _ac_show:
-        _rt = getattr(Melty, '_repaint_trace', None)
-        if _rt is None:
-            _rt = Melty._repaint_trace = []
-        _mt2 = getattr(ds, '_ac_menu_tile', None)
-        _rt.append({
-            'frame': Melty.frame_count,
-            'menu_tile': _mt2,
-            'tile_in_cache': (_mt2 in Melty.cache._tiles) if _mt2 else None,
-            'cursor_path': list(ac_state.cursor_path) if isinstance(ac_state.cursor_path, tuple) else ac_state.cursor_path,
-            'kbd_mode': getattr(ac_state, '_kbd_mode', None),
-            'ac_index': getattr(ds, '_ac_index', None),
-        })
-        del _rt[:-60]
-
     # Hover may have moved the menu's cursor (when the mouse is over it); mirror
     # that back into our selection index so Enter/arrows continue from the hovered row.
     if _ac_show and not ac_state._kbd_mode:
@@ -2893,6 +2954,7 @@ def draw_text(input_value: str,
         ds.text_selection_start = ds.text_cursor_pos
         ds.text_selection_end = ds.text_cursor_pos
         ds._ac_open = False
+        ds._ac_request_anchor = -1
         changed = True
 
 
@@ -2922,8 +2984,12 @@ def draw_text(input_value: str,
         err_draw_list = imgui.get_window_draw_list()
         err_draw_list.add_rect_filled(bx0, by0, bx1, by1, fill_col, 4.0)
         err_draw_list.add_rect(bx0, by0, bx1, by1, line_col, 4.0)
-        # Truncate to the box width so a long message can't overflow.
+        # Truncate to the box width so a long message doesn't overflow. The box
+        # shows the FIRST marker (every marker still gets its red line wash);
+        # with more than one, say so rather than silently hiding the rest.
         msg = str(_err_msg).split('\n', 1)[0]
+        if len(_err_markers) > 1:
+            msg = f"{msg}   (+{len(_err_markers) - 1} more)"
         avail = max(0, (bx1 - bx0) - 2 * pad_x)
         if imgui.calc_text_size(msg).x > avail:
             ch_w = max(1.0, imgui.calc_text_size("x").x)

@@ -729,10 +729,16 @@ def _recompile_module(module: types.ModuleType, source: str,
     old_attrs = dict(module.__dict__)
 
     code = compile(source, filename, "exec")
+    # The exec below re-runs every decorator in the module, registering throwaway
+    # wrappers in Melty's registries (same problem as _recompile). Snapshot the
+    # registries first so each function's registrations can be reconciled back to
+    # its live wrapper after patching.
+    _pre_reg = _snapshot_func_registrations()
     # Per-member snapshot of the PREVIOUS compiled state, taken BEFORE patching so
     # in-place edits don't clobber it (old_attrs aliases the live objects, whose
     # __code__ we update below). Each entry is a zero-arg restore closure.
     _member_restores = []
+    _swapped_funcs = []
     new_code_ids = set()
     try:
         exec(code, module.__dict__)
@@ -743,22 +749,51 @@ def _recompile_module(module: types.ModuleType, source: str,
                 continue
 
             if isinstance(old_obj, types.FunctionType) and isinstance(new_obj, types.FunctionType):
-                _prev = (old_obj.__code__, old_obj.__defaults__,
-                         old_obj.__kwdefaults__, dict(old_obj.__annotations__ or {}),
-                         old_obj.__doc__)
+                # Patch the RAW function. For decorated functions (@render_func,
+                # @wraps) old/new are both generic wrapper closures sharing the
+                # same wrapper code object - copying that __code__ is a no-op and
+                # the old wrapper keeps calling its OLD inner via its closure
+                # cell. The behavior lives in the inner raw, so patch that.
+                old_raw = inspect.unwrap(old_obj)
+                new_raw = inspect.unwrap(new_obj)
+                both_wrapped = old_raw is not old_obj and new_raw is not new_obj
+                tgt, src = (old_raw, new_raw) if both_wrapped else (old_obj, new_obj)
 
-                def _restore_fn(o=old_obj, p=_prev):
+                _prev = (tgt.__code__, tgt.__defaults__,
+                         tgt.__kwdefaults__, dict(tgt.__annotations__ or {}),
+                         tgt.__doc__)
+
+                def _restore_fn(o=tgt, p=_prev):
                     o.__code__, o.__defaults__, o.__kwdefaults__, ann, o.__doc__ = p
                     o.__annotations__ = dict(ann)
                 _member_restores.append(_restore_fn)
 
-                old_obj.__code__ = new_obj.__code__
-                old_obj.__defaults__ = new_obj.__defaults__
-                old_obj.__kwdefaults__ = new_obj.__kwdefaults__
-                old_obj.__annotations__ = new_obj.__annotations__
-                old_obj.__doc__ = new_obj.__doc__
+                tgt.__code__ = src.__code__
+                tgt.__defaults__ = src.__defaults__
+                tgt.__kwdefaults__ = src.__kwdefaults__
+                tgt.__annotations__ = src.__annotations__
+                tgt.__doc__ = src.__doc__
                 module.__dict__[name] = old_obj
-                new_code_ids |= _hotswap_guard.collect_code_ids(new_obj.__code__)
+                new_code_ids |= _hotswap_guard.collect_code_ids(src.__code__)
+
+                # Reconcile the throwaway wrapper's registrations and decorator
+                # state back onto the live objects - the same contract as
+                # _recompile. Without this, render_funcs_by_name (and friends)
+                # point at the throwaway while draw_state._view_func and the
+                # module global keep executing the live one; whichever side a
+                # later edit reaches, the other freezes.
+                _redirect_function_registrations(_pre_reg, new_obj,
+                                                 live_raw=old_raw, live_func=old_obj)
+                _redirect_function_decorations(new_obj, new_raw, old_obj, old_raw)
+                if both_wrapped and getattr(new_obj, "__render_func__", False):
+                    _transfer_wrapper_state(old_obj, new_obj, new_raw)
+                # The reload shifts line numbers; a cached Address would make the
+                # editor's next span-resolved save splice at stale offsets
+                # (symptom: the function tail duplicated on every save).
+                invalidate_address_cache(old_obj)
+                if both_wrapped:
+                    invalidate_address_cache(old_raw)
+                _swapped_funcs.append(old_obj)
 
             elif isinstance(old_obj, type) and isinstance(new_obj, type):
                 _snap = _snapshot_class(old_obj)
@@ -790,6 +825,11 @@ def _recompile_module(module: types.ModuleType, source: str,
             except Exception as ex:
                 print(f"[hotswap_guard] module member restore failed: {ex}")
     _hotswap_guard.register(module, _restore_module, new_code_ids, line_base=0)
+
+    # Repaint every view affected by the swapped functions - cached tiles keep
+    # blitting old pixels (and old code) until something invalidates them.
+    for fn in _swapped_funcs:
+        Melty.cache.invalidate_up_by_func(fn, max_depth=10)
 
 
 def _hotswap_class(old_cls: type, new_cls: type) -> None:

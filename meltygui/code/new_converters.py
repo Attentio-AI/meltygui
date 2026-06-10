@@ -83,6 +83,7 @@ from src.lsd.gl_gui.view.core_conversion.address import (
 from src.lsd.gl_gui.view.core_conversion.chain_converters import (
     record_compile, _enclosing_function,
 )
+from src.lsd.gl_gui.view.core_conversion.code_checks import check_source
 from src.lsd.gl_gui.view.core_conversion.file_converters import (
     _recompile, _recompile_class, _recompile_module,
 )
@@ -372,7 +373,7 @@ LOADING = object()
 @render_func(use_cache=True, selectable=False, temp=True)
 def run_in_background(input_value, loading_state: LoadingState, unique,
                       draw_state, child_kwargs, start=False, timeout=20,
-                      debounce_ms=400, wait_for_drag=False, **kwargs):
+                      debounce_ms=50, wait_for_drag=False, **kwargs):
     if Melty.frame_count < 10:
         debounce_ms = 0
     if start:
@@ -731,7 +732,7 @@ def _compile_check(text):
         return None
 
 
-def _run_chain_in(input_value, chain=None, _src_gen=None, **extra):
+def _run_chain_in(input_value, chain=None, _src_gen=None, lint_path=None, **extra):
     """Background entry point for the forward (chain_in) conversion.
 
     A plain module-level function (NOT a @render_func) so run_in_background can
@@ -751,7 +752,17 @@ def _run_chain_in(input_value, chain=None, _src_gen=None, **extra):
     # is too lenient to flag (duplicate args/kwargs, ...). Same red-highlight path.
     if error is None and isinstance(input_value, str):
         error = _compile_check(input_value)
-    return {"routed": routed, "error": error, "_src_gen": _src_gen}
+    # Compiled clean - run the static "will this RUN" pass too: undefined names +
+    # call-signature mismatches (code_checks.check_source). Only when the host
+    # declared a lint_path (a WHOLE-FILE buffer - a span buffer would flag every
+    # module-level import it can't see). Same background thread, [(line, msg)].
+    lint = []
+    if error is None and lint_path is not None and isinstance(input_value, str):
+        try:
+            lint = check_source(input_value, path=lint_path)
+        except Exception:
+            lint = []
+    return {"routed": routed, "error": error, "lint": lint, "_src_gen": _src_gen}
 
 
 def _run_chain_out(input_value, chain=None, _out_gen=None, **extra):
@@ -791,11 +802,15 @@ class ModesState:
       selected column reads the SAME last_good, so they never drift apart. While a
       fresh conversion is in flight (or one throws on half-typed source) the views
       keep rendering off this snapshot instead of blanking out.
-    last_error — the parse/compile error from the last run, or None when clean."""
+    last_error — the parse/compile error from the last run, or None when clean.
+    last_lint — [(line, msg)] from the static name/signature pass over the same
+      run (code_checks.check_source); [] when clean or when the buffer isn't a
+      lintable whole file (no lint_path on the host)."""
 
     def __init__(self):
         self.last_good = {}
         self.last_error = None
+        self.last_lint = []
         # Round-trip generation tracking (kills the value-flicker). Every conversion
         # carries the Melty.frame_count of the LOCAL EDIT that originated it, so a
         # chain-in result can be ordered against the host's latest edit and a stale parse
@@ -964,6 +979,7 @@ def convert_in_and_out(input_value, draw_state, view_func=None, chain_in=None, c
             # Fold the completed outputs into the shared snapshot AND this
             # frame's routed (so the columns see the good values immediately).
             modes_state.last_error = payload.get("error")
+            modes_state.last_lint = payload.get("lint") or []
             for name, val in payload["routed"].items():
                 modes_state.last_good[name] = val
                 routed[name] = val
@@ -1077,6 +1093,7 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
             # compares against the user's latest LOCAL edit and drops a stale parse.
             inbound_gen = payload.get("_src_gen")
             modes_state.last_error = payload.get("error")
+            modes_state.last_lint = payload.get("lint") or []
             for name, val in payload["routed"].items():
                 modes_state.last_good[name] = val
                 routed[name] = val
@@ -1151,6 +1168,71 @@ def code_file_footer(input_value, code_state, **kwargs):
     return False, None
 
 
+# ── Recompile controls - shared by code_file_io and the context menu's input
+# tab (draw_input_tab reuses them against a code-host's CodeState, so its Run
+# button rides the exact same path as a file leaf's). Three pieces because they
+# render at three different order in code_file_io's body: the button in the top
+# line, the checkmark beside it, the runner at the end (after this frame's
+# edits have landed in text_cache).
+
+def recompile_button(code_state, unique=None, height=30):
+    """The Run (hotswap) button. Hidden until the buffer is loaded. Returns
+    whether it was clicked."""
+    if code_state.text_cache is UNSET or code_state.text_cache is None:
+        return False
+    play_icon = "\uf04b"
+    return RenderFuncs.button(f"{play_icon} Run",
+                              tint=(0.05678745, 0.5, 0.2, 0.5),
+                              height=height,
+                              name=f"recompile_btn{unique}")[0]
+
+
+def recompile_status(code_state, draw_state):
+    """The fading checkmark after a successful hotswap (same_line, so call it
+    right after the button row)."""
+    if code_state._recompiled_on_frame is None:
+        return
+    duration = 10.0
+
+    recompiled_on = float(Melty.frame_count - code_state._recompiled_on_frame)
+    fade_out = min(1.0, max(0.0, 2.0 - (max(0.0, recompiled_on) / duration)))
+
+    if fade_out >= 0:
+        imgui.same_line()
+        checkmark_icon_fa = "\uf00c"
+        imgui.text_colored(f"{checkmark_icon_fa}", 0.0, 1.0, 0.0, fade_out)
+    if fade_out > 0.01:
+        draw_state.invalidate()
+        request_render()
+        code_state._recompile_on_frame = None
+
+
+def run_recompile(source, code_state, draw_state, start=False, name="recompile"):
+    """The background hotswap runner (recompile_source via run_in_background —
+    no disk write). Call it unconditionally every frame so the runner can spawn
+    its thread and surface completion; `start` is just the trigger edge. The
+    buffer/address are snapshotted from code_state at trigger time."""
+    changed, result = run_in_background(recompile_source,
+                                        child_kwargs={"source": source,
+                                                      "code_str": code_state.text_cache,
+                                                      "file_path": code_state.address.path,
+                                                      "address": code_state.address},
+                                        name=name, start=start)
+    if result == LOADING:
+        print("Starting recompile...")
+        code_state._recompiled_on_frame = None
+    elif result == UNSET:
+        pass
+    else:
+        if changed:
+            print("Recompile successful-------------------------------")
+            code_state._recompiled_on_frame = Melty.frame_count
+            record_compile(code_state.address)
+            Melty.cache.invalidate_up(draw_state._tile_id, max_depth=10)
+            request_render()
+        code_state.recompile_result = result
+
+
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  editable_source - the whole round-trip, one function                        ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
@@ -1205,12 +1287,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                 code_state.mark_file_current()
 
         if not auto_recompile_edits and code_state.text_cache is not UNSET and code_state.text_cache is not None:
-            play_icon = "\uf04b"
-            recompile = \
-                RenderFuncs.button(f"{play_icon} Run",
-                                   tint=(0.05678745, 0.5, 0.2, 0.5),
-                                   height=top_line_height,
-                                   name=f"recompile_btn{unique}")[0]
+            recompile = recompile_button(code_state, unique=unique, height=top_line_height)
 
         if Toggles.enable_jedi:
             imgui.same_line(spacing=0)
@@ -1220,20 +1297,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                                           height=top_line_height,
                                           name="jedi_index_btn")[0] or run_jedi
 
-        if code_state._recompiled_on_frame is not None:
-            duration = 10.0
-
-            recompiled_on = float(Melty.frame_count - code_state._recompiled_on_frame)
-            fade_out = min(1.0, max(0.0, 2.0 - (max(0.0, recompiled_on) / duration)))
-
-            if fade_out >= 0:
-                imgui.same_line()
-                checkmark_icon_fa = "\uf00c"
-                imgui.text_colored(f"{checkmark_icon_fa}", 0.0, 1.0, 0.0, fade_out)
-            if fade_out > 0.01:
-                draw_state.invalidate()
-                request_render()
-                code_state._recompile_on_frame = None
+        recompile_status(code_state, draw_state)
 
         if code_state.is_file_stale() and not code_state._pending_save:
             if auto_load_edits:
@@ -1368,25 +1432,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
         # Recompile (hot reload, no disk write): button, Ctrl+Enter, or recompile=True
         # on edit. Same runner, its own loading_state.
         recompile_start = (recompile) or recompile_hotkey
-        changed, result = run_in_background(recompile_source,
-                                            child_kwargs={"source": input_value,
-                                                          "code_str": code_state.text_cache,
-                                                          "file_path": address.path,
-                                                          "address": address},
-                                            name="recompile", start=recompile_start)
-        if result == LOADING:
-            print("Starting recompile...")
-            code_state._recompiled_on_frame = None
-        elif result == UNSET:
-            pass
-        else:
-            if changed:
-                print("Recompile successful-------------------------------")
-                code_state._recompiled_on_frame = Melty.frame_count
-                record_compile(address)
-                Melty.cache.invalidate_up(draw_state._tile_id, max_depth=10)
-                request_render()
-            code_state.recompile_result = result
+        run_recompile(input_value, code_state, draw_state, start=recompile_start)
 
 
     except Exception as e:
@@ -1462,21 +1508,44 @@ def code_hosts_for(ref):
         n = len(_code_host_cache)
         label = getattr(ref, "__name__", None) or type(ref).__name__
         str_host = RenderHost(io_function=code_file_io, input_value=ref,
-                              name=f"##code_cache_{label}_{n}_str",
+                              name=f"##code_cache_{label}_{n}{key}_str",
                               settings_renderer=RenderFuncs.draw_text,
                               child_kwargs={"auto_load_edits": True})
+        # MODULE/FILE refs get the static name/signature lint (code_checks): the
+        # buffer is self-contained, so an unresolved name really is a NameError.
+        # A span ref (function/class/CallSite) sees none of its module's imports
+        # and would flag every one - no lint_path, no lint.
+        lint_path = None
+        if isinstance(ref, Path) and ref.suffix == ".py":
+            lint_path = str(ref)
+        elif isinstance(ref, types.ModuleType):
+            lint_path = getattr(ref, "__file__", None)
         dict_host = RenderHost(
             io_function=convert_in_and_out_value, input_value=str_host,
-            name=f"##code_cache_{label}_{n}_dict",
+            name=f"##code_cache_{label}_{n}{key}_dict",
             child_kwargs={
                 "chain_in": [string_to_cst_module, cst_module_to_dict],
                 "chain_out": [dict_to_cst_module, cst_module_to_string],
                 "route": {cst_module_to_dict: ("code_dict", "jump_to", "run_jedi", "drive")},
+                **({"run_chain_kwargs": {"lint_path": lint_path}} if lint_path else {}),
             })
         pair = (str_host, dict_host)
         if key is not None:
             _code_host_cache[key] = pair
     return pair
+
+
+def host_code_state(host):
+    """The CodeState living inside a code str_host's wrapper — code_file_io's
+    injected state, holding the LIVE buffer (text_cache) and resolved address.
+    Same lookup shape as draw_text_from_code_cache's ModesState scan: injected
+    states sit in the wrapper draw_state's misc, keyed by param name. None until
+    the host has drawn at least once (hosts are lazy)."""
+    wds = getattr(host, "_wrapper_draw_state", None)
+    for v in (getattr(wds, "misc", None) or {}).values():
+        if isinstance(v, CodeState):
+            return v
+    return None
 
 
 def draw_text_from_code_cache(input_value=None, root_input=None, error=None,
@@ -1504,12 +1573,37 @@ def draw_text_from_code_cache(input_value=None, root_input=None, error=None,
         for v in (getattr(wds, "misc", None) or {}).values():
             if isinstance(v, ModesState):
                 err = v.last_error
-                if err is not None:
-                    line = (getattr(err, "editor_line", None) or getattr(err, "lineno", None)
-                            or getattr(err, "raw_line", None) or 1)
-                    msg = (getattr(err, "message", None) or getattr(err, "msg", None)
-                           or str(err))
-                    cache_error = {"__error__": msg, "__line__": line}
+                lint = getattr(v, "last_lint", None) or None
+                if err is not None or lint:
+                    # ONE dict per underlying (exception, lint) pair, not one
+                    # per frame: draw_text's parse-error staleness check
+                    # compares code_tree by IDENTITY to detect "a fresh parse
+                    # landed", so a dict rebuilt every frame would re-hide a
+                    # stale highlight one frame after an edit, pinned to the
+                    # old line. The memo keeps identity stable until the
+                    # background reparse actually replaces last_error /
+                    # last_lint (both swapped per completed parse, never
+                    # mutated in place).
+                    memo = getattr(dict_host, "_err_view_memo", None)
+                    if memo is not None and memo[0] is err and memo[1] is lint:
+                        cache_error = memo[2]
+                    else:
+                        # The parse/compile error first (lint only runs on a
+                        # clean compile, so in practice it's one or the other),
+                        # then the static name/signature findings - all un
+                        # __errors__, with the first mirrored into the single
+                        # __error__/__line__ pair older readers use.
+                        markers = []
+                        if err is not None:
+                            line = (getattr(err, "editor_line", None) or getattr(err, "lineno", None)
+                                    or getattr(err, "raw_line", None) or 1)
+                            msg = (getattr(err, "message", None) or getattr(err, "msg", None)
+                                   or str(err))
+                            markers.append((line, msg))
+                        markers += list(lint or ())
+                        cache_error = {"__error__": markers[0][1], "__line__": markers[0][0],
+                                       "__errors__": markers}
+                        dict_host._err_view_memo = (err, lint, cache_error)
         # The Index button's pulse rides to the cache's chain_in (one-shot:
         # cleared again on the next un-pulsed frame). cst_module_to_dict only
         # runs jedi when it ALSO has the resolved address (jump_to) - the leaf's

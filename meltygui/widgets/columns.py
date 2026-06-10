@@ -7,12 +7,15 @@ from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 @window(tint=(0.044, 0.722, 0.135))
 @render_func
 def draw_test_columns(draw_state):
-    column_count = 16
+    column_count = 31
     content_width = draw_state.content_width
     column_width = content_width / column_count
 
     for i in range(column_count):
         imgui.text(f"Column {i+1}")
         imgui.next_column()
+        
+        
+        
 
     imgui.text("Columns playground")

@@ -789,9 +789,13 @@ class DrawState(DictConversion):
 
     @property
     def abs_content_height(self):
+        if self.frame_count < 2:
+            return 0
 
         content_height = 0
         f = Core.melty.frame_count
+        max_bottom = 0
+        min_top = float('inf')
         key = (f, self.height, self._parent.abs_clip_rect, self._observed_content_height)
         is_scroll_view = not self._kwargs.get("disable_scroll", True)
         if self._abs_content_height_key == key:
@@ -813,9 +817,16 @@ class DrawState(DictConversion):
             clipped_height = clipped_bottom - clipped_top
             content_height += max(0, clipped_height)
 
+            min_top = min(min_top, child.abs_top)
+            max_bottom = max(max_bottom, child.abs_top + child.height)
+
+        content_height = max_bottom - min_top if max_bottom > min_top else 0
+
         # Special case where view wants to scroll but has no children for which to determine content height
         if "determines_height" in self._kwargs:
             content_height = self._content_rect[1]
+
+
         self._abs_content_height_cache = content_height
 
         # if is_scroll_view:
@@ -1375,7 +1386,9 @@ class DrawState(DictConversion):
 
     @property
     def abs_top(self):
-
+        # return int(self.abs_top_true)
+        # if self.pin_to_clip:
+        #     return self._abs_top()
         f = Core.melty.frame_count
         _, ancestor_sy = self._ancestor_scroll()
         key = (f, self.top_offset, self.window_pos,
@@ -1586,7 +1599,11 @@ class DrawState(DictConversion):
                     return False
         else:
             # Custom sub-region: clip it and point-test the cursor directly.
-            clip_rect = (self.abs_left, self.abs_top, self.abs_left + self.width, self.abs_top + self.height)
+            # Clamp to abs_clamped_rect (bbox ∩ abs clip), not just the bbox -
+            # a view scrolled under its parent's header still has the header
+            # band inside its bbox, and clipping only to the bbox let it report
+            # hover there and steal the header's drag (window_move) event.
+            clip_rect = self.abs_clamped_rect
             if clip_rect is not None:
                 rect = (max(rect[0], clip_rect[0]), max(rect[1], clip_rect[1]),
                         min(rect[2], clip_rect[2]), min(rect[3], clip_rect[3]))
