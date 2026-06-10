@@ -665,10 +665,9 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
     panel_open = bool(draw_state.misc.get("params_panel", True))
     imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
     changed, _ = draw_voxel_controls(tex, params=params, name="controls",
-                                     mode=Modes.POPOVER, closed=not panel_open,
-                                     parent_window=win,
-                                     window_pos=(int(win.width or 400) + 10, 0),
-                                     width=340, min_width=340, height=500,
+                                     mode=Modes.WINDOW, closed=not panel_open,
+                                     parent_window=win, auto_resize=False,
+       
                                      shadow=True)
 
     # ── status: error surfacing + lifecycle visibility ──────────────────

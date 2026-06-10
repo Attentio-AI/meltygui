@@ -329,7 +329,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
                     mode=None, keys=None, get_attr=None, set_attr=None, show_excluded=False,
                     child_kwargs=None, show_bg=False, show_search=True, align_header=False,
                     on_collapse=False, search_text="", return_item=False, close_triggers_delete=False,
-                    on_expand=False, show_add_delete=False, show_add_types=None, item_spacing_y=1, show_system=False,
+                    on_expand=False, show_add_delete=False, show_add_types=None, item_spacing_y=3, show_system=False,
                     included=None, horizontal=False, show_indices=False, excluded=None, annotation=None, **kwargs):
     """
     Universal collection renderer
