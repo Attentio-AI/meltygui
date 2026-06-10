@@ -2264,10 +2264,6 @@ class Melty:
 
         InvalidateTracker.on_frame_end()
         AttributeChurnMonitor.on_frame_end()
-        # Landed live-value windows poll for orphaned anchors here - their
-        # bodies only run on invalidation, which an orphan never receives.
-        from src.lsd.gl_gui.view.core_views.live_view_views import sweep_orphans
-        sweep_orphans()
 
     @classmethod
     def get_latest_mouse(cls):

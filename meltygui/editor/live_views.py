@@ -145,19 +145,13 @@ def draw_live_view_marker(input_value, draw_state=None, editor_ds=None,
     imgui.dummy(size, size)
 
     # The user X-ing the window directly must beat our open flag. Detect it
-    # BEFORE the render passes closed= (which overwrites the very flag we're
-    # reading): an X is "closed became True since we last asked for open".
-    # Exception: an ORPHAN auto-close (the window noticed this marker stopped
-    # rendering - editor closed / token gone / scrolled away) is not a user
-    # X; absorb it and re-latch open, so scrolling back re-opens the window.
+    # BEFORE this render passes closed= (which overwrites the very flag we're
+    # reading): an X is "closed became True while we last asked for open".
     win_ds = getattr(ds, "_lv_window_ds", None)
     if (open_now and win_ds is not None
             and getattr(ds, "_lv_passed_closed", None) is False
             and (win_ds.closed or win_ds.abs_closed)):
-        if getattr(win_ds, "_lv_auto_closed", False):
-            win_ds._lv_auto_closed = False
-        else:
-            ds._lv_open = open_now = False
+        ds._lv_open = open_now = False
 
     if hovered and imgui.is_mouse_clicked(0):
         ds._lv_open = not open_now
@@ -205,12 +199,6 @@ def draw_live_view_marker(input_value, draw_state=None, editor_ds=None,
             if (cx, cy) != (x, y):
                 Melty.summon_window(win_ds, cx, cy)
         ds._lv_window_ds = win_ds
-        if win_ds is not None:
-            # A post_frame sweep closes this window when its anchor stops
-            # rendering (in_window_orphans/_anchor_orphaned).
-            win_ds._lv_marker_ds = ds
-            ds._lv_editor_ds = editor_ds
-            _value_windows.add(win_ds)
     return False, None
 
 
@@ -350,7 +338,7 @@ def run_forward_pass(use_gen_pass=True):
 
 
 @window
-@render_func(tint=(0.02, 0.13, 0.36), auto_resize=True)
+@render_func(tint=(0.08, 0.11, 0.19), auto_resize=True)
 def live_view_forward(input_value=None, draw_state=None, **kwargs):
     from src.lsd.train.lsd_train import LSD
     draw_function_live(LSD.full_forward_pass_live, name="run_forward_pass runner")
@@ -385,7 +373,7 @@ def draw_function_live(input_value, draw_state=None, unique=None, **kwargs):
     # moves the hit boxes out from under the wheel, killing scrolling).
     win = draw_state.parent_window
     top_y = draw_state.abs_top + 32
-    avail =  win.height - 12
+    avail =  win.height - 0
     imgui.set_cursor_screen_pos((draw_state.abs_left, top_y))
     draw_function(_run_proxy(fn), height=avail, name=f"{fn.__name__} runner",
                   column=0, column_width=244)
@@ -409,51 +397,6 @@ def draw_function_live(input_value, draw_state=None, unique=None, **kwargs):
 # which flips draw_state.closed - the same flag the marker's toggle protocol
 # uses, so the X and the dot stay in sync. The window name ("loss##lv...")
 # shows its label; the ## suffix stays hidden.
-# Every latched value window ever created (draw_states persist in the
-# registry, so a plain set leaks nothing extra). Swept once per frame from
-# Melty.post_frame - an orphaned window's BODY never runs again (bodies run
-# per invalidation, and orphans have no one left to invalidate them), so the
-# watchdog cannot run in the body. Survives hotswap re-import.
-_value_windows = globals().get("_value_windows")
-if _value_windows is None:
-    _value_windows = set()
-
-
-def sweep_orphans():
-    """Melty.post_frame hook: auto-close latched value windows whose anchor
-    stopped rendering (editor closed / token vanished / line scrolled away).
-    Tagged as auto-close, NOT a user X — a returning marker re-opens them."""
-    closed_any = False
-    for ds in list(_value_windows):
-        if not ds.closed and _anchor_orphaned(ds):
-            ds.closed = True
-            ds._lv_auto_closed = True
-            ds.invalidate()
-            closed_any = True
-    if closed_any:
-        from src.lsd.gl_gui.utils.glfw_utils import request_render
-        request_render()
-
-
-def _anchor_orphaned(window_ds):
-    """Has this value window's anchor stopped rendering? True when the owning
-    EDITOR is closed, or when the editor re-rendered WITHOUT the marker (the
-    live_view token / snapshot key vanished after an edit, or its line
-    scrolled out of view). last_seen comparison is blit-safe: a cached editor
-    advances neither stamp, while a real editor re-render that still contains
-    the marker advances both in the same frame."""
-    marker = getattr(window_ds, "_lv_marker_ds", None)
-    if marker is None:
-        return False
-    editor = getattr(marker, "_lv_editor_ds", None)
-    if editor is None:
-        return False
-    if editor.closed or editor.abs_closed:
-        return True
-    e_seen, m_seen = editor.last_seen, marker.last_seen
-    return (e_seen is not None and m_seen is not None and e_seen - m_seen > 1)
-
-
 def _draw_close_x(ds):
     """An explicit top-right close glyph drawn OVER the content — volume
     values fill the whole window and bury the header's X, so the window

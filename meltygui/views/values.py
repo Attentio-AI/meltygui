@@ -2197,29 +2197,29 @@ def compute_bg_color(bg_offset=0, tint=None, nested_bg=False):
 def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset=0,
             outline=True, bg_color=None, opacity=0.0,
             style_manager=None, tint=None, outline_tint=None, selected=False,
-            hovered=False, pressed=False, nested_bg=True, **kwargs):
+            hovered=False, pressed=False, nested_bg=False, **kwargs):
     # -- Constants ---------------------------------
-    min_value = -0.024
+    min_value = -0.272
     depth_wrap = 300
-    depth_scale = 2.356
+    depth_scale = 2.713
     # [tint=(1,1,1)]
     corner_radius = rounding
     border_inset = 2.802
     border_inset_half = 1.5
     stroke_width = 4.0
     # How depth maps to color intensity
-    intensity_factor = 0.018
-    intensity_offset = -2.033
+    intensity_factor = 0.021
+    intensity_offset = 3.137
 
     some_var = [32, 18, 19]
     # Outline color tuning
     outline_base = 1.765
     outline_depth_mul = 0.786
-    outline_sat = {'default': 1.1, 'nested': 1.473, 'outline_sat': {'default': 1.1, 'nested': 1.473}}
+    outline_sat = {'default': 1.1, 'nested': 1.473}
 
     # More text
-    bleed_mix = {'nested': 0.636, 'default': 0.589}
-    bleed_style = {'value': -0.023, 'alpha': 1.112, 'saturation': 6.592}
+    bleed_mix = {'nested': 0.472, 'default': 0.526}
+    bleed_style = {'value': -0.035, 'alpha': 1.112, 'saturation': 6.592}
     outline_bleed_mix = 0.272
     # Hover offsets per interaction state
     hover_offset_by_state = {
@@ -2289,11 +2289,11 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
     # ── Background bleed color ─────────────────────────────────
     bleed_factor = bleed_mix['nested'] if nested_bg else bleed_mix['default']
 
-    bleed_base = Core.melty.get_bg_color(-1)
+    bleed_base = Core.melty.get_bg_color(-2)
     bleed_color = style_manager.make_custom_styled(
         *bleed_base, input=bg_style, **bleed_style,
     )
-    bleed_base = mix(*Core.melty.get_bg_color(-1)[:3], *bleed_color[:3], 0.899)
+    bleed_base = mix(*Core.melty.get_bg_color(-1)[:3], *bleed_color[:3], 0.32)
     bleed_color = style_manager.make_custom_styled(
         *bleed_base, input=bg_style, **bleed_style,
     )
