@@ -2612,6 +2612,11 @@ def dict_to_cst_classdef(value: dict) -> cst.ClassDef:
     if deleted:
         result = result.visit(_ClassFieldRemover(deleted))
 
+    # Dict key order drives the body order: a popped-and-reinserted key moves its
+    # statement. Runs after injection so a brand-new field also lands at its
+    # dict position instead of the end-of-body slot _inject_class_fields used.
+    result = _reorder_class_body(result, value)
+
     # Patch comments in class body
     comment_text_map = _collect_comment_edits(value)
     if comment_text_map:
@@ -2743,6 +2748,52 @@ def _inject_class_fields(classdef: cst.ClassDef, fields: dict) -> cst.ClassDef:
         insert_at = 1  # keep the docstring first
     body[insert_at:insert_at] = new_lines
     return classdef.with_changes(body=block.with_changes(body=tuple(body)))
+
+
+def _statement_member_key(stmt):
+    """Dict key cst_classdef_to_dict surfaces a class-body statement under, or
+    None for statements with no own dict entry (docstring, bare annotations,
+    __init__, bare call statements). Mirrors the forward pass's extraction so
+    reordering only ever touches statements the dict actually represents."""
+    if isinstance(stmt, cst.SimpleStatementLine):
+        for node in stmt.body:
+            if isinstance(node, cst.AnnAssign) and node.value is None:
+                continue  # bare annotation - passes through as __cst__
+            nm = _assign_field_name(node, in_init=False)
+            if nm is not None:
+                return nm
+        return None
+    if isinstance(stmt, cst.ClassDef):
+        return stmt.name.value
+    if isinstance(stmt, cst.FunctionDef) and stmt.name.value != "__init__":
+        return stmt.name.value
+    return None
+
+
+def _reorder_class_body(classdef: cst.ClassDef, value: dict) -> cst.ClassDef:
+    """Permute keyed class-body statements to match the dict's key order.
+
+    Each statement with a dict key (field assignment, method, nested class) is
+    a movable unit; its leading_lines (comments, blank lines) and trailing
+    override comment travel with it. Unkeyed statements keep their original
+    slots, so the docstring stays first and __init__ stays put. Keys with no
+    body statement (e.g. __init__ self.X fields) are ignored."""
+    order = {k: i for i, k in enumerate(value)
+             if isinstance(k, str) and not isinstance(k, Comment)
+             and not _is_dunder(k) and k != "decorators"}
+    body = list(classdef.body.body)
+    slots = [i for i, stmt in enumerate(body)
+             if _statement_member_key(stmt) in order]
+    if len(slots) < 2:
+        return classdef
+    stmts = sorted((body[i] for i in slots),
+                   key=lambda s: order[_statement_member_key(s)])
+    if all(body[i] is s for i, s in zip(slots, stmts)):
+        return classdef
+    for i, s in zip(slots, stmts):
+        body[i] = s
+    return classdef.with_changes(
+        body=classdef.body.with_changes(body=tuple(body)))
 
 
 def _find_init(classdef):
@@ -3763,11 +3814,13 @@ def _extract_decorators(decorators):
 
 
 @register
-def dict_to_cst_funcdef(value: dict) -> cst.FunctionDef:
+def dict_to_cst_funcdef(value: dict, dangerous_reorder=False) -> cst.FunctionDef:
     """Patch decorators, parameter defaults, and body assignments.
 
     "decorators" sub-dict patches decorator kwargs.
-    "parameters" sub-dict patches param defaults.
+    "parameters" sub-dict patches param defaults; its key order is the
+    signature order (see _reorder_params — positional reorders need
+    dangerous_reorder=True, since they change what call sites mean).
     "locals" sub-dict patches body assignments.
     """
     old_node = value.get("__cst__")
@@ -3790,6 +3843,11 @@ def dict_to_cst_funcdef(value: dict) -> cst.FunctionDef:
         if edits:
             result = result.with_changes(
                 params=_patch_params(result.params, edits))
+        # Runs outside the `if edits:` test: a pure reorder of no-default
+        # params leaves `edits` empty but still has to move them.
+        new_params = _reorder_params(result.params, param_edits, dangerous_reorder)
+        if new_params is not result.params:
+            result = result.with_changes(params=new_params)
 
     # Patch body assignments and comments from "locals" sub-dict
     local_edits = value.get("locals")
@@ -4409,6 +4467,61 @@ def _patch_params(params, edits):
     return params.with_changes(**changes) if changes else params
 
 
+def _reorder_params(params_node: cst.Parameters, value: dict,
+                    dangerous_reorder: bool) -> cst.Parameters:
+    """Permute parameters to match the parameters dict's key order.
+
+    Reorders within each group (posonly / regular / kwonly) only — a param
+    never crosses a `/` or `*` boundary. Keyword-only params are always safe
+    to move (call sites must pass them by name) and reorder in both modes.
+    Reordering positional params changes what positional call sites mean, so
+    it's gated on dangerous_reorder — flag off, the reorder is silently
+    dropped and the next forward parse snaps the dict back to source order.
+    Even in dangerous mode an order that would put a no-default param after a
+    defaulted one (a SyntaxError) is refused. Params not in the dict
+    (self/cls, *args/**kwargs) keep their slots."""
+    order = {k: i for i, k in enumerate(value)
+             if isinstance(k, str) and not isinstance(k, Comment)
+             and not _is_dunder(k)}
+
+    def permuted(param_list, keyword_only):
+        slots = [i for i, p in enumerate(param_list) if p.name.value in order]
+        if len(slots) < 2:
+            return None
+        moved = sorted((param_list[i] for i in slots),
+                       key=lambda p: order[p.name.value])
+        if all(param_list[i] is p for i, p in zip(slots, moved)):
+            return None
+        if not keyword_only and not dangerous_reorder:
+            return None  # positional reorder - needs the dangerous flag
+        out = list(param_list)
+        for i, p in zip(slots, moved):
+            # Keep the slot's separator/whitespace - a multi-line signature's
+            # line structure and a comma-less final param survive the move -
+            # only the param itself (name/annotation/default) travels.
+            out[i] = p.with_changes(
+                comma=param_list[i].comma,
+                whitespace_after_param=param_list[i].whitespace_after_param)
+        if not keyword_only:
+            seen_default = False
+            for p in out:
+                if p.default is not None:
+                    seen_default = True
+                elif seen_default:
+                    return None  # no-default after defaulted - SyntaxError
+        return out
+
+    changes = {}
+    for field, kw_only in (("posonly_params", False), ("params", False),
+                           ("kwonly_params", True)):
+        plist = getattr(params_node, field)
+        if plist:
+            new = permuted(list(plist), kw_only)
+            if new is not None:
+                changes[field] = new
+    return params_node.with_changes(**changes) if changes else params_node
+
+
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  cst.Call ↔ dict (keyword arguments)                                        ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
@@ -4672,6 +4785,14 @@ def dict_to_cst_call(value: dict) -> cst.Call:
         )
         surviving.append(new_arg)
 
+    # Reorder keyword args to the dict's key order (decorated kwargs in surfaced
+    # calls). Kwargs bind by name, so moving them never changes the call's
+    # meaning - no dangerous flag needed. Positional args keep their slots:
+    # their position IS their binding, so honoring a dictionary key move would
+    # rebind values to different parameters. Runs before Pass 3 so comma
+    # normalization sees the final order.
+    surviving = _reorder_call_kwargs(surviving, value)
+
     # Pass 3: fix commas. Only touch commas that need it - args left over
     # from the original keep their own Comma node (and its newline/indent
     # whitespace), so multi-line kwargs don't collapse to one line. A
@@ -4690,6 +4811,32 @@ def dict_to_cst_call(value: dict) -> cst.Call:
         surviving = fixed
 
     return old_node.with_changes(args=surviving)
+
+
+def _reorder_call_kwargs(args, value):
+    """Permute keyword args to match the edited dict's key order.
+
+    Slot permutation, same as _reorder_class_body / _reorder_params: keyword
+    args sort into dict-key order but only occupy the slots keyword args
+    already held, so positional args and */** splats never move. A newly
+    appended kwarg's end slot participates too, letting it land mid-call when
+    the dict says so. Each moved arg takes its destination slot's comma so a
+    multi-line call keeps its line structure."""
+    order = {k: i for i, k in enumerate(value)
+             if isinstance(k, str) and not isinstance(k, Comment)
+             and not _is_dunder(k)}
+    slots = [i for i, a in enumerate(args)
+             if a.keyword is not None and a.keyword.value in order]
+    if len(slots) < 2:
+        return args
+    moved = sorted((args[i] for i in slots),
+                   key=lambda a: order[a.keyword.value])
+    if all(args[i] is a for i, a in zip(slots, moved)):
+        return args
+    out = list(args)
+    for i, a in zip(slots, moved):
+        out[i] = a.with_changes(comma=args[i].comma)
+    return out
 
 
 def _call_func_name(call_node):

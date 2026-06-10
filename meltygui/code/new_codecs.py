@@ -1,6 +1,8 @@
 import ast
 import difflib
+import hashlib
 import inspect
+import re
 import sys
 import textwrap
 import tokenize
@@ -9,7 +11,9 @@ from dataclasses import dataclass
 from enum import EnumType
 from pathlib import Path
 
-from src.lsd.gl_gui.view.core_conversion.address import Address, _evict_linecache, shift_sibling_linenos, is_editable_source
+from src.lsd.gl_gui.view.core_conversion.address import (
+    Address, _evict_linecache, shift_sibling_linenos, is_editable_source,
+    is_writable_file)
 from src.lsd.gl_gui.view.core_conversion.chain_converters import (
     _ensure_import_lines, _resolve_call_address, _split_span_at_call)
 from src.lsd.gl_gui.view.core_conversion.bubbling import base_of_bubbling
@@ -17,24 +21,111 @@ from src.lsd.gl_gui.view.core_conversion.file_converters import _detect_newline
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
 
 from src.lsd.gl_gui.melty import Melty, FileWatch
-from src.shader_library.shader_manager.texture_manager import PIL_TO_GL_FORMAT, GL_TO_PIL_MODE, PendingTexture
+from src.lsd.gl_gui.render_funcs import RenderFuncs
+from src.shader_library.shader_manager.texture_manager import PIL_TO_GL_FORMAT, PendingTexture
 
-GL_TO_PIL_MODE = {v: k for k, v in PIL_TO_GL_FORMAT.items()}
-
-from OpenGL.GL import (
-    glGenTextures, glBindTexture, glTexImage2D, glTexParameteri,
-    GL_TEXTURE_2D, GL_UNSIGNED_BYTE,
-    GL_TEXTURE_MIN_FILTER, GL_TEXTURE_MAG_FILTER, GL_LINEAR,
-    GL_TEXTURE_WRAP_S, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE,
-)
-
+# No GL imports here: ImageCodec.load only DECODES (background thread); the GL
+# upload runs on the UI thread via PendingTexture.pending_upload.
 from PIL import Image
 import io
+import mimetypes
 
 NO_DATA = object()
 
 extension_to_codec = {}
 type_to_codec = {}
+
+
+class SaveConflict:
+    """Returned by codec.save when the on-disk span no longer matches what was
+    last loaded/saved — an external write landed under the (debounced) save.
+    Splicing anyway would replace the WRONG lines, so the write is refused;
+    code_file_io keeps the edit pending and surfaces the Load / Keep-mine
+    conflict UI instead."""
+
+    def __init__(self, reason):
+        self.reason = reason
+
+    def __repr__(self):
+        return f"SaveConflict({self.reason!r})"
+
+
+def _span_fingerprint(lines):
+    """Content hash of a span's lines, line-ending agnostic — the same span
+    fingerprints identically whether the lines came from linecache (keep "\\n"),
+    a CRLF file split, or a plain split. Used to verify at save time that the
+    on-disk span still holds what we last loaded/saved before splicing over it."""
+    h = hashlib.sha1()
+    for line in lines:
+        h.update(line.rstrip("\r\n").encode("utf-8", "surrogatepass"))
+        h.update(b"\n")
+    return h.hexdigest()
+
+
+def _block_is_function(source_lines, name):
+    """Does this getsourcelines block actually contain `def <name>`?
+
+    inspect.findsource trusts co_firstlineno and walks BACKWARD to the nearest
+    def-looking line — after an EXTERNAL edit shifted the file (nothing patches
+    live linenos for external writes), that lands on a DIFFERENT function or the
+    file head, silently. Loading/saving through that wrong span is the
+    file-mangling bug, so verify the block names the function we asked for."""
+    if not name.isidentifier():  # <lambda> & friends - can't verify
+        return True
+    pat = re.compile(rf"^\s*(?:async\s+)?def\s+{re.escape(name)}\b")
+    return any(pat.match(line) for line in source_lines)
+
+
+def _reanchor_function(unwrapped, source_file):
+    """Re-find a function whose co_firstlineno went stale (an external edit
+    shifted the file) by ast-walking the CURRENT file for its __qualname__.
+
+    Returns (start0, end0, span_lines) — 0-based [start, end) covering the
+    decorators + def — and HEALS the live code object's co_firstlineno (set to
+    the first decorator line, the compile convention) so subsequent resolves,
+    recompiles, and sibling shifts work from truthful coordinates again.
+    Returns None when the file doesn't parse (mid-edit), the function is nested
+    (`<locals>` — its def isn't addressable by a body walk), or the qualname
+    path isn't found."""
+    qual = unwrapped.__qualname__
+    if "<locals>" in qual or not unwrapped.__name__.isidentifier():
+        return None
+    try:
+        data = Path(source_file).read_bytes()
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            text = data.decode("latin-1")
+        tree = ast.parse(text)
+    except (OSError, SyntaxError, ValueError):
+        return None
+
+    node, body = None, tree.body
+    parts = qual.split(".")
+    for i, part in enumerate(parts):
+        last = i == len(parts) - 1
+        found = None
+        for child in body:
+            if last and isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                    and child.name == part:
+                found = child
+                break
+            if not last and isinstance(child, ast.ClassDef) and child.name == part:
+                found = child
+                break
+        if found is None:
+            return None
+        node, body = found, getattr(found, "body", [])
+
+    decos = getattr(node, "decorator_list", [])
+    first_lineno = min([d.lineno for d in decos] + [node.lineno])
+    start0, end0 = first_lineno - 1, node.end_lineno
+    span_lines = text.splitlines()[start0:end0]
+    try:
+        unwrapped.__code__ = unwrapped.__code__.replace(co_firstlineno=first_lineno)
+    except (AttributeError, TypeError, ValueError):
+        pass  # read-only code object - the span is still right for this run
+    return start0, end0, span_lines
 
 # Library-source guard is in address.py (is_editable_source) so the codec and
 # the older file_converters save paths share one gate. Local alias for brevity.
@@ -112,8 +203,15 @@ def _resync_module_linenos(address, old_lines, new_lines):
 def register_codec(cls=None, **kwargs):
     def wrap(cls):
         if "ext" in kwargs:
-            for ext in kwargs["ext"]:
-                extension_to_codec[ext] = cls
+            exts = kwargs["ext"]
+            if isinstance(exts, str):
+                exts = (exts,)   # a bare "png" once iterates CHAR BY CHAR
+            for ext in exts:
+                # Normalize to Path.suffix's shape (".png", lowercase) so
+                # registration matches lookup regardless of how it was written.
+                if not ext.startswith("."):
+                    ext = "." + ext
+                extension_to_codec[ext.lower()] = cls
 
         if "for_type" in kwargs:
             if isinstance(kwargs["for_type"], tuple):
@@ -137,6 +235,20 @@ class Codec:
     # it is the source COLOR-CODE, consumed explicitly by provenance views
     # (the context menu's draw_param_matrix), not an optional wash.
     render_kwargs = {}
+    # A codec whose loaded data is not editor text (e.g. ImageCodec's
+    # PendingImage) names its preferred view here; code_file_io prefers it over
+    # the mode-pinned text view. None = use whatever view the codec wired.
+    view_func = None
+
+    @staticmethod
+    def show_code_buttons(address):
+        """The codec's "this is Python source" switch for code_file_io: the
+        Run (hotswap) and Index (jedi) buttons, their hotkeys, AND the error
+        checking (the code-host parse + syntax/lint/runtime highlights) all
+        ride it. Only meaningful where the loaded text is Python, so the base
+        says no; TypeCodec (live Python objects) says yes; TextFileCodec says
+        yes for .py paths only."""
+        return False
 
     @staticmethod
     def resolve_address(input_value, draw_state=None, **kwargs):
@@ -155,6 +267,10 @@ class Codec:
 class TypeCodec(Codec):
     # Class source - where @defaults lives: dark grey/blue.
     render_kwargs = {"tint": (0.10, 0.12, 0.22, 0.40)}
+
+    @staticmethod
+    def show_code_buttons(address):
+        return True   # the data IS live Python source - Run/Index apply
 
     @staticmethod
     def resolve_address(input_value, draw_state=None, **kwargs):
@@ -196,6 +312,7 @@ class TypeCodec(Codec):
         address = Address(Path(source_file), start_lineno - 1,
                           start_lineno - 1 + len(source_lines),
                           source=unwrapped, watcher_ds=draw_state)
+        address._span_fp = _span_fingerprint(source_lines)
         draw_state._addr_cache = (input_value, mtime, address)
         return address
 
@@ -209,22 +326,36 @@ class TypeCodec(Codec):
         except UnicodeDecodeError:
             text = data.decode("latin-1")
         lines = text.split(newline)
-        return newline.join(lines[address.start:address.end])
+        span_lines = lines[address.start:address.end]
+        # Remember what the span held when it was loaded; save verifies the disk
+        # still holds this before splicing over it (see save's conflict guard).
+        address._span_fp = _span_fingerprint(span_lines)
+        return newline.join(span_lines)
 
 
     @staticmethod
-    def save(address, data, ensure_import=None, **kwargs):
+    def save(address, data, ensure_import=None, force=False, **kwargs):
         """Write code_str back into the file at the Address's span — the synchronous
             body of the old @render_func(background=True) _do_save, minus the Pending.
 
             ensure_import=(module, name) inserts a missing import in the SAME write so a
             synthesized decorator (e.g. @defaults) resolves. Updates the Address span in
             place and shifts siblings so this frame's Address stays valid; siblings heal
-            on the next mtime-driven re-resolve."""
+            on the next mtime-driven re-resolve.
+
+            Refuses the write (returns SaveConflict) when the on-disk span no longer
+            fingerprints to what was last loaded/saved there — an external program
+            wrote the file under us, and splicing would land on the wrong lines.
+            force=True (the user's explicit "Keep mine") skips that guard."""
         # Defense in depth: never write to library source even if an Address
         # somehow points outside the project (resolve_address should already have
         # refused it). A bad span splice bug once corrupted libcst's own source.
-        if not _is_editable_source(address.path):
+        # `_allow_write` is the whole-file opt-out: TextFileCodec stamps it on
+        # Addresses it resolved through the gentler is_writable_source gate
+        # (folder windows mount paths outside the project), so whole-file saves
+        # there pass while code codecs stay pinned to the project tree.
+        if not (_is_editable_source(address.path)
+                or getattr(address, "_allow_write", False)):
             print(f"[codec.save] refusing to write library source: {address.path}")
             return False
         full = address.path.read_bytes()
@@ -247,6 +378,22 @@ class TypeCodec(Codec):
         new_lines = data.split(newline)
 
         old_start, old_end = address.start, address.end
+
+        # ─── Verify before splice ──────────────────────────────────────────────
+        # The span coordinates were resolved on the render thread, possibly
+        # hundreds of ms before this (debounced, background) save. If anything
+        # else wrote the file in between, our coordinates index DIFFERENT
+        # content and splicing would mangle the result (duplicate the function,
+        # tear lines). Check the span still holds what we last loaded/saved;
+        # on mismatch abort, and let the conflict UI sort it out.
+        expected_fp = getattr(address, "_span_fp", None)
+        if not force and expected_fp is not None:
+            on_disk = lines if old_start is None else lines[old_start:old_end]
+            if _span_fingerprint(on_disk) != expected_fp:
+                print(f"[codec.save] refused: {address.path.name}"
+                      f"[{old_start}:{old_end}] changed on disk since load")
+                return SaveConflict(f"{address.path.name} changed on disk")
+
         if old_start is None:  # whole-file (module) address
             old_lines = lines  # pre-splice contents, for the lineno resync below
             lines = new_lines
@@ -297,7 +444,38 @@ class TypeCodec(Codec):
         FileWatch.set_hash_from_content(address.path, final_text, draw_state=address._watcher_ds)
         address.path.write_text(final_text, encoding="utf-8")
         address._hash = address._compute_hash()
+        # The on-disk span is now exactly what we wrote - refresh the conflict
+        # guard's baseline so the next save verifies against THIS write.
+        address._span_fp = _span_fingerprint(new_lines if old_start is not None else lines)
+
+        # Serve any post-write resolve from cache. This save kept address.start/end
+        # truthful, while a getsourcelines re-resolve of the file we JUST wrote
+        # can silently TRUNCATE: a broken (column-0) line in the saved buffer ends
+        # inspect's block scan at the dedent with no exception, so the raise-guard
+        # in resolve_address never fires - and the next save would splice the full
+        # buffer into the short span, truncating the tail. Bumping the cached mtime
+        # to the written value keeps the save-maintained address authoritative; a
+        # GENUINE external write bumps mtime again and still re-resolves.
+        ds = address._watcher_ds
+        cached = getattr(ds, "_addr_cache", None) if ds is not None else None
+        if cached is not None and cached[2] is address:
+            try:
+                ds._addr_cache = (cached[0], address.path.stat().st_mtime, address)
+            except OSError:
+                pass
         return False
+
+# Register AFTER TypeCodec so EnumType re-matches here: an enum class (Mode,
+# Toggles-style flag enums, etc) is an EnumMeta instance, so its MRO hits
+# EnumType before type. Same render/load/save as any class - the subclass only
+# claims the source render, so mode-backed entries (the inputs tab's mode
+# column) are distinguishable from plain class source at a glance.
+@register_codec(for_type=EnumType)
+class ModeCodec(TypeCodec):
+    name = "Enum / Mode"
+    # Mode entry kwargs - the mode column of the inputs matrix: purple.
+    render_kwargs = {"tint": (0.36, 0.16, 0.50, 0.50)}
+
 
 @register_codec(for_type=types.FunctionType)
 class FunctionCodec(TypeCodec):
@@ -349,9 +527,30 @@ class FunctionCodec(TypeCodec):
         # now returns the truthful new span. Trust it and re-cache the address;
         # rejecting it here would strand any OTHER editor window open on the same
         # file (they'd lose their reference the instant a sibling is edited).
-        address = Address(Path(source_file), start_lineno - 1,
-                          start_lineno - 1 + len(source_lines),
+        #
+        # But an EXTERNAL edit shifts the file without patching anybody's lineno -
+        # findsource then walks back from the stale lineno to whatever def-head
+        # line precedes it and hands us a block that ISN'T this function (just the
+        # wrong head). Verify the block matches us; if not, re-anchor by ast on the
+        # current line (which also heals co_firstlineno), falling back to the LAST
+        # good address when the file is mid-edit and won't parse.
+        start0 = start_lineno - 1
+        span_lines = source_lines
+        if not _block_is_function(source_lines, unwrapped.__name__):
+            span = _reanchor_function(unwrapped, source_file)
+            if span is None:
+                if cached is not None:
+                    return cached[2]
+                print(f"[editable_source] {getattr(input_value, '__name__', input_value)} "
+                      f"not found at its recorded line and could not be re-anchored")
+                return None
+            start0, end0, span_lines = span
+            print(f"[editable_source] re-anchored {unwrapped.__name__} to "
+                  f"{Path(source_file).name}:{start0 + 1} after external edit")
+
+        address = Address(Path(source_file), start0, start0 + len(span_lines),
                           source=input_value, watcher_ds=draw_state)
+        address._span_fp = _span_fingerprint(span_lines)
         draw_state._addr_cache = (input_value, mtime, address)
         return address
 
@@ -451,6 +650,9 @@ class CallerCodec(TypeCodec):
         except UnicodeDecodeError:
             text = data.decode("latin-1")
         span_lines = text.split(newline)[address.start:address.end]
+        # Conflict-guard baseline (see TypeCodec.save): the FULL span as loaded -
+        # save rebuilds prefix + call + suffix, so it verifies at line level.
+        address._span_fp = _span_fingerprint(span_lines)
         cols = getattr(address, "_call_cols", None)
         if cols is not None and span_lines:
             prefix, call_text, suffix = _split_span_at_call(span_lines, cols[0], cols[1], newline)
@@ -608,9 +810,17 @@ class TextFileCodec(TypeCodec):
     name = "Text File"
 
     @staticmethod
+    def show_code_buttons(address):
+        # One codec serves any text extension - only .py is runnable/importable.
+        return address is not None and address.path.suffix.lower() == ".py"
+
+    @staticmethod
     def resolve_address(input_value, draw_state=None, **kwargs):
         path = Path(str(input_value))
-        if not _is_editable_source(path) or not path.is_file():
+        # Whole-file text editing follows the gentler gate: folder windows
+        # mount dirs outside the project, so anywhere under $HOME works (for
+        # library installs) - not just the project tree.
+        if not is_writable_file(path) or not path.is_file():
             return None
         if draw_state is not None:
             FileWatch.register_draw_state(draw_state, path)
@@ -622,79 +832,133 @@ class TextFileCodec(TypeCodec):
         if cached is not None and cached[0] == input_value and cached[1] == mtime:
             return cached[2]
         address = Address(path, source=input_value, watcher_ds=draw_state)
+        address._allow_write = True   # resolved via is_writable_file - see save() guard
         if draw_state is not None:
             draw_state._addr_cache = (input_value, mtime, address)
         return address
 
 
-@register_codec(ext="png")
-class PngCodec(Codec):
+def _resolve_plain_file(input_value, draw_state, **kwargs):
+    """Shared resolve for read-only plain-file codecs (images, binaries):
+    is_writable_file gate, file watch, (input, mtime) address cache — the same
+    shape as TextFileCodec.resolve_address."""
+    path = Path(str(input_value))
+    if not is_writable_file(path) or not path.is_file():
+        return None
+    if draw_state is not None:
+        FileWatch.register_draw_state(draw_state, path)
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        mtime = None
+    cached = getattr(draw_state, '_addr_cache', None)
+    if cached is not None and cached[0] == input_value and cached[1] == mtime:
+        return cached[2]
+    address = Address(path, source=input_value, watcher_ds=draw_state)
+    if draw_state is not None:
+        draw_state._addr_cache = (input_value, mtime, address)
+    return address
 
-    name = "PNG Image"
+
+@register_codec(ext=(".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tga"))
+class ImageCodec(Codec):
+    """Image Path → PendingTexture. load() runs on code_file_io's background
+    thread, so it only DECODES (PIL, safe off-thread) and returns a
+    PendingTexture; core_render's wrapper calls pending_upload() on the GL
+    thread the first frame it renders, and draw_pending_texture (this codec's
+    view_func) draws the uploaded texture with zoom/pan. Read-only: save()
+    refuses, so the editor's auto-save loop can never write an image back."""
+
+    name = "Image"
+    view_func = RenderFuncs.draw_pending_texture
+    resolve_address = staticmethod(_resolve_plain_file)
 
     @staticmethod
-    def resolve_address(input_value, draw_state=None, **kwargs):
-        return Address(input_value)
+    def load(address, **kwargs):
+        path = address.path
+        key = str(path)
+        raw = path.read_bytes()
 
-    @staticmethod
-    def load(input_value, **kwargs):
-        """
-        Load PNG bytes. Returns texture ID if on GL thread and cached,
-        otherwise returns PendingTexture for deferred upload.
-        """
-        path = input_value
-        # Check cache first
-        if path:
-            cached = Core.melty.texture_manager.get(path)  # get also finalizes pending
-            if cached is not None:
-                Core.melty.texture_manager.acquire(path)
-                return cached
-
-        """
-        Read raw bytes for a file, honoring max_file_size placeholders.
-        Returns bytes, max_size_placeholder, or None on error.
-        """
-        try:
-            with open(path, "rb") as f:
-                raw = f.read()
-        except Exception:
-            raw = None
-
-        # Decode image (safe on any thread)
         image = Image.open(io.BytesIO(raw))
-
         if image.mode == "P":
             image = image.convert("RGBA" if "transparency" in image.info else "RGB")
         elif image.mode == "1":
             image = image.convert("L")
         elif image.mode not in PIL_TO_GL_FORMAT:
             image = image.convert("RGBA")
-
         image = image.transpose(Image.FLIP_TOP_BOTTOM)
 
         width, height = image.size
-        image_data = image.tobytes()
-
-        gl_format = PIL_TO_GL_FORMAT[image.mode]
-
-        texture_id = glGenTextures(1)
-        glBindTexture(GL_TEXTURE_2D, texture_id)
-        glTexImage2D(
-            GL_TEXTURE_2D, 0, gl_format,
-            width,height, 0,
-            gl_format, GL_UNSIGNED_BYTE, image_data
-        )
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
-
-        glBindTexture(GL_TEXTURE_2D, 0)
-        return texture_id
+        pending = PendingTexture(name=key, tex_width=width, tex_height=height,
+                                 gl_format=PIL_TO_GL_FORMAT[image.mode],
+                                 data=image.tobytes())
+        # Registers with the manager (dedupes against an already-uploaded
+        # texture for this path); the GL upload itself happens on the render
+        # thread via the wrapper's pending_upload() hook.
+        Core.melty.texture_manager.put_pending(key, pending)
+        return pending
 
     @staticmethod
-    def save(data, file_path, **kwargs):
-        if hasattr(data, "save"):
-            data.save(file_path)
-            return True
+    def save(*args, **kwargs):
         return False
+
+
+class BinaryFileCodec(Codec):
+    """Read-only fallback for files no other codec claims (unknown extension /
+    no extension, content sniffed as binary): show metadata and a short hex
+    preview instead of "No codec". Reached via codec_for_path, never the
+    extension registry. save() refuses — the summary is a VIEW of the bytes,
+    and writing it back would replace the file with its own hexdump."""
+
+    name = "Binary File"
+    view_func = RenderFuncs.draw_text
+    resolve_address = staticmethod(_resolve_plain_file)
+
+    PREVIEW_BYTES = 256
+
+    @staticmethod
+    def load(address, **kwargs):
+        path = address.path
+        size = path.stat().st_size
+        kind, _ = mimetypes.guess_type(path.name)
+        head = path.open("rb").read(BinaryFileCodec.PREVIEW_BYTES)
+
+        lines = [f"{path.name}  —  {size:,} bytes  ({kind or 'unknown type'})", ""]
+        for off in range(0, len(head), 16):
+            row = head[off:off + 16]
+            hx = " ".join(f"{b:02x}" for b in row)
+            ascii_ = "".join(chr(b) if 32 <= b < 127 else "." for b in row)
+            lines.append(f"{off:08x}  {hx:<47}  {ascii_}")
+        if size > len(head):
+            lines.append(f"… {size - len(head):,} more bytes")
+        return "\n".join(lines)
+
+    @staticmethod
+    def save(*args, **kwargs):
+        return False
+
+
+def codec_for_path(path):
+    """Every real file resolves to SOME codec: registered extension first,
+    else sniff the head — NUL-free utf-8 edits as text (TextFileCodec),
+    anything else gets the read-only binary summary. This is what lets the
+    folder windows mount a stress-test directory full of extensionless blobs
+    without a wall of "No codec" rows."""
+    codec = extension_to_codec.get(path.suffix.lower())
+    if codec is not None:
+        return codec
+    if not path.is_file():
+        return None
+    try:
+        head = path.open("rb").read(4096)
+    except OSError:
+        return None
+    if b"\0" in head:
+        return BinaryFileCodec
+    try:
+        head.decode("utf-8")
+    except UnicodeDecodeError:
+        # A multi-byte char split at the 4096 boundary technically lands here -
+        # acceptable: the file still renders, just as the binary summary.
+        return BinaryFileCodec
+    return TextFileCodec

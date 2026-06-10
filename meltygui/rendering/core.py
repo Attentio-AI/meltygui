@@ -31,6 +31,9 @@ from src.lsd.gl_gui.view.core_views.core_meta import AnnotationOverride
 from src.lsd.gl_gui.view.core_views.core_undo import UndoManager, handle_undo
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
+# Imported as a module (not `from ... import DragDrop`) so hotswapping
+# drag_drop.py rebinds through the module object on the next call.
+from src.lsd.gl_gui.view.core_views import drag_drop as _drag_drop
 from src.lsd.gl_gui.view.invalidation_tracker import Note
 
 
@@ -734,7 +737,13 @@ def render_func(*args, **o_kwargs):
                 draw_state._call_site = caller_site(frames)
 
             if closable:
-                if draw_state is not None and draw_state.parent_window is not None:
+                if _drag_drop.DragDrop.is_dragged_item(draw_state):
+                    # The floating dragged item rides the very top layer -
+                    # above its parent window (which, being focused, sits at
+                    # len(registered_windows) + top_layer_boost) and above
+                    # every other window for the duration of the drag.
+                    window_z_pos = len(Melty.layers) - 1
+                elif draw_state is not None and draw_state.parent_window is not None:
                     # Nested window - layer above parent
                     window_z_pos = draw_state.parent_window.layer
                 else:
@@ -861,6 +870,8 @@ def render_func(*args, **o_kwargs):
 
         if "expanded" in kwargs:
             draw_state.expanded = kwargs["expanded"]
+            if not draw_state.expanded:
+                kwargs['is_tree'] = False
 
         if not draw_state.expanded:
             kwargs.pop("width", None)
@@ -890,15 +901,32 @@ def render_func(*args, **o_kwargs):
                     draw_state.abs_left, draw_state.abs_top, draw_state.width, draw_state.header_height)
 
             if draw_state.expanded:
-                # Restore rect
-                draw_state.left, draw_state.right, draw_state.width, draw_state.height = draw_state.expanded_rect
-                draw_state._source["height"] = "expanded_rect"
-
+                # Restore the rect saved at collapse time - but only a real
+                # one. A view that STARTED expanded has only the zeroed
+                # default here; restoring it wiped width/height, so clear
+                # them to the auto-resize writers to measure this frame.
+                _exp_rect = draw_state.expanded_rect
+                if _exp_rect and _exp_rect[2] > 5 and _exp_rect[3] > 5:
+                    draw_state.left, draw_state.right, draw_state.width, draw_state.height = _exp_rect
+                    draw_state._source["height"] = "expanded_rect"
                 draw_state.expanded_rect = (0, 0, 0, 0)
             else:
-                # Save rect
-                draw_state.left, draw_state.right, draw_state.width, draw_state.height = draw_state._collapsed_rect
+                _col_rect = draw_state._collapsed_rect
+                if _col_rect and _col_rect[2] > 5 and _col_rect[3] > 5:
+                    draw_state.left, draw_state.right, draw_state.width, draw_state.height = _col_rect
+                else:
+                    # First-ever collapse: nothing saved yet. Keep the full
+                    # width (a header-only view spans the same width) and set
+                    # height to the header band. Restoring the zeroed default
+                    # made the header degenerate - bboxes_sync dropped the box and
+                    # the view vanished from hover & drag-and-drop.
+                    draw_state.height = max(draw_state.header_height or 0, 18)
                 draw_state._source["height"] = "collapsed_rect"
+
+            if draw_state._collection_draw_state is not None:
+                draw_state._collection_draw_state.invalid_content_height = True
+            if draw_state._parent is not None:
+                draw_state._parent.invalid_content_height = True
 
         if draw_state.expanded:
             draw_state.expanded_rect = (0, 0, 0, 0)
@@ -1147,6 +1175,13 @@ def render_func(*args, **o_kwargs):
 
                 if 'window_pos' in kwargs:
                     draw_state.window_pos = kwargs.get('window_pos', draw_state.window_pos)
+
+                # Drag-and-drop: the dragged item renders as a closable window;
+                # glue it under the cursor here - at render/dispatch time, on its
+                # draw_state - so it tracks the live mouse position on frames when
+                # the source collection's body (and thus its kwargs) isn't re-run.
+                if _drag_drop.DragDrop.is_dragged_item(draw_state):
+                    _drag_drop.DragDrop.glue_window_to_cursor(draw_state)
             else:
                 draw_state.window_pos = (0, 0)
 
@@ -1218,6 +1253,11 @@ def render_func(*args, **o_kwargs):
             if left_mouse_up:
                 ds_under_mouse = Melty.bvh_query(*imgui.get_mouse_pos())
                 Melty.clear_focus(not_this=(*ds_under_mouse, draw_state))
+
+            # Universal drag-and-drop: any view rendered as an item of a
+            # dict/list collection offers its window as a drag handle. The
+            # gesture itself is owned by DragDrop.frame_update (Melty.end_frame).
+            _drag_drop.DragDrop.register_item(draw_state)
 
 
             if draw_state.window_pos is not None and closable and kwargs.get("window_pos", None) is None:
@@ -1746,7 +1786,7 @@ def render_func(*args, **o_kwargs):
                             # Pin live to this view so the bar's bottom-left rides
                             # the view's top-left corner (parent_anchor defaults
                             # to TOP_LEFT), floating just above it as it scrolls.
-                            pin_to_clip=Pin.PARENT,
+                            pin_to_clip=Pin.CLIP,
                             window_pos=(0, 0),
                             width=300,
 
@@ -2516,7 +2556,8 @@ def render_func(*args, **o_kwargs):
                         end_x = max(draw_state.abs_left,
                                     draw_state.abs_left + clip_size[0] - draw_state.header_end_width - margin)
                         if not draw_state.expanded:
-                            end_x = draw_state.abs_left + draw_state.header_width + 10
+                            end_x = draw_state.abs_left + draw_state.header_width + 50
+
                         imgui.set_cursor_screen_pos((end_x,
                                                      imgui.get_cursor_screen_pos()[1] + outline_margin))
 
@@ -3233,12 +3274,55 @@ def render_func(*args, **o_kwargs):
             # undo/redo would itself be logged and the timeline would toggle.
             is_undo = draw_state in Melty.undo_requests
             if is_undo:
-                new_value, target_ui = Melty.undo_requests.pop(draw_state)
+                _requested, target_ui = Melty.undo_requests.pop(draw_state)
+                if getattr(_requested, "__collection_mutation__", False):
+                    # Mutation-based undo entry (drag-drop reorder): the stack
+                    # contains "insert x at key a"-style ops, never dict values.
+                    # Apply the requested side to the LIVE collection and let
+                    # the mutated result flow out as this view's changed value.
+                    _live = new_value if child_changed else input_value
+                    try:
+                        _, new_value, _ = _requested.apply(_live)
+                        # Rows moved/appeared; no SIZE changed, so nothing
+                        # else triggered the height changed - yet every cached
+                        # relative_pos now describes the pre-mutation layout
+                        # and a skip-advance render would commit it as truth.
+                        draw_state.invalid_content_height = True
+                    except Exception as _mut_err:
+                        print(f"undo mutation apply failed: {_mut_err}")
+                        new_value = _live
+                else:
+                    new_value = _requested
                 child_changed = True
                 draw_state.apply_undo_state(target_ui)
 
             if _has_imgui and not is_undo:
                 handle_undo(child_changed, input_value, new_value, draw_state)
+
+            # Drag-and-drop interception: a drop registered a CollectionMutation
+            # for this view's draw_state (see drag_drop.py). Apply it to
+            # the LIVE collection and report changed=True so the parent writes
+            # it back into the model - the same path an undo restore takes -
+            # and record (inverse, mutation) so the drop is one undo step.
+            if Melty.dnd_requests and draw_state in Melty.dnd_requests:
+                _dnd_op = Melty.dnd_requests.pop(draw_state)
+                try:
+                    _dnd_changed, _dnd_value, _dnd_inverse = _dnd_op.apply(
+                        new_value if child_changed else input_value)
+                except Exception as _dnd_err:
+                    print(f"drag-drop apply failed: {_dnd_err}")
+                    _dnd_changed, _dnd_value, _dnd_inverse = False, None, None
+                if _dnd_changed:
+                    child_changed, new_value = True, _dnd_value
+                    # A reorder/insert changed no row SIZES, so the size-change
+                    # detector never flags the height - but every cached
+                    # relative_pos now describes the pre-drop layout, and a
+                    # skip-advance render would measure and COMMIT that stale
+                    # layout (the locked 949-vs-164 content_height on Loras
+                    # View Three.) Force a full measure on the next render.
+                    draw_state.invalid_content_height = True
+                    if _dnd_inverse is not None:
+                        UndoManager.record(draw_state, _dnd_inverse, _dnd_op)
 
 
             # Normal return path

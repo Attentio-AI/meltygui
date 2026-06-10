@@ -184,8 +184,16 @@ class UndoManager:
     def record(cls, draw_state, old, new):
         if Core.melty.frame_count < cls.settle_for:
             return
-        if not (isinstance(old, cls.APPROVED_TYPES)
-                and isinstance(new, cls.APPROVED_TYPES)):
+        # Collection mutations (drag-drop reorders, see drag_drop.py) are
+        # frozen "insert x at key y"-style records - safe to hold by
+        # reference like the approved primitives, and the whole point of
+        # them is not snapshotting the dict they edit. `old` is the
+        # inverse mutation, `new` the applied one; undo/redo apply either
+        # side to the live collection via the wrapper-tail interception.
+        is_mutation = (getattr(old, "__collection_mutation__", False)
+                       and getattr(new, "__collection_mutation__", False))
+        if not is_mutation and not (isinstance(old, cls.APPROVED_TYPES)
+                                    and isinstance(new, cls.APPROVED_TYPES)):
             return
         # Skip no- change. Several renderers (draw_text, draw_collection, the
         # @window source views) report changed=True every frame with old == new.

@@ -36,7 +36,7 @@ from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 
 ROOT = Path(__file__).parent
-
+TEST_FOLDER = Path("/home/lukas/test_folder")
 
 def _scan(folder):
     """Disk → the held shape: {name: Path} for files, {name: {…}} for dirs."""
@@ -52,22 +52,37 @@ def _scan(folder):
     return out
 
 
-def _create(path, value):
+def _create(path, value, pending):
     """A key the user ADDED → put it on disk. A held dict → mkdir (its children
-    create themselves when the reconcile descends); a held str → a file with
-    those contents; a held Path that still exists elsewhere → a MOVE (a renamed
-    key is the old Path re-appearing under the new name)."""
+    create themselves from the same plan); a held str → a file with those
+    contents; a held Path that still exists elsewhere → a MOVE (a dragged or
+    renamed key is the old Path re-appearing under a new name). A STALE held
+    Path (its file already gone) pairs by basename to a pending delete — the
+    two halves of a move whose delete side was planned first (e.g. undoing a
+    cross-folder drag re-inserts the OLD Path while the file sits at the NEW
+    one) — and moves that file instead of writing an empty husk."""
     try:
         if isinstance(value, dict):
             path.mkdir(exist_ok=True)
-            return {}
-        if isinstance(value, Path) and value.exists() and value != path:
-            value.rename(path)
-        elif not path.exists():
+            return
+        if isinstance(value, Path):
+            if value.exists() and value != path:
+                value.rename(path)
+                pending.discard(value)
+                return
+            if not path.exists():
+                # value == path covers undo: the OLD Path re-inserted at its
+                # old home while the file sits at the move's target.
+                twin = next((p for p in sorted(pending)
+                             if p.name == value.name and p.is_file()), None)
+                if twin is not None:
+                    twin.rename(path)
+                    pending.discard(twin)
+                    return
+        if not path.exists():
             path.write_text(value if isinstance(value, str) else "")
     except OSError:
         pass
-    return path
 
 
 def _delete(path):
@@ -80,23 +95,43 @@ def _delete(path):
 
 def _reconcile(store, disk, folder, seen):
     """Mirror `store` (the held tree) ⇄ `disk` (the poller's snapshot of
-    `folder`), in place, recursively. A path the store has never SEEN is disk's
-    to give (new on disk → hold it); a path it HAS seen is the user's to take
-    away (key deleted → file deleted, key added → file created). Creates run
-    first so a key renamed within a folder MOVES its file before the old name's
-    delete fires. Every disk-side effect is stamped straight into `disk`, so
-    the snapshot never lags our own writes — the poller only ever reports
-    EXTERNAL changes."""
+    `folder`), in place, in two phases. Phase 1 (_collect) walks the whole
+    tree gathering creates and deletes, stamping every planned effect straight
+    into `disk` so the snapshot never lags our own writes — the poller only
+    ever reports EXTERNAL changes. Phase 2 executes EVERY create before ANY
+    delete, tree-wide: a file dragged between folders is renamed (a MOVE)
+    before the old key's delete fires no matter which folder the walk visits
+    first. (The old per-folder ordering destroyed the file's content whenever
+    the source folder reconciled before the target.) A delete consumed by a
+    move pairing is skipped; the rest run last, so a moved folder's old
+    skeleton is removed only after its children have been renamed out."""
+    creates, deletes = [], []
+    _collect(store, disk, folder, seen, creates, deletes)
+    pending = set(deletes)
+    for path, value in creates:
+        _create(path, value, pending)
+    for path in deletes:
+        if path in pending:
+            _delete(path)
+
+
+def _collect(store, disk, folder, seen, creates, deletes):
+    """Phase 1 of _reconcile: the recursive walk. A path the store has never
+    SEEN is disk's to give (new on disk → hold it); a path it HAS seen is the
+    user's to take away (key deleted → plan a delete, key added → plan a
+    create). Store/disk/seen bookkeeping happens here — only the disk side
+    effects are deferred to the plan."""
     for name, value in list(store.items()):
         if name not in disk and (folder / name) not in seen:        # user added
-            disk[name] = _create(folder / name, value)
+            creates.append((folder / name, value))
+            disk[name] = {} if isinstance(value, dict) else folder / name
             if not isinstance(value, dict):
                 store[name] = disk[name]
     for name in sorted(set(disk) | set(store)):
         path = folder / name
         if name not in store:
             if path in seen:                                        # user deleted
-                _delete(path)
+                deletes.append(path)
                 disk.pop(name)
                 seen.discard(path)
                 continue
@@ -108,7 +143,7 @@ def _reconcile(store, disk, folder, seen):
         seen.add(path)
         if isinstance(store[name], dict):
             sub = disk[name] if isinstance(disk[name], dict) else {}
-            _reconcile(store[name], sub, path, seen)
+            _collect(store[name], sub, path, seen, creates, deletes)
 
 
 # ── the stateful wrapper: discover -> view_func(dict) -> apply ──────────────────
@@ -119,14 +154,17 @@ def folder_io(input_value, draw_state, view_func=None, root=None, external_chang
     # ── IN: reconcile the HELD tree IN PLACE against the disk snapshot - same
     # reason as claude_terminals_io: `input_value` IS the dict the host holds
     # and the @window reads; a separate store would leave it a stale copy.
-    global _disk_tree
-    if _disk_tree is None:
-        _disk_tree = _scan(root)
+    # The snapshot is PER ROOT: the single shared global handed the second
+    # window the first root's tree - the the store saw every ROOT entry as
+    # "new on disk", complete with Path leaves pointing into the wrong folder.
+    disk = _disk_trees.get(root)
+    if disk is None:
+        disk = _disk_trees[root] = _scan(root)
     store = input_value if isinstance(input_value, dict) else {}
     seen = getattr(draw_state, "_seen_paths", None)
     if seen is None:
         seen = draw_state._seen_paths = set()
-    _reconcile(store, _disk_tree, root, seen)
+    _reconcile(store, disk, root, seen)
 
     # ── VIEW: hand the tree to the host's view func (which materializes + renders)
     edited, value = view_func(input_value=store, external_change=False, **kwargs)
@@ -139,52 +177,74 @@ def folder_io(input_value, draw_state, view_func=None, root=None, external_chang
 files_proxy = RenderHost(io_function=folder_io, input_value=None,
                          name="Folder Files", root=ROOT)
 
+test_folder_proxy = RenderHost(io_function=folder_io, input_value=None,
+                         name="TestFolderProxy", root=TEST_FOLDER)
 
-_disk_tree = None       # the poller's nested snapshot of ROOT ({name: Path | dict})
+# ── per-root state: every root gets its own snapshot, window draw_state, and
+# poller entry. (These were single globals once: the second window reconciled
+# against the first root's snapshot and rendered ROOT's files.)
+_disk_trees = {}        # root -> the poller's nested snapshot ({name: Path | dict})
+_window_dss = {}        # root -> that root's @window draw_state, stashed each render
+_proxies = {ROOT: files_proxy, TEST_FOLDER: test_folder_proxy}   # poller targets
 _poller_running = False
-_window_ds = None       # draw_folder_files' draw_state, stashed each render
 
 
-# ── the renderer: draw the held tree; user leaves edit via Mode.FILE_TREE ───────
-@window(input_value=files_proxy, tint=(0.18, 0.72, 0.74), disable_scroll=False, mode=Modes.WINDOW)
-@render_func(show_bg=False, use_cache=True, selectable=False)
-def draw_folder_files(input_value, draw_state, **kwargs):
-    global _poller_running, _window_ds
+def _draw_tree(input_value, draw_state, root):
+    """Shared @window body: start the (single, all-roots) poller, stash this
+    root's draw_state for it, and draw the held tree."""
+    global _poller_running
     if not _poller_running:
         threading.Thread(target=_poll_loop, daemon=True, name="folder-files-poller").start()
         _poller_running = True
-    _window_ds = draw_state
+    _window_dss[root] = draw_state
 
     # The tree is held one LEVEL UP under value name ("value") - same as
     # claude_terminals: draw_collection on the proxy itself would render the
     # single {"value": tree} key, not the files.
     tree = input_value.get("value") if isinstance(input_value, dict) else {}
-    RenderFuncs.draw_collection(tree if tree is not None else {}, name=ROOT.name,
-                                show_add_delete=True, new_item_type=str, temp=True, width=draw_state.content_width, 
+    RenderFuncs.draw_collection(tree if tree is not None else {}, name=root.name,
+                                show_add_delete=True, new_item_type=str, temp=True, width=draw_state.content_width,
                                 disable_scroll=True, show_bg=True,
-                                child_kwargs={"show_bg": True, "bg_offset":-4, "child_kwargs":{"show_bg":False,
-                                                                               "is_tree":False,
-                                                                               "expanded":True}, "mode": Modes.FILE_TREE})
+                                child_kwargs={"show_bg": True, "bg_offset": -4, "child_kwargs": {"show_bg": False,
+                                                                                                 "is_tree": False,
+                                                                                                 "expanded": True},
+                                              "mode": Modes.FILE_TREE})
+
+
+# ── the renderers: draw each held tree; draw leaves edit in Mode.FILE_TREE ───
+@window(input_value=files_proxy, tint=(0.11, 0.38, 0.72), disable_scroll=False, mode=Modes.WINDOW)
+@render_func(show_bg=False, use_cache=True, selectable=False)
+def draw_folder_files(input_value, draw_state, **kwargs):
+    _draw_tree(input_value, draw_state, ROOT)
     return False, None
 
 
-# ── discovery poller: the window's body is blit-cached, so it wouldn't see a
-# file that appeared/vanished with no edit to invalidate it. Re-scan and, on a
-# CHANGE to the tree, re-run io and re-render the @window.
+@window(input_value=test_folder_proxy, tint=(0.78, 0.84, 0.92), disable_scroll=False, mode=Modes.WINDOW)
+@render_func(show_bg=False, use_cache=True, selectable=False)
+def draw_test_folders(input_value, draw_state, **kwargs):
+    _draw_tree(input_value, draw_state, TEST_FOLDER)
+    return False, None
+
+
+# ── discovery poller: the wrappers' bodies are blit-cached, so they wouldn't
+# show a file that appeared/vanished with no way to render them. One
+# thread sweeps EVERY registered root; on a change to a tree, swap in the new
+# snapshot AND re-render that root's @window.
 def _poll_loop():
-    global _disk_tree
     while True:
         if Core.melty.frame_count < 4:
             time.sleep(2)
-        try:
-            cur = _scan(ROOT)
-            if cur != _disk_tree:
-                _disk_tree = cur
-                for ds in (getattr(files_proxy, "_wrapper_draw_state", None),
-                           getattr(files_proxy, "_draw_state", None), _window_ds):
-                    if ds is not None:
-                        ds.invalidate()
-                request_render()
-        except Exception:
-            pass
+        for root, proxy in list(_proxies.items()):
+            try:
+                cur = _scan(root)
+                if cur != _disk_trees.get(root):
+                    _disk_trees[root] = cur
+                    for ds in (getattr(proxy, "_wrapper_draw_state", None),
+                               getattr(proxy, "_draw_state", None),
+                               _window_dss.get(root)):
+                        if ds is not None:
+                            ds.invalidate()
+                    request_render()
+            except Exception:
+                pass
         time.sleep(1.0)

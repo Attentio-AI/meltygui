@@ -61,6 +61,27 @@ def is_editable_source(source_file) -> bool:
     return True
 
 
+def is_writable_file(path) -> bool:
+    """The gentler gate for PLAIN-FILE codecs (TextFileCodec and friends): the
+    folder-tree windows mount arbitrary directories, so whole-file editing is
+    allowed anywhere under $HOME — unlike code codecs, which hotswap live
+    objects and stay pinned to the project tree (is_editable_source). Library
+    installs are still refused: a venv lives under home too, and writing into
+    site-packages through a folder window is the same disaster the strict gate
+    exists to prevent."""
+    try:
+        p = Path(path).resolve()
+    except (OSError, ValueError):
+        return False
+    if {"site-packages", "dist-packages", "venv", ".venv", "node_modules"} & set(p.parts):
+        return False
+    try:
+        p.relative_to(Path.home())
+    except ValueError:
+        return False
+    return True
+
+
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  Address                                                                     ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝

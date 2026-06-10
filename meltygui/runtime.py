@@ -523,6 +523,13 @@ class Melty:
     # the entry so it fires for exactly one view.
     undo_requests = {}
 
+    # Drag-and-drop reorders: collection draw_state -> op(collection) ->
+    # (changed, collection). Registered by DragDrop._commit on drop; the same
+    # wrapper tail that serves undo_requests pops the entry, applies the func to
+    # the live collection and reports (True, reordered) so the parent writes
+    # it back. See view/core_views/drag_drop.py.
+    dnd_requests = {}
+
     empty_event = InputEvent(input_id="", action="")
     events_by_type = {}
     pending_blockers = [None] * max_layer
@@ -1078,7 +1085,12 @@ class Melty:
             is_window_resize = False
 
         if left_mouse_drag_event is not None:
-            is_window_drag = "window_move" in str(left_mouse_drag_event.keys()) or "corner_drag" in str(left_mouse_drag_event.keys())
+            # dnd_item: an item drag-and-drop gesture gets the same churn
+            # suppression (hover invalidation, content-height changes, scroll
+            # clamps) as a window drag - both ride the blit fast path.
+            is_window_drag = ("window_move" in str(left_mouse_drag_event.keys())
+                              or "corner_drag" in str(left_mouse_drag_event.keys())
+                              or "dnd_item" in str(left_mouse_drag_event.keys()))
         else:
             is_window_drag = False
 
@@ -1738,6 +1750,19 @@ class Melty:
 
         for ds_id, discard_ds in to_discard:
             cls.root_draw_states[ds_id].remove(discard_ds)
+
+        # Universal item drag-and-drop: pick up armed header drags, draw the
+        # drop-point lines and commit/cancel on release. BEFORE the layer
+        # dispatch - on frames where the (blitted) source collection doesn't
+        # run, deferring inline drawing, this re-registers the floating
+        # dragged window into its layer so the loop below still draws it
+        # (see view/core_views/drag_drop.py). No per-frame invalidation:
+        # the drag rides the closable-window blit fastpath.
+        try:
+            from src.lsd.gl_gui.view.core_views.drag_drop import DragDrop
+            DragDrop.frame_update()
+        except Exception as dnd_e:
+            print(f"DragDrop.frame_update failed: {dnd_e}")
 
         for idx in range(len(cls.layers)):
             layer = cls.layers[idx]

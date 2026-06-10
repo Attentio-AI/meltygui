@@ -42,7 +42,7 @@ def open_file(path, app=None):
 
 
 
-def render_search(search_ds, draw_state, unique=None, regrab_focus=True):
+def render_search(search_ds, draw_state, unique=None, width=None, regrab_focus=True):
     """Render the find UI for the searchable view whose state lives on
     `search_ds`: the search input, match count, prev/next nav, and close.
 
@@ -81,11 +81,14 @@ def render_search(search_ds, draw_state, unique=None, regrab_focus=True):
     imgui.align_text_to_frame_padding()
     imgui.text(search_icon)
     imgui.same_line()
+
+    if width is None:
+        width = draw_state.content_width - 50
     search_change, new_search = draw_text(search_ds.search_text, searchable=False,
                                           is_search_box=True,
                                           shadow=False, max_height=40,
                                           name=search_icon + str(unique), with_header=None,
-                                          with_header_end=None, width=draw_state.content_width-50,
+                                          with_header_end=None, width=width,
                                           with_footer=None, header_same_line=True, tint=search_ds.tint,
                                           show_name=False, show_header=False, single_line=True,
                                           request_focus=focus_search)
@@ -107,7 +110,7 @@ def render_search(search_ds, draw_state, unique=None, regrab_focus=True):
     from src.lsd.gl_gui.view.core_views.new_core_view import button
     fa_x_icon = ""
 
-    imgui.set_cursor_screen_pos((draw_state.abs_left + draw_state.content_width-17, imgui.get_cursor_screen_pos()[1]))
+    imgui.set_cursor_screen_pos((draw_state.abs_left + draw_state.content_width-25, imgui.get_cursor_screen_pos()[1]))
     # imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0], imgui.get_cursor_screen_pos()[1] + 2))
     if button(fa_x_icon, name=f"{unique}##fa_x_icon", show_bg=False,
               use_cache=True, height=23, shadow=True, z_offset=3, max_height=40,

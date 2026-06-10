@@ -119,11 +119,11 @@ class Tint:
 
 @window
 class Swoosh:
+    alpha = 1.0             # opacity of the swoosh
     # Nested-window "swoosh" connector (parent outline -> nested view)
     tint = (1.0, 0.7, 0.2)   # fallback color if no style manager is available
     value = 1.023              # intensity of the highlight (super-bright yellow)
     saturation = 0.791        # saturation scale applied to the current tint
-    alpha = 1.0             # opacity of the swoosh
     end_thickness = 2.304      # half-width at the two endpoints (thick)
     cap_scale = 0.962          # end-cap dot radius as a multiple of end thickness
     mid_thickness = 0.441      # half-width at the middle (thin)
@@ -149,7 +149,7 @@ class Swoosh:
                                 # within this fraction of the parent's shorter side (else stay flat)
 
 
-@window(tint=(0.88, 0.37, 0.12))
+@window(tint=(0.53, 0.19, 0.05))
 class Toggles:
 
     @defaults(tint=(0.5, 0.188, 0.053))
@@ -158,8 +158,8 @@ class Toggles:
     @defaults(tint=(0.739, 0.44, 0.349))
     class InvalidateTracker:
         keep_for_frames = 101
-        enable = False
         draw_bvh = False
+        enable = False
         draw_rect = False
 
     @defaults(tint=(0.011, 0.124, 0.211))
@@ -172,11 +172,6 @@ class Toggles:
 
     @defaults(tint=(0.089, 0.08, 0.069), bg_offset=30)
     class TerminalSettings:
-        # Minimum LOGICAL terminal size, in pixels - independent of the window size.
-        # When a terminal window is dragged smaller than this, the emulated grid (PTY)
-        # stays frozen at this minimum so line wrapping stops re-flowing; the screen
-        # clips into the window instead (a "crop in" behavior). Larger windows grow
-        # the smaller as usual. Consumed by draw_terminal_screen.
         min_width = 98.634
         min_height = 480.0
 

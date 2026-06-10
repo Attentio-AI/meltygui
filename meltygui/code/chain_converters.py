@@ -473,6 +473,49 @@ def dict_to_cst(input_value, changed=False):
     return False, back_to_cst
 
 
+def _live_apply_class_vars(cls: type, gp: dict) -> None:
+    """Drive the live class from cst_dict edits, ahead of any save/recompile.
+
+    A class span parses to {<ClassName>: {var: value, ...}} — when an edit
+    flows back through the chain, plain class-var values land on the live type
+    immediately via setattr, so dependent views respond in realtime. The real
+    recompile/hotswap (Ctrl+Enter / save) still owns methods, new vars, and
+    source truth; this only touches vars the class already has.
+
+    Skipped: non-identifier keys (Comments), underscore keys, nested dicts
+    (methods, nested classes, decorators, CallParse), and CodeLine values —
+    CodeLine is a str SUBCLASS holding unparsed source text, not the value.
+    `__init__` self-assignments surface as fields too but fail the hasattr
+    check (instance attrs, not class vars)."""
+    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import CodeLine
+    inner = gp.get(cls.__name__)
+    if not isinstance(inner, dict):
+        return
+    applied = False
+    for k, v in inner.items():
+        if not isinstance(k, str) or not k.isidentifier() or k.startswith("_"):
+            continue
+        if isinstance(v, (dict, CodeLine)):
+            continue
+        if not hasattr(cls, k):
+            continue
+        try:
+            cur = getattr(cls, k)
+            if cur is v or cur == v:
+                continue
+        except Exception:
+            pass  # incomparable (e.g. ndarray) - fall through and set
+        try:
+            setattr(cls, k, v)
+            applied = True
+        except Exception:
+            pass
+    if applied and Melty.cache is not None:
+        # Repaint views drawn from the class - cached tiles keep blitting the
+        # old value until something invalidates them (such as _recompile_class).
+        Melty.cache.invalidate_up_by_obj(cls, max_depth=10)
+
+
 @render_func(use_cache=True, selectable=False)
 def run_button(input_value: any, with_kwargs=None, draw_state=None, clicked=False):
     is_render_func = hasattr(input_value, "__render_func__")
@@ -565,6 +608,11 @@ def general_parse_to_address(input_value: GeneralParse=None, pending=False, draw
                            1.0, 0.0, 0.0)
         return False, None
     source = address.source
+
+    # Class edits drive the live type immediately (responsive preview); the
+    # recompile/hotswap below still owns methods, new vars, and source truth.
+    if changed and isinstance(source, type):
+        _live_apply_class_vars(source, input_value)
 
     # Latch the save intent across the background dict_to_cst latency. An edit
     # (focus Add/Delete, a single color pick) sets changed=True for ONE frame -

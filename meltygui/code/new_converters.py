@@ -90,8 +90,8 @@ from src.lsd.gl_gui.view.core_conversion.file_converters import (
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
     cst_module_to_dict, dict_to_cst_module,
 )
-from src.lsd.gl_gui.view.core_conversion.new_codecs import Codec, CallSite, Decorations, type_to_codec, \
-    extension_to_codec
+from src.lsd.gl_gui.view.core_conversion.new_codecs import Codec, CallSite, Decorations, SaveConflict, \
+    type_to_codec, extension_to_codec, codec_for_path
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import no_save_exclude, no_save
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
@@ -105,12 +105,14 @@ from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
 
-def save_file(address, code_str, codec=None, ensure_import=None, parent_ds=None):
+def save_file(address, code_str, codec=None, ensure_import=None, parent_ds=None, force=False):
     """Write the edited value back through the resolved codec (span splice for
-    code, whole-file for images, etc.)."""
+    code, whole-file for images, etc.). Returns the codec's result — a
+    SaveConflict when the codec refused the splice because the on-disk span
+    changed under us (force=True, the user's explicit Keep-mine, bypasses)."""
     current_time = datetime.now().strftime("%H:%M:%S")
     print(f"{current_time} Saved {address.path} from {parent_ds.name}")
-    codec.save(address=address, data=code_str, ensure_import=ensure_import)
+    return codec.save(address=address, data=code_str, ensure_import=ensure_import, force=force)
 
 
 def recompile_source(source, code_str, file_path, address=None):
@@ -241,28 +243,25 @@ def _recompile_caller(call_site, stmt_str, file_path, address):
 class TestClass:
     some_val = 102
     some_other_val = 20
-    some = []
     tint=(0.52, 0.80, 0.688)
 
     # [tint=(0.7722222, 0.5336913466453552, 0.17589502036571503)]
     def some_func(a=84, b=-153):
-        imgui.set_cursor_pos((0,0))
+        imgui.set_cursor_pos()
     some_line = 87
     myflot = 5
     tint = (0.52, 0.80, 0.688)
-    some_tuple = (101, 1)
 
-
+    aomw_list= 51
 
     list_new = [1,1,1]
-    # [tint=(0.80, 0.3665185570716858, 0.11555557698011398)]
+    # [tint=(0.31290125846862793, 0.6864094, 0.7611111402511597)]
     class NestedClass:
         so = 31    
 
     some_nested = NestedClass()
 
     new_bool = True
-    a_dict = {"x": -40, "y": 53}
 
 
 def slow_task(**kwargs):
@@ -492,6 +491,13 @@ class CodeState(DictConversion):
         self._reconvert = False
         self._recompiled_on_frame = None
         self.recompile_result = None
+        # External-change indication: _loaded_externally marks an in-flight load
+        # that was TRIGGERED by a disk change (vs the initial fill); when it
+        # completes, the frame/time stamps trigger the fading "loaded from disk"
+        # status next to the buttons (see external_load_status).
+        self._loaded_externally = False
+        self._external_load_frame = None
+        self._external_load_time = None
 
     def is_file_stale(self):
         if self.address is None:
@@ -1207,6 +1213,31 @@ def recompile_status(code_state, draw_state):
         code_state._recompile_on_frame = None
 
 
+def external_load_status(code_state, draw_state):
+    """Fading "loaded from disk" indication after an external write was picked
+    up and reloaded \u2014 the disk-change counterpart of recompile_status, so an
+    outside program (Claude, git, another editor) saving the file is visible
+    instead of the buffer just silently changing."""
+    if code_state._external_load_frame is None:
+        return
+    duration = 120.0  # linger 2x recompile's checkmark \u2014 easy to miss otherwise
+
+    loaded_for = float(Melty.frame_count - code_state._external_load_frame)
+    fade_out = min(1.0, max(0.0, 2.0 - (max(0.0, loaded_for) / duration)))
+
+    if fade_out >= 0:
+        imgui.same_line(spacing=8)
+        imgui.align_text_to_frame_padding()
+        sync_icon_fa = "\uf021"
+        imgui.text_colored(f"{sync_icon_fa} loaded from disk {code_state._external_load_time}",
+                           1.0, 0.75, 0.25, fade_out)
+    if fade_out > 0.01:
+        draw_state.invalidate()
+        request_render()
+    else:
+        code_state._external_load_frame = None
+
+
 def run_recompile(source, code_state, draw_state, start=False, name="recompile"):
     """The background hotswap runner (recompile_source via run_in_background —
     no disk write). Call it unconditionally every frame so the runner can spawn
@@ -1259,17 +1290,27 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                 if klass in type_to_codec:
                     codec = type_to_codec[klass]
                     break
-            # File-path fallback by extension -- only for a GENUOUS path or a
-            # bare str. Exact-type the str check so an extended primitive like
+            # File lookup fallback -- only for a GENUINE path or a bare str.
+            # Hard-type the str check so an extended primitive like
             # CodeLine(str) (whose type is SOURCE, not a FILE) isn't whacked
             # into being interpreted as a path. Path uses isinstance so real
             # path objects (PosixPath, a Path subclass) still match.
+            # codec_for_path = registered codec, else content sniff: text
+            # files edit via TextFileCodec, anything else gets the read-only
+            # binary summary - a real path never lands on "No codec".
             if codec is None and (isinstance(input_value, Path) or type(input_value) is str):
-                codec = extension_to_codec.get(Path(str(input_value)).suffix)
+                codec = codec_for_path(Path(str(input_value)))
 
         if codec is None:
             imgui.text(f"No codec for type: {type(input_value).__name__}")
             return False, None
+
+        # A codec whose output isn't editor text (ImageCodec → UITexture,
+        # BinaryFileCodec → plain summary) names its own view; it wins over the
+        # mode-pinned text view (FILE_TREE pins draw_text_from_code_cache, which
+        # would try to PARSE the loaded value as Python).
+        if getattr(codec, "view_func", None) is not None:
+            view_func = codec.view_func
 
         address = codec.resolve_address(input_value, draw_state, code_state=code_state)
         code_state.address = address
@@ -1280,16 +1321,24 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
         if address is None:
             return False, None
 
+        # Run (hotkey) and Index (jedi) only make sense on Python code \u2014 the
+        # codec decides (TypeCodec family: yes; TextFileCodec: .py paths only;
+        # images/binaries: no). Gates the buttons AND the Ctrl+Enter hotkey.
+        code_buttons = codec.show_code_buttons(address)
+
         if auto_load:
             if draw_state.frame_count < 1:
                 load = True
                 code_state.text_cache = None
                 code_state.mark_file_current()
 
-        if not auto_recompile_edits and code_state.text_cache is not UNSET and code_state.text_cache is not None:
+        # str gate on top: even a code codec can briefly hold non-text data.
+        if (code_buttons and not auto_recompile_edits
+                and code_state.text_cache is not UNSET
+                and isinstance(code_state.text_cache, str)):
             recompile = recompile_button(code_state, unique=unique, height=top_line_height)
 
-        if Toggles.enable_jedi:
+        if Toggles.enable_jedi and code_buttons:
             imgui.same_line(spacing=0)
             search_icon = "\uf002"
             run_jedi = RenderFuncs.button(f"{search_icon} Index",
@@ -1298,20 +1347,43 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                                           name="jedi_index_btn")[0] or run_jedi
 
         recompile_status(code_state, draw_state)
+        external_load_status(code_state, draw_state)
 
-        if code_state.is_file_stale() and not code_state._pending_save:
+        file_stale = code_state.is_file_stale()
+        conflict = file_stale and code_state._pending_save
+        keep_mine = False
+        if file_stale and not code_state._pending_save:
             if auto_load_edits:
                 load = True
+                code_state._loaded_externally = True
                 code_state.mark_file_current()
             else:
                 imgui.same_line(spacing=0)
                 if RenderFuncs.button("Load", width=100, height=top_line_height, name=f"reload{unique}")[0]:
                     load = True
+                    code_state._loaded_externally = True
 
-                if not code_state._pending_save:
-                    imgui.same_line()
-                    if RenderFuncs.button("Keep mine", width=100, height=top_line_height, name=f"keepmine{unique}")[0]:
-                        save = True
+                imgui.same_line()
+                if RenderFuncs.button("Keep mine", width=100, height=top_line_height, name=f"keepmine{unique}")[0]:
+                    save = True
+                    keep_mine = True
+        elif conflict:
+            # External write + local unsaved edits: a write conflict. Auto-save
+            # is blocked below until the user picks a side - splicing a buffer
+            # that came from the OLD file into the rewritten one is exactly the
+            # file-mangling path. Keep mine writes with force (skips the codec's
+            # span-failure guard) through the freshly re-resolved span.
+            imgui.same_line(spacing=8)
+            imgui.align_text_to_frame_padding()
+            imgui.text_colored("\uf071 changed on disk", 1.0, 0.55, 0.15, 1.0)
+            imgui.same_line(spacing=4)
+            if RenderFuncs.button("Load theirs", width=110, height=top_line_height, name=f"reload{unique}")[0]:
+                load = True
+                code_state._loaded_externally = True
+            imgui.same_line()
+            if RenderFuncs.button("Keep mine", width=100, height=top_line_height, name=f"keepmine{unique}")[0]:
+                save = True
+                keep_mine = True
 
         if not auto_save and code_state._pending_save:
             imgui.same_line(spacing=0)
@@ -1335,6 +1407,12 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             draw_state.invalidate_up(max_depth=6)
             code_state._pending_save = False
             external_change = True
+            if code_state._loaded_externally:
+                # This load was triggered by a disk change (not the initial
+                # load) - stamp the fading "loaded from disk" label.
+                code_state._loaded_externally = False
+                code_state._external_load_frame = Melty.frame_count
+                code_state._external_load_time = datetime.now().strftime("%H:%M:%S")
             request_render()
 
         # ── 3. Edit - the actual call ─────────────────────────────────────────────
@@ -1359,8 +1437,16 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             _recompile_error = (code_state.recompile_result
                                 if isinstance(code_state.recompile_result, BaseException)
                                 else None)
-            child_kwargs['error'] = _runtime_error or _recompile_error
-            child_kwargs['root_input'] = input_value
+            # Error checking rides the same codec switch as Run/Index: a None
+            # root_input makes draw_text_from_code_cache skip the code-host
+            # cache entirely - no Python parse of a .txt buffer, no syntax-error
+            # highlight on plain text, and no background reparse per keystroke.
+            child_kwargs['error'] = (_runtime_error or _recompile_error) if code_buttons else None
+            child_kwargs['root_input'] = input_value if code_buttons else None
+            # Same switch again: a .txt buffer gets plain 'default'-colored
+            # text instead of Python-tokenized Darcula colors (draw_text builds
+            # inline token widgets with it).
+            child_kwargs['syntax_highlight'] = code_buttons
             # The view's reconvert trigger: load / external edit (external_change),
             # the Index button (run_jedi), and a buffer edit from last frame
             # (_reconvert) - chain_in re-parses typed text and surfaces syntax
@@ -1394,7 +1480,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
         # We call them unconditionally every frame so the runner can spawn the
         # thread and surface completion; `start=` is just the trigger edge.
         save_hotkey = bool(s_key_pressed and s_key_pressed.ctrl)
-        recompile_hotkey = bool(enter_key_pressed and enter_key_pressed.ctrl)
+        recompile_hotkey = bool(enter_key_pressed and enter_key_pressed.ctrl) and code_buttons
 
         # Save: write the edited span back to disk off the main thread. The text is
         # snapshotted into child_kwargs at trigger time, so a later edit can't race
@@ -1402,7 +1488,13 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
         # keystrokes collapses into one write after typing pauses; the explicit
         # save button / Ctrl+S fires immediately (debounce 0).
         explicit_save = save_hotkey or save
-        save_start = (auto_save and edited) or explicit_save
+        # During a conflict (external write + pending local edit) the debounced
+        # auto-save is OFF - only an explicit save (Keep mine / Save / Ctrl+S)
+        # writes, and it writes with force past the codec's span guard. An
+        # already-in-flight debounced save is caught by that guard instead and
+        # comes back as SaveConflict (handled below).
+        save_start = (auto_save and edited and not conflict) or explicit_save
+        force_save = keep_mine or (conflict and explicit_save)
         save_debounce = 0 if explicit_save else save_debounce_ms
         time = datetime.now().strftime("%H:%M:%S")
         if save_start:
@@ -1414,12 +1506,20 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                                                         "codec": codec,
                                                         "code_str": code_state.text_cache,
                                                         "ensure_import": ensure_import,
-                                                        "parent_ds": draw_state},
+                                                        "parent_ds": draw_state,
+                                                        "force": force_save},
                                           name=f"save{draw_state.name}", start=save_start,
                                           debounce_ms=save_debounce,
                                           wait_for_drag=not explicit_save)
-        if result == LOADING:
+        if result is LOADING:
             code_state.mark_file_current()
+
+        elif saved and isinstance(result, SaveConflict):
+            # The codec refused the splice - the on-disk span changed under the
+            # in-flight write. Nothing was written: keep the edit pending but
+            # mark the file stale so the conflict UI above surfaces next frame.
+            code_state.mark_file_stale()
+            request_render()
 
         elif saved:
             # Our own write bumped mtime; clear the stale flag set on edit so the

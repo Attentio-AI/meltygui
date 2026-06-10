@@ -527,8 +527,8 @@ def draw_icon_selector(input_value, draw_state=None,
     return (True, picked) if (changed and isinstance(picked, str)) else (False, cur)
 
 
-@render_func(use_cache=False, show_bg=True, shadow=True, with_header=None, tint=(0.8, 0.318, 0.04),
-             show_name=False, selectable=False, z_offset=3, bg_offset=5)
+@render_func(use_cache=True, show_bg=True, shadow=True, with_header=None, tint=(0.81, 0.342, 0.11),
+             show_name=False, selectable=False, z_offset=3, bg_offset=10)
 def draw_bool_token(input_value, draw_state=None, **kwargs):
     """Inline True/False word — whole-token token_views renderer for 'bool'
     tokens. Renders the literal exactly as the editor would (same font, grid
@@ -545,10 +545,10 @@ def draw_bool_token(input_value, draw_state=None, **kwargs):
     hovered = x <= io.mouse_pos.x < x + w and y <= io.mouse_pos.y < y + h
     draw_list = imgui.get_window_draw_list()
     color = COLORS['bool']
-    if hovered:
-         draw_list.add_line(x, y + h - 1.5, x + w, y + h - 1.5, color, 1.0)
-    
-    
+    # if hovered:
+    #      draw_list.add_line(x, y + h - 1.5, x + w, y + h - 1.5, color, 0.0)
+
+
     draw_list.add_text(x, y, color, word)
     if hovered and imgui.is_mouse_double_clicked(0):
         return True, ("False" if word == "True" else "True")
@@ -581,7 +581,7 @@ def _parse_number_token(s):
 
 
 @render_func(use_cache=True, show_bg=False, shadow=False, with_header=None, z_offset=2,
-             show_name=False, selectable=False, tint=(0.0, 0.2, 0.552), wrap=True)
+             show_name=False, selectable=False, tint=(0.0, 0.2, 0.2, 0.6), wrap=True)
 def draw_number_token(input_value, draw_state=None,
                       left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
                       **kwargs):
@@ -1712,9 +1712,14 @@ def draw_text(input_value: str,
               single_line=False, is_search_box=False,
               draw_state=None, request_focus=False,
               line_height=1.149, font=Font.JETBRAINS_MONO_19, jump_to=None,
-              code_tree=None, code_dict=None, error=None, token_views=None):
+              code_tree=None, code_dict=None, error=None, token_views=None,
+              syntax_highlight=True):
     ds = draw_state
-    if token_views is None:
+    # Plain-text mode (codec tells "not Python source"): no Darcula colors and
+    # no inline token widgets - both are artifacts of the Python tokenizer.
+    if not syntax_highlight:
+        token_views = {}
+    elif token_views is None:
         token_views = DEFAULT_TOKEN_VIEWS   # global experiment fallback (see top)
 
     # Symbol-usage source: the parse arrives as `code_tree` in the
@@ -2608,12 +2613,20 @@ def draw_text(input_value: str,
     # content (scrolling, cursor blink, hover repaints) skip re-tokenizing and
     # only pay a C-level str compare. Each token is drawn one line-segment at a
     # time with a single add_text call rather than one call per glyph.
-    if getattr(ds, '_tok_cache_text', None) == text:
+    # The syntax flag is part of the cache key: a plain render must not reuse
+    # colored tokens (or vice versa) for the same text.
+    if (getattr(ds, '_tok_cache_text', None) == text
+            and getattr(ds, '_tok_cache_syntax', True) == syntax_highlight):
         tokens = ds._tok_cache
     else:
-        tokens = list(tokenize(text))
+        # Plain mode treats the whole buffer as ONE 'default'-colored token - the
+        # segment loop below already splits any token at newlines (docstrings
+        # span lines), so no per-line split is needed here.
+        tokens = (list(tokenize(text)) if syntax_highlight
+                  else ([(text, 'default')] if text else []))
         ds._tok_cache_text = text
         ds._tok_cache = tokens
+        ds._tok_cache_syntax = syntax_highlight
 
     x = origin_x
     y = origin_y

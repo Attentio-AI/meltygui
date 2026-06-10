@@ -42,6 +42,8 @@ from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
 from src.lsd.gl_gui.view.core_views.codec_register import registry as FILE_CODECS
 from src.lsd.gl_gui.view.core_views.core_render import render_func, render_func_kwarg_names
 from src.lsd.gl_gui.view.core_views.core_undo import UndoManager
+# Module import (not "from ... import DragDrop`) so hotswaps rebind cleanly.
+from src.lsd.gl_gui.view.core_views import drag_drop as _drag_drop
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import hotkey, tint, Core
 from src.lsd.gl_gui.view.core_views.decoration.invalidation_decoration import live
@@ -467,6 +469,10 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
     # Keys of children whose close (X) was clicked this frame — collected during the
     # loop and removed from the collection AFTER it (never mutate keys mid-iteration).
     to_delete = set()
+    # Whether any row was row-skipped this pass - a skipped pass reconstructs
+    # the layout from cached relative_pos/height caches, so its accuracy is only
+    # as good as those caches; a skip-free pass measured everything for real.
+    rows_skipped = False
 
     for idx in range(start_index, end_index + 1):
         key = keys[idx]
@@ -476,13 +482,18 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
 
         child_draw_state = draw_state._children.get(idx, None)
 
+        # A child currently being drag-and-dropped renders as a floating
+        # window (kwargs injected below) - never row-skip it, its stale
+        # relative_pos no longer says where it is.
+        is_dragged = _drag_drop.DragDrop.is_dragged_child(draw_state, key)
+
         # ----- off-screen detection -----
         # Is this row scrolled outside the viewport? When not searching, skip it
         # entirely up front (the perf early-out). On a search-counting frame keep
         # `clipped` to decide below: reuse a cached match count (no render) or
         # render to (re)count.
         clipped = False
-        if (not horizontal and child_draw_state is not None
+        if (not horizontal and not is_dragged and child_draw_state is not None
                 and child_draw_state.relative_pos is not None
                 and not Core.melty.frame_count <= 2
                 and (not draw_state.invalid_content_height or imgui.is_mouse_down(0)
@@ -492,6 +503,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
             clipped = (_bottom + child_draw_state.height < rect[1] or _spy > rect[3])
 
         if clipped and not _search_full_render:
+            rows_skipped = True
             imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0],
                                          (true_top + child_draw_state.relative_pos[1] +
                                           child_draw_state.height)))
@@ -593,6 +605,11 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
                                 item_kwargs[_ok] = _ov
 
             item_kwargs = item_kwargs | child_kwargs
+            if is_dragged:
+                # Detach the dragged child to a floating closable window,
+                # pinned to its pre-pickup size (the wrapper glues the
+                # window_pos to the cursor each dispatch).
+                item_kwargs.update(_drag_drop.DragDrop.dragged_item_kwargs())
             if isinstance(input_value, (list, tuple, set)) or horizontal:
                 item_kwargs['align_header'] = False
 
@@ -626,7 +643,16 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
                         to_delete.add(key)
                 if key_is_current:
                     search_current_h = returned_ds.header_height
-                if horizontal:
+                if is_dragged:
+                    # The child deferred to a floating window and drew nothing
+                    # inline - hold its slot open with a placeholder so the
+                    # remaining layout doesn't shift. (The horizontal branch
+                    # must not run: returned_ds.abs_* is the floating window.)
+                    imgui.set_cursor_screen_pos((returned_ds.abs_left + returned_ds.width, returned_ds.abs_top))
+                    _drag_drop.DragDrop.draw_placeholder(horizontal, item_spacing_y,
+                                                         style_manager=style_manager,
+                                                         draw_bg=draw_bg)
+                elif horizontal:
                     imgui.same_line(spacing=0)
                     imgui.set_cursor_screen_pos((returned_ds.abs_left + returned_ds.width, returned_ds.abs_top))
                 else:
@@ -704,11 +730,26 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
             h = search_current_h or imgui.get_text_line_height()
             _scroll_into_view(draw_state, search_current_y, search_current_y + h)
 
+    # Prune stale child slots - indices outside the current key range, left
+    # over from deletions/cross-collection edits. Their draw_states keep old
+    # geometry that ghost-walks (skip-advance, drop slots) would trip over.
+    if draw_state._children:
+        for _stale_idx in [i for i in draw_state._children
+                           if isinstance(i, int) and i > end_index]:
+            del draw_state._children[_stale_idx]
+
     end_pos = imgui.get_cursor_pos()[1]
     content_height = (end_pos - start_cursor)
     imgui.dummy(1, 0)
 
-    if not imgui.is_mouse_down(0) and not imgui.is_mouse_down(1) and not imgui.is_mouse_down(2) and not premature_break:
+    # Commit the measurement when it's trustworthy: a skip-free pass measured
+    # every row for real (commit even mid-drag - that's what lets a collection
+    # update DURING a drag instead of storming after it); a pass with
+    # skips reconstructed the layout from caches, so only commit it in the
+    # old steady-state conditions (no buttons held).
+    measured_fully = not rows_skipped and not premature_break
+    if measured_fully or (not imgui.is_mouse_down(0) and not imgui.is_mouse_down(1)
+                          and not imgui.is_mouse_down(2) and not premature_break):
         draw_state.content_height = snap_int(content_height)
         draw_state.invalid_content_height = False
 
@@ -1294,13 +1335,13 @@ def draw_pending_texture(input_value: PendingTexture, draw_state):
 
     return_val = draw_texture(input_value.texture_id, initial={"width":width, "height":height},
                               name=f"{draw_state.id}_inner", auto_resize=False,
-                              show_header=False, use_cache=True, wrap=False, tint=(0.2, 0.2, 0.3))
+                              show_header=False, use_cache=True, wrap=False, tint=(0.30, 0.30, 0.75))
 
     return return_val
 
 
 @render_func(is_default_for=numpy.uint32, show_bg=True, use_cache=False, show_add_delete=False, z_offset=2,
-             fill_height=True,
+             fill_height=True, selectable=True,
              indent_size=0, min_width=35, min_height=35, wrap=False, disable_scroll=True,
              zoom_speed=0.3, with_header=draw_header, manual_content_height=True)
 def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mouse_drag, right_mouse_drag,
@@ -2118,7 +2159,7 @@ def compute_bg_color(bg_offset=0, tint=None, nested_bg=False):
 def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset=0,
             outline=True, bg_color=None, opacity=0.0,
             style_manager=None, tint=None, outline_tint=None, selected=False,
-            hovered=False, pressed=False, nested_bg=False, **kwargs):
+            hovered=False, pressed=False, nested_bg=True, **kwargs):
     # -- Constants ---------------------------------
     min_value = -0.096
     depth_wrap = 300
@@ -2136,7 +2177,7 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
     # Outline color tuning
     outline_base = 1.765
     outline_depth_mul = 0.786
-    outline_sat = {'default': 1.1, 'nested': 1.473}
+    outline_sat = {'default': 1.1, 'nested': 1.473, 'outline_sat': {'default': 1.1, 'nested': 1.473}}
 
     # More text
     bleed_mix = {'nested': 0.636, 'default': 0.589}
@@ -2252,7 +2293,7 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
 
 @render_func(use_cache=True, selectable=False, disable_scroll=True, indent_size=0, show_bg=False, min_width=5,
              min_height=10, wrap=True)
-def button(input_value="", width=5, height=10, draw_state=None, alpha=1.0, left_mouse_held=False, shadow=True, left_mouse_down=False,
+def button(input_value="", width=5, height=14, draw_state=None, alpha=1.0, left_mouse_held=False, shadow=True, left_mouse_down=False,
            color=(0.533, 0.068, 0.5), highlight_hovered=True, hovered=False, style_manager=None, show_button_bg=True,
            factor=1.0, tint_value=0.32, text_value=1.023, saturation=0.8, text_saturation=0.4, text_align="center",
            search_match=False, search_current=False, tint=None, rounding=None):
@@ -2274,7 +2315,7 @@ def button(input_value="", width=5, height=10, draw_state=None, alpha=1.0, left_
         else:
             mixed_color = style_manager.make_color_rgb(color[0], color[1], color[2], value=tint_value,
                                                        factor=factor, saturation_scale=saturation, alpha=1.0)
-        text_color = style_manager.make_color_rgb(color[0], color[1], color[2], value=text_value,
+        text_color = style_manager.make_color_rgb(color[0], color[1], color[2], value=text_value + (1.5 if hovered else 0.0),
                                                   factor=factor, saturation_scale=text_saturation, alpha=1.0)
     else:
         text_color = (1.0, 1.0, 1.0)
@@ -2615,9 +2656,9 @@ def apply_param_source_matrix(input_value, ref=None, changed=False):
 
 
 @render_func(use_cache=True, show_bg=False, shadow=False, with_header=None,
-             show_name=False, selectable=False, is_tree=True, temp=True, searchable=True)
+             show_name=False, selectable=False, is_tree=True, temp=True, searchable=False)
 def draw_param_matrix(input_value, search_text="", draw_state=None, source_tints=None, unique=None,
-                      priority_params=(), view_draw_state=None, **kwargs):
+                      source_locations=None, priority_params=(), view_draw_state=None, **kwargs):
     """The inputs-tab matrix view: rows = parameters, cells = the sources that
     set them. Cells are parse FRAGMENTS (leaves pulled out of their codec's
     parse), so they can't naturally adopt the codec tint the way a whole
@@ -2637,6 +2678,13 @@ def draw_param_matrix(input_value, search_text="", draw_state=None, source_tints
     shared typo-tolerant matcher (_fuzzy_key_match) for longer ones."""
     changed = False
     tints = source_tints or {}
+    locations = source_locations or {}
+    folder_icon = "\uf07b"  # FA folder -- explicit escape, see jump_to.py
+    # Uniform label/button width across every cell so the values align into a
+    # column no matter how long each source's name is.
+    _snames = {sn for r in input_value.values() if isinstance(r, dict) for sn in r}
+    btn_w = max((imgui.calc_text_size(f"{folder_icon} {sn}")[0] for sn in _snames),
+                default=0.0) + 15
     font = Font.JETBRAINS_MONO_22
     _hdr_font = Core.melty.font_mgr.get(font) if Core.melty.font_mgr else None
 
@@ -2665,7 +2713,7 @@ def draw_param_matrix(input_value, search_text="", draw_state=None, source_tints
             imgui.dummy(0, 2)
             if _hdr_font is not None:
                 imgui.push_font(_hdr_font)
-                
+
             param = param[:min(len(param), 17)]
 
             imgui.text_colored(param, 1,1,1, name_alpha)
@@ -2678,16 +2726,33 @@ def draw_param_matrix(input_value, search_text="", draw_state=None, source_tints
             for sname, val in row.items():
                 tint = tints.get(sname)
 
+                # The source label IS the jump button: a single-width button naming
+                # the source (draw_text / @render_func(...) / @defaults(...))
+                # that opens its file in the IDE; the value sits on the same
+                # line with show_name=False, so one element does both the
+                # labeling and the navigation.
+                tint_kwargs = {"alpha": 0.0, "tint": tint} if tint else {}
+                clicked = button(f"{folder_icon} {sname}", width=btn_w, height=22, shadow=True,
+                                    text_saturation=0.9, use_cache=True, text_align="left", text_value=0.389,
+                                 name=f"jump_{sname}##{param}_{unique}", show_button_bg=True,
+                                 **tint_kwargs)[0]
+                loc = locations.get(sname)
+                if clicked and loc:
+                    from src.lsd.gl_gui.utils.jump_to_code import open_in_intellij
+                    threading.Thread(target=open_in_intellij, args=(str(loc[0]),),
+                                     kwargs={"line_number": loc[1]},
+                                     daemon=True).start()
+                imgui.same_line()
+
                 # key routes the cell by ATTRIBUTE name (a tint cell gets the
-                # swatch/picker, not draw_collection); name displays the SOURCE
-                # as the visible label.
+                # swatch/picker, not draw_collection); the SOURCE stays in place
+                # identity via name while the button above displays it.
                 ch, nv = draw_any(val, name=f"{sname}##{param}_{unique}",
-                                  key=param, header_same_line=True,
-                                  width=draw_state.content_width - 24,
+                                  key=param,
+                                  width=draw_state.content_width - 184 - btn_w - 8,
                                   tint=tint, show_bg=True, expanded=True,
-                                  show_name=True, wrap=False,
-                                  align_header=True
-                                  , bg_offset=2, z_offset=-1,
+                                  show_name=False, wrap=False,
+                                  bg_offset=2, z_offset=-1,
                                   show_add_delete=False, disable_scroll=True,
                                   shadow=True)
                 if ch:
@@ -3529,7 +3594,7 @@ def draw_live_tab(input_value, **kwargs):
     return False, input_value
 
 
-@render_func(use_cache=False, show_bg=False, show_header=False, show_name=False, selectable=False)
+@render_func(use_cache=False, show_bg=False, is_tree=False, show_header=False, show_name=False, selectable=False)
 def draw_func_tab(input_value, **kwargs):
     """Editable source of the inspected view function; hotswaps on save.
     Routes through Mode.FILE_TREE — the same cache-backed code_file_io path a
@@ -3628,16 +3693,19 @@ class ContextMenuState:
         self.class_dict = None
         self.call_site = None
         self.call_site_dict = None
+        self.mode_str = None
+        self.mode_dict = None
         # What the cached hosts above were built FOR. This menu's up/down nav
         # retargets the same tab draw_state (and thus this same cm_state) at an
         # ancestor view, so the hosts must rebuild when the target changes.
         self.host_key = None
         self.call_site_key = None
+        self.mode_key = None
 
 
 @render_func(use_cache=True, show_bg=False, show_header=False, show_name=False, selectable=False, disable_scroll=False, temp=True)
 def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, unique=None, class_to_show=None,
-                   enter_key_pressed=None, **kwargs):
+                   enter_key_pressed=None, inverted_ctrl_f_down=None, **kwargs):
     """The three editable sources behind this view, in dispatch order:
 
       1. RENDER FUNCTION — the render_func whose body produced the view, edited
@@ -3651,7 +3719,11 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, unique=No
       3. DECORATIONS — the `@...` block on the value's class, edited via
          DecorationsCodec. `class_to_show` is resolved by draw_context_menu (the
          value's own class, or the nearest parent with source for a primitive
-         field); only classes carry decorations, so it's skipped otherwise."""
+         field); only classes carry decorations, so it's skipped otherwise.
+      4. MODE — the ACTIVE mode's entry kwargs in its enum class source
+         (mode.py), edited via ModeCodec. Which member to show comes from the
+         target's _kwargs ('current_mode', stamped by the wrapper when a mode
+         config matched); skipped when no mode drove this view."""
 
     # Source/cst hosts come from the process-wide code-host cache, keyed by the
     # live reference - every menu opened on the same render_func/class/call
@@ -3676,6 +3748,20 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, unique=No
         cm_state.call_site_key = call_site
         filename, lineno = call_site
         cm_state.call_site, cm_state.call_site_dict = code_hosts_for(CallSite(filename, lineno))
+
+    # The ACTIVE mode driving this view - the wrapper stamps it into the
+    # view's kwargs when a mode config matches (kwargs['current_mode'],
+    # core_render; 'mode' for the recursive variant), so it rides on the
+    # target's _kwargs. The host is for the mode's ENUM CLASS (whose source
+    # holds every member), keyed per class so retargeting at a view under a
+    # different mode enum rebuilds; which member to show is re-read each pass.
+    current_mode = (input_value._kwargs.get('current_mode')
+                    or input_value._kwargs.get('mode'))
+    mode_cls = type(current_mode) if current_mode is not None else None
+    if cm_state.mode_key != mode_cls:
+        cm_state.mode_key = mode_cls
+        cm_state.mode_str, cm_state.mode_dict = (
+            code_hosts_for(mode_cls) if mode_cls is not None else (None, None))
 
     # ── Recompile (hotswap) - the same Run path code_file_io draws on a file
     # leaf (menu_files / FILE_TREE). A matrix edit saves SOURCE to disk via
@@ -3710,30 +3796,89 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, unique=No
     # the tint map rides into draw_param_matrix, which applies it manually
     # and individually per cell.
     from src.lsd.gl_gui.view.core_conversion.new_codecs import (
-        FunctionCodec, CallerCodec, DecorationsCodec, TypeCodec)
+        FunctionCodec, CallerCodec, DecorationsCodec, TypeCodec, ModeCodec)
 
     def _codec_tint(codec):
         return (getattr(codec, "render_kwargs", None) or {}).get("tint")
 
     sources = {}
     source_tints = {}
+    source_locations = {}
 
-    def _add_source(sname, sdict, codec):
+    def _add_source(sname, sdict, codec, location=None):
         if isinstance(sdict, dict) and sdict:
             sources[sname] = sdict
             source_tints[sname] = _codec_tint(codec)
+            if location is not None and location[0] is not None:
+                source_locations[sname] = location
 
-    _add_source("signature", cm_state.render_func_dict.deep.parameters(), FunctionCodec)
+    # Source names carry the origin: the bare function name labels the
+    # signature column, decorator-call spellings (@render_func(name), ...)
+    # label the decorator-backed columns. Locations feed the jump-to buttons.
+    view_fn = inspect.unwrap(input_value._view_func)
+    fn_name = getattr(view_fn, "__name__", "?")
+    try:
+        fn_file = inspect.getsourcefile(view_fn)
+    except TypeError:
+        fn_file = None
+    fn_loc = (fn_file, getattr(getattr(view_fn, "__code__", None),
+                               "co_firstlineno", None))
+
+    cls_name, cls_loc = "defaults", None
+    if isinstance(class_to_show, type):
+        cls_name = class_to_show.__name__
+        try:
+            cls_loc = (inspect.getsourcefile(class_to_show),
+                       inspect.getsourcelines(class_to_show)[1])
+        except (TypeError, OSError):
+            cls_loc = None
+
+    _add_source(fn_name, cm_state.render_func_dict.deep.parameters(), FunctionCodec,
+                location=fn_loc)
     call_site_dict = cm_state.call_site_dict.deep.unwrap() if cm_state.call_site_dict else None
     if call_site_dict:
         from src.lsd.gl_gui.view.core_conversion.chain_converters import caller_func_name
         _add_source(caller_func_name(input_value._call_stack) or "caller",
-                    call_site_dict, CallerCodec)
-    _add_source("render_func", cm_state.render_func_dict.deep.decorators.render_func(),
-                DecorationsCodec)
-    _add_source("window", cm_state.render_func_dict.deep.decorators.window(),
-                DecorationsCodec)
-    _add_source("defaults", cm_state.class_dict.deep.decorators.defaults(), TypeCodec)
+                    call_site_dict, CallerCodec, location=call_site)
+    _add_source(f"@render_func({fn_name})",
+                cm_state.render_func_dict.deep.decorators.render_func(),
+                DecorationsCodec, location=fn_loc)
+    _add_source(f"@window({fn_name})",
+                cm_state.render_func_dict.deep.decorators.window(),
+                DecorationsCodec, location=fn_loc)
+    _add_source(f"@defaults({cls_name})", cm_state.class_dict.deep.decorators.defaults(),
+                TypeCodec, location=cls_loc)
+
+    # MODE - the active mode is entry in its enum class source (e.g.
+    # `NEW_CODE = {types...: ModeOverrides(kwargs={...})}` in mode.py), not as
+    # the kwargs dict that entry stamps into this view. A mode can hold
+    # SEVERAL type-keyed entries (TEXT_ONLY); the parse can't be type-matched
+    # (its keys are unevaluated source), so pick the candidate whose keys best
+    # overlap the LIVE matched config (get_config_for) - the entry that
+    # actually drove THIS view. Edits merge into the mode_dict host's parse
+    # and ride its normal chain_out/save back into the enum's source file.
+    if current_mode is not None and cm_state.mode_dict is not None:
+        candidates = [c for c in
+                      cm_state.mode_dict.deep[current_mode.name].kwargs.all()
+                      if isinstance(c, dict)]
+        live_keys = set()
+        if isinstance(getattr(current_mode, "value", None), dict):
+            live_cfg = current_mode.get_config_for(input_value._raw_input_value)
+            if live_cfg is not None and live_cfg.kwargs:
+                live_keys = set(live_cfg.kwargs)
+        mode_kwargs = max(candidates,
+                          key=lambda c: len(live_keys & set(c)), default=None)
+        mode_loc = None
+        try:
+            cls_lines, cls_start = inspect.getsourcelines(mode_cls)
+            member_off = next(
+                (i for i, l in enumerate(cls_lines)
+                 if l.lstrip().startswith((f"{current_mode.name} =",
+                                           f"{current_mode.name}="))), 0)
+            mode_loc = (inspect.getsourcefile(mode_cls), cls_start + member_off)
+        except (TypeError, OSError):
+            pass
+        _add_source(str(current_mode), mode_kwargs, ModeCodec, location=mode_loc)
 
     # ── Search box: visible while the tab is open, focused on first display ─
     # The fuzzy find UI (render_search) draws inline against THIS tab's
@@ -3746,15 +3891,26 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, unique=No
     # draw_state.search_text and feeds draw_param_matrix's fuzzy row filter
     # below (render_search's keystroke handler also invalidates this
     # tab, so the matrix refilters per keystroke).
+    # Ctrl+F re-focuses the box once focus has moved elsewhere on the tab -
+    # inverted_ctrl_f_down is an auto-subscribed hover-routed key event (the
+    # same name the searchable wrapper subscribes; inverted so this tab
+    # outranks its searchable descendants, e.g. the root's text editors).
+    # _search_focus_pending is the one-shot focus claim render_search honors
+    # even with regrab_focus=False.
+    if inverted_ctrl_f_down:
+        draw_state._search_focus_pending = True
     imgui.dummy(0, 4)
-    render_search(draw_state, draw_state, unique=f"input_filter{unique}",
+    render_search(draw_state, draw_state, width=draw_state.content_width - 49, unique=f"input_filter{unique}",
                   regrab_focus=False)
     imgui.dummy(0, 4)
 
     if sources:
         _, matrix = param_source_matrix(sources, func=input_value._view_func,
                                         include_unmatched=True)
-        changed, value = draw_param_matrix(matrix, source_tints=source_tints, view_draw_state=input_value,
+        changed, value = draw_param_matrix(matrix, source_tints=source_tints,
+                                           source_locations=source_locations,
+                                           view_draw_state=input_value,
+                                           width=draw_state.content_width,
                                            priority_params=tuple(signature_param_names(input_value._view_func)),
                                            search_text=str(draw_state.search_text or ""),
                                            name=f"{input_value._view_func.__name__} inputs##matrix{unique}",
@@ -3770,7 +3926,8 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, unique=No
     # invalidates us when its value changes. Replaces the old "invalidate for the first
     # 10ms" guess, which expired before the ~400ms chain_in debounce, leaving the
     # dict blank until a manual mouse-over.
-    for _h in (cm_state.render_func_dict, cm_state.class_dict, cm_state.call_site_dict):
+    for _h in (cm_state.render_func_dict, cm_state.class_dict,
+               cm_state.call_site_dict, cm_state.mode_dict):
         if _h is not None:
             _h.notify_on_change(draw_state)
 
@@ -3844,8 +4001,8 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
             Core.melty.cache.invalidate_up(input_value._tile_id, max_depth=5)
     else:
         imgui.dummy(30, 30)
-  
-    
+
+
 
     imgui.same_line()
     imgui.text_colored(f"{context_menu_offset}", 1, 1, 1, 0.3)
