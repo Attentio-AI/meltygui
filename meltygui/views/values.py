@@ -49,7 +49,8 @@ from src.lsd.gl_gui.view.core_views.decoration.core_decoration import hotkey, ti
 from src.lsd.gl_gui.view.core_views.decoration.invalidation_decoration import live
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.core_views.folders_proxy import FolderProxy
-from src.lsd.gl_gui.view.core_views.headers import draw_header, draw_footer, render_search
+from src.lsd.gl_gui.view.core_views.headers import draw_header, draw_header_end, draw_footer, render_search, \
+    annotation_item_type
 from src.lsd.gl_gui.view.core_views.inspect_utils import set_fn_defaults
 from src.lsd.gl_gui.view.core_views.tensor_views import draw_tensor
 from src.lsd.gl_gui.view.core_views.text_editor import draw_text, _scroll_into_view
@@ -321,15 +322,15 @@ def draw_symbol_usage(input_value):
 
 
 @render_func(is_default_for=(dict, MutableMapping, defaultdict, tuple, list, GeneralParse, CallParse, _BubblingDict, _DeepPath), use_cache=True,
-             header_same_line=False, show_bg=True, show_instance_vars=False, align_header=False,
-             manual_content_height=True, shadow=True, selectable=False, show_add_delete=False,
+             header_same_line=False, show_bg=True, show_instance_vars=False, align_header=True,
+             manual_content_height=True, shadow=True, selectable=False, show_add_delete=True,
              wrap=False, with_header=draw_header, indent_size=2, searchable=True)
 def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=None,
                     mode=None, keys=None, get_attr=None, set_attr=None, show_excluded=False,
                     child_kwargs=None, show_bg=False, show_search=True, align_header=False,
                     on_collapse=False, search_text="", return_item=False, close_triggers_delete=False,
-                    on_expand=False, show_add_delete=False, item_spacing_y=1, show_system=False, included=None,
-                    horizontal=False, show_indices=False, excluded=None, **kwargs):
+                    on_expand=False, show_add_delete=True, item_spacing_y=1, show_system=False, included=None,
+                    horizontal=False, show_indices=False, excluded=None, annotation=None, **kwargs):
     """
     Universal collection renderer
     """
@@ -391,6 +392,19 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
             return False, input_value
 
         keys = list(keys)[:]
+
+    # --- per-key type annotations ---
+    # Class-level annotations (walking the MRO) name a type per attribute when
+    # rendering an object's __dict__; a typed container annotation
+    # (Dict[str, Lora] / List[Lora]) covers every key otherwise. Each child
+    # inherits its annotation so its own add button can instantiate the right
+    # item type (replaces the old meta.field_type path).
+    parent_annotations = {}
+    for _klass in reversed(getattr(parent_type, "__mro__", ())):
+        _anns = _klass.__dict__.get("__annotations__")
+        if _anns:
+            parent_annotations.update(_anns)
+    item_annotation = annotation_item_type(annotation)
 
     # --- search (key matching) ---
     # Same dual resolution as the text editor: a forwarded SearchTerm carries
@@ -585,6 +599,8 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
                 'display_name': display_name,
                 'parent_show_add_delete': show_add_delete,
                 'show_add_delete': show_add_delete,
+                'with_header_end': draw_header_end if show_add_delete else None,
+                'annotation': parent_annotations.get(key, item_annotation),
                 'y_offset': y_offset,
                 'mode': mode,
                 'search_match': key_is_match,
@@ -2161,7 +2177,7 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
             style_manager=None, tint=None, outline_tint=None, selected=False,
             hovered=False, pressed=False, nested_bg=True, **kwargs):
     # -- Constants ---------------------------------
-    min_value = -0.096
+    min_value = -0.322
     depth_wrap = 300
     depth_scale = 2.356
     # [tint=(1,1,1)]
@@ -2296,7 +2312,7 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
 def button(input_value="", width=5, height=14, draw_state=None, alpha=1.0, left_mouse_held=False, shadow=True, left_mouse_down=False,
            color=(0.533, 0.068, 0.5), highlight_hovered=True, hovered=False, style_manager=None, show_button_bg=True,
            factor=1.0, tint_value=0.32, text_value=1.023, saturation=0.8, text_saturation=0.4, text_align="center",
-           search_match=False, search_current=False, tint=None, rounding=None):
+           search_match=False, search_current=False, tint=(0.00, 0.00, 0.00), rounding=None):
 
     if color is not None:
         if not isinstance(color, tuple) or len(color) < 3:
@@ -2423,7 +2439,7 @@ def draw_none(input_value: NoneType):
     return False, input_value
 
 
-@render_func(is_default_for=(bool), use_cache=True, is_tree=False, wrap=True,
+@render_func(is_default_for=(bool), use_cache=True, is_tree=False, wrap=False,
              header_same_line=True, min_width=20, align_header=True, shadow=False, with_header=draw_header, temp=True)
 def draw_bool(input_value: bool):
     changed, is_checked = imgui.checkbox("##bool", input_value)
@@ -2752,8 +2768,7 @@ def draw_param_matrix(input_value, search_text="", draw_state=None, source_tints
                                   width=draw_state.content_width - 184 - btn_w - 8,
                                   tint=tint, show_bg=True, expanded=True,
                                   show_name=False, wrap=False,
-                                  bg_offset=2, z_offset=-1,
-                                  show_add_delete=False, disable_scroll=True,
+                                  bg_offset=2, z_offset=-1, disable_scroll=True,
                                   shadow=True)
                 if ch:
                     row[sname] = nv

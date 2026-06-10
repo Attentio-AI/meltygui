@@ -119,16 +119,16 @@ class Tint:
 
 @window
 class Swoosh:
-    alpha = 1.0             # opacity of the swoosh
     # Nested-window "swoosh" connector (parent outline -> nested view)
     tint = (1.0, 0.7, 0.2)   # fallback color if no style manager is available
     value = 1.023              # intensity of the highlight (super-bright yellow)
     saturation = 0.791        # saturation scale applied to the current tint
+    alpha = 1.0             # opacity of the swoosh
     end_thickness = 2.304      # half-width at the two endpoints (thick)
     cap_scale = 0.962          # end-cap dot radius as a multiple of end thickness
     mid_thickness = 0.441      # half-width at the middle (thin)
-    curve = 0.029             # max curve bow as a fraction of endpoint distance
-    curve_ramp = 2.0        # how the curve eases in with slope (>1 stays straighter longer)
+    curve = 0.029             # max arc bow as a fraction of endpoint distance
+    curve_ramp = 2.00        # how the bow eases in to slope (>1 stays straighter longer)
     edge_softness = 1.138     # px smoothing window for the shared-edge anchor (0 = hard)
     segments = 31            # tessellation count (higher = smoother)
     taper = 10.0              # slope of the end->middle thickness falloff
@@ -149,29 +149,35 @@ class Swoosh:
                                 # within this fraction of the parent's shorter side (else stay flat)
 
 
-@window(tint=(0.53, 0.19, 0.05))
+@window(tint=(0.5, 0.188, 0.053))
 class Toggles:
 
     @defaults(tint=(0.5, 0.188, 0.053))
     class TextEditor:
         enable_spell_check = False
-    @defaults(tint=(0.739, 0.44, 0.349))
-    class InvalidateTracker:
-        keep_for_frames = 101
-        draw_bvh = False
-        enable = False
-        draw_rect = False
 
     @defaults(tint=(0.011, 0.124, 0.211))
     class Debug:
         slow_frame_rate = True
 
+    @defaults(tint=(0.739, 0.44, 0.349))
+    class InvalidateTracker:
+        keep_for_frames = 101
+        enable = False
+        draw_bvh = False
+        draw_rect = False
+
     @defaults(tint=(0.256, 0.082, 0.511))
     class InputHandlerToggles:
         show_debug = False
 
-    @defaults(tint=(0.089, 0.08, 0.069), bg_offset=30)
+    @defaults(tint=(0.089, 0.08, 0.069))
     class TerminalSettings:
+        # Minimum LOGICAL terminal size, in tiles - independent of the window size.
+        # When a terminal window is dragged smaller than this, the emulated grid (PTY)
+        # is frozen at this minimum so line wrapping stops re-flowing; the window
+        # clips into its content instead (the "cropbox" behavior). Larger windows grow
+        # the grid as usual. Determined by draw_terminal.py.
         min_width = 98.634
         min_height = 480.0
 
@@ -185,6 +191,7 @@ class Toggles:
         scroll_speed = 600
         max_increment_fraction = 0.35
         acceleration_threshold = 0.036  # seconds
+        bg_offset = 30
 
     debug_scroll = False
     show_filled_tiles = False
@@ -207,11 +214,11 @@ class Toggles:
     show_line_break = False
 
     # Filter SettingS
-    brightness = 0.454
-    contrast = 1.766
+    brightness = 0.467
+    contrast = 1.799
     saturation = -0.4
-    prefered_header_width = 176
-    max_preferred_header_width = 153
+    prefered_header_width = 17
+    max_preferred_header_width = 179
     debug_z_depth = False
     filters = True
     show_excluded = True

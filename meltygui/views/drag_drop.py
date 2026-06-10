@@ -211,6 +211,33 @@ class DragDrop:
             imgui.dummy(0, int(h))
             imgui.dummy(0, item_spacing_y)
 
+    @classmethod
+    def draw_home_blank(cls):
+        """Blit-layer placeholder: paint the blank socket over the home slot
+        of a freshly blitted tile. Called by blit_offscreen (via
+        Melty.dnd_home_rect) right after it draws a cached tile image that
+        contains the slot — the tile's pixels there can be stale, captured
+        while the floating window still overlapped its slot. Draws on the
+        current channel, directly over the image."""
+        if cls.home_rect is None:
+            return
+        w, h = cls.size
+        if not w or not h:
+            return
+        x, y = cls.home_rect
+        melty = Core.melty
+        sm = melty.style_manager
+        if sm is not None:
+            from src.lsd.gl_gui.view.core_views.new_core_view import draw_bg
+            draw_bg(bypass=True, left=x, top=y, width=w, height=h - 2,
+                    rounding=5.0, bg_offset=1, depth=melty.shadow_depth,
+                    opacity=1.0, nested_bg=True, style_manager=sm)
+        else:
+            imgui.get_window_draw_list().add_rect(
+                x + 2, y, x + w - 2, y + h - 2,
+                imgui.get_color_u32_rgba(1.0, 1.0, 1.0, 0.10),
+                rounding=4.0, thickness=1.0)
+
     # ── per-frame update (called from Melty.end_frame) ───────────────────
 
     @classmethod
@@ -320,8 +347,11 @@ class DragDrop:
         cls.grab_offset = (max(0.0, down_x - left), max(0.0, down_y - top))
         cls.size = (draw_state.width, draw_state.height)
         # The item's inline position, captured while it still IS inline -
-        # the placeholder bg draws at this rect for the whole drag.
+        # the placeholder bg draws at this rect for the whole drag. Mirrored
+        # into Melty so blit_offscreen can repaint the socket over cached
+        # tiles that contain the slot (see draw_home_blank).
         cls.home_rect = (left, top)
+        Core.melty.dnd_home_rect = (left, top, cls.size[0] or 0, cls.size[1] or 0)
         cls.slots = ()
         cls.nearest = None
         # Reflow the collection (the item leaves the UI flow) and re-render
@@ -426,7 +456,15 @@ class DragDrop:
                 continue
             if child._collection_draw_state is not ds:
                 continue
-            if child._bvh_bbox is None or child.closed or child.abs_closed:
+            # Deliberately NOT abs_closed (it counts a row's OWN collapsed
+            # state - collapsed headers are visible and must keep slots) and
+            # NOT _bvh_bbox liveness (bvh_query lazily EVICTS collapsed rows'
+            # boxes, so any unrelated query over one would drop it from slot
+            # math until the next collection re-render). Rows hidden by a
+            # collapsed/closed ancestor never get here: the collection itself
+            # is filtered as a query by its own abs_closed. Stale rows are
+            # filtered by the key-at-idx ghost guard and the clip rect clamp.
+            if child.closed:
                 continue
             # Ghost guard: a child whose key left the collection never
             # re-renders, so its stale box would otherwise still make slots.
@@ -602,6 +640,7 @@ class DragDrop:
         cls.key = None
         cls.value = None
         cls.home_rect = None
+        Core.melty.dnd_home_rect = None
         cls.slots = ()
         cls.nearest = None
         if item is not None:

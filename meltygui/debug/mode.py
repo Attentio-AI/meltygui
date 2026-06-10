@@ -28,7 +28,7 @@ from src.lsd.gl_gui.view.core_views.new_core_view import draw_collection, draw_c
     class_to_var_dict, var_dict_to_class, draw_dropdown, draw_blank, draw_drop_down_item, draw_type_name, type_lens
 from src.lsd.gl_gui.view.core_views.text_editor import draw_text
 from src.lsd.gl_gui.view.core_conversion.new_converters import code_file_io, convert_in_and_out, string_to_cst_module, \
-    cst_module_to_string, draw_with_view_funcs, draw_text_from_code_cache
+    cst_module_to_string, draw_with_view_funcs, draw_text_from_code_cache, draw_code_tabs_from_cache
 
 
 def compute_height(draw_state):
@@ -78,29 +78,21 @@ class Mode(Enum):
                     unwrapped[key] = value
             self.unwrapped = unwrapped
 
+    # The code-host-cache route (vs inline convertors): code_file_io owns
+    # load/save of the span. draw_code_tabs_from_cache shows the structured |
+    # text tabs with the parse loaded from the shared dict_host
+    # (code_hosts_for). A class edit in the structured tab also drives the
+    # live type immediately (_live_apply_class_vars) ahead of any recompile.
     NEW_CODE = {
         (type, types.FunctionType, types.ModuleType, CallSite, Decorations): ModeOverrides(
             kwargs={"auto_load_edits": True,
                     "auto_load": True,
                     "auto_save": True,
-                    'view_func': convert_in_and_out,
+                    'view_func': draw_code_tabs_from_cache,
                     "disable_scroll": True,
                     "with_header": draw_header,
                     "child_kwargs": {
-                        "view_func": draw_with_view_funcs,
-                        "chain_in": [string_to_cst_module, cst_module_to_dict],
-                        "chain_out": [dict_to_cst_module, cst_module_to_string],
-                        "route": {
-                            cst_module_to_dict: ("code_dict", "jump_to", "run_jedi", "drive"),
-                        },
-                        'child_kwargs': {
-                            "route": {
-                                RenderFuncs.draw_collection: ("code_dict"),
-                                draw_type: "root_input",
-                            },
-                            'column_widths': [350],
-                            "view_funcs": [RenderFuncs.draw_collection, RenderFuncs.draw_text],
-                        }
+                        'column_widths': [350],
                     },
                     },
             func=code_file_io
@@ -232,7 +224,7 @@ class Mode(Enum):
                     "with_header_end": draw_header_end, "auto_resize": False, "draggable": True, 'shadow': True,
                     "show_tint": True, "show_header": True, "with_footer": draw_footer, 'indent_size': 5,
                     "disable_scroll": False, "bg_offset": -1,
-                    "show_add_delete": False, "with_header": draw_header, "min_width": 200, "min_height": 60,
+                    "with_header": draw_header, "min_width": 200, "min_height": 60,
                     "initial": {"width": 400, "height": 320, "window_pos": (100, 500)}},
 
             recursive=False

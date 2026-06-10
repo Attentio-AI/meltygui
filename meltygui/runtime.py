@@ -530,6 +530,13 @@ class Melty:
     # it back. See view/core_views/drag_drop.py.
     dnd_requests = {}
 
+    # (x, y, w, h) of the dragged item's home slot while a drag is active,
+    # else None. blit_offscreen checks this when blitting a cached tile that
+    # contains the slot and repaints the blank socket live over the image -
+    # the tile's pixels there can be incorrect (the dragged item overlapped
+    # the slot when the tile was captured). Set/cleared by DragDrop.
+    dnd_home_rect = None
+
     empty_event = InputEvent(input_id="", action="")
     events_by_type = {}
     pending_blockers = [None] * max_layer
@@ -1939,7 +1946,10 @@ class Melty:
 
         while len(cls.items_to_delete) > 0:
             key, collection = cls.items_to_delete.pop(0)
-            delete_from_collection(key, collection)
+            error = delete_from_collection(key, collection)
+            if error is not None:
+                print(error)
+            cls.cache.invalidate_by_obj(collection)
             request_render()
 
         Melty.hovered_drawstate = Melty.hovered_drawstate_pending

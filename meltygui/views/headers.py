@@ -42,6 +42,16 @@ def open_file(path, app=None):
 
 
 
+def annotation_item_type(annotation):
+    """Item type a collection annotation implies for new entries:
+    Dict[str, Lora] -> Lora, List[X] -> X, Optional[T] -> T. None when the
+    annotation carries no usable element type."""
+    args = [a for a in getattr(annotation, "__args__", ()) if a is not NoneType]
+    if not args:
+        return None
+    return args[-1]
+
+
 def render_search(search_ds, draw_state, unique=None, width=None, regrab_focus=True):
     """Render the find UI for the searchable view whose state lives on
     `search_ds`: the search input, match count, prev/next nav, and close.
@@ -344,10 +354,14 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         if show_add_delete:
             if RenderFuncs.button(f"\uf067##add{unique}", name=f"\uf067##add{unique}")[0]:
                 hinted_type = new_item_type
-                if meta is not None and meta.field_type is not None and hasattr(meta.field_type, "__args__"):
-                    if len(meta.field_type.__args__) == 2:
-                        hinted_type = meta.field_type.__args__[1]
-                add_to_collection(input_value, hinted_type())
+                if hinted_type is NoneType:
+                    hinted_type = annotation_item_type(kwargs.get("annotation")) or NoneType
+                try:
+                    new_item = hinted_type()
+                except Exception as e:
+                    print(f"Could not instantiate {hinted_type} for add: {e}")
+                    new_item = None
+                add_to_collection(input_value, new_item)
                 on_change = True
                 return_val = input_value
             same_line()
@@ -566,10 +580,14 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         if show_add_delete:
             if RenderFuncs.button(f"\uf067##add{unique}", name=f"\uf067##add{unique}")[0]:
                 hinted_type = new_item_type
-                if meta is not None and meta.field_type is not None and hasattr(meta.field_type, "__args__"):
-                    if len(meta.field_type.__args__) == 2:
-                        hinted_type = meta.field_type.__args__[1]
-                add_to_collection(input_value, hinted_type())
+                if hinted_type is NoneType:
+                    hinted_type = annotation_item_type(kwargs.get("annotation")) or NoneType
+                try:
+                    new_item = hinted_type()
+                except Exception as e:
+                    print(f"Could not instantiate {hinted_type} for add: {e}")
+                    new_item = None
+                add_to_collection(input_value, new_item)
                 on_change = True
                 return_val = input_value
             same_line()
@@ -702,21 +720,8 @@ def draw_header_end(input_value=None, name="", key=None, melty=None, parent_show
             # if draw_state.parent_window is not None:
             #     Melty.cache.invalidate_up(draw_state.parent_window._tile_id, max_depth=10)
     else:
-        if parent_show_add_delete:
-            bg_style = {
-                "value": 0.01,
-                "saturation": 1.0,
-                "alpha": 1.0,
-                'max_value': 1.0
-            }
-            bg_style = GlobalStyle.get_global_constant("bg_style", default=bg_style, folder="bg_styles")
-            search_color = (style_manager.
-                            make_color_style_value(input=bg_style, saturation=0.7, value=1.0))
-            push_style_color(imgui.COLOR_TEXT, *search_color)
-            push_style_color(imgui.COLOR_BUTTON, *(0.0, 0.0, 0.0, 0.0))
-            if imgui.button(f"\uf1f8##del"):
+        if parent_show_add_delete and collection is not None and key is not None:
+            if RenderFuncs.button(f"\uf1f8##del{unique}", tint=(0.12,0.002037035,0.002037035,0.4), name=f"\uf1f8##del{unique}")[0]:
                 Melty.to_delete(key, collection)
-                print("No selected_views or remove_view method")
             same_line(spacing=0.0)
-            pop_style_color(2)
 

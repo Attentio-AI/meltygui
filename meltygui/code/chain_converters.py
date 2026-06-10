@@ -35,7 +35,8 @@ from src.lsd.gl_gui.view.core_conversion.file_converters import (
     _detect_newline, _split_lines, _recompile, _recompile_class, _recompile_module,
 )
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
-    cst_module_to_dict, dict_to_cst_module, GeneralParse,
+    cst_module_to_dict, dict_to_cst_module, GeneralParse, CallParse, CodeLine,
+    NO_DEFAULT,
 )
 from src.lsd.gl_gui.view.core_views.headers import draw_header
 from src.lsd.gl_gui.view.core_views.text_editor import draw_text
@@ -473,27 +474,197 @@ def dict_to_cst(input_value, changed=False):
     return False, back_to_cst
 
 
-def _live_apply_class_vars(cls: type, gp: dict) -> None:
-    """Drive the live class from cst_dict edits, ahead of any save/recompile.
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  Live apply - cst_dict edits drive the live object ahead of save/recompile    ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+# The responsive-preview layer in front of the real hotswap: when an edit flows
+# back through a chain (general_parse_to_address) down the cache route
+# (draw_code_tabs_from_cache), plain values land on the LIVE object immediately.
+# The recompile (Ctrl+Enter / Run) still owns code, new names, and source truth.
 
-    A class span parses to {<ClassName>: {var: value, ...}} — when an edit
-    flows back through the chain, plain class-var values land on the live type
-    immediately via setattr, so dependent views respond in realtime. The real
-    recompile/hotswap (Ctrl+Enter / save) still owns methods, new vars, and
-    source truth; this only touches vars the class already has.
+def _usable_parse_entry(k, v):
+    """A parsed entry that can land on a live object as-is: a real identifier
+    key (Comment keys aren't), public, and a plain VALUE — not a nested parse
+    dict and not a CodeLine (a str SUBCLASS holding unparsed source text, not
+    the value)."""
+    if not isinstance(k, str) or not k.isidentifier() or k.startswith("_"):
+        return False
+    return not isinstance(v, (dict, CodeLine))
 
-    Skipped: non-identifier keys (Comments), underscore keys, nested dicts
-    (methods, nested classes, decorators, CallParse), and CodeLine values —
-    CodeLine is a str SUBCLASS holding unparsed source text, not the value.
-    `__init__` self-assignments surface as fields too but fail the hasattr
-    check (instance attrs, not class vars)."""
-    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import CodeLine
-    inner = gp.get(cls.__name__)
-    if not isinstance(inner, dict):
-        return
+
+def _differs(cur, v):
+    try:
+        return not (cur is v or cur == v)
+    except Exception:
+        return True  # incomparable (e.g. ndarray) - treat as different
+
+
+def _is_funcdef_parse(v):
+    """A nested funcdef parse (method / function child dict) — CallParse holds
+    call KWARGS under the same dict shape, so it's explicitly excluded."""
+    return (isinstance(v, GeneralParse) and not isinstance(v, CallParse)
+            and ("parameters" in v or "locals" in v))
+
+
+def _raw_function(obj):
+    """The plain FunctionType behind a member: through decorator wrappers
+    (inspect.unwrap), static/classmethod descriptors, and bound methods.
+    None when there's no real function (a property, a non-callable, ...)."""
+    if isinstance(obj, (staticmethod, classmethod)):
+        obj = obj.__func__
+    if inspect.ismethod(obj):
+        obj = obj.__func__
+    try:
+        obj = inspect.unwrap(obj)
+    except Exception:
+        return None
+    return obj if isinstance(obj, types.FunctionType) else None
+
+
+def _apply_param_defaults(raw, params) -> bool:
+    """Land edited parameter defaults on the live function's __defaults__ /
+    __kwdefaults__ — the same members the real hotswap patches, so a later
+    recompile simply re-asserts them. The parse maps every param name (NO_DEFAULT
+    for default-less ones); only names that exist in the live default sets are
+    touched, so an added/removed parameter still needs the recompile."""
+    try:
+        sig = inspect.signature(raw)
+    except (TypeError, ValueError):
+        return False
     applied = False
-    for k, v in inner.items():
+
+    pos = [p for p in sig.parameters.values()
+           if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+    defaults = list(raw.__defaults__ or ())
+    offset = len(pos) - len(defaults)
+    if offset >= 0:
+        changed_pos = False
+        for i, p in enumerate(pos[offset:]):
+            v = params.get(p.name, NO_DEFAULT)
+            if isinstance(v, type(NO_DEFAULT)) or not _usable_parse_entry(p.name, v):
+                continue
+            if _differs(defaults[i], v):
+                defaults[i] = v
+                changed_pos = True
+        if changed_pos:
+            raw.__defaults__ = tuple(defaults)
+            applied = True
+
+    kwd = raw.__kwdefaults__
+    if kwd:
+        new_kwd = dict(kwd)
+        changed_kw = False
+        for name, cur in kwd.items():
+            v = params.get(name, NO_DEFAULT)
+            if isinstance(v, type(NO_DEFAULT)) or not _usable_parse_entry(name, v):
+                continue
+            if _differs(cur, v):
+                new_kwd[name] = v
+                changed_kw = True
+        if changed_kw:
+            raw.__kwdefaults__ = new_kwd
+            applied = True
+    return applied
+
+
+# Instructions that read a co_consts slot (3.12): a slot referenced by more
+# than one of these is shared (the compiler dedups equal literals) and is
+# never patched.
+_CONST_REF_OPS = {"LOAD_CONST", "RETURN_CONST", "KW_NAMES"}
+
+
+def _const_like(v):
+    if isinstance(v, (int, float, complex, str, bytes, bool, type(None))):
+        return True
+    if isinstance(v, (tuple, frozenset)):
+        return all(_const_like(x) for x in v)
+    return False
+
+
+def _apply_const_locals(raw, locals_) -> bool:
+    """Patch `name = <literal>` body assignments straight into co_consts via
+    code.replace — no compile, the code object's identity lineage stays intact.
+
+    Conservative by construction; a swap happens ONLY when the binding is
+    unambiguous in the bytecode:
+      • the name is stored exactly once in the function (a reassigned name —
+        `x` + `x#1` keys — or a computed value drops out), and
+      • that store is fed directly by LOAD_CONST, and
+      • the const slot is referenced by exactly one instruction in the whole
+        code object — the compiler dedups equal literals, so `x = 2.0` and
+        `foo(2.0)` can share a slot, and patching it would silently change
+        the other use.
+    Everything ambiguous waits for the real recompile."""
+    import dis
+    code = raw.__code__
+    store_idx = {}    # local name -> co_consts index (None = multi/computed)
+    ref_counts = {}   # co_consts index -> referencing-instruction count
+    prev = None
+    try:
+        for ins in dis.get_instructions(code):
+            if ins.opname in _CONST_REF_OPS and ins.arg is not None:
+                ref_counts[ins.arg] = ref_counts.get(ins.arg, 0) + 1
+            if ins.opname == "STORE_FAST":
+                if ins.argval in store_idx:
+                    store_idx[ins.argval] = None
+                elif prev is not None and prev.opname == "LOAD_CONST":
+                    store_idx[ins.argval] = prev.arg
+                else:
+                    store_idx[ins.argval] = None
+            prev = ins
+    except Exception:
+        return False
+
+    consts = list(code.co_consts)
+    changed = False
+    for k, v in locals_.items():
+        if not _usable_parse_entry(k, v) or not _const_like(v):
+            continue
+        idx = store_idx.get(k)
+        if idx is None or ref_counts.get(idx, 0) != 1:
+            continue
+        if not _differs(consts[idx], v):
+            continue
+        consts[idx] = v
+        changed = True
+    if changed:
+        try:
+            raw.__code__ = code.replace(co_consts=tuple(consts))
+        except Exception:
+            return False
+    return changed
+
+
+def _apply_function_parse(fn, parsed) -> bool:
+    """Live-apply a funcdef parse: parameter defaults + constant locals."""
+    raw = _raw_function(fn)
+    if raw is None or not isinstance(parsed, dict):
+        return False
+    applied = False
+    params = parsed.get("parameters")
+    if isinstance(params, dict):
+        applied |= _apply_param_defaults(raw, params)
+    locals_ = parsed.get("locals")
+    if isinstance(locals_, dict):
+        applied |= _apply_const_locals(raw, locals_)
+    return applied
+
+
+def _apply_class_parse(cls, parsed) -> bool:
+    """Live-apply a classdef parse: plain class vars via setattr, and method
+    child dicts via the function path (param defaults + constant locals).
+
+    `__init__` self-assignments surface as fields too but fail the hasattr
+    check (instance attrs, not class vars); nested classes / decorators /
+    CallParse stay nested dicts and are skipped."""
+    applied = False
+    for k, v in parsed.items():
         if not isinstance(k, str) or not k.isidentifier() or k.startswith("_"):
+            continue
+        if _is_funcdef_parse(v):
+            member = inspect.getattr_static(cls, k, None)
+            if member is not None:
+                applied |= _apply_function_parse(member, v)
             continue
         if isinstance(v, (dict, CodeLine)):
             continue
@@ -510,10 +681,68 @@ def _live_apply_class_vars(cls: type, gp: dict) -> None:
             applied = True
         except Exception:
             pass
+    return applied
+
+
+def _apply_module_parse(mod, parsed) -> bool:
+    """Live-apply a module parse: dispatch each top-level entry on the LIVE
+    object — classes through the class path, functions through the function
+    path, plain existing globals via setattr."""
+    applied = False
+    for k, v in parsed.items():
+        if not isinstance(k, str) or not k.isidentifier() or k.startswith("_"):
+            continue
+        if k not in mod.__dict__:
+            continue
+        live = mod.__dict__[k]
+        if isinstance(v, GeneralParse) and not isinstance(v, CallParse):
+            if isinstance(live, type):
+                applied |= _apply_class_parse(live, v)
+            elif _is_funcdef_parse(v):
+                applied |= _apply_function_parse(live, v)
+            continue
+        if isinstance(v, (dict, CodeLine)):
+            continue
+        try:
+            if not _differs(live, v):
+                continue
+            setattr(mod, k, v)
+            applied = True
+        except Exception:
+            pass
+    return applied
+
+
+def live_apply_edits(source, gp) -> None:
+    """Entry point: drive the LIVE source object from its edited cst_dict.
+
+    `gp` is the module-shaped parse of the edited span — a class/function span
+    keys its parse under __name__; a module span IS the parse. Unknown source
+    types (CallSite, Decorations, None) no-op. On apply, repaint cached views
+    drawn from the source (same invalidation the real recompile does)."""
+    if not isinstance(gp, dict):
+        return
+    applied = False
+    if isinstance(source, type):
+        inner = gp.get(source.__name__)
+        if isinstance(inner, dict):
+            applied = _apply_class_parse(source, inner)
+    elif isinstance(source, types.FunctionType):
+        inner = gp.get(source.__name__)
+        if isinstance(inner, dict):
+            applied = _apply_function_parse(source, inner)
+    elif isinstance(source, types.ModuleType):
+        applied = _apply_module_parse(source, gp)
     if applied and Melty.cache is not None:
-        # Repaint views drawn from the class - cached tiles keep blitting the
-        # old value until something invalidates them (such as _recompile_class).
-        Melty.cache.invalidate_up_by_obj(cls, max_depth=10)
+        if isinstance(source, types.FunctionType):
+            Melty.cache.invalidate_up_by_func(source, max_depth=10)
+        else:
+            Melty.cache.invalidate_up_by_obj(source, max_depth=10)
+
+
+def _live_apply_class_vars(cls: type, gp: dict) -> None:
+    """Back-compat alias — the class entry of live_apply_edits."""
+    live_apply_edits(cls, gp)
 
 
 @render_func(use_cache=True, selectable=False)
@@ -609,10 +838,11 @@ def general_parse_to_address(input_value: GeneralParse=None, pending=False, draw
         return False, None
     source = address.source
 
-    # Class edits drive the live type immediately (responsive preview); the
-    # recompile/hotswap below still owns methods, new vars, and source truth.
-    if changed and isinstance(source, type):
-        _live_apply_class_vars(source, input_value)
+    # Edits drive the live object immediately (live preview): class vars,
+    # function arg defaults, constant locals, module globals. The
+    # recompile/hotswap below still owns code, new names, and source truth.
+    if changed and source is not None:
+        live_apply_edits(source, input_value)
 
     # Latch the save intent across the background dict_to_cst latency. An edit
     # (focus Add/Delete, a single color pick) sets changed=True for ONE frame -

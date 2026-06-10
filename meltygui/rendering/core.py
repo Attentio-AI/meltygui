@@ -2555,7 +2555,11 @@ def render_func(*args, **o_kwargs):
                         # rather than clipping off the right edge of the window.
                         end_x = max(draw_state.abs_left,
                                     draw_state.abs_left + clip_size[0] - draw_state.header_end_width - margin)
-                        if not draw_state.expanded:
+                        # Collapsed windows shrink to the header, so the close
+                        # button trails the header. Collection rows keep the
+                        # right-aligned alignment even when collapsed because their clip
+                        # still spans the parent's content width.
+                        if not draw_state.expanded and closable:
                             end_x = draw_state.abs_left + draw_state.header_width + 50
 
                         imgui.set_cursor_screen_pos((end_x,

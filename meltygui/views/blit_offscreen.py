@@ -1632,6 +1632,22 @@ class TileCacheMasked:
                                                                uv_a=uv_a,
                                                                uv_b=uv_b,
                                                                rounding=draw_state.corner_radius)
+
+                # Drag-n-drop home slot: when this cached tile contains the
+                # dragged item's slot, its pixels there can be stale (the
+                # floating window overlapped the slot when the tile was
+                # captured). Repaint the blank socket live over the image.
+                # Exactly one tile per level contains it - the level that
+                # actually blitted; deeper levels were skipped.
+                _home = Melty.dnd_home_rect
+                if _home is not None:
+                    _hx, _hy, _hw, _hh = _home
+                    if (a[0] <= _hx and a[1] <= _hy
+                            and _hx + _hw <= b[0] and _hy + _hh <= b[1]):
+                        from src.lsd.gl_gui.view.core_views import drag_drop as _dnd_mod
+                        if draw_state is not _dnd_mod.DragDrop.item_ds:
+                            _dnd_mod.DragDrop.draw_home_blank()
+
                 imgui.dummy(size[0], size[1])
 
                 imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top + draw_state.content_height))

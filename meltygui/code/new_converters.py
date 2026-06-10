@@ -81,7 +81,7 @@ from src.lsd.gl_gui.view.core_conversion.address import (
     Address, _evict_linecache,
 )
 from src.lsd.gl_gui.view.core_conversion.chain_converters import (
-    record_compile, _enclosing_function,
+    record_compile, _enclosing_function, live_apply_edits,
 )
 from src.lsd.gl_gui.view.core_conversion.code_checks import check_source
 from src.lsd.gl_gui.view.core_conversion.file_converters import (
@@ -1730,3 +1730,93 @@ def draw_text_from_code_cache(input_value=None, root_input=None, error=None,
     if dict_host is not None and ds is not None:
         dict_host.notify_on_change(ds)
     return changed, value
+
+
+@render_func(use_cache=True, show_bg=False, selectable=False, disable_scroll=True,
+             shadow=False, indent_size=0, with_footer=None, fill_height=False)
+def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabState = None,
+                              unique=None, draw_state=None, column_widths=None,
+                              draw=False, error=None, run_jedi=False, **kwargs):
+    """NEW_CODE's text|structured tabs on the code-host-cache route — no inline
+    chain_in/chain_out (the legacy convert_in_and_out path this replaces).
+
+      • draw_text — delegates to draw_text_from_code_cache; a text edit returns
+        to the enclosing code_file_io, which saves the span (its normal path).
+      • draw_collection — renders the shared dict_host's HELD GeneralParse
+        (code_hosts_for). An edit mutates the bubbling-wrapped parse in place,
+        marking the host dirty; the host chain_outs to source and saves through
+        the cache's own str_host, so nothing returns upward from this column.
+        An edit ALSO drives the live source immediately (live_apply_edits:
+        class vars, function param defaults + constant locals, module
+        globals) — the same responsive preview the chain route's
+        general_parse_to_address gives, ahead of any recompile.
+
+    The two code_file_io instances (this window's and the cache's str_host)
+    only ever talk through the FILE: a dict edit saves via the cache and this
+    window's auto_load_edits picks it up; a text edit saves here and the
+    cache's file watch re-parses."""
+    view_funcs = [RenderFuncs.draw_collection, RenderFuncs.draw_text]
+    # Drop entries that didn't survive (de)serialization, then default to two
+    # tabs (structured | text), matching draw_with_view_funcs.
+    tab_state.selected_tabs = [t for t in tab_state.selected_tabs if t is not None]
+    if not tab_state.selected_tabs:
+        tab_state.selected_tabs = view_funcs[:2]
+
+    imgui.dummy(0, 5)
+    names = [getattr(vf, '__name__', str(vf)) for vf in view_funcs]
+    tab_changed, new_tabs = RenderFuncs.draw_tab_bar(input_value=tab_state.selected_tabs,
+                                                     tab_height=30, show_bg=False, bg_offset=1,
+                                                     name=f"tab_bar{unique}", names=names,
+                                                     collection=view_funcs, as_toggles=False)
+    if tab_changed:
+        tab_state.selected_tabs = new_tabs
+
+    imgui.dummy(0, 2)
+    dict_host = None
+    if root_input is not None:
+        _str_host, dict_host = code_hosts_for(root_input)
+        # Repaint this subtree when the background parse lands - it reads the
+        # host's value from outside the host's own draw loop (same registration
+        # draw_text_from_code_cache makes for its error/code_dict pull).
+        dict_host.notify_on_change(draw_state)
+
+    raw_changed, raw_value = False, input_value
+    for idx, view_func in enumerate(tab_state.selected_tabs):
+        column_width = None
+        if column_widths is not None and len(column_widths) > idx:
+            column_width = column_widths[idx]
+
+        if getattr(view_func, "__name__", "") == "draw_text":
+            m_changed, m_out = draw_text_from_code_cache(
+                input_value=input_value, root_input=root_input, error=error,
+                run_jedi=run_jedi, draw=draw,
+                max_width=draw_state.content_width - 10,
+                 show_header=False,
+                column=idx, column_width=column_width,
+                name=f"draw_text##{unique}")
+            if m_changed:
+                raw_changed, raw_value = True, m_out
+                draw_state.invalidate_up(max_depth=2)
+        else:
+            gp = dict_host._held() if dict_host is not None else None
+            if not isinstance(gp, dict):
+                imgui.text_colored("Parsing…" if dict_host is not None
+                                   else "No parse for this source", 0.6, 0.6, 0.6, 1.0)
+                continue
+            m_changed, m_out = RenderFuncs.draw_collection(
+                gp, excluded=["__cst__"], show_system=True, draw=draw,
+                max_width=draw_state.content_width - 10,
+                disable_scroll=False, show_header=False,
+                column=idx, column_width=column_width, show_add_delete=False,
+                name=f"draw_collection##{unique}", selectable=False)
+            if m_changed:
+                # A rebuilt top-level dict (reorder / add / delete) replaces the
+                # held value; an in-place value edit already bubbled the host
+                # dirty. Either way the host chain_outs + saves on its next draw.
+                if m_out is not gp and isinstance(m_out, dict):
+                    dict_host[dict_host.value_key] = m_out
+                    gp = m_out
+                live_apply_edits(root_input, gp)
+                draw_state.invalidate_up(max_depth=2)
+
+    return raw_changed, raw_value
