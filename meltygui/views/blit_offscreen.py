@@ -1581,7 +1581,7 @@ class TileCacheMasked:
         imgui.begin_group()
         has_area = size is not None and size[0] != 0 and size[1] != 0
 
-        if draw_state._input_value == UNSET_VALUE or draw_state._bypass_cache:
+        if draw_state._input_value is UNSET_VALUE or draw_state._bypass_cache:
             self._stack.append(
                 _Ctx(
                     draw_state=draw_state,

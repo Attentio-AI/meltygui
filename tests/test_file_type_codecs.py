@@ -33,8 +33,30 @@ def test_extension_registry_is_normalized():
 
 def test_codec_for_path_extension_case_insensitive(tmp_path):
     p = tmp_path / "PHOTO.PNG"
-    p.write_bytes(b"")
+    Image.new("RGB", (2, 2)).save(p, format="PNG")
     assert codec_for_path(p) is ImageCodec
+
+
+def test_image_codec_vetoes_empty_file(tmp_path):
+    # old startup crash: a 0-byte "image" routed to ImageCodec made every
+    # watch-triggered load throw UnidentifiedImageError. Empty bytes decode
+    # as utf-8, so the file lands on text.
+    p = tmp_path / "test (4th copy).png"
+    p.write_bytes(b"")
+    assert codec_for_path(p) is TextFileCodec
+
+
+def test_image_codec_vetoes_non_image_bytes(tmp_path):
+    p = tmp_path / "garbage.png"
+    p.write_bytes(b"\x00\xff" * 300)              # not a PNG, not utf-8
+    assert codec_for_path(p) is BinaryFileCodec
+    p.write_text("actually notes someone misnamed")
+    assert codec_for_path(p) is TextFileCodec     # claims re-probes on change
+
+
+def test_image_codec_claims_missing_file(tmp_path):
+    # existence is resolve_address's job, not the content veto's
+    assert codec_for_path(tmp_path / "nope.png") is ImageCodec
 
 
 def test_codec_for_path_sniffs_text(tmp_path):

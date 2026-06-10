@@ -124,7 +124,7 @@ class Swoosh:
     value = 1.023              # intensity of the highlight (super-bright yellow)
     saturation = 0.791        # saturation scale applied to the current tint
     alpha = 1.0             # opacity of the swoosh
-    end_thickness = 2.304      # half-width at the two endpoints (thick)
+    end_thickness = 1.433      # half-width at the anchor endpoints (thick)
     cap_scale = 0.962          # end-cap dot radius as a multiple of end thickness
     mid_thickness = 0.441      # half-width at the middle (thin)
     curve = 0.029             # max arc bow as a fraction of endpoint distance
@@ -149,35 +149,28 @@ class Swoosh:
                                 # within this fraction of the parent's shorter side (else stay flat)
 
 
-@window(tint=(0.5, 0.188, 0.053))
+@window(tint=(0.31, 0.10, 0.15))
 class Toggles:
 
-    @defaults(tint=(0.5, 0.188, 0.053))
+    @defaults(tint=(0.167, 0.972, 1.00))
     class TextEditor:
         enable_spell_check = False
 
-    @defaults(tint=(0.011, 0.124, 0.211))
-    class Debug:
-        slow_frame_rate = True
 
-    @defaults(tint=(0.739, 0.44, 0.349))
+    @defaults(tint=(0.833, 1.00, 0.00))
     class InvalidateTracker:
         keep_for_frames = 101
         enable = False
         draw_bvh = False
         draw_rect = False
 
-    @defaults(tint=(0.256, 0.082, 0.511))
+    @defaults(tint=(0.631, 0.474, 0.861))
     class InputHandlerToggles:
         show_debug = False
 
     @defaults(tint=(0.089, 0.08, 0.069))
     class TerminalSettings:
         # Minimum LOGICAL terminal size, in tiles - independent of the window size.
-        # When a terminal window is dragged smaller than this, the emulated grid (PTY)
-        # is frozen at this minimum so line wrapping stops re-flowing; the window
-        # clips into its content instead (the "cropbox" behavior). Larger windows grow
-        # the grid as usual. Determined by draw_terminal.py.
         min_width = 98.634
         min_height = 480.0
 
@@ -209,16 +202,16 @@ class Toggles:
     slow_down_threads = False
     render_depth = False
     ds_invalidate_stack = False
-    profile_mode = ProfileMode.LIGHT
+    profile_mode = ProfileMode.OFF
     debug_stale_tint = False
     show_line_break = False
 
     # Filter SettingS
-    brightness = 0.467
-    contrast = 1.799
+    brightness = 0.475
+    contrast = 1.812
     saturation = -0.4
-    prefered_header_width = 17
-    max_preferred_header_width = 179
+    prefered_header_width = 131
+    max_preferred_header_width = 267
     debug_z_depth = False
     filters = True
     show_excluded = True
@@ -229,12 +222,12 @@ class Toggles:
     shadow_downscale = 2
 
     shadow_edge_sharpness = 49.833
-    draw_legacy = False
-
-    show_full_call_stack = False
     ignore_call_from = ("draw", "_run_visualization", "run", "_bootstrap",
                         "_bootstrap_inner", "convert_in_and_out", "draw_melty_windows", "end_frame", "render", "draw_inner",
                         "draw_inner_main", "draw_with_view_funcs")
+    draw_legacy = True
+
+    show_full_call_stack = False
     # Screenshot output directory (used by screenshot.py / context menu capture)
     screenshots = "/home/lukas/melty/screenshots"
 

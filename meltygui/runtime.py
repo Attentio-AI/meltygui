@@ -1,6 +1,8 @@
 import math
+import threading as _threading
 import time
 import types
+from contextlib import contextmanager
 from collections import defaultdict, deque
 from copy import copy
 from enum import Enum
@@ -125,6 +127,7 @@ class FileWatch:
     _ds_suppress_until = {}    # id(ds) → monotonic time until which to suppress dispatch
     _file_contents = {}
     _path_hash_cache = {}      # resolved path → (mtime, md5); avoids re-reading unchanged files
+    _self_write_hashes = {}    # resolved path → md5 of the last IN-PROCESS write (any view)
     output_debug_diff = False
     _write_suppress_window = 1.0  # seconds - for truncate+write event pairs from write_text
 
@@ -283,6 +286,13 @@ class FileWatch:
         new_hash = hashlib.md5(content.encode()).hexdigest()
         suppress_until = time.monotonic() + cls._write_suppress_window
 
+        # Process-wide record: EVERY in-process save announces its content here
+        # (codec.save / _do_save call this right before writing). is_self_write
+        # lets a SIBLING view of the same file tell "one of us wrote this" from
+        # "an outside program wrote this" - the per-draw_state hash above only
+        # covers the writer's own view.
+        cls._self_write_hashes[resolved] = new_hash
+
         if draw_state is not None:
             cls._ds_hashes[id(draw_state)] = new_hash
             cls._ds_suppress_until[id(draw_state)] = suppress_until
@@ -293,6 +303,21 @@ class FileWatch:
 
         if cls.output_debug_diff:
             cls._file_contents[resolved] = content.splitlines(keepends=True)
+
+    @classmethod
+    def is_self_write(cls, path):
+        """True when the file's CURRENT on-disk content is the last write made
+        by an in-process editor (any code_file_io / _do_save instance) — a
+        sibling view syncing through the file, not an outside program. Used to
+        reload quietly instead of stamping the "loaded from disk" indication."""
+        try:
+            resolved = str(Path(path).resolve())
+        except OSError:
+            return False
+        recorded = cls._self_write_hashes.get(resolved)
+        if recorded is None:
+            return False
+        return cls._get_hash(resolved) == recorded
 
     @classmethod
     def shutdown(cls):
@@ -418,6 +443,14 @@ class Melty:
     default_font = None
     indent_size = 10
     annotation_mode = True
+    # Per-THREAD annotation mode for recompile exec: re-running a class def
+    # re-evaluates field annotations that CALL render funcs (`@int:
+    # draw_any(...)`) - without interception they render for real on the
+    # recompile's background thread (no GL context, FBO failure, imgui
+    # ID-stack corruption on the render thread). Flipping the GLOBAL flag
+    # would break the render thread mid-frame, so recompiles wrap their exec
+    # in annotation_scope, which only the recompiling thread observes.
+    _annotation_tls = _threading.local()
     depth = 0
     shadow_depth = 0
     wrapped_depth =0
@@ -1717,6 +1750,12 @@ class Melty:
 
         cls.apply_move_to_front()
 
+        # Drain GL resources queued for deletion (released GLStates, shader
+        # programs invalidated by an edit) - must run on the render thread with
+        # the context current, which is exactly here.
+        from src.lsd.gl_gui.gl_state import GLState
+        GLState.flush_deletes()
+
         cls.apply_refresh_nested_windows()
         # Reset overlay routing to the top (global, unmasked) channel so
         # end_frame draws - FPS counter, selection rects, debug text - don't
@@ -2225,6 +2264,10 @@ class Melty:
 
         InvalidateTracker.on_frame_end()
         AttributeChurnMonitor.on_frame_end()
+        # Landed live-value windows poll for orphaned anchors here - their
+        # bodies only run on invalidation, which an orphan never receives.
+        from src.lsd.gl_gui.view.core_views.live_view_views import sweep_orphans
+        sweep_orphans()
 
     @classmethod
     def get_latest_mouse(cls):
@@ -2263,6 +2306,11 @@ class Melty:
             notify_melty_shutdown()
         except Exception as e:
             print(f"[melty] mcp shutdown notify failed: {e}")
+        try:
+            from src.lsd.gl_gui.gl_state import GLState
+            GLState.shutdown_all()
+        except Exception as e:
+            print(f"[melty] gl_state shutdown failed: {e}")
         cls.filter.cleanup()
         cls.texture_manager.clear()
         Background.shutdown()
@@ -2396,6 +2444,13 @@ class Melty:
             else:
                 print(f"Warning: Tried to delete window but {window_key} not found in registered_windows")
                 print(f"Registered windows: {list(Melty.registered_windows.keys())}")
+
+            # Views under a deleted window give up their GL resources
+            # (queued; drained by flush_deletes in end_frame). Their
+            # draw_states persist, so a re-created window lazily
+            # re-allocates on its next draw.
+            from src.lsd.gl_gui.gl_state import GLState
+            GLState.on_window_deleted(draw_state)
 
             cls.pending_delete_window = None
             request_render()
@@ -2781,12 +2836,34 @@ class Melty:
         cls.global_attrs["style_manager"] = getattr(cls, "style_manager", None)
 
         cls.annotation_mode = False
-        class_vars = {**{k: getattr(RenderFuncs, k) for k in dir(RenderFuncs) if k[0] != "_"}}
+        # NOTE: do NOT pin RenderFuncs.<name> to its resolved function here
+        # (the old `setattr(RenderFuncs, name, func._resolve())` loop). The
+        # original version froze whatever wrapper was registered at init, so a
+        # later recompile of e.g. `button` never reached RenderFuncs.button
+        # call sites. _LazyRenderFunc re-resolves through render_funcs_by_name
+        # on every call by design (one dict get - noise compared to a render);
+        # leaving the handles in place is what makes recompiles take.
 
-        for name, func in class_vars.items():
 
-            setattr(RenderFuncs, name, func._resolve())
+    @classmethod
+    def in_annotation_mode(cls):
+        """Annotation calls intercepted? — startup's global flag OR this
+        thread's recompile-exec scope (annotation_scope)."""
+        return cls.annotation_mode or getattr(cls._annotation_tls, "active", False)
 
+    @classmethod
+    @contextmanager
+    def annotation_scope(cls):
+        """Thread-local annotation mode for a recompile's exec: field
+        annotations that call render funcs return carriers (annotation_track)
+        instead of rendering on a non-GL thread. Other threads — including the
+        render thread mid-frame — are unaffected."""
+        prev = getattr(cls._annotation_tls, "active", False)
+        cls._annotation_tls.active = True
+        try:
+            yield
+        finally:
+            cls._annotation_tls.active = prev
 
     @classmethod
     def init_ui(cls, **kwargs):

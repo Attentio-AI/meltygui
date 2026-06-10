@@ -576,11 +576,15 @@ def _recompile(func: types.FunctionType, source: str,
         wrapper_source += f"\n    return {unwrapped.__name__}\n"
 
         code = compile(wrapper_source, filename, "exec")
-        exec(code, namespace)
-        new_func = namespace["_closure_wrapper"](**closure_vals)
+        # annotation scope: a default arg / annotation that CALLS a render func
+        # must return its carrier, not render on this (non-GL) thread.
+        with Melty.annotation_scope():
+            exec(code, namespace)
+            new_func = namespace["_closure_wrapper"](**closure_vals)
     else:
         code = compile(dedented, filename, "exec")
-        exec(code, namespace)
+        with Melty.annotation_scope():
+            exec(code, namespace)
         new_func = namespace.get(unwrapped.__name__)
 
     if new_func is None:
@@ -622,6 +626,11 @@ def _recompile(func: types.FunctionType, source: str,
             co_firstlineno=original_firstlineno
         )
 
+        # Mirror the patch onto the file's other module identity (src./non-src
+        # twin), so registry-resolved callers (RenderFuncs.<name>) update no
+        # matter which twin's raw the editor resolved.
+        _twins = _patch_twin_raws(unwrapped)
+
         _redirect_function_registrations(_pre_reg, new_wrapper,
                                          live_raw=unwrapped, live_func=func)
         # Re-run decoration effects (@defaults) onto the live function: the exec
@@ -642,9 +651,10 @@ def _recompile(func: types.FunctionType, source: str,
             if _lw is not None:
                 _transfer_wrapper_state(_lw, new_wrapper, new_func)
 
-        def _restore(u=unwrapped, prev=_prev):
+        def _restore(u=unwrapped, prev=_prev, twins=tuple(_twins)):
             u.__code__, u.__defaults__, u.__kwdefaults__, ann, u.__doc__ = prev
             u.__annotations__ = dict(ann)
+            _restore_twin_raws(twins)
             Melty.cache.invalidate_up_by_func(u, max_depth=10)
         # The installed code's co_firstlineno was reset to the function's file
         # position, so a traceback's line number is file-absolute → subtract
@@ -691,13 +701,20 @@ def _recompile_class(cls: type, source: str, filename: str) -> None:
         return syntax_e
 
     try:
-        exec(code, namespace)
+        # annotation_scope: the class body re-evaluates field annotations that
+        # CALL render funcs (`tint: draw_any(...)`) - they must return carriers
+        # (annotation_track), not render on this background thread (no GL
+        # context → FBO failure + imgui ID-stack corruption on the render
+        # thread). Thread-local, so live rendering elsewhere is untouched.
+        with Melty.annotation_scope():
+            exec(code, namespace)
     except NameError:
         try:
             # A just-inserted import (e.g. the @defaults decorator) isn't in the live
             # module globals yet. Pull in the file's imports and retry once.
-            _exec_file_imports(filename, namespace)
-            exec(code, namespace)
+            with Melty.annotation_scope():
+                _exec_file_imports(filename, namespace)
+                exec(code, namespace)
         except Exception as e:
             return e
 
@@ -741,7 +758,11 @@ def _recompile_module(module: types.ModuleType, source: str,
     _swapped_funcs = []
     new_code_ids = set()
     try:
-        exec(code, module.__dict__)
+        # annotation_scope: module bodies hold @window classes whose field
+        # annotations CALL render funcs - same interception _recompile_class
+        # needs, thread-local so live rendering is untouched.
+        with Melty.annotation_scope():
+            exec(code, module.__dict__)
 
         for name, old_obj in old_attrs.items():
             new_obj = module.__dict__.get(name)
@@ -774,6 +795,13 @@ def _recompile_module(module: types.ModuleType, source: str,
                 tgt.__annotations__ = src.__annotations__
                 tgt.__doc__ = src.__doc__
                 module.__dict__[name] = old_obj
+                # Mirror onto the function's other module identity (src./non-src
+                # twin) so registry-resolved addresses update too.
+                _twins = _patch_twin_raws(tgt)
+                if _twins:
+                    def _restore_twins_fn(t=tuple(_twins)):
+                        _restore_twin_raws(t)
+                    _member_restores.append(_restore_twins_fn)
                 new_code_ids |= _hotswap_guard.collect_code_ids(src.__code__)
 
                 # Reconcile the throwaway wrapper's registrations and decorator
@@ -952,6 +980,88 @@ def _snapshot_func_registrations() -> dict:
         if isinstance(reg, dict):
             snap[name] = dict(reg)
     return snap
+
+
+def _patch_twin_raws(unwrapped):
+    """Propagate an in-place hotswap to the SAME function's twin raw object(s).
+
+    One source file can sit in sys.modules under two names (the src./non-src
+    dual identity: saved-state loaders import by the stored dotted path, which
+    resurrects e.g. `lsd.gl_gui...` next to `src.lsd.gl_gui...`). Each twin
+    module owns its OWN raw function and wrapper. A recompile patches whichever
+    raw the editor resolved, but RenderFuncs.<name> handles resolve through
+    render_funcs_by_name, which can hold the OTHER twin's wrapper — that twin
+    keeps serving the stale code (the "RenderFuncs.button never updates" bug).
+    Copy the freshly-patched state onto every same-qualname raw in every twin
+    module so both identities run the edit.
+
+    Returns [(twin_raw, prev_state), ...] so the caller can fold the twins into
+    its hotswap-guard rollback (see _restore_twin_raws)."""
+    import sys
+    code = getattr(unwrapped, "__code__", None)
+    if code is None:
+        return []
+    try:
+        target = Path(code.co_filename).resolve()
+    except (OSError, ValueError):
+        return []
+    if "<locals>" in unwrapped.__qualname__:
+        return []  # locals aren't reachable by attribute walk
+    qual = unwrapped.__qualname__.split(".")
+    target_name = target.name
+    patched = []
+    for mod in list(sys.modules.values()):
+        f = getattr(mod, "__file__", None)
+        # Cheap basename gate before the syscall-heavy resolve (same pattern as
+        # chain_converters._modules_for_file).
+        if not f or f.rsplit("/", 1)[-1].rsplit("\\", 1)[-1] != target_name:
+            continue
+        try:
+            if Path(f).resolve() != target:
+                continue
+        except (OSError, ValueError):
+            continue
+        obj = mod
+        for part in qual:
+            obj = getattr(obj, part, None)
+            if obj is None:
+                break
+        if obj is None or not callable(obj):
+            continue
+        try:
+            twin = inspect.unwrap(obj)
+        except Exception:
+            continue
+        if twin is unwrapped or getattr(twin, "__code__", None) is None:
+            continue
+        prev = (twin.__code__, twin.__defaults__, twin.__kwdefaults__,
+                dict(twin.__annotations__ or {}), twin.__doc__)
+        try:
+            twin.__code__ = code
+        except ValueError as e:
+            # Mismatched freevars (differently-shaped closure twin) -
+            # leave that twin alone rather than half-patch it.
+            print(f"twin hotswap skipped for {mod.__name__}."
+                  f"{unwrapped.__qualname__}: {e}")
+            continue
+        twin.__defaults__ = unwrapped.__defaults__
+        twin.__kwdefaults__ = unwrapped.__kwdefaults__
+        twin.__annotations__ = dict(unwrapped.__annotations__ or {})
+        twin.__doc__ = unwrapped.__doc__
+        patched.append((twin, prev))
+    return patched
+
+
+def _restore_twin_raws(twins) -> None:
+    """Rollback half of _patch_twin_raws — used by the hotswap guard so a
+    runtime-throwing edit reverts on BOTH module identities, not just the one
+    the editor patched."""
+    for twin, prev in twins:
+        try:
+            twin.__code__, twin.__defaults__, twin.__kwdefaults__, ann, twin.__doc__ = prev
+            twin.__annotations__ = dict(ann)
+        except Exception as ex:
+            print(f"[hotswap_guard] twin restore failed: {ex}")
 
 
 def _redirect_function_registrations(pre_snapshot: dict, new_wrapper,

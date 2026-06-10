@@ -322,17 +322,23 @@ def draw_symbol_usage(input_value):
 
 
 @render_func(is_default_for=(dict, MutableMapping, defaultdict, tuple, list, GeneralParse, CallParse, _BubblingDict, _DeepPath), use_cache=True,
-             header_same_line=False, show_bg=True, show_instance_vars=False, align_header=True,
-             manual_content_height=True, shadow=True, selectable=False, show_add_delete=True,
+             header_same_line=False, show_bg=True, show_instance_vars=False, align_header=False,
+             manual_content_height=True, shadow=True, selectable=False,
              wrap=False, with_header=draw_header, indent_size=2, searchable=True)
 def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=None,
                     mode=None, keys=None, get_attr=None, set_attr=None, show_excluded=False,
                     child_kwargs=None, show_bg=False, show_search=True, align_header=False,
                     on_collapse=False, search_text="", return_item=False, close_triggers_delete=False,
-                    on_expand=False, show_add_delete=True, item_spacing_y=1, show_system=False, included=None,
-                    horizontal=False, show_indices=False, excluded=None, annotation=None, **kwargs):
+                    on_expand=False, show_add_delete=False, show_add_types=None, item_spacing_y=1, show_system=False,
+                    included=None, horizontal=False, show_indices=False, excluded=None, annotation=None, **kwargs):
     """
     Universal collection renderer
+
+    show_add_types={"Display Name": TypeA, ...} draws a second + button in the
+    header that instantiates the chosen type (rendered by draw_header; the
+    value just rides the kwargs through). Several entries get a chevron
+    dropdown to pick from; a single entry binds the + directly with no
+    chevron. A bare list of types is accepted and keyed by __name__.
     """
     if excluded is None:
         excluded = set()
@@ -379,7 +385,12 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
         elif hasattr(input_value, "__dict__") and depth < Core.melty.max_depth:
             if hasattr(type(input_value), "__field_defaults__") and hasattr(input_value, 'to_dict'):
                 type(input_value).__field_defaults__.update(input_value.__dict__)
-                keys = type(input_value).__field_defaults__.keys()
+                # __field_defaults__ accumulates keys from every instance, so a
+                # field deleted from THIS instance lingers there. Skip keys the
+                # instance no longer resolves (neither set nor the class default)
+                # so deleting a field removes its row instead of leaving a ghost.
+                keys = [k for k in type(input_value).__field_defaults__
+                        if k in input_value.__dict__ or hasattr(input_value, k)]
             else:
                 if input_value is None or input_value.__dict__ is None:
                     return False, input_value
@@ -527,10 +538,15 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
         item = None
         if get_attr is None:
             if isinstance(collection, dict) and key not in collection:
-                imgui.text("Key not found: " + str(key))
-                continue
-
-            if hasattr(input_value, "__dict__") and hasattr(input_value, str(key)):
+                # A declared attr deleted from the instance __dict__ still
+                # resolves through the class default - use that instead of
+                # degrading to a "Key not found" ghost row.
+                if hasattr(input_value, "__dict__") and hasattr(input_value, str(key)):
+                    item = getattr(input_value, str(key), None)
+                else:
+                    imgui.text("Key not found: " + str(key))
+                    continue
+            elif hasattr(input_value, "__dict__") and hasattr(input_value, str(key)):
                 item = getattr(input_value, str(key), None)
             else:
                 item = collection[key]
@@ -606,6 +622,12 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
                 'search_match': key_is_match,
                 'search_current': key_is_current,
             }
+
+            # Folders: a dict child of a typed-add collection (show_add_types)
+            # inherits the same type choices, so nested folders keep the
+            # [+ <type> v] affordance all the way down.
+            if show_add_types and isinstance(item, dict):
+                item_kwargs['show_add_types'] = show_add_types
 
             # Per-field overrides: a `# [tint=...]` comment above a primitive
             # field is stored on the parent as __overrides__['__<field>__'].
@@ -1225,24 +1247,24 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
 
     from src.lsd.gl_gui.model.app_model import TensorView
     draw_any(TensorView, name="Tensorview", mode=(Mode.WINDOW))
-
-    draw_any(filesystem_proxy, name="Filesystem", disable_scroll=False, mode=Mode.WINDOW)
-    draw_any([screenshots], name="Screenshots", mode=Mode.WINDOW,
-                child_kwargs={"child_kwargs":{"auto_resize": True}, "shadow":False,
-                              "show_name":False, "show_header":False, "show_bg":False, "horizontal":True})
-
-    global drop_down_selection
-    changed, selection = draw_dropdown(drop_down_selection, collection=dropdown_demo_data,
-                                       name="Dropdown Demo", mode=Mode.WINDOW, tint=(0.180984, 0.2, 0.2))
-
-    if changed:
-        drop_down_selection = selection
-        print("Drop down change", str(selection))
-
-    draw_collection(vis.root.lora_collection, name="Loras", mode=Mode.WINDOW)
-    draw_any(vis.root.lora_collection, name="Loras Alt View", mode=Mode.WINDOW)
-    draw_any(vis.root.lora_collection.loras, name="Loras View Three", child_kwargs={
-        'is_tree': True, 'expanded': False, 'show_add_delete': False}, mode=Mode.WINDOW)
+    #
+    # draw_any(filesystem_proxy, name="Filesystem", disable_scroll=False, mode=Mode.WINDOW)
+    # draw_any([screenshots], name="Screenshots", mode=Mode.WINDOW,
+    #             child_kwargs={"child_kwargs":{"auto_resize": True}, "shadow":False,
+    #                           "show_name":False, "show_header":False, "show_bg":False, "horizontal":True})
+    #
+    # global drop_down_selection
+    # changed, selection = draw_dropdown(drop_down_selection, collection=dropdown_demo_data,
+    #                                    name="Dropdown Demo", mode=Mode.WINDOW, tint=(0.180984, 0.2, 0.2))
+    #
+    # if changed:
+    #     drop_down_selection = selection
+    #     print("Drop down change", repr(selection))
+    #
+    # draw_collection(vis.root.lora_collection, name="Loras", mode=Mode.WINDOW)
+    # draw_any(vis.root.lora_collection, name="Loras Alt View", mode=Mode.WINDOW)
+    # # draw_any(vis.root.lora_collection.loras, name="Loras View Three", child_kwargs={
+    # #     'is_tree': True, 'expanded': False, 'show_add_delete': True}, mode=Mode.WINDOW)
 
     # normalized_sub_mask, _, _ = Melty.filter.normalize(Melty.cache._mask_tex)
     # draw_texture(normalized_sub_mask, show_bg=True, max_contrast=30, jet=True,
@@ -1351,7 +1373,7 @@ def draw_pending_texture(input_value: PendingTexture, draw_state):
 
     return_val = draw_texture(input_value.texture_id, initial={"width":width, "height":height},
                               name=f"{draw_state.id}_inner", auto_resize=False,
-                              show_header=False, use_cache=True, wrap=False, tint=(0.30, 0.30, 0.75))
+                              show_header=False, use_cache=True, wrap=False, tint=(0.11, 0.29, 0.52))
 
     return return_val
 
@@ -2177,7 +2199,7 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
             style_manager=None, tint=None, outline_tint=None, selected=False,
             hovered=False, pressed=False, nested_bg=True, **kwargs):
     # -- Constants ---------------------------------
-    min_value = -0.322
+    min_value = -0.024
     depth_wrap = 300
     depth_scale = 2.356
     # [tint=(1,1,1)]
@@ -2308,11 +2330,11 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
 
 
 @render_func(use_cache=True, selectable=False, disable_scroll=True, indent_size=0, show_bg=False, min_width=5,
-             min_height=10, wrap=True)
+             min_height=10, wrap=True, show_add_delete=False)
 def button(input_value="", width=5, height=14, draw_state=None, alpha=1.0, left_mouse_held=False, shadow=True, left_mouse_down=False,
            color=(0.533, 0.068, 0.5), highlight_hovered=True, hovered=False, style_manager=None, show_button_bg=True,
            factor=1.0, tint_value=0.32, text_value=1.023, saturation=0.8, text_saturation=0.4, text_align="center",
-           search_match=False, search_current=False, tint=(0.00, 0.00, 0.00), rounding=None):
+           search_match=False, search_current=False, tint=None, rounding=None, text_pad=15):
 
     if color is not None:
         if not isinstance(color, tuple) or len(color) < 3:
@@ -2339,7 +2361,7 @@ def button(input_value="", width=5, height=14, draw_state=None, alpha=1.0, left_
 
     button_txt = str(input_value).split("##")[0]
     min_size = imgui.calc_text_size(button_txt)
-    width = max(width, min_size[0] + 15)
+    width = max(width, min_size[0] + text_pad)
     height = max(height, min_size[1])
     draw_list: _DrawList = imgui.get_window_draw_list()
     bx0, by0 = imgui.get_cursor_screen_pos()
@@ -2355,8 +2377,8 @@ def button(input_value="", width=5, height=14, draw_state=None, alpha=1.0, left_
     bx1, by1 = bx0 + width, by0 + height
     # `rounding` lets callers square the corners (e.g. the search results, which
     # read as a flat list of items) — else use the view's default radius.
-    if rounding is not None:
-        draw_state.corner_radius = rounding
+    # if rounding is not None:
+    #     draw_state.corner_radius = rounding
     rnd = (draw_state.corner_radius) if rounding is None else rounding
 
     if alpha > 0.0 and show_button_bg:
@@ -3144,12 +3166,40 @@ def draw_app_model(input_val):
     imgui.text("An App Model Instance")
 
 
+def _format_run_error(exc):
+    """One compact, UI-ready error: `Type: message`, then the deepest
+    traceback frame in PROJECT code (site-packages/stdlib frames are where
+    the error SURFACED, not where it's fixable) with its source line."""
+    import traceback
+    frames = traceback.extract_tb(exc.__traceback__)
+    target = None
+    for fr in reversed(frames):
+        if "site-packages" not in fr.filename and "/lib/python" not in fr.filename:
+            target = fr
+            break
+    if target is None and frames:
+        target = frames[-1]
+    text = f"{type(exc).__name__}: {exc}"
+    if target is not None:
+        text += f"\n{Path(target.filename).name}:{target.lineno} in {target.name}"
+        if target.line:
+            text += f"\n    {target.line}"
+    return text
+
+
 @render_func(is_default_for=(types.FunctionType, types.MethodType), shadow=True, use_cache=True, show_add_delete=False, selectable=False, show_bg=True,
              parent_show_add_delete=False, is_tree=False, show_name=False, with_header=draw_header)
-def draw_function(input_value, name, draw_state, unique, **kwargs):
+def draw_function(input_value, name, draw_state, unique, auto_run=None,
+                  show_run_button=True, **kwargs):
+    """`auto_run`: opt-in compile-and-run — pass any comparable version token
+    (e.g. id(fn.__code__)); the function runs whenever the token CHANGES or a
+    parameter is edited, no button click. The token is stored before running
+    so a throwing function doesn't retry every frame. `show_run_button=False`
+    drops the named run button (the streamlined live-lab look)."""
     if not callable(input_value):
         imgui.text("Not a callable function")
         return False, input_value
+    params_edited = False
     try:
         signature = inspect.signature(input_value)
         params = signature.parameters
@@ -3179,19 +3229,40 @@ def draw_function(input_value, name, draw_state, unique, **kwargs):
                                                              })
             if changed:
                 draw_state.params = new_val
+                params_edited = True
     except Exception as e:
         imgui.text(f"Error inspecting function parameters: {e}")
         draw_state.params = {}
-        
+
         sees_this = 0
 
-    if button(f"{input_value.__name__}##{unique}", height=29, bg_offset=0, tint=(0.021, 0.104, 0.167, 0.0))[0]:
+    def _run():
         try:
             draw_state.result = input_value(**draw_state.params)
+            draw_state.misc.pop("_run_error", None)
             Core.melty.cache.invalidate_up_current(force=True)
         except Exception as e:
+            # Surfaced in the UI (red text where the result goes), anchored at
+            # the deepest frame in PROJECT code - the line the user can fix.
+            draw_state.misc["_run_error"] = _format_run_error(e)
+            Core.melty.cache.invalidate_up_current(force=True)
             print(f"Error calling function '{input_value.__name__}': {e}")
             print_colored_traceback(*sys.exc_info())
+
+    if auto_run is not None and (params_edited
+                                 or draw_state.misc.get("_auto_run_ver") != auto_run):
+        draw_state.misc["_auto_run_ver"] = auto_run
+        _run()
+
+    if show_run_button and button(f"{input_value.__name__}##{unique}", height=29,
+                                  bg_offset=0, tint=(0.021, 0.104, 0.167, 0.0))[0]:
+        _run()
+
+    run_error = draw_state.misc.get("_run_error")
+    if run_error:
+        imgui.push_text_wrap_pos(0.0)
+        imgui.text_colored(run_error, 1.0, 0.45, 0.40, 1.0)
+        imgui.pop_text_wrap_pos()
 
     if draw_state.result is not None:
         draw_any(draw_state.result, name="Result", header_same_line=True, show_header=False, show_add_delete=False)
@@ -3224,7 +3295,7 @@ def draw_debug_label(input_value: str):
 
 
 @render_func(is_default_for=Enum, is_tree=False, shadow=False, align_header=False,
-             selectable=False, header_same_line=True,
+             selectable=False, header_same_line=True, show_add_delete=False,
              parent_show_add_delete=False, with_header=draw_header, temp=True)
 def draw_enum(input_value: Enum, draw_state=None, unique=0, style_manager=None, enum_tint=(0.3, 0.3, 0.3)):
     # Delegate to draw_tab_bar so enums get its wrapping + styling for free.
@@ -3573,7 +3644,7 @@ def draw_config_tab(input_value, **kwargs):
     return False, input_value
 
 
-@render_func(use_cache=True, show_bg=False, live=True, mode=Modes.WINDOW, show_header=False, show_name=False, selectable=False)
+@render_func(use_cache=True, show_bg=False, live=False, mode=Modes.WINDOW, show_header=False, show_name=False, selectable=False)
 def draw_live_tab(input_value, **kwargs):
     """List the inspected view function's configurable parameters and their
     current values (kwarg override, else signature default)."""
@@ -4307,7 +4378,7 @@ def draw_drop_down_item(input_value, name="", unique=0, shadow=False, draw_state
     return False, input_value
 
 
-@render_func(use_cache=True, show_bg=True, shadow=True, selectable=False,
+@render_func(use_cache=True, show_bg=False, shadow=True, selectable=False,
              is_tree=False, show_name=True, with_header=draw_header)
 def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_state: DropDownState, text_align="left", **kwargs):
     """Root of a recursive dropdown. Renders a trigger button showing the current
@@ -4338,7 +4409,15 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
     # for the caret + button chrome, so show NOTHING but the selected value. Still a
     # real (bg-less) button, so it stays clickable to open the popover. Threshold is
     # tunable via compact_below (px).
-    compact = draw_state.content_width < kwargs.get("compact_below", 50)
+    #
+    # The trigger's slot width: an explicit caller `width` wins, only without one
+    # do we fall back to the measured content_width. Measurement must never feed
+    # back into the trigger size - an open popover inflates content_width, which
+    # would flip compact mode off and balloon the trigger (~240px), wrapping the
+    # header row it sits in: the disagreement between the drawn size and the
+    # measured item rect is exactly what reads as animation jitter.
+    _slot_w = kwargs.get("width") or draw_state.content_width
+    compact = _slot_w < kwargs.get("compact_below", 50)
     if compact:
         # Show the VALUE itself (not the label/key). For a name->glyph dropdown
         # the trigger must stay the glyph, not become the picked key's name.
@@ -4347,18 +4426,22 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
         drop_down_display_str = f"{caret} {str(current)[:30]}"
     bg_offset = 4 if is_open else 7
 
-    trigger_w = max(18, draw_state.width if compact else draw_state.content_width)
+    # A compact trigger hugs its glyph: minimal text pad and a centered label,
+    # so a small chevron/icon cell doesn't balloon to full text label width.
+    trigger_pad = kwargs.get("text_pad", 6 if compact else 15)
+    trigger_align = "center" if compact else text_align
+    trigger_w = max(15 if compact else 18, _slot_w)
 
     trigger_h = (getattr(draw_state, "content_height", 0) or 25) if compact else 25
     # Colour the trigger by the selected item's embedded tint (input_value is the
     # current selection passed by the caller), falling back to the view's tint.
     trigger_tint = _dd_obj_tint(input_value, draw_state.tint)
     clicked, _ = button(drop_down_display_str, name=f"{name}_dd_trigger", show_bg=False, width=trigger_w,
-                         show_button_bg=True, shadow=True, tint=trigger_tint, height=22, disable_scroll=True,
-                        z_offset=3, text_align=text_align, bg_offset=bg_offset)
+                         show_button_bg=True, shadow=True, tint=trigger_tint, height=19, disable_scroll=True,
+                        z_offset=3, text_align=trigger_align, bg_offset=bg_offset, text_pad=trigger_pad)
 
     if clicked:
-    
+
         was_open = is_open
         Melty.popover_focused_ds = None if is_open else draw_state
         is_open = Melty.popover_focused_ds is draw_state
@@ -4828,7 +4911,7 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
     return (True, picked) if changed else (False, input_value)
 
 
-@render_func(use_cache=True, show_bg=False, shadow=False, selectable=False, temp=True,
+@render_func(use_cache=True, show_bg=False, shadow=False, selectable=False, temp=True, show_add_delete=False,
              with_header=None, disable_scroll=True, min_width=300, swoosh=False, z_offset=0)
 def _dd_menu_row(input_value, draw_state, text_align="right", path_prefix=(),
                  root_state=None, tint=None, row_tags=None, cursor_path=(), open_path=(), **kwargs):
@@ -4878,7 +4961,7 @@ def _dd_menu_row(input_value, draw_state, text_align="right", path_prefix=(),
                              rounding=0, show_button_bg=False, show_bg=False, use_cache=True,
                             text_align=text_align, tint=tint)
     else:
-        clicked, _ = button(f"{label}{chevron}", name=f"{label}_ddrow", show_button_bg=False,
+        clicked, _ = button(f"{label}{chevron}", name=f"{label}_ddrow", show_button_bg=False, 
                             width=draw_state.content_width - 10, height=_DD_ROW_H, hovered=hovered,
                             text_saturation=0.716, z_offset=0, shadow=False, show_bg=False, use_cache=True,
                             text_align=text_align, tint=tint)
@@ -4908,7 +4991,7 @@ def _dd_menu_row(input_value, draw_state, text_align="right", path_prefix=(),
         # branch actually draws. Pinned to the right of this row with window_pos.
         changed, picked = draw_dd_menu(value, name=f"{label}_submenu", tint=tint,
                                        closed=not sub_open, temp=True, use_cache=True,
-                                       window_pos=(draw_state.width, -_DD_ROW_H),
+                                       window_pos=(draw_state.width, -_DD_ROW_H), show_add_delete=False,
                                        parent_window=draw_state, disable_scroll=False,
                                        root_state=root_state, path_prefix=row_path)
         if changed:

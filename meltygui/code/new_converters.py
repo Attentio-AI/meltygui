@@ -67,7 +67,7 @@ import imgui
 import libcst as cst
 
 from src.lsd.gl_gui import toggles
-from src.lsd.gl_gui.melty import Melty
+from src.lsd.gl_gui.melty import FileWatch, Melty
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
 from src.lsd.gl_gui.model.core_model.draw_state import TabState
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
@@ -1267,9 +1267,10 @@ def run_recompile(source, code_state, draw_state, start=False, name="recompile")
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  editable_source - the whole round-trip, one function                        ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
-@render_func(use_cache=True, selectable=False, with_header=draw_header, searchable=False, disable_scroll=True)
+
+@render_func(use_cache=True, selectable=False, with_header=draw_header, searchable=False, disable_scroll=False)
 def code_file_io(input_value, code_state: CodeState, codec=None, view_func=RenderFuncs.draw_text, auto_load=True,
-                 auto_load_edits=False, min_height=20,
+                 auto_load_edits=False, min_height=20, shadow=True, show_add_delete=False,
                  child_kwargs=None, draw_state=None, auto_save=True, auto_recompile_edits=False, save=False, load=False,
                  recompile=False, run_jedi=False, save_debounce_ms=600,
                  ensure_import=None, s_key_pressed=None, enter_key_pressed=None, unique=None, **kwargs):
@@ -1352,16 +1353,22 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
         file_stale = code_state.is_file_stale()
         conflict = file_stale and code_state._pending_save
         keep_mine = False
+        # A sibling in-process editor of the same file (the cache's str_host
+        # in the structured tab, another tab, a lens save) syncs through
+        # this FILE: its write is not an external change. Reload quietly: no
+        # "loaded from disk" stamp (which also fade-invalidates every update for
+        # seconds). Only a write we did NOT produce gets the indication.
+        self_write = file_stale and FileWatch.is_self_write(address.path)
         if file_stale and not code_state._pending_save:
             if auto_load_edits:
                 load = True
-                code_state._loaded_externally = True
+                code_state._loaded_externally = not self_write
                 code_state.mark_file_current()
             else:
                 imgui.same_line(spacing=0)
                 if RenderFuncs.button("Load", width=100, height=top_line_height, name=f"reload{unique}")[0]:
                     load = True
-                    code_state._loaded_externally = True
+                    code_state._loaded_externally = not self_write
 
                 imgui.same_line()
                 if RenderFuncs.button("Keep mine", width=100, height=top_line_height, name=f"keepmine{unique}")[0]:
@@ -1806,8 +1813,8 @@ def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabS
             m_changed, m_out = RenderFuncs.draw_collection(
                 gp, excluded=["__cst__"], show_system=True, draw=draw,
                 max_width=draw_state.content_width - 10,
-                disable_scroll=False, show_header=False,
-                column=idx, column_width=column_width, show_add_delete=False,
+                disable_scroll=False, show_header=False, show_add_delete=False,
+                column=idx, column_width=column_width, show_parent_add_delete=False,
                 name=f"draw_collection##{unique}", selectable=False)
             if m_changed:
                 # A rebuilt top-level dict (reorder / add / delete) replaces the

@@ -224,7 +224,8 @@ class Except(dict):
         return f"Except:{self.header}:{keys}"
 
 
-@defaults(included="__symbol_usages__", disable_scroll=True, bg_offset=-1.206, tint=(0.009,0.2495,0.39, 0.172))
+@defaults(show_add_delete=True, included="__symbol_usages__", disable_scroll=True,
+             bg_offset=-1.206, tint=(0.009,0.2495,0.39, 0.172))
 class GeneralParse(dict):
     def __init__(self, *args, source="", file_path=None, line_offset=0, **kwargs):
         super().__init__(*args, **kwargs)

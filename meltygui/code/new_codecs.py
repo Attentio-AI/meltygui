@@ -250,6 +250,17 @@ class Codec:
         yes for .py paths only."""
         return False
 
+    @classmethod
+    def claims(cls, path):
+        """Extension routing's content veto: codec_for_path asks the
+        extension-matched codec whether the file's BYTES actually decode as
+        what the extension promises. Declining (False) drops the file through
+        to the content sniff instead — a zero-byte or corrupt "image.png"
+        becomes editable text / a binary summary rather than a load() that
+        throws on every watch-triggered reload. The base accepts everything;
+        only codecs whose load() can reject content (ImageCodec) override."""
+        return True
+
     @staticmethod
     def resolve_address(input_value, draw_state=None, **kwargs):
         return NO_DATA
@@ -873,6 +884,31 @@ class ImageCodec(Codec):
     view_func = RenderFuncs.draw_pending_texture
     resolve_address = staticmethod(_resolve_plain_file)
 
+    # claims() runs in the render thread (codec_for_path is re-ried ever
+    # frame), so the PIL header probe is memoized per path and only re-runs
+    # when mtime or size moves - the same staleness key resolve_address uses.
+    _claims_cache = {}
+
+    @classmethod
+    def claims(cls, path):
+        try:
+            s = path.stat()
+        except OSError:
+            # Missing/unreadable: accept and let resolve_address return None -
+            # claims veto is only about content, not existence.
+            return True
+        cached = cls._claims_cache.get(str(path))
+        if cached is not None and cached[:2] == (s.st_mtime, s.st_size):
+            return cached[2]
+        try:
+            # Lazy open parses just the header - cheap, no pixel decode.
+            with Image.open(path):
+                ok = True
+        except Exception:
+            ok = False
+        cls._claims_cache[str(path)] = (s.st_mtime, s.st_size, ok)
+        return ok
+
     @staticmethod
     def load(address, **kwargs):
         path = address.path
@@ -943,9 +979,14 @@ def codec_for_path(path):
     else sniff the head — NUL-free utf-8 edits as text (TextFileCodec),
     anything else gets the read-only binary summary. This is what lets the
     folder windows mount a stress-test directory full of extensionless blobs
-    without a wall of "No codec" rows."""
+    without a wall of "No codec" rows.
+
+    The extension match is subject to the codec's content veto (claims): a
+    file whose bytes don't decode as the extension promises (an empty or
+    corrupt .png) falls through to the sniff instead of being routed to a
+    load() that can only throw."""
     codec = extension_to_codec.get(path.suffix.lower())
-    if codec is not None:
+    if codec is not None and codec.claims(path):
         return codec
     if not path.is_file():
         return None

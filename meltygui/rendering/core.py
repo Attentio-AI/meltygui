@@ -344,12 +344,14 @@ def render_func(*args, **o_kwargs):
         # parameter injection, load_data/save_data handling.
         _has_imgui = not kwargs.pop('_converter_mode', False)
 
-        if _has_imgui and Melty.annotation_mode:
+        if _has_imgui and Melty.in_annotation_mode():
             # The function is being evaluated as a field annotation / class
             # decorator (e.g. `alpha: as_float(min_value=15.0)`), not actually
-            # rendering. Hand the positional value and the call-time kwargs to
-            # annotation_track, which returns a lambda the metaclass registers
-            # into Melty's default maps. Never falls through to a real render.
+            # rendering - at startup (global annotation_mode) or inside a
+            # recompile's exec (thread-local annotation_scope). Hand the
+            # positional value and the call-time kwargs to annotation_track,
+            # which returns a carrier the metain data into Melty's
+            # default kwargs. Never falls through to a real render.
             return annotation_track(input_value, wrapper=wrapper, call_kwargs=kwargs)
 
         modes = kwargs.get("mode", None)
@@ -659,7 +661,7 @@ def render_func(*args, **o_kwargs):
 
 
         draw_state._raw_input_value = input_value
-        if draw_state._input_cache["external_state"][0] == UNSET_VALUE:
+        if draw_state._input_cache["external_state"][0] is UNSET_VALUE:
             if not isinstance(input_value, Pending):
                 input_hash = Background.simple_hash(input_value)
                 draw_state._input_cache["external_state"] = (input_value, Melty.frame_count, input_hash)
@@ -984,6 +986,12 @@ def render_func(*args, **o_kwargs):
                         draw_state_misc[key] = type()
                         draw_state.misc_used.add(key)
                         default_value = draw_state_misc[key]
+                        # Injected custom objects that declare an `_owner_ds`
+                        # slot (e.g. GLState) learn which draw_state owns
+                        # them - lifecycle hooks key off the owner's
+                        # parent_window chain (GL release on window delete).
+                        if hasattr(default_value, "_owner_ds"):
+                            default_value._owner_ds = draw_state
 
                 kwargs.setdefault(key, default_value)
 
@@ -1786,7 +1794,7 @@ def render_func(*args, **o_kwargs):
                             # Pin live to this view so the bar's bottom-left rides
                             # the view's top-left corner (parent_anchor defaults
                             # to TOP_LEFT), floating just above it as it scrolls.
-                            pin_to_clip=Pin.CLIP,
+                            pin_to_clip=Pin.PARENT,
                             window_pos=(0, 0),
                             width=300,
 
@@ -3523,8 +3531,13 @@ def render_func(*args, **o_kwargs):
                                                              (int, float, str, bool, tuple)) and not hasattr(
                 input_value, '__dict__')
 
+            # seen_values holds id()s (appended below) - count the id, not the
+            # object: `count(obj)` compares obj == id with list `==`, which on
+            # a torch.Tensor input_value is elementwise → "Boolean value of
+            # Tensor is ambiguous" in the render thread (locking the studio down
+            # whenever a tensor was rendered nested).
             if not is_primitive and (id(input_value) in Melty.seen_values and
-                                     Melty.seen_values.count(input_value) > 1 or Melty.depth > 15):
+                                     Melty.seen_values.count(id(input_value)) > 1 or Melty.depth > 15):
                 imgui.text("Recursive reference detected: " + str(input_value))
             else:
                 if not is_primitive:
@@ -3980,7 +3993,7 @@ def annotation_track(first_arg=None, *, wrapper, call_kwargs=None):
       * ``field: view`` / ``field: view(**kwargs)`` — returns an
         ``AnnotationOverride`` carrier; ``FieldMeta`` registers it per-attribute.
     """
-    if not Melty.annotation_mode:
+    if not Melty.in_annotation_mode():
         return None
 
     call_kwargs = dict(call_kwargs or {})

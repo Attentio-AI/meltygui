@@ -28,12 +28,15 @@ def live(cls):
         deep_refresh_names = getattr(self, '__deep_refresh__', set())
 
         # Set the attribute using the original __setattr__
-        original_value = getattr(self, name, None)
-        if original_setattr == object.__setattr__:
-            object.__setattr__(self, name, value)
-        else:
-            original_setattr(self, name, value)
-
+        try:
+            original_value = getattr(self, name, None)
+            if original_setattr == object.__setattr__:
+                object.__setattr__(self, name, value)
+            else:
+                original_setattr(self, name, value)
+        except Exception as e:
+            print(f"Error setting attribute {name} on {self}: {e}")
+            print_stack_trace(e=e)
 
         if Core.melty.silence_invalidate or Core.melty.frame_count < 2:
             return
@@ -47,8 +50,6 @@ def live(cls):
         do_deep_refresh = name in deep_refresh_names
         visible = name not in excluded
         visible = visible or do_deep_refresh
-
-
 
         if name in invalidate_all:
             if Core.melty.init_complete():

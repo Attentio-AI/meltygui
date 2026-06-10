@@ -1475,7 +1475,7 @@ class DictConversion(metaclass=FieldMeta):
                 if self.is_primitive(item):
                     new_list.append(item)
                 else:
-                    print(f"dangerous tuple item found {value} {key} {type(item)}")
+                    # print(f"dangerous tuple item found {value} {key} {type(item)}")
                     # Escape to string
                     new_list.append("Parse Failure")
             to_tuple = tuple(new_list)

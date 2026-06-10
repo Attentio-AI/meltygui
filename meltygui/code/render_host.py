@@ -558,7 +558,7 @@ class RenderHost(_DeepAttrMixin, dict):
             win_kwargs["closed"] = False
             win_kwargs['height'] = 40
             win_kwargs['width'] = 40
-            win_kwargs["window_pos"] = (100, 100)
+            win_kwargs["window_pos"] = (-38, 100)
 
         win_kwargs.update(extra)
 

@@ -1347,13 +1347,9 @@ class DrawState(DictConversion):
     def abs_left(self):
         # Pinned floats resolve their target (parent/grandparent/window) live
         # from the tree each call so they track it as it scrolls - compute live,
-        # no cache. The target's own abs_left is cached, so the walk stays cheap.
-        # Without this, the per-frame cache key (which has no term tracking of
-        # the target's position) gets primed by early hover/clip reads BEFORE the
-        # scroll delta moves the target mid-frame, so the float draws at the
-        # target's pre-scroll position - one frame behind while scrolling.
-        if self.pin_to_clip:
-            return self._abs_left()
+        # so no cache. The target's own abs_left is cached, so the walk stays cheap.
+        # if self.pin_to_clip:
+        #     return self._abs_left()
         # The key covers everything the wrapper writes per-draw_state mid-frame
         # that abs_left's value depends on: left_offset / window_pos (the
         # columns branch and the wrapper re-set these), and anchor_pos /
@@ -1374,9 +1370,9 @@ class DrawState(DictConversion):
 
     @property
     def abs_top(self):
-        # Pinned floats compute live, no cache - see abs_left.
-        if self.pin_to_clip:
-            return self._abs_top()
+        # return int(self.abs_top_true)
+        # if self.pin_to_clip:
+        #     return self._abs_top()
         f = Core.melty.frame_count
         _, ancestor_sy = self._ancestor_scroll()
         key = (f, self.top_offset, self.window_pos,

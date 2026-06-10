@@ -238,6 +238,8 @@ def _call_context(text, cursor):
     commas = 0
     i = cursor - 1
     limit = max(0, cursor - 4000)
+    if i >= len(text):
+        return (None, 0)
     while i >= limit:
         c = text[i]
         if c in ")]}":
@@ -496,6 +498,7 @@ DEFAULT_TOKEN_VIEWS = None
 # O(1) "is this a known glyph?" check for the current-value fallback below.
 from src.lsd.gl_gui.view.core_views.fa_icons import FA_ICONS, FA_GLYPH_SET
 ICON_COLLECTION = FA_ICONS
+GENERIC_ICON = "\uf005"  # star - the placeholder Ctrl+I inserts; pick the real one from the dropdown
 
 
 @render_func(use_cache=True, show_bg=True, shadow=True, tint=(0.77,0.66,0.20,1.00), z_offset=2, bg_offset=4, with_header=None, disable_scroll=True,
@@ -527,7 +530,7 @@ def draw_icon_selector(input_value, draw_state=None,
     return (True, picked) if (changed and isinstance(picked, str)) else (False, cur)
 
 
-@render_func(use_cache=True, show_bg=True, shadow=True, with_header=None, tint=(0.81, 0.342, 0.11),
+@render_func(use_cache=False, show_bg=True, shadow=True, with_header=None, tint=(0.81, 0.342, 0.11),
              show_name=False, selectable=False, z_offset=3, bg_offset=10)
 def draw_bool_token(input_value, draw_state=None, **kwargs):
     """Inline True/False word — whole-token token_views renderer for 'bool'
@@ -580,8 +583,8 @@ def _parse_number_token(s):
         return None, None, None, None
 
 
-@render_func(use_cache=True, show_bg=False, shadow=False, with_header=None, z_offset=2,
-             show_name=False, selectable=False, tint=(0.0, 0.2, 0.2, 0.6), wrap=True)
+@render_func(use_cache=False, show_bg=False, shadow=False, with_header=None, z_offset=9,
+             show_name=False, selectable=False, tint=(0.3, 0.6, 0.5, 1.0), wrap=True)
 def draw_number_token(input_value, draw_state=None,
                       left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
                       **kwargs):
@@ -787,12 +790,21 @@ DEFAULT_TOKEN_VIEWS = {
                "owns_mouse": True, "lead_cells": 2},
 }
 
+# live_view() call sites get an anchor marker + nested value window (the first
+# type-keyed overlay entry). Import from its own module so the widgets and
+# their live_view imports stay out of this file.
+from src.lsd.gl_gui.view.core_views.live_view_views import install_token_views as _install_live_view_tv
+_install_live_view_tv(DEFAULT_TOKEN_VIEWS)
 
-def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, char_w, ds):
+
+def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, char_w, ds,
+                          line_offset=0, jump_to=None):
     """Overlay pass for the TYPE-keyed entries of `token_views`: walk the code_tree
     for nodes matching a key type and call its renderer positioned at the node's
     span. Lines are 1-indexed relative to the editor's source (== code_tree.source),
-    so span line 1 sits at origin_y. Runs after the text body."""
+    so span line 1 sits at origin_y. Runs after the text body. `root`/`line_offset`/
+    `jump_to` ride along so a renderer can resolve file-absolute context (the
+    live_view overlay maps its node span back to a file line)."""
     if not token_views or not isinstance(code_tree, dict):
         return
     type_specs = [(k, v) for k, v in token_views.items() if isinstance(k, type)]
@@ -814,7 +826,8 @@ def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, c
                     try:
                         spec["renderer"](x=x, y=y, w=max(0.0, ds.content_width - (x - origin_x)),
                                          h=h, draw_state=ds, char_w=char_w, line_px=line_px,
-                                         node=node, span=span)
+                                         node=node, span=span, root=code_tree,
+                                         line_offset=line_offset, jump_to=jump_to)
                     except Exception:
                         pass
                     break
@@ -1705,7 +1718,7 @@ def _describe_code_tree(code_tree):
 
 @render_func(is_default_for=(CodeLine), show_bg=True, wrap=False, use_cache=True, disable_scroll=False, z_offset=1,
              with_header=draw_header, shadow=True, show_name=False, with_footer=draw_footer, determines_height=True,
-             selectable=False, searchable=True, bg_offset=-11)
+             selectable=False, searchable=True, bg_offset=-11, show_add_delete=False)
 def draw_text(input_value: str,
               left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
               horizontal_scroll_drag=False, search_text="",
@@ -2310,6 +2323,20 @@ def draw_text(input_value: str,
             ds.text_cursor_pos = new_hi
             changed = True
 
+        # --- Ctrl+I (insert Font Awesome icon glyph) ---
+        # Inserts a placeholder glyph at the caret; the "icon" token_views renderer
+        # immediately dresses it as the inline icon-picker dropdown, so this is
+        # the keyboard entry point into icon picking.
+        if ctrl and pressed(glfw.KEY_I):
+            ds.text_cursor_blink_time = time.time()
+            if _has_selection(ds):
+                text, ds.text_cursor_pos = _delete_selection(text, ds)
+            text = text[:ds.text_cursor_pos] + GENERIC_ICON + text[ds.text_cursor_pos:]
+            ds.text_cursor_pos += len(GENERIC_ICON)
+            ds.text_selection_start = ds.text_cursor_pos
+            ds.text_selection_end = ds.text_cursor_pos
+            changed = True
+
         # --- Code-suggestion popup: toggle visibility + rebuild candidates ---
         # Runs after every text-mutating key so the prefix reflects the final
         # buffer. Produces the list THIS frame's render draws and next frame's
@@ -2779,11 +2806,16 @@ def draw_text(input_value: str,
         ds.text_selection_start = ds.text_selection_end = ds.text_cursor_pos
         ds.text_cursor_blink_time = time.time()
 
-    # Token views keyed by libcST node TYPE (e.g. Conditional) - overlay pass,
-    # positioned by each node's span. Runs after the main text so widgets paint
-    # on top of the code they represent.
-    if token_views and code_tree is not None:
-        _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, char_w, ds)
+    # Token views keyed by code_tree node TYPE (e.g. Conditional) — overlay pass,
+    # positioned by each node's span. Runs after the inline text so widgets paint
+    # on top of the code they annotate. The PARSE arrives as code_tree in the
+    # chain routes but as code_dict on the code-host-cache route (where
+    # code_tree carries only the error dict - see draw_text_editor_code_cache),
+    # so prefer code_dict when both are present; it's the node tree with spans.
+    _tv_tree = code_dict if code_dict is not None else code_tree
+    if token_views and _tv_tree is not None:
+        _draw_cst_token_views(_tv_tree, token_views, origin_x, origin_y, line_px, char_w, ds,
+                              line_offset=_usage_off, jump_to=jump_to)
 
     # --- Spell-check squiggles -------------------------------------------------
     # Red wavy lines under unknown words. Gated behind the global toggle and

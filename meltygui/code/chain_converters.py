@@ -1165,14 +1165,20 @@ def _first_call(module):
     return found.get('c')
 
 
-def _module_for_file(target_path):
-    """The live module object whose __file__ resolves to target_path, or None.
+def _modules_for_file(target_path):
+    """EVERY live module whose __file__ resolves to target_path, most-populated
+    first. One file can sit in sys.modules under two names (the src./non-src
+    dual identity), and one of the twins can be a barely-populated stub that
+    never executed its body — sorting by vars() size puts the real, executed
+    module ahead of the stub so callers that take the first match resolve
+    against actual functions.
 
     Filters on basename before the (syscall-heavy) Path.resolve() so we don't
     stat every module in sys.modules — that loop was a measurable chunk of the
     tint-tab open cost."""
     import sys
     target_name = target_path.name
+    found = []
     for m in list(sys.modules.values()):
         f = getattr(m, "__file__", None)
         if not f:
@@ -1181,10 +1187,18 @@ def _module_for_file(target_path):
             continue
         try:
             if Path(f).resolve() == target_path:
-                return m
+                found.append(m)
         except (OSError, ValueError):
             continue
-    return None
+    found.sort(key=lambda m: len(vars(m)), reverse=True)
+    return found
+
+
+def _module_for_file(target_path):
+    """The live module object whose __file__ resolves to target_path, or None —
+    the most-populated twin when the file is imported under several names."""
+    mods = _modules_for_file(target_path)
+    return mods[0] if mods else None
 
 
 # (filename, lineno, mtime) -> resolved function object (or None). Keyed on mtime
@@ -1209,8 +1223,10 @@ def _enclosing_function(filename, lineno):
     cache_key = (str(target), lineno, mtime)
     if cache_key in _ENCLOSING_FN_CACHE:
         return _ENCLOSING_FN_CACHE[cache_key]
-    module = _module_for_file(target)
-    if module is None:
+    # Walk EVERY module twin for the file (src./non-src dual identity): the
+    # first might be an unexecuted stub whose vars hold no functions.
+    modules = _modules_for_file(target)
+    if not modules:
         _ENCLOSING_FN_CACHE[cache_key] = None
         return None
     best = {"fn": None, "line": -1}
@@ -1239,7 +1255,8 @@ def _enclosing_function(filename, lineno):
             elif isinstance(val, type):
                 walk(val)
 
-    walk(module)
+    for module in modules:
+        walk(module)
     _ENCLOSING_FN_CACHE[cache_key] = best["fn"]
     return best["fn"]
 
