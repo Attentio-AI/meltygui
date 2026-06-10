@@ -168,7 +168,8 @@ def process_captures(window):
 _view_pending = []
 
 
-def request_view_capture(draw_state, requested_frame, reopen_menu_ds=None):
+def request_view_capture(draw_state, requested_frame, reopen_menu_ds=None,
+                         on_captured=None):
     """Queue a deferred framebuffer capture of a single VIEW (any draw_state's
     on-screen rect), not a whole window. Serviced by process_take_screenshot_flags
     after `_SETTLE_FRAMES` -- enough frames for the window front-move to composite
@@ -176,12 +177,15 @@ def request_view_capture(draw_state, requested_frame, reopen_menu_ds=None):
 
     `requested_frame` is Melty.frame_count at request time. `reopen_menu_ds`, if
     given, is the context menu's draw_state to reopen once the shot lands.
+    `on_captured`, if given, is called with the saved PNG path on the render
+    thread once the shot lands (not called if the capture fails).
     Call on the render thread (from the menu's render).
     """
     _view_pending.append({
         "draw_state": draw_state,
         "requested_frame": requested_frame,
         "reopen_menu_ds": reopen_menu_ds,
+        "on_captured": on_captured,
     })
     _nudge()
 
@@ -205,11 +209,17 @@ def process_take_screenshot_flags(window):
             still.append(req)  # not settled yet
             continue
         ds = req["draw_state"]
+        path = None
         try:
-            _capture_view(window, ds)
+            path = _capture_view(window, ds)
         except Exception as e:
             name = getattr(ds, "name", None) or "view"
             print(f"Screenshot (view) failed for {name!r}: {e}")
+        if path is not None and req.get("on_captured") is not None:
+            try:
+                req["on_captured"](path)
+            except Exception as e:
+                print(f"Screenshot on_captured callback failed: {e}")
         _reopen_context_menu_ds(req.get("reopen_menu_ds"))
     _view_pending[:] = still
     if still:

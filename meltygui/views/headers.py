@@ -42,7 +42,7 @@ def open_file(path, app=None):
 
 
 
-def render_search(search_ds, draw_state, unique=None, ):
+def render_search(search_ds, draw_state, unique=None, regrab_focus=True):
     """Render the find UI for the searchable view whose state lives on
     `search_ds`: the search input, match count, prev/next nav, and close.
 
@@ -50,6 +50,11 @@ def render_search(search_ds, draw_state, unique=None, ):
     (a floating window, when it doesn't). All state — search_text, match count,
     current index — lives on `search_ds`, the owning view's draw_state, so both
     presentations drive the same search.
+
+    `regrab_focus=False` limits the focus claim to first open (plus the Ctrl+F
+    one-shot): an always-visible box (the input tab's filter) must not pull
+    focus back whenever nothing holds text focus, or other fields on the same
+    tab become untypeable once focus clears.
     """
     search_icon = ""
     from src.lsd.gl_gui.view.core_views.text_editor import draw_text
@@ -68,7 +73,7 @@ def render_search(search_ds, draw_state, unique=None, ):
     # later frames fall back to the gentle re-grab and don't fight a deliberate
     # click into the editor.
     focus_search = ((not search_ds._search_was_active)
-                    or Melty.text_focused_ds is None
+                    or (regrab_focus and Melty.text_focused_ds is None)
                     or search_ds._search_focus_pending)
     search_ds._search_focus_pending = False
     search_ds._search_was_active = True

@@ -340,7 +340,6 @@ class DrawState(DictConversion):
         # context_menu_open capture gate never fired. The flag causes the next
         # inline render will capture the call site anyway (lazy, one-shot).
         self._call_site_requested = False
-
         # Per-frame caches for the position/clip chain. abs_left/abs_top/abs_clip_rect/
         # pin_rect/clip_anchor_base are pure functions of the draw_state tree but were
         # recomputed many times per frame (the left property is hit by parent walks,
@@ -1211,22 +1210,7 @@ class DrawState(DictConversion):
         # when the whole window moves. Shift it by however far the parent window
         # has moved since capture - zero during scroll, the drag delta during a
         # window drag - so the clamp tracks the window without a re-render. The
-        # clip region moves rigidly with the window, so a uniform shift is exact.
-        pw = self.parent_window
-        anchor = self._clip_win_anchor
-        if pw is not None and pw is not self and anchor is not None:
-            dx = pw._abs_left() - anchor[0]
-            dy = pw._abs_top() - anchor[1]
-            clip = (clip[0] + dx, clip[1] + dy, clip[2] + dx, clip[3] + dy)
-
-        # Intersect the LIVE box with the (shifted) clip rect. Both move with the
-        # window now, so the clamped edges stay locked to the unclamped corner.
-        return (int(max(abs_left, clip[0])),
-                int(max(abs_top, clip[1])),
-                int(min(box_right, clip[2])),
-                int(min(box_bottom, clip[3])))
-
-
+        # clip region moves rigidly with the window, so a uniform shift is exact.        pw = self.parent_window        anchor = self._clip_win_anchor        if pw is not None and pw is not self and anchor is not None:            dx = pw._abs_left() - anchor[0]            dy = pw._abs_top() - anchor[1]            clip = (clip[0] + dx, clip[1] + dy, clip[2] + dx, clip[3] + dy)        # Intersect the LIVE box with the (shifted) clip rect. Both move with the        # window now, so the clamped edges stay locked to the unclamped corner.        return (int(max(abs_left, clip[0])),                int(max(abs_top, clip[1])),                int(min(box_right, clip[2])),                int(min(box_bottom, clip[3])))
 
     def children_in_clip(self, clip=None, max_depth=1):
         """Descendants whose vertical span overlaps `clip` (default: this view's

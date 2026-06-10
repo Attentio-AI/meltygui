@@ -2630,11 +2630,17 @@ def draw_param_matrix(input_value, search_text="", draw_state=None, source_tints
 
     `priority_params` (see signature_param_names) pins those rows into a top
     section — the view function's own signature params plus the default list —
-    divided from the remaining machinery/unmatched rows by a separator."""
+    divided from the remaining machinery/unmatched rows by a separator.
+
+    `search_text` filters the rows by parameter name (the input tab's
+    always-on filter box feeds it): exact substring for short terms, the
+    shared typo-tolerant matcher (_fuzzy_key_match) for longer ones."""
     changed = False
     tints = source_tints or {}
     font = Font.JETBRAINS_MONO_22
     _hdr_font = Core.melty.font_mgr.get(font) if Core.melty.font_mgr else None
+
+    search_q = str(search_text or "").strip().lower()
 
     def _shown(param, row):
         return isinstance(row, dict) and row and not param.startswith('_')
@@ -2644,6 +2650,12 @@ def draw_param_matrix(input_value, search_text="", draw_state=None, source_tints
                   if p in input_value and _shown(p, input_value[p])]
     rest_items = [(p, r) for p, r in input_value.items()
                   if p not in prio_set and _shown(p, r)]
+
+    if search_q:
+        prio_items = [(p, r) for p, r in prio_items
+                      if _fuzzy_key_match(search_q, p.lower())]
+        rest_items = [(p, r) for p, r in rest_items
+                      if _fuzzy_key_match(search_q, p.lower())]
 
     def _draw_rows(items, name_alpha=1.0):
         nonlocal changed
@@ -2685,18 +2697,23 @@ def draw_param_matrix(input_value, search_text="", draw_state=None, source_tints
                 imgui.dummy(0, 1)
             imgui.unindent(indent_size)
 
-    draw_text(f"def {view_draw_state._view_func.__name__}",
-                is_tree=False, editable=False,
-                font=Font.JETBRAINS_MONO_30)
+    # While filtered, drop a section header whose rows all filtered out.
+    if prio_items or not search_q:
+        draw_text(f"def {view_draw_state._view_func.__name__}",
+                    is_tree=False, editable=False,
+                    font=Font.JETBRAINS_MONO_30)
     _draw_rows(prio_items, name_alpha=1.0)
     if prio_items and rest_items:
         imgui.dummy(0, 16)
         imgui.dummy(0, 16)
 
-    draw_text(f"core_render.py", 
-            is_tree=False, editable=False,
-            font=Font.JETBRAINS_MONO_30)
+    if rest_items or not search_q:
+        draw_text(f"core_render.py",
+                is_tree=False, editable=False,
+                font=Font.JETBRAINS_MONO_30)
     _draw_rows(rest_items, name_alpha=0.2)
+    if search_q and not prio_items and not rest_items:
+        imgui.text_colored(f"no parameters match '{search_q}'", 1, 1, 1, 0.3)
     return changed, input_value
 
 
@@ -3512,14 +3529,16 @@ def draw_live_tab(input_value, **kwargs):
     return False, input_value
 
 
-@render_func(use_cache=True, show_bg=False, show_header=False, show_name=False, selectable=False)
+@render_func(use_cache=False, show_bg=False, show_header=False, show_name=False, selectable=False)
 def draw_func_tab(input_value, **kwargs):
-    """Editable source of the inspected view function; hotswaps on save."""
+    """Editable source of the inspected view function; hotswaps on save.
+    Routes through Mode.FILE_TREE — the same cache-backed code_file_io path a
+    folder-files leaf uses — so all editors share one code path."""
     from src.lsd.gl_gui.view.mode import Mode
     view_func = input_value._view_func
     if view_func is not None:
         view_func_name = view_func.__name__ if hasattr(view_func, '__name__') else str(view_func)
-        change, new_view_func = draw_any(view_func, mode=Mode.NEW_CODE, name=view_func_name)
+        change, new_view_func = draw_any(view_func, mode=Mode.FILE_TREE, name=view_func_name)
     else:
         draw_str("No view function specified", name="View Function", editable=False)
     return False, input_value
@@ -3716,11 +3735,28 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, unique=No
                 DecorationsCodec)
     _add_source("defaults", cm_state.class_dict.deep.decorators.defaults(), TypeCodec)
 
+    # ── Search box: visible while the tab is open, focused on first display ─
+    # The fuzzy find UI (render_search) draws inline against THIS tab's
+    # draw_state - no Ctrl+F, no floating draw_search window, so the box lives
+    # and dies with the tab, and the tab opens ready to type. regrab_focus=False
+    # keeps the claim to the first display only: the default "re-grab whenever
+    # nothing holds text focus" steals focus from the tab's OTHER inputs - raw
+    # imgui.input_text doesn't set Melty.text_focused_ds, so after the re-grab
+    # they look permanently unfocused and become untypeable. The text lives on
+    # draw_state.search_text and feeds draw_param_matrix's fuzzy row filter
+    # below (render_search's keystroke handler also invalidates this
+    # tab, so the matrix refilters per keystroke).
+    imgui.dummy(0, 4)
+    render_search(draw_state, draw_state, unique=f"input_filter{unique}",
+                  regrab_focus=False)
+    imgui.dummy(0, 4)
+
     if sources:
         _, matrix = param_source_matrix(sources, func=input_value._view_func,
                                         include_unmatched=True)
         changed, value = draw_param_matrix(matrix, source_tints=source_tints, view_draw_state=input_value,
                                            priority_params=tuple(signature_param_names(input_value._view_func)),
+                                           search_text=str(draw_state.search_text or ""),
                                            name=f"{input_value._view_func.__name__} inputs##matrix{unique}",
                                            disable_scroll=True)
         if changed and isinstance(value, dict):
@@ -3756,18 +3792,17 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, unique=No
     return False, input_value
 
 
-@render_func(use_cache=True, show_bg=False, show_header=False, disable_scroll=True, show_name=False, selectable=False)
+@render_func(use_cache=True, show_bg=False, show_header=False, disable_scroll=False, show_name=False, selectable=False)
 def draw_class_tab(input_value, class_to_show=None, class_is_parent=False, class_name='',  **kwargs):
     """Editable class source. For a primitive field this is the parent object's
-    class (e.g. Lora for a Lora.rank float) -- labelled so the source is clear."""
-
-
-
+    class (e.g. Lora for a Lora.rank float) -- labelled so the source is clear.
+    Routes through Mode.FILE_TREE — the same cache-backed code_file_io path a
+    folder-files leaf uses — so all editors share one code path."""
     from src.lsd.gl_gui.view.mode import Mode
     if class_is_parent:
         text(f"Parent type of {class_name}", name="Source",
              editable=False, tint=(1.0, 0.64, 0.113))
-    cls_change, new_cls = draw_any(class_to_show, mode=Mode.NEW_CODE,
+    cls_change, new_cls = draw_any(class_to_show, mode=Mode.FILE_TREE,
                                    name=class_to_show.__name__)
     return False, input_value
 
@@ -3827,6 +3862,45 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
         Core.melty.move_window_to_front(view_ds.root_window)
         draw_state._reopen = True
         request_view_capture(view_ds, Core.melty.frame_count, reopen_menu_ds=draw_state)
+        draw_state.closed = True
+        request_render()
+
+    imgui.same_line()
+
+    # Same deferred screenshot, then hand it to Claude: once the shot lands,
+    # boot a fresh claude-d session pre-typed (NOT sent) with the shot path +
+    # the view's render function (the same function the Input tab edits), and
+    # open the Claude Terminals window so the new session's terminal comes up.
+    if button(f" claude", height=30, tint=(0,0,0,1.0), name=f"claude_session##{unique}")[0]:
+        from src.lsd.gl_gui.screenshot import request_view_capture
+        view_ds = input_value
+        # Resolve the menu's offset-walked target so the shot + function match
+        # what the tabs will show (the walk proper happens above the buttons).
+        for _ in range(context_menu_offset):
+            if view_ds._parent is None or view_ds._parent is view_ds:
+                break
+            view_ds = view_ds._parent
+        fn = inspect.unwrap(view_ds._view_func)
+        fn_name = getattr(fn, "__name__", "?")
+        try:
+            fn_file = inspect.getsourcefile(fn)
+        except Exception:
+            fn_file = None
+        fn_line = getattr(getattr(fn, "__code__", None), "co_firstlineno", None)
+        loc = f"{fn_file}:{fn_line}" if fn_file else "unknown location"
+
+        def _start_claude(shot_path, _name=fn_name, _loc=loc):
+            from src.lsd.gl_gui.view.playground.claude_terminals import (
+                launch_claude_session, open_claude_terminals_window)
+            launch_claude_session(
+                f"Take a look at this screenshot of a view in the studio: {shot_path} "
+                f"It is rendered by the function `{_name}` in {_loc}. ")
+            open_claude_terminals_window()
+
+        Core.melty.move_window_to_front(view_ds.root_window)
+        draw_state._reopen = True
+        request_view_capture(view_ds, Core.melty.frame_count, reopen_menu_ds=draw_state,
+                             on_captured=_start_claude)
         draw_state.closed = True
         request_render()
 
@@ -3960,7 +4034,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
 
     for t_idx, static_tab in enumerate(tab_state.selected_tabs):
         if static_tab >= len(tab_names):
-            continue
+            draw_func_tab(input_value, name=f"func_tab_{t_idx}##{unique}", disable_scroll=True, column=t_idx)
         this_tab = tab_names[static_tab]
         # Each tab is its own render_func placed at column=t_idx; the tab owns a
         # single-column region so its inner views don't pass column themselves.
@@ -3977,7 +4051,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
             draw_config_tab(input_value, name=f"config_tab_{t_idx}##{unique}", column=t_idx)
 
         elif this_tab == func_tab:
-            draw_func_tab(input_value, name=f"func_tab_{t_idx}##{unique}", disable_scroll=True, column=t_idx)
+            draw_func_tab(input_value, name=f"func_tab_{t_idx}##{unique}", disable_scroll=False, column=t_idx)
 
         elif this_tab == eval_tab_name:
             draw_eval_tab(input_value, unique=unique, enter_key_down=enter_key_down,

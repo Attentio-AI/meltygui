@@ -414,16 +414,18 @@ class Mode(Enum):
         ),
     }
 
-    # ── File tree ────────────────────────────────────────────
+    # ── File tree / cache-backed code editor ────────────────────────────
     #
-    # A folder rendered as a nested dict (playground.get_files): subfolder →
-    # nested dict, file → Path leaf. Each Path leaf routes to code_file_io,
-    # whose extension codec (TextFileCodec) owns that file's whole-file
-    # load/edit/save round-trip. Recursive so the route survives any depth of
-    # folder nesting.
+    # THE main editor mode: code_file_io + draw_text_from_code_cache, with
+    # the parse pulled from the shared code-host cache (code_hosts_for) instead
+    # of a local convert chain. Each ref's codec owns its load/edit/save
+    # round-trip: a Path leaf in a folder tree (playground.folder_files,
+    # whole-file TextFileCodec), and equally a function / class / module /
+    # CallSite / Decorations span (the context menu's render-func and class
+    # tabs). Recursive so the route survives any depth of folder nesting.
 
     FILE_TREE = {
-        Path: ModeOverrides(
+        (Path, type, types.FunctionType, types.ModuleType, CallSite, Decorations): ModeOverrides(
             func=code_file_io,
             # Pin the text editor: draw_any forwards a mode's func override as
             # the `view_func` kwarg, which would otherwise hand code_file_io

@@ -19,10 +19,14 @@ wrapper's body is blit-cached, so it wouldn't otherwise notice a session that
 appeared/vanished with no terminal output to invalidate it).
 """
 
+import itertools
+import os
 import shlex
+import shutil
 import subprocess
 import threading
 import time
+from pathlib import Path
 
 import imgui
 
@@ -43,7 +47,11 @@ _SESSION_PREFIX = "claude-d-"
 # tm's `main`/`lsd` server - only bash/claude-d. EVERY tmux call here must target that
 # same server or it would look at the wrong (default) server and find nothing.
 _TMUX = "tmux -f /dev/null -L claude-d"
-_TMUX_ARGS = ["tmux", "-f", "/dev/null", "-L", "claude-d"]  # list form for subprocess argv
+# List form for subprocess argv. ABSOLUTE binary path so (with close_fds=False)
+# CPython spawns via posix_spawn, not fork - fork from this process copies the
+# huge engine/GL/torch address space with the GIL held and blocks the render thread.
+_TMUX_BIN = shutil.which("tmux") or "/usr/bin/tmux"
+_TMUX_ARGS = [_TMUX_BIN, "-f", "/dev/null", "-L", "claude-d"]
 # Reapply the plain terminal config from any client (idempotent global `set -g`); needed
 # in case THIS client cold-starts the server before gnome/claude-d does.
 _TMUX_SETUP = (
@@ -85,8 +93,89 @@ def _kill_session(session):
             pass
 
     threading.Thread(target=go, daemon=True).start()
-    
-    
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[5]
+_studio_session_counter = itertools.count(1)
+
+
+def launch_claude_session(prompt_text=None):
+    """Start a NEW detached claude-d tmux session running Claude Code and, once
+    its input box is up, TYPE `prompt_text` into it — literally, no Enter, so
+    the user reviews/extends the prompt before sending. The ~1s poller discovers
+    the session like any external `claude-d` one and the studio window grows a
+    terminal for it. Unlike `bin/claude-d` there's no gnome window: the session
+    lives on the dedicated socket only, and closing the in-app window kills it
+    via the normal `_kill_session` path. Returns the session name immediately;
+    everything runs off-thread (subprocess uses the absolute tmux path +
+    close_fds=False → posix_spawn, see _TMUX_BIN)."""
+    session = f"{_SESSION_PREFIX}studio-{os.getpid()}-{next(_studio_session_counter)}"
+
+    def run(args, **kw):
+        kw.setdefault("close_fds", False)
+        kw.setdefault("timeout", 10)
+        kw.setdefault("stdout", subprocess.DEVNULL)
+        kw.setdefault("stderr", subprocess.DEVNULL)
+        return subprocess.run(args, **kw)
+
+    def go():
+        # `TMUX` unset so this works even when the studio itself was launched
+        # from inside a tmux session (tmux refuses to nest otherwise).
+        env = {k: v for k, v in os.environ.items() if k != "TMUX"}
+        try:
+            run(_TMUX_ARGS + ["new-session", "-d", "-s", session, "-c", str(_REPO_ROOT),
+                              "claude --dangerously-skip-permissions"], env=env)
+        except Exception as e:
+            print(f"launch_claude_session: failed to start {session}: {e}")
+            return
+        # Plain-terminal config, same as bin/claude-d (idempotent `set -g`) - in
+        # case this cold-starts the dedicated server before bin/claude-d does.
+        for opt in (["set", "-g", "mouse", "off"],
+                    ["set", "-g", "status", "off"],
+                    ["set", "-g", "window-size", "latest"],
+                    ["set", "-g", "terminal-overrides", ",*:smcup@:rmcup@"]):
+            try:
+                run(_TMUX_ARGS + opt)
+            except Exception:
+                pass
+        if not prompt_text:
+            return
+        # Wait for Claude Code's input box before typing, so the text lands in
+        # the prompt rather than the boot screen. The box's prompt chrome is
+        # "" (U+276F); accept ASCII ">" too in case the glyph changes.
+        deadline = time.time() + 30.0
+        while time.time() < deadline:
+            try:
+                out = run(_TMUX_ARGS + ["capture-pane", "-p", "-t", session],
+                          stdout=subprocess.PIPE, text=True).stdout or ""
+            except Exception:
+                out = ""
+            if "❯" in out or ">" in out:
+                break
+            time.sleep(0.5)
+        time.sleep(0.5)  # let the TUI finish wiring its key handling
+        try:
+            # -l = literal keys: the prompt is TYPED, not sent (no Enter).
+            run(_TMUX_ARGS + ["send-keys", "-t", session, "-l", prompt_text])
+        except Exception as e:
+            print(f"launch_claude_session: failed to type prompt into {session}: {e}")
+
+    threading.Thread(target=go, daemon=True, name="claude-session-launch").start()
+    return session
+
+
+def open_claude_terminals_window():
+    """Open + front the studio's Claude Terminals window (render thread only —
+    same open pattern as screenshot.process_captures)."""
+    from src.lsd.gl_gui.melty import Melty
+    from src.lsd.gl_gui.screenshot import _find_window
+    mw = _find_window("draw_claude_terminals")
+    if mw is None:
+        return
+    mw.draw_state.closed = False
+    if isinstance(mw.window_args, dict):
+        mw.window_args["closed"] = False
+    Melty.move_window_to_front(mw.draw_state)
 
 
 # ── the stateful wrapper: discover -> view_func(dict) -> apply ──────────────────
