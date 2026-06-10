@@ -326,6 +326,15 @@ class RenderHost(_DeepAttrMixin, dict):
         if self._pending_external:
             self._awaiting_inbound = True
 
+        # A fresh DERIVED-result pulse must reach external consumers even when
+        # the VALUE didn't change: a FAILED parse keeps last_good held (so
+        # _materialize never runs) and parks the error in the wrapper's
+        # ModesState - consumers that read that error (the folder-tree editor's
+        # red-line highlight, via draw_text_from_code_cache) would otherwise
+        # never re-run their cached subtrees to show or clear it.
+        if external_change and self._consumers:
+            self._notify_consumers(name="RenderHost result pulse")
+
         # FILE-WATCHER / external reload. The codec registers a file watcher on the
         # host's draw_state at resolve_address; when the file changes, FileWatch sets
         # that draw_state dirty and code_file_io re-reads the file into text_cache. draw()
@@ -458,15 +467,23 @@ class RenderHost(_DeepAttrMixin, dict):
         _reinstall_children(self, self)
         # The held value just CHANGED - invalidate any external consumer subtrees so they
         # re-run and pick it up (the background-parse-lands-into-a-cached-context-menu
-        # case). Climb their ancestors (invalidate_up) since the consumer is usually a
-        # nested cached view that doesn't re-run unless its parents do.
+        # case).
+        self._notify_consumers(name="RenderHost value materialized")
+        request_render()
+
+    def _notify_consumers(self, name="RenderHost value changed"):
+        """Invalidate external consumer subtrees (notify_on_change): they read this
+        host's value/error from OUTSIDE its own draw loop, so nothing else re-runs
+        them. Climb their ancestors (invalidate_up) since the consumer is usually a
+        nested cached view that won't re-run unless its parents do."""
         for cds in self._consumers:
             tid = getattr(cds, "_tile_id", None)
             if tid is not None:
                 Melty.cache.invalidate_up(tid, force=True,
-                                          note=Note(name="RenderHost value materialized",
+                                          note=Note(name=name,
                                                     tint=(0.4, 1.0, 0.6), draw_state=cds))
-        request_render()
+        if self._consumers:
+            request_render()
 
     def _held(self):
         """The single held value (string / tree) the wrapper edits — None until first

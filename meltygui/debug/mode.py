@@ -28,7 +28,7 @@ from src.lsd.gl_gui.view.core_views.new_core_view import draw_collection, draw_c
     class_to_var_dict, var_dict_to_class, draw_dropdown, draw_blank, draw_drop_down_item, draw_type_name, type_lens
 from src.lsd.gl_gui.view.core_views.text_editor import draw_text
 from src.lsd.gl_gui.view.core_conversion.new_converters import code_file_io, convert_in_and_out, string_to_cst_module, \
-    cst_module_to_string, draw_with_view_funcs
+    cst_module_to_string, draw_with_view_funcs, draw_text_from_code_cache
 
 
 def compute_height(draw_state):
@@ -429,7 +429,10 @@ class Mode(Enum):
             # the `view_func` kwarg, which would otherwise hand code_file_io
             # ITSELF as its nested view (str → "No codec"). Mode kwargs win
             # over call kwargs (`kwargs | override_kwargs`), so this corrects it.
-            kwargs={"auto_load_edits": True, "view_func": draw_text},
+            # draw_text_from_code_cache = draw_text fed the cst node from the
+            # global code-host cache (code_cache_for), so usage links and
+            # syntax-error highlighting work without an inline chain.
+            kwargs={"auto_load_edits": True, "view_func": draw_text_from_code_cache},
             recursive=True,
         ),
     }

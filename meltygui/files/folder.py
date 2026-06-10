@@ -27,7 +27,6 @@ import time
 from pathlib import Path
 
 import imgui
-
 from src.lsd.gl_gui.modes import Modes
 from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.utils.glfw_utils import request_render

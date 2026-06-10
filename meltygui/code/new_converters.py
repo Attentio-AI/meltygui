@@ -1477,3 +1477,62 @@ def code_hosts_for(ref):
         if key is not None:
             _code_host_cache[key] = pair
     return pair
+
+
+def draw_text_from_code_cache(input_value=None, root_input=None, error=None,
+                              run_jedi=False, **kwargs):
+    """FILE_TREE's editor view: plain draw_text fed from the shared code-host
+    cache instead of an inline chain. code_hosts_for(path) owns the parse —
+    str_host watches the file, dict_host re-parses on change — and we pull its
+    held cst_dict each frame, so usage links and syntax-error highlighting
+    arrive as code_dict / code_tree exactly as in the NEW_CODE routes. Pull-
+    based by design: an edit here auto-saves to disk, the cache's str_host
+    reloads from the file, and the editor picks up the fresh parse a beat
+    later — the leaf and the cache only ever talk through the file."""
+    code_dict, cache_error, dict_host = None, None, None
+    if root_input is not None:
+        _str_host, dict_host = code_hosts_for(root_input)
+        code_dict = dict_host._held()
+        # The chain's parse error lives on the wrapper's injected ModesState.
+        # Normalize it to the ParseError-dict shape _code_tree_errors reads
+        # ({'__error__','__line__'}) and pass it as code_tree: the raw exception
+        # could be a cst.ParserSyntaxError, whose line lives in `raw_line` - a
+        # name neither _code_tree_errors nor _exception_handler knows. code_dict
+        # keeps the last GOOD parse alongside, so the editor highlights the
+        # offending line without losing its structure.
+        wds = getattr(dict_host, "_wrapper_draw_state", None)
+        for v in (getattr(wds, "misc", None) or {}).values():
+            if isinstance(v, ModesState):
+                err = v.last_error
+                if err is not None:
+                    line = (getattr(err, "editor_line", None) or getattr(err, "lineno", None)
+                            or getattr(err, "raw_line", None) or 1)
+                    msg = (getattr(err, "message", None) or getattr(err, "msg", None)
+                           or str(err))
+                    cache_error = {"__error__": msg, "__line__": line}
+        # The Index button's pulse rides to the cache's chain_in (one-shot:
+        # cleared again on the next un-pulsed frame). cst_module_to_dict only
+        # runs jedi when it ALSO has the resolved address (jump_to) - the leaf's
+        # code_file_io hands us the whole-file Address, so forward it alongside.
+        # _pending_external makes the host re-run chain_in (its start gate is
+        # external_change); invalidating alone would just replay the blit.
+        if run_jedi:
+            dict_host.child_kwargs["run_jedi"] = True
+            if kwargs.get("jump_to") is not None:
+                dict_host.child_kwargs["jump_to"] = kwargs["jump_to"]
+            dict_host._pending_external = True
+            for hds in (wds, getattr(dict_host, "_draw_state", None)):
+                if hds is not None:
+                    hds.invalidate()
+            request_render()
+        elif dict_host.child_kwargs.get("run_jedi"):
+            dict_host.child_kwargs.pop("run_jedi", None)
+    changed, value, ds = RenderFuncs.draw_text(input_value, code_dict=code_dict,
+                                               code_tree=cache_error, error=error,
+                                               return_extras=True, **kwargs)
+    # Re-render this editor when the background parse lands - its external
+    # change is outside the host's own draw loop, so without registering it
+    # the fresh cst_dict sits invisible until an unrelated invalidation.
+    if dict_host is not None and ds is not None:
+        dict_host.notify_on_change(ds)
+    return changed, value

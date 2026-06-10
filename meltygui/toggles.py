@@ -149,7 +149,7 @@ class Swoosh:
                                 # within this fraction of the parent's shorter side (else stay flat)
 
 
-@window(tint=(0.85, 0.78, 0.65))
+@window(tint=(0.88, 0.37, 0.12))
 class Toggles:
 
     @defaults(tint=(0.5, 0.188, 0.053))
@@ -212,10 +212,10 @@ class Toggles:
     show_line_break = False
 
     # Filter SettingS
-    brightness = 0.425
-    contrast = 1.736
+    brightness = 0.454
+    contrast = 1.766
     saturation = -0.4
-    prefered_header_width = 17
+    prefered_header_width = 176
     max_preferred_header_width = 153
     debug_z_depth = False
     filters = True

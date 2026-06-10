@@ -72,7 +72,6 @@ def _attach_cmd(session):
             _TMUX_SETUP +
             "exec " + _TMUX + " attach-session -t " + shlex.quote(session)]
 
-
 def _kill_session(session):
     """Kill a claude-d tmux session off-thread. This ends the `claude-d` process
     running it (its EXIT/HUP trap fires) → the gnome window closes, and the session
@@ -245,7 +244,7 @@ def _poll_loop():
             cur = _list_claude_sessions()
             if cur != last:
                 last = cur
-                _live_sessions = cur
+                _live_sessions = []
                 for ds in (getattr(claude_proxy, "_wrapper_draw_state", None),
                            getattr(claude_proxy, "_draw_state", None), _window_ds):
                     if ds is not None:
@@ -254,5 +253,3 @@ def _poll_loop():
         except Exception:
             pass
         time.sleep(1.0)
-
-

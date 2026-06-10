@@ -8,7 +8,6 @@ from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 @render_func
 def draw_test_columns(draw_state):
     column_count = 16
-
     content_width = draw_state.content_width
     column_width = content_width / column_count
 

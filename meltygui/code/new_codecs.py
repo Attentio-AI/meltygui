@@ -130,6 +130,14 @@ def register_codec(cls=None, **kwargs):
 
 class Codec:
     name = "Base Codec"
+    # Base render kwargs for views of this codec's data - the codec IS the
+    # data source, so source-level appearance lives here. core_render merges
+    # these in as the LOWEST priority layer (args = codec_kwargs | kwargs;
+    # everything overrides here) - EXCEPT `tint`, which never propagates:
+    # it is the source COLOR-CODE, consumed explicitly by provenance views
+    # (the context menu's draw_param_matrix), not an optional wash.
+    render_kwargs = {}
+
     @staticmethod
     def resolve_address(input_value, draw_state=None, **kwargs):
         return NO_DATA
@@ -145,6 +153,9 @@ class Codec:
 
 @register_codec(for_type=(type, EnumType))
 class TypeCodec(Codec):
+    # Class source - where @defaults lives: dark grey/blue.
+    render_kwargs = {"tint": (0.10, 0.12, 0.22, 0.40)}
+
     @staticmethod
     def resolve_address(input_value, draw_state=None, **kwargs):
         if isinstance(input_value, type) and input_value.__module__ not in ('builtins', '_collections_abc'):
@@ -291,6 +302,8 @@ class TypeCodec(Codec):
 @register_codec(for_type=types.FunctionType)
 class FunctionCodec(TypeCodec):
     name = "Python Function"
+    # The render function's own source (def + body): green.
+    render_kwargs = {"tint": (0.04, 0.45, 0.12, 0.50)}
 
     @staticmethod
     def resolve_address(input_value, draw_state=None, **kwargs):
@@ -362,6 +375,8 @@ class CallerCodec(TypeCodec):
     prefix/suffix are stable (the user edits only the call), so they stay valid even
     through half-typed states where the call's columns drift."""
     name = "Python Call Site"
+    # Caller kwargs at the call site: the call is teal.
+    render_kwargs = {"tint": (0.05, 0.14, 0.20, 0.60)}
 
     @staticmethod
     def resolve_address(input_value, draw_state=None, **kwargs):
@@ -511,6 +526,8 @@ class DecorationsCodec(TypeCodec):
     An undecorated target resolves to a zero-length span pinned above its def/class
     line: load returns "", and saving typed text splices a fresh decorator in."""
     name = "Python Decorations"
+    # Decorator blocks (@window / @render_func / @defaults): lighter blue.
+    render_kwargs = {"tint": (0.20, 0.42, 0.75, 0.50)}
 
     @staticmethod
     def resolve_address(input_value, draw_state=None, **kwargs):
@@ -564,6 +581,8 @@ class DecorationsCodec(TypeCodec):
 @register_codec(for_type=types.ModuleType)
 class ModuleCodec(TypeCodec):
     name = "Python Module"
+    # No source highlighting yet (don't inherit TypeCodec's class blue tint).
+    render_kwargs = {}
 
     @staticmethod
     def resolve_address(input_value, draw_state=None, **kwargs):

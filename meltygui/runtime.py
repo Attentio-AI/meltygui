@@ -344,6 +344,12 @@ class Melty:
 
     mode_stack = []
     search_stack = []
+    # Active data-source codec stack. core_render pushes a value's codec
+    # (function / call-site / class / decorations) on entry and pops on exit,
+    # mirroring mode_stack. Every draw_state in the subtree stashes the top as
+    # ds._codec, so any descendant view can ask "which data source am I
+    # rendering?" (e.g. to apply the codec's source tint prominently).
+    codec_stack = []
     # The draw_state holding the current search match (set by the search owner's
     # pre-body walk). The find UI resolves this to a click target on Ctrl+Enter
     # (see new_core_view.search_activate_target) and injects a mouse-down there.

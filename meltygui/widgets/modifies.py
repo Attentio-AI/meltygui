@@ -78,7 +78,6 @@ def test_code_ui(_, draw_state):
     if changed:
         draw_state.invalidate_up_by_obj(obj=dict_proxy, frame_delta=2, note=Note(name="String Proxy Edit", tint=(1,1,1)), max_depth=10)
 
-
         # request_render()
     # New trick: `.deep.unwrap()` skips the redundant wrapper rungs (value / module /
     # function name) and hands draw_collection the meaningful content dict with its keys

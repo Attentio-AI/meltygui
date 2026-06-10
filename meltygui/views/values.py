@@ -39,7 +39,7 @@ from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
 from src.lsd.gl_gui.view.core_views.codec_register import registry as FILE_CODECS
-from src.lsd.gl_gui.view.core_views.core_render import render_func
+from src.lsd.gl_gui.view.core_views.core_render import render_func, render_func_kwarg_names
 from src.lsd.gl_gui.view.core_views.core_undo import UndoManager
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import hotkey, tint, Core
@@ -332,7 +332,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
     """
     if excluded is None:
         excluded = set()
-        
+
     if included is None:
         included = set()
 
@@ -2090,17 +2090,17 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
             style_manager=None, tint=None, outline_tint=None, selected=False,
             hovered=False, pressed=False, nested_bg=False, **kwargs):
     # -- Constants ---------------------------------
-    min_value = -0.31
+    min_value = -0.096
     depth_wrap = 300
-    depth_scale = 2.633
+    depth_scale = 2.356
     # [tint=(1,1,1)]
     corner_radius = rounding
     border_inset = 2.802
     border_inset_half = 1.5
     stroke_width = 4.0
     # How depth maps to color intensity
-    intensity_factor = 0.021
-    intensity_offset = -0.336
+    intensity_factor = 0.018
+    intensity_offset = -2.033
 
     some_var = [32, 18, 19]
     # Outline color tuning
@@ -2109,8 +2109,8 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
     outline_sat = {'default': 1.1, 'nested': 1.473}
 
     # More text
-    bleed_mix = {'nested': 0.472, 'default': 0.526}
-    bleed_style = {'value': -0.035, 'alpha': 1.112, 'saturation': 6.592}
+    bleed_mix = {'nested': 0.636, 'default': 0.589}
+    bleed_style = {'value': -0.023, 'alpha': 1.112, 'saturation': 6.592}
     outline_bleed_mix = 0.272
     # Hover offsets per interaction state
     hover_offset_by_state = {
@@ -2180,11 +2180,11 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
     # ── Background bleed color ─────────────────────────────────
     bleed_factor = bleed_mix['nested'] if nested_bg else bleed_mix['default']
 
-    bleed_base = Core.melty.get_bg_color(-2)
+    bleed_base = Core.melty.get_bg_color(-1)
     bleed_color = style_manager.make_custom_styled(
         *bleed_base, input=bg_style, **bleed_style,
     )
-    bleed_base = mix(*Core.melty.get_bg_color(-1)[:3], *bleed_color[:3], 0.32)
+    bleed_base = mix(*Core.melty.get_bg_color(-1)[:3], *bleed_color[:3], 0.899)
     bleed_color = style_manager.make_custom_styled(
         *bleed_base, input=bg_style, **bleed_style,
     )
@@ -2495,7 +2495,10 @@ def param_source_matrix(input_value, keys=None, func=None, include_unmatched=Fal
     source sets that are NOT parameters append as extra rows at the end —
     typos and **kwargs ride-throughs stay visible instead of vanishing.
     Shaped like sort_dict_alphabetically: a plain (changed, value) chain node;
-    apply_param_source_matrix below is the unsort-style reverse."""
+    apply_param_source_matrix below is the unsort-style reverse.
+    Source COLOR-CODING is not this function's job: codecs carry a tint
+    (new_codecs.render_kwargs) that core_render merges in as the lowest
+    kwargs layer, so codec-backed values color themselves wherever drawn."""
     changed = False
     if isinstance(input_value, dict):
         items = list(input_value.items())
@@ -2509,6 +2512,13 @@ def param_source_matrix(input_value, keys=None, func=None, include_unmatched=Fal
                     if p not in ("args", "kwargs", "o_kwargs", "next_kwargs")]
         except (TypeError, ValueError):
             keys = []
+        # A render func's input surface is its signature PLUS the kwargs the
+        # @render_func machinery itself consumes (width/height/tint/shadow and
+        # the flag zoo) - shared by every render func, loaded once per process
+        # by re-scanning the decorator source (render_func_kwarg_names).
+        if getattr(func, "__render_func__", False):
+            _seen = set(keys)
+            keys += [k for k in render_func_kwarg_names() if k not in _seen]
     keys = list(keys or [])
 
     matrix = {}
@@ -2546,6 +2556,60 @@ def apply_param_source_matrix(input_value, ref=None, changed=False):
             if isinstance(src, dict) and (param not in src or src[param] is not val):
                 src[param] = val
     return changed, ref
+
+
+@render_func(use_cache=True, show_bg=False, shadow=False, with_header=None,
+             show_name=False, selectable=False, is_tree=True, temp=True)
+def draw_param_matrix(input_value, draw_state=None, source_tints=None, unique=None, **kwargs):
+    """The inputs-tab matrix view: rows = parameters, cells = the sources that
+    set them. Cells are parse FRAGMENTS (leaves pulled out of their codec's
+    parse), so they can't naturally adopt the codec tint the way a whole
+    codec-typed value does — this view is special: it looks the tint up per
+    source (the tab maps each column to its codec) and applies it MANUALLY to
+    every cell, alpha-boosted, so the data source is highly visible at a
+    glance. Empty rows are skipped here — this is the provenance view; the
+    full parameter surface is the matrix dict itself. Cell edits mutate the
+    row in place and report changed, for apply_param_source_matrix write-back."""
+    changed = False
+    tints = source_tints or {}
+    font = Font.JETBRAINS_MONO_22
+    _hdr_font = Core.melty.font_mgr.get(font) if Core.melty.font_mgr else None
+    for param, row in input_value.items():
+        if not isinstance(row, dict) or not row:
+            continue
+        if param.startswith('_'):
+            continue
+
+        # One SECTION per attribute name: the name once, in a slightly larger
+        # font, with every source's value grouped & indented beneath it.
+        imgui.dummy(0, 2)
+        if _hdr_font is not None:
+            imgui.push_font(_hdr_font)
+        imgui.text_colored(param, 1,1,1,1.1)
+        if _hdr_font is not None:
+            imgui.pop_font()
+            
+
+        imgui.dummy(0, 4)
+        indent_size = 1
+        imgui.indent(indent_size)
+        for sname, val in row.items():
+            tint = tints.get(sname)
+
+            ch, nv = draw_any(val, name=f"{sname}##{param}_{unique}",
+                              width=draw_state.content_width - 24,
+                              tint=tint, show_bg=True, expanded=True,
+                              show_name=True, wrap=False,
+                              align_header=True, bg_offset=2, z_offset=-1,
+                              show_add_delete=False, disable_scroll=True,
+                              shadow=True)
+            if ch:
+                row[sname] = nv
+                changed = True
+
+            imgui.dummy(0, 4)
+        imgui.unindent(indent_size)
+    return changed, input_value
 
 
 @render_func(is_default_for=UsageRef, use_cache=True, shadow=True, z_offset=2, show_bg=True, with_header=draw_header,
@@ -2895,7 +2959,7 @@ def draw_app_model(input_val):
     imgui.text("An App Model Instance")
 
 
-@render_func(is_default_for=(types.FunctionType, types.MethodType), show_add_delete=False, selectable=False, show_bg=False,
+@render_func(is_default_for=(types.FunctionType, types.MethodType), shadow=True, use_cache=True, show_add_delete=False, selectable=False, show_bg=True,
              parent_show_add_delete=False, is_tree=False, show_name=False, with_header=draw_header)
 def draw_function(input_value, name, draw_state, unique, **kwargs):
     if not callable(input_value):
@@ -2924,17 +2988,19 @@ def draw_function(input_value, name, draw_state, unique, **kwargs):
             draw_state.params = param_dict
         if len(draw_state.params) > 0:
             changed, new_val = draw_collection(draw_state.params, name="Parameters", initial={"expanded":False},
-                                               show_add_delete=False, parent_show_add_delete=False, horizontal=True,
-                                               child_kwargs={"max_width": 200,
-                                                             "show_bg": True, "use_cache": True, "z_offset": 2.0})
+                                               show_add_delete=False, shadow=False, z_offset=0, parent_show_add_delete=False, horizontal=True,
+                                               child_kwargs={"max_width": 200, "shadow":False,
+                                                             "show_bg": False, "use_cache": True, "z_offset": 0.0
+                                                             })
             if changed:
                 draw_state.params = new_val
     except Exception as e:
         imgui.text(f"Error inspecting function parameters: {e}")
         draw_state.params = {}
+        
         sees_this = 0
 
-    if button(f"{input_value.__name__}##{unique}", height=35, bg_offset=-15, tint=(0.021, 0.104, 0.167, 0.0))[0]:
+    if button(f"{input_value.__name__}##{unique}", height=29, bg_offset=0, tint=(0.021, 0.104, 0.167, 0.0))[0]:
         try:
             draw_state.result = input_value(**draw_state.params)
             Core.melty.cache.invalidate_up_current(force=True)
@@ -3494,34 +3560,57 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, unique=No
     # if changed:
     #     cm_state.render_func_str.value = value
 
-    imgui.text(f"{input_value._call_site}")
+    # imgui.text(f"{input_value._call_site}")
 
-    render_func = cm_state.render_func_dict.deep.parameters()
-    if render_func:
-        changed, value = draw_collection(render_func, tint=(0.05, 0.13, 0.16, 0.284), name=f"{input_value._view_func.__name__}##{unique}", disable_scroll=True)
+    # ── Every input in one table: parameter × source matrix ───────────────
+    # Collect each parsed source dict (columns), pivot against the render
+    # function's parameter list (rows) via param_source_matrix, and draw the
+    # whole input surface as one grid. Rebuilt every frame from the live
+    # parses (cheap dict scans), so a background parse landing or an edit to
+    # any source shows up immediately. Edits to a cell write back into the
+    # SOURCE dict they came from (apply_param_source_matrix) - those dicts are
+    # the hosts' bubbling-wrapped parse nodes, so the edit makes the owning
+    # host dirty and rides its normal chain_out update path.
+    # Each source column maps to the CODEC that owns the data - the codec's
+    # render_kwargs tint IS the source color. The matrix cells are parse
+    # fragments that can't adopt it naturally (type-based codec fragments), so
+    # the tint map rides into draw_param_matrix, which applies it manually
+    # and individually per cell.
+    from src.lsd.gl_gui.view.core_conversion.new_codecs import (
+        FunctionCodec, CallerCodec, DecorationsCodec, TypeCodec)
 
+    def _codec_tint(codec):
+        return (getattr(codec, "render_kwargs", None) or {}).get("tint")
+
+    sources = {}
+    source_tints = {}
+
+    def _add_source(sname, sdict, codec):
+        if isinstance(sdict, dict) and sdict:
+            sources[sname] = sdict
+            source_tints[sname] = _codec_tint(codec)
+
+    _add_source("signature", cm_state.render_func_dict.deep.parameters(), FunctionCodec)
     call_site_dict = cm_state.call_site_dict.deep.unwrap() if cm_state.call_site_dict else None
     if call_site_dict:
         from src.lsd.gl_gui.view.core_conversion.chain_converters import caller_func_name
-        caller_name = caller_func_name(input_value._call_stack) or "Call site"
-        changed, value = draw_collection(call_site_dict, is_tree=True, tint=(0.05,0.14,0.20, 0.3), name=f"{caller_name}##call_site{unique}",
-                                         disable_scroll=True)
+        _add_source(caller_func_name(input_value._call_stack) or "caller",
+                    call_site_dict, CallerCodec)
+    _add_source("render_func", cm_state.render_func_dict.deep.decorators.render_func(),
+                DecorationsCodec)
+    _add_source("window", cm_state.render_func_dict.deep.decorators.window(),
+                DecorationsCodec)
+    _add_source("defaults", cm_state.class_dict.deep.decorators.defaults(), TypeCodec)
 
-
-    render_func = cm_state.render_func_dict.deep.decorators.render_func()
-    if render_func:
-        changed, value = draw_collection(render_func, bg_offset=-20, tint=(0.00956193,0.1581395,0.03996849, 0.308),
-                                         name=f"render_func##{unique}", disable_scroll=True)
-
-    window_decoration = cm_state.render_func_dict.deep.decorators.window()
-    if window_decoration:
-        changed, value = draw_collection(window_decoration, bg_offset=-20, tint=(0.03,0.31,0.60), name=f"@window##{unique}",
-                                         disable_scroll=True)
-
-    class_defaults = cm_state.class_dict.deep.decorators.defaults()
-    if class_defaults:
-        changed, value = draw_collection(class_defaults, tint=(0.02,0.06,0.10), name=f"defaults##{unique}",
-                                         disable_scroll=True)
+    if sources:
+        _, matrix = param_source_matrix(sources, func=input_value._view_func,
+                                        include_unmatched=True)
+        changed, value = draw_param_matrix(matrix, source_tints=source_tints,
+                                           name=f"{input_value._view_func.__name__} inputs##matrix{unique}",
+                                           disable_scroll=True)
+        if changed and isinstance(value, dict):
+            # Pure write-back (no UI) - call the bare function, not this wrapper.
+            apply_param_source_matrix.__wrapped__(value, ref=sources, changed=True)
 
     # Each *_dict RenderHost parses its source on a background worker in its OWN draw
     # loop; this tab merely READS the materialized value (h.deep....) and draws it. When

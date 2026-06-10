@@ -580,7 +580,7 @@ def _parse_number_token(s):
         return None, None, None, None
 
 
-@render_func(use_cache=True, show_bg=False, shadow=False, with_header=None, z_offset=3,
+@render_func(use_cache=True, show_bg=False, shadow=False, with_header=None, z_offset=2,
              show_name=False, selectable=False, tint=(0.0, 0.2, 0.552), wrap=True)
 def draw_number_token(input_value, draw_state=None,
                       left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
@@ -610,9 +610,9 @@ def draw_number_token(input_value, draw_state=None,
     # word, with only a subtle hover/active lift instead of imgui's bright blue.
     push_style_var(imgui.STYLE_FRAME_PADDING, (0, 1))
     push_style_color(imgui.COLOR_TEXT, 0.41, 0.59, 0.73)              # number blue
-    push_style_color(imgui.COLOR_FRAME_BACKGROUND, 0.10, 0.11, 0.13)
+    push_style_color(imgui.COLOR_FRAME_BACKGROUND, *(0.029, 0.039, 0.061))
     push_style_color(imgui.COLOR_FRAME_BACKGROUND_HOVERED, 0.14, 0.16, 0.19)
-    push_style_color(imgui.COLOR_FRAME_BACKGROUND_ACTIVE, 0.17, 0.19, 0.23)
+    push_style_color(imgui.COLOR_FRAME_BACKGROUND_ACTIVE, *(0.058, 0.07, 0.094))
     imgui.set_next_item_width(draw_state.width)
     if kind == 'int':
         speed = max(0.2, abs(val) * 0.01)

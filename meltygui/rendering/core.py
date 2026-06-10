@@ -15,6 +15,7 @@ import imgui
 from imgui.core import _DrawList
 
 from src.lsd.gl_gui.background import Background, Pending
+from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.toggles import Counters, Toggles, Tint
 from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
 from src.lsd.gl_gui.view.core_conversion.address import to_address, Address
@@ -29,6 +30,7 @@ from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
 from src.lsd.gl_gui.view.core_views.core_meta import AnnotationOverride
 from src.lsd.gl_gui.view.core_views.core_undo import UndoManager, handle_undo
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
+from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.invalidation_tracker import Note
 
 
@@ -256,6 +258,41 @@ def draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height):
         dl.add_rect_filled(track_x1, grab_y1, track_x2, grab_y2, col_grab, rounding=3.0)
         # dl.add_rect(track_x1, grab_y1, track_x2, grab_y2, col_border, rounding=3.0)
 
+
+
+# type -> codec class (or None), resolved once per type via the codec
+# registry's MRO walk. Codec identity is hotswap-stable (classes patch in
+# place), and render_kwargs is read per-call with getattr, so editing a
+# codec's tint takes effect without busting this cache.
+_codec_by_type_cache = {}
+
+
+def _codec_for_type(value_type):
+    """The codec class registered for `value_type` (MRO walk, like
+    code_file_io's codec resolution), or None. Drives both the codec's
+    render_kwargs base layer and the Melty.codec_stack data-source context."""
+    codec = _codec_by_type_cache.get(value_type, _codec_by_type_cache)  # sentinel: self
+    if codec is _codec_by_type_cache:
+        codec = None
+        try:
+            from src.lsd.gl_gui.view.core_conversion.new_codecs import type_to_codec
+            for base in value_type.__mro__:
+                codec = type_to_codec.get(base)
+                if codec is not None:
+                    break
+        except Exception:
+            codec = None
+        _codec_by_type_cache[value_type] = codec
+    return codec
+
+
+def _codec_render_kwargs(value_type):
+    """The render_kwargs dict of `value_type`'s codec — {} when no codec
+    matches or the codec declares nothing."""
+    codec = _codec_for_type(value_type)
+    if codec is None:
+        return {}
+    return getattr(codec, "render_kwargs", None) or {}
 
 
 def render_func(*args, **o_kwargs):
@@ -927,6 +964,30 @@ def render_func(*args, **o_kwargs):
 
             kwargs = Melty.default_kwargs_by_type[kwargs.get("real_type", type(input_value))] | kwargs
             kwargs = Melty.default_kwargs_by_attrib_type[kwargs.get("type_collection", type(collection))][key] | kwargs
+            # Codec-provided base kwargs + active-codec marker. The value's
+            # data-source codec (function / call-site / class / decorations)
+            # contributes its render_kwargs as the LOWEST priority layer -
+            # every explicit/default kwarg above overrides them. `tint` is the
+            # ONE EXCEPTION: it deliberately does NOT propagate from here (it
+            # would wash codec-typed views app-wide), and is stored on the
+            # codec as the effective color-code, consumed only by views
+            # that surface this info (draw_param_matrix in the context menu).
+            # The codec also pushes onto Melty.codec_stack (popped in the
+            # cleanup next to mode_stack), and every draw_state stashes the
+            # ACTIVE codec as ds._codec - its own, or inherited from the
+            # enclosing subtree - so any view can ask which data source it
+            # renders under.
+            _codec = _codec_for_type(kwargs.get("real_type", type(input_value)))
+            _codec_pushed = False
+            if _codec is not None:
+                _ck = getattr(_codec, "render_kwargs", None)
+                if _ck:
+                    _ck = {k: v for k, v in _ck.items() if k != "tint"}
+                    if _ck:
+                        kwargs = _ck | kwargs
+                Melty.codec_stack.append(_codec)
+                _codec_pushed = True
+            draw_state._codec = _codec or (Melty.codec_stack[-1] if Melty.codec_stack else None)
 
             set_default("input_value", input_value)
             set_default("draw_state", draw_state)
@@ -3103,6 +3164,8 @@ def render_func(*args, **o_kwargs):
 
             if mode_stacked:
                 Melty.mode_stack.pop()
+            if _codec_pushed:
+                Melty.codec_stack.pop()
             if _pushed_search:
                 # Count + current-match selection were computed by the pre-body
                 # search_walk (the single source for truth); nothing to read back
@@ -3603,6 +3666,73 @@ def render_func(*args, **o_kwargs):
     Melty.render_funcs_by_name[wrapper.__name__] = wrapper
 
     return wrapper
+
+
+# Keys the wrapper consumes for control CONVERSION/PLUMBING, not appearance -
+# excluded from render_func_kwarg_names. Tune freely; everything else the
+# scan finds (width/height/tint/shadow/mode/layer/...) counts as an input that
+# can realistically change how the view looks.
+_RF_KWARG_EXCLUDE = frozenset({
+    "_converter_mode", "next_kwargs", "draw_state", "input_value",
+    "melty_window", "style_manager", "depth", "changed", "collection",
+    "data", "ref", "registry", "from_type", "to_type", "load_data",
+    "save_data", "is_default_for", "is_lens_for", "interrupt_source_for",
+    "inverse_of", "real_type", "key", "return_extras", "name_func",
+    "current_mode", "auto_apply", "convert_in", "convert_out", "pending",
+    "type_collection", "drives", "view_func",
+})
+
+_rf_kwarg_names_cache = None
+
+@window
+@render_func
+def draw_kwargs_names():
+    global _rf_kwarg_names_cache
+    from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
+    draw_any(_rf_kwarg_names_cache, name="Names cache")
+
+def render_func_kwarg_names():
+    """The kwarg names the @render_func machinery itself consumes — width,
+    height, tint, shadow, the flag zoo — i.e. the inputs every render func
+    shares on top of its own signature. Built ONCE per process by AST-scanning
+    render_func's own source for string-key access on kwargs / o_kwargs /
+    header_defaults (`.get/.pop/.setdefault("x")`, `["x"]`, `"x" in kwargs`),
+    minus the conversion-plumbing keys in _RF_KWARG_EXCLUDE. Self-maintaining:
+    a new `kwargs.get("new_flag")` in the wrapper shows up on next launch (the
+    cache resets when this module re-execs on hotswap)."""
+    global _rf_kwarg_names_cache
+    if _rf_kwarg_names_cache is None:
+        import ast
+        import textwrap
+        targets = {"kwargs", "o_kwargs", "header_defaults"}
+        names = set()
+        try:
+            tree = ast.parse(textwrap.dedent(inspect.getsource(render_func)))
+        except (OSError, TypeError, SyntaxError):
+            return []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                if (isinstance(node.func.value, ast.Name) and node.func.value.id in targets
+                        and node.func.attr in ("get", "pop", "setdefault")
+                        and node.args and isinstance(node.args[0], ast.Constant)
+                        and isinstance(node.args[0].value, str)):
+                    names.add(node.args[0].value)
+            elif isinstance(node, ast.Subscript):
+                if (isinstance(node.value, ast.Name) and node.value.id in targets
+                        and isinstance(node.slice, ast.Constant)
+                        and isinstance(node.slice.value, str)):
+                    names.add(node.slice.value)
+            elif isinstance(node, ast.Compare):
+                if (len(node.ops) == 1 and isinstance(node.ops[0], (ast.In, ast.NotIn))
+                        and isinstance(node.left, ast.Constant)
+                        and isinstance(node.left.value, str)
+                        and any(isinstance(c, ast.Name) and c.id in targets
+                                for c in node.comparators)):
+                    names.add(node.left.value)
+        _rf_kwarg_names_cache = sorted(names - _RF_KWARG_EXCLUDE)
+    return _rf_kwarg_names_cache
+
+render_func_kwarg_names()
 
 
 def begin_window(unique_id, *args, **kwargs):
