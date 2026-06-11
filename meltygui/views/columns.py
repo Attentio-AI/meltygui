@@ -1,55 +1,3 @@
-"""Standalone column layout — independent of core_render's legacy column=
-machinery (_column_cursor / _columns_top / column_offsets stay untouched).
-
-draw_columns is an ordinary container render_func: it places one child per
-column at an explicit screen position and pins the child's width AND height.
-A child with both passed is fixed_size in the wrapper, so it pushes itself
-onto Melty.fixed_size_stack and its content (and all descendants) wrap at
-the column width — the wrapper does the rest, nothing here touches it.
-
-Columns are rigid bodies with their own position and width
-(``column_layout`` auto-state, [x, width] per column, where x is an offset
-from the window's left edge — the content origin). That reference frame is
-the point: when the window moves or its left edge is dragged, columns ride
-it in the SAME frame automatically; there are no compensation passes, so
-nothing ever lags or readjusts. NOTHING else moves unless dragged or
-bumped — and it's EDGES that move, not columns: a moving edge that
-reaches a neighbour first consumes that column's width (its far edge
-stays put) down to the hard MIN_COLUMN_WIDTH floor; only then does the
-far edge move and carry the push onward (a min-width column translates
-as a unit). A push past a container's bound escalates: rightward
-it widens the enclosing draw_columns cell (recursing through nesting) and
-finally the parent window; leftward a train that hits the left bound
-NUDGES it — the cell's left edge gives way, and at the top the window's
-left edge slides (window_pos shifts, width grows). A left nudge moves the
-origin, so the layout is readjusted by the same amount and renders one
-frame behind the window's move — accepted cost. Pushes MUTATE state and
-stay: dragging back does not un-push anything.
-
-ESCALATION IS DRAG-DRIVEN ONLY. The glue that keeps the last edge on the
-container's right bound is bound-FOLLOWING: it clamps at the row's
-fully-compressed minimum and never escalates — if it could, any frame
-where the bound falls below that minimum (a corner drag re-deriving
-width from its latch, a content-sized window re-measuring) would nudge
-window_pos again and again, scooting the window off screen. Hands move
-the world; the glue only follows it. The columns' minimum is instead
-stamped onto window.min_width, so core_render's own resize handler
-refuses to shrink a window below its row. Window "fixedness" is read
-from the RAW
-auto_resize kwarg (draw_state.auto_resize is False for every closable
-window, including content-hugging ones — useless here): content-driven
-windows get no glue on their outermost container (their width already
-follows the row through the footprint commit — the same-edge semantics
-emerge for free), no width writes, no left strip.
-
-``column_widths`` keeps its ownership semantics: a caller that passes it
-owns the layout every frame (packed, dividers inert); a caller that omits
-it gets the stateful rigid-body layout above.
-
-Heights settle by feedback: each cell renders at last frame's measured
-content height; the real height is read off the cell's draw_state after
-the call and fed back, converging one frame later.
-"""
 import imgui
 
 from src.lsd.gl_gui.utils.glfw_utils import request_render
@@ -58,16 +6,11 @@ from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
 from src.lsd.gl_gui.view.invalidation_tracker import Note
 
-COLUMN_GAP = 8
-# Fundamental rule: no column is ever pushed below this, regardless of what its
-# child view would tolerate. Pushes consume a column's width down to this
-# floor before they start moving the column's far edge.
 MIN_COLUMN_WIDTH = 30
-MIN_CELL_HEIGHT = 20
+MIN_ROW_HEIGHT = 20
 EDGE_GRAB_WIDTH = 14.0
-WINDOW_EDGE_GRAB = 14.0
 
-_PUSH_NOTE = dict(name="draw_columns", tint=(0.5, 0.8, 1.0))
+_NOTE = dict(name="draw_columns", tint=(0.5, 0.8, 1.0))
 
 
 class Columns(dict):
@@ -76,14 +19,37 @@ class Columns(dict):
     Columns({"a": ..., "b": Columns({...})})."""
 
 
-def resolve_column_widths(column_widths, n_cols, content_width, gap):
+# ---------------------------------------------------------------------------
+# Edge model
+#
+# An EDGE is a dict with a single float - {"x": 123.0} - in WINDOW
+# coordinates (offset from window.abs_left). Edges are passed around BY
+# REFERENCE: a nested columns view does not create its own far edges, it
+# adopts the two edge objects of its enclosing cell, so a shared boundary is
+# always the same object in both views and can never drift apart.
+#
+# ALL edges live on the ROOT WINDOW's draw_state: every columns view in the
+# tree upserts its edge list into window._edge_views, and drags from any
+# views land on window._pending_drags. Once per frame - triggered by the
+# first columns view that moves - the window resolves the queue in a
+# single flat collision solve over every edge sorted by x. Consecutive
+# edges always bound exactly one column of some view, so a flat
+# MIN_COLUMN_WIDTH separation gives column contact chains across nesting
+# levels for free. Net motion of the window-direct row's far edges drives
+# the window frame itself (with a re-base to the lines hold their
+# screen positions); contributors are invalidated and every view lines its
+# cells up with the new edges in that same frame.
+# ---------------------------------------------------------------------------
+
+
+def resolve_column_widths(column_widths, n_cols, content_width):
     """Pixel width per column for ``n_cols`` columns in ``content_width``.
 
     Entries are pixels; None (or a missing entry — the list may be shorter
     than the column count) takes an equal share of whatever the sized columns
     leave over. Widths never drop below MIN_COLUMN_WIDTH.
     """
-    available = max(0.0, content_width - gap * (n_cols - 1))
+    available = max(0.0, float(content_width))
     spec = list(column_widths)[:n_cols] if column_widths else []
     spec += [None] * (n_cols - len(spec))
 
@@ -97,246 +63,189 @@ def resolve_column_widths(column_widths, n_cols, content_width, gap):
             for w in spec]
 
 
-def _packed_layout(widths, gap):
-    """[x, width] per column, packed left with `gap` between."""
-    layout, x = [], 0.0
+def _seed_edges(column_widths, n_cols, content_width, base=0.0):
+    """Fresh edge dicts for n_cols columns: n_cols+1 lines accumulated from
+    ``base`` (window coordinates)."""
+    widths = resolve_column_widths(column_widths, n_cols, content_width)
+    edges = [{"x": float(base)}]
     for w in widths:
-        layout.append([x, float(w)])
-        x += w + gap
-    return layout
-
-
-def _widths_pinned(draw_state, column_widths):
-    """True when the CALLER owns column_widths this call (passed explicitly).
-
-    The body can't see raw call kwargs (auto-state resolves them away), but
-    auto_params holds only internally-written values and an explicit kwarg
-    wins over it — so a resolved value that exists with no stored entry, or
-    that differs from the stored one, must have been passed by the caller.
-    """
-    if column_widths is None:
-        return False
-    stored = (draw_state.__dict__.get("auto_params") or {}).get("column_widths")
-    if stored is None:
-        return True
-    try:
-        return bool(list(column_widths) != list(stored))
-    except Exception:
-        return True
-
-
-def _layout_to_edges(layout):
-    """Flatten [x, w] columns into a sorted edge-position list:
-    [L0, R0, L1, R1, ...]."""
-    edges = []
-    for x, w in layout:
-        edges.append(float(x))
-        edges.append(float(x + w))
+        edges.append({"x": edges[-1]["x"] + w})
     return edges
 
 
-def _edges_to_layout(edges, layout):
-    """Write resolved edge positions back onto the [x, w] layout."""
-    for i in range(len(layout)):
-        left, right = edges[2 * i], edges[2 * i + 1]
-        layout[i][0] = left
-        layout[i][1] = right - left
+def _ensure_window_state(window):
+    if getattr(window, "_edge_views", None) is None:
+        window._edge_views = {}
+    if getattr(window, "_pending_drags", None) is None:
+        window._pending_drags = []
 
 
-def _min_sep(k, gap):
-    """Minimum separation between consecutive edges k and k+1: a column's
-    width floor between its own two edges, the visual gap between columns."""
-    return float(MIN_COLUMN_WIDTH) if k % 2 == 0 else float(gap)
+def _all_edges(window):
+    """Every edge registered on the window, deduped by identity (shared
+    refs appear once)."""
+    seen, flat = set(), []
+    for _, edge_list in window._edge_views.values():
+        for e in edge_list:
+            if id(e) not in seen:
+                seen.add(id(e))
+                flat.append(e)
+    return flat
 
 
-def _drag_edge(edges, k, target, gap):
-    """Move edge k to `target`. No other edge moves unless the moving edge
-    (or one it already carried) comes within its MINIMUM separation — then
-    it is carried, and the chain stops at the first edge that's far enough
-    away. Edges only move edges they're touching: a column's far edge is
-    "touched" by its near edge only at the 30px floor, so a pushed column
-    first compresses in place (far edge planted) and only then translates.
-    The drag is just one line; everything else is contacts."""
-    old = edges[k]
+def _drag_edge(edges, k, target):
+    """Move edge k of the sorted list to `target`. Edges are independent
+    objects: no other edge moves unless the moving edge (or one it already
+    carried) closes to MIN_COLUMN_WIDTH — then it is carried, and the chain
+    stops at the first edge with slack. Pulling away never drags anything
+    along; only contact pushes."""
+    old = edges[k]["x"]
     if target == old:
         return
-    edges[k] = float(target)
+    edges[k]["x"] = float(target)
     if target > old:
         for m in range(k + 1, len(edges)):
-            need = edges[m - 1] + _min_sep(m - 1, gap)
-            if edges[m] >= need:
+            need = edges[m - 1]["x"] + MIN_COLUMN_WIDTH
+            if edges[m]["x"] >= need:
                 break
-            edges[m] = need
+            edges[m]["x"] = need
     else:
         for m in range(k - 1, -1, -1):
-            need = edges[m + 1] - _min_sep(m, gap)
-            if edges[m] <= need:
+            need = edges[m + 1]["x"] - MIN_COLUMN_WIDTH
+            if edges[m]["x"] <= need:
                 break
-            edges[m] = need
+            edges[m]["x"] = need
 
 
-def _min_left_target(layout, k, gap):
-    """Lowest position edge k can reach by dragging left with the left bound
-    rigid: every column to its left fully compressed to the floor. Mirrors
-    _drag_edge's minimum separations exactly — a leftward drag clamped to
-    this can never overshoot x=0."""
-    own = k // 2
-    x = own * (float(MIN_COLUMN_WIDTH) + gap)
-    if k % 2:  # a right edge: the next column's floor sits between
-        x += float(MIN_COLUMN_WIDTH)
-    return x
-
-
-def _window_is_fixed(window):
-    """True when the window's width is a persistent value rather than
-    re-measured from content every frame. draw_state.auto_resize is the
-    WRONG flag for this — closable forces it False even for content-hugging
-    windows. The wrapper's actual sizing condition is the RAW auto_resize
-    kwarg (default True) `or not expanded`; reproduce exactly that."""
-    if window is None:
+def _solve_collisions(window):
+    """Apply every queued drag against the FULL edge population, one flat
+    sorted-by-x list — contact chains cross view boundaries naturally.
+    Returns True if anything moved. (No standing repair pass: edges only
+    move while a drag is applied.)"""
+    pending, window._pending_drags = window._pending_drags, []
+    if not pending:
         return False
-    kwargs = getattr(window, "_kwargs", None) or {}
-    content_driven = (kwargs.get("auto_resize", True)
-                      or not getattr(window, "expanded", True))
-    return not content_driven
+    flat = _all_edges(window)
+    moved = False
+    for edge, target in pending:
+        flat.sort(key=lambda e: e["x"])
+        k = next((i for i, e in enumerate(flat) if e is edge), None)
+        if k is None or target == edge["x"]:
+            continue
+        _drag_edge(flat, k, target)
+        moved = True
+    return moved
 
 
-def _enclosing_cell(draw_state):
-    """(container_ds, cell_idx) of the nearest ancestor draw_columns this
-    container sits in, or (None, None). The climb is scoped to the parent
-    window (stops there; guards the root's self-parent loop)."""
-    node = draw_state
+def _window_direct(draw_state):
+    """True when this columns view is the direct content of its window —
+    its frame IS the window frame."""
     window = draw_state.parent_window
-    while node is not None and node is not window and node._parent is not node:
-        parent = node._parent
-        if parent is None:
-            break
-        if getattr(parent, "_column_container", False):
-            for i, c in parent._children.items():
-                if c is node:
-                    return parent, i
-        node = parent
-    return None, None
+    return window is not None and draw_state._parent is window
 
 
-def _apply_edge_drag(draw_state, layout, k, target, content_width, gap,
-                     escalate=True):
-    """Step 2 of the two-step drag: resolve edge k's move on the flat edge
-    list, write positions back, and escalate ONLY what this drag newly
-    pushed past the container bounds (a row already overflowing doesn't
-    re-escalate). Returns True if anything moved.
-
-    escalate=False is for bound-FOLLOWING callers (the glue): the move is
-    resolved locally and may clip, but it never requests space — only
-    drag-driven calls may move cells, windows, or window_pos. Bound
-    followers that escalate are feedback loops waiting to happen (a corner
-    drag re-derives width from its latch every frame, erasing the growth
-    the escalation just made → the same nudge fires forever)."""
-    edges = _layout_to_edges(layout)
-    if target == edges[k]:
+def _drive_left_edge(draw_state, delta):
+    """The window-direct row's far-left edge moved by `delta`: the window's
+    left edge follows (pos slides, width compensates so the right side stays
+    put on screen). Returns True when applied — the caller must then re-base
+    every edge by -delta, because window coordinates ride the window."""
+    if not _window_direct(draw_state):
         return False
-    old_first, old_last = edges[0], edges[-1]
-    _drag_edge(edges, k, target, gap)
-    _edges_to_layout(edges, layout)
-
-    if escalate:
-        over_right = edges[-1] - max(old_last, content_width)
-        if over_right > 0:
-            _request_width(draw_state, over_right)
-        over_left = min(old_first, 0.0) - edges[0]
-        if over_left > 0:
-            _request_left(draw_state, over_left)
-            # The origin just moved left by over_left; readjust so non-pushed
-            # cells stay put on screen (renders one frame behind the window).
-            for c in layout:
-                c[0] += over_left
+    window = draw_state.parent_window
+    pos = window.window_pos or (0, 0)
+    window.window_pos = (pos[0] + delta, pos[1])
+    window.width = snap_int(window.width - delta)
+    window.expanded = True
     return True
 
 
-def _request_width(draw_state, amount):
-    """A push overflowed this container's right bound by `amount` px: the
-    enclosing draw_columns cell's RIGHT edge gives way (same edge-drag rules
-    at the parent level, recursing outward); at the top the parent window
-    widens. Rightward growth never moves the origin — no readjustment."""
-    if amount <= 0:
+def _drive_right_edge(draw_state, delta):
+    """The window-direct row's far-right edge moved by `delta`: the window's
+    right edge follows (width only; origin unmoved, no re-base needed)."""
+    if not _window_direct(draw_state):
         return
-    parent, idx = _enclosing_cell(draw_state)
-    if parent is not None:
-        layout, content_width, gap, pinned = parent._col_state
-        if pinned:
-            return  # the caller owns that layout; the push stops (clips) here
-        k = 2 * idx + 1
-        target = layout[idx][0] + layout[idx][1] + amount
-        _log_mut(f"request_width +{round(amount, 1)} (from nested)", parent,
-                 k, target)
-        if _apply_edge_drag(parent, layout, k, target, content_width, gap):
-            parent.column_layout = layout
-            parent.invalidate(note=Note(reason="pushed by nested columns",
-                                        **_PUSH_NOTE))
-        return
-
     window = draw_state.parent_window
-    if window is None:
+    window.width = snap_int(window.width + delta)
+    window.expanded = True
+
+
+def _window_solve(window):
+    """The root window's once-per-frame edge pass, triggered by the first
+    columns view that renders in it: fold native window resizes into the
+    drag queue, resolve the queue over every registered edge, drive the
+    window frame from its direct row's far edges, and invalidate
+    contributors so every view lines up with the moved edges this same
+    frame."""
+    from src.lsd.gl_gui.melty import Melty
+    frame = Melty.frame_count
+    if getattr(window, "_edges_solved_frame", None) == frame:
         return
-    # Fixed windows grow explicitly; content-driven windows follow the
-    # content, which just grew so nothing to do.
-    if _window_is_fixed(window):
-        _log_mut(f"request_width window +{round(amount, 1)}", draw_state,
-                 -1, window.width + amount)
-        window.width = snap_int(window.width + amount)
-        window.expanded = True
+    window._edges_solved_frame = frame
+
+    for key, (ds, _) in list(window._edge_views.items()):
+        if getattr(ds, "closed", False):
+            del window._edge_views[key]
+
+    direct = next((ds for ds, _ in window._edge_views.values()
+                   if ds._parent is window), None)
+    d_edges = window._edge_views[direct.id][1] if direct is not None else None
+
+    d_window = 0.0
+    if d_edges and _window_direct(direct):
+        # The pile can never over-compress the window: ensure min_width to the
+        # fully-compressed span so a native shrink resize completes its
+        # collision pass instead of shoving the left line and triggering the
+        # resize latch. Raise only, re-stamped every frame (the wrapper
+        # rewrites min_width from resolved kwargs each frame).
+        flat_n = len(_all_edges(window))
+        chrome = max(0.0, float(window.width) - d_edges[-1]["x"])
+        need = snap_int(d_edges[0]["x"]
+                        + MIN_COLUMN_WIDTH * max(0, flat_n - 1) + chrome)
+        if (window.min_width or 0) < need:
+            window.min_width = need
+
+        # Native resizes (title drag, right-click draw, programmatic width
+        # writes) move the window's right edge without touching the lines:
+        # queue the movement as a drag of the LAST line so it runs the
+        # same collision solve and window edge and last line stay in sync.
+        # The baseline is stamped after our own change below, so only
+        # foreign width writes show up here.
+        last_w = getattr(window, "_edges_last_width", None)
+        if last_w is not None and window.width != last_w:
+            d_window = float(window.width) - float(last_w)
+            window._pending_drags.append(
+                (d_edges[-1], d_edges[-1]["x"] + d_window))
+
+    prev = (d_edges[0]["x"], d_edges[-1]["x"]) if d_edges else None
+
+    if _solve_collisions(window):
+        if d_edges:
+            # Drive the window only by the lines' net motion BEYOND what the
+            # native resize already applied to it.
+            d_right = (d_edges[-1]["x"] - prev[1]) - d_window
+            if d_right:
+                _drive_right_edge(direct, d_right)
+            d_left = d_edges[0]["x"] - prev[0]
+            if d_left and _drive_left_edge(direct, d_left):
+                for e in _all_edges(window):
+                    e["x"] -= d_left
+        for ds, _ in window._edge_views.values():
+            ds.invalidate(note=Note(reason="edge solve", **_NOTE))
+        request_render()
+
+    window._edges_last_width = window.width
 
 
-def _request_left(draw_state, amount):
-    """A push hit this container's left bound with `amount` px to go: the
-    enclosing draw_columns cell's LEFT edge gives way (edge-drag rules at
-    the parent level, recursing outward); at the top the parent window's
-    left edge is nudged (window_pos shifts, width grows)."""
-    if amount <= 0:
-        return
-    parent, idx = _enclosing_cell(draw_state)
-    if parent is not None:
-        layout, content_width, gap, pinned = parent._col_state
-        if pinned:
-            return  # the caller owns that layout; the push stops (clips) here
-        k = 2 * idx
-        _log_mut(f"request_left -{round(amount, 1)} (from nested)", parent,
-                 k, layout[idx][0] - amount)
-        if _apply_edge_drag(parent, layout, k, layout[idx][0] - amount,
-                            content_width, gap):
-            parent.column_layout = layout
-            parent.invalidate(note=Note(reason="pushed by nested columns",
-                                        **_PUSH_NOTE))
-        return
-
-    window = draw_state.parent_window
-    if window is None:
-        return
-    _log_mut(f"request_left window nudge -{round(amount, 1)}", draw_state,
-             -1, amount)
-    # The pos slide applies to every window kind (a content-driven window
-    # grows leftward: pos l slides, width follows from the content); the
-    # width write only sticks on truly fixed windows.
-    pos = window.window_pos or (0, 0)
-    window.window_pos = (pos[0] - amount, pos[1])
-    if _window_is_fixed(window):
-        window.width = snap_int(window.width + amount)
-        window.expanded = True
-
-
-# Rolling log of every layout mutation (who moved what, why) - forensics
-# for "this edge moved and nothing should have moved it". Read via eval:
-#   from src.lsd.gl_gui.view.core_views import columns; columns.MUTATION_LOG
-MUTATION_LOG = []
-
-
-def _log_mut(reason, draw_state, k, target):
-    from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
-    MUTATION_LOG.append((Core.melty.frame_count, reason,
-                         str(draw_state.name), str(draw_state._tile_id),
-                         k, round(float(target), 1)))
-    if len(MUTATION_LOG) > 300:
-        del MUTATION_LOG[:100]
+def _grab_zone(edges, k):
+    """Horizontal grab span for edge k of this view's list: EDGE_GRAB_WIDTH
+    centered on the line, but split at the midpoint toward each neighbouring
+    edge so adjacent zones never overlap."""
+    x = edges[k]["x"]
+    lo, hi = x - EDGE_GRAB_WIDTH / 2, x + EDGE_GRAB_WIDTH / 2
+    if k > 0:
+        lo = max(lo, (edges[k - 1]["x"] + x) / 2)
+    if k < len(edges) - 1:
+        hi = min(hi, (x + edges[k + 1]["x"]) / 2)
+    return lo, hi
 
 
 def _drag_inc(draw_state, handle, drag):
@@ -356,16 +265,18 @@ def _drag_inc(draw_state, handle, drag):
 
 @render_func(use_cache=True, show_bg=False, shadow=False, selectable=False,
              is_default_for=Columns)
-def draw_columns(input_value, column_widths=None, column_layout=None,
-                 draw_state=None, column_gap=COLUMN_GAP, max_cell_height=None,
-                 resizable=True, cell_heights=None, child_kwargs=None, **kwargs):
-    """Lay out a dict's values (or a list's items) side by side in columns.
+def draw_columns(input_value, column_widths=None, column_edges=None,
+                 draw_state=None, resizable=True, child_kwargs=None, **kwargs):
+    """Side-by-side cells lined up with shared draggable edges.
 
-    Each value is one column, drawn with draw_any so it routes to its normal
-    renderer (a nested Columns value nests the layout). Pass ``column_widths``
-    (pixels; None entries share the leftover) to own a packed layout, or omit
-    it for the stateful rigid-body layout where edge drags persist.
-    ``column_layout`` is auto-state ([x, width] per column) — don't pass it.
+    Edges are {"x": float} dicts in window coordinates (see the edge-model
+    comment above). This view owns its interior edges (auto-state
+    ``column_edges``); when it renders as a cell of another columns view it
+    adopts the enclosing cell's two edge objects as its far edges
+    (``left_edge``/``right_edge`` kwargs, passed by reference). All edges
+    register on the ROOT WINDOW, which solves collisions once per frame and
+    drives its own frame from the direct row's far edges; this view just
+    queues drags and lines its cells up with its edges.
     """
     if child_kwargs is None:
         child_kwargs = {}
@@ -382,216 +293,117 @@ def draw_columns(input_value, column_widths=None, column_layout=None,
     if not keys:
         return False, input_value
     n_cols = len(keys)
+    n_lines = n_cols + 1
 
-    if cell_heights is None:
-        cell_heights = {}
-        draw_state.cell_heights = cell_heights
-    for stale in [k for k in cell_heights if k not in keys]:
-        del cell_heights[stale]
-
-    pinned = _widths_pinned(draw_state, column_widths)
-    if pinned or column_layout is None or len(column_layout) != n_cols:
-        widths = resolve_column_widths(column_widths, n_cols,
-                                       draw_state.content_width, column_gap)
-        layout = _packed_layout(widths, column_gap)
-    else:
-        # Fresh working copy each frame; any mutation (own drags, pushes from
-        # nested containers via _col_state) writes it back to the auto-state.
-        layout = [list(c) for c in column_layout]
-
-    draw_state._pinned = pinned
-    draw_state._column_container = True
-    draw_state._col_state = (layout, draw_state.content_width, column_gap, pinned)
-
-    # The last column's right edge and this container's right bound are THE
-    # SAME EDGE. Keeping them glue in sync makes normal window resizing
-    # (corner drag, right-click resize, the strips) interact with the
-    # columns: shrinking drags the shared edge left - compressing the last
-    # column to the bound, then coiling the rigid train - and growing
-    # stretches the last column. The glue FOLLOWS the bound: its target is
-    # clamped at the row's rigid minimum and it NEVER escalates (a follower
-    # that escalates is a feedback loop - see _apply_edge_drag). Skipped for
-    # the outermost container of a content-driven window, whose width
-    # already follows the row without the layout commit.
-    bound = draw_state.content_width
-    in_cell = _enclosing_cell(draw_state)[0] is not None
-    window = draw_state.parent_window
-    fixed_window = _window_is_fixed(window)
-    last_k = 2 * n_cols - 1
-    if resizable and not pinned:
-        # Hard floor, every frame: empty children and legacy state included.
-        for c in layout:
-            c[1] = max(c[1], float(MIN_COLUMN_WIDTH))
-        if in_cell or fixed_window:
-            target = max(bound, _min_left_target(layout, last_k, column_gap))
-            if abs(layout[-1][0] + layout[-1][1] - target) > 0.5:
-                _log_mut("glue last->bound", draw_state, last_k, target)
-                if _apply_edge_drag(draw_state, layout, last_k, target,
-                                    bound, column_gap, escalate=False):
-                    draw_state.column_layout = layout
-        if (fixed_window and not in_cell
-                and "min_width" not in (window._kwargs or {})):
-            # The columns' fully-compressed minimum IS the window's minimum
-            # width: core_render's resize latch clamps corner/right-click
-            # drags against min_width, so the window itself refuses to
-            # shrink beyond its row - enforced through existing machinery
-            # instead of fighting the resize latch frame by frame. Skipped
-            # if the window has its own min_width kwarg (the wrapper
-            # rewrites it from the kwarg every frame - the caller means it).
-            window.min_width = snap_int(
-                _min_left_target(layout, last_k, column_gap)
-                + max(0.0, window.width - bound))
+    # ----- window anchor: all edges live on the root window -----
+    window = draw_state.parent_window or draw_state
+    _ensure_window_state(window)
+    _window_solve(window)
+    win_x = window.abs_left
 
     origin = imgui.get_cursor_screen_pos()
     top = origin[1]
 
-    # ----- edge drags -----
-    # Every column's RIGHT edge is a resize handle; the fixed window's edges
-    # are handles too (registered by the outermost container, fixed windows
-    # only). All drag are per-frame incremental mutation: nothing latches,
-    # nothing restores, a pushed column stays where it was pushed.
-    active_edge = None
-    mutated = False
-    seen_handles = set()
-    if resizable and not pinned:
-        row_height = max(cell_heights.values()) if cell_heights else MIN_CELL_HEIGHT
+    # ----- interior edges: load / seed, then adopt the enclosing cell's far
+    # edge objects so shared boundaries are shared identity -----
+    left_ref = kwargs.get("left_edge")
+    right_ref = kwargs.get("right_edge")
 
-        # No handle (and no line) for the LAST column's right edge: it IS the
-        # window edge - moved by window resizing (corner drag, right-click,
-        # the strips), with the glue above carrying the layout along.
-        for i in range(n_cols - 1):
-            # The grab zone is centered on the VISUAL divider line (column
-            # edge plus half the gap) - rect and line must share the same x or
-            # the handle feels offset.
-            line_x = origin[0] + layout[i][0] + layout[i][1] + column_gap / 2
-            rect = (line_x - EDGE_GRAB_WIDTH / 2, top,
-                    line_x + EDGE_GRAB_WIDTH / 2, top + row_height)
+    stored = column_edges if isinstance(column_edges, list) else []
+    ok = (len(stored) == n_lines and
+          all(isinstance(e, dict) and "x" in e for e in stored))
+    seed_valid = True
+    if ok:
+        edges = list(stored)
+    else:
+        if left_ref is not None and right_ref is not None:
+            base, extent = left_ref["x"], right_ref["x"] - left_ref["x"]
+        else:
+            base = origin[0] - win_x
+            extent = float(draw_state.content_width or 0)
+        # A seed taken before the parent has laid out (content_width ~0)
+        # must stay TRANSIENT: render with it this frame but don't persist,
+        # so a later frame re-seeds at the real width instead of locking in
+        # an all-minimum-width pile.
+        seed_valid = extent > n_cols * float(MIN_COLUMN_WIDTH)
+        extent = max(extent, n_cols * float(MIN_COLUMN_WIDTH))
+        edges = _seed_edges(column_widths, n_cols, extent, base=base)
+    owned = [True] * n_lines
+    if left_ref is not None:
+        edges[0] = left_ref
+        owned[0] = False
+    if right_ref is not None:
+        edges[-1] = right_ref
+        owned[-1] = False
+    if (not ok or any(a is not b for a, b in zip(stored, edges))):
+        # Stamp so auto state persists the list; in-place x mutations on the
+        # edges persist without re-stamping.
+        draw_state.column_edges = edges
+
+    window._edge_views[draw_state.id] = (draw_state, edges)
+
+    # ----- drag handles for OWNED edges (foreign boundary edges already have
+    # the enclosing view's handles on the same line) -----
+    active_edge = None
+    if resizable:
+        height = max(getattr(draw_state, "_edge_lines_height", 0.0),
+                     MIN_ROW_HEIGHT)
+        seen_handles = set()
+        for k in range(n_lines):
+            if not owned[k]:
+                continue
+            lo, hi = _grab_zone(edges, k)
+            rect = (win_x + lo, top, win_x + hi, top + height)
             drag = draw_state.on_action("left_mouse_drag",
-                                        view_id=f"col_edge_{i}",
+                                        view_id=f"col_edge_{k}",
                                         rect=rect, priority_delta=1)
             if not drag:
                 continue
-            active_edge = i
-            seen_handles.add(f"col_{i}")
-            inc = _drag_inc(draw_state, f"col_{i}", drag)
-            if not inc:
-                continue
-            _log_mut(f"handle col_{i} inc={round(inc, 1)}", draw_state,
-                     2 * i + 1, layout[i][0] + layout[i][1] + inc)
-            # One call either direction: the dragged line moves, columns
-            # pushes neighbouring edges rigidly, bounds escalate with the new
-            # push (for a nested container that escalation IS the cell edge -
-            # same-thing semantics hold at every level).
-            mutated = _apply_edge_drag(
-                draw_state, layout, 2 * i + 1,
-                layout[i][0] + layout[i][1] + inc,
-                draw_state.content_width, column_gap) or mutated
+            active_edge = k
+            seen_handles.add(k)
+            inc = _drag_inc(draw_state, k, drag)
+            if inc:
+                window._pending_drags.append((edges[k], edges[k]["x"] + inc))
 
-        # Left window edge strip (the right one is the last column's right).
-        if fixed_window and not in_cell:
-            win_left, win_top = window.abs_left, window.abs_top
-            rect = (win_left - WINDOW_EDGE_GRAB / 2, win_top,
-                    win_left + WINDOW_EDGE_GRAB / 2, win_top + window.height)
-            drag = window.on_action("left_mouse_drag",
-                                    view_id="col_window_left_edge", rect=rect)
-            if drag:
-                active_edge = "left"
-                seen_handles.add("win_left")
-                inc = _drag_inc(draw_state, "win_left", drag)
-                if inc:
-                    # Columns are referenced to this edge, so they ride it in
-                    # the same frame - no compensation, nothing to readjust.
-                    _log_mut(f"win left strip inc={round(inc, 1)}",
-                             draw_state, -1, window.width - inc)
-                    window.expanded = True
-                    pos = window.window_pos or (0, 0)
-                    window.window_pos = (pos[0] + inc, pos[1])
-                    window.width = snap_int(window.width - inc)
-
-        # Per-handle gesture baselines expire any any whose handle had no
-        # event this frame, so a finished gesture never pollutes the next.
         totals = getattr(draw_state, "_drag_totals", None)
         if totals:
             for h in [h for h in totals if h not in seen_handles]:
                 del totals[h]
         if active_edge is not None:
-            draw_state.invalidate(note=Note(reason="edge drag", **_PUSH_NOTE))
+            draw_state.invalidate(note=Note(reason="edge drag", **_NOTE))
             request_render()
-        if mutated:
-            draw_state.column_layout = layout
 
-    # ----- cells -----
-    row_bottom = top
+    # ----- cells: lined up with their edges; nested Columns get the cell's
+    # edge objects by reference -----
     changed = False
-    settled = True
-
     for idx, key in enumerate(keys):
-        item = input_value[key]
-        cell_x, cell_width = layout[idx]
-        cell_height = max(cell_heights.get(key, MIN_CELL_HEIGHT), MIN_CELL_HEIGHT)
-        if max_cell_height:
-            cell_height = min(cell_height, max_cell_height)
-
-        # Reposition before EVERY cell: a cache-skipped sibling leaves the
-        # cursor wherever its blit ended, so column positions must never be
-        # derived from the running cursor.
-        imgui.set_cursor_screen_pos((snap_int(origin[0] + cell_x), snap_int(top)))
-
-        # A width change re-renders the cell (its child hash moves) but a
-        # cached middle tile would still blit-skip stale grandchildren -
-        # cascade the change (invalidate_up goes down too) before redrawing.
-        prev_ds = draw_state._children.get(idx)
-        if prev_ds is not None and prev_ds.width != snap_int(cell_width):
-            prev_ds.invalidate_up(max_depth=6,
-                                  note=Note(reason="cell width change", **_PUSH_NOTE))
-
-        item_kwargs = {"name": f"{key}", "align_header": False} | child_kwargs
-        item_changed, out_value, cell_ds = draw_any(
-            item, width=snap_int(cell_width), height=snap_int(cell_height),
-            return_extras=True, **item_kwargs)
-
+        e_left, e_right = edges[idx], edges[idx + 1]
+        imgui.set_cursor_screen_pos((win_x + e_left["x"], origin[1]))
+        content_width = e_right["x"] - e_left["x"]
+        item_kwargs = {"name": f"{key}", "align_header": False,
+                       "content_width": content_width, "auto_resize": False,
+                       "width": content_width} | child_kwargs
+        if isinstance(input_value[key], Columns):
+            item_kwargs |= {"left_edge": e_left, "right_edge": e_right}
+        item_changed, out_value = draw_any(input_value[key], **item_kwargs)
         if item_changed:
             changed = True
             if isinstance(input_value, (dict, list)):
                 input_value[key] = out_value
 
-        if cell_ds is not None:
-            draw_state._children[idx] = cell_ds
-            # Content height is observed even though the cell's height is
-            # pinned; feed it back so next frame's pin matches the content.
-            measured = max(MIN_CELL_HEIGHT,
-                           int(cell_ds._observed_content_height +
-                               cell_ds.header_height + cell_ds.footer_height))
-            if cell_heights.get(key) != measured:
-                cell_heights[key] = measured
-                settled = False
-                cell_ds.invalidate()
+    bottom = imgui.get_cursor_screen_pos()[1]
+    draw_state._edge_lines_height = max(bottom - top, MIN_ROW_HEIGHT)
 
-        row_bottom = max(row_bottom, top + cell_height)
-
-    # ----- final visuals -----
-    # Subtle lines on each column's right edge, brightened while dragged.
-    # No hover highlight: a cached tile doesn't re-render on hover, so a
-    # hover-dependent visual would run stale.
-    if resizable and not pinned:
-        draw_list = imgui.get_window_draw_list()
-        for i in range(n_cols - 1):
-            ex = origin[0] + layout[i][0] + layout[i][1] + column_gap / 2
-            alpha = 0.5 if active_edge == i else 0.12
-            draw_list.add_line(snap_int(ex), snap_int(top + 2),
-                               snap_int(ex), snap_int(row_bottom - 2),
-                               imgui.get_color_u32_rgba(1.0, 1.0, 1.0, alpha), 1.0)
-
-    if not settled:
-        draw_state.invalidate(note=Note(reason="cell height settle", **_PUSH_NOTE))
-        request_render()
-
-    # Commit the row's dimensions so the wrapper makes the container as
-    # tall as its tallest cell (and as wide as its rightmost edge), not
-    # wherever the last cell left the cursor.
-    right_extent = max(c[0] + c[1] for c in layout)
-    imgui.set_cursor_screen_pos((snap_int(origin[0] + right_extent),
-                                 snap_int(row_bottom)))
-    imgui.dummy(0, 0)
+    # ----- the lines (owned only; foreign lines are drawn by the owner) --
+    draw_list = imgui.get_window_draw_list()
+    line_bottom = top + draw_state._edge_lines_height + 300
+    for k in range(n_lines):
+        if not owned[k]:
+            continue
+        ex = win_x + edges[k]["x"]
+        alpha = 0.6 if active_edge == k else 0.2
+        draw_list.add_line(snap_int(ex), snap_int(top + 2),
+                           snap_int(ex), snap_int(line_bottom - 2),
+                           imgui.get_color_u32_rgba(1.0, 1.0, 1.0, alpha), 1.0)
 
     return changed, input_value

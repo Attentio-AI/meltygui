@@ -49,7 +49,6 @@ from src.lsd.gl_gui.view.core_views.cst_proxy import *
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import hotkey, tint, Core
 from src.lsd.gl_gui.view.core_views.decoration.invalidation_decoration import live
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
-from src.lsd.gl_gui.view.core_views.folders_proxy import FolderProxy
 from src.lsd.gl_gui.view.core_views.headers import draw_header, draw_header_end, draw_footer, render_search, \
     annotation_item_type
 from src.lsd.gl_gui.view.core_views.inspect_utils import set_fn_defaults
@@ -107,7 +106,11 @@ def draw_module(input_value: types.ModuleType, draw_state, **kwargs):
              show_bg=True, with_header=draw_header)
 def draw_type_name(input_value, **kwargs):
     try:
-        imgui.text(f"{input_value.__name__}")
+        if isinstance(input_value, str):
+            imgui.text(f"{input_value}")
+
+        else:
+            imgui.text(f"{input_value.__name__}")
     except Exception as e:
         imgui.text(f"Error displaying type: {e}")
 
@@ -594,11 +597,6 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
 
         prev_tint = None
         try:
-            if isinstance(collection, FolderProxy):
-                codec = FILE_CODECS.for_name(key)
-                if codec is not None and hasattr(codec, 'tint'):
-                    prev_tint = style_manager.get_tint()
-                    style_manager.set_imgui_tint(*codec.tint)
 
             y_offset = Core.melty.collection_spacing
             if show_indices:
@@ -1313,9 +1311,6 @@ proxy = cst_wrap(module)
 name_edits = {}
 code_export_str = "Test"
 
-filesystem_proxy = FolderProxy("/home/lukas/test_folder", text_mode=True)
-
-screenshots = FolderProxy(Toggles.screenshots, text_mode=True)
 
 
 # Main draw function, called by the GUI framework
@@ -2721,124 +2716,140 @@ def apply_param_source_matrix(input_value, ref=None, changed=False):
 @render_func(use_cache=True, show_bg=False, shadow=False, with_header=None,
              show_name=False, selectable=False, is_tree=True, temp=True, searchable=False)
 def draw_param_matrix(input_value, wrap=True, search_text="", draw_state=None, source_tints=None, unique=None,
-                      source_locations=None, priority_params=(), view_draw_state=None, **kwargs):
-    """The inputs-tab matrix view: rows = parameters, cells = the sources that
-    set them. Cells are parse FRAGMENTS (leaves pulled out of their codec's
-    parse), so they can't naturally adopt the codec tint the way a whole
-    codec-typed value does — this view is special: it looks the tint up per
-    source (the tab maps each column to its codec) and applies it MANUALLY to
-    every cell, alpha-boosted, so the data source is highly visible at a
-    glance. Empty rows are skipped here — this is the provenance view; the
-    full parameter surface is the matrix dict itself. Cell edits mutate the
+                      source_locations=None, priority_params=(), source_order=(), view_draw_state=None, **kwargs):
+    """The inputs-tab parameter screen: ONE parameter at a time, EVERY source.
+    A dropdown at the top switches between all the parameters identified for
+    the view (its own signature params first, then the @render_func machinery
+    kwargs); below it, one row per possible input source — param default
+    (signature), caller, mode, class @defaults, function decoration — in
+    `source_order`, shown whether or not the source currently sets the value.
+    Sources that set the param show their editable value; the rest show a dim
+    "not set", so the parameter's full input surface is mapped in one glance.
+
+    Cells are parse FRAGMENTS (leaves pulled out of their codec's parse), so
+    they can't naturally adopt the codec tint the way a whole codec-typed
+    value does — this view is special: it looks the tint up per source (the
+    tab maps each row to its codec) and applies it MANUALLY, alpha-boosted,
+    so the data source is highly visible at a glance. Cell edits mutate the
     row in place and report changed, for apply_param_source_matrix write-back.
 
-    `priority_params` (see signature_param_names) pins those rows into a top
-    section — the view function's own signature params plus the default list —
-    divided from the remaining machinery/unmatched rows by a separator.
+    `priority_params` (see signature_param_names) orders the view function's
+    own signature params to the front of the dropdown list.
 
-    `search_text` filters the rows by parameter name (the input tab's
-    always-on filter box feeds it): exact substring for short terms, the
-    shared typo-tolerant matcher (_fuzzy_key_match) for longer ones."""
+    `search_text` (the tab's Ctrl+F find bar) filters the dropdown's param
+    list and auto-switches the screen to the best match: exact substring for
+    short terms, the shared typo-tolerant matcher (_fuzzy_key_match) for
+    longer ones."""
     changed = False
     tints = source_tints or {}
     locations = source_locations or {}
     folder_icon = "\uf07b"  # FA folder -- explicit escape, see jump_to.py
-    # Uniform label/button width across every cell so the values align into a
-    # column no matter how long each source's name is.
-    _snames = {sn for r in input_value.values() if isinstance(r, dict) for sn in r}
-    btn_w = max((imgui.calc_text_size(f"{folder_icon} {sn}")[0] for sn in _snames),
-                default=0.0) + 15
-    font = Font.JETBRAINS_MONO_22
-    _hdr_font = Core.melty.font_mgr.get(font) if Core.melty.font_mgr else None
+
+    # The dropdown's param list: the view function's own signature params
+    # first, then the @render_func machinery kwargs. Frameworked-underscored
+    # names are never user-visible, so they don't get a screen.
+    prio_set = set(priority_params or ())
+    params = [p for p in (priority_params or ())
+              if p in input_value and not p.startswith('_')]
+    params += [p for p in input_value
+               if p not in prio_set and p not in _MATRIX_FRAMEWORK_PARAMS
+               and not p.startswith('_')]
 
     search_q = str(search_text or "").strip().lower()
-
-    def _shown(param, row):
-        return isinstance(row, dict) and row and not param.startswith('_')
-
-    prio_set = set(priority_params or ())
-    prio_items = [(p, input_value[p]) for p in (priority_params or ())
-                  if p in input_value and _shown(p, input_value[p])]
-    rest_items = [(p, r) for p, r in input_value.items()
-                  if p not in prio_set and _shown(p, r)]
-
     if search_q:
-        prio_items = [(p, r) for p, r in prio_items
-                      if _fuzzy_key_match(search_q, p.lower())]
-        rest_items = [(p, r) for p, r in rest_items
-                      if _fuzzy_key_match(search_q, p.lower())]
-
-    def _draw_rows(items, name_alpha=1.0):
-        nonlocal changed
-        for param, row in items:
-            # One row per attribute name: the name once, in a slightly larger
-            # font, with every source's value grouped & indented beneath it.
-            imgui.dummy(0, 2)
-            if _hdr_font is not None:
-                imgui.push_font(_hdr_font)
-
-            param = param[:min(len(param), 17)]
-
-            imgui.text_colored(param, 1,1,1, name_alpha)
-            if _hdr_font is not None:
-                imgui.pop_font()
-
-            imgui.same_line()
-            indent_size = 174
-            imgui.indent(indent_size)
-            for sname, val in row.items():
-                tint = tints.get(sname)
-
-                # The source label IS the jump button: a single-width button naming
-                # the source (draw_text / @render_func(...) / @defaults(...))
-                # that opens its file in the IDE; the value sits on the same
-                # line with show_name=False, so one element does both the
-                # labeling and the navigation.
-                tint_kwargs = {"alpha": 0.0, "tint": tint} if tint else {}
-                clicked = button(f"{folder_icon} {sname}", width=btn_w, height=22, shadow=True,
-                                    text_saturation=0.9, use_cache=True, text_align="left", text_value=0.389,
-                                 name=f"jump_{sname}##{param}_{unique}", show_button_bg=True,
-                                 **tint_kwargs)[0]
-                loc = locations.get(sname)
-                if clicked and loc:
-                    from src.lsd.gl_gui.utils.jump_to_code import open_in_intellij
-                    threading.Thread(target=open_in_intellij, args=(str(loc[0]),),
-                                     kwargs={"line_number": loc[1]},
-                                     daemon=True).start()
-                imgui.same_line()
-
-                # key routes the cell by ATTRIBUTE name (a tint cell gets the
-                # swatch/picker, not draw_collection); the SOURCE stays in place
-                # identity via name while the button above displays it.
-                ch, nv = draw_any(val, name=f"{sname}##{param}_{unique}",
-                                  key=param,
-                                  tint=tint,
-                                  show_name=False, wrap=True,
-                                  bg_offset=2, z_offset=0, disable_scroll=True)
-                if ch:
-                    row[sname] = nv
-                    changed = True
-
-                imgui.dummy(0, 1)
-            imgui.unindent(indent_size)
-
-    # While filtered, drop a section header whose rows all filtered out.
-    if prio_items or not search_q:
-        draw_text(f"def {view_draw_state._view_func.__name__}",
-                    is_tree=False, editable=False, width=draw_state.content_width - 14,
-                    font=Font.JETBRAINS_MONO_30)
-    _draw_rows(prio_items, name_alpha=1.0)
-    if prio_items and rest_items:
-        imgui.dummy(0, 16)
-        imgui.dummy(0, 16)
-
-    if rest_items or not search_q:
-        draw_text(f"core_render.py",
-                is_tree=False, editable=False, width=draw_state.content_width - 15,
-                                font=Font.JETBRAINS_MONO_30)
-    _draw_rows(rest_items, name_alpha=0.2)
-    if search_q and not prio_items and not rest_items:
+        params = [p for p in params if _fuzzy_key_match(search_q, p.lower())]
+    if not params:
         imgui.text_colored(f"no parameters match '{search_q}'", 1, 1, 1, 0.3)
+        return False, input_value
+
+    selected = getattr(draw_state, "_selected_param", None)
+    if selected not in params:
+        selected = params[0]
+        draw_state._selected_param = selected
+
+    draw_text(f"def {view_draw_state._view_func.__name__}",
+              is_tree=False, editable=False, width=draw_state.content_width - 14,
+              font=Font.JETBRAINS_MONO_30)
+    imgui.dummy(0, 4)
+
+    # STABLE identity: the dropdown's name must not change with the selection -
+    # its popover is a latching child window, and a name change would orphan
+    # the open popover (nothing ever calls it with closed=True again, so it
+    # sticks open). Instead the trigger label is synced below by stamping
+    # selected_label/selected_path on the dropdown's misc state, which only
+    # covers a filter auto-switch changing the selection out from under it.
+    dd_res = draw_dropdown(
+        selected, collection={p: p for p in params},
+        name=f"param_pick##{unique}",
+        width=min(280, max(120, draw_state.content_width - 24)),
+        show_header=False, return_extras=True)
+    picked_changed, picked = dd_res[0], dd_res[1]
+    if picked_changed and picked in input_value:
+        draw_state._selected_param = picked
+        selected = picked
+        draw_state.invalidate()
+    dd_ds = dd_res[2] if len(dd_res) > 2 else None
+    dd_state = (getattr(dd_ds, 'misc', None) or {}).get('drop_down_state') if dd_ds is not None else None
+    if dd_state is not None and getattr(dd_state, 'selected_label', None) != selected:
+        dd_state.selected_label = selected
+        dd_state.selected_path = (selected,)
+    imgui.same_line()
+    origin = "signature" if selected in prio_set else "core_render.py"
+    imgui.text_colored(origin, 1, 1, 1, 0.25)
+    imgui.dummy(0, 6)
+
+    row = input_value.get(selected)
+    row = row if isinstance(row, dict) else {}
+    # Every registered source gets a row, set or not; sources present only in
+    # the row (unmatched leftovers) append after the canonical order.
+    order = [s for s in (source_order or ())]
+    order += [s for s in row if s not in order]
+
+    # Uniform label-button width across every row, so values align into a
+    # column no matter how long each source's name is.
+    btn_w = max((imgui.calc_text_size(f"{folder_icon} {sn}")[0] for sn in order),
+                default=0.0) + 15
+
+    for sname in order:
+        tint = tints.get(sname)
+        is_set = sname in row
+
+        # The source label IS the jump button: the tinted button naming
+        # the source (draw_text / @render_func(...) / @defaults(...))
+        # that opens its file in the IDE; the value renders on the same
+        # line with show_name=False, so one element does both the
+        # labeling and the navigation.
+        tint_kwargs = {"alpha": 0.0, "tint": tint} if tint else {}
+        clicked = button(f"{folder_icon} {sname}", width=btn_w, height=22, shadow=True,
+                         text_saturation=0.9, use_cache=True, text_align="left",
+                         text_value=0.389 if is_set else 0.2,
+                         name=f"jump_{sname}##{selected}_{unique}", show_button_bg=True,
+                         **tint_kwargs)[0]
+        loc = locations.get(sname)
+        if clicked and loc:
+            from src.lsd.gl_gui.utils.jump_to_code import open_in_intellij
+            threading.Thread(target=open_in_intellij, args=(str(loc[0]),),
+                             kwargs={"line_number": loc[1]},
+                             daemon=True).start()
+        imgui.same_line()
+
+        if is_set:
+            # key routes the cell by ATTRIBUTE name (a tint value gets the
+            # swatch/picker, not draw_tuple); the SOURCE stays in the
+            # identity via name while the button above displays it.
+            ch, nv = draw_any(row[sname], name=f"{sname}##{selected}_{unique}",
+                              key=selected,
+                              tint=tint,
+                              show_name=False, wrap=True,
+                              bg_offset=2, z_offset=0, disable_scroll=True)
+            if ch:
+                row[sname] = nv
+                changed = True
+        else:
+            imgui.text_colored("not set", 1, 1, 1, 0.25)
+
+        imgui.dummy(0, 3)
+
     return changed, input_value
 
 
@@ -3684,7 +3695,7 @@ def draw_live_tab(input_value, **kwargs):
     current values (kwarg override, else signature default)."""
     imgui.text("Re-renders view frequently, bad for performance but good for debugging")
 
-    params_to_view = ["unique", ("abs_left"), ("abs_top", "top_offset"), "scroll_offset", ("abs_top_true", "top_offset_true"), ("width", "height"), ("content_width", "content_height"), "layer", "z_offset"]
+    params_to_view = ["unique", ("abs_left", "left_offset"), ("abs_top", "top_offset"), "scroll_offset", ("abs_top_true", "top_offset_true"), ("width", "height"), ("content_width", "content_height"), "layer", "z_offset"]
     for to_view in params_to_view:
         if isinstance(to_view, str):
             value = getattr(input_value, to_view, 'N/A')
@@ -3901,20 +3912,26 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, wrap=True
         run_recompile(input_value._view_func, code_state, draw_state,
                       start=clicked or hotkey, name=f"recompile{unique}")
 
-    # ── Every input in one table: parameter × source matrix ───────────────
-    # Collect each parsed source dict (columns), pivot against the render
-    # function's parameter list (rows) via param_source_matrix, and draw the
-    # whole input surface as one grid. Rebuilt every frame from the live
-    # parses (cheap dict scans), so a background parse landing or an edit to
-    # any source shows up immediately. Edits to a cell write back into the
-    # SOURCE dict they came from (apply_param_source_matrix) - those dicts are
-    # the hosts' bubbling-wrapped parse nodes, so the edit makes the owning
-    # host dirty and rides its normal chain_out update path.
-    # Each source column maps to the CODEC that owns the data - the codec's
+    # ── Every input source, one parameter at a time ──────────────────────────
+    # Collect each parsed source dict, match against the render function's
+    # parameter list via param_source_matrix, and hand the matrix to
+    # draw_param_matrix: a per-parameter SCREEN (dropdown within params)
+    # listing every possible source - param default, caller, mode, class
+    # default, function decoration - set or not. Sources register here even
+    # when empty/unparsed (placeholder {}), so each screen always shows the
+    # full source list; registration order is the screens' row order.
+    # Rebuilt every frame from the live parses (cheap dict copy), so a
+    # background parse landing or an edit in any source shows up immediately.
+    # Edits to a cell write back into the SOURCE dict they came from
+    # (apply_param_source_changes) - those dicts are the hosts'
+    # bubbling-wrapped parse nodes, so the edit marks the owning host dirty
+    # and rides its normal chain_out/save path. Placeholder rows are plain
+    # empty dicts: they never grow cells, so no write-back can land in them.
+    # Each source maps to the CODEC that owns its data - the codec's
     # render_kwargs tint IS the source color. The matrix cells are parse
     # fragments that can't adopt it naturally (type-based codec fragments), so
     # the tint map rides into draw_param_matrix, which applies it manually
-    # and individually per cell.
+    # and prominently per row.
     from src.lsd.gl_gui.view.core_conversion.new_codecs import (
         FunctionCodec, CallerCodec, DecorationsCodec, TypeCodec, ModeCodec)
 
@@ -3926,11 +3943,13 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, wrap=True
     source_locations = {}
 
     def _add_source(sname, sdict, codec, location=None):
-        if isinstance(sdict, dict) and sdict:
-            sources[sname] = sdict
-            source_tints[sname] = _codec_tint(codec)
-            if location is not None and location[0] is not None:
-                source_locations[sname] = location
+        # Register even when the source sets nothing or hasn't parsed yet -
+        # the per-param screen draws EVERY source row, absent ones as "not
+        # set". The placeholder is a fresh empty dict, never written into.
+        sources[sname] = sdict if isinstance(sdict, dict) else {}
+        source_tints[sname] = _codec_tint(codec)
+        if location is not None and location[0] is not None:
+            source_locations[sname] = location
 
     # Source names carry the origin: the bare function name labels the
     # signature column, decorator-call spellings (@render_func(name), ...)
@@ -3953,21 +3972,12 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, wrap=True
         except (TypeError, OSError):
             cls_loc = None
 
-    _add_source(fn_name, cm_state.render_func_dict.deep.parameters(), FunctionCodec,
-                location=fn_loc)
     call_site_dict = cm_state.call_site_dict.deep.unwrap() if cm_state.call_site_dict else None
-    if call_site_dict:
+    caller_name = "caller"
+    _stack = getattr(input_value, "_call_stack", None)
+    if _stack:
         from src.lsd.gl_gui.view.core_conversion.chain_converters import caller_func_name
-        _add_source(caller_func_name(input_value._call_stack) or "caller",
-                    call_site_dict, CallerCodec, location=call_site)
-    _add_source(f"@render_func({fn_name})",
-                cm_state.render_func_dict.deep.decorators.render_func(),
-                DecorationsCodec, location=fn_loc)
-    _add_source(f"@window({fn_name})",
-                cm_state.render_func_dict.deep.decorators.window(),
-                DecorationsCodec, location=fn_loc)
-    _add_source(f"@defaults({cls_name})", cm_state.class_dict.deep.decorators.defaults(),
-                TypeCodec, location=cls_loc)
+        caller_name = caller_func_name(_stack) or "caller"
 
     # MODE - the active mode is entry in its enum class source (e.g.
     # `NEW_CODE = {types...: ModeOverrides(kwargs={...})}` in mode.py), not as
@@ -3977,12 +3987,8 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, wrap=True
     # overlap the LIVE matched config (get_config_for) - the entry that
     # actually drove THIS view. Edits merge into the mode_dict host's parse
     # and ride its normal chain_out/save back into the enum's source file.
-    imgui.text(f"{str(input_value._kwargs.get('mode'))} {input_value._kwargs.get('current_mode')}")
-    if cm_state.mode_dict is None:
-        imgui.text(f"No mode source for {mode_cls}")
-    else:
-        imgui.text(f"mode source for {mode_cls}")
-
+    mode_label = str(current_mode) if current_mode is not None else "mode"
+    mode_kwargs, mode_loc = None, None
     if current_mode is not None and cm_state.mode_dict is not None:
         candidates = [c for c in
                       cm_state.mode_dict.deep[current_mode.name].kwargs.all()
@@ -3994,7 +4000,6 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, wrap=True
                 live_keys = set(live_cfg.kwargs)
         mode_kwargs = max(candidates,
                           key=lambda c: len(live_keys & set(c)), default=None)
-        mode_loc = None
         try:
             cls_lines, cls_start = inspect.getsourcelines(mode_cls)
             member_off = next(
@@ -4005,23 +4010,39 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, wrap=True
         except (TypeError, OSError):
             pass
 
-        imgui.text(f"mode source for {mode_kwargs}"[:50])
-
-        _add_source(str(current_mode), mode_kwargs, ModeCodec, location=mode_loc)
+    # Registration order IS the per-param screen's row order: param default
+    # (signature), caller, mode, class default, function decoration.
+    _add_source(fn_name, cm_state.render_func_dict.deep.parameters(), FunctionCodec,
+                location=fn_loc)
+    _add_source(caller_name, call_site_dict, CallerCodec, location=call_site)
+    _add_source(mode_label, mode_kwargs, ModeCodec, location=mode_loc)
+    _add_source(f"@defaults({cls_name})", cm_state.class_dict.deep.decorators.defaults(),
+                TypeCodec, location=cls_loc)
+    _add_source(f"@render_func({fn_name})",
+                cm_state.render_func_dict.deep.decorators.render_func(),
+                DecorationsCodec, location=fn_loc)
+    # @window only exists as a source on actually-@window-decorated funcs -
+    # a placeholder row here would be permanent noise on every other tab.
+    _window_deco = cm_state.render_func_dict.deep.decorators.window()
+    if isinstance(_window_deco, dict) and _window_deco:
+        _add_source(f"@window({fn_name})", _window_deco,
+                    DecorationsCodec, location=fn_loc)
 
     # ── Search - the STANDARD searchable path; no special find box. The tab
     # is searchable=True, so Ctrl+F over it opens the framework's floating
     # find bar (view_render, searchable=True) which maintains the term on
     # this draw_state.search_text and invalidates this tab per keystroke.
-    # That same term feeds draw_param_matrix's fuzzy row filter below, and the
-    # search session on pty.search_stack reaches the matrix cells' editors
-    # for in-place highlighting like any other searchable view.
+    # That same term feeds draw_param_matrix's fuzzy-row filter below (which
+    # auto-switches the screen to the best match), and the search session's
+    # Melty.search_stack reaches the matrix cells' editors for in-place
+    # highlighting like any other searchable editor.
 
     if sources:
         _, matrix = param_source_matrix(sources, func=input_value._view_func,
                                         include_unmatched=True)
         changed, value = draw_param_matrix(matrix, source_tints=source_tints,
                                            source_locations=source_locations,
+                                           source_order=tuple(sources),
                                            view_draw_state=input_value, wrap=True,
                                            width=draw_state.content_width-17,
                                            priority_params=tuple(signature_param_names(input_value._view_func)),

@@ -73,6 +73,7 @@ from src.lsd.gl_gui.model.core_model.draw_state import TabState
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.model.model_enums import RelaxedEnum
 from src.lsd.gl_gui.modes import Modes
+from src.lsd.gl_gui.notifications import notify
 from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace, get_exception_frames
@@ -112,6 +113,7 @@ def save_file(address, code_str, codec=None, ensure_import=None, parent_ds=None,
     changed under us (force=True, the user's explicit Keep-mine, bypasses)."""
     current_time = datetime.now().strftime("%H:%M:%S")
     print(f"{current_time} Saved {address.path} from {parent_ds.name}")
+    notify(f"Saved {address.path} from {parent_ds.name}")
     return codec.save(address=address, data=code_str, ensure_import=ensure_import, force=force)
 
 
@@ -1739,16 +1741,25 @@ def _index_host_in_place(str_host, dict_host, gen):
         flat = compute_symbol_usages_for_address(address)
     except Exception:
         return
-    # Re-fetch the held value - a reparse may have replaced it mid-compute;
-    # sites are path-absolute, so attaching to the new gp is still correct.
-    gp = dict_host._held()
-    if not isinstance(gp, dict):
-        return
-    gp._symbol_gen = gen
-    if flat:
-        gp.symbol_usage = flat
-        _distribute_by_name(gp, flat)
-    dict_host._notify_consumers(name="symbol index attached")
+
+    def _attach():
+        # Runs on the render thread (Melty.post_to_render): the gp is LIVE -
+        # several hosts (editor views, usage spans, draw_collection) iterate
+        # its dicts every frame, and adding __symbol_usages__ keys from a
+        # worker mid-iteration raises "dictionary changed size during
+        # iteration". Between frames there is no iterator to race. Re-fetch
+        # the held value here - a reparse may have replaced it mid-compute;
+        # sites are file-absolute, so attaching to the newer gp is correct.
+        gp = dict_host._held()
+        if not isinstance(gp, dict):
+            return
+        gp._symbol_gen = gen
+        if flat:
+            gp.symbol_usage = flat
+            _distribute_by_name(gp, flat)
+        dict_host._notify_consumers(name="symbol index attached")
+
+    Melty.post_to_render(_attach)
 
 
 def _wake_stale_code_hosts(gen):

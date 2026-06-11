@@ -925,7 +925,27 @@ def _usage_spans(ds, text, code_tree, line_offset=0):
         except Exception:
             ds._usage_spans = ()
         ds._usage_spans_key = key
+        ds._usage_tc = {}     # per-su jump-target counts; valid per span set
     return ds._usage_spans
+
+
+def _usage_target_count(ds, su, view_path, view_span):
+    """len() of the EXACT list the usage-jump dropdown would show for `su` in
+    this view — the wash color keys on this, so hue ≡ dropdown size. Raw
+    caller count is the wrong signal: a usage SITE away from the definition
+    jumps to exactly one place (the definition) no matter how many callers
+    exist project-wide, and must read cool. Memoized per span set on the
+    draw_state — _usage_jump_targets realpath()s per call, far too hot for a
+    per-span per-frame paint loop. id(su) is a stable key here: the spans
+    cache holds the su objects alive, and the memo dies with it."""
+    tc = getattr(ds, '_usage_tc', None)
+    if tc is None:
+        tc = ds._usage_tc = {}
+    n = tc.get(id(su))
+    if n is None:
+        n = len(_usage_jump_targets(su, view_path=view_path, view_span=view_span))
+        tc[id(su)] = n
+    return n
 
 
 def _usage_jump_targets(su, view_path=None, view_span=None):
@@ -991,12 +1011,15 @@ def _usage_ref_items(targets):
 _USAGE_WASH_CACHE: dict = {}
 
 
-def _usage_wash_color(n_users):
-    """Packed-ABGR wash for a usage span — a heat ramp on the user count: one
-    user is the old faint washed-out steel blue, climbing to a bright deep
-    orange by ~six users, so heavily-used symbols read hot at a glance. The
-    hue walks the warm side of the wheel (blue → violet → red → orange)
-    rather than lerping straight down through green."""
+def _usage_wash_color(n_targets):
+    """Packed-ABGR wash for a usage span — a heat ramp on the JUMP-TARGET
+    count (the rows the usage-jump dropdown would show, see
+    _usage_target_count): one target is the faint washed-out steel blue,
+    climbing to a bright deep orange by ~six, so a click that fans out reads
+    hot at a glance while a straight jump-to-definition stays cool. The hue
+    walks the warm side of the wheel (blue → violet → red → orange) rather
+    than lerping straight down through green."""
+    n_users = n_targets
     col = _USAGE_WASH_CACHE.get(n_users)
     if col is None:
         import colorsys
@@ -1987,6 +2010,34 @@ def draw_text(input_value: str,
         Melty._text_focus_grant_frame = Melty.frame_count
         is_focused = True
 
+    def _try_usage_jump(pos):
+        """Usage jump at buffer index `pos` (double-click / Ctrl+B): one
+        counterpart opens straight in IntelliJ; several open the usage-jump
+        picker under the symbol. True if the jump or picker happened."""
+        for _us, _ue, _su in _usage_spans(ds, text, _usage_tree, _usage_off):
+            if _us <= pos < _ue:
+                _targets = _usage_jump_targets(
+                    _su,
+                    view_path=getattr(jump_to, 'path', None) if jump_to is not None else None,
+                    view_span=(_usage_off + 1, _usage_off + text.count('\n') + 1))
+                if len(_targets) > 1:
+                    _items, _tags = _usage_ref_items(_targets)
+                    ds._uj_items = _items
+                    ds._uj_tags = _tags
+                    ds._uj_anchor = _us   # picker hangs under the symbol
+                    ds._uj_index = 0
+                    ds._uj_open = True
+                    uj_state._kbd_mode = True
+                    uj_state.cursor_path = (next(iter(_items)),)
+                    uj_state.open_path = ()
+                    request_render()
+                    return True
+                if _targets:
+                    _open_usage_ref(_targets[0])
+                    return True
+                return False
+        return False
+
     if left_mouse_down:
         if Toggles.text_focus_stack_trace and Melty.text_focused_ds is not ds:
             print(f"[focus-grant] click -> {ds.name} ({ds._tile_id})")
@@ -2009,36 +2060,15 @@ def draw_text(input_value: str,
         ds.text_double_click_time = now
         ds.text_last_click_pos = click_pos
 
-        if ds.text_click_count == 2 or ctrl_b_down:
+        if ds.text_click_count == 2:
             # Double-click on a symbol that has users → jump like IntelliJ
             # instead of word-selecting (the washed background is the
             # affordance). One counterpart jumps you there; several open
             # the usage-jump picker (the same latched dropdown as the
             # code-suggestion popup) under the symbol so the user picks the
-            # site. Anywhere else, word-select.
-            _jumped = False
-            for _us, _ue, _su in _usage_spans(ds, text, _usage_tree, _usage_off):
-                if _us <= click_pos < _ue:
-                    _targets = _usage_jump_targets(
-                        _su,
-                        view_path=getattr(jump_to, 'path', None) if jump_to is not None else None,
-                        view_span=(_usage_off + 1, _usage_off + text.count('\n') + 1))
-                    if len(_targets) > 1:
-                        _items, _tags = _usage_ref_items(_targets)
-                        ds._uj_items = _items
-                        ds._uj_tags = _tags
-                        ds._uj_anchor = _us   # picker hangs under the symbol
-                        ds._uj_index = 0
-                        ds._uj_open = True
-                        uj_state._kbd_mode = True
-                        uj_state.cursor_path = (next(iter(_items)),)
-                        uj_state.open_path = ()
-                        request_render()
-                        _jumped = True        # skip the word-select below
-                    elif _targets:
-                        _open_usage_ref(_targets[0])
-                        _jumped = True
-                    break
+            # target. Anywhere else, word-select. (Ctrl+B does the same at the
+            # caret - see the standalone handler below the click state.)
+            _jumped = _try_usage_jump(click_pos)
             if _jumped:
                 ds.text_drag_mode = 'char'
                 ds.text_cursor_pos = click_pos
@@ -2114,6 +2144,15 @@ def draw_text(input_value: str,
             ds.text_selection_end = drag_pos
             ds.text_cursor_pos = drag_pos
         ds.text_cursor_blink_time = time.time()
+
+    # Ctrl+B - IntelliJ-style "go to declaration" at the CARET, no mouse
+    # involved. (This flag used to be read only inside the click handler above,
+    # so the shortcut silently required a simultaneous mouse press.) The event
+    # is global-routed, so it reaches the editor under the pointer; gate on
+    # focus so a stale caret in some other merely-hovered editor can't jump.
+    if (ctrl_b_down and is_focused and not single_line and not is_search_box
+            and not getattr(ds, '_uj_open', False)):
+        _try_usage_jump(min(ds.text_cursor_pos, max(len(text) - 1, 0)))
 
     # --- Keyboard handling ---
     if is_focused:
@@ -2705,11 +2744,16 @@ def draw_text(input_value: str,
     # Symbol-usage washes: a slight background behind every occurrence of a
     # symbol that has callers elsewhere - the affordance that a double-click
     # jumps to its users (see the mouse handler). The wash rides a blue→orange
-    # heat ramp on the user count (_usage_wash_color), so a heavily-used symbol
-    # is hotter than a single-caller one. Drawn before (under) the search
-    # matches and the glyphs.
+    # color ramp from the DROPDOWN size (_usage_target_count - the same list
+    # _try_usage_jump would show), so the user answers "how many places does
+    # this click go": a usage site away from its definition jumps to one
+    # place and stays cool blue however popular the symbol is project-wide;
+    # the definition of a six-caller function reads hot. Drawn before (under)
+    # the search highlights and the glyphs.
     _uspans = _usage_spans(ds, text, _usage_tree, _usage_off)
     if _uspans:
+        _u_vpath = getattr(jump_to, 'path', None) if jump_to is not None else None
+        _u_vspan = (_usage_off + 1, _usage_off + text.count('\n') + 1)
         for _us, _ue, _su in _uspans:
             u_line, _ = _index_to_line_col(text, _us)
             sy = origin_y + u_line * line_px
@@ -2718,7 +2762,7 @@ def draw_text(input_value: str,
                 continue
             sx = origin_x + _colx(_us)
             ex = origin_x + _colx(_ue)
-            usage_bg = _usage_wash_color(len(getattr(_su, 'callers', None) or ()))
+            usage_bg = _usage_wash_color(_usage_target_count(ds, _su, _u_vpath, _u_vspan))
             draw_list.add_rect_filled(sx - 1, sy + 1, ex + 1, ey - 1, usage_bg, 3.0)
 
     # Search match highlights (drawn behind the text so glyphs stay readable).

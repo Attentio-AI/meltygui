@@ -115,7 +115,8 @@ class GLTexture:
         self.internal_format = int(internal_format)
 
     def __repr__(self):
-        kind = {gl.GL_TEXTURE_2D: "2d", gl.GL_TEXTURE_3D: "3d"}.get(self.target, hex(self.target))
+        kind = {gl.GL_TEXTURE_1D: "1d", gl.GL_TEXTURE_2D: "2d",
+                gl.GL_TEXTURE_3D: "3d"}.get(self.target, hex(self.target))
         return f"GLTexture({kind} id={self.texture_id} shape={self.shape})"
 
 
@@ -382,6 +383,34 @@ class GLState:
 
         deps = ((depth, height, width), str(data.dtype), nearest, version)
         return self.get(key, create, delete, deps=deps)
+
+    def texture1d(self, key, data, nearest=False, version=None):
+        """1-D RGB texture from a flat [r,g,b, r,g,b, ...] float list (the LUT
+        shape — anything reshapable to (n, 3) works). Linear-filtered and
+        edge-clamped by default so a color ramp samples smoothly. The payload
+        is tiny, so it uploads via plain client-memory TexImage1D — no PBO
+        staging needed. Pass `version` (any comparable token, e.g. a content
+        hash) to force re-upload when same-length data changes."""
+        payload = np.ascontiguousarray(np.asarray(data, dtype=np.float32).reshape(-1, 3))
+        n = int(payload.shape[0])
+        filt = gl.GL_NEAREST if nearest else gl.GL_LINEAR
+
+        def create():
+            tex = _scalar(gl.glGenTextures(1))
+            gl.glBindTexture(gl.GL_TEXTURE_1D, tex)
+            gl.glTexParameteri(gl.GL_TEXTURE_1D, gl.GL_TEXTURE_MIN_FILTER, filt)
+            gl.glTexParameteri(gl.GL_TEXTURE_1D, gl.GL_TEXTURE_MAG_FILTER, filt)
+            gl.glTexParameteri(gl.GL_TEXTURE_1D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE)
+            with tight_unpack():
+                gl.glTexImage1D(gl.GL_TEXTURE_1D, 0, gl.GL_RGB32F, n, 0,
+                                gl.GL_RGB, gl.GL_FLOAT, payload)
+            gl.glBindTexture(gl.GL_TEXTURE_1D, 0)
+            return GLTexture(tex, gl.GL_TEXTURE_1D, (n,), gl.GL_RGB32F)
+
+        def delete(tex):
+            gl.glDeleteTextures([tex.texture_id])
+
+        return self.get(key, create, delete, deps=(n, nearest, version))
 
     def vao(self, key, build=None, deps=None):
         """A vertex array. `build()` runs once with the fresh VAO bound — it

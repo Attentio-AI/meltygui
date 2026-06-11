@@ -49,7 +49,6 @@ class ModeOverrides:
 
 @window
 class Mode(Enum):
-    some_int = 20
     def get_config_for(self, input_value=None, the_type=None):
         if input_value is not None:
             the_type = type(input_value)
@@ -202,7 +201,7 @@ class Mode(Enum):
                     "show_tint": False, "show_header": True, "with_footer": draw_footer, 'indent_size': 5,
                     "search_text": "",
                     "show_add_delete": False, "with_header": draw_header, "min_width": 200, "min_height": 60,
-                    "initial": {"width": 600, "height": 420, "window_pos": (100, 500)}},
+                    "initial": {"width": 900, "height": 600, "window_pos": (100, 500)}},
 
             recursive=False
         )

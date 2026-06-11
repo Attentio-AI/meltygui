@@ -682,11 +682,12 @@ def render_func(*args, **o_kwargs):
             # of waiting for this view to re-render with a new cursor pos.
             anc_sx, anc_sy = draw_state._ancestor_scroll()
             if kwargs.get("view_offset", True):
+                left = kwargs.get("left", imgui.get_cursor_screen_pos()[0])
                 draw_state.left_offset, draw_state.top_offset = (
-                    imgui.get_cursor_screen_pos()[0] - draw_state.parent_window.abs_left + anc_sx,
+                    left - draw_state.parent_window.abs_left + anc_sx,
                     imgui.get_cursor_screen_pos()[1] - draw_state.parent_window.abs_top + anc_sy)
             else:
-                draw_state.left_offset, draw_state.top_offset = (0,0)
+                draw_state.left_offset, draw_state.top_offset = (kwargs.get("left", 0),0)
 
 
         if closable:
@@ -934,10 +935,11 @@ def render_func(*args, **o_kwargs):
                             kwargs['style_manager'] = style_manager
                             kwargs['draw_state'] = draw_state
                             kwargs["with_header"](**draw_state._kwargs)
+                            left = kwargs.get("left", imgui.get_cursor_screen_pos()[0])
 
                             imgui.pop_id()
                             draw_state.left_offset, draw_state.top_offset = (
-                                imgui.get_cursor_screen_pos()[0] - draw_state._parent.abs_left,
+                                left - draw_state._parent.abs_left,
                                 imgui.get_cursor_screen_pos()[1] - draw_state._parent.abs_top)
                             if not draw_state.expanded:
                                 return_value = (False, None)

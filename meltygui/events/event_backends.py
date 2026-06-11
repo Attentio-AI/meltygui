@@ -239,6 +239,24 @@ class ImGuiBackend:
         glfw.KEY_Y: "y",
         glfw.KEY_S: "s",
         glfw.KEY_Z: "z",
+        glfw.KEY_SLASH: "slash",
+        # Numpad - Blender-style viewport hotkeys (voxel views) live on these.
+        glfw.KEY_KP_0: "kp_0",
+        glfw.KEY_KP_1: "kp_1",
+        glfw.KEY_KP_2: "kp_2",
+        glfw.KEY_KP_3: "kp_3",
+        glfw.KEY_KP_4: "kp_4",
+        glfw.KEY_KP_5: "kp_5",
+        glfw.KEY_KP_6: "kp_6",
+        glfw.KEY_KP_7: "kp_7",
+        glfw.KEY_KP_8: "kp_8",
+        glfw.KEY_KP_9: "kp_9",
+        glfw.KEY_KP_DECIMAL: "kp_decimal",
+        glfw.KEY_KP_DIVIDE: "kp_divide",
+        glfw.KEY_KP_MULTIPLY: "kp_multiply",
+        glfw.KEY_KP_SUBTRACT: "kp_subtract",
+        glfw.KEY_KP_ADD: "kp_add",
+        glfw.KEY_KP_ENTER: "kp_enter",
     } if HAS_IMGUI else {}
 
     def __init__(self, handler: InputHandler):

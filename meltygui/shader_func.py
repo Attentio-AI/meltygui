@@ -113,7 +113,11 @@ def infer_glsl_type(value):
     # Name-compared (not isinstance) so textures created before a hotswap of
     # gl_state.py keep working the same logic as set_default's type check.
     if type(value).__name__ == "GLTexture":
-        return "sampler3D" if value.target == int(gl.GL_TEXTURE_3D) else "sampler2D"
+        if value.target == int(gl.GL_TEXTURE_3D):
+            return "sampler3D"
+        if value.target == int(gl.GL_TEXTURE_1D):
+            return "sampler1D"
+        return "sampler2D"
     tname = type(value).__name__
     if type(value).__module__ == "glm":
         if tname.startswith("d"):   # dvec3/dmat4x4 - setter upcasts to f32

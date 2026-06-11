@@ -1270,10 +1270,17 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int) -> dict:
         base = member_bases.get(nm)
         if obj is not None:                       # module-level: real source via inspect
             try:
-                df = inspect.getsourcefile(obj)
-                dl = inspect.getsourcelines(obj)[1]
-                dm = getattr(obj, "__module__", "") or mod_name
-            except (TypeError, OSError):
+                # Unwrap decorator chains (render_func etc.) for inspect:
+                # getsourcelines follows __wrapped__ internally but
+                # getsourcefile does not, so an un-unwrapped wrapper yields a
+                # mismatched pair - the wrapper's FILE (core_render.py) with
+                # the wrapped function's LINE. Unwrapping once keeps them
+                # consistent. ValueError = unwrap's cycle guard.
+                target = inspect.unwrap(obj)
+                df = inspect.getsourcefile(target)
+                dl = inspect.getsourcelines(target)[1]
+                dm = getattr(target, "__module__", "") or mod_name
+            except (TypeError, OSError, ValueError):
                 df, dl, dm = rp_str, def_lines.get(nm, 0), mod_name
         elif base is not None:                    # reverse ref: member on an
             df, dl = _member_def_site(base, nm.split('.', 1)[1])   # external base
@@ -6068,19 +6075,7 @@ def build_index_cache() -> tuple:
             if Melty.frame_count > 60:
                 _time.sleep(0.002)
     if real_changes:
-        # Source changed somewhere - span-level usage results may have gained
-        # or lost callers. Bumping the generation lapses them (see
-        # _compute_symbol_usages); the callbacks wake index clients (cached
-        # editor hosts replay their blits until something re-runs them, so a
-        # bump they can't observe themselves must push the re-index trigger).
-        _index_generation += 1
-        _symbol_store["gen"] = _index_generation
-        for cb in list(_index_bump_callbacks):
-            try:
-                cb(_index_generation)
-            except Exception:
-                pass
-        _save_symbol_store()
+        _bump_generation()
     elif _index_generation == 0 and reparsed:
         # Pathological fallback: nothing counted as a real change (snapshot
         # already current) but we've never served results this launch - make
@@ -6090,21 +6085,136 @@ def build_index_cache() -> tuple:
     return len(mod_map), reparsed
 
 
+def _bump_generation():
+    """Source really changed somewhere — span-level usage results may have
+    gained or lost callers. Bumping the generation lapses them (see
+    _compute_symbol_usages); the callbacks wake idle consumers (cached editor
+    hosts replay their blit until something re-runs them, so a change they
+    can't observe must push the re-index trigger); the store write-back +
+    save persist the new state. Shared tail of both change detectors: the
+    file-watch path below (primary) and the warmer's reconcile pass."""
+    global _index_generation
+    _index_generation += 1
+    _symbol_store["gen"] = _index_generation
+    for cb in list(_index_bump_callbacks):
+        try:
+            cb(_index_generation)
+        except Exception:
+            pass
+    _save_symbol_store()
+
+
+# ── File-watch driven index updates ───────────────────────────
+# The PRIMARY change detector: FileWatch (melty.py) raises events for every
+# .py under the src tree (the recursive watch scheduled in
+# _register_index_watch below), so we re-index exactly the files that
+# changed - no scanning. The warmer daemon's periodic pass remains only as a
+# slow safety reconcile (missed/overflowing watchdog events, modules whose
+# files changed before they were first imported) plus the initial cold load.
+
+_watch_pending: set = set()
+_watch_timer = None
+_watch_lock = _threading_spans.Lock()
+_WATCH_DEBOUNCE_S = 0.6      # a save arrives as a truncate+flush event burst
+
+
+def _on_watch_event(src_path):
+    """FileWatch global listener (runs on the watchdog OBSERVER thread — only
+    collect + re-arm here). Debounce-batches changed src .py paths; the timer
+    thread does the actual re-index, so one save burst costs one pass."""
+    if not (isinstance(src_path, str) and src_path.endswith(".py")
+            and src_path.startswith(_SRC_PREFIX)):
+        return
+    global _watch_timer
+    with _watch_lock:
+        _watch_pending.add(src_path)
+        if _watch_timer is not None:
+            _watch_timer.cancel()
+        t = _threading_spans.Timer(_WATCH_DEBOUNCE_S, _process_watch_events)
+        t.daemon = True
+        _watch_timer = t
+        t.start()
+
+
+def _process_watch_events():
+    """Debounced batch: re-parse refs for JUST the changed files, then bump
+    the generation when any really moved past the snapshot (same real-change
+    accounting as the warmer pass — a touch with identical mtime, or a file
+    outside the loaded module map, bumps nothing). Runs on the debounce timer
+    thread, with the usual drag deferral."""
+    global _watch_timer
+    with _watch_lock:
+        paths = list(_watch_pending)
+        _watch_pending.clear()
+        _watch_timer = None
+    if not paths:
+        return
+    _wait_for_no_drag(max_wait=10.0)
+    mod_map = _src_mod_map()
+    changed = 0
+    for p in paths:
+        try:
+            rp = _Path(p).resolve()
+        except (OSError, ValueError):
+            continue
+        mod = mod_map.get(rp)
+        if mod is None:
+            continue            # not a loaded module - outside the index
+        prev = _index_refs_cache.get(rp)
+        _file_index_refs(rp, mod)
+        entry = _index_refs_cache.get(rp)
+        if (entry is not prev and entry is not None
+                and _mtime_snapshot.get(rp) != entry[0]):
+            changed += 1
+            _mtime_snapshot[rp] = entry[0]
+    if changed:
+        _bump_generation()
+
+
+def _register_index_watch():
+    """Subscribe the index to FileWatch and put one recursive watch on the
+    src tree, so EVERY src .py raises events (the per-editor watches only
+    cover directories with open views). Re-exec safe: the listener dedupes by
+    __name__, the recursive watch by a marker in _watched_dirs (fresh sets on
+    a restart-in-place re-create both against the new Observer)."""
+    try:
+        from src.lsd.gl_gui.melty import FileWatch
+        listeners = getattr(FileWatch, "global_listeners", None)
+        if listeners is None:
+            return              # older melty.py still loaded - reconcile pass covers us
+        listeners[:] = [f for f in listeners
+                        if getattr(f, "__name__", "") != "_on_watch_event"]
+        listeners.append(_on_watch_event)
+        marker = _SRC_PREFIX + "::recursive"
+        if marker not in FileWatch._watched_dirs:
+            FileWatch.observer.schedule(FileWatch.handler, _SRC_PREFIX,
+                                        recursive=True)
+            FileWatch._watched_dirs.add(marker)
+    except Exception as e:
+        print(f"[symbol-index] watch registration failed: {e}")
+
+
+_register_index_watch()
+
+
 @_window
 class SymbolIndexCache:
     """Keeps the fast caller-index cache warm on a background thread, so the
     editor's Index button is instant. Flip `auto` off to stop the periodic
     refresh; call rebuild() for a one-shot. Status fields below are live."""
     auto = True              # keep the cache fresh in the background
-    interval_s = 15.0        # seconds between background refresh passes
-    startup_delay_s = 0.0    # build immediately; the loop's immediate second
+    interval_s = 300.0       # SLOW safety reconcile only - the FileWatch
+                             # listener (_on_watch_event) is the primary
+                             # change detector now, re-indexing exactly the
+                             # files that changed within ~0.6s of the save
+    startup_delay_s = 10.00    # start immediately; the loop's immediate second
+    src_files = 0
                              # pass catches modules that import after us
     # ── status (written by the worker) ──
     building = False
-    src_files = 0
     last_reparsed = 0
-    last_secs = 0.0
     builds = 0
+    last_secs = 0.0
 
     @classmethod
     def _build_once(cls):

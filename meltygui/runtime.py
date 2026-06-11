@@ -131,6 +131,12 @@ class FileWatch:
     _self_write_hashes = {}    # resolved path → md5 of the last IN-PROCESS write (any view)
     output_debug_diff = False
     _write_suppress_window = 1.0  # seconds - for truncate+write event pairs from write_text
+    # Global file-event listeners: called with every event's src_path on the
+    # OBSERVER thread, before (and regardless of) the per-draw_state dispatch
+    # - so a subscriber sees changes to files no view is watching. The symbol
+    # index subscribes here (libcst_conversion._on_watch_event). Listeners
+    # must be fast/non-blocking (debounce internally); exceptions swallowed.
+    global_listeners = []
 
     @classmethod
     def start(cls):
@@ -178,6 +184,11 @@ class FileWatch:
         # view of its own) is still invalidated. Keyed the same as
         # path_to_draw_states - str(path.resolve) - so event.src_path matches.
         Melty.code_cache.pop(event.src_path, None)
+        for listener in list(cls.global_listeners):
+            try:
+                listener(event.src_path)
+            except Exception:
+                pass
         draw_states = cls.path_to_draw_states.get(event.src_path)
         if not draw_states:
             return
@@ -368,6 +379,13 @@ class Melty:
 
     root_draw_states = defaultdict(lambda: list())
     root_draw_states_by_layer = defaultdict(lambda: list())
+
+    # Callables posted from worker threads, drained on the render thread at
+    # end_frame (_drain_render_tasks) - for work that must not race a frame
+    # in progress, e.g. mutating a live view-model tree that frame walkers
+    # iterate. post_to_render wakes the loop, so an idle thread drains promptly.
+    _render_tasks = []
+    _render_tasks_lock = _threading.Lock()
 
     filter = Filter()
     detached = False
@@ -1771,6 +1789,29 @@ class Melty:
         cls.nested_window_refresh = parent_window
 
     @classmethod
+    def post_to_render(cls, fn):
+        """Queue `fn` to run on the render thread between frames (drained at
+        end_frame). Safe from any thread; wakes the loop so an idle app runs
+        it promptly. For work that must not race a frame in progress — e.g.
+        mutating a live view-model tree that frame walkers iterate."""
+        with cls._render_tasks_lock:
+            cls._render_tasks.append(fn)
+        request_render()
+
+    @classmethod
+    def _drain_render_tasks(cls):
+        if not cls._render_tasks:
+            return
+        with cls._render_tasks_lock:
+            tasks, cls._render_tasks = cls._render_tasks, []
+        for fn in tasks:
+            try:
+                fn()
+            except Exception as e:
+                print(f"[melty] render task failed: {e}")
+                print_stack_trace(exception=e)
+
+    @classmethod
     def end_frame(cls):
         if glfw_utils.frames_left > 0:
             request_render()
@@ -1782,6 +1823,13 @@ class Melty:
         # the context current, which is exactly here.
         from src.lsd.gl_gui.gl_state import GLState
         GLState.flush_deletes()
+
+        # Drain callables posted from worker threads (post_to_render) - work
+        # that must not race the frame, e.g. attaching symbol usages into a
+        # LIVE gp tree that view walkers iterate (inserting a dict key during
+        # another thread's iteration raises RuntimeError). Same thread here as
+        # the GL delete queue above.
+        cls._drain_render_tasks()
 
         cls.apply_refresh_nested_windows()
         # Reset overlay routing to the top (global, unmasked) channel so

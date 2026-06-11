@@ -156,6 +156,9 @@ class Toggles:
     class TextEditor:
         enable_spell_check = False
 
+    @defaults(tint=(0.631, 0.474, 0.861))
+    class InputHandlerToggles:
+        show_debug = False
 
     @defaults(tint=(0.833, 1.00, 0.044))
     class InvalidateTracker:
@@ -163,10 +166,6 @@ class Toggles:
         enable = False
         draw_bvh = False
         draw_rect = True
-
-    @defaults(tint=(0.631, 0.474, 0.861))
-    class InputHandlerToggles:
-        show_debug = False
 
     @defaults(tint=(0.089, 0.08, 0.069))
     class TerminalSettings:
