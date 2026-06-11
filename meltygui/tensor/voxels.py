@@ -235,12 +235,8 @@ class VoxelParams(DictConversion):
     density: draw_float(min_value=0.5, max_value=30.0) = 8.0
     threshold: draw_float(min_value=0.0, max_value=1.0) = 0.12
     step_size: draw_float(min_value=0.001, max_value=0.02) = 0.004
-    # screen-pixel multiplier for the axis-label billboards; 0 disables them
-    # (not a uniform; applied Python-side by _billboard_specs)
-    label_scale: draw_float(min_value=0.0, max_value=4.0) = 1.0
     nearest = False   # texture filtering, applied per frame, not a uniform
     lut = "jet"       # LUT name (a LUTS key); the texture itself rides in separately
-
 
 # The annotated fields are exactly the scalar uniform candidates.
 _UNIFORM_FIELDS = tuple(VoxelParams.__annotations__)
@@ -684,14 +680,15 @@ _NAME_PX, _NUM_PX = 24.0, 16.0        # billboard heights
 _NAME_OFF_PX, _NUM_OFF_PX = 46.0, 19.0   # outward offset from the edge
 
 
-def _tick_values(size, px_per_idx, num_px):
+def _tick_values(size, px_per_idx, num_px, spacing=1.6):
     """Integer tick positions for one edge: EVERY integer when the labels
     fit, else the smallest 1-2-5·10ᵏ step whose rotated labels keep clear of
     each other (footprint ≈ the widest label's text width along the edge, in
-    projected PIXELS — so zooming in fits more ticks). The end value always
-    shows; the last multiple yields when it would crowd it."""
+    projected PIXELS — so zooming in fits more ticks). `spacing` is the
+    minimum gap between tick centers in widest-label widths. The end value
+    always shows; the last multiple yields when it would crowd it."""
     widest = max(1, len(str(size))) * 0.62 * num_px   # ~average glyph aspect
-    min_px = widest * 1.6
+    min_px = widest * spacing
     step, k = None, 1
     while step is None and k <= 10 ** 9:
         for s in (1, 2, 5):
@@ -710,8 +707,8 @@ def _tick_values(size, px_per_idx, num_px):
     return ticks
 
 
-def _billboard_specs(silhouette, corners, axis_display, volume_scale, params,
-                     label_scale=1.0):
+def _billboard_specs(silhouette, corners, axis_display, volume_scale,
+                     label_size=1.0, label_spacing=1.6):
     """[(text, anchor3, u_dir3, v_dir3, out_dir3, px_h, off_px, alpha)] for
     every drawn silhouette edge — the dim name beside the midpoint plus
     integer ticks (_tick_values) at their TRUE positions along the edge.
@@ -725,8 +722,8 @@ def _billboard_specs(silhouette, corners, axis_display, volume_scale, params,
     always rides the UNFLIPPED outward direction, so labels never land
     inside the box. Projected-length gates match the outline: <32px no
     furniture, <70px no ticks."""
-    name_px, num_px = _NAME_PX * label_scale, _NUM_PX * label_scale
-    name_off, num_off = _NAME_OFF_PX * label_scale, _NUM_OFF_PX * label_scale
+    name_px, num_px = _NAME_PX * label_size, _NUM_PX * label_size
+    name_off, num_off = _NAME_OFF_PX * label_size, _NUM_OFF_PX * label_size
     vis = [p for p in corners.values() if p is not None]
     if not vis:
         return []
@@ -781,7 +778,7 @@ def _billboard_specs(silhouette, corners, axis_display, volume_scale, params,
 
         specs.append((name, mid, u, v, out, name_px, name_off, 1.0))
         if px_len >= 70.0 and size > 0:
-            for idx in _tick_values(int(size), px_len / size, num_px):
+            for idx in _tick_values(int(size), px_len / size, num_px, label_spacing):
                 p = tuple(a3[i] + w[i] * (length * idx / size) for i in range(3))
                 specs.append((str(idx), p, u, v, out, num_px, num_off, 1.0))
     return specs
