@@ -25,21 +25,33 @@ def live(cls):
 
     @functools.wraps(original_setattr)
     def new_setattr(self, name: str, value: Any) -> None:
-        deep_refresh_names = getattr(self, '__deep_refresh__', set())
+        melty = Core.melty
+        if melty.silence_invalidate or melty.frame_count < 2:
+            # Silenced - the render wrapper's own bookkeeping writes land here
+            # ~100x per render_func call, so do nothing with the raw data.
+            # scroll_offset is the one attr with a side effect even while
+            # silenced: a real change bumps the version which keys the
+            # _ancestor_scroll memo (see DrawState._ancestor_scroll).
+            if name == 'scroll_offset' and getattr(self, name, None) != value:
+                melty.scroll_version = getattr(melty, 'scroll_version', 0) + 1
+            try:
+                original_setattr(self, name, value)
+            except Exception as e:
+                print(f"Error setting attribute {name} on {self}: {e}")
+                print_stack_trace(e=e)
+            return
 
         # Set the attribute using the original __setattr__
+        original_value = None
         try:
             original_value = getattr(self, name, None)
-            if original_setattr == object.__setattr__:
-                object.__setattr__(self, name, value)
-            else:
-                original_setattr(self, name, value)
+            original_setattr(self, name, value)
         except Exception as e:
             print(f"Error setting attribute {name} on {self}: {e}")
             print_stack_trace(e=e)
 
-        if Core.melty.silence_invalidate or Core.melty.frame_count < 2:
-            return
+        if name == 'scroll_offset' and value != original_value:
+            melty.scroll_version = getattr(melty, 'scroll_version', 0) + 1
 
         # Check if we're initializing
         initializing = getattr(self, init_flag, False)

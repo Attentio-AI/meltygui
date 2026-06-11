@@ -944,9 +944,13 @@ def request_render(for_frames:int | None=None):
     from src.lsd.gl_gui.melty import Melty
     if Melty.glfw_window is None:
         return
-    # Check if glfw initialized before requesting render, as this can be called from any thread
-    if glfw.get_current_context() is None:
-        return
+    # NOTE: no glfw.get_current_context() readiness check here - it returns the
+    # context current on the CALLING thread, which is None on every worker
+    # thread, so it silently dropped exactly the cross-thread wakes this
+    # function exists for (an idle loop blocks in glfw.wait_events; a
+    # task completion must post_empty_event to produce a frame). The
+    # window-exists gate above covers pre-init; the try/except at the bottom
+    # covers mid-shutdown teardown.
 
     global frames_left
     if frames_left > 0:
@@ -961,5 +965,8 @@ def request_render(for_frames:int | None=None):
             print_stack_trace(size=3, section="REQUEST RENDER")
 
     _needs_render.set()
-    glfw.post_empty_event()
+    try:
+        glfw.post_empty_event()
+    except Exception:
+        pass    # glfw torn down mid-event (shutdown/restart) - nothing to wake
 

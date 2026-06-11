@@ -14,7 +14,7 @@ from src.lsd.gl_gui.melty import Melty, SearchTerm
 from src.lsd.gl_gui.fonts import Font
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.jump_to import draw_jump_to
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults, Core
 
 
 def _hex(h):
@@ -530,8 +530,8 @@ def draw_icon_selector(input_value, draw_state=None,
     return (True, picked) if (changed and isinstance(picked, str)) else (False, cur)
 
 
-@render_func(use_cache=False, show_bg=True, shadow=True, with_header=None, tint=(0.81, 0.342, 0.11),
-             show_name=False, selectable=False, z_offset=3, bg_offset=10)
+@render_func(use_cache=True, show_bg=True, shadow=True, with_header=None, tint=(0.878, 0.496, 0.117),
+             show_name=False, selectable=False, z_offset=3, bg_offset=7)
 def draw_bool_token(input_value, draw_state=None, **kwargs):
     """Inline True/False word — whole-token token_views renderer for 'bool'
     tokens. Renders the literal exactly as the editor would (same font, grid
@@ -583,12 +583,13 @@ def _parse_number_token(s):
         return None, None, None, None
 
 
-@render_func(use_cache=False, show_bg=False, shadow=False, with_header=None, z_offset=9,
-             show_name=False, selectable=False, tint=(0.3, 0.6, 0.5, 1.0), wrap=True)
+@render_func(use_cache=True, show_bg=True, shadow=True, with_header=None, z_offset=4,
+             show_name=False, selectable=False, bg_offset=3, tint=(0.043, 0.068, 0.094), wrap=True)
 def draw_number_token(input_value, draw_state=None,
                       left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
                       **kwargs):
     """Inline drag widget for a numeric literal — whole-token token_views renderer
+    
     for 'number' tokens. Ints get drag_int, floats drag_float (unbounded: min=max=0);
     the dragged value is formatted back preserving the literal's shape (base,
     e-notation, decimal places) and spliced into the source like a keystroke.
@@ -620,12 +621,8 @@ def draw_number_token(input_value, draw_state=None,
     # word, with only a subtle hover/active lift instead of imgui's bright blue.
     push_style_var(imgui.STYLE_FRAME_PADDING, (0, 1))
     push_style_color(imgui.COLOR_TEXT, 0.41, 0.59, 0.73)              # number blue
-    push_style_color(imgui.COLOR_FRAME_BACKGROUND, *(0.029, 0.039, 0.061))
-    push_style_color(imgui.COLOR_FRAME_BACKGROUND_HOVERED, 0.14, 0.16, 0.19)
-    push_style_color(imgui.COLOR_FRAME_BACKGROUND_ACTIVE, *(0.058, 0.07, 0.094))
-
     def _pop_styles():
-        pop_style_color(4)
+        pop_style_color(1)
         pop_style_var()
 
     imgui.set_next_item_width(draw_state.width)
@@ -653,7 +650,7 @@ def draw_number_token(input_value, draw_state=None,
             draw_state._num_edit = False   # Enter / Esc / click-away ends this
         # The editor's tile is cached; keep it re-rendering while we hold the
         # input so the caret blinks and keystrokes land the frame they occur.
-        Melty.cache.invalidate_up(draw_state._tile_id, max_depth=10, force=True)
+        Melty.cache.invalidate_up(draw_state._tile_id, max_depth=4, force=True)
         request_render()
         _pop_styles()
         # Live-apply parseable edits like imgui's temp input did: a same-kind
@@ -843,9 +840,12 @@ def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, c
 # _distribute_by_name). Each SymbolUsage carries `sites` — file-absolute
 # (line, col) occurrences of the symbol within this view's source — and
 # `callers` — cross-project UsageRefs. The editor washes a slight background
-# behind every site whose symbol HAS callers; a double-click jumps in IntelliJ
-# (the same behavior as the jump-to button) - to the first caller when the
-# definition is in this view, back to the definition from a caller site.
+# behind each site whose symbol HAS callers, its color climbing a blue→orange
+# heat ramp with the user count; a double-click jumps via IntelliJ (the same opener as the jump-to
+# button) - toward the callers if a definition is in a view, back to the
+# definition from a usage site. A single target jumps straight there, more
+# open the usage-jump popup (the same latched dropdown as the code-suggestion
+# popup) listing every user.
 
 def _collect_usage_spans(code_tree, text, line_offset=0):
     """[(start_index, end_index, SymbolUsage)] — buffer-index spans for every
@@ -928,14 +928,16 @@ def _usage_spans(ds, text, code_tree, line_offset=0):
     return ds._usage_spans
 
 
-def _jump_to_usage(su, view_path=None, view_span=None) -> bool:
-    """Open the symbol's counterpart in IntelliJ — the same opener the jump-to
-    header button uses. Direction depends on where we are:
+def _usage_jump_targets(su, view_path=None, view_span=None):
+    """Ordered jump candidates (UsageRefs) for a symbol-usage click. Direction
+    depends on where we are:
       • the symbol's DEFINITION lives inside this view (view_path + 1-based
-        file-line range view_span) → we're at the definition: jump to the
-        first caller ("who uses this?").
-      • otherwise we're at a USAGE site → jump back to the definition.
-    Async (daemon thread), True if a target existed."""
+        file-line range view_span) → we're at the definition: the candidates
+        are its callers ("who uses this?").
+      • otherwise we're at a USAGE site → the definition (falling back to the
+        callers when jedi found none).
+    One candidate → the caller jumps straight there; several → it opens the
+    usage-jump picker."""
     d = getattr(su, 'definition', None)
     if d is not None and getattr(d, 'path', None) is None:
         d = None
@@ -952,18 +954,61 @@ def _jump_to_usage(su, view_path=None, view_span=None) -> bool:
             def_here = False
 
     if def_here:
-        target = callers[0] if callers else None
-    else:
-        target = d or (callers[0] if callers else None)
-    if target is None:
-        return False
+        return callers
+    return [d] if d is not None else callers
+
+
+def _open_usage_ref(ref):
+    """Open one UsageRef in IntelliJ — the same opener the jump-to header
+    button uses. Async (daemon thread) so a slow IDE never stalls the loop."""
     import threading
     from src.lsd.gl_gui.utils.jump_to_code import open_in_intellij
     threading.Thread(target=open_in_intellij,
-                     args=(str(target.path),),
-                     kwargs={"line_number": getattr(target, 'line', None)},
+                     args=(str(ref.path),),
+                     kwargs={"line_number": getattr(ref, 'line', None)},
                      daemon=True).start()
-    return True
+
+
+def _usage_ref_items(targets):
+    """({label: UsageRef}, {UsageRef: tag}) rows for the usage-jump picker: the
+    label is the user's enclosing scope, the dim right-aligned tag its
+    file:line. Duplicate scope labels get a numeric suffix (dict keys feed
+    draw_dd_menu, so they must be unique)."""
+    items, tags = {}, {}
+    for ref in targets:
+        scope = (getattr(ref, 'scope', '') or getattr(ref, 'module_name', '')
+                 or '<module>')
+        label, n = scope, 2
+        while label in items:
+            label = f"{scope} ({n})"
+            n += 1
+        items[label] = ref
+        p = getattr(ref, 'path', None)
+        tags[ref] = f"{p.name}:{ref.line}" if p is not None else f":{ref.line}"
+    return items, tags
+
+
+_USAGE_WASH_CACHE: dict = {}
+
+
+def _usage_wash_color(n_users):
+    """Packed-ABGR wash for a usage span — a heat ramp on the user count: one
+    user is the old faint washed-out steel blue, climbing to a bright deep
+    orange by ~six users, so heavily-used symbols read hot at a glance. The
+    hue walks the warm side of the wheel (blue → violet → red → orange)
+    rather than lerping straight down through green."""
+    col = _USAGE_WASH_CACHE.get(n_users)
+    if col is None:
+        import colorsys
+        t = min(max(n_users, 1) - 1, 5) / 5.0
+        h = (0.57 + 0.5 * t) % 1.0      # 0.57 blue → 1.07 ≡ 0.07 orange
+        s = 0.35 + 0.6 * t              # washed-out → fully saturated
+        v = 0.75 + 0.25 * t             # dim → bright
+        a = int(52 + 38 * t)            # the wash itself firms up a touch
+        r, g, b = colorsys.hsv_to_rgb(h, s, v)
+        col = (a << 24) | (int(b * 255) << 16) | (int(g * 255) << 8) | int(r * 255)
+        _USAGE_WASH_CACHE[n_users] = col
+    return col
 
 
 def _is_icon_char(c):
@@ -1716,14 +1761,14 @@ def _describe_code_tree(code_tree):
     return name
 
 
-@render_func(is_default_for=(CodeLine), show_bg=True, wrap=False, use_cache=True, disable_scroll=False, z_offset=1,
+@render_func(is_default_for=(CodeLine), show_bg=True, use_cache=True, disable_scroll=False, z_offset=1,
              with_header=draw_header, shadow=True, show_name=False, with_footer=draw_footer, determines_height=True,
              selectable=False, searchable=True, bg_offset=-11, show_add_delete=False)
 def draw_text(input_value: str,
               left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
-              horizontal_scroll_drag=False, search_text="",
-              single_line=False, is_search_box=False,
-              draw_state=None, request_focus=False,
+              horizontal_scroll_drag=False, search_text="", ctrl_b_down=False,
+              single_line=False, is_search_box=False, min_width=110,
+              draw_state=None, request_focus=False, wrap=False,
               line_height=1.149, font=Font.JETBRAINS_MONO_19, jump_to=None,
               code_tree=None, code_dict=None, error=None, token_views=None,
               syntax_highlight=True):
@@ -1751,6 +1796,10 @@ def draw_text(input_value: str,
     if getattr(ds, '_ac_state', None) is None:
         ds._ac_state = DropDownState()
     ac_state = ds._ac_state
+    # Same deal for the usage-jump picker (multi-user symbol double-click).
+    if getattr(ds, '_uj_state', None) is None:
+        ds._uj_state = DropDownState()
+    uj_state = ds._uj_state
 
     # Imported in-function to avoid a module-load import cycle (toggles pulls in
     # decoration/window machinery). For the spell-check button + squiggles below.
@@ -1861,6 +1910,8 @@ def draw_text(input_value: str,
     else:
         line_offset = 0
         gutter_w = 0.0
+        
+
     text_visible_width = draw_state.content_width - gutter_w
 
     # Snapshot the clip rect in the same scroll frame as `left`/`top`. Those
@@ -1920,15 +1971,33 @@ def draw_text(input_value: str,
     # rebind focus by tile id so a cache hit doesn't silently drop it.
     if (not is_focused and Melty.text_focused_ds is not None
             and getattr(Melty.text_focused_ds, '_tile_id', None) == ds._tile_id):
+        if Toggles.text_focus_stack_trace:
+            print(f"[focus-grant] rebind -> {ds.name} ({ds._tile_id}) "
+                  f"from ds {id(Melty.text_focused_ds)}")
         Melty.text_focused_ds = ds
+        Melty._text_focus_grant_frame = Melty.frame_count
         is_focused = True
     if request_focus:
+        if Toggles.text_focus_stack_trace and Melty.text_focused_ds is not ds:
+            print(f"[focus-grant] request_focus -> {ds.name} ({ds._tile_id})")
         Melty.text_focused_ds = ds
+        # Stamp the grant frame so the same-frame request_focus grace (see
+        # Melty.clear_focus) protects this claim from the very click that
+        # opened the search box / dropdown / menu owning it.
+        Melty._text_focus_grant_frame = Melty.frame_count
         is_focused = True
 
     if left_mouse_down:
+        if Toggles.text_focus_stack_trace and Melty.text_focused_ds is not ds:
+            print(f"[focus-grant] click -> {ds.name} ({ds._tile_id})")
         Melty.text_focused_ds = ds
+        Melty._text_focus_grant_frame = Melty.frame_count
         is_focused = True
+        # A fresh click anywhere in the editor dismisses the usage-jump picker
+        # (the double-click branch below re-opens it when it should). Clicks on
+        # the picker itself never land here - it floats in its own window, so
+        # this hover-ranged event doesn't fire.
+        ds._uj_open = False
         ds.text_cursor_blink_time = time.time()
         click_pos = _xy_to_char_index(text, io.mouse_pos.x, io.mouse_pos.y,
                                       origin_x, origin_y, line_px, vcols=_get_vcols())
@@ -1940,17 +2009,35 @@ def draw_text(input_value: str,
         ds.text_double_click_time = now
         ds.text_last_click_pos = click_pos
 
-        if ds.text_click_count == 2:
-            # Double-click on a symbol that has users → jump to the first
-            # caller like IntelliJ instead of word-selecting (the washed
-            # background is the affordance). Anywhere else, word-select.
+        if ds.text_click_count == 2 or ctrl_b_down:
+            # Double-click on a symbol that has users → jump like IntelliJ
+            # instead of word-selecting (the washed background is the
+            # affordance). One counterpart jumps you there; several open
+            # the usage-jump picker (the same latched dropdown as the
+            # code-suggestion popup) under the symbol so the user picks the
+            # site. Anywhere else, word-select.
             _jumped = False
             for _us, _ue, _su in _usage_spans(ds, text, _usage_tree, _usage_off):
                 if _us <= click_pos < _ue:
-                    _jumped = _jump_to_usage(
+                    _targets = _usage_jump_targets(
                         _su,
                         view_path=getattr(jump_to, 'path', None) if jump_to is not None else None,
                         view_span=(_usage_off + 1, _usage_off + text.count('\n') + 1))
+                    if len(_targets) > 1:
+                        _items, _tags = _usage_ref_items(_targets)
+                        ds._uj_items = _items
+                        ds._uj_tags = _tags
+                        ds._uj_anchor = _us   # picker hangs under the symbol
+                        ds._uj_index = 0
+                        ds._uj_open = True
+                        uj_state._kbd_mode = True
+                        uj_state.cursor_path = (next(iter(_items)),)
+                        uj_state.open_path = ()
+                        request_render()
+                        _jumped = True        # skip the word-select below
+                    elif _targets:
+                        _open_usage_ref(_targets[0])
+                        _jumped = True
                     break
             if _jumped:
                 ds.text_drag_mode = 'char'
@@ -2079,6 +2166,30 @@ def draw_text(input_value: str,
                 _fired.discard(glfw.KEY_ENTER)
                 _fired.discard(glfw.KEY_KP_ENTER)
                 _fired.discard(glfw.KEY_TAB)
+
+        # --- Usage-jump picker: navigation & accept --- same key model as the
+        # suggestion popup above: while open, Esc/arrows/Enter drive the picker
+        # and are consumed before the caret handlers see them.
+        if getattr(ds, '_uj_open', False):
+            _uj_keys = list(getattr(ds, '_uj_items', None) or ())
+            _uj_idx = getattr(ds, '_uj_index', 0)
+            if pressed(glfw.KEY_ESCAPE):
+                ds._uj_open = False
+                _fired.discard(glfw.KEY_ESCAPE)
+            elif (pressed(glfw.KEY_UP) or pressed(glfw.KEY_DOWN)) and _uj_keys:
+                step = 1 if pressed(glfw.KEY_DOWN) else -1
+                _uj_idx = (_uj_idx + step) % len(_uj_keys)
+                ds._uj_index = _uj_idx
+                uj_state._kbd_mode = True
+                uj_state.cursor_path = (_uj_keys[_uj_idx],)
+                _fired.discard(glfw.KEY_UP)
+                _fired.discard(glfw.KEY_DOWN)
+                request_render()
+            elif (pressed(glfw.KEY_ENTER) or pressed(glfw.KEY_KP_ENTER)) and _uj_keys and not ctrl:
+                _open_usage_ref(ds._uj_items[_uj_keys[min(_uj_idx, len(_uj_keys) - 1)]])
+                ds._uj_open = False
+                _fired.discard(glfw.KEY_ENTER)
+                _fired.discard(glfw.KEY_KP_ENTER)
 
         # --- Typed characters --- drained in order, using each key event's own
         # modifiers so fast shift-typing across a slow frame stays shifted.
@@ -2337,6 +2448,11 @@ def draw_text(input_value: str,
             ds.text_selection_end = ds.text_cursor_pos
             changed = True
 
+        # Any buffer edit dismisses the usage-jump picker - its spans (and the
+        # anchor it hangs off) are stale the moment the text shifts.
+        if changed and getattr(ds, '_uj_open', False):
+            ds._uj_open = False
+
         # --- Code-suggestion popup: toggle visibility + rebuild candidates ---
         # Runs after every text-mutating key so the prefix reflects the final
         # buffer. Produces the list THIS frame's render draws and next frame's
@@ -2588,11 +2704,12 @@ def draw_text(input_value: str,
 
     # Symbol-usage washes: a slight background behind every occurrence of a
     # symbol that has callers elsewhere - the affordance that a double-click
-    # jumps to its first caller (see the mouse handler). Drawn before (under)
-    # the search highlights and the glyphs.
+    # jumps to its users (see the mouse handler). The wash rides a blue→orange
+    # heat ramp on the user count (_usage_wash_color), so a heavily-used symbol
+    # is hotter than a single-caller one. Drawn before (under) the search
+    # matches and the glyphs.
     _uspans = _usage_spans(ds, text, _usage_tree, _usage_off)
     if _uspans:
-        usage_bg = (52 << 24) | (190 << 16) | (150 << 8) | 95  # faint light blue
         for _us, _ue, _su in _uspans:
             u_line, _ = _index_to_line_col(text, _us)
             sy = origin_y + u_line * line_px
@@ -2601,6 +2718,7 @@ def draw_text(input_value: str,
                 continue
             sx = origin_x + _colx(_us)
             ex = origin_x + _colx(_ue)
+            usage_bg = _usage_wash_color(len(getattr(_su, 'callers', None) or ()))
             draw_list.add_rect_filled(sx - 1, sy + 1, ex + 1, ey - 1, usage_bg, 3.0)
 
     # Search match highlights (drawn behind the text so glyphs stay readable).
@@ -2700,8 +2818,7 @@ def draw_text(input_value: str,
                 _w = (_lead * char_w) if _lead else (len(token) * char_w + 2 * _pad)
                 try:
                     _res = _view["renderer"](token, width=_w, height=line_px, name=_name)
-                except Exception:
-                    _res = None
+                except Exception:                    _res = None
                 imgui.set_cursor_screen_pos(_save_cur)
                 if _lead:
                     draw_list.add_text(x + _lead * char_w, y, color, token)
@@ -2867,8 +2984,10 @@ def draw_text(input_value: str,
         if not blink_cursor or (time.time() - ds.text_cursor_blink_time) % 1.0 < 0.5:
             cx, cy = _char_pos_to_xy(text, ds.text_cursor_pos, origin_x, origin_y, line_px, vcols=vcols)
             current_line_rect = (int(origin_x), int(cy + 1), int(origin_x + visible_width), int(cy + line_px + 1))
-            line_highlight_color = imgui.get_color_u32_rgba(*Tint.cursor_tint()[:3], 0.1)
+            line_highlight_color = imgui.get_color_u32_rgba(*Tint.cursor_tint()[:3], 0.05)
+            draw_list.channels_set_current(Core.melty.get_channel() - 1)  # draw under the text
             draw_list.add_rect_filled(*current_line_rect, line_highlight_color)
+            draw_list.channels_set_current(Core.melty.get_channel() + 1)  # draw under the text
 
             imgui_color = imgui.get_color_u32_rgba(*Tint.cursor_tint()[:3], 1.0)
             draw_list.add_line(cx, cy, cx, cy + line_px, imgui_color, 2.0)
@@ -2965,6 +3084,7 @@ def draw_text(input_value: str,
         if _mt is not None:
             Melty.cache.invalidate_up(_mt, force=True)
 
+
     imgui.dummy(draw_state.content_width - 1, text_height)
 
     # draw_dd_menu is a LATCHED window: called every frame with closed=not _ac_show
@@ -3002,6 +3122,61 @@ def draw_text(input_value: str,
         ds._ac_request_anchor = -1
         changed = True
 
+    # --- Usage-jump picker (multi-use symbols) ---
+    # Same latched window contract as the suggestion popup above: draw_dd_menu
+    # is called EVERY frame with closed= toggled. Rows are the symbol's users
+    # ({scope_id: UsageRef}, with the text as the dim row tag); a pick - mouse
+    # or Enter (handled in the key block) - opens that site in IntelliJ.
+    _uj_show = (Melty.text_focused_ds is draw_state and getattr(ds, '_uj_open', False)
+                and bool(getattr(ds, '_uj_items', None)))
+    _uj_items = ds._uj_items if _uj_show else {}
+    _uj_anchor = getattr(ds, '_uj_anchor', ds.text_cursor_pos)
+    _uj_x, _uj_y = _char_pos_to_xy(text, _uj_anchor, origin_x, origin_y, line_px, vcols=vcols)
+    if _uj_show:
+        # Keyboard-vs-hover highlight: same dance as the suggestion popup -
+        # keyboard selection shows unless the mouse actively MOVES over the
+        # popup; a resting pointer never steals the highlight.
+        _mp = imgui.get_mouse_pos()
+        _lm = getattr(uj_state, '_last_mouse', None)
+        _pop_x0, _pop_y0 = _uj_x, _uj_y + line_px
+        _pop_h = min(len(_uj_items) * 24 + 10, 312)
+        _over = (_pop_x0 - 4 <= _mp[0] <= _pop_x0 + 400
+                 and _pop_y0 - 2 <= _mp[1] <= _pop_y0 + _pop_h)
+        _moved = _lm is not None and (abs(_mp[0] - _lm[0]) > 0.5 or abs(_mp[1] - _lm[1]) > 0.5)
+        if not _over:
+            uj_state._kbd_mode = True
+        elif _moved:
+            uj_state._kbd_mode = False
+        uj_state._last_mouse = (_mp[0], _mp[1])
+        # Cached latched window: force its tile dirty per interaction so the
+        # selection/hover row actually repaints (see the AC popup note above).
+        _mt = getattr(ds, '_uj_menu_tile', None)
+        if _mt is not None:
+            Melty.cache.invalidate_up(_mt, force=True)
+
+    uj_changed, uj_pick = draw_dd_menu(
+        _uj_items, name=f"{ds.name}_uj_menu", tint=(0.6380185, 0.7277778, 0.278981477022171, 1.0), view_offset=False, show_bg=True,
+        temp=True, show_search=False, swoosh=False, closed=not _uj_show, min_height=140, bg_offset=3, auto_resize=False, min_width=500,
+        window_pos=(_uj_x - draw_state.abs_left, _uj_y - draw_state.abs_top + line_px), text_align="left",
+        row_tags=(getattr(ds, '_uj_tags', None) if _uj_show else None),
+        parent_window=draw_state, root_state=uj_state, path_prefix=())
+    if _uj_show:
+        _mt = getattr(ds, '_uj_menu_tile', None)
+        if _mt is None or _mt not in Melty.cache._tiles:
+            _pref = f"{ds.name}_uj_menu##"
+            for _k in Melty.cache._tiles:
+                if _k.startswith(_pref):
+                    ds._uj_menu_tile = _k
+                    break
+    # Mirror a hover-moved cursor back into the keyboard index so Enter/arrows
+    # continue from the hovered row.
+    if _uj_show and not uj_state._kbd_mode:
+        _cp = uj_state.cursor_path
+        if isinstance(_cp, tuple) and len(_cp) == 1 and _cp[0] in _uj_items:
+            ds._uj_index = list(_uj_items).index(_cp[0])
+    if uj_changed and getattr(uj_pick, 'path', None) is not None:
+        _open_usage_ref(uj_pick)
+        ds._uj_open = False
 
     if _font_pushed:
         imgui.pop_font()

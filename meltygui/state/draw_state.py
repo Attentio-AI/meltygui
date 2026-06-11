@@ -218,7 +218,7 @@ class TileMode(Enum):
          "overhead_time", "scroll_visible", "depth_and_layer", "imgui_is_toggled_open", "top", "left",
          "hotkey_receiver", "use_child", "cst", "bg_color", "depth", "z_pos", "content_height", "return_item",
          "is_active", "clip_rect", "wrapped_top", "current_tint", "wrapped_left", "multi_line", "relative_pos", "footer_width", "footer_height",
-         "min_width", "min_height", "is_focused", "drag_window_pos_x", "drag_window_pos_y", "corner_radius",
+         "min_width", "min_height", "is_focused", "drag_window_pos_x", "drag_window_pos_y",
          "drag_mode", "is_hovered_last", "bg_shown", "draw_window_pos_x", "z_offset", "melty_window",
          "misc_used", "draw_window_pos_y", "drag_delta", "screen_pos", "hover_rects", "melty_window", "auto_resize",
          "imgui_is_item_activated", "frame_count", "text_search_current", "text_search_count")
@@ -230,7 +230,7 @@ class TileMode(Enum):
          "premature_break", "wrapped_left", "_did_use_cache", "hover_rects", "window_pos", "content_width", "code_state",
          "content_region", "value_hash", "drag_window", "content_region", "did_render", "footer_height", "footer_width",
          "bounding_hovered", "dlt_count", "clip_rect",
- "scrolled", "is_hovered_last", "frame_count", "z_pos", "corner_radius",
+ "scrolled", "is_hovered_last", "frame_count", "z_pos",
          "text_search_current", "text_search_count")
 @no_save_exclude('render_time',  "total_z_offset", 'closable', 'has_full_tile', 'invalid_content_height',
                   "parent_window", "pressed", "bbox", "", "child_selected", "bg_color",
@@ -244,6 +244,13 @@ class TileMode(Enum):
 @deep_refresh( 'closed', 'search_text', 'search_active')
 class DrawState(DictConversion):
     """Holds per-widget runtime state (expand/collapse, etc.)."""
+
+    # _ancestor_scroll cache, keyed on (frame_count, Melty.scroll_version).
+    # Class-level defaults so pre-existing/deserialized instances resolve them
+    # without __init__; written via object.__setattr__ (never accessed or
+    # serialized; to_dict only walks the default instance's fields).
+    _anc_scroll_key = None
+    _anc_scroll_cache = (0, 0)
 
     def __init__(self):
         super().__init__()
@@ -283,7 +290,11 @@ class DrawState(DictConversion):
         self.misc_used = set()
         self.closed = False
         self.frame_count = 0
-        self.corner_radius = 6
+        # corner_radius is no longer a declared field - it migrated to the
+        # auto state system (see core_render's auto-state block): views that
+        # tune it declare a named `corner_radius` param (e.g. button), the
+        # default bg path stamps it from there, and background painters read
+        # it via getattr(ds, 'corner_radius', 6).
         self.nested_window = False
         self.use_cache = False
         self.depth = 0
@@ -562,6 +573,19 @@ class DrawState(DictConversion):
         self.pin_to_clip = None
         self._kwargs = {}
         self.kwargs = AttrDict({})
+        # Auto-state params (see the auto-state block in core_render.py).
+        # auto_params holds only DIVERGED values - what view code wrote via
+        # draw_state.<param> = x - keyed by param name. They inject into the
+        # kwargs gauntlet above the default layers (defaults and caller-passed
+        # kwargs still win). Non-underscore on purpose: it serializes whenever
+        # non-empty, so diverged state persists across sessions while
+        # at-default params save nothing. _auto_baseline mirrors last frame's
+        # RESOLVED value per param (what the caller handed the view); the
+        # divergence scan compares the live attr against it to detect writes.
+        # The the draw_state.<param> attrs themselves are dynamic (not
+        # declared here), so to_dict never serializes them directly.
+        self.auto_params = {}
+        self._auto_baseline = {}
         self.hover_reported = True
         self._start_z_pos = 3
         self._column_width = 0
@@ -1024,7 +1048,18 @@ class DrawState(DictConversion):
         chain. Used so abs_left/abs_top respond to ancestor scroll deltas
         without waiting for the descendant to re-render — left_offset is
         stored as the *unscrolled* content position and this delta subtracted
-        on demand. Returns (sx, sy)."""
+        on demand. Returns (sx, sy).
+
+        Memoized per (frame_count, Melty.scroll_version): the walk used to run
+        on EVERY abs_left/abs_top access just to build their cache keys (~57
+        walks per render_func call). Any real scroll_offset change anywhere
+        bumps scroll_version (see new_setattr in invalidation_decoration), so
+        mid-frame scroll deltas still invalidate exactly like the uncached
+        walk did."""
+        melty = Core.melty
+        key = (melty.frame_count, getattr(melty, 'scroll_version', 0))
+        if self._anc_scroll_key == key:
+            return self._anc_scroll_cache
         sx = sy = 0
         node = self._parent
         stop = self.parent_window
@@ -1058,6 +1093,12 @@ class DrawState(DictConversion):
             if nxt is node:
                 break
             node = nxt
+        # Raw writes so the memo must not re-enter @live setattr tracking.
+        # Cache before key, so a matching key always sees a written cache.
+        # (The clamp writeback above may have bumped scroll_version, making
+        # this key already anyway - the next access just recomputes.)
+        object.__setattr__(self, '_anc_scroll_cache', (sx, sy))
+        object.__setattr__(self, '_anc_scroll_key', key)
         return sx, sy
 
     def _abs_left(self):

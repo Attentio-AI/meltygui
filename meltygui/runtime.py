@@ -15,6 +15,7 @@ from imgui.core import _DrawList
 
 from rtree import index as rtree_index
 
+from src.lsd.gl_gui.notifications import draw_notifications
 from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.utils import glfw_utils
 from src.lsd.gl_gui.view.attribute_churn import AttributeChurnMonitor
@@ -324,8 +325,13 @@ class FileWatch:
         if cls.observer.is_alive():
             cls.observer.stop()
             cls.observer.join()
-        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import shutdown_jedi_pool
+        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
+            shutdown_jedi_pool, shutdown_symbol_index_daemon)
         shutdown_jedi_pool()
+        # Stops the warmer daemon + clears its process guard (a future
+        # restart-in-place then starts a fresh one) and flushes the portable
+        # symbol results to ~/.lsd/symbol_index.json for instant warm starts.
+        shutdown_symbol_index_daemon()
 
 
 class Melty:
@@ -343,6 +349,13 @@ class Melty:
     # frame_count when a popover last opened - clear_focus grants it a one-frame
     # pass so the opening click can't immediately dismiss it.
     _popover_open_frame = 0
+    # frame_count when text focus was last GRANTED (draw_text's request_focus /
+    # rebind + click paths stamp this). clear_focus skips clearing a same-frame
+    # grant: the click that opens a find bar / dropdown / context menu is routed
+    # to window wrappers in the same frame the freshly-opened search box first
+    # claims focus, and wrappers that run after the grant used to skip it (the
+    # box is never under the opening click, so skip_this couldn't protect it).
+    _text_focus_grant_frame = -99
 
     # Previous frame's imgui io.want_text_input - used to detect when an imgui
     # input widget newly captures the keyboard (rising edge), so a Melty text
@@ -389,6 +402,11 @@ class Melty:
     _converter_to_type = {}
     converter_flags_by_type = {}
     converter_flags = {}
+
+    # Bumped on every REAL scroll_offset change (new_setattr in
+    # invalidation_decoration); bumps the DrawState._ancestor_scroll memo so
+    # mid-frame scroll deltas invalidate it without per-access parent walks.
+    scroll_version = 0
 
     # list, full with 32 Nones
     max_depth = 32
@@ -880,11 +898,20 @@ class Melty:
         # clicking the parent window, defeating click-outside-to-dismiss.
         popover_grace = (cls.frame_count - getattr(cls, "_popover_open_frame", -99)) <= 1
 
+        # Same-frame text-focus grace: a grant stamped THIS frame outlives the
+        # click being processed this frame (the click physically happened before
+        # the grant, e.g. it's the very click that opened the search box now
+        # claiming focus). Clears triggered by later clicks run in later frames
+        # and proceed normally.
+        text_grace = cls.frame_count == getattr(cls, "_text_focus_grant_frame", -99)
+
         for ds in (cls.focused_ds, cls.text_focused_ds, cls.popover_focused_ds):
 
             if ds is None or ds.id in protect:
                 continue
             if ds is cls.popover_focused_ds and popover_grace:
+                continue
+            if ds is cls.text_focused_ds and text_grace:
                 continue
             if Toggles.text_focus_stack_trace:
                 print_stack_trace(size=5)
@@ -1884,14 +1911,15 @@ class Melty:
                         if parent_clip is not None:
                             overlay_dl.push_clip_rect(parent_clip[0], parent_clip[1],
                                                       parent_clip[2], parent_clip[3], True)
+                        offset_rounding = getattr(offset_ds, 'corner_radius', 6)
                         overlay_dl.add_rect_filled(offset_ds.abs_left, offset_ds.abs_top,
                                                    offset_ds.abs_left + offset_ds.width,
                                                    offset_ds.abs_top + offset_ds.height,
-                                                   bg_col, rounding=offset_ds.corner_radius)
+                                                   bg_col, rounding=offset_rounding)
                         overlay_dl.add_rect(offset_ds.abs_left, offset_ds.abs_top,
                                             offset_ds.abs_left + offset_ds.width,
                                             offset_ds.abs_top + offset_ds.height,
-                                            outline_col, rounding=offset_ds.corner_radius,
+                                            outline_col, rounding=offset_rounding,
                                             thickness=Tint.highlight_outline_thickness)
                         if parent_clip is not None:
                             overlay_dl.pop_clip_rect()
@@ -1919,7 +1947,7 @@ class Melty:
                     # window_index, which collapses to the parent's layer for a
                     # first-level nested view) so the line/outline aren't masked
                     # by the nested window. cls.draw may also have moved the channel.
-                    rounding = draw_state.corner_radius
+                    rounding = getattr(draw_state, 'corner_radius', 6)
 
 
                     overlay_dl.channels_set_current(min(draw_state.window_index, Melty.max_layer -1))
@@ -1939,8 +1967,8 @@ class Melty:
                         draw_state.abs_left, draw_state.abs_top,
                         draw_state.width, draw_state.height,
                         highlight_rgb,
-                        p_round=offset_ds.corner_radius,
-                        n_round=draw_state.corner_radius,
+                        p_round=getattr(offset_ds, 'corner_radius', 6),
+                        n_round=rounding,
                         p_clip=parent_clip,
                     )
 
@@ -2041,7 +2069,7 @@ class Melty:
             select_rgb = cls._highlight_rgb(selected_ds.current_tint)
             bg_col = imgui.get_color_u32_rgba(*select_rgb, Tint.select_bg_alpha)
             outline_col = imgui.get_color_u32_rgba(*select_rgb, Tint.select_outline_alpha)
-            rounding = selected_ds.corner_radius
+            rounding = getattr(selected_ds, 'corner_radius', 6)
 
             clip_rect = selected_ds.abs_clip_rect
             overlay.push_clip_rect(clip_rect[0], clip_rect[1], clip_rect[2], clip_rect[3], True)
@@ -2133,6 +2161,8 @@ class Melty:
 
         Collisions.handle_collisions()
 
+        draw_notifications()
+
         for parent_ds_id, ds_list in cls.root_draw_states.items():
             if len(ds_list) == 0:
                 empty_parents.add(parent_ds_id)
@@ -2144,6 +2174,8 @@ class Melty:
         # floating search box). Clearing earlier would empty the buffer before
         # those windows read it, which is why text input saw no keys.
         cls.frame_key_events = []
+
+
 
     @classmethod
     def finalize_overlay_channels(cls):

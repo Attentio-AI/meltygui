@@ -1474,7 +1474,7 @@ class TileCacheMasked:
         use_image = t and has_area and (t.size == (size[0], size[1])) and (not self._is_dirty(t))
 
         if has_area and not draw_state.closed and use_image:
-            corner_radius = getattr(draw_state, "corner_radius", 5.0) or 5.0
+            corner_radius = getattr(draw_state, "corner_radius", 6) or 5.0
             x, y = draw_state.abs_left, draw_state.abs_top
             w, h = draw_state.width, draw_state.height
             cb = draw_state.clipped_by_rect
@@ -1518,7 +1518,7 @@ class TileCacheMasked:
                                                            b=b,
                                                            uv_a=uv_a,
                                                            uv_b=uv_b,
-                                                           rounding=max(0.0, draw_state.corner_radius))
+                                                           rounding=max(0.0, getattr(draw_state, "corner_radius", 6)))
 
         imgui.pop_id()
         draw_state.last_seen = Melty.frame_count
@@ -1631,7 +1631,7 @@ class TileCacheMasked:
                                                                b=b,
                                                                uv_a=uv_a,
                                                                uv_b=uv_b,
-                                                               rounding=draw_state.corner_radius)
+                                                               rounding=getattr(draw_state, "corner_radius", 6))
 
                 # Drag-n-drop home slot: when this cached tile contains the
                 # dragged item's slot, its pixels there can be stale (the
@@ -1720,7 +1720,7 @@ class TileCacheMasked:
         clipped = self._clip_rect(x, y, w, h, clip)
         self._key_to_ctx[ctx.key] = ctx
 
-        corner_radius = getattr(ctx.draw_state, "corner_radius", 5.0) or 5.0
+        corner_radius = getattr(ctx.draw_state, "corner_radius", 6) or 5.0
         if ctx.size:
             if clipped:
                 cx, cy, cw, ch = clipped

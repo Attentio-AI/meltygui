@@ -408,7 +408,7 @@ def run_in_background(input_value, loading_state: LoadingState, unique,
             note = Note(name="new converters, Deadline", tint=(1, 0.5, 1.0), draw_state=draw_state)
 
             draw_state.invalidate(note=note)
-        elif wait_for_drag and (imgui.is_mouse_down(0) or imgui.is_mouse_down(1)):
+        elif wait_for_drag and (imgui.is_mouse_down(0) or imgui.is_mouse_dragging(1) or imgui.is_mouse_dragging(2)):
             # Past the time deadline, but a mouse button is still held - the user
             # is mid-drag (a tint slider, a value drag). The time debounce only
             # collapses a BURST of edits; it can still elapse during a slow or
@@ -1270,7 +1270,7 @@ def run_recompile(source, code_state, draw_state, start=False, name="recompile")
 
 @render_func(use_cache=True, selectable=False, with_header=draw_header, searchable=False, disable_scroll=False)
 def code_file_io(input_value, code_state: CodeState, codec=None, view_func=RenderFuncs.draw_text, auto_load=True,
-                 auto_load_edits=False, min_height=20, shadow=True, show_add_delete=False,
+                 auto_load_edits=False, min_height=20, shadow=False, show_add_delete=False,
                  child_kwargs=None, draw_state=None, auto_save=True, auto_recompile_edits=False, save=False, load=False,
                  recompile=False, run_jedi=False, save_debounce_ms=600,
                  ensure_import=None, s_key_pressed=None, enter_key_pressed=None, unique=None, **kwargs):
@@ -1655,6 +1655,140 @@ def host_code_state(host):
     return None
 
 
+# Monotonic time of the last auto-index nudge. One host per window: at
+# session start every open editor's parse predates the warmer's first build,
+# and letting them all index at once stacks several ~0.2s GIL-holding passes
+# against the render thread. Time-based, NOT frame-based - the render loop is
+# event-driven, so N frames at idle can be unbounded wall-clock time. Skipped
+# hosts simply retry on a later frame.
+_last_auto_index_time = 0.0
+_AUTO_INDEX_STAGGER_S = 0.25
+
+
+def _ensure_symbol_index(dict_host, str_host, code_dict, jump_to=None):
+    """Auto-index trigger: re-run the cache's chain_in when the held parse
+    predates the current symbol index — either it never got a symbol pass
+    (fresh session: the host's first parse ran before any editor stamped
+    jump_to into its child_kwargs) or the background cache warmer
+    (SymbolIndexCache) advanced a generation because src files changed, so
+    cross-file callers may have moved. The chain itself attaches the symbols
+    (cst_module_to_dict's auto pass); this only supplies `jump_to` and the
+    re-run edge. One nudge per (parse identity, generation), so a span whose
+    index is legitimately empty doesn't re-trigger every frame."""
+    global _last_auto_index_time
+    if dict_host is None or not isinstance(code_dict, dict):
+        return
+    if not (getattr(Toggles, "enable_jedi", True)
+            and getattr(Toggles, "auto_index", True)
+            and not getattr(Toggles, "jedi_correctness", False)):
+        return
+    from src.lsd.gl_gui.view.core_conversion import libcst_conversion as _lc
+    gen = _lc._index_generation
+    if gen < 1:
+        return          # warmer hasn't built yet - we retry once it bumps
+    if getattr(code_dict, "_symbol_gen", None) == gen:
+        return          # parse already indexed against the current generation
+    if not _lc._wait_for_no_drag(max_wait=0.0):
+        return          # mid-gesture - don't even start; retried next frame
+    if jump_to is None and str_host is not None:
+        cs = host_code_state(str_host)
+        jump_to = getattr(cs, "address", None) if cs is not None else None
+    if jump_to is None:
+        return          # host hasn't resolved a span yet
+    if dict_host.child_kwargs.get("jump_to") is not jump_to:
+        dict_host.child_kwargs["jump_to"] = jump_to
+    key = (id(code_dict), gen)
+    if getattr(dict_host, "_auto_index_key", None) == key:
+        return          # nudge already issued for this parse / generation
+    if time.monotonic() - _last_auto_index_time < _AUTO_INDEX_STAGGER_S:
+        return          # another host nudged recently - stagger a retry later
+    _last_auto_index_time = time.monotonic()
+    dict_host._auto_index_key = key
+    threading.Thread(target=_index_host_in_place, args=(str_host, dict_host, gen),
+                     daemon=True, name="symbol-index-attach").start()
+
+
+def _index_host_in_place(str_host, dict_host, gen):
+    """Compute + attach symbol usages onto a host's HELD gp, on a background
+    thread, WITHOUT re-running its chain. A chain re-run would libcst-reparse
+    the whole buffer — at ~0.5s+ of GIL-bound parse per open editor, the
+    original gen-bump kick stacked those into one big render-thread hang right
+    after the warmer's first build. The index compute itself is unavoidable
+    GIL work (it resolves against LIVE objects via _src_mod_map, so unlike the
+    accurate-jedi path it cannot move to the subprocess pool), but it's the
+    small slice — mtime/generation-cached, ~25ms warm. In-place dict writes on
+    the gp are safe here: consumers only re-read after _notify_consumers
+    invalidates their subtrees (the same wake a background parse uses)."""
+    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
+        compute_symbol_usages_for_address, _distribute_by_name, _wait_for_no_drag)
+    if not _wait_for_no_drag():
+        # Gesture outlasted the wait - bail rather than steal GIL time from
+        # it. Clearing the in-flight key lets the editor-side nudge (or
+        # the next generation bump) retry once the user lets go.
+        dict_host._auto_index_key = None
+        return
+    address = dict_host.child_kwargs.get("jump_to")
+    if address is None:
+        cs = host_code_state(str_host)
+        address = getattr(cs, "address", None) if cs is not None else None
+        if address is None:
+            return
+        # Persist for the chain: future reparses attach via cst_module_to_dict.
+        dict_host.child_kwargs["jump_to"] = address
+    try:
+        flat = compute_symbol_usages_for_address(address)
+    except Exception:
+        return
+    # Re-fetch the held value - a reparse may have replaced it mid-compute;
+    # sites are path-absolute, so attaching to the new gp is still correct.
+    gp = dict_host._held()
+    if not isinstance(gp, dict):
+        return
+    gp._symbol_gen = gen
+    if flat:
+        gp.symbol_usage = flat
+        _distribute_by_name(gp, flat)
+    dict_host._notify_consumers(name="symbol index attached")
+
+
+def _wake_stale_code_hosts(gen):
+    """Index-generation-bump hook (runs on the warmer's daemon thread):
+    refresh the symbol usages of every cached code host whose held parse
+    predates `gen`, without any editor interaction. The editor-side
+    _ensure_symbol_index can't cover this case — cached editor views replay
+    their blit on an idle app, so a bump that happens while nothing is
+    invalidating (right after startup, or an external-IDE edit) would never
+    be observed. Attaches IN PLACE (no chain re-run / libcst reparse — see
+    _index_host_in_place); a small sleep between hosts keeps their index
+    passes from stacking into one GIL burst against the render thread."""
+    if not (getattr(Toggles, "enable_jedi", True)
+            and getattr(Toggles, "auto_index", True)
+            and not getattr(Toggles, "jedi_correctness", False)):
+        return
+    for sh, dh in list(_code_host_cache.values()):
+        gp = dh._held()
+        if not isinstance(gp, dict) or getattr(gp, "_symbol_gen", None) == gen:
+            continue
+        if getattr(dh, "_auto_index_key", None) == (id(gp), gen):
+            continue
+        dh._auto_index_key = (id(gp), gen)
+        _index_host_in_place(sh, dh, gen)
+        time.sleep(0.25)
+
+
+def _register_index_bump_hook():
+    from src.lsd.gl_gui.view.core_conversion import libcst_conversion as _lc
+    cbs = getattr(_lc, "_index_bump_callbacks", None)
+    if cbs is None:
+        return                  # older libcst_conversion still loaded
+    cbs[:] = [cb for cb in cbs
+              if getattr(cb, "__name__", "") != "_wake_stale_code_hosts"]
+    cbs.append(_wake_stale_code_hosts)
+
+
+_register_index_bump_hook()
+
+
 def draw_text_from_code_cache(input_value=None, root_input=None, error=None,
                               run_jedi=False, **kwargs):
     """FILE_TREE's editor view: plain draw_text fed from the shared code-host
@@ -1669,6 +1803,9 @@ def draw_text_from_code_cache(input_value=None, root_input=None, error=None,
     if root_input is not None:
         _str_host, dict_host = code_hosts_for(root_input)
         code_dict = dict_host._held()
+        # Background auto-index: keep the held parse's symbol usages current
+        # without the manual Index click (no-op when already indexed).
+        _ensure_symbol_index(dict_host, _str_host, code_dict, kwargs.get("jump_to"))
         # The chain's parse error lives on the wrapper's injected ModesState.
         # Normalize it to the ParseError-dict shape _code_tree_errors reads
         # ({'__error__','__line__'}) and pass it as code_tree: the raw exception
@@ -1726,7 +1863,12 @@ def draw_text_from_code_cache(input_value=None, root_input=None, error=None,
                 if hds is not None:
                     hds.invalidate()
             request_render()
-        elif dict_host.child_kwargs.get("run_jedi"):
+        elif (dict_host.child_kwargs.get("run_jedi")
+                and not dict_host._pending_external):
+            # One-shot clear - but only after the host actually consumed the
+            # pulse (_pending_external drops when its chain_in is handed the
+            # kwargs). Popping earlier loses a click whenever this editor
+            # re-renders between the pulse frame and the host's next draw.
             dict_host.child_kwargs.pop("run_jedi", None)
     changed, value, ds = RenderFuncs.draw_text(input_value, code_dict=code_dict,
                                                code_tree=cache_error, error=error,
@@ -1786,6 +1928,11 @@ def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabS
         # host's value from outside the host's own draw loop (same registration
         # draw_text_from_code_cache makes for its error/code_dict pull).
         dict_host.notify_on_change(draw_state)
+        # Auto-index here too (idempotent with the draw_text delegate's call):
+        # a structured-only window never runs draw_text_from_code_cache, and
+        # its usage links should stay live all the same.
+        _ensure_symbol_index(dict_host, _str_host, dict_host._held(),
+                             kwargs.get("jump_to"))
 
     raw_changed, raw_value = False, input_value
     for idx, view_func in enumerate(tab_state.selected_tabs):
@@ -1796,7 +1943,7 @@ def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabS
         if getattr(view_func, "__name__", "") == "draw_text":
             m_changed, m_out = draw_text_from_code_cache(
                 input_value=input_value, root_input=root_input, error=error,
-                run_jedi=run_jedi, draw=draw,
+                run_jedi=run_jedi, jump_to=kwargs.get("jump_to"), draw=draw,
                 max_width=draw_state.content_width - 10,
                  show_header=False,
                 column=idx, column_width=column_width,
@@ -1808,6 +1955,7 @@ def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabS
             gp = dict_host._held() if dict_host is not None else None
             if not isinstance(gp, dict):
                 imgui.text_colored("Parsing…" if dict_host is not None
+                
                                    else "No parse for this source", 0.6, 0.6, 0.6, 1.0)
                 continue
             m_changed, m_out = RenderFuncs.draw_collection(

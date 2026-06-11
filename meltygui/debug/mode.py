@@ -92,7 +92,7 @@ class Mode(Enum):
                     "disable_scroll": True,
                     "with_header": draw_header,
                     "child_kwargs": {
-                        'column_widths': [350],
+                        'column_widths': [358],
                     },
                     },
             func=code_file_io

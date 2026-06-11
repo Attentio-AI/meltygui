@@ -242,7 +242,7 @@ class DictConversion(metaclass=FieldMeta):
         if hasattr(self, '__no_save__'):
             if excluded is None:
                 excluded = []
-            excluded = excluded[:]
+            excluded = list(excluded)[:]
             if excluded is None:
                 excluded = self.__no_save__
             else:

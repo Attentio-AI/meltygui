@@ -81,14 +81,14 @@ class Tint:
         return hsv_to_rgb(*active_hsv)
 
     @staticmethod
-    @defaults(tint=(0.1, 0.1, 0))
+    @defaults(tint=(0.54, 0.54, 0.54))
     def cursor_tint():
         style_manager: ImGuiStyleManager = Core.melty.style_manager
         active_hsv = style_manager.hsv
 
         hue_delta = 0.00
         saturation_factor = 0.958
-        value_factor = 2.194
+        value_factor = 2.899
 
         active_hsv = ((active_hsv[0] + hue_delta),
                       min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
@@ -157,12 +157,12 @@ class Toggles:
         enable_spell_check = False
 
 
-    @defaults(tint=(0.833, 1.00, 0.00))
+    @defaults(tint=(0.833, 1.00, 0.044))
     class InvalidateTracker:
-        keep_for_frames = 101
+        keep_for_frames = 61
         enable = False
         draw_bvh = False
-        draw_rect = False
+        draw_rect = True
 
     @defaults(tint=(0.631, 0.474, 0.861))
     class InputHandlerToggles:
@@ -190,19 +190,22 @@ class Toggles:
     show_filled_tiles = False
     gl_check_error = False
     enable_jedi = True
+    attrib_change_stack_trace = False
     # [tint(0.9, 0.5, 0.0)]
     jedi_correctness = False
+    # Attach symbol usages to every editor parse automatically (background,
+    # fast index path only); the refresh button stays as a manual refresh.
+    auto_index = True
 
     # Invalidation settings
     invalidate_stack_trace = False
     text_focus_stack_trace = False
-    attrib_change_stack_trace = False
     attrib_churn_log = False
     debug_threads = False
     slow_down_threads = False
     render_depth = False
     ds_invalidate_stack = False
-    profile_mode = ProfileMode.OFF
+    profile_mode = ProfileMode.LIGHT
     debug_stale_tint = False
     show_line_break = False
 
@@ -210,8 +213,8 @@ class Toggles:
     brightness = 0.475
     contrast = 1.812
     saturation = -0.4
-    prefered_header_width = 131
-    max_preferred_header_width = 267
+    prefered_header_width = 70
+    max_preferred_header_width = 159
     debug_z_depth = False
     filters = True
     show_excluded = True
@@ -225,7 +228,7 @@ class Toggles:
     ignore_call_from = ("draw", "_run_visualization", "run", "_bootstrap",
                         "_bootstrap_inner", "convert_in_and_out", "draw_melty_windows", "end_frame", "render", "draw_inner",
                         "draw_inner_main", "draw_with_view_funcs")
-    draw_legacy = True
+    draw_legacy = False
 
     show_full_call_stack = False
     # Screenshot output directory (used by screenshot.py / context menu capture)

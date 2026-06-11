@@ -15,6 +15,7 @@ import imgui
 from imgui.core import _DrawList
 
 from src.lsd.gl_gui.background import Background, Pending
+from src.lsd.gl_gui.events.input_handler import ALL_ACTIONS
 from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.toggles import Counters, Toggles, Tint
 from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
@@ -263,6 +264,94 @@ def draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height):
 
 
 
+# ── Auto draw_state params ──────────────────────────────────────────────────
+# Every named render_func parameter (minus the exclusions below) is mirrored
+# on the view's draw_state as a plain attribute: draw_state.<param>. This
+# automates the old manual pattern of declaring a param AND a duplicate
+# DrawState field.
+#
+# Per-call resolution (the "kwargs gauntlet", high → low priority):
+#   caller-passed kwarg / Mode override          (explicit_param_keys)
+#   draw_state.auto_params[<name>]              (diverged internal state)
+#   type / attrib / annotation / codec default  (Melty default maps)
+#   decorator o_kwargs → signature default
+#
+# draw_state.auto_params holds DIVERGED values only: when view code writes
+# draw_state.speed = x, the next frame's divergence scan (x no longer
+# matches the _auto_baseline mirror of the last resolved value) promotes it
+# into auto_params, where it overrides the default layers until cleared
+# (del draw_state.auto_params['speed']) - but an explicitly passed kwarg or
+# Mode override still wins the resolution. Params that were never written
+# stay out of auto_params, so Mode / class-annotation / codec defaults keep
+# flowing live frame to frame. auto_params is a public (non-underscore)
+# DrawState field, so it serializes whenever non-empty - diverged state
+# persists across saves; at-default params save nothing.
+#
+# Params whose name is an existing DrawState field/property are SKIPPED - they
+# keep their legacy manual handling. To migrate one, delete the field from
+# DrawState.__init__ (and its no_init/exclude entries): the name leaves the
+# reserved set and auto-state takes over. Opt a param out entirely with
+# @render_func(auto_state=False).
+
+_AUTO_PARAM_EXCLUDE = {
+    # injected by set_default / the wrapper itself
+    'input_value', 'draw_state', 'name', 'unique', 'suffix', 'window_stack',
+    'func', 'render_func', 'style_manager', 'view_func', 'outer_func',
+    # signature plumbing
+    'kwargs', 'args', 'o_kwargs', 'next_kwargs', 'changed',
+    # per-call context / converter args, never view state
+    'key', 'collection', 'meta', 'mode', 'current_mode', 'real_type',
+    'data', 'ref', 'chain', 'initial', 'auto_state',
+}
+
+_EVENT_SUFFIXES = tuple(f"_{a}" for a in ALL_ACTIONS)
+
+
+def _is_event_param_name(name):
+    """True when `name` is an input-event subscription per the event-param
+    auto-subscribe convention (enter_key_pressed, inverted_ctrl_f_down, ...).
+    Event values are injected per-frame from Melty.events — persisting one on
+    the draw_state would replay the event on every following frame."""
+    n = name[3:] if name.startswith('on_') else name
+    return n in ALL_ACTIONS or n.endswith(_EVENT_SUFFIXES)
+
+
+def _values_differ(a, b):
+    """Divergence test for the auto-state scan. Identity first (the common
+    no-write case: the attr still holds the exact object the mirror wrote),
+    then equality so re-writing an equal scalar/tuple doesn't stick the param.
+    Values whose == doesn't reduce to a bool (numpy arrays, tensors) count as
+    diverged — identity is the only sane check for those."""
+    if a is b:
+        return False
+    try:
+        return bool(a != b)
+    except Exception:
+        return True
+
+
+_ds_reserved_cache = None
+_ds_reserved_for_cls = None
+
+
+def _draw_state_reserved_names():
+    """Every name the current DrawState already owns (init fields, properties,
+    methods). Auto-state must not touch these — a param sharing one of these
+    names keeps its legacy manual handling. Returns None while DrawState isn't
+    constructible yet (Core.melty not up); callers just skip auto-state for
+    that call and retry next time. Recomputed when the class object changes
+    (hotswap of draw_state.py)."""
+    global _ds_reserved_cache, _ds_reserved_for_cls
+    if _ds_reserved_for_cls is not DrawState:
+        try:
+            fields = set(vars(DrawState()))
+        except Exception:
+            return None
+        _ds_reserved_cache = fields | set(dir(DrawState))
+        _ds_reserved_for_cls = DrawState
+    return _ds_reserved_cache
+
+
 # type -> codec class (or None), resolved once per type via the codec
 # registry's MRO walk. Codec identity is hotswap-stable (classes patch in
 # place), and render_kwargs is read per-call with getattr, so editing a
@@ -318,6 +407,34 @@ def render_func(*args, **o_kwargs):
     wanted_params.remove("o_kwargs") if "o_kwargs" in wanted_params else None
     header_defaults = o_kwargs
     param_defaults = {p: params[p].default for p in params if params[p].default is not inspect.Parameter.empty}
+
+    # Auto-state param names for this func, resolved lazily (DrawState must be
+    # constructible to know what names its real fields reserve) and cached
+    # until the reserved set changes (DrawState hotswap).
+    _auto_params_cache = ()
+    _auto_params_for = None
+
+    def _auto_state_params():
+        nonlocal _auto_params_cache, _auto_params_for
+        reserved = _draw_state_reserved_names()
+        if reserved is None:
+            return ()
+        if reserved is not _auto_params_for:
+            out = []
+            for p in wanted_params:
+                if p in _AUTO_PARAM_EXCLUDE or p in reserved or _is_event_param_name(p):
+                    continue
+                ann = name_to_param_type.get(p)
+                if (ann is not inspect.Parameter.empty and inspect.isclass(ann)
+                        and param_defaults.get(p) is None):
+                    # Injected-state param (CodeObject / GLState / ...): owned
+                    # by auto_default's misc type path, which also handles
+                    # type-mismatch discard across hotswap. Keep it there.
+                    continue
+                out.append(p)
+            _auto_params_cache = tuple(out)
+            _auto_params_for = reserved
+        return _auto_params_cache
 
 
     """
@@ -403,6 +520,14 @@ def render_func(*args, **o_kwargs):
             for mode in not_recursive:
                 if kwargs['mode'] == mode:
                     kwargs.pop('mode', None)
+
+        # Auto-state: the keys explicitly provided for THIS call - by the
+        # decorator or a Mode override - captured before any default layer merges
+        # in.  The auto-state value yields to these, but overrides every
+        # default layer (type/attrib defaults, codec render_kwargs, decorator
+        # o_kwargs, signature default).
+        explicit_param_keys = set(kwargs)
+
         kwargs = Melty.default_kwargs_by_type[kwargs.get("real_type", type(input_value))] | kwargs
         as_window = kwargs.get("as_window", False)
         initial_values = kwargs.get("initial", {})
@@ -686,10 +811,46 @@ def render_func(*args, **o_kwargs):
         if Melty.cache is not None:
             draw_state._parent_ctx = Melty.cache.get_current_parent()
 
+        # ── Auto draw_state params (see module comment above) ──
+        # auto_params holds DIVERGED values only (view code wrote
+        # draw_state.<param>, not a deserialized save) - those inject into the
+        # kwargs gauntlet above the other layers. _auto_baseline holds last
+        # frame's instance value per param; an instance attr that no longer
+        # matches its baseline is a view-code write, and gets promoted into
+        # auto_params. Both lazily created: pre-existing draw_states
+        # (deserialized / pre-hotswap) lack the fields.
+        auto_state_params = _auto_state_params() if kwargs.get("auto_state", True) else ()
+        auto_state_values = draw_state.__dict__.get('auto_params')
+        if auto_state_values is None:
+            auto_state_values = {}
+            draw_state.auto_params = auto_state_values
+        auto_state_baseline = draw_state.__dict__.get('_auto_baseline')
+        if auto_state_baseline is None:
+            auto_state_baseline = {}
+            draw_state._auto_baseline = auto_state_baseline
+
+        # Divergence check: promote view-code writes since the last frame
+        # into the persisted dict. Untouched params stay out of auto_params,
+        # so defaults (Mode / class annotations / codec) keep as live.
+        if auto_state_params and auto_state_baseline:
+            ds_attrs = draw_state.__dict__
+            for p in auto_state_params:
+                if p in auto_state_baseline and p in ds_attrs:
+                    cur = ds_attrs[p]
+                    if _values_differ(cur, auto_state_baseline[p]):
+                        auto_state_values[p] = cur
+
         # Set default values from initial on the first frame (before any potential mutation)
         if draw_state.frame_count < 3 or draw_state.closed:
             approved_kwargs = ['expanded', 'closed']
             for item_name, initial_value in initial_values.items():
+                # An auto-state param receives `kwargs` defaults only before its
+                # first resolution (and never over a deserialized value).
+                if (item_name in auto_state_params
+                        and item_name not in auto_state_values
+                        and item_name not in auto_state_baseline):
+                    auto_state_values[item_name] = initial_value
+                    continue
 
                 if isinstance(getattr(draw_state, item_name, None), int):
                     if getattr(draw_state, item_name) == 0 or kwargs.get("force_initial", False):
@@ -1039,12 +1200,34 @@ def render_func(*args, **o_kwargs):
             kwargs = unique_events | kwargs
             ##############################################
 
+            # Auto-state pre-pass: inject each diverged value into the kwargs
+            # gauntlet. By this point every DEFAULT layer (type/attrib
+            # defaults, codec render_kwargs, decorator o_kwargs) has merged
+            # into kwargs, so the stored value overwrites those - but yields
+            # to keys the caller or a Mode override'd explicitly.
+            if auto_state_values:
+                for p in auto_state_params:
+                    if p in auto_state_values and p not in explicit_param_keys:
+                        kwargs[p] = auto_state_values[p]
+
             for param in wanted_params:
                 if param not in kwargs and param != "kwargs" and param != 'args' and param != 'o_kwargs' and param != 'next_kwargs':
                     wanted_type = name_to_param_type.get(param, None)
                     if wanted_type is inspect.Parameter.empty:
                         wanted_type = None
                     set_default(param, None, wanted_type)
+
+            # Auto-state post-pass: mirror every resolved param onto the
+            # draw_state under its own name (so view code reads and writes
+            # draw_state.<param>) and record it as the baseline the next
+            # frame's divergence logic compares against.
+            if auto_state_params:
+                ds_attrs = draw_state.__dict__
+                for p in auto_state_params:
+                    if p in kwargs:
+                        v = kwargs[p]
+                        ds_attrs[p] = v
+                        auto_state_baseline[p] = v
 
             draw_state._kwargs = kwargs
 
@@ -1268,31 +1451,39 @@ def render_func(*args, **o_kwargs):
             _drag_drop.DragDrop.register_item(draw_state)
 
 
-            if draw_state.window_pos is not None and closable and kwargs.get("window_pos", None) is None:
-                on_held = draw_state.on_action("left_mouse_held", "window_move", priority_delta=-2)
-                on_drag = draw_state.on_action("left_mouse_drag", "window_move")
-                left_mouse_down = draw_state.on_action("left_mouse_down", "window_move", priority_delta=-1)
+            if draw_state.window_pos is not None and closable:
+                _explicit_window_pos = kwargs.get("window_pos", None) is not None
+                if not _explicit_window_pos:
+                    on_held = draw_state.on_action("left_mouse_held", "window_move", priority_delta=-2)
+                    on_drag = draw_state.on_action("left_mouse_drag", "window_move")
+                    left_mouse_down = draw_state.on_action("left_mouse_down", "window_move", priority_delta=-1)
 
 
-                if left_mouse_down:
-                    # draw_state is the window that just won the click
-                    # (left_mouse_down is its own on_action result). Pass it
-                    # directly rather than reading melty_window_stack[-1] - for
-                    # a child window move_window_to_front walks up to the
-                    # registered root, for a root window it's a no-op resolve.
-                    Melty.move_window_to_front(draw_state)
+                    if left_mouse_down:
+                        # draw_state is the window that actually won the click
+                        # (left_mouse_down is its own on_action result). Pass it
+                        # here rather than reading melty_window_stack[-1] - for
+                        # a child window move_window_to_front walks up to the
+                        # registered root, for a root window it's a no-op anyway.
+                        Melty.move_window_to_front(draw_state)
 
-                if on_drag and not imgui_active and not "window_pos" in kwargs:
-                    if draw_state._initial_window_pos is None:
-                        draw_state._initial_window_pos = (draw_state.window_pos[0],
-                                                          draw_state.window_pos[1])
+                    if on_drag and not imgui_active:
+                        if draw_state._initial_window_pos is None:
+                            draw_state._initial_window_pos = (draw_state.window_pos[0],
+                                                              draw_state.window_pos[1])
 
-                    pos_x = draw_state._initial_window_pos[0] + on_drag.total_dx
-                    pos_y = draw_state._initial_window_pos[1] + on_drag.total_dy
-                    draw_state.window_pos = (pos_x, pos_y)
-                else:
-                    draw_state._initial_window_pos = None
+                        pos_x = draw_state._initial_window_pos[0] + on_drag.total_dx
+                        pos_y = draw_state._initial_window_pos[1] + on_drag.total_dy
+                        draw_state.window_pos = (pos_x, pos_y)
+                    else:
+                        draw_state._initial_window_pos = None
 
+                # Anchor / pin stamping applies to explicitly-positioned windows
+                # too: the find bar (and the Save/Load pending dialogs) pass
+                # window_pos= together with anchor= and pin_to_clip=. These were
+                # previously only stamped for draggable (no window_pos kwarg)
+                # windows, so the pin was silently ignored and the find bar rode
+                # with scrolled content instead of pinning to the visible top.
                 anchor_pos = kwargs.get("anchor", Anchor.TOP_LEFT)
                 draw_state.anchor_pos = anchor_pos
                 draw_state.parent_anchor_pos = kwargs.get("parent_anchor", Anchor.TOP_LEFT)
@@ -1304,7 +1495,12 @@ def render_func(*args, **o_kwargs):
                 pin = kwargs.get("pin_to_clip", None)
                 draw_state.pin_to_clip = pin if isinstance(pin, Pin) else None
 
-                imgui.set_cursor_screen_pos((snap_int(draw_state.abs_left), snap_int(draw_state.abs_top)))
+                # Draggable windows always render at their own abs box; an
+                # explicitly-positioned window keeps the caller's cursor but
+                # a clip overrides its position (abs box ignores the captured
+                # offsets, so the cursor must follow the pin).
+                if not _explicit_window_pos or draw_state.pin_to_clip is not None:
+                    imgui.set_cursor_screen_pos((snap_int(draw_state.abs_left), snap_int(draw_state.abs_top)))
 
             kwargs['melty_window'] = False
             Melty.size_stack.append((draw_state.width, draw_state.height))
@@ -1791,10 +1987,13 @@ def render_func(*args, **o_kwargs):
                             swoosh=False,
                             tint=draw_state.tint,
                             mode=Mode.WINDOW_CLEAN,
-                            # Pin live to this view so the bar's bottom-left rides
-                            # the view's top-left corner (parent_anchor defaults
-                            # to TOP_LEFT), floating just above it as it scrolls.
-                            pin_to_clip=Pin.PARENT,
+                            # Pin live to this view's VISIBLE box: Pin.CLIP
+                            # intersects the view's rect with the window, so the
+                            # bar rides the view's top-left corner while that is
+                            # on-screen and stops at the window edge once the
+                            # view scrolls under it (Pin.PARENT followed the raw
+                            # view top, which scrolled the bar away).
+                            pin_to_clip=Pin.CLIP,
                             window_pos=(0, 0),
                             width=300,
 
@@ -1805,6 +2004,19 @@ def render_func(*args, **o_kwargs):
                     search_ds = extras[2]
                     if search_ds.last_seen is None:
                         search_ds.window_pos = (0, 0)
+
+                    # Focus retry: render_search (inside this Find window) is
+                    # responsible for claim focus for the box, and it stamps
+                    # _search_was_active=True when it actually runs. If the
+                    # claim is pending (Ctrl+F just set _search_was_active
+                    # False) a CACHED Find tile would blit-skip and never run
+                    # render_search - so a repeated Ctrl+F couldn't re-focus
+                    # the box. Invalidate the Find subtree until the claim
+                    # lands (one frame in practice, self-limiting).
+                    if (not draw_state._search_was_active
+                            or draw_state._search_focus_pending):
+                        Melty.cache.invalidate_up(search_ds._tile_id, force=True)
+                        request_render()
 
                     # Build this frame's cross-view aggregation session. A new
                     # term resets the global selection to the first match; nav
@@ -2276,7 +2488,12 @@ def render_func(*args, **o_kwargs):
                             max(0, min(offscreen_depth + passed_z_offset - 2,
                                        Melty.max_depth - 1)))
 
-                    draw_state.corner_radius = 5.0
+                    # Resolved through the kwargs gauntlet (caller / parent /
+                    # auto_params / type defaults), so any show_bg view can be
+                    # rounded with corner_radius=...; 5.0 is the legacy stamp.
+                    # Stamped onto the draw_state so framework painters (melty
+                    # highlights, blurr mask) read this view's effective radius.
+                    draw_state.corner_radius = kwargs.get("corner_radius", 5.0)
                     from src.lsd.gl_gui.view.core_views.new_core_view import draw_bg
                     style_manager = Melty.global_attrs['style_manager']
 
@@ -2645,7 +2862,7 @@ def render_func(*args, **o_kwargs):
                             draw_list.add_rect_filled(selected.abs_left, selected.abs_top,
                                                       selected.abs_left + selected.width,
                                                       selected.abs_top + selected.height,
-                                                      bg_col, rounding=selected.corner_radius)
+                                                      bg_col, rounding=getattr(selected, 'corner_radius', 6))
                             draw_list.pop_clip_rect()
 
 
@@ -3761,6 +3978,9 @@ def render_func(*args, **o_kwargs):
     wrapper.__render_func__ = True
     wrapper.__header_defaults__ = header_defaults
     wrapper.__params__ = params
+    # Callable (lazy - DrawState must be constructible) the param names this
+    # view auto-mirrors onto its draw_state. For introspection/docs/tests.
+    wrapper.__auto_state_params__ = _auto_state_params
 
     # Auto-register by name so RenderFuncs.<name> can resolve this lazily
     # without anyone importing the module that defines it (avoids import cycles).
