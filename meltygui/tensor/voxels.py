@@ -213,12 +213,13 @@ void main() {
 """
 
 _LABEL_UNIFORMS = ("tilt", "spin", "zoom", "aspect", "ortho", "pan", "label")
-_LABEL_FLOATS = 20   # 4×vec3 + 2×vec4 per instance
+_LABEL_FLOATS = 20  # 4×vec3 + 2×vec4 per instance
 
 
 def _label_program(gl_state):
     """The instanced label program + its uniform-location map, compiled once
     per GLState (re-created when the GLSL source changes, e.g. on hotswap)."""
+
     def create():
         def compile_one(kind, source):
             s = gl.glCreateShader(kind)
@@ -227,6 +228,7 @@ def _label_program(gl_state):
             if gl.glGetShaderiv(s, gl.GL_COMPILE_STATUS) != gl.GL_TRUE:
                 raise RuntimeError(gl.glGetShaderInfoLog(s).decode(errors="replace"))
             return s
+
         vs = compile_one(gl.GL_VERTEX_SHADER, LABEL_VERT)
         fs = compile_one(gl.GL_FRAGMENT_SHADER, LABEL_FRAG)
         prog = gl.glCreateProgram()
@@ -250,6 +252,7 @@ def _label_program(gl_state):
 def _label_vao(gl_state):
     """(vao, vbo): one interleaved per-instance buffer (divisor 1 on every
     attribute — the quad corners come from gl_VertexID, no vertex attribs)."""
+
     def create():
         vao = gl.glGenVertexArrays(1)
         vbo = gl.glGenBuffers(1)
@@ -290,6 +293,7 @@ def _label_atlas(gl_state, texts):
 
     return gl_state.get("label_atlas", create, delete, deps=(texts, id(font)))
 
+
 class VoxelParams(DictConversion):
     """Camera + render params, auto-injected per view. The field annotations
     ARE the control UI (`draw_any(params)` renders them with these ranges,
@@ -308,8 +312,9 @@ class VoxelParams(DictConversion):
     density: draw_float(min_value=0.5, max_value=30.0) = 8.0
     threshold: draw_float(min_value=0.0, max_value=1.0) = 0.12
     step_size: draw_float(min_value=0.001, max_value=0.02) = 0.004
-    nearest = True   # pixel filtering, applied per frame - not a uniform
-    lut = "jet"       # LUT name (a LUTS key); the sampler itself rides in separately
+    nearest = True  # texture filtering, set per frame but not a uniform
+    lut = "jet"  # LUT name (a LUTS key); the sampler itself rides in separately
+
 
 # The annotated fields are exactly the scalar uniform candidates.
 _UNIFORM_FIELDS = tuple(VoxelParams.__annotations__)
@@ -334,11 +339,13 @@ def _poly(coeffs):
     """Per-channel polynomial in t (Horner); rows are (r, g, b) coefficients
     in ascending order — the shape of Matt Zucker's matplotlib colormap fits
     (shadertoy WlfXRN) and of Google's turbo fit."""
+
     def fn(t):
         r = g = b = 0.0
         for cr, cg, cb in reversed(coeffs):
             r, g, b = r * t + cr, g * t + cg, b * t + cb
         return r, g, b
+
     return fn
 
 
@@ -419,7 +426,6 @@ _LUT_TEXTURES = globals().get("_LUT_TEXTURES", {})
 # Once-only warning latch for the label-billboard path (hotswap-reused).
 _LABEL_WARNED = globals().get("_LABEL_WARNED", False)
 
-
 # Survives hotswap re-exec (module dict is reused) so the demo volume isn't
 # regenerated on every code edit.
 _VOLUME = globals().get("_VOLUME")
@@ -460,7 +466,7 @@ class VoxelAxes(DictConversion):
         self.y_dim = -1
         self.z_dim = -1
         self.slice_indices = []
-        self.mean_dims = []   # dims averaged over instead of scrubbed
+        self.mean_dims = []  # dims averaged over instead of scrubbed
         # Neural flow: post-slice, chop one DISPLAY axis into `nf_chunk`-wide
         # blocks laid group-major along another - the old viewer's trick for
         # making weird high dims (Feature 4096) viewable as a volume.
@@ -474,7 +480,7 @@ class VoxelAxes(DictConversion):
         last three dims → z/y/x, like the old viewer); only clamp on a
         same-rank shape change so user names/mapping survive resizes."""
         if not hasattr(self, "mean_dims"):
-            self.mean_dims = []   # instances from before the field existed
+            self.mean_dims = []  # instances from before the field existed
         n = len(shape)
         if len(self.dim_names) != n:
             self.dim_names = [f"dim{i}" for i in range(n)]
@@ -529,7 +535,7 @@ def slice_by_axes(t, axes: VoxelAxes):
     index = tuple(slice(None) if d in picked
                   else (0 if d in mean_set else axes.slice_indices[d])
                   for d in range(t.dim()))
-    sub = t[index]                       # first 3 dims keep original order
+    sub = t[index]  # picked 3 dims keep original order
     remaining = sorted(picked)
     return sub.permute(remaining.index(axes.z_dim),
                        remaining.index(axes.y_dim),
@@ -575,7 +581,7 @@ def voxel_io(input_value=None, gl_state: GLState = None, view_func=None,
     if demo:
         t = torch.from_numpy(demo_volume())
     elif isinstance(source, np.ndarray):
-        t = torch.from_numpy(source)   # shares data; version keys on the array
+        t = torch.from_numpy(source)  # shares memory; version keys on the array
     else:
         t = source
 
@@ -611,12 +617,12 @@ def voxel_io(input_value=None, gl_state: GLState = None, view_func=None,
     for axis, dim in (("x", axes.x_dim), ("y", axes.y_dim), ("z", axes.z_dim)):
         label = axes.dim_names[dim] if dim < len(axes.dim_names) else axis
         if axes.nf_on and axis == axes.nf_chop:
-            label = f"{label} % {axes.nf_chunk}"          # chopped into blocks
+            label = f"{label} % {axes.nf_chunk}"  # chopped into blocks
         elif axes.nf_on and axis == axes.nf_along:
             chop_dim = getattr(axes, axes.nf_chop + "_dim")
             chop_name = (axes.dim_names[chop_dim]
                          if chop_dim < len(axes.dim_names) else axes.nf_chop)
-            label = f"{label} · {chop_name}"              # carries the blocks
+            label = f"{label} · {chop_name}"  # along the blocks
         display.append((label, int(t3.shape[_AXIS_POS[axis]])))
     tex.axis_display = tuple(display)
     axes._io_ds = kwargs.get("draw_state")
@@ -673,12 +679,13 @@ def _silhouette_edges(corners):
     runs that interleave the front and back squares), consecutive hull
     vertices then differ on two axes, the cube-adjacency test fails, and
     outline sides vanish — the missing-lines bug."""
+
     def face_visible(k, s):
         # Corner quad of face (axis k, sign s), wound CCW seen from outside:
         # i + j = +k, and the s<0 loop reverses.
         i, j = (k + 1) % 3, (k + 2) % 3
         quad = ((-1, -1), (1, -1), (1, 1), (-1, 1)) if s > 0 else \
-               ((-1, -1), (-1, 1), (1, 1), (1, -1))
+            ((-1, -1), (-1, 1), (1, 1), (1, -1))
         loop = []
         for vi, vj in quad:
             c = [0, 0, 0]
@@ -704,7 +711,7 @@ def _silhouette_edges(corners):
                 a, b = tuple(a), tuple(b)
                 if corners[a] is None or corners[b] is None:
                     continue
-                if vis[(i, si)] != vis[(j, sj)]:   # the edge separates two faces
+                if vis[(i, si)] != vis[(j, sj)]:  # the edge's adjacent faces
                     edges.add(frozenset((a, b)))
     return edges
 
@@ -773,7 +780,7 @@ def _tick_values(size, px_per_idx, num_px, spacing=1.6):
     projected PIXELS — so zooming in fits more ticks). `spacing` is the
     minimum gap between tick centers in widest-label widths. The end value
     always shows; the last multiple yields when it would crowd it."""
-    widest = max(1, len(str(size))) * 0.62 * num_px   # ~average glyph aspect
+    widest = max(1, len(str(size))) * 0.62 * num_px  # ~avg glyph aspect
     min_px = widest * spacing
     step, k = None, 1
     while step is None and k <= 10 ** 9:
@@ -812,22 +819,22 @@ def _billboard_specs(silhouette, corners, axis_display, volume_scale,
     always rides the UNFLIPPED outward direction, so labels never land
     inside the box. Projected-length gates match the outline: <32px no
     furniture, <70px no ticks."""
-    name_off = name_padding + name_size * 0.5   # line → label CENTER
+    name_off = name_padding + name_size * 0.5  # anchor -> label CENTER
     num_off = num_padding + num_size * 0.5
     # tick label slant (optional, not the label plane - matplotlib-style)
     ca, sa = math.cos(math.radians(num_angle)), math.sin(math.radians(num_angle))
     vis = [p for p in corners.values() if p is not None]
     if not vis:
         return []
-    scx = sum(p[0] for p in vis) / len(vis)   # silhouette's screen centroid
+    scx = sum(p[0] for p in vis) / len(vis)  # silhouette's screen centroid
     scy = sum(p[1] for p in vis) / len(vis)
 
     specs = []
     for edge in silhouette:
         a, b = tuple(edge)
-        k = next(i for i in range(3) if a[i] != b[i])   # the axis it runs along
+        k = next(i for i in range(3) if a[i] != b[i])  # the axis it runs along
         if a[k] > b[k]:
-            a, b = b, a                                  # a = the texel-0 corner
+            a, b = b, a  # a is the texcoord-0 end
         pa, pb = corners[a], corners[b]
         px_len = math.hypot(pb[0] - pa[0], pb[1] - pa[1])
         if px_len < 32.0:
@@ -836,10 +843,10 @@ def _billboard_specs(silhouette, corners, axis_display, volume_scale,
         a3 = tuple(a[i] * volume_scale[i] for i in range(3))
         b3 = tuple(b[i] * volume_scale[i] for i in range(3))
         length = math.sqrt(sum((b3[i] - a3[i]) ** 2 for i in range(3))) or 1.0
-        w = tuple((b3[i] - a3[i]) / length for i in range(3))   # a → b, for placement
+        w = tuple((b3[i] - a3[i]) / length for i in range(3))  # a → b, for placement
         mid = tuple((a3[i] + b3[i]) * 0.5 for i in range(3))
         m_len = math.sqrt(sum(c * c for c in mid)) or 1.0
-        out = tuple(c / m_len for c in mid)   # outward, ⊥ the edge (mid-w = 0)
+        out = tuple(c / m_len for c in mid)  # normalized, ⊥ the edge (mid-w = 0)
 
         # TRUE screen directions, not the camera-basis approximation (which
         # skews under perspective for off-center edges and mirrors oblique
@@ -1065,7 +1072,7 @@ def draw_voxel_controls(input_value=None, params=None, draw_state=None, **kwargs
                                             show_add_delete=False, shadow=False)
         if names_changed and isinstance(new_names, list) and len(new_names) == len(axes.dim_names):
             axes.dim_names = [str(n) for n in new_names]
-            _wake_io(axes)   # labels (axis_display) are built by the io
+            _wake_io(axes)  # labels (axis_display) are built by the io
             changed = True
 
     # ── metadata: pipeline + lifecycle visibility (lives here, not drawn
@@ -1088,7 +1095,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                 params: VoxelParams = None, draw_state=None,
                 name_size=28.0, name_padding=30.1, name_opacity=1.1,
                 num_size=17.1, num_padding=5.5, num_opacity=0.8,
-                num_spacing=1.5, num_angle=0.0,
+                num_spacing=1.0, num_angle=0.0,
                 middle_mouse_drag=None, right_mouse_drag=None,
                 scroll_y_changed=None, left_mouse_double_clicked=None,
                 kp_7_pressed=None, kp_1_pressed=None, kp_3_pressed=None,
@@ -1265,10 +1272,10 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
     imgui.set_cursor_screen_pos((win.abs_left + (win.width or width) + 12, win.abs_top))
     panel_kwargs = {"closed": not panel_open} if (init or toggled) else {}
     changed, _, panel_ds = draw_voxel_controls(tex, params=params, name="controls",
-                                     mode=Modes.WINDOW,
-                                     parent_window=win, auto_resize=False,
-                                     shadow=True, return_extras=True,
-                                     **panel_kwargs)
+                                               mode=Modes.WINDOW,
+                                               parent_window=win, auto_resize=False,
+                                               shadow=True, return_extras=True,
+                                               **panel_kwargs)
     if panel_ds is not None:
         draw_state.misc["params_panel"] = not panel_ds.closed
 
@@ -1374,7 +1381,7 @@ def _draw_host_volume(input_value):
     draw_any(tex, name="volume")
 
 
-@window(input_value=voxel_host, tint=(0.00, 0.22, 0.54))
+@window(input_value=voxel_host, tint=(0.00, 0.02, 0.12))
 @render_func(show_bg=True, use_cache=True)
 def draw_voxel_playground(input_value=None, **kwargs):
     _draw_host_volume(input_value)
