@@ -423,7 +423,7 @@ class DrawState(DictConversion):
         self._unmanaged_window = False
         self.live = False
         self._shadow_depth = 0
-        self.shadow = True
+        self.shadow = False
         self.cst = None
         self.window_pos = (0,0)
         self.window_size = None
@@ -593,6 +593,13 @@ class DrawState(DictConversion):
 
         # Used to cache abs_clip_rect
         self.clipped_by_rect = None
+
+        # Set by Melty's end_frame tree rebuild: True while this nested
+        # window's spawning view is currently scrolled/clipped out of sight, so
+        # the window is skipped (not closed) by the layer dispatch and its
+        # subtree filtered out of bvh_query hits. Read via getattr (live
+        # instances predating the field won't have it).
+        self._hidden_offscreen = False
 
         self._show_load = False
         self._show_save = False
@@ -1101,6 +1108,37 @@ class DrawState(DictConversion):
         object.__setattr__(self, '_anc_scroll_key', key)
         return sx, sy
 
+    def _cap_to_display(self, pos, axis):
+        """Cap a nested window's computed abs position so at least a sliver of
+        its box stays on the display. Nested windows follow their spawning
+        view's scroll (the ancestor-scroll subtraction in _abs_left/_abs_top),
+        which otherwise carries them right off screen. Only the COMPUTED
+        position is capped — left_offset / window_pos stay untouched — so
+        scrolling back returns the window to its natural spot. A sliver cap
+        (not full containment) so a deliberate drag can still tuck a window
+        mostly off screen without ever losing its grab handle. The floating
+        DnD window is exempt: glue_window_to_cursor assumes abs is linear in
+        window_pos, and a clamp would make its per-frame correction
+        accumulate without bound."""
+        if (not self.closable or self.parent_window is None
+                or self.parent_window is self):
+            return pos
+        size = self.width if axis == 0 else self.height
+        disp = Core.melty.display_size
+        if size is None or disp is None:
+            return pos
+        keep = min(48, size)
+        lo, hi = keep - size, disp[axis] - keep
+        if lo <= pos <= hi:
+            return pos
+        try:
+            from src.lsd.gl_gui.view.core_views.drag_drop import DragDrop
+            if DragDrop.is_dragged_item(self):
+                return pos
+        except Exception:
+            pass
+        return max(min(pos, hi), lo)
+
     def _abs_left(self):
         # Recursive parent walks go through the cached `parent_window.abs_left`
         # property - once an ancestor's value is cached for the current key, the
@@ -1140,6 +1178,7 @@ class DrawState(DictConversion):
             sx, _ = self._ancestor_scroll()
             this_left = (window_pos_x + parent_left + self.left_offset - sx
                          + self.parent_anchor_offset[0] + anchor[0])
+            this_left = self._cap_to_display(this_left, 0)
         return int(this_left)
 
     def _abs_top_true(self):
@@ -1200,6 +1239,7 @@ class DrawState(DictConversion):
             _, sy = self._ancestor_scroll()
             this_top = (window_pos_y + parent_top + self.top_offset - sy
                         + self.parent_anchor_offset[1] + anchor[1])
+            this_top = self._cap_to_display(this_top, 1)
         return int(this_top)
 
     @property

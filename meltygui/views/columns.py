@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+
 import imgui
 
 from src.lsd.gl_gui.utils.glfw_utils import request_render
@@ -137,11 +139,24 @@ def _solve_collisions(window):
     return moved
 
 
-def _window_direct(draw_state):
-    """True when this columns view is the direct content of its window —
-    its frame IS the window frame."""
+def _has_columns_ancestor(draw_state):
+    """True when another columns container sits between this view and its
+    window. Used to decide window-frame adoption: a row with NO columns
+    ancestor is the window's row — however many plain wrapper views
+    (window bodies, code_file_io, …) sit in between — and adopts the
+    window's frame edges; a row under another columns container gets its
+    far edges from the enclosing cell instead (passed refs, or its own as
+    the deep-nesting fallback). The climb is scoped to the parent window
+    and guards the root ds's self-parent loop."""
     window = draw_state.parent_window
-    return window is not None and draw_state._parent is window
+    node = draw_state._parent
+    while node is not None and node is not node._parent:
+        if node is window:
+            break
+        if getattr(node, "_column_container", False):
+            return True
+        node = node._parent
+    return False
 
 
 def window_edge_pass(window):
@@ -237,15 +252,6 @@ def window_edge_pass(window):
             ds.invalidate(note=Note(reason="edge solve", **_NOTE))
         request_render()
 
-    # Frame edge lines, full height, in this window's layer.
-    draw_list = imgui.get_window_draw_list()
-    for k, e in enumerate(fe):
-        ex = win_x + e["x"]
-        alpha = 0.6 if active == k else 0.2
-        draw_list.add_line(snap_int(ex), snap_int(win_y + 2),
-                           snap_int(ex), snap_int(win_y + window.height - 2),
-                           imgui.get_color_u32_rgba(1.0, 1.0, 1.0, alpha), 1.0)
-
 
 def _grab_zone(edges, k):
     """Horizontal grab span for edge k of this view's list: EDGE_GRAB_WIDTH
@@ -273,6 +279,253 @@ def _drag_inc(draw_state, handle, drag):
     last = totals.get(handle, 0.0)
     totals[handle] = drag.total_dx
     return drag.total_dx - last
+
+
+class ColumnLayout:
+    """Manual-cell access to the shared edge system, for renderers that draw
+    their own cells instead of routing values through draw_columns (e.g. the
+    code editor's structured|text tabs).
+
+        cols = ColumnLayout(draw_state, n_cols, column_edges=column_edges,
+                            column_widths=column_widths)
+        for idx in range(n_cols):
+            with cols.cell(idx) as width:
+                any_renderer(..., width=width)
+        cols.finish()
+
+    Declare ``column_edges=None`` as a named param on the host render_func
+    and pass its resolved value through — ColumnLayout stamps
+    draw_state.column_edges on seed/adoption changes, so auto-state persists
+    the edge dicts exactly like draw_columns. Edge ownership, registration
+    on the root window, drag handles and the collision solve are the same
+    machinery; only the cell CONTENT is the caller's."""
+
+    def __init__(self, draw_state, n_cols, column_edges=None,
+                 column_widths=None, left_edge=None, right_edge=None,
+                 resizable=True, padding=6.0, border_color=(0.0, 0.0, 0.0, 0.4)):
+        self.draw_state = draw_state
+        self.n_cols = n_cols
+        n_lines = self.n_lines = n_cols + 1
+        # Cells inset by `padding` on every side and the whole row carries
+        # ONE filled rounded band (drawn before the cells, so their rounded
+        # backgrounds read as holes in it): the band shows through the
+        # padding and fills the gaps between columns, so the row reads as
+        # a single rounded rectangle. border_color None (or padding 0)
+        # removes it.
+        self.padding = float(padding)
+        self.border_color = border_color
+        self._cell_radius = {}
+
+        window = draw_state.parent_window or draw_state
+        _ensure_window_state(window)
+        window_edge_pass(window)  # idempotent; usually ran via the wrapper
+        self.window = window
+        self.win_x = window.abs_left
+
+        origin = imgui.get_cursor_screen_pos()
+        self.top = origin[1]
+        self._bottom = self.top
+
+        # Mark this host so descendants' adoption checks can see it.
+        draw_state._column_container = True
+
+        # Far edges belong to the CONTAINER: the enclosing cell when given;
+        # else the WINDOW frame whenever no other columns container sits
+        # above this view (plain wrappers like window bodies / code_file_io
+        # are exceptions - their host IS the window content, so the row IS
+        # the window's row); else own edges (deep-nesting fallback).
+        if left_edge is None and right_edge is None and not _has_columns_ancestor(draw_state):
+            frame_edges = getattr(window, "_frame_edges", None)
+            if frame_edges:
+                left_edge, right_edge = frame_edges
+
+        stored = column_edges if isinstance(column_edges, list) else []
+        ok = (len(stored) == n_lines and
+              all(isinstance(e, dict) and "x" in e for e in stored))
+        seed_valid = True
+        if ok:
+            edges = list(stored)
+        else:
+            if left_edge is not None and right_edge is not None:
+                base, extent = left_edge["x"], right_edge["x"] - left_edge["x"]
+            else:
+                base = origin[0] - self.win_x
+                extent = float(draw_state.content_width or 0)
+            # A seed taken before the container has laid out (content_width
+            # ~0) stays TRANSIENT: render with it this frame, don't persist,
+            # so a later frame re-seeds at the new extent instead of
+            # locking up an all-minimum-width pile.
+            seed_valid = extent > n_cols * float(MIN_COLUMN_WIDTH)
+            extent = max(extent, n_cols * float(MIN_COLUMN_WIDTH))
+            edges = _seed_edges(column_widths, n_cols, extent, base=base)
+        owned = [True] * n_lines
+        if left_edge is not None:
+            edges[0] = left_edge
+            owned[0] = False
+        if right_edge is not None:
+            edges[-1] = right_edge
+            owned[-1] = False
+        if seed_valid and (not ok or any(a is not b for a, b in zip(stored, edges))):
+            # Stamp so auto-state persists the list; in-place x mutations on
+            # the dicts persist without re-stamping.
+            draw_state.column_edges = edges
+        self.edges = edges
+        self.owned = owned
+
+        window._edge_views[draw_state.id] = (draw_state, edges)
+
+        # Grab handles for OWNED edges (foreign far edges already have the
+        # container's handles on the same line).
+        self.active_edge = None
+        if resizable:
+            height = max(getattr(draw_state, "_edge_lines_height", 0.0),
+                         MIN_ROW_HEIGHT)
+            seen_handles = set()
+            for k in range(n_lines):
+                if not owned[k]:
+                    continue
+                lo, hi = _grab_zone(edges, k)
+                rect = (self.win_x + lo, self.top,
+                        self.win_x + hi, self.top + height)
+                drag = draw_state.on_action("left_mouse_drag",
+                                            view_id=f"col_edge_{k}",
+                                            rect=rect, priority_delta=1)
+                if not drag:
+                    continue
+                self.active_edge = k
+                seen_handles.add(k)
+                inc = _drag_inc(draw_state, k, drag)
+                if inc:
+                    window._pending_drags.append(
+                        (edges[k], edges[k]["x"] + inc))
+
+            totals = getattr(draw_state, "_drag_totals", None)
+            if totals:
+                for h in [h for h in totals if h not in seen_handles]:
+                    del totals[h]
+            if self.active_edge is not None:
+                draw_state.invalidate(note=Note(reason="edge drag", **_NOTE))
+                request_render()
+
+        # The host's VISIBLE box (live clip, screen coords) - the band's
+        # authority for adopted sides, so content margins / the scrollbar
+        # reserve never shave it and the padding reads even all around.
+        self.clip = Core.melty.get_clip_rect() or draw_state.abs_clip_rect
+
+        # ----- the row band: one filled rounded rectangle spanning the
+        # effective bounds, drawn BEFORE the cells so they render on top -
+        # their rounded backgrounds are the holes, the band shows through
+        # the padding and fills the space between columns. ADOPTED far
+        # edges are the container's boundary, so the band takes the
+        # container's visible box (the clip) there - a owned row's band
+        # lands exactly in the panel band's middle. -----
+        if self.padding > 0 and self.border_color is not None:
+            # The band spans the VISIBLE viewport: its bottom comes from the
+            # host's clip, not from measured row height - a short row
+            # still frames the whole pane, and there's no settle lag.
+            if self.clip is not None:
+                band_bottom = self.clip[3]
+            else:
+                band_bottom = self.top + max(draw_state.height or 0.0,
+                                             MIN_ROW_HEIGHT)
+            radius = getattr(draw_state, "_band_radius", 6.0) + self.padding
+            draw_list = imgui.get_window_draw_list()
+            draw_list.channels_set_current(Core.melty.get_channel() - 1)
+            draw_list.add_rect_filled(
+                snap_int(self.win_x + self._band_left()),
+                snap_int(self.top),
+                snap_int(self.win_x + self._band_right()),
+                snap_int(band_bottom),
+                imgui.get_color_u32_rgba(*self.border_color),
+                rounding=radius)
+            draw_list.channels_set_current(Core.melty.get_channel())
+
+    def width(self, idx):
+        return self.edges[idx + 1]["x"] - self.edges[idx]["x"]
+
+    def _band_left(self):
+        """Band left bound. An ADOPTED far edge sits on the container's
+        boundary, where margins/rounding would shave the band — so the band
+        takes the container's VISIBLE box (the clip) on that side instead.
+        An owned edge is the row's own line and the band spans exactly to
+        it."""
+        if self.owned[0]:
+            return self.edges[0]["x"]
+        if self.clip is not None:
+            return self.clip[0] - self.win_x
+        return self.edges[0]["x"] + self.padding
+
+    def _band_right(self):
+        if self.owned[-1]:
+            return self.edges[-1]["x"]
+        if self.clip is not None:
+            return self.clip[2] - self.win_x
+        return self.edges[-1]["x"] - self.padding
+
+    def _bound_left(self, idx):
+        return self._band_left() if idx == 0 else self.edges[idx]["x"]
+
+    def _bound_right(self, idx):
+        return (self._band_right() if idx == self.n_cols - 1
+                else self.edges[idx + 1]["x"])
+
+    def inner_width(self, idx):
+        """Content width of column idx: the effective span minus padding."""
+        return max(0.0, self._bound_right(idx) - self._bound_left(idx)
+                   - 2 * self.padding)
+
+    @contextmanager
+    def cell(self, idx, height=None):
+        """Position the cursor at column idx's content origin (inset by
+        padding from the effective bounds), clip to the content box, and
+        yield the content width. Render the cell inside the with-block.
+        `height` is the FULL cell band including padding — the content box
+        is inset from it."""
+        pad = self.padding
+        left_b = self._bound_left(idx)
+        inner_w = self.inner_width(idx)
+        x0 = snap_int(self.win_x + left_b + pad)
+        y0 = snap_int(self.top + pad)
+        imgui.set_cursor_screen_pos((self.win_x + left_b + pad,
+                                     self.top + pad))
+        clip_h = height if height is not None else (self.draw_state.height
+                                                    or MIN_ROW_HEIGHT)
+        Core.melty.push_clip((x0, y0, x0 + snap_int(inner_w),
+                              snap_int(self.top) + snap_int(clip_h)
+                              - snap_int(pad)))
+        try:
+            yield inner_w
+        finally:
+            Core.melty.pop_clip()
+            bottom = imgui.get_cursor_screen_pos()[1]
+            self._bottom = max(self._bottom, bottom + pad)
+
+    def note_child(self, idx, child_ds):
+        """Optional: record column idx's child draw_state so the band's
+        outer rounding can follow the children's actual corner radius
+        (default 6 when never noted)."""
+        if child_ds is not None:
+            radius = getattr(child_ds, "corner_radius", None)
+            if radius is not None:
+                self._cell_radius[idx] = float(radius)
+
+    def finish(self):
+        """Measure the row — the UNIFORM band height the panel draws at next
+        frame — stamp the band rounding from the noted child corners, and
+        leave the flow cursor below the row."""
+        ds = self.draw_state
+        new_h = max(self._bottom - self.top, MIN_ROW_HEIGHT)
+        prev_h = getattr(ds, "_edge_lines_height", None)
+        ds._edge_lines_height = new_h
+        ds._band_radius = (max(self._cell_radius.values())
+                           if self._cell_radius else 6.0)
+        if prev_h is None or abs(new_h - prev_h) > 1.0:
+            # The band stopped at last frame's height; catch up next frame.
+            ds.invalidate(note=Note(reason="row band settle", **_NOTE))
+            request_render()
+        imgui.set_cursor_screen_pos((self.win_x + self.edges[0]["x"],
+                                     self._bottom))
+        imgui.dummy(0, 0)
 
 
 @render_func(use_cache=True, show_bg=False, shadow=False, selectable=False,
@@ -305,127 +558,32 @@ def draw_columns(input_value, column_widths=None, column_edges=None,
     if not keys:
         return False, input_value
     n_cols = len(keys)
-    n_lines = n_cols + 1
 
-    # ----- window anchor: all edges live on the root window -----
-    window = draw_state.parent_window or draw_state
-    _ensure_window_state(window)
-    window_edge_pass(window)  # idempotent; usually already called via the wrapper
-    win_x = window.abs_left
-
-    origin = imgui.get_cursor_screen_pos()
-    top = origin[1]
-
-    # ----- own edges: load / seed, then adopt the cell container's far
-    # edge objects so shared boundaries are shared identity. The container
-    # is the enclosing cell - or the WINDOW itself for a window-direct row,
-    # whose far edges are the window's frame edges -----
-    left_ref = kwargs.get("left_edge")
-    right_ref = kwargs.get("right_edge")
-    if left_ref is None and right_ref is None and _window_direct(draw_state):
-        frame_edges = getattr(window, "_frame_edges", None)
-        if frame_edges:
-            left_ref, right_ref = frame_edges
-
-    stored = column_edges if isinstance(column_edges, list) else []
-    ok = (len(stored) == n_lines and
-          all(isinstance(e, dict) and "x" in e for e in stored))
-    seed_valid = True
-    if ok:
-        edges = list(stored)
-    else:
-        if left_ref is not None and right_ref is not None:
-            base, extent = left_ref["x"], right_ref["x"] - left_ref["x"]
-        else:
-            base = origin[0] - win_x
-            extent = float(draw_state.content_width or 0)
-        # A seed taken before the parent has laid out (content_width ~0)
-        # must stay TRANSIENT: render with it this frame but don't persist,
-        # so a later frame re-seeds at the real width instead of locking in
-        # an all-minimum-width pile.
-        seed_valid = extent > n_cols * float(MIN_COLUMN_WIDTH)
-        extent = max(extent, n_cols * float(MIN_COLUMN_WIDTH))
-        edges = _seed_edges(column_widths, n_cols, extent, base=base)
-    owned = [True] * n_lines
-    if left_ref is not None:
-        edges[0] = left_ref
-        owned[0] = False
-    if right_ref is not None:
-        edges[-1] = right_ref
-        owned[-1] = False
-    if (not ok or any(a is not b for a, b in zip(stored, edges))):
-        # Stamp so auto state persists the list; in-place x mutations on the
-        # edges persist without re-stamping.
-        draw_state.column_edges = edges
-
-    window._edge_views[draw_state.id] = (draw_state, edges)
-
-    # ----- drag handles for OWNED edges (foreign boundary edges already have
-    # the enclosing view's handles on the same line) -----
-    active_edge = None
-    if resizable:
-        height = max(getattr(draw_state, "_edge_lines_height", 0.0),
-                     MIN_ROW_HEIGHT)
-        seen_handles = set()
-        for k in range(n_lines):
-            if not owned[k]:
-                continue
-            lo, hi = _grab_zone(edges, k)
-            rect = (win_x + lo, top, win_x + hi, top + height)
-            drag = draw_state.on_action("left_mouse_drag",
-                                        view_id=f"col_edge_{k}",
-                                        rect=rect, priority_delta=1)
-            if not drag:
-                continue
-            active_edge = k
-            seen_handles.add(k)
-            inc = _drag_inc(draw_state, k, drag)
-            if inc:
-                window._pending_drags.append((edges[k], edges[k]["x"] + inc))
-
-        totals = getattr(draw_state, "_drag_totals", None)
-        if totals:
-            for h in [h for h in totals if h not in seen_handles]:
-                del totals[h]
-        if active_edge is not None:
-            draw_state.invalidate(note=Note(reason="edge drag", **_NOTE))
-            request_render()
+    cols = ColumnLayout(draw_state, n_cols, column_edges=column_edges,
+                        column_widths=column_widths,
+                        left_edge=kwargs.get("left_edge"),
+                        right_edge=kwargs.get("right_edge"),
+                        resizable=resizable)
 
     # ----- cells: lined up with their edges; nested Columns get the cell's
     # edge objects by reference -----
     changed = False
     for idx, key in enumerate(keys):
-        e_left, e_right = edges[idx], edges[idx + 1]
-        imgui.set_cursor_screen_pos((win_x + e_left["x"], origin[1]))
-        content_width = e_right["x"] - e_left["x"]
-        Core.melty.push_clip((snap_int(win_x + e_left["x"]), snap_int(origin[1]),
-                              snap_int(win_x + e_left["x"]) + snap_int(content_width),
-                              snap_int(origin[1]) + snap_int(draw_state.height)))
-        item_kwargs = {"name": f"{key}", "align_header": False,
-                       "width": content_width} | child_kwargs
-        if isinstance(input_value[key], Columns):
-            item_kwargs |= {"left_edge": e_left, "right_edge": e_right}
-        item_changed, out_value = draw_any(input_value[key], **item_kwargs)
+        item = input_value[key]
+        with cols.cell(idx) as cell_width:
+            item_kwargs = {"name": f"{key}", "align_header": False,
+                           "width": cell_width} | child_kwargs
+            if isinstance(item, Columns):
+                item_kwargs |= {"left_edge": cols.edges[idx],
+                                "right_edge": cols.edges[idx + 1]}
+            item_changed, out_value, cell_ds = draw_any(
+                item, return_extras=True, **item_kwargs)
+            cols.note_child(idx, cell_ds)  # border follows the child's corners
         if item_changed:
             changed = True
             if isinstance(input_value, (dict, list)):
                 input_value[key] = out_value
 
-        Core.melty.pop_clip()
-
-    bottom = imgui.get_cursor_screen_pos()[1]
-    draw_state._edge_lines_height = max(bottom - top, MIN_ROW_HEIGHT)
-
-    # ----- the lines (owned only; foreign lines are drawn by the owner) --
-    draw_list = imgui.get_window_draw_list()
-    line_bottom = top + draw_state._edge_lines_height + 300
-    for k in range(n_lines):
-        if not owned[k]:
-            continue
-        ex = win_x + edges[k]["x"]
-        alpha = 0.6 if active_edge == k else 0.2
-        draw_list.add_line(snap_int(ex), snap_int(top + 2),
-                           snap_int(ex), snap_int(line_bottom - 2),
-                           imgui.get_color_u32_rgba(1.0, 1.0, 1.0, alpha), 1.0)
+    cols.finish()
 
     return changed, input_value

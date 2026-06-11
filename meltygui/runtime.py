@@ -25,7 +25,7 @@ from src.lsd.gl_gui.view.invalidation_tracker import InvalidateTracker, Note
 from src.lsd.gl_gui.background import Background
 from src.lsd.gl_gui.collection_action import CollectionAction
 from src.lsd.gl_gui.collision import Collisions
-from src.lsd.gl_gui.toggles import Toggles, Counters, Tint, Swoosh
+from src.lsd.gl_gui.toggles import Toggles, Counters, Tint, Swoosh, SwooshMode
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import set_window_registrar
 from src.lsd.gl_gui.view.core_views.monitor import Monitor
 from src.lsd.gl_gui.view.view_utils.imgui_style_manager_class import ImGuiStyleManager
@@ -644,6 +644,11 @@ class Melty:
     # O(1) membership against this instead of imgui.is_mouse_hovering_rect.
     bvh_hover_ids = set()
 
+    # OS-window framebuffer size, stashed once per frame in begin_frame so
+    # external code without imgui access (DrawState's nested-window position
+    # cap) can read it. None until the first frame / in headless mode.
+    display_size = None
+
     items_to_delete = []
     # Foreground/overlay channel routing. The overlay draw list is channel-split
     # into max_depth channels (like the window draw list); a view adds its
@@ -856,6 +861,25 @@ class Melty:
             # box here. Filter it out, and lazily evict so it stops being hit.
             if ds.closed or ds.abs_closed:
                 stale.append(ds)
+                continue
+            # A nested window hidden because its spawner scrolled out of sight
+            # (end frame's dispatch rebuild) keeps its geometry and BVH boxes -
+            # they must NOT be evicted, or its blit-cached widgets would stay
+            # hover-dead when it unhides (they only re-sync when they actually
+            # re-render). Just skip hits inside any hidden window up the
+            # parent_window chain while the flag is set.
+            node, hidden = ds, False
+            for _ in range(32):
+                if node is None:
+                    break
+                if getattr(node, '_hidden_offscreen', False):
+                    hidden = True
+                    break
+                nxt = node.parent_window
+                if nxt is node:
+                    break
+                node = nxt
+            if hidden:
                 continue
             # The index stores full, UNCLIPPED bboxes, so a view scrolled partly
             # out of its parent still matches over its hidden region. Reject the
@@ -1249,6 +1273,7 @@ class Melty:
         # cls._gen_by_module.setdefault(module_id, 0)
         # cls._path_stack.clear()
         fb_w, fb_h = map(int, imgui.get_io().display_size)  # or your true GL FB size if HiDPI
+        cls.display_size = (fb_w, fb_h)
         cls.cache.mask_begin_frame((fb_w, fb_h))
 
         # Channel-split the foreground/overlay draw list the same way as the
@@ -1533,8 +1558,136 @@ class Melty:
         return sm.make_custom(*tint,
                               saturation_scale=1.0, value=0.6)[:3]
     @staticmethod
+    def _draw_ribbon(overlay_dl, px0, py0, px1, py1, nx0, ny0, nx1, ny1,
+                     rgb, p_round=0.0, n_round=0.0):
+        """Thick-ribbon connector: instead of the thin tapered line, bridge
+        the two views' facing edges with a full band. Each end of the band
+        sits on the straight (un-rounded) portion of its view's facing edge,
+        centered on the shared overlap span, and is sized from its OWN edge
+        length (Swoosh.ribbon_coverage of it, capped by ribbon_max_width) —
+        so a small child hanging off a big parent gets a funnel, wide at the
+        parent and narrow at the child. When the views are offset the two
+        bands land at different positions and the band's boundary curves
+        s-curve between them (cubics with tangents perpendicular to the
+        edges — the classic node-link shape). Returns True when drawn; False
+        when the rects overlap (no facing gap to bridge) or an edge is all
+        corner, so the caller falls back to the thin line. Tunables:
+        Swoosh.ribbon_*."""
+        gap_r, gap_l = nx0 - px1, px0 - nx1
+        gap_b, gap_t = ny0 - py1, py0 - ny1
+        gx, gy = max(gap_r, gap_l), max(gap_b, gap_t)
+        if gx <= 0.0 and gy <= 0.0:
+            return False
+
+        # Bridge along the axis with the wider gap. ep/ec are the two facing
+        # edge coordinates on that axis; lo/hi bound the straight portion of
+        # the facing edge (inset by its corner radius) on the other axis.
+        if gx >= gy:
+            ep, ec = (px1, nx0) if gap_r >= gap_l else (px0, nx1)
+            p_lo, p_hi = py0 + p_round, py1 - p_round
+            c_lo, c_hi = ny0 + n_round, ny1 - n_round
+            shared = (max(py0, ny0) + min(py1, ny1)) * 0.5
+            pt = lambda along, across: (along, across)
+        else:
+            ep, ec = (py1, ny0) if gap_b >= gap_t else (py0, ny1)
+            p_lo, p_hi = px0 + p_round, px1 - p_round
+            c_lo, c_hi = nx0 + n_round, nx1 - n_round
+            shared = (max(px0, nx0) + min(px1, nx1)) * 0.5
+            pt = lambda along, across: (across, along)
+
+        # Per-end half-widths: each end is sized from its own edge, clamped to
+        # that edge's full straight span (coverage >= 1 spans the whole edge)
+        # and optionally capped in px. Mismatched views make a funnel.
+        def end_hw(lo, hi):
+            w = (hi - lo) * Swoosh.ribbon_coverage
+            if Swoosh.ribbon_max_width > 0.0:
+                w = min(w, Swoosh.ribbon_max_width)
+            return min(w, hi - lo) * 0.5
+        p_hw = end_hw(p_lo, p_hi)
+        c_hw = end_hw(c_lo, c_hi)
+        if p_hw < 1.0 or c_hw < 1.0:
+            return False
+        # Center each band on the shared-span center, clamped into its own
+        # straight edge: aligned views get a straight band; offset views get
+        # bands at different positions with the curves bridge them.
+        pc = min(max(shared, p_lo + p_hw), p_hi - p_hw)
+        cc = min(max(shared, c_lo + c_hw), c_hi - c_hw)
+
+        # Tangent reach of the boundary cubics: perpendicular to the edges at
+        # both ends, scaled with the band centers' distance (not just the
+        # gap) so the S stays smooth when the gap is small but the ends
+        # large. Signed so the tangents always point out of their view.
+        reach = Swoosh.ribbon_curve * math.hypot(ec - ep, cc - pc)
+        if ec < ep:
+            reach = -reach
+
+        segments = max(2, int(Swoosh.segments))
+        sides = []
+        for sign in (-1.0, 1.0):
+            a0, a3 = pc + sign * p_hw, cc + sign * c_hw
+            pts = []
+            for i in range(segments + 1):
+                t = i / segments
+                u = 1.0 - t
+                along = (u * u * u * ep + 3 * u * u * t * (ep + reach)
+                         + 3 * u * t * t * (ec - reach) + t * t * t * ec)
+                across = (u * u * u * a0 + 3 * u * u * t * a0
+                          + 3 * u * t * t * a3 + t * t * t * a3)
+                pts.append(pt(along, across))
+            sides.append(pts)
+
+        # Fill between the two boundary polylines; the band isn't convex, so
+        # fill segment quads as triangle pairs. Per-triangle antialiasing is
+        # deliberately OFF for the fill: AA feathers a fringe around every
+        # triangle, and on the shared interior edges the overlapping fringes
+        # over-blend into visible seams - a wireframe across the translucent
+        # band. Without AA adjacent triangles rasterize watertight (identical
+        # shared vertices), and the band's outer edges are feathered by the
+        # boundary strokes below instead.
+        #
+        # With ribbon_fade_width the fill thins inversely with the local band
+        # width - a cross-section contains constant "ink", so a huge ribbon
+        # stays airy rather than overwhelming. Width varies along the funnel, so
+        # the alpha is per segment: the wide end fades more than the narrow
+        # end, graded smoothly over the tessellation. Strokes keep full
+        # strength.
+        a, b = sides
+        fade = Swoosh.ribbon_fade_width
+        fill = imgui.get_color_u32_rgba(*rgb, Swoosh.ribbon_alpha)
+        dl_flags = overlay_dl.flags
+        overlay_dl.flags = dl_flags & ~imgui.DRAW_LIST_ANTI_ALIASED_FILL
+        try:
+            for i in range(segments):
+                if fade > 0.0:
+                    wmid = (math.hypot(b[i][0] - a[i][0], b[i][1] - a[i][1])
+                            + math.hypot(b[i + 1][0] - a[i + 1][0],
+                                         b[i + 1][1] - a[i + 1][1])) * 0.5
+                    if wmid > fade:
+                        fill = imgui.get_color_u32_rgba(
+                            *rgb, Swoosh.ribbon_alpha * fade / wmid)
+                    else:
+                        fill = imgui.get_color_u32_rgba(*rgb, Swoosh.ribbon_alpha)
+                overlay_dl.add_triangle_filled(a[i][0], a[i][1], b[i][0], b[i][1],
+                                               a[i + 1][0], a[i + 1][1], fill)
+                overlay_dl.add_triangle_filled(b[i][0], b[i][1], b[i + 1][0], b[i + 1][1],
+                                               a[i + 1][0], a[i + 1][1], fill)
+        finally:
+            overlay_dl.flags = dl_flags
+
+        # Stroke the boundary curves (add_polyline is antialiased) for
+        # definition and to soften the hard triangle edges. The band's ends
+        # sit flush against the view edges, so no caps are needed.
+        if Swoosh.ribbon_edge_thickness > 0.0:
+            edge = imgui.get_color_u32_rgba(*rgb, Swoosh.ribbon_edge_alpha)
+            overlay_dl.add_polyline(a, edge, flags=imgui.DRAW_NONE,
+                                    thickness=Swoosh.ribbon_edge_thickness)
+            overlay_dl.add_polyline(b, edge, flags=imgui.DRAW_NONE,
+                                    thickness=Swoosh.ribbon_edge_thickness)
+        return True
+
+    @staticmethod
     def _draw_swoosh(overlay_dl, px, py, pw, ph, nx, ny, nw, nh, rgb,
-                     p_round=0.0, n_round=0.0, p_clip=None):
+                     p_round=0.0, n_round=0.0, p_clip=None, mode=None):
         """Draw a curved connector from the parent view's outline to the nested
         view. The line is thick at both endpoints and tapers thin in the middle.
         `rgb` is the resolved highlight color (see _highlight_rgb); p_round /
@@ -1542,20 +1695,38 @@ class Melty:
         edge. p_clip, if given, is the parent's absolute clip rect
         (left, top, right, bottom): the parent end is anchored against the
         *visible* (clipped) part of the parent rect so the cap dot never lands
-        on a region that's been scrolled/clipped away. Tunables live on
-        Swoosh.*."""
+        on a region that's been scrolled/clipped away. `mode` is a SwooshMode
+        (or its string value) selecting the connector style per window — the
+        swoosh_mode window kwarg lands here; None follows the global
+        Swoosh.ribbon toggle. Tunables live on Swoosh.*."""
+        if mode is None:
+            mode = SwooshMode.RIBBON if Swoosh.ribbon else SwooshMode.LINE
+        elif isinstance(mode, str):
+            mode = SwooshMode(mode)
         # Clamp the parent rect to its visible region so the connector anchors on
-        # what's actually on screen rather than a clipped-off edge.
+        # what's actually on screen rather than a clipped-off edge. When the
+        # parent is scrolled/clipped completely out of view there is no visible
+        # edge to anchor to - draw nothing rather than tether to a phantom rect.
         if p_clip is not None:
             cl, ct, cr, cb = p_clip
             vx0, vy0 = max(px, cl), max(py, ct)
             vx1, vy1 = min(px + pw, cr), min(py + ph, cb)
-            if vx1 > vx0 and vy1 > vy0:
-                px, py, pw, ph = vx0, vy0, vx1 - vx0, vy1 - vy0
+            if vx1 <= vx0 or vy1 <= vy0:
+                return
+            px, py, pw, ph = vx0, vy0, vx1 - vx0, vy1 - vy0
 
         # Real (un-grown) view rects: the endpoints must land on these.
         rpx0, rpy0, rpx1, rpy1 = px, py, px + pw, py + ph
         rnx0, rny0, rnx1, rny1 = nx, ny, nx + nw, ny + nh
+
+        # Ribbon mode: a full band between the view edges replaces the thin
+        # line whenever the views have a space to bridge; overlapping views fall
+        # through to the line, which knows how to route around the intersection.
+        if mode is SwooshMode.RIBBON and Melty._draw_ribbon(
+                overlay_dl, rpx0, rpy0, rpx1, rpy1,
+                rnx0, rny0, rnx1, rny1, rgb,
+                p_round=p_round, n_round=n_round):
+            return
 
         # The overlap transition is computed on the grown rects so it begins
         # as the views approach, before they actually touch (Swoosh.overlap_padding).
@@ -1812,6 +1983,48 @@ class Melty:
                 print_stack_trace(exception=e)
 
     @classmethod
+    def _spawner_fully_clipped(cls, ds, _depth=0):
+        """True when the view this nested window was spawned from (the same
+        anchor the swoosh tethers to) is completely scrolled/clipped out of
+        view — or when the window's own parent window is hidden for that
+        reason, so chains of nested windows hide together.
+
+        Deliberately a LIVE-geometry test, not a BVH lookup or a "did the
+        parent render this frame" test: BVH boxes only catch up when a view
+        re-renders, so they are stale during the very scroll that pushes the
+        parent away — and a blit-cached parent skips its render while being
+        perfectly visible, so render-recency can't distinguish "offscreen"
+        from "cached". abs_left/abs_top (and so abs_clip_rect) are computed
+        live off the persistent draw_state — ancestor scroll included —
+        regardless of how (or whether) the parent was drawn this frame, so
+        an empty visible rect means exactly "the spawner is out of sight"."""
+        # The floating DnD window rides the cursor and must survive its
+        # source view auto-scrolling out from under the drag.
+        try:
+            from src.lsd.gl_gui.view.core_views.drag_drop import DragDrop
+            if DragDrop.is_dragged_item(ds):
+                return False
+        except Exception:
+            pass
+
+        parent = ds._parent
+        if parent is not None and parent is not ds:
+            anchor = getattr(parent, '_offset_ds', None)
+            if anchor is None:
+                anchor = parent
+            if (anchor.width is not None and anchor.height is not None
+                    and anchor.clipped_by_rect is not None):
+                vl, vt, vr, vb = anchor.abs_clip_rect
+                if vr <= vl or vb <= vt:
+                    return True
+
+        pw = ds.parent_window
+        if (_depth < 16 and pw is not None and pw is not ds
+                and pw.closable and pw._parent is not None):
+            return cls._spawner_fully_clipped(pw, _depth + 1)
+        return False
+
+    @classmethod
     def end_frame(cls):
         if glfw_utils.frames_left > 0:
             request_render()
@@ -1866,7 +2079,25 @@ class Melty:
             for idx, ds in enumerate(ds_list):
                 if ds.abs_closed or ds.closed:
                     to_discard.add((parent_ds_id, ds))
-                else:
+                    continue
+                # Hide - don't discard - nested windows whose spawning view is
+                # fully offset-clipped out of sight. The window stays
+                # registered (a discard could never come back while the layer
+                # rides the blit cache, since only the parent's live call site
+                # re-registers it), it just isn't dispatched: no draw, no
+                # swoosh, no highlight. It reappears the moment the spawner
+                # scrolls back into view.
+                try:
+                    hidden = cls._spawner_fully_clipped(ds)
+                except Exception:
+                    hidden = False
+                if hidden != getattr(ds, '_hidden_offscreen', False):
+                    ds._hidden_offscreen = hidden
+                    # bvh_query memoizes per (x, y) keyed on _bvh_gen alone: a
+                    # flag flip changes its effective result without an index
+                    # mutation, so bump gen to invalidate the stale memo.
+                    cls._bvh_gen += 1
+                if not hidden:
                     cls.root_draw_states_by_layer[ds.abs_layer].append(ds)
 
         for ds_id, discard_ds in to_discard:
@@ -2018,6 +2249,7 @@ class Melty:
                         p_round=getattr(offset_ds, 'corner_radius', 6),
                         n_round=rounding,
                         p_clip=parent_clip,
+                        mode=draw_state._kwargs.get("swoosh_mode"),
                     )
 
                 if Melty.channels_split:
@@ -3547,7 +3779,12 @@ def apply_collection_action(action: CollectionAction):
     return None
 
 
-applied, skipped = Core.melty.replay(Melty)
+# First import only: until here Core.melty is the MockMelty recorder, whose
+# pre-init interactions replay onto the real class. On a hotswap reinit
+# Core.melty is already the (previous) Melty class - no recorder, nothing
+# to replay - and the line would AttributeError, blocking the reload.
+if hasattr(Core.melty, "replay"):
+    applied, skipped = Core.melty.replay(Melty)
 Core.melty = Melty
 
 class DepthState:

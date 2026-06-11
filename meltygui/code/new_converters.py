@@ -41,6 +41,26 @@ launch while a mouse button is down — a slow/paused drag (a tint slider) can
 outlast the time deadline, and we don't want the O(buffer) write firing mid-
 gesture; it lands once the button releases.
 
+ASYNC NEVER LAGS THE UI — the one design rule everything above serves. The live
+buffer (text_cache / a host's held value) is ALWAYS the newest state and is what
+the UI renders; background work only ever consumes SNAPSHOTS of it and may not
+push results back over it ungated. Concretely:
+  * The save is a trailing, write-only side channel. While a save is queued or
+    in flight, edits keep landing in the buffer, the UI keeps rendering them,
+    and every edit refreshes the queued save's snapshot (run_in_background's
+    one-slot queue). Nothing about the save's lifecycle — debounce, drag hold,
+    in-flight write, completion, even its own mtime bump reading back as a
+    stale file — may suppress edits, freeze the snapshot, or substitute an
+    older value for what the UI shows. A save-vintage value re-entering the
+    display path (e.g. a false "changed on disk" conflict from our own write
+    starving save_start, so the queue wrote an old buffer that file-syncing
+    views then displayed) is THE classic bug here; see the INVARIANT comment at
+    the save site in code_file_io and run_in_background's docstring.
+  * Background results that legitimately flow back (a load, a chain_in parse)
+    go through ordering gates — frame-precedence / generation tags in
+    render_host, the pending-save gate on reloads — so an older result can
+    never clobber a newer local edit.
+
 Syntax-error feedback belongs to the editor, not this file. chain_in parses the
 buffer on its background thread every time the text changes; the route hands that
 result to draw_text — `code_tree` on success, the parse exception on failure —
@@ -259,7 +279,7 @@ class TestClass:
     list_new = [1,1,1]
     # [tint=(0.31290125846862793, 0.6864094, 0.7611111402511597)]
     class NestedClass:
-        so = 31    
+        so = 31
 
     some_nested = NestedClass()
 
@@ -375,6 +395,38 @@ LOADING = object()
 def run_in_background(input_value, loading_state: LoadingState, unique,
                       draw_state, child_kwargs, start=False, timeout=20,
                       debounce_ms=50, wait_for_drag=False, **kwargs):
+    """One-shot background runner: call it every frame; `start=True` is the
+    trigger edge that snapshots (input_value, child_kwargs) into the queue.
+
+    Returns (changed, value):
+      (False, LOADING)        — BUSY: a run is in flight, OR a run finished but a
+                                newer one is already queued (see below).
+      (True, result)          — a run completed AND nothing newer is queued.
+                                Reported exactly once.
+      (False, cached_result)  — idle; last completed result (UNSET before any).
+
+    Queue semantics — latest-only, coalesced:
+      * The queue is ONE slot (`_run_next`). Every `start` overwrites it, so the
+        eventual run always uses the LATEST snapshot. Callers must therefore keep
+        re-triggering `start` while their input keeps changing — anything that
+        gates the trigger (e.g. code_file_io's `not conflict`) freezes the queued
+        snapshot at the last armed value, and the run will execute OLD data.
+      * Completion is reported only when the queue is empty, so consumers only
+        ever see the final result of a burst (render_host's materialize gate
+        relies on a reported result never being superseded).
+      * A completed-but-superseded run is BUSY, not idle: its completion edge is
+        deliberately swallowed (coalescing), so the runner must not present an
+        idle return — consumers attach side effects to the busy state
+        (code_file_io's mark_file_current absorbs the save's own mtime bump on
+        LOADING frames; an idle return there once latched a false "changed on
+        disk" conflict that starved the auto-save snapshot — the
+        old-value-written-during-save bug).
+
+    Debounce: `debounce_ms` defers the launch until the trigger goes quiet (a
+    one-shot timer wakes the loop at the deadline — never per-frame polling).
+    `wait_for_drag` additionally holds the launch while a mouse button is down,
+    so an O(buffer) run never fires mid-gesture; the snapshot keeps tracking the
+    latest input the whole time."""
     if Melty.frame_count < 10:
         debounce_ms = 0
     if start:
@@ -461,8 +513,17 @@ def run_in_background(input_value, loading_state: LoadingState, unique,
                     if loading_state._run_next is run_next:
                         loading_state._run_next = None
 
-    if loading_state._loading:
-        loading_for = Melty.frame_count - loading_state._loading_start_frame
+    # BUSY includes "completed, but a newer run is already queued". Completion is
+    # only ever REPORTED once the queue is empty (coalesced to latest-only - see
+    # the docstring), so a swallowed completion must surface as LOADING, never
+    # as idle `(False, cached_result)`: the caller can't tell idle from
+    # completed-and-superseded, and must attach a meaning to the busy
+    # state (code_file_io absorbs its own write's mtime bump on LOADING frames).
+    # Dropping into idle could let a save's mtime bump read back as an EXTERNAL
+    # change → false "changes on disk" conflict → auto-save stopped re-arming →
+    # the queued save wrote a stale snapshot (the old-value-during-save bug).
+    if loading_state._loading or (loading_state._pending_change
+                                  and loading_state._run_next is not None):
         return False, LOADING
 
     if loading_state._pending_change and loading_state._run_next is None:
@@ -487,6 +548,12 @@ class CodeState(DictConversion):
         self.file_mtime = None
         self.file_size = None
         self._pending_save = False
+        # Set when the codec REFUSED a save (SaveConflict: the on-disk span
+        # changed during the debounced write). While set, a stale file is a
+        # GENUINE conflict even if the disk content is an in-process write -
+        # it gates the auto-write absorb in code_file_io so the conflict UI
+        # actually surfaces. Cleared on a successful save or a (re)load.
+        self._save_refused = False
         # Set the frame an edit changes the buffer; consumed next frame to force a
         # reconvert (so chain_in re-parses the new text and surfaces syntax errors)
         # even when nothing external changed.
@@ -1353,7 +1420,6 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
         external_load_status(code_state, draw_state)
 
         file_stale = code_state.is_file_stale()
-        conflict = file_stale and code_state._pending_save
         keep_mine = False
         # A sibling in-process editor of the same file (the cache's str_host
         # in the structured tab, another tab, a lens save) syncs through
@@ -1361,6 +1427,24 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
         # "loaded from disk" stamp (which also fade-invalidates every update for
         # seconds). Only a write we did NOT produce gets the indication.
         self_write = file_stale and FileWatch.is_self_write(address.path)
+        # On a pending local edit, a verified IN-PROCESS write (is_self_write
+        # hash-checks the actual disk content) is absorbed, not conflicted. This
+        # is usually our own write's mtime bump observed before the runner's
+        # completion frame consumed it - the stat above runs BEFORE the save
+        # runner below, so there's always a frame where our write reads back as
+        # stale. Treating it as a conflict blocks `save_start` (below), which
+        # FREEZES the queued save's snapshot while the user keeps editing - the
+        # save then writes an OLD buffer and the file-syncing view displays
+        # the old value. Async must never gate the live buffer or its save on
+        # its own in-flight write. A refused save (_save_refused) is the one
+        # exception: the buffer holds a sibling's write and splice would mangle,
+        # so the conflict must surface. A genuine external program's write
+        # never hash-matches and conflicts as before.
+        if self_write and code_state._pending_save and not code_state._save_refused:
+            code_state.mark_file_current()
+            file_stale = False
+            self_write = False
+        conflict = file_stale and code_state._pending_save
         if file_stale and not code_state._pending_save:
             if auto_load_edits:
                 load = True
@@ -1415,6 +1499,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             code_state.mark_file_current()
             draw_state.invalidate_up(max_depth=6)
             code_state._pending_save = False
+            code_state._save_refused = False
             external_change = True
             if code_state._loaded_externally:
                 # This load was triggered by a disk change (not the initial
@@ -1456,6 +1541,15 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             # text instead of Python-tokenized Darcula colors (draw_text builds
             # inline token widgets with it).
             child_kwargs['syntax_highlight'] = code_buttons
+            # Enclosing-cell column edges ride down like jump_to: code_file_io
+            # is transparent to the column system (its box IS the cell
+            # content), so a host row passes its cell's edge dicts BY
+            # REFERENCE and the nested view's Column host adopts them as its
+            # own edges (draw_function_live's source column). Stamped
+            # unconditionally - usually None - so a shared child_kwargs dict
+            # never carries one window's edges into another.
+            child_kwargs['left_edge'] = kwargs.get('left_edge')
+            child_kwargs['right_edge'] = kwargs.get('right_edge')
             # The view's reconvert trigger: load / external edit (external_change),
             # the Index button (run_jedi), and a buffer edit from last frame
             # (_reconvert) - chain_in re-parses typed text and surfaces syntax
@@ -1496,6 +1590,24 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
         # the in-flight write. Auto-save-on-edit is debounced so a burst of
         # keystrokes collapses into one write after typing pauses; the explicit
         # save button / Ctrl+S fires immediately (debounce 0).
+        #
+        # INVARIANT - the save is a write-only side channel off the live buffer:
+        # it must never hold the UI back. The buffer (text_cache) and everything
+        # rendered from it always run ahead; the save trails behind. Two rules
+        # keep that true:
+        #   1. The queued snapshot must hold the LATEST buffer until launch:
+        #      run_in_background's one-slot queue is refreshed by every `start`,
+        #      so every edit while a save is queued/in flight MUST re-arm
+        #      save_start. Any condition that gates save_start across multiple
+        #      edit frames (today: `not conflict`) must be impossible to trigger
+        #      from the save's own lifecycle - otherwise the queue freezes on an
+        #      old buffer and the completed write pushes the OLD version out to
+        #      every view that syncs through the file.
+        #   2. Our own write must never read back as an external change. The
+        #      mtime bump is absorbed on busy frames (result is LOADING - which
+        #      includes completed-but-superseded runs), on the reported `saved`
+        #      frame, and by the verified self-write absorb above for any frame
+        #      that runs between them.
         explicit_save = save_hotkey or save
         # During a conflict (external write + pending local edit) the debounced
         # auto-save is OFF - only an explicit save (Keep mine / Save / Ctrl+S)
@@ -1527,6 +1639,10 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             # The codec refused the splice - the on-disk span changed under the
             # in-flight write. Nothing was written: keep the edit pending but
             # mark the file stale so the conflict UI above surfaces next frame.
+            # _save_refused disables the self-write absorb (the disk likely
+            # holds a SIBLING editor's in-process write, which would otherwise
+            # hash-match and silently re-absorb the conflict on this frame).
+            code_state._save_refused = True
             code_state.mark_file_stale()
             request_render()
 
@@ -1535,6 +1651,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             # next frame doesn't read the disk as an external change.
             code_state.mark_file_current()
             code_state._pending_save = False
+            code_state._save_refused = False
             note = Note(name="On saved, code_file_io", tint=(0.5, 1.0, 1.0), draw_state=draw_state)
             Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=4, note=note)
 
@@ -1893,10 +2010,11 @@ def draw_text_from_code_cache(input_value=None, root_input=None, error=None,
 
 
 @render_func(use_cache=True, show_bg=False, selectable=False, disable_scroll=True,
-             shadow=False, indent_size=0, with_footer=None, fill_height=False)
+             shadow=False, indent_size=0, with_footer=None)
 def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabState = None,
                               unique=None, draw_state=None, column_widths=None,
-                              draw=False, error=None, run_jedi=False, **kwargs):
+                              column_edges=None, draw=False, error=None,
+                              run_jedi=False, **kwargs):
     """NEW_CODE's text|structured tabs on the code-host-cache route — no inline
     chain_in/chain_out (the legacy convert_in_and_out path this replaces).
 
@@ -1945,44 +2063,67 @@ def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabS
         _ensure_symbol_index(dict_host, _str_host, dict_host._held(),
                              kwargs.get("jump_to"))
 
+    # New layout method (shared band system): the panes line up with the
+    # objects registered on the root window - the border between the
+    # structured and text panes is a black line in the same collision
+    # solve as every other column edge. Lazy import (new_core_view sits
+    # between this module and columns.py). left_edge/right_edge: when this
+    # row renders inside another row's cell, the host passes the cell's edge
+    # dicts (through code_file_io's child_kwargs) and they become this row's
+    # column edges by reference - same adoption draw_columns gives to
+    # Columns. Absent (the usual standalone window), ColumnLayout falls back
+    # to the window frame edges.
+    from src.lsd.gl_gui.view.core_views.columns import ColumnLayout, MIN_ROW_HEIGHT
+    cols = ColumnLayout(draw_state, len(tab_state.selected_tabs),
+                        column_edges=column_edges, column_widths=column_widths,
+                        left_edge=kwargs.get("left_edge"),
+                        right_edge=kwargs.get("right_edge"))
+    # Pin each pane to the visible viewport (the legacy column_max_height
+    # clamp this instead) - long sources scroll inside their pane.
+    avail_h = None
+    size_kwargs = {}
+    clip = cols.clip if cols.clip is not None else draw_state.abs_clip_rect
+    if clip is not None:
+        # Exactly to the clip bottom: the content then ends the padding
+        # above the band's bottom edge, so the black reads even all around.
+        avail_h = max(MIN_ROW_HEIGHT, clip[3] - cols.top)
+        # The pane content is inset by the column padding on every side.
+        size_kwargs = {"height": avail_h - 2 * cols.padding}
+
     raw_changed, raw_value = False, input_value
     for idx, view_func in enumerate(tab_state.selected_tabs):
-        column_width = None
-        if column_widths is not None and len(column_widths) > idx:
-            column_width = column_widths[idx]
+        with cols.cell(idx, height=avail_h) as col_width:
+            if getattr(view_func, "__name__", "") == "draw_text":
+                m_changed, m_out = draw_text_from_code_cache(
+                    input_value=input_value, root_input=root_input, error=error,
+                    run_jedi=run_jedi, jump_to=kwargs.get("jump_to"), draw=draw,
+                    show_header=False,
+                    width=col_width, **size_kwargs,
+                    name=f"draw_text##{unique}")
+                if m_changed:
+                    raw_changed, raw_value = True, m_out
+                    draw_state.invalidate_up(max_depth=2)
+            else:
+                gp = dict_host._held() if dict_host is not None else None
+                if not isinstance(gp, dict):
+                    imgui.text_colored("Parsing…" if dict_host is not None
+                                       else "No parse for this source", 0.6, 0.6, 0.6, 1.0)
+                    continue
+                m_changed, m_out = RenderFuncs.draw_collection(
+                    gp, excluded=["__cst__"], show_system=True, draw=draw,
 
-        if getattr(view_func, "__name__", "") == "draw_text":
-            m_changed, m_out = draw_text_from_code_cache(
-                input_value=input_value, root_input=root_input, error=error,
-                run_jedi=run_jedi, jump_to=kwargs.get("jump_to"), draw=draw,
-                max_width=draw_state.content_width - 10,
-                 show_header=False,
-                column=idx, column_width=column_width,
-                name=f"draw_text##{unique}")
-            if m_changed:
-                raw_changed, raw_value = True, m_out
-                draw_state.invalidate_up(max_depth=2)
-        else:
-            gp = dict_host._held() if dict_host is not None else None
-            if not isinstance(gp, dict):
-                imgui.text_colored("Parsing…" if dict_host is not None
-                
-                                   else "No parse for this source", 0.6, 0.6, 0.6, 1.0)
-                continue
-            m_changed, m_out = RenderFuncs.draw_collection(
-                gp, excluded=["__cst__"], show_system=True, draw=draw,
-                max_width=draw_state.content_width - 10,
-                disable_scroll=False, show_header=False, show_add_delete=False,
-                column=idx, column_width=column_width, show_parent_add_delete=False,
-                name=f"draw_collection##{unique}", selectable=False)
-            if m_changed:
-                # A rebuilt top-level dict (reorder / add / delete) replaces the
-                # held value; an in-place value edit already bubbled the host
-                # dirty. Either way the host chain_outs + saves on its next draw.
-                if m_out is not gp and isinstance(m_out, dict):
-                    dict_host[dict_host.value_key] = m_out
-                    gp = m_out
-                live_apply_edits(root_input, gp)
-                draw_state.invalidate_up(max_depth=2)
+                    disable_scroll=False, show_header=False, show_add_delete=False,
+                    width=col_width, **size_kwargs, show_parent_add_delete=False,
+                    name=f"draw_collection##{unique}", selectable=False)
+                if m_changed:
+                    # A rebuilt top-level tree (reorder / add / delete) replaces the
+                    # held value; an in-place value edit already bubbled the host
+                    # dirty. Either way the host value_outs + saves on its own draw.
+                    if m_out is not gp and isinstance(m_out, dict):
+                        dict_host[dict_host.value_key] = m_out
+                        gp = m_out
+                    live_apply_edits(root_input, gp)
+                    draw_state.invalidate_up(max_depth=2)
 
+    cols.finish()
     return raw_changed, raw_value

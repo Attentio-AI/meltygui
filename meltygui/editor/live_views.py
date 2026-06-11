@@ -104,7 +104,7 @@ def draw_live_view_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
              show_name=False, selectable=False, disable_scroll=True, wrap=True,
              z_offset=3, max_height=24)
 def draw_live_view_marker(input_value, draw_state=None, editor_ds=None,
-                          auto_open=True,
+                          auto_open=True, child_kwargs=None,
                           left_mouse_down=False, left_mouse_held=False,
                           **kwargs):
     """The anchor dot beside a live_view call: green when a value has been
@@ -116,6 +116,8 @@ def draw_live_view_marker(input_value, draw_state=None, editor_ds=None,
     draw_icon_selector."""
     handle = input_value
     ds = draw_state
+    if child_kwargs is None:
+        child_kwargs = {}
     # First-publish only: a dim dot whose code then runs gets invalidated
     # on the key's FIRST value, flips green (and auto-opens below, if this
     # marker auto-opens) - one editor re-render per new key, nothing per
@@ -172,7 +174,7 @@ def draw_live_view_marker(input_value, draw_state=None, editor_ds=None,
         imgui.set_cursor_screen_pos((x, y))
         _c, _v, win_ds = draw_live_value_window(
             handle, name=f"{label}##lv{ds.id}", closable=True,
-            closed=not ds._lv_open, return_extras=True)
+            closed=not ds._lv_open, return_extras=True, child_kwargs=child_kwargs, **child_kwargs)
         ds._lv_passed_closed = not ds._lv_open
         if ds._lv_open and win_ds is not None and not win_ds.width:
             # The closable self-sizing branch (core_render ~1358) silently
@@ -258,11 +260,16 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         # Auto-open the VOLUMES (3-D data → orbiting voxel window: the
         # point of the lab) so a run pops them unprompted; scalars/configs
         # stay quiet click-to-open dots so 19 locals don't hide the code.
+        overrides = {}
+        if 'locals' in node and '__overrides__' in node['locals']:
+            override_path = f"__{key_path[-1]}__"
+            if override_path in node['locals']["__overrides__"]:
+                overrides = dict(node['locals']["__overrides__"][override_path])
         draw_live_view_marker(
             LiveHandle(fn, key_path),
             name=f"lvs::{draw_state.id}::{fn.__qualname__}::"
                  f"{'/'.join(key_path)}",
-            editor_ds=draw_state, auto_open=is_volume(lv.value))
+            editor_ds=draw_state, auto_open=is_volume(lv.value), child_kwargs=overrides, **overrides)
 
 
 def _scope_function(filename, def_line):
@@ -338,22 +345,32 @@ def run_forward_pass(use_gen_pass=True):
 
 
 @window
-@render_func(tint=(0.08, 0.11, 0.19), auto_resize=True)
+@render_func(tint=(0.09, 0.03, 0.32), auto_resize=True)
 def live_view_forward(input_value=None, draw_state=None, **kwargs):
     from src.lsd.train.lsd_train import LSD
-    draw_function_live(LSD.full_forward_pass_live, name="run_forward_pass runner")
+    from src.lsd.gl_gui.view.mode import Mode
+    # NEW_CODE = the full two-pane code_file_io display: the draw_collection
+    # structured (code_dict) pane AND the live-overlay text pane side by side.
+    draw_function_live(LSD.full_forward_pass_live, name="run_forward_pass runner",
+                       source_mode=Mode.NEW_CODE)
 
 
 @render_func(use_cache=True, show_bg=False, shadow=False, selectable=False,
              with_header=None, show_name=False)
-def draw_function_live(input_value, draw_state=None, unique=None, **kwargs):
+def draw_function_live(input_value, draw_state=None, unique=None,
+                       source_mode=None, column_edges=None, **kwargs):
     """draw_function with transparent instrumentation, source side by side:
     the instrumented twin (live_instrument) runs AUTOMATICALLY — on first
     view, on every hotswap (id(fn.__code__) is the auto_run token, so a save
     in the editor compiles AND runs in one go), and on param edits — every
     assignment publishes one snapshot to the ORIGINAL function's store, and
     the editor column shows the ORIGINAL code with the snapshot overlay
-    anchoring each captured value at its line."""
+    anchoring each captured value at its line.
+
+    `source_mode` picks the source column's route: FILE_TREE (the default)
+    is the text-only editor; NEW_CODE is the full code_file_io display —
+    the draw_collection structured pane and the live-overlay text pane at
+    the same time (live_view_forward uses it)."""
     fn = input_value
     try:
         fn = inspect.unwrap(fn)
@@ -364,26 +381,35 @@ def draw_function_live(input_value, draw_state=None, unique=None, **kwargs):
         return False, input_value
     from src.lsd.gl_gui.view.core_views.new_core_view import (
         draw_function, draw_any)
+    from src.lsd.gl_gui.view.core_views.columns import (
+        ColumnLayout, MIN_ROW_HEIGHT)
     from src.lsd.gl_gui.view.mode import Mode
-    # Anchor both columns at a FIXED offset below this view's top, never the
-    # live imgui cursor: _abs_top is assigned from the cursor by whichever
-    # column child renders first that frame, and a cache-skipped sibling
-    # leaves the cursor at its stale rect bottom - the columns then have
-    # different tops and jump between layouts in every frame (which also
-    # moves the hit boxes out from under the wheel, killing scrolling).
-    win = draw_state.parent_window
+    # Runner | source: a shared edge system (ColumnLayout): the divider is
+    # a draggable line in the window's flat collision solve, and each column
+    # manages its own height - no _columns_top capture to race with
+    # cache-skipped siblings. Columns pin to the visible viewport so long
+    # functions clip inside their cell instead of growing past the window
+    # bottom. A NEW_CODE source column nests its own structured+text
+    # ColumnLayout inside cell 1; the cell's edge dicts pass down with the
+    # call (left_edge/right_edge, by reference - code_file_io forwards them
+    # like jump_to), so the nested row's far edges ARE this row's divider and
+    # right edge and can never drift apart from them.
     top_y = draw_state.abs_top + 32
-    avail =  win.height - 0
     imgui.set_cursor_screen_pos((draw_state.abs_left, top_y))
-    draw_function(_run_proxy(fn), height=avail, name=f"{fn.__name__} runner",
-                  column=0, column_width=244)
-    imgui.set_cursor_screen_pos((draw_state.abs_left, top_y))
-    # The fixed height on the editor column: code_file_io is the scroll
-    # container (disable_scroll=False), so pinning it to the remaining window
-    # space gives long sources an internal scrollbar instead of growing the
-    # box past the window bottom.
-    draw_any(fn, mode=Mode.FILE_TREE, height=avail,
-             name=f"{fn.__name__} live source", column=1)
+    cols = ColumnLayout(draw_state, 2, column_edges=column_edges,
+                        column_widths=[244])
+    clip = cols.clip if cols.clip is not None else draw_state.abs_clip_rect
+    avail = (max(MIN_ROW_HEIGHT, clip[3] - cols.top) if clip is not None
+             else 400.0)
+    inner_h = avail - 2 * cols.padding
+    with cols.cell(0, height=avail) as col_w:
+        draw_function(_run_proxy(fn), height=inner_h, width=col_w,
+                      name=f"{fn.__name__} runner")
+    with cols.cell(1, height=avail) as col_w:
+        draw_any(fn, mode=source_mode or Mode.FILE_TREE, height=inner_h,
+                 width=col_w, name=f"{fn.__name__} live source",
+                 left_edge=cols.edges[1], right_edge=cols.edges[2])
+    cols.finish()
     return False, input_value
 
 
@@ -419,8 +445,8 @@ def _draw_close_x(ds):
 
 
 @render_func(use_cache=True, show_bg=True, shadow=True, auto_resize=False,
-             tint=(0.15, 0.16, 0.17), selectable=False)
-def draw_live_value_window(input_value, draw_state=None, **kwargs):
+             selectable=False)
+def draw_live_value_window(input_value, draw_state=None, child_kwargs=None, **kwargs):
     """The anchored value window: re-reads the store each render, registers as
     a watcher so the PUBLISHING thread invalidates it per publish (throttled
     wake — the editor tile is never touched), and routes the value through
@@ -430,6 +456,8 @@ def draw_live_value_window(input_value, draw_state=None, **kwargs):
     device-to-device, re-upload keyed on identity/_version so each publish
     streams in) and draw_any(tex) lands on draw_voxels — a live, orbiting
     volume anchored to the code that produced it."""
+    if child_kwargs is None:
+        child_kwargs = {}
     handle = input_value
     watch(handle.store_obj, handle.key_path, draw_state)
     lv = live_values_for(handle.store_obj).get(handle.key_path)
@@ -443,9 +471,9 @@ def draw_live_value_window(input_value, draw_state=None, **kwargs):
         from src.lsd.gl_gui.view.playground.voxel_playground import voxel_io
         _c, tex = voxel_io(lv.value, name=f"lvvox::{key}")
         if type(tex).__name__ == "GLTexture":
-            draw_any(tex, name=f"lvtex::{key}")
+            draw_any(tex, name=f"lvtex::{key}", **child_kwargs)
         else:
-            draw_any(lv.value, name=f"lvv::{key}")
+            draw_any(lv.value, name=f"lvv::{key}", **child_kwargs)
     else:
         draw_any(lv.value, name=f"lvv::{key}")
     imgui.text_colored(f"{lv.name or ''}  gen {lv.generation}",

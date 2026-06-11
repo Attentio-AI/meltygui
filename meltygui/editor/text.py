@@ -1786,7 +1786,7 @@ def _describe_code_tree(code_tree):
 
 @render_func(is_default_for=(CodeLine), show_bg=True, use_cache=True, disable_scroll=False, z_offset=1,
              with_header=draw_header, shadow=True, show_name=False, with_footer=draw_footer, determines_height=True,
-             selectable=False, searchable=True, bg_offset=-11, show_add_delete=False)
+             selectable=False, searchable=True, bg_offset=-3, show_add_delete=False)
 def draw_text(input_value: str,
               left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
               horizontal_scroll_drag=False, search_text="", ctrl_b_down=False,
@@ -2783,12 +2783,7 @@ def draw_text(input_value: str,
                 draw_list.add_rect_filled(sx, sy, ex, ey, cur_bg)
                 draw_list.add_rect(sx, sy, ex, ey, cur_border)
             else:
-                draw_list.add_rect_filled(sx, sy, ex, ey, match_bg)
-
-    # Parse/compile error line highlight from the routed ast_tree or a routed
-    # exception: a translucent red wash spanning the offending line, drawn under
-    # the glyphs so the code stays readable. The message itself rides in the file
-    # header (see draw_header_text above), not floated over the code.
+                draw_list.add_rect_filled(sx, sy, ex, ey, match_bg)    # Parse/compile-error line highlight from the routed code_tree or or routed    # exception: a translucent red wash behind the offending line, drawn under    # the glyphs so the code stays readable. The message itself rides in the file    # header (see draw_jump_to above), not floated over the code.
     if _err_markers:
         err_bg = (110 << 24) | (40 << 16) | (40 << 8) | 210  # translucent red (ABGR)
         for err_line, _msg in _err_markers:

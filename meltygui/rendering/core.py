@@ -1233,10 +1233,10 @@ def render_func(*args, **o_kwargs):
 
             draw_state._kwargs = kwargs
 
-            if draw_state.kwargs is None:
-                draw_state.kwargs = AttrDict(kwargs)
-            else:
-                draw_state.kwargs.rebind(kwargs)
+            # if draw_state.kwargs is None:
+            #     draw_state.kwargs = AttrDict(kwargs)
+            # else:
+            #     draw_state.kwargs.rebind(kwargs)
 
             draw_state.just_shadow = kwargs.get("just_shadow", False)
 

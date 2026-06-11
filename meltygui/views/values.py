@@ -2663,15 +2663,27 @@ def param_source_matrix(input_value, keys=None, func=None, include_unmatched=Fal
     if include_unmatched:
         for sname, sdict in items:
             for k in sdict:
+                # Parse metadata is NOT an input: skip non-plain-str keys
+                # (Comment objects keying their own line in a class-body
+                # parse), dunders/underscored bookkeeping, and the parse's
+                # section keys - only real attribute names become rows.
+                if (type(k) is not str or k.startswith('_')
+                        or k in _PARSE_SECTION_KEYS):
+                    continue
                 if k not in matrix or (k not in keys and sname not in matrix[k]):
                     matrix.setdefault(k, {})[sname] = sdict[k]
     return changed, matrix
 
 
-# Attributes pinned into the signature section of the inputs matrix even
-# though they come from the @render_func machinery, not the view function's
-# own signature.
-MATRIX_DEFAULT_PRIORITY = ("tint",)
+# Attributes ALWAYS in the inputs-tab param list (pinned right after the view
+# function's own signature params), even if no source sets them organically -
+# they come from the @render_func machinery, not the view function's signature.
+MATRIX_DEFAULT_PRIORITY = ("width", "height", "min_height", "min_width", "tint")
+
+# Structural sections of a GeneralParse dict - never attribute names, so
+# param_source_matrix's include_unmatched must not turn them into rows when a
+# a class/function parse is registered as a source (the class-var source).
+_PARSE_SECTION_KEYS = frozenset({"decorators", "parameters", "locals"})
 
 # Framework-injected parameters: present in most view-function signatures but
 # never user-tunable, so they don't belong in the signature section.
@@ -2682,9 +2694,10 @@ _MATRIX_FRAMEWORK_PARAMS = {"input_value", "draw_state", "args", "kwargs",
 
 def signature_param_names(func):
     """The view function's OWN tunable parameters (unwrapped signature minus
-    the framework-injected names) plus MATRIX_DEFAULT_PRIORITY — the rows
-    pinned to the top section of the inputs matrix. For draw_float that's
-    min_value/max_value/speed/…; tint rides along from the default list."""
+    the framework-injected names) plus MATRIX_DEFAULT_PRIORITY — the params
+    pinned to the front of the inputs-tab list. For draw_float that's
+    min_value/max_value/speed/…; width/height/min_height/min_width/tint ride
+    along from the default list."""
     try:
         params = inspect.signature(inspect.unwrap(func)).parameters
     except (TypeError, ValueError):
@@ -2719,7 +2732,8 @@ def apply_param_source_matrix(input_value, ref=None, changed=False):
 @render_func(use_cache=True, show_bg=False, shadow=False, with_header=None,
              show_name=False, selectable=False, is_tree=True, temp=True, searchable=False)
 def draw_param_matrix(input_value, wrap=True, search_text="", draw_state=None, source_tints=None, unique=None,
-                      source_locations=None, priority_params=(), source_order=(), view_draw_state=None, **kwargs):
+                      source_locations=None, priority_params=(), source_order=(), view_draw_state=None,
+                      source_dicts=None, writable_sources=(), source_kinds=None, **kwargs):
     """The inputs-tab parameter screen: ONE parameter at a time, EVERY source.
     A dropdown at the top switches between all the parameters identified for
     the view (its own signature params first, then the @render_func machinery
@@ -2742,18 +2756,29 @@ def draw_param_matrix(input_value, wrap=True, search_text="", draw_state=None, s
     `search_text` (the tab's Ctrl+F find bar) filters the dropdown's param
     list and auto-switches the screen to the best match: exact substring for
     short terms, the shared typo-tolerant matcher (_fuzzy_key_match) for
-    longer ones."""
+    longer ones.
+
+    `source_dicts` (the live {source_name: parse dict} mapping) enables the
+    +/× buttons: + stamps the param into a source that doesn't set it (seeded
+    from the view's live resolved value), × pops it from one that does. Both
+    are PLAIN dict mutations — the bubbling wrapper marks the owning host
+    dirty and its normal chain_out/save path persists the change. Only
+    `writable_sources` (real parse dicts, not the absent-source placeholders)
+    get the buttons."""
     changed = False
     tints = source_tints or {}
     locations = source_locations or {}
+    plus_icon = "\uf067"   # FA plus -- explicit escape, see jump_to.py
+    times_icon = ""  # FA times -- explicit escape, see jump_to.py
     folder_icon = "\uf07b"  # FA folder -- explicit escape, see jump_to.py
 
     # The dropdown's param list: the view function's own signature params
-    # first, then the @render_func machinery kwargs. Frameworked-underscored
-    # names are never user-visible, so they don't get a screen.
+    # first (plus the MATRIX_DEFAULT_PRIORITY pins, which are listed even
+    # when no source row exists for them - their screen just shows every
+    # source as not set / +), then the @render_func machinery kwargs.
+    # Injected/underscored params are never user inputs, so no screen.
     prio_set = set(priority_params or ())
-    params = [p for p in (priority_params or ())
-              if p in input_value and not p.startswith('_')]
+    params = [p for p in (priority_params or ()) if not p.startswith('_')]
     params += [p for p in input_value
                if p not in prio_set and p not in _MATRIX_FRAMEWORK_PARAMS
                and not p.startswith('_')]
@@ -2767,7 +2792,10 @@ def draw_param_matrix(input_value, wrap=True, search_text="", draw_state=None, s
 
     selected = getattr(draw_state, "_selected_param", None)
     if selected not in params:
-        selected = params[0]
+        # Fresh screen (or stale selection) defaults to tint - the param this
+        # menu is reached for most - falling back to the first param if a
+        # search filter has excluded it.
+        selected = "tint" if "tint" in params else params[0]
         draw_state._selected_param = selected
 
     draw_text(f"def {view_draw_state._view_func.__name__}",
@@ -2787,7 +2815,7 @@ def draw_param_matrix(input_value, wrap=True, search_text="", draw_state=None, s
         width=min(280, max(120, draw_state.content_width - 24)),
         show_header=False, return_extras=True)
     picked_changed, picked = dd_res[0], dd_res[1]
-    if picked_changed and picked in input_value:
+    if picked_changed and picked in params:
         draw_state._selected_param = picked
         selected = picked
         draw_state.invalidate()
@@ -2813,19 +2841,49 @@ def draw_param_matrix(input_value, wrap=True, search_text="", draw_state=None, s
     btn_w = max((imgui.calc_text_size(f"{folder_icon} {sn}")[0] for sn in order),
                 default=0.0) + 15
 
+    def _stamp_value(param):
+        """Seed for a + click: the view's LIVE resolved value for the param
+        (its stamped kwargs, then the draw_state mirror), falling back to the
+        first set source's cell — adding a source changes nothing visually
+        until the user edits the new value. Deep-copied so the new source
+        never aliases another source's parse node; a copied dict's foreign
+        __cst__ would mis-anchor the save, so it's stripped."""
+        import copy as _copy
+        v = (getattr(view_draw_state, '_kwargs', None) or {}).get(param, UNSET_VALUE)
+        if v is UNSET_VALUE:
+            try:
+                v = getattr(view_draw_state, param, None)
+            except Exception:
+                v = None
+        if v is None:
+            v = next((row[sn] for sn in order if sn in row), None)
+        try:
+            v = _copy.deepcopy(v)
+        except Exception:
+            pass
+        if isinstance(v, dict):
+            v.pop('__cst__', None)
+        return v
+
     for sname in order:
         tint = tints.get(sname)
         is_set = sname in row
+        src = (source_dicts or {}).get(sname)
+        can_write = isinstance(src, dict) and sname in (writable_sources or ())
 
-        # The source label IS the jump button: the tinted button naming
-        # the source (draw_text / @render_func(...) / @defaults(...))
-        # that opens its file in the IDE; the value renders on the same
-        # line with show_name=False, so one element does both the
-        # labeling and the navigation.
+        # The source KIND caption (signature / caller / mode / class default /
+        # decoration) sits on its own line above the row; the tinted button
+        # below displays the concrete name (def draw_voxels / Mode.WINDOW /
+        # @defaults(...)) and IS the jump button - clicking opens the source's
+        # file in the IDE; the value sits on the same line with
+        # show_name=False - so one element does both labeling and navigation.
+        kind = (source_kinds or {}).get(sname)
+        if kind:
+            imgui.text_colored(kind, 1, 1, 1, 0.5)
         tint_kwargs = {"alpha": 0.0, "tint": tint} if tint else {}
-        clicked = button(f"{folder_icon} {sname}", width=btn_w, height=22, shadow=True,
+        clicked = button(f"{folder_icon} {sname}", width=btn_w, height=22, shadow=False,
                          text_saturation=0.9, use_cache=True, text_align="left",
-                         text_value=0.389 if is_set else 0.2,
+                         text_value=0.819,
                          name=f"jump_{sname}##{selected}_{unique}", show_button_bg=True,
                          **tint_kwargs)[0]
         loc = locations.get(sname)
@@ -2837,6 +2895,21 @@ def draw_param_matrix(input_value, wrap=True, search_text="", draw_state=None, s
         imgui.same_line()
 
         if is_set:
+            # × removes the param from this source's dict. A plain dict
+            # mutation: the bubbling invalidate notifies the owning object,
+            # which goes dirty and persists via its own chain_out/save.
+            if isinstance(src, dict):
+                if button(times_icon, width=30, height=22, shadow=True, use_cache=True,
+                          text_value=1.0, name=f"{sname}_delete##{selected}_{unique}",
+                          show_button_bg=True, **tint_kwargs)[0]:
+                    src.pop(selected, None)
+                    row.pop(sname, None)
+                    draw_state.invalidate()
+                    request_render()
+                    imgui.dummy(0, 3)
+                    continue
+                imgui.same_line()
+
             # key routes the cell by ATTRIBUTE name (a tint value gets the
             # swatch/picker, not draw_tuple); the SOURCE stays in the
             # identity via name while the button above displays it.
@@ -2848,8 +2921,20 @@ def draw_param_matrix(input_value, wrap=True, search_text="", draw_state=None, s
             if ch:
                 row[sname] = nv
                 changed = True
+        elif can_write:
+            # + stamps the param on this source - same plain-dict write the
+            # cell editors use, so the same host-dirty/save machinery runs.
+            if button(plus_icon, width=31, height=22, shadow=True, use_cache=True,
+                      text_value=1.1, name=f"add_{sname}##{selected}_{unique}",
+                      show_button_bg=True, **tint_kwargs)[0]:
+                src[selected] = _stamp_value(selected)
+                row[sname] = src.get(selected)
+                draw_state.invalidate()
+                request_render()
+            imgui.same_line()
+            imgui.text_colored("not set", 1, 1, 1, 0.5)
         else:
-            imgui.text_colored("not set", 1, 1, 1, 0.25)
+            imgui.text_colored("not set", 1, 1, 1, 0.5)
 
         imgui.dummy(0, 3)
 
@@ -3323,7 +3408,7 @@ def draw_int(input_value: int, draw_state=None, min_width=80, wrap=False, min_va
         imgui.set_next_item_width(draw_state.content_width)
     else:
         imgui.set_next_item_width(min_width)
-        
+
     max_int = 2147483647
     if input_value < max_int:
         changed, value = imgui.drag_int("##int", input_value,
@@ -3944,19 +4029,30 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, wrap=True
     sources = {}
     source_tints = {}
     source_locations = {}
+    source_kinds = {}
+    writable_sources = []
 
-    def _add_source(sname, sdict, codec, location=None):
+    def _add_source(sname, sdict, codec, location=None, kind=None):
         # Register even when the source sets nothing or hasn't parsed yet -
         # the per-param screen draws EVERY source row, absent ones as "not
-        # set". The placeholder is a fresh empty dict, never written into.
+        # set". The placeholder is a fresh empty dict, never written to;
+        # only REAL parse dicts (even empty ones) are writable, so the
+        # matrix's +/× buttons know where a stamped cell can legally land.
+        # `kind` is the row's caption (signature / caller / mode / ...);
+        # sname stays the concrete spelling (def draw_x / Mode.WINDOW / ...).
+        if isinstance(sdict, dict):
+            writable_sources.append(sname)
         sources[sname] = sdict if isinstance(sdict, dict) else {}
         source_tints[sname] = _codec_tint(codec)
+        if kind:
+            source_kinds[sname] = kind
         if location is not None and location[0] is not None:
             source_locations[sname] = location
 
-    # Source names carry the origin: the bare function name labels the
-    # signature column, decorator-call spellings (@render_func(name), ...)
-    # label the decorator-backed columns. Locations feed the jump-to buttons.
+    # Source names are the concrete spelling shown on the row button
+    # (def draw_x / Mode.WINDOW / @render_func(draw_x), ...); the generic
+    # origin goes into `kind`, shown as a caption above the button. Locations
+    # feed the jump-to buttons.
     view_fn = inspect.unwrap(input_value._view_func)
     fn_name = getattr(view_fn, "__name__", "?")
     try:
@@ -3966,7 +4062,7 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, wrap=True
     fn_loc = (fn_file, getattr(getattr(view_fn, "__code__", None),
                                "co_firstlineno", None))
 
-    cls_name, cls_loc = "defaults", None
+    cls_name, cls_loc = "None", None
     if isinstance(class_to_show, type):
         cls_name = class_to_show.__name__
         try:
@@ -3990,7 +4086,7 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, wrap=True
     # overlap the LIVE matched config (get_config_for) - the entry that
     # actually drove THIS view. Edits merge into the mode_dict host's parse
     # and ride its normal chain_out/save back into the enum's source file.
-    mode_label = str(current_mode) if current_mode is not None else "mode"
+    mode_label = str(current_mode) if current_mode is not None else "None"
     mode_kwargs, mode_loc = None, None
     if current_mode is not None and cm_state.mode_dict is not None:
         candidates = [c for c in
@@ -4014,22 +4110,31 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, wrap=True
             pass
 
     # Registration order IS the per-param screen's row order: param default
-    # (signature), caller, mode, class default, function decoration.
-    _add_source(fn_name, cm_state.render_func_dict.deep.parameters(), FunctionCodec,
-                location=fn_loc)
-    _add_source(caller_name, call_site_dict, CallerCodec, location=call_site)
-    _add_source(mode_label, mode_kwargs, ModeCodec, location=mode_loc)
+    # (signature), caller, mode, class var, class default, function decoration.
+    _add_source(f"def {fn_name}", cm_state.render_func_dict.deep.parameters(), FunctionCodec,
+                location=fn_loc, kind="signature")
+    _add_source(caller_name, call_site_dict, CallerCodec, location=call_site,
+                kind="caller")
+    _add_source(mode_label, mode_kwargs, ModeCodec, location=mode_loc, kind="mode")
+    # CLASS VAR - the data class's body assignments (`tint = (...)` on the
+    # class itself). The class parse IS that dict (fields + __cst__/comment
+    # bookkeeping, filtered out by param_source_matrix), so a + here writes a
+    # brand-new class var assignment and × removes one, via the same
+    # bubbling/save path as every other source.
+    _add_source(f"class {cls_name}",
+                cm_state.class_dict.deep.unwrap() if cm_state.class_dict else None,
+                TypeCodec, location=cls_loc, kind="class var")
     _add_source(f"@defaults({cls_name})", cm_state.class_dict.deep.decorators.defaults(),
-                TypeCodec, location=cls_loc)
+                TypeCodec, location=cls_loc, kind="class default")
     _add_source(f"@render_func({fn_name})",
                 cm_state.render_func_dict.deep.decorators.render_func(),
-                DecorationsCodec, location=fn_loc)
+                DecorationsCodec, location=fn_loc, kind="decoration")
     # @window only exists as a source on actually-@window-decorated funcs -
     # a placeholder row here would be permanent noise on every other tab.
     _window_deco = cm_state.render_func_dict.deep.decorators.window()
     if isinstance(_window_deco, dict) and _window_deco:
         _add_source(f"@window({fn_name})", _window_deco,
-                    DecorationsCodec, location=fn_loc)
+                    DecorationsCodec, location=fn_loc, kind="decoration")
 
     # ── Search - the STANDARD searchable path; no special find box. The tab
     # is searchable=True, so Ctrl+F over it opens the framework's floating
@@ -4046,6 +4151,9 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, wrap=True
         changed, value = draw_param_matrix(matrix, source_tints=source_tints,
                                            source_locations=source_locations,
                                            source_order=tuple(sources),
+                                           source_dicts=sources,
+                                           writable_sources=tuple(writable_sources),
+                                           source_kinds=source_kinds,
                                            view_draw_state=input_value, wrap=True,
                                            width=draw_state.content_width-17,
                                            priority_params=tuple(signature_param_names(input_value._view_func)),

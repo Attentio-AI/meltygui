@@ -1,7 +1,17 @@
+from enum import Enum
+
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import tint, Core, defaults
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.view_utils.imgui_style_manager_class import ImGuiStyleManager
+
+
+class SwooshMode(Enum):
+    """Connector style for the nested-window swoosh. Pass per window as a
+    kwarg — swoosh=True, swoosh_mode=SwooshMode.RIBBON — to override the
+    global default (the Swoosh.ribbon toggle) for just that window."""
+    LINE = "line"
+    RIBBON = "ribbon"
 
 
 class Counters:
@@ -134,6 +144,25 @@ class Swoosh:
     taper = 10.0              # slope of the end->middle thickness falloff
     aa_width = 1.5           # antialiased edge-stroke width in px (0 = none)
 
+    # Ribbon mode: replace the thin connector line with a full band bridging the
+    # two views' facing edges, s-curving between them when the views are offset
+    # (see Melty._draw_ribbon). Each end is sized from ITS OWN edge length, so
+    # a small child on a big parent gets a funnel. Per-window override:
+    # swoosh_mode=SwooshMode.RIBBON / OUTLINE. Views with no facing gap
+    # (overlapping) fall back to the thin line, which knows how to route
+    # around the overlap.
+    ribbon = True              # global default: ribbon instead of the thin line
+    ribbon_coverage = 0.96      # each end's band width as a fraction of its shared edge
+                                # (clamped at the full edge, so >=1 spans the edge)
+    ribbon_max_width = 0     # px cap on each end's band width (0 = uncapped)
+    ribbon_curve = 0.38         # s-curve arcness as a fraction of the bridge length
+    ribbon_alpha = 0.16         # fill opacity of the band (at/below fade_width)
+    ribbon_fade_width = 328.2   # px band width where the fill starts thinning:
+                                # opacity scales as fade_width/width past it, so a
+                                # wide band spreads the same ink thinner (0 = off)
+    ribbon_edge_alpha = 0.24    # opacity of the band's two boundary strokes
+    ribbon_edge_thickness = 1.4 # boundary stroke thickness in px (0 = no stroke/AA)
+
     # When the child overlaps the parent, slide both endpoints along their own
     # rect edge out of the intersection area to flank the reentrant corner of the
     # union, then bow the curve smoothly towards that corner so the connector hugs the
@@ -149,10 +178,10 @@ class Swoosh:
                                 # within this fraction of the parent's shorter side (else stay flat)
 
 
-@window(tint=(0.31, 0.10, 0.15))
+@window(tint=(0.07, 0.11, 0.14))
 class Toggles:
 
-    @defaults(tint=(0.833, 1.00, 0.044))
+    @defaults(tint=(0.60, 0.55, 0.077))
     class InvalidateTracker:
         keep_for_frames = 61
         enable = False
