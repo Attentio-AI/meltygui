@@ -54,7 +54,7 @@ from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.shader_func import shader_func
 from src.lsd.gl_gui.text_texture import bake_text, bake_texts
-from src.lsd.gl_gui.utils.glfw_utils import request_render
+from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
 from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import exclude
@@ -1044,6 +1044,19 @@ def _render_label_billboards(gl_state, specs, cam, height):
         gl.glDisable(gl.GL_BLEND)
 
 
+def _resolve_dim(axes, v):
+    """A dim given by INDEX or by NAME (resolved through axes.dim_names);
+    None stays None (meaning: leave interactive)."""
+    if v is None:
+        return None
+    if isinstance(v, str):
+        try:
+            return axes.dim_names.index(v)
+        except ValueError:
+            return None
+    return int(v)
+
+
 def _wake_io(axes: VoxelAxes):
     """Make the owning host's io actually re-run next frame. The io body sits
     under the host envelope window (render_host_view, blit-cached): marking
@@ -1157,7 +1170,7 @@ def _draw_axis_controls(axes: VoxelAxes):
 
 
 @render_func(show_bg=False, use_cache=True)
-def draw_voxel_controls(input_value=None, params=None, draw_state=None,
+def draw_voxel_controls(input_value=None, params=None, dim_names=None, draw_state=None,
                         hovered=None, **kwargs):
     """Every control that drives a voxel view, in one satellite panel:
     the VoxelParams tree, the axis remap radios + scrubbers + neural flow,
@@ -1218,7 +1231,9 @@ def draw_voxel_controls(input_value=None, params=None, draw_state=None,
 
 @render_func(is_default_for="GLTexture", show_bg=False, use_cache=True)
 def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
-                params: VoxelParams = None, draw_state=None,
+                params: VoxelParams = None, draw_state=None, dim_names=None,
+                x_dim=None, y_dim=None, z_dim=None,
+                nf_on=None, nf_chop=None, nf_along=None, nf_chunk=None,
                 name_size=28.0, name_padding=30.1, name_opacity=1.1,
                 num_size=17.1, num_padding=5.5, num_opacity=0.8,
                 num_spacing=1.0, num_angle=0.0, step_size=0.0002,
@@ -1234,13 +1249,50 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
     integer ticks): `*_size` is the screen-pixel height (0 hides that
     type), `*_padding` the pixel gap between line and label, `*_opacity`
     the alpha, and `num_spacing` the minimum gap between tick labels in
-    widest-label widths (smaller = denser ticks)."""
+    widest-label widths (smaller = denser ticks).
+
+    The data mapping is callable too: dim_names (any length — extras wait
+    for bigger tensors), x_dim/y_dim/z_dim and nf_chop/nf_along (dim INDEX
+    or dim NAME), nf_on/nf_chunk. Every non-None value applies to the
+    shared VoxelAxes and re-slices through the io; passed values re-apply
+    each render (caller-PINNED — the panel can't override them while they
+    keep arriving), None leaves that piece interactive."""
     tex = input_value
 
     # A 1-D texture is a LUT, not a volume - don't try to raymarch it.
     if getattr(tex, "target", None) == int(gl.GL_TEXTURE_1D):
         imgui.text(f"{tex!r} — a LUT, not a volume")
         return False, None
+
+    # ── caller-pinned data mapping: non-None kwargs apply onto the shared
+    # VoxelAxes (dims by index or name, names first so name-given dims
+    # conflict to them) and wake the io to re-slice. ─────────────────
+    axes = getattr(tex, "axes", None)
+    if axes is not None:
+        ax_changed = False
+        if dim_names is not None:
+            wanted = [str(x) for x in dim_names]
+            if wanted != list(axes.dim_names):
+                axes.dim_names = wanted
+                ax_changed = True
+        for attr, val in (("x_dim", x_dim), ("y_dim", y_dim), ("z_dim", z_dim)):
+            d = _resolve_dim(axes, val)
+            if d is not None and 0 <= d < len(axes.dim_sizes) and getattr(axes, attr) != d:
+                axes.assign(attr, d)   # keeps the radio rows' conflict-swap rule
+                ax_changed = True
+        if nf_on is not None and bool(nf_on) != axes.nf_on:
+            axes.nf_on = bool(nf_on)
+            ax_changed = True
+        for attr, val in (("nf_chop_dim", nf_chop), ("nf_along_dim", nf_along)):
+            d = _resolve_dim(axes, val)
+            if d is not None and getattr(axes, attr, -1) != d:
+                setattr(axes, attr, d)
+                ax_changed = True
+        if nf_chunk is not None and int(nf_chunk) != axes.nf_chunk:
+            axes.nf_chunk = int(nf_chunk)
+            ax_changed = True
+        if ax_changed:
+            _wake_io(axes)
 
     # Size from the OWNING WINDOW, not this view's own draw() - a nested
     # view's height derives from what it rendered last frame (self-referential),
