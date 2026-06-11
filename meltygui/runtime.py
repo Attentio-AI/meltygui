@@ -1558,8 +1558,15 @@ class Melty:
         return sm.make_custom(*tint,
                               saturation_scale=1.0, value=0.6)[:3]
     @staticmethod
+    def _lerp_rgb(a, b, t):
+        """Plain RGB lerp for the parent->child connector gradient."""
+        return (a[0] + (b[0] - a[0]) * t,
+                a[1] + (b[1] - a[1]) * t,
+                a[2] + (b[2] - a[2]) * t)
+
+    @staticmethod
     def _draw_ribbon(overlay_dl, px0, py0, px1, py1, nx0, ny0, nx1, ny1,
-                     rgb, p_round=0.0, n_round=0.0):
+                     rgb, rgb2=None, p_round=0.0, n_round=0.0):
         """Thick-ribbon connector: instead of the thin tapered line, bridge
         the two views' facing edges with a full band. Each end of the band
         sits on the straight (un-rounded) portion of its view's facing edge,
@@ -1653,20 +1660,28 @@ class Melty:
         # strength.
         a, b = sides
         fade = Swoosh.ribbon_fade_width
+        # Gradient: `sides` runs parent (i=0) -> child (i=segments), so the
+        # fill (and the boundary strokes below) lerp from the parent color to
+        # the child color along the bridge. rgb2 None/equal means single color.
+        grad = rgb2 is not None and tuple(rgb2[:3]) != tuple(rgb[:3])
+        if rgb2 is None:
+            rgb2 = rgb
         fill = imgui.get_color_u32_rgba(*rgb, Swoosh.ribbon_alpha)
         dl_flags = overlay_dl.flags
         overlay_dl.flags = dl_flags & ~imgui.DRAW_LIST_ANTI_ALIASED_FILL
         try:
             for i in range(segments):
+                seg_rgb = (Melty._lerp_rgb(rgb, rgb2, (i + 0.5) / segments)
+                           if grad else rgb)
+                alpha = Swoosh.ribbon_alpha
                 if fade > 0.0:
                     wmid = (math.hypot(b[i][0] - a[i][0], b[i][1] - a[i][1])
                             + math.hypot(b[i + 1][0] - a[i + 1][0],
                                          b[i + 1][1] - a[i + 1][1])) * 0.5
                     if wmid > fade:
-                        fill = imgui.get_color_u32_rgba(
-                            *rgb, Swoosh.ribbon_alpha * fade / wmid)
-                    else:
-                        fill = imgui.get_color_u32_rgba(*rgb, Swoosh.ribbon_alpha)
+                        alpha = Swoosh.ribbon_alpha * fade / wmid
+                if grad or fade > 0.0:
+                    fill = imgui.get_color_u32_rgba(*seg_rgb, alpha)
                 overlay_dl.add_triangle_filled(a[i][0], a[i][1], b[i][0], b[i][1],
                                                a[i + 1][0], a[i + 1][1], fill)
                 overlay_dl.add_triangle_filled(b[i][0], b[i][1], b[i + 1][0], b[i + 1][1],
@@ -1678,19 +1693,38 @@ class Melty:
         # definition and to soften the hard triangle edges. The band's ends
         # sit flush against the view edges, so no caps are needed.
         if Swoosh.ribbon_edge_thickness > 0.0:
-            edge = imgui.get_color_u32_rgba(*rgb, Swoosh.ribbon_edge_alpha)
-            overlay_dl.add_polyline(a, edge, flags=imgui.DRAW_NONE,
-                                    thickness=Swoosh.ribbon_edge_thickness)
-            overlay_dl.add_polyline(b, edge, flags=imgui.DRAW_NONE,
-                                    thickness=Swoosh.ribbon_edge_thickness)
+            if grad:
+                # Per-segment strokes carry the same gradient as the fill (a
+                # polyline is one color; consecutive segments share their
+                # endpoints, so the joints are tight).
+                for i in range(segments):
+                    edge = imgui.get_color_u32_rgba(
+                        *Melty._lerp_rgb(rgb, rgb2, (i + 0.5) / segments),
+                        Swoosh.ribbon_edge_alpha)
+                    overlay_dl.add_polyline([a[i], a[i + 1]], edge,
+                                            flags=imgui.DRAW_NONE,
+                                            thickness=Swoosh.ribbon_edge_thickness)
+                    overlay_dl.add_polyline([b[i], b[i + 1]], edge,
+                                            flags=imgui.DRAW_NONE,
+                                            thickness=Swoosh.ribbon_edge_thickness)
+            else:
+                edge = imgui.get_color_u32_rgba(*rgb, Swoosh.ribbon_edge_alpha)
+                overlay_dl.add_polyline(a, edge, flags=imgui.DRAW_NONE,
+                                        thickness=Swoosh.ribbon_edge_thickness)
+                overlay_dl.add_polyline(b, edge, flags=imgui.DRAW_NONE,
+                                        thickness=Swoosh.ribbon_edge_thickness)
         return True
 
     @staticmethod
     def _draw_swoosh(overlay_dl, px, py, pw, ph, nx, ny, nw, nh, rgb,
-                     p_round=0.0, n_round=0.0, p_clip=None, mode=None):
+                     rgb2=None, p_round=0.0, n_round=0.0, p_clip=None,
+                     mode=None):
         """Draw a curved connector from the parent view's outline to the nested
         view. The line is thick at both endpoints and tapers thin in the middle.
-        `rgb` is the resolved highlight color (see _highlight_rgb); p_round /
+        `rgb` is the resolved highlight color (see _highlight_rgb); `rgb2`,
+        when given, is the CHILD end's color — fill, edge strokes and end caps
+        all blend from `rgb` at the parent end to `rgb2` at the child end (in
+        both line and ribbon modes). p_round /
         n_round are the parent/nested corner radii so the ends meet the rounded
         edge. p_clip, if given, is the parent's absolute clip rect
         (left, top, right, bottom): the parent end is anchored against the
@@ -1724,7 +1758,7 @@ class Melty:
         # through to the line, which knows how to route around the intersection.
         if mode is SwooshMode.RIBBON and Melty._draw_ribbon(
                 overlay_dl, rpx0, rpy0, rpx1, rpy1,
-                rnx0, rny0, rnx1, rny1, rgb,
+                rnx0, rny0, rnx1, rny1, rgb, rgb2=rgb2,
                 p_round=p_round, n_round=n_round):
             return
 
@@ -1789,6 +1823,9 @@ class Melty:
             cxp = cxp + (ncx - cxp) * ctrl_g
             cyp = cyp + (ncy - cyp) * ctrl_g
 
+        grad = rgb2 is not None and tuple(rgb2[:3]) != tuple(rgb[:3])
+        if rgb2 is None:
+            rgb2 = rgb
         col = imgui.get_color_u32_rgba(*rgb, Swoosh.alpha)
         segments = max(2, int(Swoosh.segments))
         end_hw = Swoosh.end_thickness
@@ -1826,6 +1863,12 @@ class Melty:
             right.append((bx - nxn * hw, by - nyn * hw))
 
         for i in range(segments):
+            if grad:
+                # Remember t=0 is the parent end, t=1 the child end, so the gradient
+                # blends parent color -> child color along its length.
+                col = imgui.get_color_u32_rgba(
+                    *Melty._lerp_rgb(rgb, rgb2, (i + 0.5) / segments),
+                    Swoosh.alpha)
             l0, l1 = left[i], left[i + 1]
             r0, r1 = right[i], right[i + 1]
             overlay_dl.add_triangle_filled(l0[0], l0[1], r0[0], r0[1], l1[0], l1[1], col)
@@ -1834,16 +1877,29 @@ class Melty:
         # add_triangle_filled has hard (aliased) edges, but add_polyline is
         # antialiased (DRAW_LIST_ANTI_ALIASED_LINES, on by default). Stroke the
         # ribbon's two long edges to feather them; the square ends are covered by
-        # the AA cap circles below.
+        # the AA cap circles below. Gradient mode strokes per segment (one
+        # color per polyline; shared endpoints keep the joints tight).
         if Swoosh.aa_width > 0.0:
-            overlay_dl.add_polyline(left, col, flags=imgui.DRAW_NONE, thickness=Swoosh.aa_width)
-            overlay_dl.add_polyline(right, col, flags=imgui.DRAW_NONE, thickness=Swoosh.aa_width)
+            if grad:
+                for i in range(segments):
+                    seg_col = imgui.get_color_u32_rgba(
+                        *Melty._lerp_rgb(rgb, rgb2, (i + 0.5) / segments),
+                        Swoosh.alpha)
+                    overlay_dl.add_polyline([left[i], left[i + 1]], seg_col,
+                                            flags=imgui.DRAW_NONE, thickness=Swoosh.aa_width)
+                    overlay_dl.add_polyline([right[i], right[i + 1]], seg_col,
+                                            flags=imgui.DRAW_NONE, thickness=Swoosh.aa_width)
+            else:
+                overlay_dl.add_polyline(left, col, flags=imgui.DRAW_NONE, thickness=Swoosh.aa_width)
+                overlay_dl.add_polyline(right, col, flags=imgui.DRAW_NONE, thickness=Swoosh.aa_width)
 
         # Round caps over the flat (square) ends of the ribbon so the endpoints
-        # read as dots rather than squared-off edges.
+        # read as dots rather than chopped-off edges - each in its own endcap color.
         cap_r = end_hw * Swoosh.cap_scale
-        overlay_dl.add_circle_filled(x0, y0, cap_r, col)
-        overlay_dl.add_circle_filled(x1, y1, cap_r, col)
+        overlay_dl.add_circle_filled(x0, y0, cap_r,
+                                     imgui.get_color_u32_rgba(*rgb, Swoosh.alpha))
+        overlay_dl.add_circle_filled(x1, y1, cap_r,
+                                     imgui.get_color_u32_rgba(*rgb2, Swoosh.alpha))
 
     @classmethod
     def is_wrapped(cls):
@@ -2228,13 +2284,32 @@ class Melty:
                     # by the nested window. cls.draw may also have moved the channel.
                     rounding = getattr(draw_state, 'corner_radius', 6)
 
+                    # The child end wears the CHILD window's OWN color: the
+                    # highlight outline takes it and the swoosh blends parent ->
+                    # child between the two ends. current_tint is intentionally
+                    # NOT preferred here - it's the AMBIENT tint at draw
+                    # (stashed before the wrapper pushes the window's own tint,
+                    # and replayed as ambient context for latched closable
+                    # windows), so it reads the enclosing window, not this one.
+                    # Prefer the live child tint kwarg, then the ds.tint
+                    # first-draw stamp; ambient only when the child declares no
+                    # tint of its own (the old single-color look).
+                    child_tint = draw_state._kwargs.get("tint")
+                    if not (isinstance(child_tint, (tuple, list)) and len(child_tint) >= 3):
+                        child_tint = draw_state.tint
+                    if not (isinstance(child_tint, (tuple, list)) and len(child_tint) >= 3):
+                        child_tint = draw_state.current_tint
+                    child_rgb = (Melty._highlight_rgb(tuple(child_tint[:3]))
+                                 if child_tint else highlight_rgb)
+                    child_outline_col = imgui.get_color_u32_rgba(
+                        *child_rgb, Tint.highlight_outline_alpha)
 
                     overlay_dl.channels_set_current(min(draw_state.window_index, Melty.max_layer -1))
 
                     overlay_dl.add_rect(draw_state.abs_left, draw_state.abs_top,
                                         draw_state.abs_left + draw_state.width,
                                         draw_state.abs_top + draw_state.height,
-                                        outline_col, rounding=rounding,
+                                        child_outline_col, rounding=rounding,
                                         thickness=Tint.highlight_outline_thickness)
 
                     # overlay_dl.channels_set_current(min(Melty.max_layer - 1, offset_ds.window_index))
@@ -2246,6 +2321,7 @@ class Melty:
                         draw_state.abs_left, draw_state.abs_top,
                         draw_state.width, draw_state.height,
                         highlight_rgb,
+                        rgb2=child_rgb,
                         p_round=getattr(offset_ds, 'corner_radius', 6),
                         n_round=rounding,
                         p_clip=parent_clip,

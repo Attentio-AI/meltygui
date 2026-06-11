@@ -32,6 +32,7 @@ from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.core_views.new_core_view import draw_any, draw_collection
 from src.lsd.gl_gui.view.mode import Mode
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
 
 
 # ── Toy code under instrumentation ───────────────────────────────────────────
@@ -205,7 +206,7 @@ def live_view_snapshot(input_value=None, draw_state=None, **kwargs):
 
 def attention_lab(heads=12, seq=48, dim=32, temp=0.35, shift=3):
     import torch
-    torch.manual_seed(7)
+    torch.manual_seed(10)
     q = torch.randn(heads, seq, dim)
     k = q.roll(shifts=shift, dims=1) + 0.4 * torch.randn(heads, seq, dim)
     scores = q @ k.transpose(-2, -1) / (dim ** 0.5 * temp)
@@ -215,7 +216,7 @@ def attention_lab(heads=12, seq=48, dim=32, temp=0.35, shift=3):
 
 
 @window
-@render_func(tint=(0.06, 0.42, 0.73), auto_resize=True)
+@render_func(tint=(0.02, 0.20, 0.37), auto_resize=True)
 def live_view_tensors(input_value=None, draw_state=None, **kwargs):
     from src.lsd.gl_gui.view.core_views.live_view_views import draw_function_live
     draw_function_live(attention_lab, name="attention_lab runner")

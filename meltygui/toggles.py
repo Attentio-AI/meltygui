@@ -154,9 +154,9 @@ class Swoosh:
     ribbon = True              # global default: ribbon instead of the thin line
     ribbon_coverage = 0.96      # each end's band width as a fraction of its shared edge
                                 # (clamped at the full edge, so >=1 spans the edge)
-    ribbon_max_width = 0     # px cap on each end's band width (0 = uncapped)
-    ribbon_curve = 0.38         # s-curve arcness as a fraction of the bridge length
-    ribbon_alpha = 0.16         # fill opacity of the band (at/below fade_width)
+    ribbon_max_width = 0     # px cap on either end's band width (0 = uncapped)
+    ribbon_curve = 0.23         # s-curve's reach as a fraction of the bridge length
+    ribbon_alpha = 0.29         # fill opacity of the band (at/below fade_width)
     ribbon_fade_width = 328.2   # px band width where the fill starts thinning:
                                 # opacity scales as fade_width/width past it, so a
                                 # wide band spreads the same ink thinner (0 = off)
@@ -178,7 +178,7 @@ class Swoosh:
                                 # within this fraction of the parent's shorter side (else stay flat)
 
 
-@window(tint=(0.07, 0.11, 0.14))
+@window(tint=(0.03, 0.17, 0.08))
 class Toggles:
 
     @defaults(tint=(0.60, 0.55, 0.077))

@@ -71,7 +71,7 @@ class ImGuiStyleManager:
             h, s, v = colorsys.rgb_to_hsv(r, g, b)
         except:
             print(f"Error converting RGB to HSV for color ({r}, {g}, {b})")
-            h, s, v = 0.0, 0.0, 0.0
+            h, s, v = 0.1, 0.1, 0.1
         value = input["value"] + value
 
         if saturation is not None:

@@ -3350,7 +3350,7 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
 
             draw_state.params = param_dict
         if len(draw_state.params) > 0:
-            changed, new_val = draw_collection(draw_state.params, name="Parameters", initial={"expanded":False},
+            changed, new_val = draw_collection(draw_state.params, name="Parameters", initial={"expanded":True},
                                                show_add_delete=False, shadow=False, z_offset=0, parent_show_add_delete=False, 
                                                horizontal=True, wrap=wrap,
                                                child_kwargs={"max_width": 200, "shadow":False,

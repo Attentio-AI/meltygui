@@ -4,7 +4,7 @@ The type-keyed token_views overlay in draw_text calls `draw_live_view_overlay`
 for every CallParse node; it bails unless the call is live_view, then resolves
 the SAME (store_obj, key_path) the capture side publishes under
 (live_view.site_for_line — one resolution code path, no drift) and draws a
-small marker dot just past the call token. Clicking the marker toggles the
+box outline around the symbol being visualized. Clicking the box toggles the
 value window: a closable nested window (latched into Melty.root_draw_states,
 so it persists and re-draws every frame even while the editor tile is
 blit-cached) whose swoosh connector anchors back to the marker. The window
@@ -15,13 +15,14 @@ editor tile, never per frame.
 Only explicit live_view() call tokens auto-open their window the first time a
 marker renders while a value exists — you typed the call, so the value shows
 without a click. Snapshot/param markers (every captured assignment from an
-instrumented run) start closed and open on dot click, so a run doesn't bury
+instrumented run) start closed and open on box click, so a run doesn't bury
 the code under one window per local. Sites the dict conversion can't surface
 (while/with/match bodies — line-keyed fallback stores) have no CallParse token
 to anchor and get no marker yet.
 """
 
 import inspect
+import re
 import weakref
 
 import imgui
@@ -55,12 +56,18 @@ def install_token_views(token_views):
 class LiveHandle:
     """Hashable (store_obj, key_path) pair — the input_value of the marker and
     window render_funcs, so draw_state identity and caching key off the site,
-    not the (ever-changing) value."""
-    __slots__ = ("store_obj", "key_path")
+    not the (ever-changing) value. `box_w`/`box_h` (the symbol box's pixel
+    size) ride along as plain attrs excluded from hash/eq, re-stamped by the
+    overlay every call: per-site geometry must NOT travel as render_func
+    kwargs — caching/auto-state replays another marker's values there (every
+    box rendered at the last call's width)."""
+    __slots__ = ("store_obj", "key_path", "box_w", "box_h")
 
-    def __init__(self, store_obj, key_path):
+    def __init__(self, store_obj, key_path, box_w=None, box_h=None):
         self.store_obj = store_obj
         self.key_path = key_path
+        self.box_w = box_w
+        self.box_h = box_h
 
     def __hash__(self):
         return hash((self.store_obj, self.key_path))
@@ -93,34 +100,48 @@ def draw_live_view_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
     if store_obj is None:
         return
     token_cells = max(1, span.end_col - span.start_col)
-    imgui.set_cursor_screen_pos((x + token_cells * char_w + 6,
-                                 y + max(0.0, (line_px - 16) / 2)))
-    draw_live_view_marker(LiveHandle(store_obj, key_path),
+    if getattr(span, "end_line", span.start_line) != span.start_line:
+        # Multi-line call: box just the first line, from the token start to
+        # the end of that line's text.
+        src_lines = (getattr(root, "source", "") or "").split("\n")
+        if 1 <= span.start_line <= len(src_lines):
+            token_cells = max(1, len(src_lines[span.start_line - 1].rstrip())
+                              - span.start_col)
+    pad = 2.0
+    imgui.set_cursor_screen_pos((x - pad, y - pad))
+    draw_live_view_marker(LiveHandle(store_obj, key_path,
+                                     box_w=token_cells * char_w + 2 * pad,
+                                     box_h=line_px + 2 * pad),
                           name=f"lvm::{draw_state.id}::{'/'.join(key_path)}",
                           editor_ds=draw_state)
 
 
 @render_func(use_cache=True, show_bg=False, shadow=False, with_header=None,
              show_name=False, selectable=False, disable_scroll=True, wrap=True,
-             z_offset=3, max_height=24)
+             z_offset=3, max_height=32)
 def draw_live_view_marker(input_value, draw_state=None, editor_ds=None,
-                          auto_open=True, child_kwargs=None,
+                          auto_open=True, child_kwargs=None, indent_size=30,
                           left_mouse_down=False, left_mouse_held=False,
                           **kwargs):
-    """The anchor dot beside a live_view call: green when a value has been
-    captured, dim when the site hasn't run yet. Click toggles the value
-    window. `auto_open=False` (the snapshot/param markers) keeps the window
-    closed until the dot is clicked — only explicit live_view() tokens pop
-    their value unprompted. left_mouse_* are declared (never read) so a press
-    on the dot latches here instead of moving the editor caret — see
+    """The anchor box around the symbol being visualized: a rounded outline
+    over the live_view call / captured assignment — green when a value has
+    been captured, dim when the site hasn't run yet. Click toggles the value
+    window. The box's pixel size rides on the handle (`handle.box_w/h`, set
+    by the overlays along with the cursor at the box's top-left) — NOT as
+    kwargs: use_cache replays stale kwargs on watcher-driven re-renders, so
+    every box would render at some other marker's size.
+    `auto_open=False` (the snapshot/param markers) keeps the window closed
+    until the box is clicked — only explicit live_view() tokens pop their
+    value unprompted. left_mouse_* are declared (never read) so a press on
+    the box latches here instead of moving the editor caret — see
     draw_icon_selector."""
     handle = input_value
     ds = draw_state
     if child_kwargs is None:
         child_kwargs = {}
-    # First-publish only: a dim dot whose code then runs gets invalidated
-    # on the key's FIRST value, flips green (and auto-opens below, if this
-    # marker auto-opens) - one editor re-render per new key, nothing per
+    # First only only: a gray box whose code then runs gets invalidated
+    # on the key's FIRST value, flips green (and auto-opens below, when this
+    # marker auto-opens) — one editor re-render per new key, nothing per
     # steady-state publish.
     watch(handle.store_obj, handle.key_path, ds, first_only=True)
     lv = live_values_for(handle.store_obj).get(handle.key_path)
@@ -128,9 +149,10 @@ def draw_live_view_marker(input_value, draw_state=None, editor_ds=None,
     if getattr(ds, "_lv_open", None) is None and lv is not None and auto_open:
         ds._lv_open = True  # first value seen → show it without a click
     x, y = imgui.get_cursor_screen_pos()
-    size = 18.7
+    w = getattr(handle, "box_w", None) or 18.7
+    h = getattr(handle, "box_h", None) or 18.7
     io = imgui.get_io()
-    hovered = x <= io.mouse_pos.x < x + size and y <= io.mouse_pos.y < y + size
+    hovered = x <= io.mouse_pos.x < x + w and y <= io.mouse_pos.y < y + h
     open_now = bool(getattr(ds, "_lv_open", False))
     if lv is not None:
         base = (0.36, 0.85, 0.46) if open_now else (0.26, 0.62, 0.34)
@@ -139,12 +161,13 @@ def draw_live_view_marker(input_value, draw_state=None, editor_ds=None,
     if hovered:
         base = tuple(min(1.0, c + 0.18) for c in base)
     dl = imgui.get_window_draw_list()
-    cx, cy, r = x + size / 2, y + size / 2, 3.9
-    dl.add_circle_filled(cx, cy, r, imgui.get_color_u32_rgba(*base, 1.0))
     if open_now:
-        dl.add_circle(cx, cy, r + 2.5,
-                      imgui.get_color_u32_rgba(*base, 0.55), thickness=1.2)
-    imgui.dummy(size, size)
+        dl.add_rect_filled(x, y, x + w, y + h,
+                           imgui.get_color_u32_rgba(*base, 0.10), 4.0)
+    dl.add_rect(x, y, x + w, y + h,
+                imgui.get_color_u32_rgba(*base, 0.9 if open_now else 0.6),
+                4.0, thickness=1.3)
+    imgui.dummy(w, h)
 
     # The user X-ing the window directly must beat our open flag. Detect it
     # BEFORE this render passes closed= (which overwrites the very flag we're
@@ -228,10 +251,10 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
     fn = _scope_function(str(filename), span.start_line + line_offset)
     if fn is None:
         return
-    # Store this registration BEFORE any values exist: the first instrumented
-    # run's brand-new keys invalidate the screen, the overlay re-runs, and
-    # the markers materialize (closed - these auto_open=False dots wait for a
-    # click). Without it the first run stays invisible until an unrelated
+    # Store-level registration BEFORE any values exist: the first instrumented
+    # run's brand-new keys invalidate this editor, the overlay re-runs, and
+    # the markers materialize (closed - these auto_open=False boxes wait for
+    # a click). Without it the first run stays invisible until an unrelated
     # repaint.
     watch(fn, None, draw_state)
 
@@ -246,30 +269,52 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         anchor = _key_anchor(node, key_path, line_offset)
         if anchor is None:
             continue
-        rel_line, end_col = anchor
+        rel_line, start_col, end_col = anchor
         if end_col is None:
-            # No span (line:N tail) - anchor at the end of the line's text.
+            # No span (line:N key) - box the line's text, first non-space
+            # to end ("line highlight").
             if 1 <= rel_line <= len(source_lines):
-                end_col = len(source_lines[rel_line - 1])
+                text = source_lines[rel_line - 1]
+                if not text.strip():
+                    continue
+                start_col = len(text) - len(text.lstrip())
+                end_col = len(text.rstrip())
             else:
                 continue
+        else:
+            # The leaf span covers the assignment (or sometimes just its
+            # RHS, depending on the parse) - box the SYMBOL itself so the
+            # highlight (and its click latch) doesn't swallow the line: the
+            # first word-boundary occurrence of the target name on the line
+            # (the assignment target precedes any RHS use of the name).
+            name = key_path[-1].split("#", 1)[0]
+            text = (source_lines[rel_line - 1]
+                    if 1 <= rel_line <= len(source_lines) else "")
+            m = re.search(rf"\b{re.escape(name)}\b", text)
+            if m is not None:
+                start_col, end_col = m.start(), m.end()
+            else:
+                end_col = start_col + max(1, len(name))
+        pad = 2.0
         imgui.set_cursor_screen_pos(
-            (origin_x + (end_col + 1.5) * char_w,
-             origin_y + (rel_line - 1) * line_px
-             + max(0.0, (line_px - 16) / 2)))
+            (origin_x + start_col * char_w - pad,
+             origin_y + (rel_line - 1) * line_px - pad))
         # Auto-open the VOLUMES (3-D data → orbiting voxel window: the
         # point of the lab) so a run pops them unprompted; scalars/configs
-        # stay quiet click-to-open dots so 19 locals don't hide the code.
+        # stay quiet click-to-open boxes so 19 locals don't bury the def.
         overrides = {}
         if 'locals' in node and '__overrides__' in node['locals']:
             override_path = f"__{key_path[-1]}__"
             if override_path in node['locals']["__overrides__"]:
                 overrides = dict(node['locals']["__overrides__"][override_path])
         draw_live_view_marker(
-            LiveHandle(fn, key_path),
+            LiveHandle(fn, key_path,
+                       box_w=max(1, end_col - start_col) * char_w + 2 * pad,
+                       box_h=line_px + 2 * pad),
             name=f"lvs::{draw_state.id}::{fn.__qualname__}::"
                  f"{'/'.join(key_path)}",
-            editor_ds=draw_state, auto_open=is_volume(lv.value), child_kwargs=overrides, **overrides)
+            editor_ds=draw_state, auto_open=is_volume(lv.value),
+            child_kwargs=overrides, **overrides)
 
 
 def _scope_function(filename, def_line):
@@ -284,13 +329,14 @@ def _scope_function(filename, def_line):
 
 
 def _key_anchor(scope_node, key_path, line_offset):
-    """(buffer-relative line, end col | None) a snapshot key anchors at:
-    descend the scope's locals by the key path to the leaf's span; a `line:N`
-    tail IS the (absolute) anchor, with no column information."""
+    """(buffer-relative line, start col | None, end col | None) the symbol
+    box for a snapshot key: descend the scope's locals by the key path to the
+    leaf's span; a `line:N` tail IS the (absolute) anchor, with no column
+    information (the caller boxes the whole line's text)."""
     tail = key_path[-1]
     if tail.startswith("line:"):
         try:
-            return int(tail[5:]) - line_offset, None
+            return int(tail[5:]) - line_offset, None, None
         except ValueError:
             return None
     node = scope_node.get("locals")
@@ -307,7 +353,10 @@ def _key_anchor(scope_node, key_path, line_offset):
         sp = getattr(child, "span", None)
     if sp is None:
         return None
-    return sp.start_line, getattr(sp, "end_col", None)
+    end_col = getattr(sp, "end_col", None)
+    return (sp.start_line,
+            getattr(sp, "start_col", 0) if end_col is not None else None,
+            end_col)
 
 
 # ── Run-once snapshot view: draw_function + instrumentation + source ──
