@@ -57,6 +57,7 @@ from src.lsd.gl_gui.text_texture import bake_text, bake_texts
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
 from src.lsd.gl_gui.view.core_views.core_render import render_func
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import exclude
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.modes import Modes
 from src.lsd.gl_gui.view.core_views.new_core_view import draw_float, draw_any
@@ -103,8 +104,15 @@ void main() {
     float t = max(hit.x, 0.0);
     vec4 acc = vec4(0.0);
     for (int i = 0; i < 2048; i++) {
-        if (t > hit.y || acc.a > 0.98) break;
-        vec3 p = (ro + rd * t) / volume_scale * 0.5 + 0.5;   // box -> texcoord [0,1]
+        if (t >= hit.y || acc.a > 0.98) break;
+        // Weight each sample by the segment it actually covers (the tail is
+        // partial) and sample at the segment MIDPOINT: a slab thinner than
+        // one step then accumulates opacity proportional to its true path
+        // length instead of jumping by whole steps as the sample count
+        // changes with view angle — the concentric-ring artifact on thin
+        // tensors.
+        float seg = min(step_size, hit.y - t);
+        vec3 p = (ro + rd * (t + seg * 0.5)) / volume_scale * 0.5 + 0.5;
         float v = texture(volume, p).r;
         // The old viewer's value pipeline, verbatim: contrast about
         // mid-grey, then brightness, on the GREYSCALE value — the LUT lookup
@@ -116,7 +124,7 @@ void main() {
         v = clamp(v, 0.0, 1.0);
         float d = clamp((v - threshold) * density, 0.0, 1.0);
         if (d > 0.0) {
-            float a = d * step_size * 60.0;
+            float a = d * seg * 60.0;
             acc.rgb += (1.0 - acc.a) * a * texture(lut, v).rgb;
             acc.a   += (1.0 - acc.a) * a;
         }
@@ -293,14 +301,14 @@ def _label_atlas(gl_state, texts):
 
     return gl_state.get("label_atlas", create, delete, deps=(texts, id(font)))
 
-
+@exclude("tilt", "spin", "zoom", "pan_x", "pan_y", "pan_z", "ortho", "brightness",)
 class VoxelParams(DictConversion):
     """Camera + render params, auto-injected per view. The field annotations
     ARE the control UI (`draw_any(params)` renders them with these ranges,
     editable from the context menus), and every annotated field is forwarded
     to the shader as a uniform."""
 
-    tilt: draw_float(min_value=-1.5708, max_value=1.5708) = 0.5
+    tilt: draw_float(min_value=-3.1416, max_value=3.1416) = 0.5
     spin: draw_float(min_value=-6.3, max_value=6.3) = 0.8
     zoom: draw_float(min_value=1.4, max_value=15.0) = 3.4
     pan_x: draw_float(min_value=-4.0, max_value=4.0) = 0.0
@@ -311,7 +319,6 @@ class VoxelParams(DictConversion):
     contrast: draw_float(min_value=0.1, max_value=4.0) = 1.0
     density: draw_float(min_value=0.5, max_value=30.0) = 8.0
     threshold: draw_float(min_value=0.0, max_value=1.0) = 0.12
-    step_size: draw_float(min_value=0.001, max_value=0.02) = 0.004
     nearest = True  # texture filtering, set per frame but not a uniform
     lut = "jet"  # LUT name (a LUTS key); the sampler itself rides in separately
 
@@ -759,17 +766,19 @@ def _draw_axis_lines(draw_list, img_pos, corners, silhouette):
     more — they're textured billboards in the voxel FBO (_billboard_specs +
     _render_label_billboards), so they live in the 3-D scene."""
     line_col = imgui.get_color_u32_rgba(0.9, 0.9, 1.0, 0.5)
-    SHORTEN = _EDGE_SHORTEN_PX
     for edge in silhouette:
         a, b = tuple(edge)
         pa, pb = corners[a], corners[b]
         dx, dy = pb[0] - pa[0], pb[1] - pa[1]
         length = math.hypot(dx, dy)
-        if length < 2 * SHORTEN + 4:
+        if length < 2.0:
             continue
+        # Short edges shorten proportionally instead of vanishing - the
+        # outline only ever skips sub-2px degenerates.
+        shorten = min(_EDGE_SHORTEN_PX, length * 0.25)
         ux, uy = dx / length, dy / length
-        draw_list.add_line(img_pos[0] + pa[0] + ux * SHORTEN, img_pos[1] + pa[1] + uy * SHORTEN,
-                           img_pos[0] + pb[0] - ux * SHORTEN, img_pos[1] + pb[1] - uy * SHORTEN,
+        draw_list.add_line(img_pos[0] + pa[0] + ux * shorten, img_pos[1] + pa[1] + uy * shorten,
+                           img_pos[0] + pb[0] - ux * shorten, img_pos[1] + pb[1] - uy * shorten,
                            line_col, 1.0)
 
 
@@ -837,8 +846,8 @@ def _billboard_specs(silhouette, corners, axis_display, volume_scale,
             a, b = b, a  # a is the texcoord-0 end
         pa, pb = corners[a], corners[b]
         px_len = math.hypot(pb[0] - pa[0], pb[1] - pa[1])
-        if px_len < 32.0:
-            continue
+        if px_len < 8.0:
+            continue   # only true degenerates (pointy depth edges) hide
         name, size = axis_display[k]
         a3 = tuple(a[i] * volume_scale[i] for i in range(3))
         b3 = tuple(b[i] * volume_scale[i] for i in range(3))
@@ -877,18 +886,20 @@ def _billboard_specs(silhouette, corners, axis_display, volume_scale,
 
         if name_size > 0:
             specs.append((name, mid, u, v, out, name_size, name_off, name_opacity))
-        if num_size > 0 and px_len >= 70.0 and size > 0:
+        if num_size > 0 and px_len >= 24.0 and size > 0:
             # Ticks convert into the VISIBLE line span (edges draw shortened
-            # by _EDGE_SHORTEN_PX per end), so 0 sits at the line's start and
-            # the max value at the end instead of out at the corners.
-            inset = _EDGE_SHORTEN_PX * length / px_len
+            # adaptively per end), so 0 sits at the edge's start and the max
+            # value at its end instead of out at the corners. _tick_values
+            # self-limits on short edges (degrades to just 0 and max).
+            inset_px = min(_EDGE_SHORTEN_PX, px_len * 0.25)
+            inset = inset_px * length / px_len
             span = max(0.0, length - 2.0 * inset)
             if num_angle:
                 ut = tuple(ca * u[i] + sa * v[i] for i in range(3))
                 vt = tuple(ca * v[i] - sa * u[i] for i in range(3))
             else:
                 ut, vt = u, v
-            for idx in _tick_values(int(size), (px_len - 2 * _EDGE_SHORTEN_PX) / size,
+            for idx in _tick_values(int(size), (px_len - 2 * inset_px) / size,
                                     num_size, num_spacing):
                 p = tuple(a3[i] + w[i] * (inset + span * idx / size) for i in range(3))
                 specs.append((str(idx), p, ut, vt, out, num_size, num_off, num_opacity))
@@ -1059,7 +1070,8 @@ def draw_voxel_controls(input_value=None, params=None, draw_state=None,
     tex = input_value
     axes = getattr(tex, "axes", None)
 
-    changed, _ = draw_any(params, name="params", initial={"expanded": True},
+    changed, _ = draw_any(params, name="params", initial={"expanded": False
+    },
                           show_add_delete=False, shadow=False)
 
     # ── LUT picker: one radio per list the LUT host knows about ─────────
@@ -1077,7 +1089,7 @@ def draw_voxel_controls(input_value=None, params=None, draw_state=None,
             _wake_io(axes)
             changed = True
         names_changed, new_names = draw_any(axes.dim_names, name="dim names",
-                                            initial={"expanded": False},
+                                            initial={"expanded": True},
                                             show_add_delete=False, shadow=False)
         if names_changed and isinstance(new_names, list) and len(new_names) == len(axes.dim_names):
             axes.dim_names = [str(n) for n in new_names]
@@ -1092,10 +1104,8 @@ def draw_voxel_controls(input_value=None, params=None, draw_state=None,
     imgui.text_colored(
         f"{tex!r}\n"
         f"{injected} uniforms · gl: {stats['states']} states / "
-        f"{stats['resources']} res / {stats['queued_deletes']} queued\n"
-        f"mid-drag orbit (shift pan) · scroll zoom\n"
-        f"numpad 7/1/3 views · 5 ortho · / recenter",
-        0.55, 0.55, 0.55, 1.0)
+        f"{stats['resources']} res / {stats['queued_deletes']} queued",
+        0.21, 0.33, 0.62, 1.0)
     return changed, input_value
 
 
@@ -1104,7 +1114,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                 params: VoxelParams = None, draw_state=None,
                 name_size=28.0, name_padding=30.1, name_opacity=1.1,
                 num_size=17.1, num_padding=5.5, num_opacity=0.8,
-                num_spacing=1.0, num_angle=0.0,
+                num_spacing=1.0, num_angle=0.0, step_size=0.004,
                 middle_mouse_drag=None, right_mouse_drag=None,
                 scroll_y_changed=None, left_mouse_double_clicked=None,
                 kp_7_pressed=None, kp_1_pressed=None, kp_3_pressed=None,
@@ -1153,7 +1163,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
             params.spin -= middle_mouse_drag.dx * 0.008
         else:
             params.spin -= middle_mouse_drag.dx * 0.008
-            params.tilt = min(HALF_PI, max(-HALF_PI, params.tilt + middle_mouse_drag.dy * 0.008))
+            params.tilt = min(math.pi, max(-math.pi, params.tilt + middle_mouse_drag.dy * 0.008))
     if right_mouse_drag is not None:
         # the old viewer's shading drag: horizontal = brightness, vertical =
         # contrast (up = increase). A real drag exceeds CLICK_MAX_DISTANCE,
@@ -1194,7 +1204,13 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
     # tex.shape is (depth, height, width) = (z, y, x).
     t_depth, t_height, t_width = (max(1, int(s)) for s in tex.shape)
     longest = float(max(t_depth, t_height, t_width))
-    volume_scale = (t_width / longest, t_height / longest, t_depth / longest)
+    # Floor each extent so extreme aspect ratios stay visible: a 1-voxel dim
+    # on a 4096 box otherwise collapses to ~0.0005 world units - far below
+    # the ray step. 0.02 reads as a thin plate (labels/silhouette use the
+    # same floored scale, so the furniture stays consistent).
+    volume_scale = (max(0.02, t_width / longest),
+                    max(0.02, t_height / longest),
+                    max(0.02, t_depth / longest))
 
     # ── LUT: prefer the shared 1-D texture the LUT host materialized; fall
     # back to a direct upload of the named lut until the host has time ────
@@ -1230,7 +1246,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
         uniforms = {name: getattr(params, name, getattr(VoxelParams, name, 0.0))
                     for name in _UNIFORM_FIELDS}
         voxel_pass(gl_state, volume=tex, lut=lut_tex, aspect=width / height,
-                   volume_scale=volume_scale, **uniforms)
+                   volume_scale=volume_scale, step_size=step_size, **uniforms)
         if silhouette and (name_size > 0 or num_size > 0):
             # Labels as in-scene textured quads. A bake/render hiccup should
             # not take down the view (or trigger the hotswap auto-revert) -
@@ -1280,42 +1296,39 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
     panel_open = bool(draw_state.misc.get("params_panel", False))
     imgui.set_cursor_screen_pos((win.abs_left + (win.width or width) + 12, win.abs_top))
     panel_kwargs = {"closed": not panel_open} if (init or toggled) else {}
-    changed, _, panel_ds = draw_voxel_controls(tex, params=params, name="controls",
-                                               mode=Modes.WINDOW,
-                                               parent_window=win, auto_resize=False,
-                                               shadow=True, return_extras=True,
-                                               **panel_kwargs)
-    if panel_ds is not None:
-        draw_state.misc["params_panel"] = not panel_ds.closed
-        # The panel is cached and MUST NOT refresh per drag frame - it rides
-        # its blit while a camera gesture mutates params, then catches up
-        # ONCE at the drag edge (or on any external param change, e.g. a
-        # numpad preset). During a gesture, self-invalidate so one
-        # more render lands the refresh after the last drag event.
-        dragging = (middle_mouse_drag is not None or right_mouse_drag is not None
-                    or scroll_y_changed is not None)
-        if not panel_ds.closed:
-            sig = (params.tilt, params.spin, params.zoom, params.pan_x,
-                   params.pan_y, params.pan_z, params.brightness,
-                   params.contrast, params.lut)
-            if dragging:
-                draw_state.misc["panel_stale"] = True
-                draw_state.invalidate()
-                request_render()
-            elif draw_state.misc.pop("panel_stale", False) \
-                    or draw_state.misc.get("panel_sig") != sig:
-                draw_state.misc["panel_sig"] = sig
-                panel_ds.invalidate()
 
-    # ── status: error surfacing only (metadata lives in the panel) ──────
-    if voxel_pass.last_error:
-        imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
-        imgui.text_colored(voxel_pass.last_error.splitlines()[0], 1.0, 0.45, 0.40, 1.0)
+    if not middle_mouse_drag and not right_mouse_drag and scroll_y_changed is None:
+        changed, _, panel_ds = draw_voxel_controls(tex, params=params, name="controls",
+                                                   mode=Modes.WINDOW,
+                                                   parent_window=win, auto_resize=False,
+                                                   shadow=True, return_extras=True,
+                                                   **panel_kwargs)
+        if panel_ds is not None:
+            draw_state.misc["params_panel"] = not panel_ds.closed
+            # The panel is cached and must NOT refresh per drag frame - it rides
+            # its blit as a camera gesture mutates params, then updates up
+            # ONCE at the gesture edge (or on any external param change, e.g. a
+            # numpad preset). During the gesture we no-invalidate so one
+            # trailing render lands the refresh after the last drag event.
+            dragging = (middle_mouse_drag is not None or right_mouse_drag is not None
+                        or scroll_y_changed is not None)
+            if not panel_ds.closed:
+                sig = (params.tilt, params.spin, params.zoom, params.pan_x,
+                       params.pan_y, params.pan_z, params.brightness,
+                       params.contrast, params.lut)
+                if (not imgui.is_mouse_down(2) and not imgui.is_mouse_down(1) and not
+                        imgui.is_mouse_down(0) and scroll_y_changed is None) and changed:
+                    panel_ds.invalidate_up()
 
-    if changed:
-        draw_state.invalidate()
-        request_render()
-        return changed, input_value
+        # ── status: error surfacing only (metadata lives in the panel) ──────
+        if voxel_pass.last_error:
+            imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
+            imgui.text_colored(voxel_pass.last_error.splitlines()[0], 1.0, 0.45, 0.40, 1.0)
+
+        if changed:
+            draw_state.invalidate()
+            request_render()
+            return changed, input_value
 
     return False, None
 
@@ -1415,7 +1428,7 @@ def draw_voxel_playground(input_value=None, **kwargs):
     _draw_host_volume(input_value)
 
 
-@window(input_value=voxel_host_4d, tint=(0.17, 0.02, 0.06))
+@window(input_value=voxel_host_4d, tint=(0.34, 0.05, 0.13))
 @render_func(show_bg=True, use_cache=True)
 def draw_voxel_4d(input_value=None, **kwargs):
     _draw_host_volume(input_value)
