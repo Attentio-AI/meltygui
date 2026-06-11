@@ -665,22 +665,54 @@ def _draw_axis_lines(draw_list, img_pos, corners, silhouette):
                            line_col, 1.0)
 
 
-# World-space label sizes (the box's longest axis spans 2.0 world units).
-_NAME_H, _NUM_H = 0.20, 0.14         # billboard heights
-_NAME_DIST, _NUM_DIST = 0.26, 0.18   # outward offset from the edge
+# World-space label metrics (the box's longest axis spans 2.0 world units);
+# draw_voxels' label_scale multiplies all of them. Names sit beyond the tick
+# band so a mid-edge tick can't collide with the dim name.
+_NAME_H, _NUM_H = 0.20, 0.13          # billboard heights
+_NAME_DIST, _NUM_DIST = 0.38, 0.16    # billboard offset from the edge
 
 
-def _billboard_specs(silhouette, corners, axis_display, volume_scale, params):
+def _tick_values(size, world_per_idx, num_h):
+    """Integer tick positions for one edge: EVERY integer when the labels
+    fit, else the smallest 1-2-5·10ᵏ step whose rotated labels keep clear of
+    each other (footprint ≈ the widest label's text width along the edge,
+    world-space — so the series is zoom-invariant). The end value always
+    shows; the last multiple yields when it would crowd it."""
+    widest = max(1, len(str(size))) * 0.62 * num_h   # ~mono glyph widt
+    min_world = widest * 1.6
+    step, k = None, 1
+    while step is None and k <= 10 ** 9:
+        for s in (1, 2, 5):
+            if s * k * world_per_idx >= min_world:
+                step = s * k
+                break
+        else:
+            k *= 10
+    if step is None or step > size:
+        return [0, size] if size > 0 else [0]
+    ticks = list(range(0, size + 1, step))
+    if ticks[-1] != size:
+        if size - ticks[-1] < 0.6 * step and len(ticks) > 1:
+            ticks.pop()
+        ticks.append(size)
+    return ticks
+
+
+def _billboard_specs(silhouette, corners, axis_display, volume_scale, params,
+                     label_scale=1.0):
     """[(text, center3, u_dir3, v_dir3, height, alpha)] for every drawn
-    silhouette edge — the dim name beside the midpoint plus 0/size near the
-    ends, all in volume-box WORLD coordinates. u runs along the edge and v
-    outward from the box ("angled perpendicular to the line"); both are
-    flipped for readability — the up-axis flips when the quad shows its back
-    (un-mirrors without reversing the reading direction), then a 180° spin
-    makes text read left-to-right, or bottom-to-top on near-vertical edges.
-    Placement always uses the UNFLIPPED outward direction, so labels never
-    land inside the box. Projected-length gates match the outline: <32px no
-    furniture, <70px no end numbers."""
+    silhouette edge — the dim name beside the midpoint plus integer ticks
+    (_tick_values) at their TRUE positions along the edge, all in volume-box
+    WORLD coordinates. u runs along the edge and v outward from the box
+    ("angled perpendicular to the line"); both are flipped for readability —
+    the up-axis flips when the quad shows its back (un-mirrors without
+    reversing the reading direction), then a 180° spin makes text read
+    left-to-right, or bottom-to-top on near-vertical edges. Placement always
+    uses the UNFLIPPED outward direction, so labels never land inside the
+    box. Projected-length gates match the outline: <32px no furniture,
+    <70px no ticks."""
+    name_h, num_h = _NAME_H * label_scale, _NUM_H * label_scale
+    name_dist, num_dist = _NAME_DIST * label_scale, _NUM_DIST * label_scale
     st_, ct_ = math.sin(params.tilt), math.cos(params.tilt)
     cs_, ss_ = math.cos(params.spin), math.sin(params.spin)
     right_w = (-ss_, cs_, 0.0)
@@ -726,13 +758,11 @@ def _billboard_specs(silhouette, corners, axis_display, volume_scale, params):
         def at(base, dist):
             return tuple(base[i] + out[i] * dist for i in range(3))
 
-        specs.append((name, at(mid, _NAME_DIST), u, v, _NAME_H, 0.85))
-        if px_len >= 70.0:
-            inset = min(0.30, length * 0.18)
-            p0 = tuple(a3[i] + w[i] * inset for i in range(3))
-            p1 = tuple(b3[i] - w[i] * inset for i in range(3))
-            specs.append(("0", at(p0, _NUM_DIST), u, v, _NUM_H, 0.45))
-            specs.append((str(size), at(p1, _NUM_DIST), u, v, _NUM_H, 0.45))
+        specs.append((name, at(mid, name_dist), u, v, name_h, 0.85))
+        if px_len >= 70.0 and size > 0:
+            for idx in _tick_values(int(size), length / size, num_h):
+                p = tuple(a3[i] + w[i] * (length * idx / size) for i in range(3))
+                specs.append((str(idx), at(p, num_dist), u, v, num_h, 0.45))
     return specs
 
 
@@ -878,14 +908,16 @@ def draw_voxel_controls(input_value=None, params=None, draw_state=None, **kwargs
 
 @render_func(is_default_for="GLTexture", show_bg=True, use_cache=True)
 def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
-                params: VoxelParams = None, draw_state=None,
+                params: VoxelParams = None, draw_state=None, label_scale=1.0,
                 middle_mouse_drag=None, right_mouse_drag=None,
                 scroll_y_changed=None, left_mouse_double_clicked=None,
                 kp_7_pressed=None, kp_1_pressed=None, kp_3_pressed=None,
                 kp_5_pressed=None, slash_pressed=None, kp_divide_pressed=None,
                 kp_decimal_pressed=None, **kwargs):
     """The voxel renderer: input is a GLTexture, full stop — everything else
-    becomes one upstream (voxel_io / the future CUDA-interop path)."""
+    becomes one upstream (voxel_io / the future CUDA-interop path).
+    `label_scale` sizes the axis-label billboards (0 hides them); smaller
+    labels also fit more integer ticks per edge."""
     tex = input_value
 
     # A 1-D texture is a LUT, not a volume - don't try to raymarch it.
@@ -1004,14 +1036,14 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                     for name in _UNIFORM_FIELDS}
         voxel_pass(gl_state, volume=tex, lut=lut_tex, aspect=width / height,
                    volume_scale=volume_scale, **uniforms)
-        if silhouette:
+        if silhouette and label_scale and label_scale > 0:
             # Labels as in-scene textured quads. A bake/render hiccup should
             # not take down the view (or trigger the hotswap auto-revert) -
             # log it and keep rendering the volume.
             global _LABEL_WARNED
             try:
                 specs = _billboard_specs(silhouette, corners, axis_display,
-                                         volume_scale, params)
+                                         volume_scale, params, label_scale)
                 cam = {n: uniforms[n] for n in ("tilt", "spin", "zoom", "pan_x",
                                                 "pan_y", "pan_z", "ortho")}
                 cam["aspect"] = width / height
