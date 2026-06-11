@@ -159,7 +159,13 @@ void main() {
     vec3 right = vec3(-sin(spin), cos(spin), 0.0);
     vec3 up = cross(right, fwd);
     vec3 eye = vec3(pan_x, pan_y, pan_z) - fwd * zoom;
-    vec3 world = quad_center + quad_u * q.x + quad_v * q.y;
+    // Screen-constant sizing: half_w/half_h/offs arrive in NDC units. The
+    // world length that projects to one NDC unit at the ANCHOR's depth is
+    // depth/1.7 (zoom/1.7 in ortho), so the label keeps its pixel size at
+    // any zoom while still anchoring to and foreshortening with the scene.
+    float ws = (ortho ? zoom : max(0.05, dot(quad_anchor - eye, fwd))) / 1.7;
+    vec3 world = quad_anchor + (quad_out * offs
+               + quad_u * (half_w * q.x) + quad_v * (half_h * q.y)) * ws;
     vec3 d = world - eye;
     // The voxel ray gen, inverted (same math as project_corners): perspective
     // keeps the depth in w for the divide, ortho is a plain scale.
@@ -185,9 +191,11 @@ void main() {
 
 
 @shader_func(fragment=LABEL_FRAG, vertex=LABEL_VERT)
-def label_pass(gl_state: GLState = None, quad_center=(0.0, 0.0, 0.0),
-               quad_u=(1.0, 0.0, 0.0), quad_v=(0.0, 0.0, 1.0), label=None,
-               label_tint=(1.0, 1.0, 1.0, 0.85), tilt=0.5, spin=0.8, zoom=3.4,
+def label_pass(gl_state: GLState = None, quad_anchor=(0.0, 0.0, 0.0),
+               quad_u=(1.0, 0.0, 0.0), quad_v=(0.0, 0.0, 1.0),
+               quad_out=(0.0, 0.0, 1.0), half_w=0.05, half_h=0.05, offs=0.0,
+               label=None, label_tint=(1.0, 1.0, 1.0, 1.0),
+               tilt=0.5, spin=0.8, zoom=3.4,
                pan_x=0.0, pan_y=0.0, pan_z=0.0, ortho=False, aspect=1.0,
                **kwargs):
     gl.glBindVertexArray(gl_state.vao("fs_triangle"))
@@ -665,25 +673,26 @@ def _draw_axis_lines(draw_list, img_pos, corners, silhouette):
                            line_col, 1.0)
 
 
-# World-space label metrics (the box's longest axis spans 2.0 world units);
-# draw_voxels' label_scale multiplies all of them. Names sit beyond the tick
-# band so a mid-edge tick can't collide with the dim name.
-_NAME_H, _NUM_H = 0.20, 0.13          # billboard heights
-_NAME_DIST, _NUM_DIST = 0.38, 0.16    # billboard offset from the edge
+# Screen-space label metrics in PIXELS - labels keep this size at any zoom
+# (the vertex shader converts at the anchor's depth). draw_voxels'
+# label_scale multiplies all of them. Names sit beyond the number band so a
+# mid-edge tick can't collide with the dim name.
+_NAME_PX, _NUM_PX = 19.0, 13.0        # billboard heights
+_NAME_OFF_PX, _NUM_OFF_PX = 38.0, 16.0   # outward offset from the edge
 
 
-def _tick_values(size, world_per_idx, num_h):
+def _tick_values(size, px_per_idx, num_px):
     """Integer tick positions for one edge: EVERY integer when the labels
     fit, else the smallest 1-2-5·10ᵏ step whose rotated labels keep clear of
-    each other (footprint ≈ the widest label's text width along the edge,
-    world-space — so the series is zoom-invariant). The end value always
+    each other (footprint ≈ the widest label's text width along the edge, in
+    projected PIXELS — so zooming in fits more ticks). The end value always
     shows; the last multiple yields when it would crowd it."""
-    widest = max(1, len(str(size))) * 0.62 * num_h   # ~mono glyph widt
-    min_world = widest * 1.6
+    widest = max(1, len(str(size))) * 0.62 * num_px   # ~average glyph aspect
+    min_px = widest * 1.6
     step, k = None, 1
     while step is None and k <= 10 ** 9:
         for s in (1, 2, 5):
-            if s * k * world_per_idx >= min_world:
+            if s * k * px_per_idx >= min_px:
                 step = s * k
                 break
         else:
@@ -700,19 +709,21 @@ def _tick_values(size, world_per_idx, num_h):
 
 def _billboard_specs(silhouette, corners, axis_display, volume_scale, params,
                      label_scale=1.0):
-    """[(text, center3, u_dir3, v_dir3, height, alpha)] for every drawn
-    silhouette edge — the dim name beside the midpoint plus integer ticks
-    (_tick_values) at their TRUE positions along the edge, all in volume-box
-    WORLD coordinates. u runs along the edge and v outward from the box
-    ("angled perpendicular to the line"); both are flipped for readability —
-    the up-axis flips when the quad shows its back (un-mirrors without
-    reversing the reading direction), then a 180° spin makes text read
-    left-to-right, or bottom-to-top on near-vertical edges. Placement always
-    uses the UNFLIPPED outward direction, so labels never land inside the
-    box. Projected-length gates match the outline: <32px no furniture,
-    <70px no ticks."""
-    name_h, num_h = _NAME_H * label_scale, _NUM_H * label_scale
-    name_dist, num_dist = _NAME_DIST * label_scale, _NUM_DIST * label_scale
+    """[(text, anchor3, u_dir3, v_dir3, out_dir3, px_h, off_px, alpha)] for
+    every drawn silhouette edge — the dim name beside the midpoint plus
+    integer ticks (_tick_values) at their TRUE positions along the edge.
+    Anchors are volume-box WORLD points ON the edge; sizes and outward
+    offsets are screen PIXELS (the shader depth-converts at each anchor, so
+    labels hold their size at any zoom). u runs along the edge and v outward
+    from the box ("angled perpendicular to the line"); both are flipped for
+    readability — the up-axis flips when the quad shows its back (un-mirrors
+    without reversing the reading direction), then a 180° spin makes text
+    read left-to-right, or bottom-to-top on near-vertical edges. The offset
+    always rides the UNFLIPPED outward direction, so labels never land
+    inside the box. Projected-length gates match the outline: <32px no
+    furniture, <70px no ticks."""
+    name_px, num_px = _NAME_PX * label_scale, _NUM_PX * label_scale
+    name_off, num_off = _NAME_OFF_PX * label_scale, _NUM_OFF_PX * label_scale
     st_, ct_ = math.sin(params.tilt), math.cos(params.tilt)
     cs_, ss_ = math.cos(params.spin), math.sin(params.spin)
     right_w = (-ss_, cs_, 0.0)
@@ -755,37 +766,36 @@ def _billboard_specs(silhouette, corners, axis_display, volume_scale, params,
             u = tuple(-c for c in u)
             v = tuple(-c for c in v)
 
-        def at(base, dist):
-            return tuple(base[i] + out[i] * dist for i in range(3))
-
-        specs.append((name, at(mid, name_dist), u, v, name_h, 0.85))
+        specs.append((name, mid, u, v, out, name_px, name_off, 1.0))
         if px_len >= 70.0 and size > 0:
-            for idx in _tick_values(int(size), length / size, num_h):
+            for idx in _tick_values(int(size), px_len / size, num_px):
                 p = tuple(a3[i] + w[i] * (length * idx / size) for i in range(3))
-                specs.append((str(idx), at(p, num_dist), u, v, num_h, 0.45))
+                specs.append((str(idx), p, u, v, out, num_px, num_off, 1.0))
     return specs
 
 
-def _render_label_billboards(gl_state, specs, cam):
+def _render_label_billboards(gl_state, specs, cam, height):
     """Draw each label spec as a textured quad into the CURRENT FBO with the
-    volume's camera (`cam` = the camera uniform kwargs). Quad half-extents
-    come from the requested world height and the baked texture's aspect."""
+    volume's camera (`cam` = the camera uniform kwargs). Pixel sizes/offsets
+    convert to NDC units against the viewport height (`height`); the shader
+    depth-scales them at each anchor for screen-constant labels. Quad width
+    comes from the baked texture's aspect."""
     if not specs:
         return
+    ndc_per_px = 2.0 / max(1.0, float(height))
     blend_was = bool(gl.glIsEnabled(gl.GL_BLEND))
     gl.glEnable(gl.GL_BLEND)
     gl.glBlendEquation(gl.GL_FUNC_ADD)
     gl.glBlendFuncSeparate(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA,
                            gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA)
-    for text, center, u, v, height, alpha in specs:
+    for text, anchor, u, v, out, px_h, off_px, alpha in specs:
         tex = _label_texture(gl_state, text)
         th, tw = tex.shape
-        half_h = height * 0.5
+        half_h = (px_h * 0.5) * ndc_per_px
         half_w = half_h * (tw / max(1, th))
-        label_pass(gl_state, label=tex,
-                   quad_center=center,
-                   quad_u=tuple(c * half_w for c in u),
-                   quad_v=tuple(c * half_h for c in v),
+        label_pass(gl_state, label=tex, quad_anchor=anchor,
+                   quad_u=u, quad_v=v, quad_out=out,
+                   half_w=half_w, half_h=half_h, offs=off_px * ndc_per_px,
                    label_tint=(1.0, 1.0, 1.0, alpha), **cam)
     if not blend_was:
         gl.glDisable(gl.GL_BLEND)
@@ -908,7 +918,7 @@ def draw_voxel_controls(input_value=None, params=None, draw_state=None, **kwargs
 
 @render_func(is_default_for="GLTexture", show_bg=True, use_cache=True)
 def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
-                params: VoxelParams = None, draw_state=None, label_scale=1.0,
+                params: VoxelParams = None, draw_state=None, label_scale=10.00,
                 middle_mouse_drag=None, right_mouse_drag=None,
                 scroll_y_changed=None, left_mouse_double_clicked=None,
                 kp_7_pressed=None, kp_1_pressed=None, kp_3_pressed=None,
@@ -1047,7 +1057,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                 cam = {n: uniforms[n] for n in ("tilt", "spin", "zoom", "pan_x",
                                                 "pan_y", "pan_z", "ortho")}
                 cam["aspect"] = width / height
-                _render_label_billboards(gl_state, specs, cam)
+                _render_label_billboards(gl_state, specs, cam, height)
             except Exception as e:
                 if not _LABEL_WARNED:
                     _LABEL_WARNED = True
@@ -1080,7 +1090,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                                      mode=Modes.WINDOW, closed=not panel_open,
                                      parent_window=win, auto_resize=False,
                                      shadow=True, return_extras=True)
-                                     
+
     if panel_ds.closed:
         draw_state.misc["params_panel"] = False
 

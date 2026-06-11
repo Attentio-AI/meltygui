@@ -163,7 +163,8 @@ def _render_draw_data(dd, w, h):
         gl.glBindTexture(gl.GL_TEXTURE_2D, tex)
         gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA8, w, h, 0,
                         gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, None)
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER,
+                           gl.GL_LINEAR_MIPMAP_LINEAR)
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE)
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)
@@ -177,7 +178,11 @@ def _render_draw_data(dd, w, h):
         gl.glDisable(gl.GL_SCISSOR_TEST)
         gl.glDisable(gl.GL_DEPTH_TEST)
         gl.glDisable(gl.GL_CULL_FACE)
-        gl.glClearColor(0.0, 0.0, 0.0, 0.0)
+        # WHITE-transparent, not black-transparent: mip levels average the
+        # RGB of empty texels into the glyph shape, and black gives scaled
+        # down/angled text a dark halo. White RGB everywhere keeps every mip
+        # level pure white with only coverage in alpha.
+        gl.glClearColor(1.0, 1.0, 1.0, 0.0)
         gl.glClear(gl.GL_COLOR_BUFFER_BIT)
         gl.glEnable(gl.GL_BLEND)
         gl.glBlendEquation(gl.GL_FUNC_ADD)
@@ -207,6 +212,20 @@ def _render_draw_data(dd, w, h):
                                   ctypes.c_void_p(offset))
                 offset += cmd.elem_count * imgui.INDEX_SIZE
         gl.glBindVertexArray(0)
+
+        # Trilinear mips + anisotropy keep scaled/angled billboard sampling
+        # sharp instead of shimmering. Anisotropic filtering is technically an
+        # extension (universally supported) - soft-fail if the driver lacks it.
+        gl.glBindTexture(gl.GL_TEXTURE_2D, tex)
+        gl.glGenerateMipmap(gl.GL_TEXTURE_2D)
+        try:
+            GL_TEXTURE_MAX_ANISOTROPY = 0x84FE
+            GL_MAX_TEXTURE_MAX_ANISOTROPY = 0x84FF
+            max_aniso = gl.glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY)
+            gl.glTexParameterf(gl.GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY,
+                               min(8.0, float(max_aniso)))
+        except Exception:
+            pass
     except Exception:
         gl.glDeleteTextures([tex])
         raise
