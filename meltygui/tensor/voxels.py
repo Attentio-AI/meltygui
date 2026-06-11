@@ -483,46 +483,53 @@ def lut_io(input_value=None, gl_state: GLState = None, view_func=None,
     return view_func(input_value=input_value, external_change=external_change, **kwargs)
 
 
-# Cube edges per DISPLAY axis: corner tuples differing only on that axis,
-# ordered (negative end, positive end) so "0" labels the texcoord-0 corner.
-# World x → texture x (width dim), matching the shader's p = cube*0.5+0.5.
-_AXIS_EDGES = {
-    "x": [((-1, y, z), (1, y, z)) for y in (-1, 1) for z in (-1, 1)],
-    "y": [((x, -1, z), (x, 1, z)) for x in (-1, 1) for z in (-1, 1)],
-    "z": [((x, y, -1), (x, y, 1)) for x in (-1, 1) for y in (-1, 1)],
-}
-
-
 def _silhouette_edges(corners):
-    """The cube edges on the screen-space outline. Under projection a convex
-    solid's silhouette IS the convex hull of its projected corners — so hull
-    membership replaces the old face-visibility walk: an edge is on the
-    silhouette iff its endpoints are CONSECUTIVE hull vertices."""
-    pts = [(c, p) for c, p in corners.items() if p is not None]
-    if len(pts) < 3:
-        return set()
-    pts.sort(key=lambda cp: (cp[1][0], cp[1][1]))
+    """The cube edges on the screen-space outline, by the classic mesh rule:
+    an edge is on the silhouette iff exactly ONE of its two adjacent faces is
+    front-facing. Facing comes from the projected quad's signed (shoelace)
+    area — outward-wound faces flip to clockwise on screen (y grows down), so
+    front-facing means a NEGATIVE sum. Edge-on faces (|area| ≈ 0 — every side
+    face in an exact top view) count as back-facing, so the camera-facing
+    square contributes all four sides.
 
-    def cross(o, a, b):
-        return ((a[1][0] - o[1][0]) * (b[1][1] - o[1][1])
-                - (a[1][1] - o[1][1]) * (b[1][0] - o[1][0]))
+    The previous convex-hull walk degenerated in the axis-aligned views: the
+    depth-axis corner pairs project onto the same point (or onto collinear
+    runs that interleave the front and back squares), consecutive hull
+    vertices then differ on two axes, the cube-adjacency test fails, and
+    outline sides vanish — the missing-lines bug."""
+    def face_visible(k, s):
+        # Corner quad of face (axis k, sign s), wound CCW seen from outside:
+        # i + j = +k, and the s<0 loop reverses.
+        i, j = (k + 1) % 3, (k + 2) % 3
+        quad = ((-1, -1), (1, -1), (1, 1), (-1, 1)) if s > 0 else \
+               ((-1, -1), (-1, 1), (1, 1), (1, -1))
+        loop = []
+        for vi, vj in quad:
+            c = [0, 0, 0]
+            c[k], c[i], c[j] = s, vi, vj
+            p = corners[tuple(c)]
+            if p is None:
+                return False
+            loop.append(p)
+        area2 = sum(loop[m][0] * loop[(m + 1) % 4][1]
+                    - loop[(m + 1) % 4][0] * loop[m][1] for m in range(4))
+        return area2 < -1.0
 
-    lower, upper = [], []
-    for p in pts:
-        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
-            lower.pop()
-        lower.append(p)
-    for p in reversed(pts):
-        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
-            upper.pop()
-        upper.append(p)
-    hull = [cp[0] for cp in (lower[:-1] + upper[:-1])]
+    vis = {(k, s): face_visible(k, s) for k in range(3) for s in (-1, 1)}
     edges = set()
-    for i, a in enumerate(hull):
-        b = hull[(i + 1) % len(hull)]
-        # consecutive hull corners that are also cube-adjacent (differ on one axis)
-        if sum(1 for k in range(3) if a[k] != b[k]) == 1:
-            edges.add(frozenset((a, b)))
+    for k in range(3):
+        i, j = (k + 1) % 3, (k + 2) % 3
+        for si in (-1, 1):
+            for sj in (-1, 1):
+                a, b = [0, 0, 0], [0, 0, 0]
+                a[k], b[k] = -1, 1
+                a[i] = b[i] = si
+                a[j] = b[j] = sj
+                a, b = tuple(a), tuple(b)
+                if corners[a] is None or corners[b] is None:
+                    continue
+                if vis[(i, si)] != vis[(j, sj)]:   # the edge separates two faces
+                    edges.add(frozenset((a, b)))
     return edges
 
 
@@ -560,10 +567,13 @@ def project_corners(tilt, spin, zoom, aspect, width, height, scale=(1.0, 1.0, 1.
 def _draw_axis_labels(draw_list, img_pos, corners, axis_display):
     """The old view's edge furniture: the cube's silhouette outline drawn as
     thin lines (shortened near corners, the original fixed_shorten look), and
-    per display axis ONE labeled silhouette edge — the (flow-aware) dim name
-    centered beside its midpoint, 0 → size at the ends. Text is centered via
-    calc_text_size and offset PERPENDICULAR to the edge so labels sit beside
-    their line instead of colliding at shared corners."""
+    EVERY drawn edge labeled — the (flow-aware) dim name centered beside its
+    midpoint, 0 → size at the ends. Text is centered via calc_text_size and
+    offset PERPENDICULAR to the edge so labels sit beside their line instead
+    of colliding at shared corners. No per-axis edge picking: in the generic
+    3/4 view all six hexagon edges carry labels (two per axis), in the
+    axis-aligned views all four square sides do, and an edge too short to
+    draw (the degenerate depth axis) gets no label."""
     visible = [p for p in corners.values() if p is not None]
     if len(visible) < 4:
         return
@@ -580,9 +590,12 @@ def _draw_axis_labels(draw_list, img_pos, corners, axis_display):
         draw_list.add_text(img_pos[0] + x + nx * dist - ts.x / 2,
                            img_pos[1] + y + ny * dist - ts.y / 2, color, text)
 
-    # ── the silhouette ──────────────────────────────────────────────────────
+    # ── the outline and every edge label ──────────────────────────────────
     for edge in silhouette:
         a, b = tuple(edge)
+        k = next(i for i in range(3) if a[i] != b[i])   # the axis it runs along
+        if a[k] > b[k]:
+            a, b = b, a                                  # a = the texcoord-0 end
         pa, pb = corners[a], corners[b]
         dx, dy = pb[0] - pa[0], pb[1] - pa[1]
         length = math.hypot(dx, dy)
@@ -593,38 +606,9 @@ def _draw_axis_labels(draw_list, img_pos, corners, axis_display):
                            img_pos[0] + pb[0] - ux * SHORTEN, img_pos[1] + pb[1] - uy * SHORTEN,
                            line_col, 1.0)
 
-    # ── one labeled edge per axis (prefer silhouette edges) ─────────────
-    TIE_EPS = 16.0   # px - midpoint distances closer than this count as tied
-    for axis, (name, size) in zip(("x", "y", "z"), axis_display):
-        cands = []
-        for a, b in _AXIS_EDGES[axis]:
-            pa, pb = corners[a], corners[b]
-            if pa is None or pb is None:
-                continue
-            mx, my = (pa[0] + pb[0]) * 0.5, (pa[1] + pb[1]) * 0.5
-            dist = math.hypot(mx - cx, my - cy)
-            score = dist + (1e5 if frozenset((a, b)) in silhouette else 0.0)
-            cands.append((score, dist, my - mx, (a, b), (pa, pb, mx, my)))
-        if not cands:
-            continue
-        # Outermost silhouette edge first - but in the axis-aligned views
-        # (numpad top/front/right) opposite edges sit symmetricmetrical about the
-        # centroid: their distances tie within jitter, and hull membership of
-        # the coincident corner pairs flaps, so the score alone hops edge to
-        # edge frame to frame. Among edges whose DISTANCE near-ties the
-        # winner's (silhouette flag deliberately ignored - the twins are
-        # visually the same outline edge), settle toward the screen's bottom
-        # left (y grows downward). That preference is quantized (quarter-px)
-        # with the corner signs as the final key, so near-twins that project
-        # onto the same pixels sort deterministically too.
-        top = max(cands, key=lambda c: c[0])
-        best = max((c for c in cands if abs(c[1] - top[1]) <= TIE_EPS),
-                   key=lambda c: (round(c[2] * 4), c[3]))
-        pa, pb, mx, my = best[4]
-        dx, dy = pb[0] - pa[0], pb[1] - pa[1]
-        length = math.hypot(dx, dy) or 1.0
-        ux, uy = dx / length, dy / length
         # label direction, reduced to its component PERPENDICULAR to the edge
+        name, size = axis_display[k]
+        mx, my = (pa[0] + pb[0]) * 0.5, (pa[1] + pb[1]) * 0.5
         ox, oy = mx - cx, my - cy
         along = ox * ux + oy * uy
         nx, ny = ox - along * ux, oy - along * uy

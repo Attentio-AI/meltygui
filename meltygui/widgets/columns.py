@@ -31,5 +31,5 @@ columns_demo = Columns({
 @window
 @render_func(tint=(0.16, 0.35, 0.49), auto_resize=False, min_width=720, min_height=420)
 def draw_columns_demo(_, draw_state):
-    imgui.text("draw_columns: draggable edge lines (lines only — views don't follow yet)")
+    imgui.text("draw_columns: shared edges — cells, nested rows, and the window frame all collide")
     draw_columns(columns_demo, name="columns_demo_body")

@@ -623,6 +623,9 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
                 'search_current': key_is_current,
             }
 
+            if "content_width" in draw_state._kwargs:
+                item_kwargs['content_width'] = draw_state._kwargs['content_width'] - Core.melty.spacing[0] * 2
+
             # Folders: a dict child of a typed-add collection (show_add_types)
             # inherits the same type choices, so nested folders keep the
             # [+ <type> v] affordance all the way down.

@@ -1504,6 +1504,18 @@ def render_func(*args, **o_kwargs):
                 if not _explicit_window_pos or draw_state.pin_to_clip is not None:
                     imgui.set_cursor_screen_pos((snap_int(draw_state.abs_left), snap_int(draw_state.abs_top)))
 
+                # Draggable window frame edges (left/right) use the shared
+                # column-edge collision system (columns.window_edge_pass).
+                # Resolved through the module each call so columns.py
+                # hotswaps before reaching here.
+                from src.lsd.gl_gui.view.core_views import columns as _columns
+                try:
+                    _columns.window_edge_pass(draw_state)
+                except Exception as _edge_err:
+                    if getattr(draw_state, "_edge_pass_error", None) != repr(_edge_err):
+                        draw_state._edge_pass_error = repr(_edge_err)
+                        print(f"[window_edge_pass] {draw_state.name}: {_edge_err!r}")
+
             kwargs['melty_window'] = False
             Melty.size_stack.append((draw_state.width, draw_state.height))
 
@@ -1564,6 +1576,16 @@ def render_func(*args, **o_kwargs):
                 parent_wrap_height = fixed_size_draw_state.height - fixed_size_draw_state.header_height - fixed_size_draw_state.footer_height
                 parent_wrap_left = fixed_size_draw_state.abs_left
                 parent_wrap_top = fixed_size_draw_state.abs_top
+                # A pushed Melty clip is a HARD width limit: we can't
+                # use space past it, so when the live clip ends before the
+                # wrap frame does, wrap at the clip's right edge instead
+                # (draw_columns pushes exactly this clip around each cell).
+                # For everything else the innermost clip is the enclosing
+                # view's own clip == the wrap frame, and this is a no-op.
+                _live_clip = Melty.get_clip_rect()
+                if (_live_clip is not None and parent_wrap_width is not None
+                        and _live_clip[2] < parent_wrap_left + parent_wrap_width):
+                    parent_wrap_width = max(0, _live_clip[2] - parent_wrap_left)
             elif draw_state.clip_rect is not None:
                 clip_size = draw_state.clip_size
                 clip_rect = draw_state.abs_clip_rect
@@ -1710,23 +1732,30 @@ def render_func(*args, **o_kwargs):
             # min_width is set so widgets without one keep prior behavior.
             single_line_trigger = kwargs.get("min_width", draw_state.min_width) or 30
             header_same_line = kwargs.get("header_same_line", False)
-            if ((single_line_avail < single_line_trigger or (
-                    draw_state.height is not None and draw_state.height - draw_state.footer_height > 50))
-                    and not header_same_line):
+            if "content_width" in kwargs:
+                draw_state.content_width = kwargs["content_width"]
+                draw_state._source["content_width"] = "explicit content_width"
                 draw_state.multi_line = True
-                draw_state.content_width = available_width
-                draw_state._source["content_width"] = "available_width"
-            else:
-                draw_state.multi_line = False
-                draw_state.content_width = single_line_avail
-                draw_state._source["content_width"] = "single_line_avail"
 
-            # When a scrollbar is visible (scroll_visible reflects last frame's
-            # scroll state), subtract room for it so content doesn't draw under
-            # the bar. disable_scroll views never get a bar, so skip them.
-            if draw_state.scroll_visible and not kwargs.get("disable_scroll", False):
-                draw_state.content_width = max(0, draw_state.content_width - SCROLLBAR_RESERVE)
-                draw_state._source["content_width"] += " - scrollbar"
+            else:
+
+                if ((single_line_avail < single_line_trigger or (
+                        draw_state.height is not None and draw_state.height - draw_state.footer_height > 50))
+                        and not header_same_line):
+                    draw_state.multi_line = True
+                    draw_state.content_width = available_width
+                    draw_state._source["content_width"] = "available_width"
+                else:
+                    draw_state.multi_line = False
+                    draw_state.content_width = single_line_avail
+                    draw_state._source["content_width"] = "single_line_avail"
+
+                # When a scrollbar is showing (scroll_visible reflects last frame's
+                # scroll state), reserve room for it so content doesn't draw under
+                # the bar. disable_scroll views never get a bar, so skip them.
+                if draw_state.scroll_visible and not kwargs.get("disable_scroll", False):
+                    draw_state.content_width = max(0, draw_state.content_width - SCROLLBAR_RESERVE)
+                    draw_state._source["content_width"] += " - scrollbar"
 
             if draw_state.expanded:
                 draw_state.min_width = kwargs.get("min_width", draw_state.min_width)

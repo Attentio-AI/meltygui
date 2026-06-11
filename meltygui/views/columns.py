@@ -3,12 +3,13 @@ import imgui
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
 from src.lsd.gl_gui.view.core_views.core_render import render_func
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
 from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
 from src.lsd.gl_gui.view.invalidation_tracker import Note
 
 MIN_COLUMN_WIDTH = 30
 MIN_ROW_HEIGHT = 20
-EDGE_GRAB_WIDTH = 14.0
+EDGE_GRAB_WIDTH = 20.0
 
 _NOTE = dict(name="draw_columns", tint=(0.5, 0.8, 1.0))
 
@@ -143,96 +144,107 @@ def _window_direct(draw_state):
     return window is not None and draw_state._parent is window
 
 
-def _drive_left_edge(draw_state, delta):
-    """The window-direct row's far-left edge moved by `delta`: the window's
-    left edge follows (pos slides, width compensates so the right side stays
-    put on screen). Returns True when applied — the caller must then re-base
-    every edge by -delta, because window coordinates ride the window."""
-    if not _window_direct(draw_state):
-        return False
-    window = draw_state.parent_window
-    pos = window.window_pos or (0, 0)
-    window.window_pos = (pos[0] + delta, pos[1])
-    window.width = snap_int(window.width - delta)
-    window.expanded = True
-    return True
+def window_edge_pass(window):
+    """Every window's left/right FRAME edges as draggable edge objects —
+    run once per frame per window (idempotent; called from core_render's
+    melty-window path for ALL windows, and from draw_columns as a fallback).
 
-
-def _drive_right_edge(draw_state, delta):
-    """The window-direct row's far-right edge moved by `delta`: the window's
-    right edge follows (width only; origin unmoved, no re-base needed)."""
-    if not _window_direct(draw_state):
-        return
-    window = draw_state.parent_window
-    window.width = snap_int(window.width + delta)
-    window.expanded = True
-
-
-def _window_solve(window):
-    """The root window's once-per-frame edge pass, triggered by the first
-    columns view that renders in it: fold native window resizes into the
-    drag queue, resolve the queue over every registered edge, drive the
-    window frame from its direct row's far edges, and invalidate
-    contributors so every view lines up with the moved edges this same
-    frame."""
+    The window owns two edge dicts seeded at [0, width] (window coords) and
+    registered in the same solve as every column edge. Native resizes
+    (corner drag, right-click draw, programmatic width writes) are folded
+    in through the invariant right.x == window.width: any foreign width
+    change queues a drag of the right frame edge, so it runs the SAME
+    collision solve and frame and lines can never desync. After the solve
+    the window lines up with its edges exactly like cells do: left edge
+    off 0 → window_pos slides + everything re-bases; right edge off width
+    → width follows."""
     from src.lsd.gl_gui.melty import Melty
-    frame = Melty.frame_count
-    if getattr(window, "_edges_solved_frame", None) == frame:
+    if getattr(window, "_edges_frame", None) == Melty.frame_count:
         return
-    window._edges_solved_frame = frame
+    window._edges_frame = Melty.frame_count
+
+    if not getattr(window, "expanded", True) or not window.width or not window.height:
+        return
+    _ensure_window_state(window)
+
+    fe = getattr(window, "_frame_edges", None)
+    if not fe:
+        fe = [{"x": 0.0}, {"x": float(window.width)}]
+        window._frame_edges = fe
+    window._edge_views[window.id] = (window, fe)
+    left, right = fe
 
     for key, (ds, _) in list(window._edge_views.items()):
-        if getattr(ds, "closed", False):
+        if ds is not window and getattr(ds, "closed", False):
             del window._edge_views[key]
 
-    direct = next((ds for ds, _ in window._edge_views.values()
-                   if ds._parent is window), None)
-    d_edges = window._edge_views[direct.id][1] if direct is not None else None
+    # Foreign width change since last pass → the right frame edge follows
+    # it in the collision solve.
+    if abs(right["x"] - window.width) > 0.5:
+        window._pending_drags.append((right, float(window.width)))
 
-    d_window = 0.0
-    if d_edges and _window_direct(direct):
-        # The pile can never over-compress the window: ensure min_width to the
-        # fully-compressed span so a native shrink resize completes its
-        # collision pass instead of shoving the left line and triggering the
-        # resize latch. Raise only, re-stamped every frame (the wrapper
-        # rewrites min_width from resolved kwargs each frame).
-        flat_n = len(_all_edges(window))
-        chrome = max(0.0, float(window.width) - d_edges[-1]["x"])
-        need = snap_int(d_edges[0]["x"]
-                        + MIN_COLUMN_WIDTH * max(0, flat_n - 1) + chrome)
-        if (window.min_width or 0) < need:
-            window.min_width = need
+    # The pile can never out-compress the window: keep min_width at the
+    # fully-compressed span so a native shrink always completes its
+    # collision pass instead of fighting the resize latch. Raise-only,
+    # re-stamped every frame (the wrapper rewrites min_width from resolved
+    # contents every frame).
+    need = snap_int(left["x"]
+                    + MIN_COLUMN_WIDTH * max(1, len(_all_edges(window)) - 1))
+    if (window.min_width or 0) < need:
+        window.min_width = need
 
-        # Native resizes (title drag, right-click draw, programmatic width
-        # writes) move the window's right edge without touching the lines:
-        # queue the movement as a drag of the LAST line so it runs the
-        # same collision solve and window edge and last line stay in sync.
-        # The baseline is stamped after our own change below, so only
-        # foreign width writes show up here.
-        last_w = getattr(window, "_edges_last_width", None)
-        if last_w is not None and window.width != last_w:
-            d_window = float(window.width) - float(last_w)
-            window._pending_drags.append(
-                (d_edges[-1], d_edges[-1]["x"] + d_window))
+    # Frame edge drag handles, full window height.
+    win_x, win_y = window.abs_left, window.abs_top
+    active = None
+    seen_handles = set()
+    for k, e in enumerate(fe):
+        x = win_x + e["x"]
+        rect = (x - EDGE_GRAB_WIDTH / 2, win_y,
+                x + EDGE_GRAB_WIDTH / 2, win_y + window.height)
+        drag = window.on_action("left_mouse_drag", view_id=f"win_edge_{k}",
+                                rect=rect, priority_delta=1)
+        if not drag:
+            continue
+        active = k
+        seen_handles.add(f"win_{k}")
+        inc = _drag_inc(window, f"win_{k}", drag)
+        if inc:
+            window._pending_drags.append((e, e["x"] + inc))
+    totals = getattr(window, "_drag_totals", None)
+    if totals:
+        for h in [h for h in totals if h not in seen_handles]:
+            del totals[h]
 
-    prev = (d_edges[0]["x"], d_edges[-1]["x"]) if d_edges else None
+    moved = _solve_collisions(window)
 
-    if _solve_collisions(window):
-        if d_edges:
-            # Drive the window only by the lines' net motion BEYOND what the
-            # native resize already applied to it.
-            d_right = (d_edges[-1]["x"] - prev[1]) - d_window
-            if d_right:
-                _drive_right_edge(direct, d_right)
-            d_left = d_edges[0]["x"] - prev[0]
-            if d_left and _drive_left_edge(direct, d_left):
-                for e in _all_edges(window):
-                    e["x"] -= d_left
+    # Line the WINDOW up with its frame edges: the same rule cells use.
+    d_left = left["x"]
+    if d_left:
+        pos = window.window_pos or (0, 0)
+        window.window_pos = (pos[0] + d_left, pos[1])
+        window.width = snap_int(window.width - d_left)
+        for e in _all_edges(window):
+            e["x"] -= d_left
+        moved = True
+    if abs(right["x"] - window.width) > 0.5:
+        window.width = snap_int(right["x"])
+        moved = True
+    # Kill snap drift so the invariant check doesn't re-fire every frame.
+    right["x"] = float(window.width)
+
+    if moved:
         for ds, _ in window._edge_views.values():
             ds.invalidate(note=Note(reason="edge solve", **_NOTE))
         request_render()
 
-    window._edges_last_width = window.width
+    # Frame edge lines, full height, in this window's layer.
+    draw_list = imgui.get_window_draw_list()
+    for k, e in enumerate(fe):
+        ex = win_x + e["x"]
+        alpha = 0.6 if active == k else 0.2
+        draw_list.add_line(snap_int(ex), snap_int(win_y + 2),
+                           snap_int(ex), snap_int(win_y + window.height - 2),
+                           imgui.get_color_u32_rgba(1.0, 1.0, 1.0, alpha), 1.0)
 
 
 def _grab_zone(edges, k):
@@ -298,16 +310,22 @@ def draw_columns(input_value, column_widths=None, column_edges=None,
     # ----- window anchor: all edges live on the root window -----
     window = draw_state.parent_window or draw_state
     _ensure_window_state(window)
-    _window_solve(window)
+    window_edge_pass(window)  # idempotent; usually already called via the wrapper
     win_x = window.abs_left
 
     origin = imgui.get_cursor_screen_pos()
     top = origin[1]
 
-    # ----- interior edges: load / seed, then adopt the enclosing cell's far
-    # edge objects so shared boundaries are shared identity -----
+    # ----- own edges: load / seed, then adopt the cell container's far
+    # edge objects so shared boundaries are shared identity. The container
+    # is the enclosing cell - or the WINDOW itself for a window-direct row,
+    # whose far edges are the window's frame edges -----
     left_ref = kwargs.get("left_edge")
     right_ref = kwargs.get("right_edge")
+    if left_ref is None and right_ref is None and _window_direct(draw_state):
+        frame_edges = getattr(window, "_frame_edges", None)
+        if frame_edges:
+            left_ref, right_ref = frame_edges
 
     stored = column_edges if isinstance(column_edges, list) else []
     ok = (len(stored) == n_lines and
@@ -380,8 +398,10 @@ def draw_columns(input_value, column_widths=None, column_edges=None,
         e_left, e_right = edges[idx], edges[idx + 1]
         imgui.set_cursor_screen_pos((win_x + e_left["x"], origin[1]))
         content_width = e_right["x"] - e_left["x"]
+        Core.melty.push_clip((snap_int(win_x + e_left["x"]), snap_int(origin[1]),
+                              snap_int(win_x + e_left["x"]) + snap_int(content_width),
+                              snap_int(origin[1]) + snap_int(draw_state.height)))
         item_kwargs = {"name": f"{key}", "align_header": False,
-                       "content_width": content_width, "auto_resize": False,
                        "width": content_width} | child_kwargs
         if isinstance(input_value[key], Columns):
             item_kwargs |= {"left_edge": e_left, "right_edge": e_right}
@@ -390,6 +410,8 @@ def draw_columns(input_value, column_widths=None, column_edges=None,
             changed = True
             if isinstance(input_value, (dict, list)):
                 input_value[key] = out_value
+
+        Core.melty.pop_clip()
 
     bottom = imgui.get_cursor_screen_pos()[1]
     draw_state._edge_lines_height = max(bottom - top, MIN_ROW_HEIGHT)

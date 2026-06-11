@@ -152,6 +152,13 @@ class Swoosh:
 @window(tint=(0.31, 0.10, 0.15))
 class Toggles:
 
+    @defaults(tint=(0.833, 1.00, 0.044))
+    class InvalidateTracker:
+        keep_for_frames = 61
+        enable = False
+        draw_bvh = False
+        draw_rect = True
+
     @defaults(tint=(0.167, 0.972, 1.00))
     class TextEditor:
         enable_spell_check = False
@@ -159,13 +166,6 @@ class Toggles:
     @defaults(tint=(0.631, 0.474, 0.861))
     class InputHandlerToggles:
         show_debug = False
-
-    @defaults(tint=(0.833, 1.00, 0.044))
-    class InvalidateTracker:
-        keep_for_frames = 61
-        enable = False
-        draw_bvh = False
-        draw_rect = True
 
     @defaults(tint=(0.089, 0.08, 0.069))
     class TerminalSettings:
