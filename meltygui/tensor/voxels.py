@@ -1040,13 +1040,22 @@ def _draw_axis_controls(axes: VoxelAxes):
     return changed
 
 
-@render_func(show_bg=False)
-def draw_voxel_controls(input_value=None, params=None, draw_state=None, **kwargs):
+@render_func(show_bg=False, use_cache=True)
+def draw_voxel_controls(input_value=None, params=None, draw_state=None,
+                        hovered=None, **kwargs):
     """Every control that drives a voxel view, in one satellite panel:
     the VoxelParams tree, the axis remap radios + scrubbers + neural flow,
-    and the editable dim names. input_value is the GLTexture (it carries
-    the shared .axes); params is the OWNING VIEW's instance, passed in so
-    both windows edit the same object."""
+    the editable dim names and the pipeline metadata. input_value is the
+    GLTexture (it carries the shared .axes); params is the OWNING VIEW's
+    instance, passed in so both windows edit the same object.
+
+    CACHED, live only under the cursor: the body used to run every frame
+    (a Modes.WINDOW body renders from the deferred window queue), which
+    taxed every frame of a camera drag. The `hovered` event param keeps the
+    cache bypassed while the cursor is over the panel (so every widget
+    stays interactive), and draw_voxels invalidates it ONCE when a gesture
+    ends or params change externally (numpad presets), so it never refreshes
+    per drag frame."""
     tex = input_value
     axes = getattr(tex, "axes", None)
 
@@ -1278,6 +1287,25 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                                                **panel_kwargs)
     if panel_ds is not None:
         draw_state.misc["params_panel"] = not panel_ds.closed
+        # The panel is cached and MUST NOT refresh per drag frame - it rides
+        # its blit while a camera gesture mutates params, then catches up
+        # ONCE at the drag edge (or on any external param change, e.g. a
+        # numpad preset). During a gesture, self-invalidate so one
+        # more render lands the refresh after the last drag event.
+        dragging = (middle_mouse_drag is not None or right_mouse_drag is not None
+                    or scroll_y_changed is not None)
+        if not panel_ds.closed:
+            sig = (params.tilt, params.spin, params.zoom, params.pan_x,
+                   params.pan_y, params.pan_z, params.brightness,
+                   params.contrast, params.lut)
+            if dragging:
+                draw_state.misc["panel_stale"] = True
+                draw_state.invalidate()
+                request_render()
+            elif draw_state.misc.pop("panel_stale", False) \
+                    or draw_state.misc.get("panel_sig") != sig:
+                draw_state.misc["panel_sig"] = sig
+                panel_ds.invalidate()
 
     # ── status: error surfacing only (metadata lives in the panel) ──────
     if voxel_pass.last_error:
@@ -1387,13 +1415,13 @@ def draw_voxel_playground(input_value=None, **kwargs):
     _draw_host_volume(input_value)
 
 
-@window(input_value=voxel_host_4d, tint=(0.95, 0.55, 0.15))
+@window(input_value=voxel_host_4d, tint=(0.17, 0.02, 0.06))
 @render_func(show_bg=True, use_cache=True)
 def draw_voxel_4d(input_value=None, **kwargs):
     _draw_host_volume(input_value)
 
 
-@window(input_value=voxel_host_5d, tint=(0.10, 0.16, 0.34))
+@window(input_value=voxel_host_5d, tint=(0.02, 0.38, 0.11))
 @render_func(show_bg=True, use_cache=True)
 def draw_voxel_5d(input_value=None, **kwargs):
     _draw_host_volume(input_value)
