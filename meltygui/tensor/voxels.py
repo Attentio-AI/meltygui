@@ -25,6 +25,11 @@ The pipeline, each piece narrow and swappable:
   RenderHost whose io turns them into shared 1-D textures (_LUT_TEXTURES),
   re-uploading when a list is edited. draw_voxels samples the one params.lut
   names — the old custom jet() GLSL is now just the baked "jet" entry.
+- Axis labels are textured billboards IN the scene: text_texture.py bakes the
+  strings via imgui's own font atlas (a private shared-atlas context + the
+  screen pass's draw-list mechanics, no freetype), and label_pass draws each
+  as a world-space quad in the voxel FBO — baseline along its edge, up-axis
+  perpendicular, flipped per frame so it always reads upright.
 
 Middle-drag = orbit (shift: pan, ctrl: dolly), scroll = zoom, and Blender-style
 numpad views while hovered: 7/1/3 = top/front/right (ctrl = opposite side),
@@ -47,6 +52,7 @@ from src.lsd.gl_gui.gl_state import GLState
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.shader_func import shader_func
+from src.lsd.gl_gui.text_texture import bake_text
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
 from src.lsd.gl_gui.view.core_views.core_render import render_func
@@ -129,6 +135,78 @@ def voxel_pass(gl_state: GLState = None, tilt=0.5, spin=0.8, zoom=3.4,
     # Program bound, uniforms set - the body is just the draw call.
     gl.glBindVertexArray(gl_state.vao("fs_triangle"))
     gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
+
+
+# ── label billboards: text quads IN the 3d scene ───────────────────────────
+# Label text is baked into RGBA textures by label_texture.py (imgui's own font
+# atlas laid out in a private shared-atlas context and baked with the same
+# draw-list mechanics as the screen pass - no freetype). Each label is then a
+# quad in volume-box world space, rendered into the voxel FBO with the SAME
+# analytic camera as the volume, so labels foreshorten/track like scene
+# geometry instead of floating like screen text.
+
+LABEL_VERT = """
+#version 330 core
+out vec2 uv;
+void main() {
+    // two-triangle quad from gl_VertexID: corners in {-1,+1}²
+    int id = gl_VertexID;
+    vec2 q = vec2((id == 1 || id == 2 || id == 4) ? 1.0 : -1.0,
+                  (id == 2 || id == 4 || id == 5) ? 1.0 : -1.0);
+    uv = q * 0.5 + 0.5;   // bake puts the text TOP at v=1
+    float ct = cos(tilt);
+    vec3 fwd = -vec3(cos(spin) * ct, sin(spin) * ct, sin(tilt));
+    vec3 right = vec3(-sin(spin), cos(spin), 0.0);
+    vec3 up = cross(right, fwd);
+    vec3 eye = vec3(pan_x, pan_y, pan_z) - fwd * zoom;
+    vec3 world = quad_center + quad_u * q.x + quad_v * q.y;
+    vec3 d = world - eye;
+    // The voxel ray gen, inverted (same math as project_corners): perspective
+    // keeps the depth in w for the divide, ortho is a plain scale.
+    if (ortho) {
+        float s = zoom / 1.7;
+        gl_Position = vec4(dot(d, right) / (s * aspect), dot(d, up) / s, 0.0, 1.0);
+    } else {
+        gl_Position = vec4(1.7 * dot(d, right) / aspect, 1.7 * dot(d, up),
+                           0.0, dot(d, fwd));
+    }
+}
+"""
+
+LABEL_FRAG = """
+#version 330 core
+in vec2 uv;
+out vec4 FragColor;
+void main() {
+    vec4 t = texture(label, uv);
+    FragColor = vec4(label_tint.rgb * t.rgb, t.a * label_tint.a);
+}
+"""
+
+
+@shader_func(fragment=LABEL_FRAG, vertex=LABEL_VERT)
+def label_pass(gl_state: GLState = None, quad_center=(0.0, 0.0, 0.0),
+               quad_u=(1.0, 0.0, 0.0), quad_v=(0.0, 0.0, 1.0), label=None,
+               label_tint=(1.0, 1.0, 1.0, 0.85), tilt=0.5, spin=0.8, zoom=3.4,
+               pan_x=0.0, pan_y=0.0, pan_z=0.0, ortho=False, aspect=1.0,
+               **kwargs):
+    gl.glBindVertexArray(gl_state.vao("fs_triangle"))
+    gl.glDrawArrays(gl.GL_TRIANGLES, 0, 6)
+
+
+def _label_texture(gl_state, text):
+    """The baked texture for one label string, cached on the view's gl_state.
+    Baked at a large font size (the billboard scales it down) so angled
+    sampling stays crisp."""
+    from src.lsd.gl_gui.fonts import Font
+    from src.lsd.gl_gui.melty import Melty
+    font = Melty.font_mgr.get(Font.JETBRAINS_MONO_30) if Melty.font_mgr else None
+
+    def delete(t):
+        gl.glDeleteTextures([t.texture_id])
+
+    return gl_state.get(("label_tex", text), lambda: bake_text(text, font=font),
+                        delete, deps=(text, id(font)))
 
 
 class VoxelParams(DictConversion):
@@ -257,6 +335,9 @@ LUTS = {
 # Host-converted 1-D textures by LUT name - module-level (hotswap-reused) so
 # every voxel view uses the SAME textures the LUT host materialized.
 _LUT_TEXTURES = globals().get("_LUT_TEXTURES", {})
+
+# Once-only warning latch for the label-billboard path (hotswap-reused).
+_LABEL_WARNED = globals().get("_LABEL_WARNED", False)
 
 
 # Survives hotswap re-exec (module dict is reused) so the demo volume isn't
@@ -564,38 +645,15 @@ def project_corners(tilt, spin, zoom, aspect, width, height, scale=(1.0, 1.0, 1.
     return out
 
 
-def _draw_axis_labels(draw_list, img_pos, corners, axis_display):
-    """The old view's edge furniture: the cube's silhouette outline drawn as
-    thin lines (shortened near corners, the original fixed_shorten look), and
-    EVERY drawn edge labeled — the (flow-aware) dim name centered beside its
-    midpoint, 0 → size at the ends. Text is centered via calc_text_size and
-    offset PERPENDICULAR to the edge so labels sit beside their line instead
-    of colliding at shared corners. No per-axis edge picking: in the generic
-    3/4 view all six hexagon edges carry labels (two per axis), in the
-    axis-aligned views all four square sides do, and an edge too short to
-    draw (the degenerate depth axis) gets no label."""
-    visible = [p for p in corners.values() if p is not None]
-    if len(visible) < 4:
-        return
-    cx = sum(p[0] for p in visible) / len(visible)
-    cy = sum(p[1] for p in visible) / len(visible)
-    silhouette = _silhouette_edges(corners)
+def _draw_axis_lines(draw_list, img_pos, corners, silhouette):
+    """The cube's silhouette outline as thin imgui lines, shortened near the
+    corners (the original fixed_shorten look). Labels are NOT drawn here any
+    more — they're textured billboards in the voxel FBO (_billboard_specs +
+    label_pass), so they live in the 3-D scene."""
     line_col = imgui.get_color_u32_rgba(0.9, 0.9, 1.0, 0.5)
-    name_col = imgui.get_color_u32_rgba(1.0, 1.0, 1.0, 0.85)
-    num_col = imgui.get_color_u32_rgba(1.0, 1.0, 1.0, 0.45)
     SHORTEN = 14.0
-
-    def put_text(text, x, y, nx, ny, dist, color):
-        ts = imgui.calc_text_size(text)
-        draw_list.add_text(img_pos[0] + x + nx * dist - ts.x / 2,
-                           img_pos[1] + y + ny * dist - ts.y / 2, color, text)
-
-    # ── the outline and every edge label ──────────────────────────────────
     for edge in silhouette:
         a, b = tuple(edge)
-        k = next(i for i in range(3) if a[i] != b[i])   # the axis it runs along
-        if a[k] > b[k]:
-            a, b = b, a                                  # a = the texcoord-0 end
         pa, pb = corners[a], corners[b]
         dx, dy = pb[0] - pa[0], pb[1] - pa[1]
         length = math.hypot(dx, dy)
@@ -606,21 +664,101 @@ def _draw_axis_labels(draw_list, img_pos, corners, axis_display):
                            img_pos[0] + pb[0] - ux * SHORTEN, img_pos[1] + pb[1] - uy * SHORTEN,
                            line_col, 1.0)
 
-        # label direction, reduced to its component PERPENDICULAR to the edge
+
+# World-space label sizes (the box's longest axis spans 2.0 world units).
+_NAME_H, _NUM_H = 0.20, 0.14         # billboard heights
+_NAME_DIST, _NUM_DIST = 0.26, 0.18   # outward offset from the edge
+
+
+def _billboard_specs(silhouette, corners, axis_display, volume_scale, params):
+    """[(text, center3, u_dir3, v_dir3, height, alpha)] for every drawn
+    silhouette edge — the dim name beside the midpoint plus 0/size near the
+    ends, all in volume-box WORLD coordinates. u runs along the edge and v
+    outward from the box ("angled perpendicular to the line"); both are
+    flipped for readability — the up-axis flips when the quad shows its back
+    (un-mirrors without reversing the reading direction), then a 180° spin
+    makes text read left-to-right, or bottom-to-top on near-vertical edges.
+    Placement always uses the UNFLIPPED outward direction, so labels never
+    land inside the box. Projected-length gates match the outline: <32px no
+    furniture, <70px no end numbers."""
+    st_, ct_ = math.sin(params.tilt), math.cos(params.tilt)
+    cs_, ss_ = math.cos(params.spin), math.sin(params.spin)
+    right_w = (-ss_, cs_, 0.0)
+    up_w = (-cs_ * st_, -ss_ * st_, ct_)
+
+    def dot3(p, q):
+        return p[0] * q[0] + p[1] * q[1] + p[2] * q[2]
+
+    specs = []
+    for edge in silhouette:
+        a, b = tuple(edge)
+        k = next(i for i in range(3) if a[i] != b[i])   # the axis it runs along
+        if a[k] > b[k]:
+            a, b = b, a                                  # a = the texel-0 corner
+        pa, pb = corners[a], corners[b]
+        px_len = math.hypot(pb[0] - pa[0], pb[1] - pa[1])
+        if px_len < 32.0:
+            continue
         name, size = axis_display[k]
-        mx, my = (pa[0] + pb[0]) * 0.5, (pa[1] + pb[1]) * 0.5
-        ox, oy = mx - cx, my - cy
-        along = ox * ux + oy * uy
-        nx, ny = ox - along * ux, oy - along * uy
-        norm = math.hypot(nx, ny) or 1.0
-        nx, ny = nx / norm, ny / norm
-        put_text(name, mx, my, nx, ny, 16, name_col)
-        if length >= 70:
-            # End numbers sit a little way IN along their own edge - shared
-            # corners would stack each edge's number at one point.
-            inset = min(26.0, length * 0.16)
-            put_text("0", pa[0] + ux * inset, pa[1] + uy * inset, nx, ny, 11, num_col)
-            put_text(str(size), pb[0] - ux * inset, pb[1] - uy * inset, nx, ny, 11, num_col)
+        a3 = tuple(a[i] * volume_scale[i] for i in range(3))
+        b3 = tuple(b[i] * volume_scale[i] for i in range(3))
+        length = math.sqrt(sum((b3[i] - a3[i]) ** 2 for i in range(3))) or 1.0
+        w = tuple((b3[i] - a3[i]) / length for i in range(3))   # a → b, for placement
+        mid = tuple((a3[i] + b3[i]) * 0.5 for i in range(3))
+        m_len = math.sqrt(sum(c * c for c in mid)) or 1.0
+        out = tuple(c / m_len for c in mid)   # outward, ⊥ the edge (mid-w = 0)
+
+        u, v = w, out
+        u_s = (dot3(u, right_w), -dot3(u, up_w))   # screen dirs, y down
+        v_s = (dot3(v, right_w), -dot3(v, up_w))
+        # Chirality - readable text needs cross(u_s, v_s) < 0 on a y-down
+        # screen. When the quad shows its back, flip the UP axis - that
+        # un-mirrors top/bottom without reversing the reading direction.
+        if u_s[0] * v_s[1] - u_s[1] * v_s[0] > 0:
+            v = tuple(-c for c in v)
+        # 180° flipping (chirality-preserving): read left-to-right, or
+        # bottom-to-top when the baseline is near-vertical on screen.
+        if u_s[0] < -0.2 * abs(u_s[1]) or (
+                abs(u_s[0]) <= 0.2 * abs(u_s[1]) and u_s[1] > 0):
+            u = tuple(-c for c in u)
+            v = tuple(-c for c in v)
+
+        def at(base, dist):
+            return tuple(base[i] + out[i] * dist for i in range(3))
+
+        specs.append((name, at(mid, _NAME_DIST), u, v, _NAME_H, 0.85))
+        if px_len >= 70.0:
+            inset = min(0.30, length * 0.18)
+            p0 = tuple(a3[i] + w[i] * inset for i in range(3))
+            p1 = tuple(b3[i] - w[i] * inset for i in range(3))
+            specs.append(("0", at(p0, _NUM_DIST), u, v, _NUM_H, 0.45))
+            specs.append((str(size), at(p1, _NUM_DIST), u, v, _NUM_H, 0.45))
+    return specs
+
+
+def _render_label_billboards(gl_state, specs, cam):
+    """Draw each label spec as a textured quad into the CURRENT FBO with the
+    volume's camera (`cam` = the camera uniform kwargs). Quad half-extents
+    come from the requested world height and the baked texture's aspect."""
+    if not specs:
+        return
+    blend_was = bool(gl.glIsEnabled(gl.GL_BLEND))
+    gl.glEnable(gl.GL_BLEND)
+    gl.glBlendEquation(gl.GL_FUNC_ADD)
+    gl.glBlendFuncSeparate(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA,
+                           gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA)
+    for text, center, u, v, height, alpha in specs:
+        tex = _label_texture(gl_state, text)
+        th, tw = tex.shape
+        half_h = height * 0.5
+        half_w = half_h * (tw / max(1, th))
+        label_pass(gl_state, label=tex,
+                   quad_center=center,
+                   quad_u=tuple(c * half_w for c in u),
+                   quad_v=tuple(c * half_h for c in v),
+                   label_tint=(1.0, 1.0, 1.0, alpha), **cam)
+    if not blend_was:
+        gl.glDisable(gl.GL_BLEND)
 
 
 def _wake_io(axes: VoxelAxes):
@@ -839,6 +977,20 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
         lut_tex = gl_state.texture1d("lut_fallback", lut_list,
                                      version=(params.lut, len(lut_list)))
 
+    # ── axis furniture geometry: corners + silhouette are the Python mirror
+    # of the OpenGL camera, computed BEFORE the GL pass - the label
+    # billboards render IN the voxel FBO with the volume's own camera ────
+    axes = getattr(tex, "axes", None)
+    axis_display = getattr(tex, "axis_display", None)
+    corners = silhouette = None
+    if axis_display:
+        corners = project_corners(params.tilt, params.spin, params.zoom,
+                                  width / height, width, height,
+                                  scale=volume_scale,
+                                  pan=(params.pan_x, params.pan_y, params.pan_z),
+                                  ortho=params.ortho)
+        silhouette = _silhouette_edges(corners)
+
     # ── GL pass: every resource tracked + lifecycle-managed by gl_state ──
     fb = gl_state.fbo("target", width, height)
     depth_was_on = gl.glIsEnabled(gl.GL_DEPTH_TEST)
@@ -852,23 +1004,33 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                     for name in _UNIFORM_FIELDS}
         voxel_pass(gl_state, volume=tex, lut=lut_tex, aspect=width / height,
                    volume_scale=volume_scale, **uniforms)
+        if silhouette:
+            # Labels as in-scene textured quads. A bake/render hiccup should
+            # not take down the view (or trigger the hotswap auto-revert) -
+            # log it and keep rendering the volume.
+            global _LABEL_WARNED
+            try:
+                specs = _billboard_specs(silhouette, corners, axis_display,
+                                         volume_scale, params)
+                cam = {n: uniforms[n] for n in ("tilt", "spin", "zoom", "pan_x",
+                                                "pan_y", "pan_z", "ortho")}
+                cam["aspect"] = width / height
+                _render_label_billboards(gl_state, specs, cam)
+            except Exception as e:
+                if not _LABEL_WARNED:
+                    _LABEL_WARNED = True
+                    import traceback
+                    print(f"label billboards disabled: {e}")
+                    traceback.print_exc()
     if depth_was_on:
         gl.glEnable(gl.GL_DEPTH_TEST)
 
     img_pos = imgui.get_cursor_screen_pos()
     imgui.image(fb.texture_id, width, height, uv0=(0, 1), uv1=(1, 0))
 
-    # ── axis labels: dim names + extents along the box's outermost corners,
-    # drawn with the Python mirror of the shader camera ────────────────
-    axes = getattr(tex, "axes", None)
-    axis_display = getattr(tex, "axis_display", None)
-    if axis_display:
-        corners = project_corners(params.tilt, params.spin, params.zoom,
-                                  width / height, width, height,
-                                  scale=volume_scale,
-                                  pan=(params.pan_x, params.pan_y, params.pan_z),
-                                  ortho=params.ortho)
-        _draw_axis_labels(imgui.get_window_draw_list(), img_pos, corners, axis_display)
+    # ── the outline stays 2-D imgui (crisp 1px outline over the volume) ────
+    if silhouette:
+        _draw_axis_lines(imgui.get_window_draw_list(), img_pos, corners, silhouette)
 
     # ── ALL controls live in a satellite panel pinned to the window's
     # right edge (params + axis remap + scrubbers + flow + dim names).
@@ -882,10 +1044,13 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
         request_render()
     panel_open = bool(draw_state.misc.get("params_panel", False))
     imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
-    changed, _ = draw_voxel_controls(tex, params=params, name="controls",
+    changed, _, panel_ds = draw_voxel_controls(tex, params=params, name="controls",
                                      mode=Modes.WINDOW, closed=not panel_open,
                                      parent_window=win, auto_resize=False,
-                                     shadow=True)
+                                     shadow=True, return_extras=True)
+                                     
+    if panel_ds.closed:
+        draw_state.misc["params_panel"] = False
 
     # ── status: error surfacing + lifecycle visibility ──────────────────
     imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
