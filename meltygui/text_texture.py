@@ -263,3 +263,50 @@ def bake_text(text, font=None, pad=2):
         return _render_draw_data(imgui.get_draw_data(), w, h)
     finally:
         imgui.set_current_context(main)
+
+
+def bake_texts(texts, font=None, pad=2, gap=8):
+    """Rasterize MANY strings into ONE texture (a vertical-strip atlas), so a
+    whole label set renders as a single instanced draw. Returns
+    (GLTexture, {text: (u0, v0, u1, v1, px_w, px_h)}) with v1 at the TOP of
+    each string. `gap` transparent rows between entries keep mip levels from
+    bleeding neighbours into each other (labels draw near 1:1, so only the
+    first mips matter)."""
+    texts = list(dict.fromkeys(texts))   # de-dupe, preserving order
+    main = imgui.get_current_context()
+    ctx = _ensure_context()
+    imgui.set_current_context(ctx)
+    try:
+        io = imgui.get_io()
+        io.display_size = (4096.0, 16384.0)   # layout surface; never rendered
+        io.delta_time = 1.0 / 60.0
+        imgui.new_frame()
+        if font is not None:
+            imgui.push_font(font)
+        try:
+            dl = imgui.get_overlay_draw_list()
+            col = imgui.get_color_u32_rgba(1, 1, 1, 1)
+            rows, y, w_max = {}, 0, 1
+            for t in texts:
+                ts = imgui.calc_text_size(t)
+                w = max(1, int(ts.x + 0.5)) + pad * 2
+                h = max(1, int(ts.y + 0.5)) + pad * 2
+                dl.add_text(float(pad), float(y + pad), col, t)
+                rows[t] = (y, w, h)
+                w_max = max(w_max, w)
+                y += h + gap
+            height = max(1, y - gap)
+        finally:
+            if font is not None:
+                imgui.pop_font()
+        imgui.render()
+        tex = _render_draw_data(imgui.get_draw_data(), w_max, height)
+    finally:
+        imgui.set_current_context(main)
+    rects = {}
+    for t, (y0, w, h) in rows.items():
+        rects[t] = (0.0, 1.0 - (y0 + h) / height,   # u0, v0 (bottom)
+                    w / w_max, 1.0 - y0 / height,   # u1, v1 (top)
+                    w, h)
+        # consistency with bake_text: display y=0 maps to v=1
+    return tex, rects

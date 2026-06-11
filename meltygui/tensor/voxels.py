@@ -27,7 +27,7 @@ The pipeline, each piece narrow and swappable:
   names — the old custom jet() GLSL is now just the baked "jet" entry.
 - Axis labels are textured billboards IN the scene: text_texture.py bakes the
   strings via imgui's own font atlas (a private shared-atlas context + the
-  screen pass's draw-list mechanics, no freetype), and label_pass draws each
+  screen pass's draw-list mechanics, no freetype), and a raw-GL pass draws each
   as a world-space quad in the voxel FBO — baseline along its edge, up-axis
   perpendicular, flipped per frame so it always reads upright.
 
@@ -42,6 +42,7 @@ chunk 128, and the feature dim unrolls into a browsable volume — the old
 viewer's trick for weird-shaped tensors).
 """
 
+import ctypes
 import math
 
 import imgui
@@ -52,7 +53,7 @@ from src.lsd.gl_gui.gl_state import GLState
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.shader_func import shader_func
-from src.lsd.gl_gui.text_texture import bake_text
+from src.lsd.gl_gui.text_texture import bake_text, bake_texts
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
 from src.lsd.gl_gui.view.core_views.core_render import render_func
@@ -145,27 +146,47 @@ def voxel_pass(gl_state: GLState = None, tilt=0.5, spin=0.8, zoom=3.4,
 # analytic camera as the volume, so labels foreshorten/track like scene
 # geometry instead of floating like screen text.
 
+# This pass is definitely RAW GL with INSTANCING, not @shader_func: dozens
+# of label quads draw per frame on streaming volumes, and per-quad Python GL
+# calls (let alone shader_func's per-call kwargs→uniform plumbing) cost real
+# frame time - the 120→90fps regression. All strings for a view bake into
+# ONE vertical-strip atlas (re-baked only when the tick set changes), every
+# quad's placement rides a per-instance vertex buffer, and the whole label
+# set is a single glDrawArraysInstanced.
+
 LABEL_VERT = """
 #version 330 core
+uniform float tilt, spin, zoom, aspect;
+uniform bool ortho;
+uniform vec3 pan;
+layout(location = 0) in vec3 a_anchor;   // world point ON the edge
+layout(location = 1) in vec3 a_u;        // baseline dir (flipped for reading)
+layout(location = 2) in vec3 a_v;        // text-up dir
+layout(location = 3) in vec3 a_out;      // unflipped outward dir (placement)
+layout(location = 4) in vec4 a_metrics;  // half_w, half_h, offs (NDC), alpha
+layout(location = 5) in vec4 a_uvrect;   // u0, v0(bottom), u1, v1(top)
 out vec2 uv;
+out float v_alpha;
 void main() {
     // two-triangle quad from gl_VertexID: corners in {-1,+1}²
     int id = gl_VertexID;
     vec2 q = vec2((id == 1 || id == 2 || id == 4) ? 1.0 : -1.0,
                   (id == 2 || id == 4 || id == 5) ? 1.0 : -1.0);
-    uv = q * 0.5 + 0.5;   // bake puts the text TOP at v=1
+    uv = vec2(mix(a_uvrect.x, a_uvrect.z, q.x * 0.5 + 0.5),
+              mix(a_uvrect.y, a_uvrect.w, q.y * 0.5 + 0.5));
+    v_alpha = a_metrics.w;
     float ct = cos(tilt);
     vec3 fwd = -vec3(cos(spin) * ct, sin(spin) * ct, sin(tilt));
     vec3 right = vec3(-sin(spin), cos(spin), 0.0);
     vec3 up = cross(right, fwd);
-    vec3 eye = vec3(pan_x, pan_y, pan_z) - fwd * zoom;
-    // Screen-constant sizing: half_w/half_h/offs arrive in NDC units. The
-    // world length that projects to one NDC unit at the ANCHOR's depth is
-    // depth/1.7 (zoom/1.7 in ortho), so the label keeps its pixel size at
-    // any zoom while still anchoring to and foreshortening with the scene.
-    float ws = (ortho ? zoom : max(0.05, dot(quad_anchor - eye, fwd))) / 1.7;
-    vec3 world = quad_anchor + (quad_out * offs
-               + quad_u * (half_w * q.x) + quad_v * (half_h * q.y)) * ws;
+    vec3 eye = pan - fwd * zoom;
+    // Screen-constant sizing: metrics arrive in NDC units. The world length
+    // that projects to one NDC unit at the ANCHOR's depth is depth/1.7
+    // (zoom/1.7 in ortho), so the label keeps its pixel size at any zoom
+    // while still anchoring to and foreshortening with the scene.
+    float ws = (ortho ? zoom : max(0.05, dot(a_anchor - eye, fwd))) / 1.7;
+    vec3 world = a_anchor + (a_out * a_metrics.z
+               + a_u * (a_metrics.x * q.x) + a_v * (a_metrics.y * q.y)) * ws;
     vec3 d = world - eye;
     // The voxel ray gen, inverted (same math as project_corners): perspective
     // keeps the depth in w for the divide, ortho is a plain scale.
@@ -181,41 +202,93 @@ void main() {
 
 LABEL_FRAG = """
 #version 330 core
+uniform sampler2D label;
 in vec2 uv;
+in float v_alpha;
 out vec4 FragColor;
 void main() {
     vec4 t = texture(label, uv);
-    FragColor = vec4(label_tint.rgb * t.rgb, t.a * label_tint.a);
+    FragColor = vec4(t.rgb, t.a * v_alpha);
 }
 """
 
-
-@shader_func(fragment=LABEL_FRAG, vertex=LABEL_VERT)
-def label_pass(gl_state: GLState = None, quad_anchor=(0.0, 0.0, 0.0),
-               quad_u=(1.0, 0.0, 0.0), quad_v=(0.0, 0.0, 1.0),
-               quad_out=(0.0, 0.0, 1.0), half_w=0.05, half_h=0.05, offs=0.0,
-               label=None, label_tint=(1.0, 1.0, 1.0, 1.0),
-               tilt=0.5, spin=0.8, zoom=3.4,
-               pan_x=0.0, pan_y=0.0, pan_z=0.0, ortho=False, aspect=1.0,
-               **kwargs):
-    gl.glBindVertexArray(gl_state.vao("fs_triangle"))
-    gl.glDrawArrays(gl.GL_TRIANGLES, 0, 6)
+_LABEL_UNIFORMS = ("tilt", "spin", "zoom", "aspect", "ortho", "pan", "label")
+_LABEL_FLOATS = 20   # 4×vec3 + 2×vec4 per instance
 
 
-def _label_texture(gl_state, text):
-    """The baked texture for one label string, cached on the view's gl_state.
-    Baked at a large font size (the billboard scales it down) so angled
-    sampling stays crisp."""
+def _label_program(gl_state):
+    """The instanced label program + its uniform-location map, compiled once
+    per GLState (re-created when the GLSL source changes, e.g. on hotswap)."""
+    def create():
+        def compile_one(kind, source):
+            s = gl.glCreateShader(kind)
+            gl.glShaderSource(s, source)
+            gl.glCompileShader(s)
+            if gl.glGetShaderiv(s, gl.GL_COMPILE_STATUS) != gl.GL_TRUE:
+                raise RuntimeError(gl.glGetShaderInfoLog(s).decode(errors="replace"))
+            return s
+        vs = compile_one(gl.GL_VERTEX_SHADER, LABEL_VERT)
+        fs = compile_one(gl.GL_FRAGMENT_SHADER, LABEL_FRAG)
+        prog = gl.glCreateProgram()
+        gl.glAttachShader(prog, vs)
+        gl.glAttachShader(prog, fs)
+        gl.glLinkProgram(prog)
+        gl.glDeleteShader(vs)
+        gl.glDeleteShader(fs)
+        if gl.glGetProgramiv(prog, gl.GL_LINK_STATUS) != gl.GL_TRUE:
+            raise RuntimeError(gl.glGetProgramInfoLog(prog).decode(errors="replace"))
+        loc = {n: gl.glGetUniformLocation(prog, n) for n in _LABEL_UNIFORMS}
+        return prog, loc
+
+    def delete(value):
+        gl.glDeleteProgram(value[0])
+
+    return gl_state.get("label_prog", create, delete,
+                        deps=(hash(LABEL_VERT), hash(LABEL_FRAG)))
+
+
+def _label_vao(gl_state):
+    """(vao, vbo): one interleaved per-instance buffer (divisor 1 on every
+    attribute — the quad corners come from gl_VertexID, no vertex attribs)."""
+    def create():
+        vao = gl.glGenVertexArrays(1)
+        vbo = gl.glGenBuffers(1)
+        gl.glBindVertexArray(vao)
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo)
+        stride = _LABEL_FLOATS * 4
+        offset = 0
+        for slot, n in ((0, 3), (1, 3), (2, 3), (3, 3), (4, 4), (5, 4)):
+            gl.glEnableVertexAttribArray(slot)
+            gl.glVertexAttribPointer(slot, n, gl.GL_FLOAT, gl.GL_FALSE, stride,
+                                     ctypes.c_void_p(offset))
+            gl.glVertexAttribDivisor(slot, 1)
+            offset += n * 4
+        gl.glBindVertexArray(0)
+        return vao, vbo
+
+    def delete(value):
+        vao, vbo = value
+        gl.glDeleteBuffers(1, [vbo])
+        gl.glDeleteVertexArrays(1, [vao])
+
+    return gl_state.get("label_vao", create, delete)
+
+
+def _label_atlas(gl_state, texts):
+    """The strip atlas for this view's label strings, cached until the
+    string SET changes (tick sets only change at zoom thresholds, so
+    re-bakes are rare). `texts` must be a sorted tuple."""
     from src.lsd.gl_gui.fonts import Font
     from src.lsd.gl_gui.melty import Melty
     font = Melty.font_mgr.get(Font.JETBRAINS_MONO_30) if Melty.font_mgr else None
 
-    def delete(t):
-        gl.glDeleteTextures([t.texture_id])
+    def create():
+        return bake_texts(texts, font=font)
 
-    return gl_state.get(("label_tex", text), lambda: bake_text(text, font=font),
-                        delete, deps=(text, id(font)))
+    def delete(value):
+        gl.glDeleteTextures([value[0].texture_id])
 
+    return gl_state.get("label_atlas", create, delete, deps=(texts, id(font)))
 
 class VoxelParams(DictConversion):
     """Camera + render params, auto-injected per view. The field annotations
@@ -652,13 +725,19 @@ def project_corners(tilt, spin, zoom, aspect, width, height, scale=(1.0, 1.0, 1.
     return out
 
 
+# Outline lines draw shortened by this many screen px at each end (the
+# original fixed_shorten look); tick placement compresses into the remaining
+# span so the 0 and max labels align with the visible line ends.
+_EDGE_SHORTEN_PX = 14.0
+
+
 def _draw_axis_lines(draw_list, img_pos, corners, silhouette):
     """The cube's silhouette outline as thin imgui lines, shortened near the
     corners (the original fixed_shorten look). Labels are NOT drawn here any
     more — they're textured billboards in the voxel FBO (_billboard_specs +
-    label_pass), so they live in the 3-D scene."""
+    _render_label_billboards), so they live in the 3-D scene."""
     line_col = imgui.get_color_u32_rgba(0.9, 0.9, 1.0, 0.5)
-    SHORTEN = 14.0
+    SHORTEN = _EDGE_SHORTEN_PX
     for edge in silhouette:
         a, b = tuple(edge)
         pa, pb = corners[a], corners[b]
@@ -670,14 +749,6 @@ def _draw_axis_lines(draw_list, img_pos, corners, silhouette):
         draw_list.add_line(img_pos[0] + pa[0] + ux * SHORTEN, img_pos[1] + pa[1] + uy * SHORTEN,
                            img_pos[0] + pb[0] - ux * SHORTEN, img_pos[1] + pb[1] - uy * SHORTEN,
                            line_col, 1.0)
-
-
-# Screen-space label metrics in PIXELS - labels keep this size at any zoom
-# (the vertex shader converts at the anchor's depth). draw_voxels'
-# label_scale multiplies all of them. Names sit beyond the number band so a
-# mid-edge tick can't collide with the dim name.
-_NAME_PX, _NUM_PX = 24.0, 16.0        # billboard heights
-_NAME_OFF_PX, _NUM_OFF_PX = 46.0, 19.0   # outward offset from the edge
 
 
 def _tick_values(size, px_per_idx, num_px, spacing=1.6):
@@ -708,22 +779,26 @@ def _tick_values(size, px_per_idx, num_px, spacing=1.6):
 
 
 def _billboard_specs(silhouette, corners, axis_display, volume_scale,
-                     label_size=1.0, label_spacing=1.6):
+                     name_size=24.0, name_padding=34.0, name_opacity=1.0,
+                     num_size=16.0, num_padding=11.0, num_opacity=1.0,
+                     num_spacing=1.6):
     """[(text, anchor3, u_dir3, v_dir3, out_dir3, px_h, off_px, alpha)] for
     every drawn silhouette edge — the dim name beside the midpoint plus
     integer ticks (_tick_values) at their TRUE positions along the edge.
-    Anchors are volume-box WORLD points ON the edge; sizes and outward
-    offsets are screen PIXELS (the shader depth-converts at each anchor, so
-    labels hold their size at any zoom). u runs along the edge and v outward
-    from the box ("angled perpendicular to the line"); both are flipped for
+    Anchors are volume-box WORLD points ON the edge. All metrics are screen
+    PIXELS, held at any zoom (the shader depth-converts at each anchor):
+    `*_size` is the label height (0 hides that label type), `*_padding` the
+    GAP between the line and the label's near edge (independent of size),
+    `*_opacity` the tint alpha. u runs along the edge and v outward from
+    the box ("angled perpendicular to the line"); both are flipped for
     readability — the up-axis flips when the quad shows its back (un-mirrors
     without reversing the reading direction), then a 180° spin makes text
     read left-to-right, or bottom-to-top on near-vertical edges. The offset
     always rides the UNFLIPPED outward direction, so labels never land
     inside the box. Projected-length gates match the outline: <32px no
     furniture, <70px no ticks."""
-    name_px, num_px = _NAME_PX * label_size, _NUM_PX * label_size
-    name_off, num_off = _NAME_OFF_PX * label_size, _NUM_OFF_PX * label_size
+    name_off = name_padding + name_size * 0.5   # line → label CENTER
+    num_off = num_padding + num_size * 0.5
     vis = [p for p in corners.values() if p is not None]
     if not vis:
         return []
@@ -776,37 +851,73 @@ def _billboard_specs(silhouette, corners, axis_display, volume_scale,
             u = tuple(-c for c in u)
             v = tuple(-c for c in v)
 
-        specs.append((name, mid, u, v, out, name_px, name_off, 1.0))
-        if px_len >= 70.0 and size > 0:
-            for idx in _tick_values(int(size), px_len / size, num_px, label_spacing):
-                p = tuple(a3[i] + w[i] * (length * idx / size) for i in range(3))
-                specs.append((str(idx), p, u, v, out, num_px, num_off, 1.0))
+        if name_size > 0:
+            specs.append((name, mid, u, v, out, name_size, name_off, name_opacity))
+        if num_size > 0 and px_len >= 70.0 and size > 0:
+            # Ticks convert into the VISIBLE line span (edges draw shortened
+            # by _EDGE_SHORTEN_PX per end), so 0 sits at the line's start and
+            # the max value at the end instead of out at the corners.
+            inset = _EDGE_SHORTEN_PX * length / px_len
+            span = max(0.0, length - 2.0 * inset)
+            for idx in _tick_values(int(size), (px_len - 2 * _EDGE_SHORTEN_PX) / size,
+                                    num_size, num_spacing):
+                p = tuple(a3[i] + w[i] * (inset + span * idx / size) for i in range(3))
+                specs.append((str(idx), p, u, v, out, num_size, num_off, num_opacity))
     return specs
 
 
 def _render_label_billboards(gl_state, specs, cam, height):
-    """Draw each label spec as a textured quad into the CURRENT FBO with the
-    volume's camera (`cam` = the camera uniform kwargs). Pixel sizes/offsets
-    convert to NDC units against the viewport height (`height`); the shader
-    depth-scales them at each anchor for screen-constant labels. Quad width
-    comes from the baked texture's aspect."""
+    """Draw every label spec into the CURRENT FBO with the volume's camera
+    (`cam` = the camera uniform kwargs) in ONE instanced draw: assemble the
+    per-instance buffer (anchor/axes/metrics/uv-rect per label), upload,
+    glDrawArraysInstanced. Pixel sizes/offsets convert to NDC units against
+    the viewport height (`height`); the shader depth-scales them at each
+    anchor for screen-constant labels."""
     if not specs:
         return
+    texts = tuple(sorted({s[0] for s in specs}))
+    atlas, rects = _label_atlas(gl_state, texts)
+    prog, loc = _label_program(gl_state)
+    vao, vbo = _label_vao(gl_state)
+
     ndc_per_px = 2.0 / max(1.0, float(height))
+    data = np.empty((len(specs), _LABEL_FLOATS), np.float32)
+    for i, (text, anchor, u, v, out, px_h, off_px, alpha) in enumerate(specs):
+        u0, v0, u1, v1, tw, th = rects[text]
+        half_h = (px_h * 0.5) * ndc_per_px
+        row = data[i]
+        row[0:3] = anchor
+        row[3:6] = u
+        row[6:9] = v
+        row[9:12] = out
+        row[12] = half_h * (tw / max(1, th))
+        row[13] = half_h
+        row[14] = off_px * ndc_per_px
+        row[15] = alpha
+        row[16:20] = (u0, v0, u1, v1)
+
     blend_was = bool(gl.glIsEnabled(gl.GL_BLEND))
+    prev_prog = gl.glGetIntegerv(gl.GL_CURRENT_PROGRAM)
     gl.glEnable(gl.GL_BLEND)
     gl.glBlendEquation(gl.GL_FUNC_ADD)
     gl.glBlendFuncSeparate(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA,
                            gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA)
-    for text, anchor, u, v, out, px_h, off_px, alpha in specs:
-        tex = _label_texture(gl_state, text)
-        th, tw = tex.shape
-        half_h = (px_h * 0.5) * ndc_per_px
-        half_w = half_h * (tw / max(1, th))
-        label_pass(gl_state, label=tex, quad_anchor=anchor,
-                   quad_u=u, quad_v=v, quad_out=out,
-                   half_w=half_w, half_h=half_h, offs=off_px * ndc_per_px,
-                   label_tint=(1.0, 1.0, 1.0, alpha), **cam)
+    gl.glUseProgram(prog)
+    gl.glUniform1f(loc["tilt"], cam["tilt"])
+    gl.glUniform1f(loc["spin"], cam["spin"])
+    gl.glUniform1f(loc["zoom"], cam["zoom"])
+    gl.glUniform1f(loc["aspect"], cam["aspect"])
+    gl.glUniform1i(loc["ortho"], 1 if cam["ortho"] else 0)
+    gl.glUniform3f(loc["pan"], cam["pan_x"], cam["pan_y"], cam["pan_z"])
+    gl.glUniform1i(loc["label"], 0)
+    gl.glActiveTexture(gl.GL_TEXTURE0)
+    gl.glBindTexture(gl.GL_TEXTURE_2D, atlas.texture_id)
+    gl.glBindVertexArray(vao)
+    gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo)
+    gl.glBufferData(gl.GL_ARRAY_BUFFER, data.nbytes, data, gl.GL_STREAM_DRAW)
+    gl.glDrawArraysInstanced(gl.GL_TRIANGLES, 0, 6, len(specs))
+    gl.glBindVertexArray(0)
+    gl.glUseProgram(prev_prog)
     if not blend_was:
         gl.glDisable(gl.GL_BLEND)
 
@@ -929,6 +1040,9 @@ def draw_voxel_controls(input_value=None, params=None, draw_state=None, **kwargs
 @render_func(is_default_for="GLTexture", show_bg=True, use_cache=True)
 def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                 params: VoxelParams = None, draw_state=None,
+                name_size=28.0, name_padding=30.1, name_opacity=1.1,
+                num_size=17.1, num_padding=5.5, num_opacity=1.2,
+                num_spacing=1.5,
                 middle_mouse_drag=None, right_mouse_drag=None,
                 scroll_y_changed=None, left_mouse_double_clicked=None,
                 kp_7_pressed=None, kp_1_pressed=None, kp_3_pressed=None,
@@ -936,21 +1050,18 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                 kp_decimal_pressed=None, **kwargs):
     """The voxel renderer: input is a GLTexture, full stop — everything else
     becomes one upstream (voxel_io / the future CUDA-interop path).
-    `params.label_scale` (a slider in the controls panel) sizes the
-    axis-label billboards; 0 hides them, and smaller labels also fit more
-    integer ticks per edge."""
+    Label UI constants ride the render_func signature, NOT VoxelParams
+    (which serializes), one set per label type (name_* = dim names, num_* =
+    integer ticks): `*_size` is the screen-pixel height (0 hides that
+    type), `*_padding` the pixel gap between line and label, `*_opacity`
+    the alpha, and `num_spacing` the minimum gap between tick labels in
+    widest-label widths (smaller = denser ticks)."""
     tex = input_value
 
     # A 1-D texture is a LUT, not a volume - don't try to raymarch it.
     if getattr(tex, "target", None) == int(gl.GL_TEXTURE_1D):
         imgui.text(f"{tex!r} — a LUT, not a volume")
         return False, None
-
-    # Support instances created/serialized before these fields existed.
-    for field in ("pan_x", "pan_y", "pan_z", "ortho", "lut", "label_scale"):
-        if not hasattr(params, field):
-            setattr(params, field, getattr(VoxelParams, field))
-    label_scale = params.label_scale
 
     # Size from the OWNING WINDOW, not this view's own draw() - a nested
     # view's height derives from what it rendered last frame (self-referential),
@@ -1058,14 +1169,16 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                     for name in _UNIFORM_FIELDS}
         voxel_pass(gl_state, volume=tex, lut=lut_tex, aspect=width / height,
                    volume_scale=volume_scale, **uniforms)
-        if silhouette and label_scale and label_scale > 0:
+        if silhouette and (name_size > 0 or num_size > 0):
             # Labels as in-scene textured quads. A bake/render hiccup should
             # not take down the view (or trigger the hotswap auto-revert) -
             # log it and keep rendering the volume.
             global _LABEL_WARNED
             try:
                 specs = _billboard_specs(silhouette, corners, axis_display,
-                                         volume_scale, params, label_scale)
+                                         volume_scale, name_size, name_padding,
+                                         name_opacity, num_size, num_padding,
+                                         num_opacity, num_spacing)
                 cam = {n: uniforms[n] for n in ("tilt", "spin", "zoom", "pan_x",
                                                 "pan_y", "pan_z", "ortho")}
                 cam["aspect"] = width / height
