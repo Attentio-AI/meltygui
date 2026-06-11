@@ -308,8 +308,8 @@ class VoxelParams(DictConversion):
     density: draw_float(min_value=0.5, max_value=30.0) = 8.0
     threshold: draw_float(min_value=0.0, max_value=1.0) = 0.12
     step_size: draw_float(min_value=0.001, max_value=0.02) = 0.004
-    nearest = False   # texture filtering, applied per frame, not a uniform
-    lut = "jet"       # LUT name (a LUTS key); the texture itself rides in separately
+    nearest = True   # pixel filtering, applied per frame - not a uniform
+    lut = "jet"       # LUT name (a LUTS key); the sampler itself rides in separately
 
 # The annotated fields are exactly the scalar uniform candidates.
 _UNIFORM_FIELDS = tuple(VoxelParams.__annotations__)
@@ -445,7 +445,9 @@ class VoxelAxes(DictConversion):
     """How a high-dim tensor maps onto the 3 display axes — the port of the
     old TensorFrame x/y/z_dim machinery. `dim_names` label the tensor's dims
     (editable), x/y/z_dim pick which dim feeds each display axis, and every
-    other dim is pinned to `slice_indices[dim]` (the scrubbers — "time").
+    other dim is pinned to `slice_indices[dim]` (the scrubbers — "time") or,
+    when listed in `mean_dims`, AVERAGED over instead (the old viewer's mean
+    dim option).
     Injected into voxel_io (slicing is the data source's job) and rides the
     GLTexture to the renderer (`tex.axes`), which draws the radio rows and
     mutates this same instance."""
@@ -458,6 +460,7 @@ class VoxelAxes(DictConversion):
         self.y_dim = -1
         self.z_dim = -1
         self.slice_indices = []
+        self.mean_dims = []   # dims averaged over instead of scrubbed
         # Neural flow: post-slice, chop one DISPLAY axis into `nf_chunk`-wide
         # blocks laid group-major along another - the old viewer's trick for
         # making weird high dims (Feature 4096) viewable as a volume.
@@ -470,11 +473,15 @@ class VoxelAxes(DictConversion):
         """Fit state to a tensor shape. Re-derive on ndim change (defaults:
         last three dims → z/y/x, like the old viewer); only clamp on a
         same-rank shape change so user names/mapping survive resizes."""
+        if not hasattr(self, "mean_dims"):
+            self.mean_dims = []   # instances from before the field existed
         n = len(shape)
         if len(self.dim_names) != n:
             self.dim_names = [f"dim{i}" for i in range(n)]
             self.z_dim, self.y_dim, self.x_dim = max(0, n - 3), max(0, n - 2), n - 1
             self.slice_indices = [0] * n
+            self.mean_dims = []
+        self.mean_dims = [d for d in self.mean_dims if d < n]
         self.dim_sizes = list(shape)
         for d in range(n):
             self.slice_indices[d] = min(self.slice_indices[d], shape[d] - 1)
@@ -493,6 +500,7 @@ class VoxelAxes(DictConversion):
 
     def signature(self):
         return (self.x_dim, self.y_dim, self.z_dim, tuple(self.slice_indices),
+                tuple(getattr(self, "mean_dims", ())),
                 self.nf_on, self.nf_chop, self.nf_along, self.nf_chunk)
 
     def scrub_dims(self):
@@ -512,7 +520,14 @@ def slice_by_axes(t, axes: VoxelAxes):
     if t.dtype not in (torch.float16, torch.float32):
         t = t.float()
     picked = (axes.z_dim, axes.y_dim, axes.x_dim)
-    index = tuple(slice(None) if d in picked else axes.slice_indices[d]
+    # Mean dims average with keepdim (shape preserved, size -> 1), then the
+    # index below pins them at 0 - no index bookkeeping needed.
+    mean_set = {d for d in getattr(axes, "mean_dims", ())
+                if d not in picked and d < t.dim()}
+    for d in mean_set:
+        t = t.mean(dim=d, keepdim=True)
+    index = tuple(slice(None) if d in picked
+                  else (0 if d in mean_set else axes.slice_indices[d])
                   for d in range(t.dim()))
     sub = t[index]                       # first 3 dims keep original order
     remaining = sorted(picked)
@@ -781,7 +796,7 @@ def _tick_values(size, px_per_idx, num_px, spacing=1.6):
 def _billboard_specs(silhouette, corners, axis_display, volume_scale,
                      name_size=24.0, name_padding=34.0, name_opacity=1.0,
                      num_size=16.0, num_padding=11.0, num_opacity=1.0,
-                     num_spacing=1.6):
+                     num_spacing=1.6, num_angle=0.0):
     """[(text, anchor3, u_dir3, v_dir3, out_dir3, px_h, off_px, alpha)] for
     every drawn silhouette edge — the dim name beside the midpoint plus
     integer ticks (_tick_values) at their TRUE positions along the edge.
@@ -799,6 +814,8 @@ def _billboard_specs(silhouette, corners, axis_display, volume_scale,
     furniture, <70px no ticks."""
     name_off = name_padding + name_size * 0.5   # line → label CENTER
     num_off = num_padding + num_size * 0.5
+    # tick label slant (optional, not the label plane - matplotlib-style)
+    ca, sa = math.cos(math.radians(num_angle)), math.sin(math.radians(num_angle))
     vis = [p for p in corners.values() if p is not None]
     if not vis:
         return []
@@ -859,10 +876,15 @@ def _billboard_specs(silhouette, corners, axis_display, volume_scale,
             # the max value at the end instead of out at the corners.
             inset = _EDGE_SHORTEN_PX * length / px_len
             span = max(0.0, length - 2.0 * inset)
+            if num_angle:
+                ut = tuple(ca * u[i] + sa * v[i] for i in range(3))
+                vt = tuple(ca * v[i] - sa * u[i] for i in range(3))
+            else:
+                ut, vt = u, v
             for idx in _tick_values(int(size), (px_len - 2 * _EDGE_SHORTEN_PX) / size,
                                     num_size, num_spacing):
                 p = tuple(a3[i] + w[i] * (inset + span * idx / size) for i in range(3))
-                specs.append((str(idx), p, u, v, out, num_size, num_off, num_opacity))
+                specs.append((str(idx), p, ut, vt, out, num_size, num_off, num_opacity))
     return specs
 
 
@@ -966,6 +988,17 @@ def _draw_axis_controls(axes: VoxelAxes):
         size = axes.dim_sizes[d]
         if size <= 1:
             continue
+        # mean toggle: average over this dim instead of scrubbing one slice
+        if not hasattr(axes, "mean_dims"):
+            axes.mean_dims = []
+        mean_changed, is_mean = imgui.checkbox(f"mean##mean_{d}", d in axes.mean_dims)
+        if mean_changed:
+            axes.mean_dims.append(d) if is_mean else axes.mean_dims.remove(d)
+            changed = True
+        imgui.same_line()
+        if is_mean:
+            imgui.text(f"{axes.dim_names[d]} (averaged)")
+            continue
         imgui.push_item_width(160)
         scrub_changed, value = RenderFuncs.draw_int(
             axes.slice_indices[d], name=f"{axes.dim_names[d]}##scrub_{d}", min_value=0, max_value=size - 1)
@@ -1000,7 +1033,7 @@ def _draw_axis_controls(axes: VoxelAxes):
     return changed
 
 
-@render_func(show_bg=True)
+@render_func(show_bg=False)
 def draw_voxel_controls(input_value=None, params=None, draw_state=None, **kwargs):
     """Every control that drives a voxel view, in one satellite panel:
     the VoxelParams tree, the axis remap radios + scrubbers + neural flow,
@@ -1034,15 +1067,28 @@ def draw_voxel_controls(input_value=None, params=None, draw_state=None, **kwargs
             axes.dim_names = [str(n) for n in new_names]
             _wake_io(axes)   # labels (axis_display) are built by the io
             changed = True
+
+    # ── metadata: pipeline + lifecycle visibility (lives here, not drawn
+    # over the volume) ───────────────────────────────────────────────────
+    injected = sum(1 for line in voxel_pass.last_generated.get("fragment", "").splitlines()
+                   if line.startswith("uniform "))
+    stats = GLState.stats()
+    imgui.text_colored(
+        f"{tex!r}\n"
+        f"{injected} uniforms · gl: {stats['states']} states / "
+        f"{stats['resources']} res / {stats['queued_deletes']} queued\n"
+        f"mid-drag orbit (shift pan) · scroll zoom\n"
+        f"numpad 7/1/3 views · 5 ortho · / recenter",
+        0.55, 0.55, 0.55, 1.0)
     return changed, input_value
 
 
-@render_func(is_default_for="GLTexture", show_bg=True, use_cache=True)
+@render_func(is_default_for="GLTexture", show_bg=False, use_cache=True)
 def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                 params: VoxelParams = None, draw_state=None,
                 name_size=28.0, name_padding=30.1, name_opacity=1.1,
-                num_size=17.1, num_padding=5.5, num_opacity=1.2,
-                num_spacing=1.5,
+                num_size=17.1, num_padding=5.5, num_opacity=0.8,
+                num_spacing=1.5, num_angle=0.0,
                 middle_mouse_drag=None, right_mouse_drag=None,
                 scroll_y_changed=None, left_mouse_double_clicked=None,
                 kp_7_pressed=None, kp_1_pressed=None, kp_3_pressed=None,
@@ -1178,7 +1224,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                 specs = _billboard_specs(silhouette, corners, axis_display,
                                          volume_scale, name_size, name_padding,
                                          name_opacity, num_size, num_padding,
-                                         num_opacity, num_spacing)
+                                         num_opacity, num_spacing, num_angle)
                 cam = {n: uniforms[n] for n in ("tilt", "spin", "zoom", "pan_x",
                                                 "pan_y", "pan_z", "ortho")}
                 cam["aspect"] = width / height
@@ -1199,39 +1245,37 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
     if silhouette:
         _draw_axis_lines(imgui.get_window_draw_list(), img_pos, corners, silhouette)
 
-    # ── ALL controls live in a satellite panel pinned to the window's
-    # right edge (params + axis remap + scrubbers + flow + dim names).
-    # POPOVER window_pos is relative to the CURSOR at the call, so anchor
-    # the cursor at the view's top-left and offset by the window width; the
-    # panel moves along when the window is dragged. Double-click the volume
-    # to show/hide. ───────────────────────────────────────────────────────
+    # ── ALL controls live in a satellite panel opening to the RIGHT of
+    # the window (params + LUTs + axis remap + scrubbers + flow + names +
+    # metadata). POPOVER window_pos is relative to the CURSOR at the call,
+    # so anchor at the window's right edge - the panel rides along if the
+    # window is dragged. Double-click the volume to show/hide; `closed` is
+    # only PASSED on init/toggle so the window's own X button works - the
+    # framework owns the state between toggles and we mirror it back (a
+    # forced closed= every call reopened the panel on the next pre-render,
+    # which is why the X appeared dead). ─────────────────────────────────
+    init = "params_panel" not in draw_state.misc
+    toggled = False
     if left_mouse_double_clicked is not None:
         draw_state.misc["params_panel"] = not draw_state.misc.get("params_panel", False)
+        toggled = True
         draw_state.invalidate()
         request_render()
     panel_open = bool(draw_state.misc.get("params_panel", False))
-    imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
+    imgui.set_cursor_screen_pos((win.abs_left + (win.width or width) + 12, win.abs_top))
+    panel_kwargs = {"closed": not panel_open} if (init or toggled) else {}
     changed, _, panel_ds = draw_voxel_controls(tex, params=params, name="controls",
-                                     mode=Modes.WINDOW, closed=not panel_open,
+                                     mode=Modes.WINDOW,
                                      parent_window=win, auto_resize=False,
-                                     shadow=True, return_extras=True)
+                                     shadow=True, return_extras=True,
+                                     **panel_kwargs)
+    if panel_ds is not None:
+        draw_state.misc["params_panel"] = not panel_ds.closed
 
-    if panel_ds.closed:
-        draw_state.misc["params_panel"] = False
-
-    # ── status: error surfacing + lifecycle visibility ──────────────────
-    imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
+    # ── status: error surfacing only (metadata lives in the panel) ──────
     if voxel_pass.last_error:
+        imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
         imgui.text_colored(voxel_pass.last_error.splitlines()[0], 1.0, 0.45, 0.40, 1.0)
-    else:
-        injected = sum(1 for line in voxel_pass.last_generated.get("fragment", "").splitlines()
-                       if line.startswith("uniform "))
-        stats = GLState.stats()
-        imgui.text_colored(
-            f"{tex!r} · {injected} uniforms injected · gl: {stats['states']} states / "
-            f"{stats['resources']} resources / {stats['queued_deletes']} queued · "
-            f"mid-drag orbit (shift pan) · scroll zoom · numpad 7/1/3/5 · / recenter",
-            0.55, 0.55, 0.55, 1.0)
 
     if changed:
         draw_state.invalidate()
