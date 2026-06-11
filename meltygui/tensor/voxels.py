@@ -235,6 +235,9 @@ class VoxelParams(DictConversion):
     density: draw_float(min_value=0.5, max_value=30.0) = 8.0
     threshold: draw_float(min_value=0.0, max_value=1.0) = 0.12
     step_size: draw_float(min_value=0.001, max_value=0.02) = 0.004
+    # screen-pixel multiplier for the axis-label billboards; 0 disables them
+    # (not a uniform; applied Python-side by _billboard_specs)
+    label_scale: draw_float(min_value=0.0, max_value=4.0) = 1.0
     nearest = False   # texture filtering, applied per frame, not a uniform
     lut = "jet"       # LUT name (a LUTS key); the texture itself rides in separately
 
@@ -677,8 +680,8 @@ def _draw_axis_lines(draw_list, img_pos, corners, silhouette):
 # (the vertex shader converts at the anchor's depth). draw_voxels'
 # label_scale multiplies all of them. Names sit beyond the number band so a
 # mid-edge tick can't collide with the dim name.
-_NAME_PX, _NUM_PX = 19.0, 13.0        # billboard heights
-_NAME_OFF_PX, _NUM_OFF_PX = 38.0, 16.0   # outward offset from the edge
+_NAME_PX, _NUM_PX = 24.0, 16.0        # billboard heights
+_NAME_OFF_PX, _NUM_OFF_PX = 46.0, 19.0   # outward offset from the edge
 
 
 def _tick_values(size, px_per_idx, num_px):
@@ -724,13 +727,11 @@ def _billboard_specs(silhouette, corners, axis_display, volume_scale, params,
     furniture, <70px no ticks."""
     name_px, num_px = _NAME_PX * label_scale, _NUM_PX * label_scale
     name_off, num_off = _NAME_OFF_PX * label_scale, _NUM_OFF_PX * label_scale
-    st_, ct_ = math.sin(params.tilt), math.cos(params.tilt)
-    cs_, ss_ = math.cos(params.spin), math.sin(params.spin)
-    right_w = (-ss_, cs_, 0.0)
-    up_w = (-cs_ * st_, -ss_ * st_, ct_)
-
-    def dot3(p, q):
-        return p[0] * q[0] + p[1] * q[1] + p[2] * q[2]
+    vis = [p for p in corners.values() if p is not None]
+    if not vis:
+        return []
+    scx = sum(p[0] for p in vis) / len(vis)   # silhouette's screen centroid
+    scy = sum(p[1] for p in vis) / len(vis)
 
     specs = []
     for edge in silhouette:
@@ -751,9 +752,21 @@ def _billboard_specs(silhouette, corners, axis_display, volume_scale, params,
         m_len = math.sqrt(sum(c * c for c in mid)) or 1.0
         out = tuple(c / m_len for c in mid)   # outward, ⊥ the edge (mid-w = 0)
 
+        # TRUE screen directions, not the camera-basis approximation (which
+        # skews under perspective for off-center edges and mirrors oblique
+        # labels): the baseline from the edge's mean projected points, the
+        # outward axis as its perpendicular pointing away from the
+        # silhouette's screen centroid (the world `out` projects into that
+        # half-space for any silhouette edge, so the signs match).
+        u_s = ((pb[0] - pa[0]) / px_len, (pb[1] - pa[1]) / px_len)
+        mxs, mys = (pa[0] + pb[0]) * 0.5, (pa[1] + pb[1]) * 0.5
+        ox, oy = mxs - scx, mys - scy
+        along = ox * u_s[0] + oy * u_s[1]
+        nx, ny = ox - along * u_s[0], oy - along * u_s[1]
+        nl = math.hypot(nx, ny) or 1.0
+        v_s = (nx / nl, ny / nl)
+
         u, v = w, out
-        u_s = (dot3(u, right_w), -dot3(u, up_w))   # screen dirs, y down
-        v_s = (dot3(v, right_w), -dot3(v, up_w))
         # Chirality - readable text needs cross(u_s, v_s) < 0 on a y-down
         # screen. When the quad shows its back, flip the UP axis - that
         # un-mirrors top/bottom without reversing the reading direction.
@@ -918,7 +931,7 @@ def draw_voxel_controls(input_value=None, params=None, draw_state=None, **kwargs
 
 @render_func(is_default_for="GLTexture", show_bg=True, use_cache=True)
 def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
-                params: VoxelParams = None, draw_state=None, label_scale=10.00,
+                params: VoxelParams = None, draw_state=None,
                 middle_mouse_drag=None, right_mouse_drag=None,
                 scroll_y_changed=None, left_mouse_double_clicked=None,
                 kp_7_pressed=None, kp_1_pressed=None, kp_3_pressed=None,
@@ -926,8 +939,9 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                 kp_decimal_pressed=None, **kwargs):
     """The voxel renderer: input is a GLTexture, full stop — everything else
     becomes one upstream (voxel_io / the future CUDA-interop path).
-    `label_scale` sizes the axis-label billboards (0 hides them); smaller
-    labels also fit more integer ticks per edge."""
+    `params.label_scale` (a slider in the controls panel) sizes the
+    axis-label billboards; 0 hides them, and smaller labels also fit more
+    integer ticks per edge."""
     tex = input_value
 
     # A 1-D texture is a LUT, not a volume - don't try to raymarch it.
@@ -936,9 +950,10 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
         return False, None
 
     # Support instances created/serialized before these fields existed.
-    for field in ("pan_x", "pan_y", "pan_z", "ortho", "lut"):
+    for field in ("pan_x", "pan_y", "pan_z", "ortho", "lut", "label_scale"):
         if not hasattr(params, field):
             setattr(params, field, getattr(VoxelParams, field))
+    label_scale = params.label_scale
 
     # Size from the OWNING WINDOW, not this view's own draw() - a nested
     # view's height derives from what it rendered last frame (self-referential),
