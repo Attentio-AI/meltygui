@@ -114,15 +114,27 @@ void main() {
         float seg = min(step_size, hit.y - t);
         vec3 p = (ro + rd * (t + seg * 0.5)) / volume_scale * 0.5 + 0.5;
         float v = texture(volume, p).r;
+        if (centered) { v = v * 0.5 + 0.5; }   // signed [-1,1] -> [0,1]
         // The old viewer's value pipeline, verbatim: contrast about
         // mid-grey, then brightness, on the GREYSCALE value — the LUT lookup
         // and the opacity gate both consume the remapped value. `lut` is a
         // 1-D texture the LUT host baked from a flat [r,g,b,...] float list
         // (the old jet() is now just the "jet" entry).
         v = (v - 0.5) * contrast + 0.5;
-        v *= brightness;
-        v = clamp(v, 0.0, 1.0);
-        float d = clamp((v - threshold) * density, 0.0, 1.0);
+        float d;
+        if (centered) {
+            // signed data: raw 0 sits at the LUT middle (pair with a
+            // diverging LUT like seismic/coolwarm), brightness gains about
+            // the center, and opacity keys on MAGNITUDE so negatives render
+            // as strongly as positives.
+            v = 0.5 + (v - 0.5) * brightness;
+            v = clamp(v, 0.0, 1.0);
+            d = clamp((abs(v - 0.5) * 2.0 - threshold) * density, 0.0, 1.0);
+        } else {
+            v *= brightness;
+            v = clamp(v, 0.0, 1.0);
+            d = clamp((v - threshold) * density, 0.0, 1.0);
+        }
         if (d > 0.0) {
             float a = d * seg * 60.0;
             acc.rgb += (1.0 - acc.a) * a * texture(lut, v).rgb;
@@ -139,7 +151,8 @@ void main() {
 def voxel_pass(gl_state: GLState = None, tilt=0.5, spin=0.8, zoom=3.4,
                pan_x=0.0, pan_y=0.0, pan_z=0.0, ortho=False,
                aspect=1.0, brightness=1.0, contrast=1.0, density=8.0,
-               threshold=0.12, step_size=0.004, volume=None, lut=None,
+               threshold=0.12, step_size=0.004, centered=False,
+               volume=None, lut=None,
                volume_scale=(1.0, 1.0, 1.0), **kwargs):
     # Program bound, uniforms set - the body is just the draw call.
     gl.glBindVertexArray(gl_state.vao("fs_triangle"))
@@ -315,6 +328,8 @@ class VoxelParams(DictConversion):
     pan_y: draw_float(min_value=-4.0, max_value=4.0) = 0.0
     pan_z: draw_float(min_value=-4.0, max_value=4.0) = 0.0
     ortho: bool = False
+    # signed-data mode: raw 0 maps to the LUT middle, opacity = magnitude
+    centered: bool = False
     brightness: draw_float(min_value=0.0, max_value=4.0) = 1.0
     contrast: draw_float(min_value=0.1, max_value=4.0) = 1.0
     density: draw_float(min_value=0.5, max_value=30.0) = 8.0
@@ -402,6 +417,23 @@ _TURBO = [
 ]
 
 
+def _seismic(v):
+    """Diverging blue-white-red with dark ends (matplotlib's seismic) —
+    strong negative coverage: zero is white, sign maps to hue, magnitude
+    to saturation/darkness. Pair with params.centered."""
+    if v < 0.25:
+        t = v / 0.25
+        return (0.0, 0.0, 0.3 + 0.7 * t)
+    if v < 0.5:
+        t = (v - 0.25) / 0.25
+        return (t, t, 1.0)
+    if v < 0.75:
+        t = (v - 0.5) / 0.25
+        return (1.0, 1.0 - t, 1.0 - t)
+    t = (v - 0.75) / 0.25
+    return (1.0 - 0.5 * t, 0.0, 0.0)
+
+
 def _coolwarm(v):
     """Cool-to-warm diverging ramp: blue → near-white → red."""
     if v < 0.5:
@@ -424,6 +456,7 @@ LUTS = {
     "grey": _bake_lut(lambda v: (v, v, v)),
     "hot": _bake_lut(lambda v: (3.0 * v, 3.0 * v - 1.0, 3.0 * v - 2.0)),
     "coolwarm": _bake_lut(_coolwarm),
+    "seismic": _bake_lut(_seismic),
 }
 
 # Host-converted 1-D textures by LUT name - module-level (hotswap-reused) so
@@ -474,6 +507,8 @@ class VoxelAxes(DictConversion):
         self.z_dim = -1
         self.slice_indices = []
         self.mean_dims = []  # dims averaged over instead of scrubbed
+        self.sort_dim = -1   # sort slices along this tensor dim (-1 = off)
+        self.normalize = False   # min-max normalize the DISPLAYED volume
         # Neural flow: post-slice, chop one TENSOR DIM into `nf_chunk`-wide
         # blocks laid group-major along another - the old viewer's trick for
         # making weird high dims (Feature 4096) viewable as a volume.
@@ -490,6 +525,10 @@ class VoxelAxes(DictConversion):
         same-rank shape change so user names/mapping survive resizes."""
         if not hasattr(self, "mean_dims"):
             self.mean_dims = []  # instances from before the field existed
+        if not hasattr(self, "sort_dim"):
+            self.sort_dim = -1
+        if not hasattr(self, "normalize"):
+            self.normalize = False
         if not hasattr(self, "nf_chop_dim"):
             # migrate pre-dim-relative instances: resolve the old display-axis
             # defaults through the CURRENT mapping once, then stay dim-pinned
@@ -508,6 +547,8 @@ class VoxelAxes(DictConversion):
         for attr in ("x_dim", "y_dim", "z_dim"):
             if getattr(self, attr) >= n:
                 setattr(self, attr, n - 1)
+        if self.sort_dim >= n:
+            self.sort_dim = -1
         if not (0 <= self.nf_chop_dim < n):
             self.nf_chop_dim = self.x_dim
         if not (0 <= self.nf_along_dim < n):
@@ -525,6 +566,7 @@ class VoxelAxes(DictConversion):
     def signature(self):
         return (self.x_dim, self.y_dim, self.z_dim, tuple(self.slice_indices),
                 tuple(getattr(self, "mean_dims", ())),
+                getattr(self, "sort_dim", -1), getattr(self, "normalize", False),
                 self.nf_on, getattr(self, "nf_chop_dim", -1),
                 getattr(self, "nf_along_dim", -1), self.nf_chunk)
 
@@ -604,6 +646,12 @@ def voxel_io(input_value=None, gl_state: GLState = None, view_func=None,
     else:
         t = source
 
+    # Sort runs on the FULL tensor (dim-pinned, like neural flow): values
+    # sort independently in the chosen dim's size, old-viewer style.
+    sort_dim = getattr(axes, "sort_dim", -1)
+    if 0 <= sort_dim < t.dim():
+        t = torch.sort(t.detach(), dim=sort_dim, descending=True).values
+
     t3 = slice_by_axes(t, axes)
     if axes.nf_on:
         # The flow is pinned to TENSOR DIMS; resolve to display axes here.
@@ -613,6 +661,15 @@ def voxel_io(input_value=None, gl_state: GLState = None, view_func=None,
         along = dim_to_axis.get(getattr(axes, "nf_along_dim", -1))
         if chop and along and chop != along:
             t3 = neural_flow_volume(t3, chop, along, axes.nf_chunk)
+    if getattr(axes, "normalize", False):
+        # Over the DISPLAYED volume: signed data scales by signed-magnitude so
+        # zero stays anchored (pairs with params.centered + a diverging
+        # LUT); all-positive data min-max stretches to [0, 1].
+        lo, hi = t3.min(), t3.max()
+        if lo < 0:
+            t3 = t3 / (torch.maximum(hi.abs(), lo.abs()) + 1e-12)
+        else:
+            t3 = (t3 - lo) / (hi - lo + 1e-12)
     base = "demo" if demo else (id(source), getattr(source, "_version", 0))
     version = (base, axes.signature())
 
@@ -789,8 +846,8 @@ def _draw_axis_lines(draw_list, img_pos, corners, silhouette):
         pa, pb = corners[a], corners[b]
         dx, dy = pb[0] - pa[0], pb[1] - pa[1]
         length = math.hypot(dx, dy)
-        if length < 2.0:
-            continue
+        if length < 0.5:
+            continue   # zero-area edge: nothing to draw, skip the div
         # Short edges shorten proportionally instead of vanishing - the
         # outline only ever skips sub-2px degenerates.
         shorten = min(_EDGE_SHORTEN_PX, length * 0.25)
@@ -844,8 +901,9 @@ def _billboard_specs(silhouette, corners, axis_display, volume_scale,
     without reversing the reading direction), then a 180° spin makes text
     read left-to-right, or bottom-to-top on near-vertical edges. The offset
     always rides the UNFLIPPED outward direction, so labels never land
-    inside the box. Projected-length gates match the outline: <32px no
-    furniture, <70px no ticks."""
+    inside the box. Nothing hides by projected size any more — the
+    face-visibility silhouette already culls truly invisible edges, and
+    _tick_values degrades to just 0/max on short edges."""
     name_off = name_padding + name_size * 0.5  # anchor -> label CENTER
     num_off = num_padding + num_size * 0.5
     # tick label slant (optional, not the label plane - matplotlib-style)
@@ -864,8 +922,8 @@ def _billboard_specs(silhouette, corners, axis_display, volume_scale,
             a, b = b, a  # a is the texcoord-0 end
         pa, pb = corners[a], corners[b]
         px_len = math.hypot(pb[0] - pa[0], pb[1] - pa[1])
-        if px_len < 8.0:
-            continue   # only true degenerates (pointy depth edges) hide
+        if px_len < 0.5:
+            continue   # zero-area edge: direction math requires a length
         name, size = axis_display[k]
         a3 = tuple(a[i] * volume_scale[i] for i in range(3))
         b3 = tuple(b[i] * volume_scale[i] for i in range(3))
@@ -904,7 +962,7 @@ def _billboard_specs(silhouette, corners, axis_display, volume_scale,
 
         if name_size > 0:
             specs.append((name, mid, u, v, out, name_size, name_off, name_opacity))
-        if num_size > 0 and px_len >= 24.0 and size > 0:
+        if num_size > 0 and size > 0:
             # Ticks convert into the VISIBLE line span (edges draw shortened
             # adaptively per end), so 0 sits at the edge's start and the max
             # value at its end instead of out at the corners. _tick_values
@@ -1045,6 +1103,22 @@ def _draw_axis_controls(axes: VoxelAxes):
             axes.slice_indices[d] = value
             changed = True
 
+    # ── normalize + sort: data transforms, dim-pinned like the others ─────
+    norm_changed, axes.normalize = imgui.checkbox(
+        "normalize##norm", getattr(axes, "normalize", False))
+    changed = changed or norm_changed
+    imgui.same_line()
+    imgui.text("sort:")
+    imgui.same_line()
+    if imgui.radio_button("off##sort_off", getattr(axes, "sort_dim", -1) == -1):
+        axes.sort_dim = -1
+        changed = True
+    for d, dim_name in enumerate(axes.dim_names):
+        imgui.same_line()
+        if imgui.radio_button(f"{dim_name}##sort_{d}", getattr(axes, "sort_dim", -1) == d):
+            axes.sort_dim = d
+            changed = True
+
     # ── neural flow: chop one tensor dim into chunks laid along another
     # (dim-pinned: remapping x/y/z never changes which dim gets chopped;
     # only currently-displayed dims are offered, since the flow operates on
@@ -1138,7 +1212,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                 params: VoxelParams = None, draw_state=None,
                 name_size=28.0, name_padding=30.1, name_opacity=1.1,
                 num_size=17.1, num_padding=5.5, num_opacity=0.8,
-                num_spacing=1.0, num_angle=0.0, step_size=0.004,
+                num_spacing=1.0, num_angle=0.0, step_size=0.0002,
                 middle_mouse_drag=None, right_mouse_drag=None,
                 scroll_y_changed=None, left_mouse_double_clicked=None,
                 kp_7_pressed=None, kp_1_pressed=None, kp_3_pressed=None,
@@ -1183,7 +1257,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
         elif middle_mouse_drag.ctrl:
             # the old viewer's ctrl-drag: vertical = dolly zoom, horizontal
             # still orbits.
-            params.zoom = min(49.1, max(0.3, params.zoom * math.exp(0.005 * middle_mouse_drag.dy)))
+            params.zoom = min(137.6, max(0.0, params.zoom * math.exp(0.005 * middle_mouse_drag.dy)))
             params.spin -= middle_mouse_drag.dx * 0.008
         else:
             params.spin -= middle_mouse_drag.dx * 0.008
@@ -1195,7 +1269,8 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
         params.brightness = min(4.0, max(0.0, params.brightness + right_mouse_drag.dx * 0.01))
         params.contrast = min(4.0, max(0.1, params.contrast - right_mouse_drag.dy * 0.008))
     if scroll_y_changed is not None:
-        params.zoom = min(49.1, max(0.3, params.zoom * math.exp(-0.23 * scroll_y_changed.value)))
+        params.zoom = min(135.5
+        , max(0.0, params.zoom * math.exp(-0.23 * scroll_y_changed.value)))
 
     # ── Blender-style numpad views (hover-routed key events): 7/1/3 = top/
     # front/right, ctrl = the opposite side, 5 = ortho toggle, / (either
