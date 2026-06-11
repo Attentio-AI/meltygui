@@ -500,7 +500,7 @@ class VoxelAxes(DictConversion):
 
     def __init__(self):
         super().__init__()
-        self.dim_names = []
+        self.dim_names = ["layer", "batch", "token", "feature"]
         self.dim_sizes = []
         self.x_dim = -1
         self.y_dim = -1
@@ -520,9 +520,13 @@ class VoxelAxes(DictConversion):
         self.nf_chunk = 128
 
     def sync(self, shape):
-        """Fit state to a tensor shape. Re-derive on ndim change (defaults:
-        last three dims → z/y/x, like the old viewer); only clamp on a
-        same-rank shape change so user names/mapping survive resizes."""
+        """Fit state to a tensor shape. STRUCTURAL state (slice indices,
+        x/y/z mapping) re-derives when the RANK changes (defaults: last
+        three dims → z/y/x, like the old viewer) and only clamps on a
+        same-rank resize. `dim_names` is a free-form user label list — it
+        may be LONGER than the tensor (extra names simply wait for a bigger
+        tensor) and is padded with dimN when shorter, but NEVER reset, so
+        provided names survive rebinds across shapes."""
         if not hasattr(self, "mean_dims"):
             self.mean_dims = []  # instances from before the field existed
         if not hasattr(self, "sort_dim"):
@@ -535,11 +539,12 @@ class VoxelAxes(DictConversion):
             self.nf_chop_dim = getattr(self, getattr(self, "nf_chop", "x") + "_dim", -1)
             self.nf_along_dim = getattr(self, getattr(self, "nf_along", "z") + "_dim", -1)
         n = len(shape)
-        if len(self.dim_names) != n:
-            self.dim_names = [f"dim{i}" for i in range(n)]
+        if len(self.slice_indices) != n:   # rank changed - names stay
             self.z_dim, self.y_dim, self.x_dim = max(0, n - 3), max(0, n - 2), n - 1
             self.slice_indices = [0] * n
             self.mean_dims = []
+        if len(self.dim_names) < n:
+            self.dim_names = list(self.dim_names) + [f"dim{i}" for i in range(len(self.dim_names), n)]
         self.mean_dims = [d for d in self.mean_dims if d < n]
         self.dim_sizes = list(shape)
         for d in range(n):
@@ -571,9 +576,10 @@ class VoxelAxes(DictConversion):
                 getattr(self, "nf_along_dim", -1), self.nf_chunk)
 
     def scrub_dims(self):
-        """Dims not mapped to a display axis — these get index scrubbers."""
+        """Dims not mapped to a display axis — these get index scrubbers.
+        Ranges over the TENSOR's dims (dim_names may be longer)."""
         shown = {self.x_dim, self.y_dim, self.z_dim}
-        return [d for d in range(len(self.dim_names)) if d not in shown]
+        return [d for d in range(len(self.dim_sizes)) if d not in shown]
 
 
 def slice_by_axes(t, axes: VoxelAxes):
@@ -744,7 +750,7 @@ def lut_io(input_value=None, gl_state: GLState = None, view_func=None,
         imgui.text(f"{name} ({n})")
     if view_func is None:
         return False, input_value
-    return view_func(input_value=input_value, external_change=external_change, **kwargs)
+    return view_func(input_value=input_value, **kwargs)
 
 
 def _silhouette_edges(corners):
@@ -1070,9 +1076,10 @@ def _draw_axis_controls(axes: VoxelAxes):
     """The remap UI: a radio row per display axis (one option per named dim,
     conflict swaps), index scrubbers for unmapped dims, editable names."""
     changed = False
+    n_dims = len(axes.dim_sizes)   # dim_names may be longer than the tensor
     for label, attr in (("x", "x_dim"), ("y", "y_dim"), ("z", "z_dim")):
         imgui.text(f"{label}:")
-        for d, dim_name in enumerate(axes.dim_names):
+        for d, dim_name in enumerate(axes.dim_names[:n_dims]):
             imgui.same_line()
             if imgui.radio_button(f"{dim_name}##axis_{label}_{d}",
                                   getattr(axes, attr) == d):
@@ -1113,7 +1120,7 @@ def _draw_axis_controls(axes: VoxelAxes):
     if imgui.radio_button("off##sort_off", getattr(axes, "sort_dim", -1) == -1):
         axes.sort_dim = -1
         changed = True
-    for d, dim_name in enumerate(axes.dim_names):
+    for d, dim_name in enumerate(axes.dim_names[:n_dims]):
         imgui.same_line()
         if imgui.radio_button(f"{dim_name}##sort_{d}", getattr(axes, "sort_dim", -1) == d):
             axes.sort_dim = d
@@ -1188,9 +1195,11 @@ def draw_voxel_controls(input_value=None, params=None, draw_state=None,
             changed = True
         names_changed, new_names = draw_any(axes.dim_names, name="dim names",
                                             initial={"expanded": True},
-                                            show_add_delete=False, shadow=False)
-        if names_changed and isinstance(new_names, list) and len(new_names) == len(axes.dim_names):
-            axes.dim_names = [str(n) for n in new_names]
+                                            shadow=False)
+        if names_changed and isinstance(new_names, list):
+            # Any length goes: extra names are for the labels, missing
+            # ones pad back to dimN on the next sync.
+            axes.dim_names = [str(x) for x in new_names]
             _wake_io(axes)  # labels (axis_display) are built by the io
             changed = True
 
