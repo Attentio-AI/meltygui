@@ -474,12 +474,14 @@ class VoxelAxes(DictConversion):
         self.z_dim = -1
         self.slice_indices = []
         self.mean_dims = []  # dims averaged over instead of scrubbed
-        # Neural flow: post-slice, chop one DISPLAY axis into `nf_chunk`-wide
+        # Neural flow: post-slice, chop one TENSOR DIM into `nf_chunk`-wide
         # blocks laid group-major along another - the old viewer's trick for
         # making weird high dims (Feature 4096) viewable as a volume.
+        # Keyed by tensor dim (not display axis) so remapping x/y/z never
+        # changes WHICH dim gets chopped; -1 = derive defaults on sync.
         self.nf_on = False
-        self.nf_chop = "x"
-        self.nf_along = "z"
+        self.nf_chop_dim = -1
+        self.nf_along_dim = -1
         self.nf_chunk = 128
 
     def sync(self, shape):
@@ -488,6 +490,11 @@ class VoxelAxes(DictConversion):
         same-rank shape change so user names/mapping survive resizes."""
         if not hasattr(self, "mean_dims"):
             self.mean_dims = []  # instances from before the field existed
+        if not hasattr(self, "nf_chop_dim"):
+            # migrate pre-dim-relative instances: resolve the old display-axis
+            # defaults through the CURRENT mapping once, then stay dim-pinned
+            self.nf_chop_dim = getattr(self, getattr(self, "nf_chop", "x") + "_dim", -1)
+            self.nf_along_dim = getattr(self, getattr(self, "nf_along", "z") + "_dim", -1)
         n = len(shape)
         if len(self.dim_names) != n:
             self.dim_names = [f"dim{i}" for i in range(n)]
@@ -501,6 +508,10 @@ class VoxelAxes(DictConversion):
         for attr in ("x_dim", "y_dim", "z_dim"):
             if getattr(self, attr) >= n:
                 setattr(self, attr, n - 1)
+        if not (0 <= self.nf_chop_dim < n):
+            self.nf_chop_dim = self.x_dim
+        if not (0 <= self.nf_along_dim < n):
+            self.nf_along_dim = self.z_dim
 
     def assign(self, axis, dim):
         """Point a display axis at a tensor dim, swapping with whichever axis
@@ -514,7 +525,8 @@ class VoxelAxes(DictConversion):
     def signature(self):
         return (self.x_dim, self.y_dim, self.z_dim, tuple(self.slice_indices),
                 tuple(getattr(self, "mean_dims", ())),
-                self.nf_on, self.nf_chop, self.nf_along, self.nf_chunk)
+                self.nf_on, getattr(self, "nf_chop_dim", -1),
+                getattr(self, "nf_along_dim", -1), self.nf_chunk)
 
     def scrub_dims(self):
         """Dims not mapped to a display axis — these get index scrubbers."""
@@ -594,7 +606,13 @@ def voxel_io(input_value=None, gl_state: GLState = None, view_func=None,
 
     t3 = slice_by_axes(t, axes)
     if axes.nf_on:
-        t3 = neural_flow_volume(t3, axes.nf_chop, axes.nf_along, axes.nf_chunk)
+        # The flow is pinned to TENSOR DIMS; resolve to display axes here.
+        # A chop/along dim that isn't currently displayed makes this a no-op.
+        dim_to_axis = {axes.x_dim: "x", axes.y_dim: "y", axes.z_dim: "z"}
+        chop = dim_to_axis.get(getattr(axes, "nf_chop_dim", -1))
+        along = dim_to_axis.get(getattr(axes, "nf_along_dim", -1))
+        if chop and along and chop != along:
+            t3 = neural_flow_volume(t3, chop, along, axes.nf_chunk)
     base = "demo" if demo else (id(source), getattr(source, "_version", 0))
     version = (base, axes.signature())
 
@@ -623,12 +641,12 @@ def voxel_io(input_value=None, gl_state: GLState = None, view_func=None,
     display = []
     for axis, dim in (("x", axes.x_dim), ("y", axes.y_dim), ("z", axes.z_dim)):
         label = axes.dim_names[dim] if dim < len(axes.dim_names) else axis
-        if axes.nf_on and axis == axes.nf_chop:
+        if axes.nf_on and dim == getattr(axes, "nf_chop_dim", -1):
             label = f"{label} % {axes.nf_chunk}"  # chopped into blocks
-        elif axes.nf_on and axis == axes.nf_along:
-            chop_dim = getattr(axes, axes.nf_chop + "_dim")
+        elif axes.nf_on and dim == getattr(axes, "nf_along_dim", -1):
+            chop_dim = getattr(axes, "nf_chop_dim", -1)
             chop_name = (axes.dim_names[chop_dim]
-                         if chop_dim < len(axes.dim_names) else axes.nf_chop)
+                         if 0 <= chop_dim < len(axes.dim_names) else "?")
             label = f"{label} · {chop_name}"  # along the blocks
         display.append((label, int(t3.shape[_AXIS_POS[axis]])))
     tex.axis_display = tuple(display)
@@ -1027,17 +1045,23 @@ def _draw_axis_controls(axes: VoxelAxes):
             axes.slice_indices[d] = value
             changed = True
 
-    # ── neural flow: chop a display axis into chunks laid along another ──
+    # ── neural flow: chop one tensor dim into chunks laid along another
+    # (dim-pinned: remapping x/y/z never changes which dim gets chopped;
+    # only currently-displayed dims are offered, since the flow operates on
+    # the sliced display volume) ─────────────────────────────────────────
     nf_changed, axes.nf_on = imgui.checkbox("neural flow##nf", axes.nf_on)
     changed = changed or nf_changed
     if axes.nf_on:
-        for label, attr in (("chop", "nf_chop"), ("along", "nf_along")):
+        shown = [d for d in (axes.x_dim, axes.y_dim, axes.z_dim)
+                 if 0 <= d < len(axes.dim_names)]
+        for label, attr in (("chop", "nf_chop_dim"), ("along", "nf_along_dim")):
             imgui.same_line()
             imgui.text(f"{label}:")
-            for axis in ("x", "y", "z"):
+            for d in shown:
                 imgui.same_line()
-                if imgui.radio_button(f"{axis}##{attr}", getattr(axes, attr) == axis):
-                    setattr(axes, attr, axis)
+                if imgui.radio_button(f"{axes.dim_names[d]}##{attr}_{d}",
+                                      getattr(axes, attr, -1) == d):
+                    setattr(axes, attr, d)
                     changed = True
         imgui.same_line()
         imgui.push_item_width(110)
