@@ -26,6 +26,7 @@ import re
 import weakref
 
 import imgui
+from imgui.core import _DrawList
 
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_conversion.live_view import (
@@ -116,14 +117,14 @@ def draw_live_view_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
                           editor_ds=draw_state)
 
 
-@render_func(use_cache=True, show_bg=False, shadow=False, with_header=None,
+@render_func(use_cache=False, show_bg=False, shadow=False, with_header=None,
              show_name=False, selectable=False, disable_scroll=True, wrap=True,
-             z_offset=3, max_height=32)
+             z_offset=4, max_height=32)
 def draw_live_view_marker(input_value, draw_state=None, editor_ds=None,
-                          auto_open=True, child_kwargs=None, indent_size=30,
+                          auto_open=True, child_kwargs=None, corner_radius=4.0,
                           left_mouse_down=False, left_mouse_held=False,
                           **kwargs):
-    """The anchor box around the symbol being visualized: a rounded outline
+    """The anchor box around the symbol being visualized: a plain rect
     over the live_view call / captured assignment — green when a value has
     been captured, dim when the site hasn't run yet. Click toggles the value
     window. The box's pixel size rides on the handle (`handle.box_w/h`, set
@@ -160,13 +161,9 @@ def draw_live_view_marker(input_value, draw_state=None, editor_ds=None,
         base = (0.45, 0.45, 0.45)
     if hovered:
         base = tuple(min(1.0, c + 0.18) for c in base)
-    dl = imgui.get_window_draw_list()
-    if open_now:
-        dl.add_rect_filled(x, y, x + w, y + h,
-                           imgui.get_color_u32_rgba(*base, 0.10), 4.0)
+    dl: _DrawList = imgui.get_window_draw_list()
     dl.add_rect(x, y, x + w, y + h,
-                imgui.get_color_u32_rgba(*base, 0.9 if open_now else 0.6),
-                4.0, thickness=1.3)
+                imgui.get_color_u32_rgba(*base, 0.9 if open_now else 0.6), rounding=corner_radius)
     imgui.dummy(w, h)
 
     # The user X-ing the window directly must beat our open flag. Detect it
@@ -307,6 +304,11 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
             override_path = f"__{key_path[-1]}__"
             if override_path in node['locals']["__overrides__"]:
                 overrides = dict(node['locals']["__overrides__"][override_path])
+        # Overrides go ONLY in child_kwargs (for the value window's view) -
+        # never splat them onto the marker itself: they're view params
+        # (tint/show_bg/dim_names/nf_format), and show_bg=True in a dark theme
+        # makes the marker's wrapper paint an opaque bg over the very symbol
+        # it boxes (the symbol inside the rect disappears).
         draw_live_view_marker(
             LiveHandle(fn, key_path,
                        box_w=max(1, end_col - start_col) * char_w + 2 * pad,
@@ -314,7 +316,7 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
             name=f"lvs::{draw_state.id}::{fn.__qualname__}::"
                  f"{'/'.join(key_path)}",
             editor_ds=draw_state, auto_open=is_volume(lv.value),
-            child_kwargs=overrides, **overrides)
+            child_kwargs=overrides)
 
 
 def _scope_function(filename, def_line):
@@ -407,7 +409,8 @@ def live_view_forward(input_value=None, draw_state=None, **kwargs):
 @render_func(use_cache=True, show_bg=False, shadow=False, selectable=False,
              with_header=None, show_name=False)
 def draw_function_live(input_value, draw_state=None, unique=None,
-                       source_mode=None, column_edges=None, **kwargs):
+                       source_mode=None, column_edges=None, run_in_thread=True,
+                       **kwargs):
     """draw_function with transparent instrumentation, source side by side:
     the instrumented twin (live_instrument) runs AUTOMATICALLY — on first
     view, on every hotswap (id(fn.__code__) is the auto_run token, so a save
@@ -415,6 +418,13 @@ def draw_function_live(input_value, draw_state=None, unique=None,
     assignment publishes one snapshot to the ORIGINAL function's store, and
     the editor column shows the ORIGINAL code with the snapshot overlay
     anchoring each captured value at its line.
+
+    `run_in_thread=True` (the default) runs the twin on a worker so a long
+    pass (live_view_forward's full forward pass) never blocks the render
+    loop. The live views need no special handling for this: each publish
+    invalidates its watcher draw_states from the worker and wakes the loop
+    (the terminal-reader pattern in live_view._notify_watchers), and all
+    window rendering / voxel uploads happen on the GL thread next frame.
 
     `source_mode` picks the source column's route: FILE_TREE (the default)
     is the text-only editor; NEW_CODE is the full code_file_io display —
@@ -453,7 +463,7 @@ def draw_function_live(input_value, draw_state=None, unique=None,
     inner_h = avail - 2 * cols.padding
     with cols.cell(0, height=avail) as col_w:
         draw_function(_run_proxy(fn), height=inner_h, width=col_w,
-                      name=f"{fn.__name__} runner")
+                      name=f"{fn.__name__} runner", run_in_thread=run_in_thread)
     with cols.cell(1, height=avail) as col_w:
         draw_any(fn, mode=source_mode or Mode.FILE_TREE, height=inner_h,
                  width=col_w, name=f"{fn.__name__} live source",

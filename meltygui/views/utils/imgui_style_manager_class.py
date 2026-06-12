@@ -66,12 +66,24 @@ class ImGuiStyleManager:
     def set_root(self, root):
         self.root = root
 
+    @staticmethod
+    def _safe_rgb_to_hsv(r, g, b):
+        # colorsys.rgb_to_hsv divides by max(r, g, b); slightly out-of-range
+        # channels (e.g. a computed bleed tint like (0.0, -0.005, -0.009))
+        # hit ZeroDivisionError, so clamp every channel into [0, 1] first.
+        def clamp(c):
+            try:
+                c = float(c)
+            except (TypeError, ValueError):
+                return 0.0
+            if c != c:  # NaN
+                return 0.0
+            return min(1.0, max(0.0, c))
+
+        return colorsys.rgb_to_hsv(clamp(r), clamp(g), clamp(b))
+
     def make_custom_styled(self, r, g, b, input, alpha=1.0, value=0.5, saturation=None):
-        try:
-            h, s, v = colorsys.rgb_to_hsv(r, g, b)
-        except:
-            print(f"Error converting RGB to HSV for color ({r}, {g}, {b})")
-            h, s, v = 0.1, 0.1, 0.1
+        h, s, v = self._safe_rgb_to_hsv(r, g, b)
         value = input["value"] + value
 
         if saturation is not None:
@@ -86,7 +98,7 @@ class ImGuiStyleManager:
         return (modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
 
     def make_custom(self, r, g, b, value, saturation_scale=1.0, alpha=1.0):
-        h, s, v = colorsys.rgb_to_hsv(r, g, b)
+        h, s, v = self._safe_rgb_to_hsv(r, g, b)
         modified_rgb = colorsys.hsv_to_rgb(h, s * saturation_scale, value)
         imgui_color = imgui.get_color_u32_rgba(modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
 
@@ -351,7 +363,7 @@ class ImGuiStyleManager:
             b = b * a + pb * (1.0 - a)
 
         self.current_rgb = (r, g, b)
-        h, s, v = colorsys.rgb_to_hsv(r, g, b)
+        h, s, v = self._safe_rgb_to_hsv(r, g, b)
         self.hsv = (h, s, v)
         style = imgui.get_style()
         colors = style.colors

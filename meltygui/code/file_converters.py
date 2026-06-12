@@ -871,6 +871,11 @@ def _hotswap_class(old_cls: type, new_cls: type) -> None:
     for name in list(vars(old_cls)):
         if name.startswith("__") and name.endswith("__"):
             continue
+        if isinstance(vars(old_cls).get(name), types.MemberDescriptorType):
+            # Slot descriptor: deleting it or removing the slot breaks every live
+            # instance (AttributeError on access) - the descriptor can't be
+            # removed in place anyway.
+            continue
         if name not in vars(new_cls):
             try:
                 delattr(old_cls, name)
@@ -882,6 +887,15 @@ def _hotswap_class(old_cls: type, new_cls: type) -> None:
             continue
 
         old_val = vars(old_cls).get(name)
+
+        if (isinstance(new_val, types.MemberDescriptorType)
+                or isinstance(old_val, types.MemberDescriptorType)):
+            # Slot descriptors are tied to their defining class. Copying the
+            # new class's onto the old one makes EVERY slot access on existing
+            # instances raise "descriptor doesn't apply" (the stale-LiveHandle
+            # crash). The old class keeps its own descriptors - the slot
+            # layout can't change in place.
+            continue
 
         if (isinstance(old_val, types.FunctionType)
                 and isinstance(new_val, types.FunctionType)):

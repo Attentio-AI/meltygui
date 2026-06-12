@@ -480,7 +480,7 @@ def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
                       max_str_len=200, max_items=5, max_depth=2, max_output=200,
                       exception=None, e=None, section=None, group=None, file=None,
                       print_args=True,
-                      ignore_functions=("wrapper", "draw_any", "draw_state._view_func", "draw_inner_main")):
+                      ignore_functions=("wrapper")):
     """
     Print a stack trace with optional variable watching.
 
@@ -542,7 +542,7 @@ def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
     if size is not None:
         frames = frames[-size:]
 
-    watch_paths = watch if watch else []
+    watch_paths = list(watch) if watch else []
     watch_paths.append("watch")
 
     if group and section:
@@ -627,14 +627,25 @@ def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
                 effective_watches.extend(watch_paths)
 
                 for expr in effective_watches:
-                    row = _resolve_watch(expr, filename, lineno, local_vars,
-                                         max_str_len, max_items, max_depth, max_output)
+                    # A watch resolves against live objects (truncate, repr,
+                    # pformat) and can throw on any of them - one bad value
+                    # must cost its row, not the whole trace.
+                    try:
+                        row = _resolve_watch(expr, filename, lineno, local_vars,
+                                             max_str_len, max_items, max_depth, max_output)
+                    except Exception as watch_err:
+                        row = (_highlight_inline(expr), f"{_DIM}?{_RESET}",
+                               f"{_RED}<unprintable {type(watch_err).__name__}: {watch_err}>{_RESET}",
+                               _make_link(filename, lineno))
                     if row is not None:
                         table_rows.append(row)
 
             if table_rows:
-                buf.write(_render_watch_table(file_line, code_line, table_rows,
-                                              error=is_error_frame))
+                try:
+                    buf.write(_render_watch_table(file_line, code_line, table_rows,
+                                                  error=is_error_frame))
+                except Exception:
+                    buf.write(_render_frame_simple(file_line, code_line, table_rows))
             else:
                 buf.write(f"  {file_line}\n")
                 if code_line:
@@ -894,7 +905,18 @@ def _truncate(value, max_str_len=120, max_items=5, max_depth=3, _current_depth=0
         remaining = len(items) - show
         if remaining > 0:
             truncated.append(f"\u2026+{remaining}")
-        return type(value)(truncated) if isinstance(value, tuple) else truncated
+        if not isinstance(value, tuple):
+            return truncated
+        try:
+            # namedtuples take positional fields, not an iterable \u2014 and a
+            # truncated one no longer has the right arity at all
+            if hasattr(value, '_fields'):
+                if len(truncated) == len(value):
+                    return type(value)(*truncated)
+                return tuple(truncated)
+            return type(value)(truncated)
+        except Exception:
+            return tuple(truncated)
     if isinstance(value, (set, frozenset)):
         items = list(value)
         show = max_items or len(items)

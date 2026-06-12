@@ -794,6 +794,20 @@ from src.lsd.gl_gui.view.core_views.live_view_views import install_token_views a
 _install_live_view_tv(DEFAULT_TOKEN_VIEWS)
 
 
+def _parse_col_shift(buffer_text, parse_source):
+    """Uniform column delta between the rendered buffer and the parse's own
+    source: the code-host route parses function spans DEDENTED while the
+    buffer keeps the file's indent, so every span col sits that many cells
+    left of its glyph. Compared on the first line that's non-blank in both;
+    0 when the sources agree (whole-file editors)."""
+    if not parse_source or parse_source is buffer_text:
+        return 0
+    for a, b in zip(buffer_text.split('\n', 50), parse_source.split('\n', 50)):
+        if a.strip() and b.strip():
+            return (len(a) - len(a.lstrip())) - (len(b) - len(b.lstrip()))
+    return 0
+
+
 def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, char_w, ds,
                           line_offset=0, jump_to=None):
     """Overlay pass for the TYPE-keyed entries of `token_views`: walk the code_tree
@@ -831,7 +845,13 @@ def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, c
         for v in node.values():
             walk(v, depth + 1)
 
+    # Cursor aware, like the inline token views: renderers position
+    # themselves with set_cursor_screen_pos (the live_view markers), so the
+    # caller's size-decaring area must measure from wherever the body left
+    # the cursor - just below the last marker drawn.
+    _save_cur = imgui.get_cursor_screen_pos()
     walk(code_tree)
+    imgui.set_cursor_screen_pos(_save_cur)
 
 
 # --- Symbol usages: highlight + double-click jump-to-caller -------------------
@@ -2969,7 +2989,12 @@ def draw_text(input_value: str,
     # so prefer code_dict when both are present; it's the node tree with spans.
     _tv_tree = code_dict if code_dict is not None else code_tree
     if token_views and _tv_tree is not None:
-        _draw_cst_token_views(_tv_tree, token_views, origin_x, origin_y, line_px, char_w, ds,
+        # Span cols are in the PARSE's coords (dedented on the code-host
+        # route); shift the origin by the indent delta so node overlays land
+        # on the glyphs, which use the buffer's file-indented chars.
+        _tv_shift = _parse_col_shift(text, getattr(_tv_tree, 'source', '') or '')
+        _draw_cst_token_views(_tv_tree, token_views, origin_x + _tv_shift * char_w,
+                              origin_y, line_px, char_w, ds,
                               line_offset=_usage_off, jump_to=jump_to)
 
     # --- Spell-check squiggles -------------------------------------------------

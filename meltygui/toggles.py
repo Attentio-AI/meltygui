@@ -152,15 +152,26 @@ class Swoosh:
     # (overlapping) fall back to the thin line, which knows how to route
     # around the overlap.
     ribbon = True              # global default: ribbon instead of the thin line
-    ribbon_coverage = 0.96      # each end's band width as a fraction of its shared edge
+    ribbon_coverage = 1.04      # each end's band width as a fraction of its own edge
                                 # (clamped at the full edge, so >=1 spans the edge)
     ribbon_max_width = 0     # px cap on either end's band width (0 = uncapped)
-    ribbon_curve = 0.23         # s-curve's reach as a fraction of the bridge length
-    ribbon_alpha = 0.29         # fill opacity of the band (at/below fade_width)
-    ribbon_fade_width = 328.2   # px band width where the fill starts thinning:
-                                # opacity scales as fade_width/width past it, so a
-                                # wide band spreads the same ink thinner (0 = off)
-    ribbon_edge_alpha = 0.24    # opacity of the band's two boundary strokes
+    ribbon_curve = 0.33         # s-curve tangent reach as a fraction of the gap the
+                                # ribbon spans (x for left-right, y for down)
+    ribbon_curve_across = 0.00  # how much of a side's CROSS-axis travel adds to that
+                                # reach - the offset matters less than the gap (0 = none at all)
+    ribbon_bow = -0.02            # single-sided bow: how far the band bulges through
+                                # the swerve, scaled by width/length so wide short
+                                # ribbons arc as one C and long thin ones keep the
+                                # S (negative = bow "in" against the swerve, 0 = off)
+    ribbon_bow_shape = 2.0      # bow profile exponent: <1 broad arc, >1 mid bulge
+    ribbon_alpha = 0.15         # fill opacity of the band (below the fade area)
+    ribbon_fade_size = 328.2    # px: the fill starts thinning once the band's AREA
+                                # exceeds fade_size x fade_size; alpha then scales
+                                # inversely with area (constant total ink, 0 = off)
+    ribbon_edge_alpha = 0.59    # opacity of the band's two boundary strokes
+    ribbon_edge_fade_length = 350.0  # px: each boundary stroke starts thinning once its
+                                # own arc length exceeds this; alpha scales inversely
+                                # with length, per stroke (0 = off)
     ribbon_edge_thickness = 1.4 # boundary stroke thickness in px (0 = no stroke/AA)
 
     # When the child overlaps the parent, slide both endpoints along their own
@@ -172,13 +183,13 @@ class Swoosh:
     intersect_hook = 24.0       # px the endpoints slide along the edge past the overlap
     intersect_soft = 50.0       # px of overlap depth over which to ease in from the plain cur
     overlap_padding = 20.0      # grow each rect by this so the transition starts before they touch
-    envelop_tie = 0.048          # enveloped child: near-tie window for the corner edge blend
+    envelop_tie = 0.04          # enveloped child: near-tie window for the round corner blend
                                 #   (0 = always flat edges, hard switch; 0.5 = always blending)
     envelop_corner = 0.25       # enveloped child: only round the corner when the nearer gap is
                                 # within this fraction of the parent's shorter side (else stay flat)
 
 
-@window(tint=(0.03, 0.17, 0.08))
+@window(tint=(0.71, 0.32, 0.13))
 class Toggles:
 
     @defaults(tint=(0.60, 0.55, 0.077))

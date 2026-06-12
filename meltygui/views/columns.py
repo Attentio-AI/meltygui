@@ -302,7 +302,7 @@ class ColumnLayout:
 
     def __init__(self, draw_state, n_cols, column_edges=None,
                  column_widths=None, left_edge=None, right_edge=None,
-                 resizable=True, padding=6.0, border_color=(0.0, 0.0, 0.0, 0.4)):
+                 resizable=True, padding=6.0, border_color=(0.0, 0.0, 0.0, 0.9)):
         self.draw_state = draw_state
         self.n_cols = n_cols
         n_lines = self.n_lines = n_cols + 1
@@ -390,6 +390,7 @@ class ColumnLayout:
                 drag = draw_state.on_action("left_mouse_drag",
                                             view_id=f"col_edge_{k}",
                                             rect=rect, priority_delta=1)
+
                 if not drag:
                     continue
                 self.active_edge = k

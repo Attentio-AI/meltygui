@@ -1,6 +1,7 @@
 import difflib
 import inspect
 import time
+import traceback
 import types
 import zlib
 from collections import defaultdict
@@ -3432,17 +3433,30 @@ def render_func(*args, **o_kwargs):
                 previous_exception = draw_state._stack_trace
                 if type(e) == type(previous_exception):
                     is_same_exception = True
-                    draw_state._stack_trace = e
+            if draw_state is not None:
+                draw_state._stack_trace = e
 
             if not is_same_exception:
-                with trace_group(f"Drawing {func.__name__} {draw_state.name}", hash=draw_state.unique) as g:
-                    watch = ["draw_state.name", "input_value", "convert_path", "clean_args.input_value", "func.__name__",
-                             "mode"]
-                    print_stack_trace(frames=get_live_frames(), section="UI Thread",
-                                      group=g, watch=watch)
-                    print_stack_trace(exception=e, section="Exception",
-                                      group=g, watch=watch)
-                    print_stack_trace(exception=e, ignore_functions=[])
+                # The fancy printer resolves watches against live objects and
+                # can itself throw. An escape here would land in the finally
+                # below, whose return DISCARDS the in-flight exception and the
+                # original trace would vanish without a sound. Fall back to a
+                # plain traceback, which cannot fail.
+                try:
+                    with trace_group(f"Drawing {func.__name__} {draw_state.name}", hash=draw_state.unique) as g:
+                        watch = ["draw_state.name", "input_value", "convert_path", "clean_args.input_value", "func.__name__",
+                                 "mode"]
+                        print_stack_trace(frames=get_live_frames(), section="UI Thread",
+                                          group=g, watch=watch)
+                        print_stack_trace(exception=e, section="Exception",
+                                          group=g, watch=watch)
+                        print_stack_trace(exception=e, ignore_functions=[])
+                except Exception as report_err:
+                    print(f"print_stack_trace failed, plain traceback for {func.__name__}:")
+                    traceback.print_exception(type(e), e, e.__traceback__)
+                    print("--- reporter's own failure ---")
+                    traceback.print_exception(type(report_err), report_err,
+                                              report_err.__traceback__)
             else:
                 print(f"Exception in {func.__name__}: {e}")
 

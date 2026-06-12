@@ -1620,18 +1620,21 @@ class Melty:
         pc = min(max(shared, p_lo + p_hw), p_hi - p_hw)
         cc = min(max(shared, c_lo + c_hw), c_hi - c_hw)
 
-        # Tangent reach of the boundary cubics: perpendicular to the edges at
-        # both ends, scaled with the band centers' distance (not just the
-        # gap) so the S stays smooth when the gap is small but the ends
-        # large. Signed so the tangents always point out of their view.
-        reach = Swoosh.ribbon_curve * math.hypot(ec - ep, cc - pc)
-        if ec < ep:
-            reach = -reach
-
         segments = max(2, int(Swoosh.segments))
-        sides = []
+        out = -1.0 if ec < ep else 1.0   # bridge direction out of the parent
+        raw = []
         for sign in (-1.0, 1.0):
             a0, a3 = pc + sign * p_hw, cc + sign * c_hw
+            # Tangent reach of this boundary cubic, perpendicular to the edges
+            # at both ends. The distance that matters is the ALONG-axis gap -
+            # a left-to-right ribbon curves with its x distance, a vertical
+            # one with its y distance. A side's across-axis travel (the offset
+            # it has to swerve) counts too, but with the much smaller
+            # ribbon_curve_across weight, so the two sides of a funnel still
+            # differ: the side travelling further bows a little deeper.
+            # Signed so the tangents always point out of their view.
+            reach = out * (Swoosh.ribbon_curve * abs(ec - ep)
+                           + Swoosh.ribbon_curve_across * abs(a3 - a0))
             pts = []
             for i in range(segments + 1):
                 t = i / segments
@@ -1640,8 +1643,33 @@ class Melty:
                          + 3 * u * t * t * (ec - reach) + t * t * t * ec)
                 across = (u * u * u * a0 + 3 * u * u * t * a0
                           + 3 * u * t * t * a3 + t * t * t * a3)
-                pts.append(pt(along, across))
-            sides.append(pts)
+                pts.append((along, across))
+            raw.append(pts)
+
+        # One-direction bow (bend-strip model): rather than the symmetric S,
+        # shift both edges the same way so the band reads as one arc - bent
+        # rubber keeps its width, it doesn't pinch. The direction is picked
+        # from the swerve itself: the bulge leads "out" toward the child's
+        # side (a negative ribbon_bow flips it "in" - hug the parent's level,
+        # then dive late). The amount is what the proportions tell you: a band
+        # much wider than it is long can't physically s-bend all that distance,
+        # so the bow scales with width/length (saturating at 1) and with the
+        # offset it has to absorb, while long thin ribbons keep the pure S.
+        # The bow is zero at the ends, so they stay pinned to the views.
+        bow = Swoosh.ribbon_bow
+        offset = cc - pc
+        length = abs(ec - ep)
+        if bow != 0.0 and abs(offset) > 1e-6 and length > 1e-6:
+            aspect = min(1.0, (p_hw + c_hw) / length)
+            amp = bow * offset * aspect   # signed: bulges with the swerve
+            shape = max(Swoosh.ribbon_bow_shape, 0.05)
+            sa, sb = raw
+            for i in range(1, segments):
+                t = i / segments
+                push = amp * (4.0 * t * (1.0 - t)) ** shape
+                sa[i] = (sa[i][0], sa[i][1] + push)
+                sb[i] = (sb[i][0], sb[i][1] + push)
+        sides = [[pt(al, ac) for al, ac in side] for side in raw]
 
         # Fill between the two boundary polylines; the band isn't convex, so
         # fill segment quads as triangle pairs. Per-triangle antialiasing is
@@ -1652,36 +1680,45 @@ class Melty:
         # shared vertices), and the band's outer edges are feathered by the
         # boundary strokes below instead.
         #
-        # With ribbon_fade_width the fill thins inversely with the local band
-        # width - a cross-section contains constant "ink", so a huge ribbon
-        # stays airy rather than overwhelming. Width varies along the funnel, so
-        # the alpha is per segment: the wide end fades more than the narrow
-        # end, graded smoothly over the tessellation. Strokes keep full
-        # strength.
+        # The band's opacity is a function of its AREA: total ink is what
+        # overwhelms, and area is a property of the whole ribbon, so one fade
+        # factor for the band - fill and edge strokes alike. Once the
+        # band's area exceeds ribbon_fade_size² (a fade_size × fade_size
+        # square) the factor scales inversely with area - constant total ink -
+        # so a huge sail washes out to a faint outline while a small tab
+        # keeps full ribbon_alpha / ribbon_edge_alpha.
         a, b = sides
-        fade = Swoosh.ribbon_fade_width
+        fade_f = 1.0
+        fade = Swoosh.ribbon_fade_size
+        if fade > 0.0:
+            # Shoelace area of the band polygon (side a forward, side b back).
+            poly = a + b[::-1]
+            n = len(poly)
+            area2 = 0.0
+            for i in range(n):
+                x0, y0 = poly[i]
+                x1, y1 = poly[(i + 1) % n]
+                area2 += x0 * y1 - x1 * y0
+            area = abs(area2) * 0.5
+            ref = fade * fade
+            if area > ref:
+                fade_f = ref / area
+        alpha = Swoosh.ribbon_alpha * fade_f
         # Gradient: `sides` runs parent (i=0) -> child (i=segments), so the
         # fill (and the boundary strokes below) lerp from the parent color to
         # the child color along the bridge. rgb2 None/equal means single color.
         grad = rgb2 is not None and tuple(rgb2[:3]) != tuple(rgb[:3])
         if rgb2 is None:
             rgb2 = rgb
-        fill = imgui.get_color_u32_rgba(*rgb, Swoosh.ribbon_alpha)
+        fill = imgui.get_color_u32_rgba(*rgb, alpha)
         dl_flags = overlay_dl.flags
         overlay_dl.flags = dl_flags & ~imgui.DRAW_LIST_ANTI_ALIASED_FILL
         try:
             for i in range(segments):
-                seg_rgb = (Melty._lerp_rgb(rgb, rgb2, (i + 0.5) / segments)
-                           if grad else rgb)
-                alpha = Swoosh.ribbon_alpha
-                if fade > 0.0:
-                    wmid = (math.hypot(b[i][0] - a[i][0], b[i][1] - a[i][1])
-                            + math.hypot(b[i + 1][0] - a[i + 1][0],
-                                         b[i + 1][1] - a[i + 1][1])) * 0.5
-                    if wmid > fade:
-                        alpha = Swoosh.ribbon_alpha * fade / wmid
-                if grad or fade > 0.0:
-                    fill = imgui.get_color_u32_rgba(*seg_rgb, alpha)
+                if grad:
+                    fill = imgui.get_color_u32_rgba(
+                        *Melty._lerp_rgb(rgb, rgb2, (i + 0.5) / segments),
+                        alpha)
                 overlay_dl.add_triangle_filled(a[i][0], a[i][1], b[i][0], b[i][1],
                                                a[i + 1][0], a[i + 1][1], fill)
                 overlay_dl.add_triangle_filled(b[i][0], b[i][1], b[i + 1][0], b[i + 1][1],
@@ -1691,28 +1728,42 @@ class Melty:
 
         # Stroke the boundary curves (add_polyline is antialiased) for
         # definition and to soften the hard triangle edges. The band's ends
-        # sit flush against the view edges, so no caps are needed.
+        # sit flush against the view edges, so no caps are needed. Each
+        # stroke fades with its OWN arc length (not the band's area): past
+        # ribbon_edge_fade_length px the alpha scales inversely with the
+        # length - constant ink along the wire - so a long sweeping edge
+        # thins out while a short hop stays crisp. The two sides fade
+        # independently - the short side of a funnel keeps its definition
+        # next to its long faded partner.
         if Swoosh.ribbon_edge_thickness > 0.0:
+            fade_len = Swoosh.ribbon_edge_fade_length
+            side_alpha = []
+            for pts in (a, b):
+                e_alpha = Swoosh.ribbon_edge_alpha
+                if fade_len > 0.0:
+                    ln = 0.0
+                    for i in range(len(pts) - 1):
+                        ln += math.hypot(pts[i + 1][0] - pts[i][0],
+                                         pts[i + 1][1] - pts[i][1])
+                    if ln > fade_len:
+                        e_alpha = Swoosh.ribbon_edge_alpha * fade_len / ln
+                side_alpha.append(e_alpha)
             if grad:
                 # Per-segment strokes carry the same gradient as the fill (a
                 # polyline is one color; consecutive segments share their
                 # endpoints, so the joints are tight).
                 for i in range(segments):
-                    edge = imgui.get_color_u32_rgba(
-                        *Melty._lerp_rgb(rgb, rgb2, (i + 0.5) / segments),
-                        Swoosh.ribbon_edge_alpha)
-                    overlay_dl.add_polyline([a[i], a[i + 1]], edge,
-                                            flags=imgui.DRAW_NONE,
-                                            thickness=Swoosh.ribbon_edge_thickness)
-                    overlay_dl.add_polyline([b[i], b[i + 1]], edge,
-                                            flags=imgui.DRAW_NONE,
-                                            thickness=Swoosh.ribbon_edge_thickness)
+                    seg_rgb = Melty._lerp_rgb(rgb, rgb2, (i + 0.5) / segments)
+                    for pts, e_alpha in ((a, side_alpha[0]), (b, side_alpha[1])):
+                        edge = imgui.get_color_u32_rgba(*seg_rgb, e_alpha)
+                        overlay_dl.add_polyline([pts[i], pts[i + 1]], edge,
+                                                flags=imgui.DRAW_NONE,
+                                                thickness=Swoosh.ribbon_edge_thickness)
             else:
-                edge = imgui.get_color_u32_rgba(*rgb, Swoosh.ribbon_edge_alpha)
-                overlay_dl.add_polyline(a, edge, flags=imgui.DRAW_NONE,
-                                        thickness=Swoosh.ribbon_edge_thickness)
-                overlay_dl.add_polyline(b, edge, flags=imgui.DRAW_NONE,
-                                        thickness=Swoosh.ribbon_edge_thickness)
+                for pts, e_alpha in ((a, side_alpha[0]), (b, side_alpha[1])):
+                    edge = imgui.get_color_u32_rgba(*rgb, e_alpha)
+                    overlay_dl.add_polyline(pts, edge, flags=imgui.DRAW_NONE,
+                                            thickness=Swoosh.ribbon_edge_thickness)
         return True
 
     @staticmethod

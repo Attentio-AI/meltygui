@@ -121,7 +121,7 @@ void main() {
         // 1-D texture the LUT host baked from a flat [r,g,b,...] float list
         // (the old jet() is now just the "jet" entry).
         v = (v - 0.5) * contrast + 0.5;
-        float d;
+        float m;   // opacity drive: the value, or its magnitude when centered
         if (centered) {
             // signed data: raw 0 sits at the LUT middle (pair with a
             // diverging LUT like seismic/coolwarm), brightness gains about
@@ -129,14 +129,24 @@ void main() {
             // as strongly as positives.
             v = 0.5 + (v - 0.5) * brightness;
             v = clamp(v, 0.0, 1.0);
-            d = clamp((abs(v - 0.5) * 2.0 - threshold) * density, 0.0, 1.0);
+            m = abs(v - 0.5) * 2.0;
         } else {
             v *= brightness;
             v = clamp(v, 0.0, 1.0);
-            d = clamp((v - threshold) * density, 0.0, 1.0);
+            m = v;
         }
-        if (d > 0.0) {
-            float a = d * seg * 60.0;
+        // The old viewer's transfer function: values at/above the gate
+        // (1 - threshold) are FULLY opaque — a hard isosurface — and below
+        // it opacity falls off as (m/gate)^4, scaled by density and the
+        // marched segment length (seg = step_size except the partial tail).
+        float gate = 1.0 - clamp(threshold, 0.0, 0.999);
+        float a;
+        if (m >= gate) {
+            a = 1.0;
+        } else {
+            a = clamp(pow(m / gate, 4.0) * density * seg * 50.0, 0.0, 1.0);
+        }
+        if (a > 0.0) {
             acc.rgb += (1.0 - acc.a) * a * texture(lut, v).rgb;
             acc.a   += (1.0 - acc.a) * a;
         }
@@ -150,8 +160,8 @@ void main() {
 @shader_func(fragment=VOXEL_FRAG)
 def voxel_pass(gl_state: GLState = None, tilt=0.5, spin=0.8, zoom=3.4,
                pan_x=0.0, pan_y=0.0, pan_z=0.0, ortho=False,
-               aspect=1.0, brightness=1.0, contrast=1.0, density=8.0,
-               threshold=0.12, step_size=0.004, centered=False,
+               aspect=1.0, brightness=1.0, contrast=1.0, density=1.0,
+               threshold=0.1, step_size=0.004, centered=False,
                volume=None, lut=None,
                volume_scale=(1.0, 1.0, 1.0), **kwargs):
     # Program bound, uniforms set - the body is just the draw call.
@@ -332,8 +342,10 @@ class VoxelParams(DictConversion):
     centered: bool = False
     brightness: draw_float(min_value=0.0, max_value=4.0) = 1.0
     contrast: draw_float(min_value=0.1, max_value=4.0) = 1.0
-    density: draw_float(min_value=0.5, max_value=30.0) = 8.0
-    threshold: draw_float(min_value=0.0, max_value=1.0) = 0.12
+    # density = the old densityScale (haze opacity below the opacity gate);
+    # threshold = the old opacityThreshold (higher → lower gate → more opaque)
+    density: draw_float(min_value=0.0, max_value=10.0) = 1.0
+    threshold: draw_float(min_value=0.0, max_value=1.0) = 0.1
     nearest = True  # texture filtering, set per frame but not a uniform
     lut = "jet"  # LUT name (a LUTS key); the sampler itself rides in separately
 
@@ -1232,7 +1244,7 @@ def draw_voxel_controls(input_value=None, params=None, dim_names=None, draw_stat
 @render_func(is_default_for="GLTexture", show_bg=False, use_cache=True)
 def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                 params: VoxelParams = None, draw_state=None, dim_names=None,
-                x_dim=None, y_dim=None, z_dim=None,
+                x_dim=None, y_dim=None, z_dim=0,
                 nf_on=None, nf_chop=None, nf_along=None, nf_chunk=None,
                 name_size=28.0, name_padding=30.1, name_opacity=1.1,
                 num_size=17.1, num_padding=5.5, num_opacity=0.8,

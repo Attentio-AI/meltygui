@@ -102,6 +102,11 @@ class FileMeta:
 
 class Address:
 
+    # Class-level default: live-view stack windows can render a `self` captured
+    # mid-__init__ (or left half-built after _compute_hash raises on an
+    # unreadable file) - __hash__/__eq__ must still work on such an instance.
+    _hash = None
+
     def __init__(self, path, start=None, end=None, source=None, watcher_ds=None):
         self.path = Path(path).resolve()
         self.start = start

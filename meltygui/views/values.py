@@ -3318,12 +3318,20 @@ def _format_run_error(exc):
 @render_func(is_default_for=(types.FunctionType, types.MethodType), shadow=True, use_cache=True, show_add_delete=False, selectable=False, show_bg=True,
              parent_show_add_delete=False, is_tree=False, show_name=False, with_header=draw_header)
 def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=False,
-                  show_run_button=True, **kwargs):
+                  show_run_button=True, run_in_thread=False, **kwargs):
     """`auto_run`: opt-in compile-and-run — pass any comparable version token
     (e.g. id(fn.__code__)); the function runs whenever the token CHANGES or a
     parameter is edited, no button click. The token is stored before running
     so a throwing function doesn't retry every frame. `show_run_button=False`
-    drops the named run button (the streamlined live-lab look)."""
+    drops the named run button (the streamlined live-lab look).
+
+    `run_in_thread=True` runs the function on a daemon worker instead of
+    blocking the render loop (long model passes). Single-flight: a click or
+    auto_run while a run is in flight is skipped — but the auto_run token is
+    only latched when a run actually starts, so a hotswap landing mid-run
+    re-fires on completion instead of being lost. The worker only writes
+    draw_state attrs and uses the cross-thread invalidation path (the
+    Background.run completion pattern); all rendering stays on the GL thread."""
     if not callable(input_value):
         imgui.text("Not a callable function")
         return False, input_value
@@ -3366,6 +3374,45 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
         sees_this = 0
 
     def _run():
+        if run_in_thread:
+            if draw_state.misc.get("_run_busy"):
+                return  # single-flight: one run per runner at a time
+            draw_state.misc["_run_busy"] = True
+            # Snapshot params so a mid-run edit can't give the worker a
+            # half-updated dict; never run a @render_func WRAPPER off-thread
+            # (it mutates process-global Melty stacks - see run_in_background),
+            # otherwise take the bare function.
+            params = dict(draw_state.params)
+            fn = getattr(input_value, "__wrapped__", input_value)
+
+            def _worker():
+                try:
+                    draw_state.result = fn(**params)
+                    draw_state.misc.pop("_run_error", None)
+                except Exception as e:
+                    draw_state.misc["_run_error"] = _format_run_error(e)
+                    print(f"Error calling function '{input_value.__name__}': {e}")
+                    print_colored_traceback(*sys.exc_info())
+                finally:
+                    draw_state.misc.pop("_run_busy", None)
+                    # invalidate_up_current reads the live render stack - only
+                    # valid mid-render on the GL thread. Off-thread completion
+                    # marks the runner's subtree by tile id (force: the result
+                    # pane is a cached descendant) and wakes the loop; the
+                    # validation itself happens on the render thread.
+                    from src.lsd.gl_gui.view.invalidation_tracker import Note
+                    Melty.cache.invalidate_up(
+                        draw_state._tile_id, force=True,
+                        note=Note(name="draw_function run complete",
+                                  reason=f"func={input_value.__name__}",
+                                  tint=(0, 0, 1)))
+                    request_render()
+
+            threading.Thread(target=_worker, daemon=True,
+                             name=f"draw_function:{input_value.__name__}").start()
+            Core.melty.cache.invalidate_up_current(force=True)  # show spinner now
+            request_render()
+            return
         try:
             draw_state.result = input_value(**draw_state.params)
             draw_state.misc.pop("_run_error", None)
@@ -3378,14 +3425,18 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
             print(f"Error calling function '{input_value.__name__}': {e}")
             print_colored_traceback(*sys.exc_info())
 
-    if auto_run is not None and (params_edited
-                                 or draw_state.misc.get("_auto_run_ver") != auto_run):
+    busy = run_in_thread and draw_state.misc.get("_run_busy")
+    if auto_run is not None and not busy and (
+            params_edited or draw_state.misc.get("_auto_run_ver") != auto_run):
         draw_state.misc["_auto_run_ver"] = auto_run
         _run()
 
     if show_run_button and button(f"{input_value.__name__}##{unique}", height=29,
                                   bg_offset=0, tint=(0.021, 0.104, 0.167, 0.0))[0]:
         _run()
+
+    if run_in_thread and draw_state.misc.get("_run_busy"):
+        imgui.text_colored("running...", 0.55, 0.75, 1.0, 1.0)
 
     run_error = draw_state.misc.get("_run_error")
     if run_error:

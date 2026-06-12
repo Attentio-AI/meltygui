@@ -402,11 +402,15 @@ class Background:
         if memo is None:
             memo = {}
 
-        # Check if hashable first
+        # Check if hashable first. Catch everything, not just TypeError: the
+        # structural hashes are user objects (live-view frame buffers), and a
+        # buggy __hash__ - e.g. reading an attribute a mid-__init__ capture
+        # never set - must fall through to the structural path, not kill the
+        # render.
         try:
             standard_hash = hash(value)
             return str(standard_hash)
-        except TypeError:
+        except Exception:
             pass
 
         if do_print:
