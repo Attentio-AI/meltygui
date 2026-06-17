@@ -28,11 +28,13 @@ import weakref
 import imgui
 from imgui.core import _DrawList
 
+from src.lsd.gl_gui.modes import Modes
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_conversion.live_view import (
     live_values_for, site_for_line, watch, install_builtin)
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
+from src.lsd.gl_gui.view.core_views.headers import draw_header
 
 # The seamless path: any app can call live_view() with no import (like
 # breakpoint()). Installed when the editor side loads - i.e. every studio
@@ -122,7 +124,7 @@ def draw_live_view_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
              z_offset=4, max_height=32)
 def draw_live_view_marker(input_value, draw_state=None, editor_ds=None,
                           auto_open=True, child_kwargs=None, corner_radius=4.0,
-                          left_mouse_down=False, left_mouse_held=False,
+                          left_mouse_down=False, left_mouse_held=False, unique=0,
                           **kwargs):
     """The anchor box around the symbol being visualized: a plain rect
     over the live_view call / captured assignment — green when a value has
@@ -154,7 +156,12 @@ def draw_live_view_marker(input_value, draw_state=None, editor_ds=None,
     h = getattr(handle, "box_h", None) or 18.7
     io = imgui.get_io()
     hovered = x <= io.mouse_pos.x < x + w and y <= io.mouse_pos.y < y + h
-    open_now = bool(getattr(ds, "_lv_open", False))
+    win_ds = getattr(ds, "_lv_window_ds", None)
+    if win_ds is not None:
+        open_now = not win_ds.closed
+    else:
+        open_now = False
+
     if lv is not None:
         base = (0.36, 0.85, 0.46) if open_now else (0.26, 0.62, 0.34)
     else:
@@ -166,17 +173,10 @@ def draw_live_view_marker(input_value, draw_state=None, editor_ds=None,
                 imgui.get_color_u32_rgba(*base, 0.9 if open_now else 0.6), rounding=corner_radius)
     imgui.dummy(w, h)
 
-    # The user X-ing the window directly must beat our open flag. Detect it
-    # BEFORE this render passes closed= (which overwrites the very flag we're
-    # reading): an X is "closed became True while we last asked for open".
-    win_ds = getattr(ds, "_lv_window_ds", None)
-    if (open_now and win_ds is not None
-            and getattr(ds, "_lv_passed_closed", None) is False
-            and (win_ds.closed or win_ds.abs_closed)):
-        ds._lv_open = open_now = False
-
     if hovered and imgui.is_mouse_clicked(0):
         ds._lv_open = not open_now
+        if win_ds is not None:
+            win_ds.closed = not ds._lv_open
         ds.invalidate()
 
     # Latched-window visibility pattern (the color-picker pattern,
@@ -192,35 +192,35 @@ def draw_live_view_marker(input_value, draw_state=None, editor_ds=None,
         # the window's FIRST measure degenerate - and a closable window never
         # remeasures (fixed_size), leaving it 0×0 and invisible visible.
         imgui.set_cursor_screen_pos((x, y))
-        _c, _v, win_ds = draw_live_value_window(
-            handle, name=f"{label}##lv{ds.id}", closable=True,
-            closed=not ds._lv_open, return_extras=True, child_kwargs=child_kwargs, **child_kwargs)
-        ds._lv_passed_closed = not ds._lv_open
-        if ds._lv_open and win_ds is not None and not win_ds.width:
-            # The closable self-sizing branch (core_render ~1358) silently
-            # fails in some nested layouts (wrap inheritance, multi_line
-            # siblings) and a 0-width first measure never recovers - seed it;
-            # auto sizing takes over from there. Volumes get a viewport-
-            # sized seed: the voxel renderer derives its render size from the
-            # owning window, so a 120×40 seed would orbit in a keyhole.
-            if lv is not None and is_volume(lv.value):
-                win_ds.width = 320
-                win_ds.height = max(win_ds.height or 0, 340)
-            else:
-                win_ds.width = 120
-                win_ds.height = max(win_ds.height or 0, 40)
-            # First latch only: a marker anchored below/right of the display
-            # anchors its window OFF-SCREEN ("not seeing the live view") -
-            # clamp the fresh window into the viewport; the whoosh still
-            # points back at the (off-screen) marker. Window drags persist
-            # afterwards because this only runs on the 0-width first measure.
-            from src.lsd.gl_gui.melty import Melty
-            display = imgui.get_io().display_size
-            cx = min(max(x, 10), max(10, display.x - win_ds.width - 20))
-            cy = min(max(y, 10), max(10, display.y - win_ds.height - 30))
-            if (cx, cy) != (x, y):
-                Melty.summon_window(win_ds, cx, cy)
+        from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
+
+        handle = input_value
+        watch(handle.store_obj, handle.key_path, draw_state)
+        lv = live_values_for(handle.store_obj).get(handle.key_path)
+        if lv is None:
+            imgui.text_colored("no value yet — run the code", 0.65, 0.65, 0.65, 1.0)
+            return False, None
+        from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
+        key = '/'.join(handle.key_path)
+
+
+        child_kwargs.pop("mode", None)
+
+        _c, _v, win_ds = draw_any(
+            lv.value, name=f"{label}##lv{ds.id}{key}", mode=Modes.WINDOW, with_header=draw_header,
+            selectable=False, min_height=32, min_width=32, disable_scroll=True,
+            return_extras=True, **child_kwargs)
+
+        # _c, _v, win_ds = draw_live_value_window(
+        #     handle, name=f"{label}##lv{ds.id}", mode=Modes.WINDOW, min_height=32, min_width=32,
+        #     return_extras=True, child_kwargs=child_kwargs)
+
+
+        if win_ds.closed:
+            ds._lv_open = False
+
         ds._lv_window_ds = win_ds
+
     return False, None
 
 
@@ -395,8 +395,8 @@ def run_forward_pass(use_gen_pass=True):
                           use_gen_pass=use_gen_pass)
 
 
-@window
-@render_func(tint=(0.09, 0.03, 0.32), auto_resize=True)
+@window(initial={"width": 350, "height": 540})
+@render_func(tint=(0.09, 0.03, 0.32), auto_resize=False)
 def live_view_forward(input_value=None, draw_state=None, **kwargs):
     from src.lsd.train.lsd_train import LSD
     from src.lsd.gl_gui.view.mode import Mode
@@ -510,11 +510,10 @@ def draw_live_value_window(input_value, draw_state=None, child_kwargs=None, **kw
     a watcher so the PUBLISHING thread invalidates it per publish (throttled
     wake — the editor tile is never touched), and routes the value through
     draw_any so every type renders with its normal view. Volume-shaped values
-    (3-D+ tensors/ndarrays) route through the voxel pipeline instead: upload
-    via voxel_io (gl_state/axes auto-injected per draw_state, CUDA tensors go
-    device-to-device, re-upload keyed on identity/_version so each publish
-    streams in) and draw_any(tex) lands on draw_voxels — a live, orbiting
-    volume anchored to the code that produced it."""
+    (3-D+ tensors/ndarrays) go straight to draw_voxels, which owns slicing +
+    upload + render (CUDA tensors device-to-device, re-upload keyed on
+    identity/_version so each publish streams in) — a live, orbiting volume
+    anchored to the code that produced it."""
     if child_kwargs is None:
         child_kwargs = {}
     handle = input_value
@@ -522,24 +521,15 @@ def draw_live_value_window(input_value, draw_state=None, child_kwargs=None, **kw
     lv = live_values_for(handle.store_obj).get(handle.key_path)
     if lv is None:
         imgui.text_colored("no value yet — run the code", 0.65, 0.65, 0.65, 1.0)
-        _draw_close_x(draw_state)
         return False, None
     from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
     key = '/'.join(handle.key_path)
-    if is_volume(lv.value):
-        from src.lsd.gl_gui.view.playground.voxel_playground import voxel_io
-        _c, tex = voxel_io(lv.value, name=f"lvvox::{key}")
-        if type(tex).__name__ == "GLTexture":
-            draw_any(tex, name=f"lvtex::{key}", **child_kwargs)
-        else:
-            draw_any(lv.value, name=f"lvv::{key}", **child_kwargs)
-    else:
-        draw_any(lv.value, name=f"lvv::{key}")
-    imgui.text_colored(f"{lv.name or ''}  gen {lv.generation}",
-                       0.55, 0.55, 0.55, 1.0)
+
+    draw_any(lv.value, name=f"lvv::{key}", **{"with_header":draw_header, **child_kwargs})
+
     # Drawn LAST = on top - volume values fill the window and bury the
     # header's X, so the window carries its own close glyph.
-    _draw_close_x(draw_state)
+    # _draw_close_x(draw_state)
     return False, None
 
 

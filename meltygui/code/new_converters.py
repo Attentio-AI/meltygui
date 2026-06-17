@@ -133,7 +133,8 @@ def save_file(address, code_str, codec=None, ensure_import=None, parent_ds=None,
     changed under us (force=True, the user's explicit Keep-mine, bypasses)."""
     current_time = datetime.now().strftime("%H:%M:%S")
     print(f"{current_time} Saved {address.path} from {parent_ds.name}")
-    notify(f"Saved {address.path} from {parent_ds.name}")
+    file_name = address.path.name if address.path is not None else "unknown"
+    notify(f"Saved {file_name} from {parent_ds.name}", tint=(0.5, 1.0, 0.5))
     return codec.save(address=address, data=code_str, ensure_import=ensure_import, force=force)
 
 
@@ -384,6 +385,8 @@ class LoadingState:
 def load_file(input_value: Address, codec: Codec = None, **kwargs) -> str:
     """Read the value through the resolved codec (span for code, whole file for
     images, etc.)."""
+    file_name = input_value.path.name if input_value.path is not None else "unknown"
+    notify(f"Loading {file_name}...", tint=(0.5, 1.0, 0.5))
     return codec.load(input_value)
 
 
@@ -1447,9 +1450,28 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
         conflict = file_stale and code_state._pending_save
         if file_stale and not code_state._pending_save:
             if auto_load_edits:
-                load = True
-                code_state._loaded_externally = not self_write
-                code_state.mark_file_current()
+                # A VERIFIED self-write (a sibling editor of the same file - the
+                # code-host str_host, another window, a lens save - synced
+                # through disk) is picked up IN-PROCESS from the exact text that
+                # write produced: no disk reload, no "Loading..." banner, no
+                # external stamp. A reparse still fires (text_cache change +
+                # external_change below), so the structured pane updates exactly
+                # as the auto-load path drove it - load their only fires for a
+                # change we did NOT produce. get_self_write_text returns None if
+                # an external write has since raced in, falling through to a disk
+                # load (treated as external, with the stamp).
+                mem_text = FileWatch.get_self_write_text(address.path) if self_write else None
+                if mem_text is not None:
+                    code_state.text_cache = codec.load(address, source_text=mem_text)
+                    code_state.mark_file_current()
+                    code_state._save_refused = False
+                    external_change = True
+                    draw_state.invalidate_up(max_depth=6)
+                    request_render()
+                else:
+                    load = True
+                    code_state._loaded_externally = not self_write
+                    code_state.mark_file_current()
             else:
                 imgui.same_line(spacing=0)
                 if RenderFuncs.button("Load", width=100, height=top_line_height, name=f"reload{unique}")[0]:

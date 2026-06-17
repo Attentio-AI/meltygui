@@ -506,6 +506,15 @@ def _is_funcdef_parse(v):
             and ("parameters" in v or "locals" in v))
 
 
+def _is_classdef_parse(v):
+    """A nested classdef parse (a class child dict, e.g. Toggles.InvalidateTracker)
+    — distinguished from a method parse, a CallParse, and a plain dict literal by
+    the cst.ClassDef it carries under __cst__ (set by cst_classdef_to_dict). The
+    __cst__ marker is precise where the funcdef heuristic ('parameters'/'locals'
+    keys) is not, so this is checked FIRST."""
+    return isinstance(v, GeneralParse) and isinstance(v.get("__cst__"), cst.ClassDef)
+
+
 def _raw_function(obj):
     """The plain FunctionType behind a member: through decorator wrappers
     (inspect.unwrap), static/classmethod descriptors, and bound methods.
@@ -651,15 +660,36 @@ def _apply_function_parse(fn, parsed) -> bool:
 
 
 def _apply_class_parse(cls, parsed) -> bool:
-    """Live-apply a classdef parse: plain class vars via setattr, and method
-    child dicts via the function path (param defaults + constant locals).
+    """Live-apply a classdef parse: plain class vars via setattr, method child
+    dicts via the function path (param defaults + constant locals), and NESTED
+    classes by RECURSING onto the live nested class.
+
+    The recursion is what lets an edit to a class nested inside `cls` (e.g.
+    Toggles.InvalidateTracker.invalidate_stack_trace) land on the live object in
+    place — its plain vars and method defaults apply immediately, the same
+    responsive preview the top-level class gets, instead of waiting for the full
+    recompile. Structural changes (new/removed members) still need the recompile,
+    exactly as at the top level.
 
     `__init__` self-assignments surface as fields too but fail the hasattr
-    check (instance attrs, not class vars); nested classes / decorators /
-    CallParse stay nested dicts and are skipped."""
+    check (instance attrs, not class vars); decorators / CallParse stay nested
+    dicts and are skipped."""
     applied = False
     for k, v in parsed.items():
         if not isinstance(k, str) or not k.isidentifier() or k.startswith("_"):
+            continue
+        # Nested class FIRST: a classdef parse carries an unambiguous cst.ClassDef
+        # marker, whereas _is_funcdef_parse is a key heuristic that a class member
+        # literally named `parameters`/`locals` would trip.
+        if _is_classdef_parse(v):
+            member = inspect.getattr_static(cls, k, None)
+            if isinstance(member, type) and _apply_class_parse(member, v):
+                applied = True
+                # The outer invalidate (live_apply_edits) keys off `cls`, so it
+                # never reaches a tile drawn from the nested class - trigger it
+                # here, the same way live_apply_edits repaints its outer source.
+                if Melty.cache is not None:
+                    Melty.cache.invalidate_up_by_obj(member, max_depth=10)
             continue
         if _is_funcdef_parse(v):
             member = inspect.getattr_static(cls, k, None)

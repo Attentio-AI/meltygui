@@ -530,8 +530,8 @@ def draw_icon_selector(input_value, draw_state=None,
     return (True, picked) if (changed and isinstance(picked, str)) else (False, cur)
 
 
-@render_func(use_cache=True, show_bg=True, shadow=True, with_header=None, tint=(0.878, 0.496, 0.117),
-             show_name=False, selectable=False, z_offset=3, bg_offset=7)
+@render_func(use_cache=True, show_bg=True, shadow=True, with_header=None, tint=(0.911, 0.305, 0.0),
+             show_name=False, selectable=False, z_offset=3, bg_offset=2)
 def draw_bool_token(input_value, draw_state=None, **kwargs):
     """Inline True/False word — whole-token token_views renderer for 'bool'
     tokens. Renders the literal exactly as the editor would (same font, grid
@@ -550,8 +550,7 @@ def draw_bool_token(input_value, draw_state=None, **kwargs):
     color = COLORS['bool']
     # if hovered:
     #      draw_list.add_line(x, y + h - 1.5, x + w, y + h - 1.5, color, 0.0)
-
-
+    
     draw_list.add_text(x, y, color, word)
     if hovered and imgui.is_mouse_double_clicked(0):
         return True, ("False" if word == "True" else "True")
@@ -1822,7 +1821,7 @@ def draw_text(input_value: str,
         token_views = {}
     elif token_views is None:
         token_views = DEFAULT_TOKEN_VIEWS   # global experiment fallback (see top)
-
+        
     # Symbol-usage source: the parse arrives as `code_tree` in the
     # address_to_general_parse routes, as `code_dict` in the CODE_UI routes
     # (cst_module_to_dict - which is also where the run_jedi() pass attaches
@@ -1907,9 +1906,14 @@ def draw_text(input_value: str,
 
     changed = False
     original_input = input_value
-    max_lines = 1000  # limit for performance; can be adjusted or removed
-    input_value = '\n'.join(input_value.split('\n')[:max_lines])
-
+    # No line limit: the editor shows the WHOLE span. Off-screen lines are
+    # already viewport-culled in every draw loop below (rect_min_y/rect_max_y)
+    # and tokenization is cached by text value, so a long function costs an
+    # O(n) position walk per frame, not per-line GPU remeasurements. The old
+    # `max_lines = 1000` cap truncated the visible/editable text AND - because
+    # its save-time rebuild re-stitched the hidden tail with no newline - ate one
+    # boundary newline per save, progressively merging lines at line 1000 of any
+    # longer function (the draw_text / abs_clip_rect_local corruptions).
     text = input_value
     io = imgui.get_io()
     line_px = imgui.get_text_line_height() * line_height
@@ -2803,7 +2807,13 @@ def draw_text(input_value: str,
                 draw_list.add_rect_filled(sx, sy, ex, ey, cur_bg)
                 draw_list.add_rect(sx, sy, ex, ey, cur_border)
             else:
-                draw_list.add_rect_filled(sx, sy, ex, ey, match_bg)    # Parse/compile-error line highlight from the routed code_tree or a routed    # exception: a translucent red wash spanning the entire line, drawn under    # the glyphs so the code stays readable. The message itself rides in the file    # header (see draw_jump_to_bar), not floated over the code.    if _err_markers:
+                draw_list.add_rect_filled(sx, sy, ex, ey, match_bg)
+
+    # Parse/compile-error line highlight from the routed code_tree or a routed
+    # exception: a translucent red band spanning the offending line, drawn under
+    # the glyphs so the code stays readable. The message itself rides in the file
+    # header (see draw_jump_to_bar), not painted over the code.
+    if _err_markers:
         err_bg = (110 << 24) | (40 << 16) | (40 << 8) | 210  # translucent red (ABGR)
         for err_line, _msg in _err_markers:
             ey0 = origin_y + (err_line - 1) * line_px
@@ -3311,6 +3321,5 @@ def draw_text(input_value: str,
             ds._err_stale = False                  # a fresh parse landed
 
     if changed:
-        rebuilt_text = text + '\n'.join(original_input.split('\n')[max_lines:])
-        return True, rebuilt_text
+        return True, text
     return False, original_input

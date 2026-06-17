@@ -1,30 +1,27 @@
 """Voxel renderer on the GLState + @shader_func stack, plugged into real data
 through a RenderHost.
 
-The pipeline, each piece narrow and swappable:
+The pipeline — draw_voxels owns everything, no state objects:
 
-    tensor / ndarray / None ──voxel_io──► GLTexture ──draw_any──► draw_voxels
-    (host input)              (upload on    (held in     (routed by type:
-                              render thread) the host)    is_default_for)
+    tensor / ndarray / None ──voxel_io──► tensor ──draw_voxels──► pixels
+    (host input)             (resolve     (held in   (slice + upload + render,
+                              source/demo) the host)  all parameter-driven)
 
-- `voxel_host` is a RenderHost whose io_function makes the input "look like a
-  GLTexture": slice to 3-D and upload via the io's own injected gl_state (io
-  runs on the render thread, so GL is legal). CUDA tensors copy device-to-device
-  through a registered PBO (cuda_interop.py — no CPU round trip); anything else
-  takes the cpu path. Re-uploads when the source's identity/`_version` changes —
-  a tensor mutated by training streams in.
-- `draw_voxels` is the renderer: input is a GLTexture, full stop. Anything that
-  can become a GLTexture gets volume-rendered via plain `draw_any(tex)`.
-- Controls are ONE `draw_any(params)` — VoxelParams is an annotated
-  DictConversion, so ranges live as field annotations (`draw_float(min_value=…)`)
-  editable from the context menus, and every annotated field whose name appears
-  in the GLSL is forwarded as a uniform by shader_func.
+- `voxel_io` only resolves the SOURCE (tensor/ndarray through, anything else
+  → demo torus). `draw_voxels` slices via slice_volume (a pure function of
+  its params), uploads through its gl_state (CUDA tensors device-to-device
+  via a registered PBO, cuda_interop.py; re-upload keyed on source
+  identity/`_version`/mapping deps — a tensor mutated by training streams
+  in), and renders. Tensor METADATA (shape, dim count) rides the uploaded
+  buffer; every camera/shading/mapping choice is a PARAMETER on the
+  draw_voxels signature — auto draw_state params, so gestures and the
+  controls panel write draw_state.<name> and only diverged values persist.
 - The fragment shader declares NO uniforms; break it in the editor and the last
   good program keeps rendering with the remapped driver error underneath.
 - LUTs are flat [r,g,b, r,g,b, ...] float lists (LUTS); `lut_host` is a
   RenderHost whose io turns them into shared 1-D textures (_LUT_TEXTURES),
-  re-uploading when a list is edited. draw_voxels samples the one params.lut
-  names — the old custom jet() GLSL is now just the baked "jet" entry.
+  re-uploading when a list is edited. draw_voxels samples the one its `lut`
+  param names — the old custom jet() GLSL is now just the baked "jet" entry.
 - Axis labels are textured billboards IN the scene: text_texture.py bakes the
   strings via imgui's own font atlas (a private shared-atlas context + the
   screen pass's draw-list mechanics, no freetype), and a raw-GL pass draws each
@@ -49,7 +46,7 @@ import imgui
 import numpy as np
 import OpenGL.GL as gl
 
-from src.lsd.gl_gui.gl_state import GLState
+from src.lsd.gl_gui.gl_state import GLState, GLTexture
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.shader_func import shader_func
@@ -57,10 +54,9 @@ from src.lsd.gl_gui.text_texture import bake_text, bake_texts
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
 from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
 from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import exclude
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.modes import Modes
-from src.lsd.gl_gui.view.core_views.new_core_view import draw_float, draw_any
+from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
 
 HALF_PI = math.pi / 2
 
@@ -95,6 +91,14 @@ void main() {
     // a plane through it, sized to match the perspective frame at the target.
     vec3 ro = ortho ? eye + (right * ndc.x + up * ndc.y) * (zoom / 1.7) : eye;
     vec3 rd = ortho ? fwd : normalize(fwd * 1.7 + right * ndc.x + up * ndc.y);
+    // Accumulate optical depth per unit of VIEW DEPTH, not per unit of ray
+    // arc length. In perspective, edge rays cross the volume at a steeper
+    // angle and a step's world length (seg) is ~1/cos(theta) longer than a
+    // center ray's, so a thin slab reads denser toward the screen edges (a
+    // screenspace radial artifact — hidden on cubes only because they saturate
+    // the alpha break). cos(angle to fwd) cancels the extra path. Ortho rays
+    // have rd == fwd, so view_cos == 1 and this is a no-op there.
+    float view_cos = dot(rd, fwd);
 
     // volume_scale: box extents per axis, voxel-count-proportional — so each
     // VOXEL is a cube and the tensor keeps its true shape.
@@ -103,7 +107,11 @@ void main() {
 
     float t = max(hit.x, 0.0);
     vec4 acc = vec4(0.0);
-    for (int i = 0; i < 2048; i++) {
+    // max_steps is a watchdog: the break on hit.y is what normally ends the
+    // march. The whole box is covered only while max_steps * step_size
+    // exceeds the worst-case chord (2*sqrt(3) ≈ 3.46 units) — a granular
+    // step_size needs a higher cap or the far side of the volume clips away.
+    for (int i = 0; i < max_steps; i++) {
         if (t >= hit.y || acc.a > 0.98) break;
         // Weight each sample by the segment it actually covers (the tail is
         // partial) and sample at the segment MIDPOINT: a slab thinner than
@@ -144,7 +152,7 @@ void main() {
         if (m >= gate) {
             a = 1.0;
         } else {
-            a = clamp(pow(m / gate, 4.0) * density * seg * 50.0, 0.0, 1.0);
+            a = clamp(pow(m / gate, 4.0) * density * seg * view_cos * 50.0, 0.0, 1.0);
         }
         if (a > 0.0) {
             acc.rgb += (1.0 - acc.a) * a * texture(lut, v).rgb;
@@ -161,7 +169,7 @@ void main() {
 def voxel_pass(gl_state: GLState = None, tilt=0.5, spin=0.8, zoom=3.4,
                pan_x=0.0, pan_y=0.0, pan_z=0.0, ortho=False,
                aspect=1.0, brightness=1.0, contrast=1.0, density=1.0,
-               threshold=0.1, step_size=0.004, centered=False,
+               threshold=0.1, step_size=0.0015, max_steps=4096, centered=False,
                volume=None, lut=None,
                volume_scale=(1.0, 1.0, 1.0), **kwargs):
     # Program bound, uniforms set - the body is just the draw call.
@@ -324,39 +332,9 @@ def _label_atlas(gl_state, texts):
 
     return gl_state.get("label_atlas", create, delete, deps=(texts, id(font)))
 
-@exclude("tilt", "spin", "zoom", "pan_x", "pan_y", "pan_z", "ortho", "brightness",)
-class VoxelParams(DictConversion):
-    """Camera + render params, auto-injected per view. The field annotations
-    ARE the control UI (`draw_any(params)` renders them with these ranges,
-    editable from the context menus), and every annotated field is forwarded
-    to the shader as a uniform."""
-
-    tilt: draw_float(min_value=-3.1416, max_value=3.1416) = 0.5
-    spin: draw_float(min_value=-6.3, max_value=6.3) = 0.8
-    zoom: draw_float(min_value=1.4, max_value=15.0) = 3.4
-    pan_x: draw_float(min_value=-4.0, max_value=4.0) = 0.0
-    pan_y: draw_float(min_value=-4.0, max_value=4.0) = 0.0
-    pan_z: draw_float(min_value=-4.0, max_value=4.0) = 0.0
-    ortho: bool = False
-    # signed-data mode: raw 0 maps to the LUT middle, opacity = magnitude
-    centered: bool = False
-    brightness: draw_float(min_value=0.0, max_value=4.0) = 1.0
-    contrast: draw_float(min_value=0.1, max_value=4.0) = 1.0
-    # density = the old densityScale (haze opacity below the opacity gate);
-    # threshold = the old opacityThreshold (higher → lower gate → more opaque)
-    density: draw_float(min_value=0.0, max_value=10.0) = 1.0
-    threshold: draw_float(min_value=0.0, max_value=1.0) = 0.1
-    nearest = True  # texture filtering, set per frame but not a uniform
-    lut = "jet"  # LUT name (a LUTS key); the sampler itself rides in separately
-
-
-# The annotated fields are exactly the scalar uniform candidates.
-_UNIFORM_FIELDS = tuple(VoxelParams.__annotations__)
-
-
 # ── LUTs: a LUT is just a flat [r,g,b, r,g,b, ...] float list ───────────────
-# lut_host (bottom of file) converts these into shared 1-D textures; draw_voxels
-# samples the one params.lut names. Editing Ls through the host re-uploads.
+# lut_host (bottom of file) turns these into shared 1-D textures; draw_voxels
+# samples the one its `lut` param names. Editing a list re-uploads.
 
 def _bake_lut(fn, n=256):
     """Sample fn(v ∈ [0,1]) → (r, g, b) into the flat-list LUT shape."""
@@ -432,7 +410,7 @@ _TURBO = [
 def _seismic(v):
     """Diverging blue-white-red with dark ends (matplotlib's seismic) —
     strong negative coverage: zero is white, sign maps to hue, magnitude
-    to saturation/darkness. Pair with params.centered."""
+    to saturation/darkness. Pair with the `centered` param."""
     if v < 0.25:
         t = v / 0.25
         return (0.0, 0.0, 0.3 + 0.7 * t)
@@ -499,126 +477,106 @@ def demo_volume():
     return _VOLUME
 
 
-class VoxelAxes(DictConversion):
-    """How a high-dim tensor maps onto the 3 display axes — the port of the
-    old TensorFrame x/y/z_dim machinery. `dim_names` label the tensor's dims
-    (editable), x/y/z_dim pick which dim feeds each display axis, and every
-    other dim is pinned to `slice_indices[dim]` (the scrubbers — "time") or,
-    when listed in `mean_dims`, AVERAGED over instead (the old viewer's mean
-    dim option).
-    Injected into voxel_io (slicing is the data source's job) and rides the
-    GLTexture to the renderer (`tex.axes`), which draws the radio rows and
-    mutates this same instance."""
-
-    def __init__(self):
-        super().__init__()
-        self.dim_names = ["layer", "batch", "token", "feature"]
-        self.dim_sizes = []
-        self.x_dim = -1
-        self.y_dim = -1
-        self.z_dim = -1
-        self.slice_indices = []
-        self.mean_dims = []  # dims averaged over instead of scrubbed
-        self.sort_dim = -1   # sort slices along this tensor dim (-1 = off)
-        self.normalize = False   # min-max normalize the DISPLAYED volume
-        # Neural flow: post-slice, chop one TENSOR DIM into `nf_chunk`-wide
-        # blocks laid group-major along another - the old viewer's trick for
-        # making weird high dims (Feature 4096) viewable as a volume.
-        # Keyed by tensor dim (not display axis) so remapping x/y/z never
-        # changes WHICH dim gets chopped; -1 = derive defaults on sync.
-        self.nf_on = False
-        self.nf_chop_dim = -1
-        self.nf_along_dim = -1
-        self.nf_chunk = 128
-
-    def sync(self, shape):
-        """Fit state to a tensor shape. STRUCTURAL state (slice indices,
-        x/y/z mapping) re-derives when the RANK changes (defaults: last
-        three dims → z/y/x, like the old viewer) and only clamps on a
-        same-rank resize. `dim_names` is a free-form user label list — it
-        may be LONGER than the tensor (extra names simply wait for a bigger
-        tensor) and is padded with dimN when shorter, but NEVER reset, so
-        provided names survive rebinds across shapes."""
-        if not hasattr(self, "mean_dims"):
-            self.mean_dims = []  # instances from before the field existed
-        if not hasattr(self, "sort_dim"):
-            self.sort_dim = -1
-        if not hasattr(self, "normalize"):
-            self.normalize = False
-        if not hasattr(self, "nf_chop_dim"):
-            # migrate pre-dim-relative instances: resolve the old display-axis
-            # defaults through the CURRENT mapping once, then stay dim-pinned
-            self.nf_chop_dim = getattr(self, getattr(self, "nf_chop", "x") + "_dim", -1)
-            self.nf_along_dim = getattr(self, getattr(self, "nf_along", "z") + "_dim", -1)
-        n = len(shape)
-        if len(self.slice_indices) != n:   # rank changed - names stay
-            self.z_dim, self.y_dim, self.x_dim = max(0, n - 3), max(0, n - 2), n - 1
-            self.slice_indices = [0] * n
-            self.mean_dims = []
-        if len(self.dim_names) < n:
-            self.dim_names = list(self.dim_names) + [f"dim{i}" for i in range(len(self.dim_names), n)]
-        self.mean_dims = [d for d in self.mean_dims if d < n]
-        self.dim_sizes = list(shape)
-        for d in range(n):
-            self.slice_indices[d] = min(self.slice_indices[d], shape[d] - 1)
-        for attr in ("x_dim", "y_dim", "z_dim"):
-            if getattr(self, attr) >= n:
-                setattr(self, attr, n - 1)
-        if self.sort_dim >= n:
-            self.sort_dim = -1
-        if not (0 <= self.nf_chop_dim < n):
-            self.nf_chop_dim = self.x_dim
-        if not (0 <= self.nf_along_dim < n):
-            self.nf_along_dim = self.z_dim
-
-    def assign(self, axis, dim):
-        """Point a display axis at a tensor dim, swapping with whichever axis
-        already used it (the old radio-row conflict rule)."""
-        prev = getattr(self, axis)
-        for other in ("x_dim", "y_dim", "z_dim"):
-            if other != axis and getattr(self, other) == dim:
-                setattr(self, other, prev)
-        setattr(self, axis, dim)
-
-    def signature(self):
-        return (self.x_dim, self.y_dim, self.z_dim, tuple(self.slice_indices),
-                tuple(getattr(self, "mean_dims", ())),
-                getattr(self, "sort_dim", -1), getattr(self, "normalize", False),
-                self.nf_on, getattr(self, "nf_chop_dim", -1),
-                getattr(self, "nf_along_dim", -1), self.nf_chunk)
-
-    def scrub_dims(self):
-        """Dims not mapped to a display axis — these get index scrubbers.
-        Ranges over the TENSOR's dims (dim_names may be longer)."""
-        shown = {self.x_dim, self.y_dim, self.z_dim}
-        return [d for d in range(len(self.dim_sizes)) if d not in shown]
+def _clean_dim_name(x, i):
+    """A dim name is a short single-line LABEL, whatever lands in the list —
+    DnD/paste can drop arbitrary objects whose str() is a multi-KB code repr,
+    and one of those blows up every radio row and billboard bake."""
+    first = (str(x).splitlines() or [""])[0].strip()
+    return first[:48] if first else f"dim{i}"
 
 
-def slice_by_axes(t, axes: VoxelAxes):
-    """Extract the (depth, height, width) = (z_dim, y_dim, x_dim) sub-volume,
-    pinning every other dim at its slice index. Stays on t's device."""
+def _resolve_dim(dim_names, v, n):
+    """A dim given by INDEX or by NAME (resolved through dim_names); None
+    stays None, out-of-range collapses to None."""
+    if v is None:
+        return None
+    if isinstance(v, str):
+        names = list(dim_names or ())
+        if v not in names:
+            return None
+        v = names.index(v)
+    v = int(v)
+    return v if 0 <= v < n else None
+
+
+def _resolve_axes(shape, dim_names, x_dim, y_dim, z_dim):
+    """(z, y, x) display dims for a shape: dims by index or NAME, None
+    derives the default (last three dims → z/y/x, like the old viewer).
+    A None fill never lands on an explicitly taken dim."""
+    n = len(shape)
+    zd = _resolve_dim(dim_names, z_dim, n)
+    yd = _resolve_dim(dim_names, y_dim, n)
+    xd = _resolve_dim(dim_names, x_dim, n)
+    taken = {d for d in (zd, yd, xd) if d is not None}
+
+    def fill(cur, default):
+        if cur is not None:
+            return cur
+        d = default
+        while d in taken and d > 0:
+            d -= 1
+        taken.add(d)
+        return d
+
+    zd = fill(zd, max(0, n - 3))
+    yd = fill(yd, max(0, n - 2))
+    xd = fill(xd, n - 1)
+    return zd, yd, xd
+
+
+def slice_volume(t, dim_names=(), x_dim=None, y_dim=None, z_dim=None,
+                 slices=(), mean_dims=(), sort_dim=-1, normalize=False,
+                 nf_on=False, nf_chop=None, nf_along=None, nf_chunk=128):
+    """tensor → (depth, height, width) display volume, PURE: every choice
+    arrives as an argument (the draw_voxels params), nothing is stored.
+    Unmapped dims pin to their `slices` index (missing entries → 0) or
+    average when listed in mean_dims (keepdim, then pinned at 0); sort
+    orders fibers along a dim; normalize min-max stretches the DISPLAYED
+    volume (signed data scales by max-magnitude so zero stays anchored).
+    Stays on t's device. Returns (vol3, (z_dim, y_dim, x_dim), shape)."""
+    import torch
     t = t.detach()
     while t.dim() < 3:
         t = t.unsqueeze(0)
-    axes.sync(tuple(t.shape))
-    import torch
     if t.dtype not in (torch.float16, torch.float32):
         t = t.float()
-    picked = (axes.z_dim, axes.y_dim, axes.x_dim)
-    # Mean dims average with keepdim (shape preserved, size -> 1), then the
-    # index below pins them at 0 - no index bookkeeping needed.
-    mean_set = {d for d in getattr(axes, "mean_dims", ())
-                if d not in picked and d < t.dim()}
+    n = t.dim()
+    shape = tuple(int(s) for s in t.shape)
+    zd, yd, xd = _resolve_axes(shape, dim_names, x_dim, y_dim, z_dim)
+    if 0 <= int(sort_dim) < n:
+        t = torch.sort(t, dim=int(sort_dim), descending=True).values
+    picked = (zd, yd, xd)
+    mean_set = {int(d) for d in (mean_dims or ())
+                if 0 <= int(d) < n and int(d) not in picked}
     for d in mean_set:
         t = t.mean(dim=d, keepdim=True)
-    index = tuple(slice(None) if d in picked
-                  else (0 if d in mean_set else axes.slice_indices[d])
-                  for d in range(t.dim()))
+    index = tuple(
+        slice(None) if d in picked
+        else (0 if d in mean_set
+              else min(int(slices[d]) if d < len(slices) else 0, shape[d] - 1))
+        for d in range(n))
     sub = t[index]  # picked 3 dims keep original order
     remaining = sorted(picked)
-    return sub.permute(remaining.index(axes.z_dim),
-                       remaining.index(axes.y_dim),
-                       remaining.index(axes.x_dim)).contiguous()
+    vol = sub.permute(remaining.index(zd), remaining.index(yd),
+                      remaining.index(xd)).contiguous()
+    if nf_on:
+        # Flow is pinned to TENSOR DIMS (remapping x/y/z never changes WHICH
+        # data gets chopped); unset dims default to chop=x, along=z. A chop
+        # or along dim that isn't mapped makes it a no-op.
+        chop_d = _resolve_dim(dim_names, nf_chop, n)
+        along_d = _resolve_dim(dim_names, nf_along, n)
+        dim_to_axis = {xd: "x", yd: "y", zd: "z"}
+        chop = dim_to_axis.get(xd if chop_d is None else chop_d)
+        along = dim_to_axis.get(zd if along_d is None else along_d)
+        if chop and along and chop != along:
+            vol = neural_flow_volume(vol, chop, along, int(nf_chunk))
+    if normalize:
+        lo, hi = vol.min(), vol.max()
+        if lo < 0:
+            vol = vol / (torch.maximum(hi.abs(), lo.abs()) + 1e-12)
+        else:
+            vol = (vol - lo) / (hi - lo + 1e-12)
+    return vol, (zd, yd, xd), shape
 
 
 # Display-axis position in the sliced (z, y, x) volume.
@@ -640,97 +598,18 @@ def neural_flow_volume(vol, chop_axis, along_axis, chunk):
 
 
 @render_func(show_bg=False)
-def voxel_io(input_value=None, gl_state: GLState = None, view_func=None,
-             axes: VoxelAxes = None, external_change=False, **kwargs):
-    """RenderHost io: make the input look like a GLTexture. Runs on the render
-    thread inside the host's settings window, so GL (and CUDA interop) is
-    legal here. The injected VoxelAxes maps tensor dims → display axes before
-    upload; CUDA tensors go device-to-device through a registered PBO — no
-    CPU round trip; everything else takes the cpu upload. Only one of the two
-    textures is kept (the other path's resource is dropped)."""
+def voxel_io(input_value=None, view_func=None, external_change=False, **kwargs):
+    """RenderHost io: resolve the SOURCE and pass it through — slicing and
+    upload are draw_voxels' job (parameter-driven, gl_state-cached), so no
+    GL happens here. Only tensor-shaped inputs count as a source; everything
+    else (None, the host dict, an echoed held value) serves the demo torus."""
     import torch
-    from src.lsd.gl_gui import cuda_interop
-
-    # Only tensor-like inputs count as a source. Everything else - None, the
-    # host dict, and notably the host's OWN HELD GLTexture (an unbound io
-    # resolves input to its held value, echoing last frame's value back in)
-    # - means "no source": serve the demo volume.
     source = input_value if isinstance(input_value, (torch.Tensor, np.ndarray)) else None
-    demo = source is None
-    if demo:
-        t = torch.from_numpy(demo_volume())
-    elif isinstance(source, np.ndarray):
-        t = torch.from_numpy(source)  # shares memory; version keys on the array
-    else:
-        t = source
-
-    # Sort runs on the FULL tensor (dim-pinned, like neural flow): values
-    # sort independently in the chosen dim's size, old-viewer style.
-    sort_dim = getattr(axes, "sort_dim", -1)
-    if 0 <= sort_dim < t.dim():
-        t = torch.sort(t.detach(), dim=sort_dim, descending=True).values
-
-    t3 = slice_by_axes(t, axes)
-    if axes.nf_on:
-        # The flow is pinned to TENSOR DIMS; resolve to display axes here.
-        # A chop/along dim that isn't currently displayed makes this a no-op.
-        dim_to_axis = {axes.x_dim: "x", axes.y_dim: "y", axes.z_dim: "z"}
-        chop = dim_to_axis.get(getattr(axes, "nf_chop_dim", -1))
-        along = dim_to_axis.get(getattr(axes, "nf_along_dim", -1))
-        if chop and along and chop != along:
-            t3 = neural_flow_volume(t3, chop, along, axes.nf_chunk)
-    if getattr(axes, "normalize", False):
-        # Over the DISPLAYED volume: signed data scales by signed-magnitude so
-        # zero stays anchored (pairs with params.centered + a diverging
-        # LUT); all-positive data min-max stretches to [0, 1].
-        lo, hi = t3.min(), t3.max()
-        if lo < 0:
-            t3 = t3 / (torch.maximum(hi.abs(), lo.abs()) + 1e-12)
-        else:
-            t3 = (t3 - lo) / (hi - lo + 1e-12)
-    base = "demo" if demo else (id(source), getattr(source, "_version", 0))
-    version = (base, axes.signature())
-
-    tex, path = None, "cpu"
-    if t3.is_cuda:
-        tex = cuda_interop.tensor_to_texture(gl_state, "volume_cuda", t3, version=version)
-        path = "cuda-interop"
-    if tex is None:
-        tex = gl_state.texture3d("volume", t3.cpu().numpy(), version=version)
-        path = "demo" if demo else "cpu"
-        gl_state.drop("volume_cuda")
-    else:
-        gl_state.drop("volume")
-
-    # Context rides the texture (GUI philosophy): the renderer draws the
-    # mapping UI against this same axes instance and labels edges from
-    # axis_display (flow-aware: a flowed axis shows its original extent).
-    # _host (via the bound view_func) + _io_ds let the renderer WAKE this io
-    # on remap: the io body only runs when the io ENVELOPE re-runs, so the
-    # wake must hit the envelope draw tiles + their gl-obj cache keys - the
-    # same recipe RenderHost.draw() uses for upstream updates. Invalidating
-    # just the io's tile leaves the envelope blitting and the io frozen.
-    tex.axes = axes
-    host = getattr(view_func, "__self__", None)
-    axes._host = host if isinstance(host, RenderHost) else None
-    display = []
-    for axis, dim in (("x", axes.x_dim), ("y", axes.y_dim), ("z", axes.z_dim)):
-        label = axes.dim_names[dim] if dim < len(axes.dim_names) else axis
-        if axes.nf_on and dim == getattr(axes, "nf_chop_dim", -1):
-            label = f"{label} % {axes.nf_chunk}"  # chopped into blocks
-        elif axes.nf_on and dim == getattr(axes, "nf_along_dim", -1):
-            chop_dim = getattr(axes, "nf_chop_dim", -1)
-            chop_name = (axes.dim_names[chop_dim]
-                         if 0 <= chop_dim < len(axes.dim_names) else "?")
-            label = f"{label} · {chop_name}"  # along the blocks
-        display.append((label, int(t3.shape[_AXIS_POS[axis]])))
-    tex.axis_display = tuple(display)
-    axes._io_ds = kwargs.get("draw_state")
-
-    imgui.text(f"{type(source).__name__} → {tex!r} via {path}")
+    t = demo_volume() if source is None else source
+    imgui.text(f"{'demo' if source is None else type(source).__name__} → draw_voxels")
     if view_func is None:
-        return False, tex
-    return view_func(input_value=tex, external_change=external_change, **kwargs)
+        return False, t
+    return view_func(input_value=t, external_change=external_change, **kwargs)
 
 
 @render_func(show_bg=False)
@@ -1056,153 +935,154 @@ def _render_label_billboards(gl_state, specs, cam, height):
         gl.glDisable(gl.GL_BLEND)
 
 
-def _resolve_dim(axes, v):
-    """A dim given by INDEX or by NAME (resolved through axes.dim_names);
-    None stays None (meaning: leave interactive)."""
-    if v is None:
-        return None
-    if isinstance(v, str):
-        try:
-            return axes.dim_names.index(v)
-        except ValueError:
-            return None
-    return int(v)
-
-
-def _wake_io(axes: VoxelAxes):
-    """Make the owning host's io actually re-run next frame. The io body sits
-    under the host envelope window (render_host_view, blit-cached): marking
-    only the io's tile leaves the envelope replaying its blit and the io
-    never gets CALLED. Mirror RenderHost.draw()'s upstream-change wake:
-    invalidate envelope + wrapper draw_states AND their by-obj cache keys."""
-    host = getattr(axes, "_host", None)
-    targets = []
-    if host is not None:
-        # The axes change is a "recipe change" with an UNCHANGED input - the
-        # host's materialize gate would keep the old cached texture. Arm the
-        # upstream-change latch so the io's fresh output (a new GLTexture
-        # object) gets materialized when it lands.
-        from src.lsd.gl_gui.melty import Melty
-        host._pending_external = True
-        host._input_change_frame = Melty.frame_count
-        targets = [host._draw_state, host._wrapper_draw_state]
-    elif getattr(axes, "_io_ds", None) is not None:
-        targets = [axes._io_ds]
-    for ds in targets:
-        if ds is None:
-            continue
-        ds.invalidate()
-        if host is not None:
-            ds.invalidate_by_obj(obj=host)
-    request_render()
-
-
-def _draw_axis_controls(axes: VoxelAxes):
-    """The remap UI: a radio row per display axis (one option per named dim,
-    conflict swaps), index scrubbers for unmapped dims, editable names."""
+def _draw_axis_controls(vox_ds, shape, mapping, dim_names):
+    """The remap UI over the renderer's draw_state params: a radio row per
+    display axis (conflict swaps — the displaced axis takes the old dim),
+    index scrubbers for unmapped dims, mean toggles, sort + normalize,
+    neural flow. Every edit writes vox_ds.<param>; auto-state persists the
+    diverged values, no object of its own."""
     changed = False
-    n_dims = len(axes.dim_sizes)   # dim_names may be longer than the tensor
+    n = len(shape)
+    zd, yd, xd = mapping
+    current = {"x_dim": xd, "y_dim": yd, "z_dim": zd}
+    names = [dim_names[d] if d < len(dim_names) else f"dim{d}" for d in range(n)]
     for label, attr in (("x", "x_dim"), ("y", "y_dim"), ("z", "z_dim")):
         imgui.text(f"{label}:")
-        for d, dim_name in enumerate(axes.dim_names[:n_dims]):
+        for d in range(n):
             imgui.same_line()
-            if imgui.radio_button(f"{dim_name}##axis_{label}_{d}",
-                                  getattr(axes, attr) == d):
-                axes.assign(attr, d)
+            if imgui.radio_button(f"{names[d]}##axis_{label}_{d}",
+                                  current[attr] == d):
+                prev = current[attr]
+                for other, od in current.items():
+                    if other != attr and od == d:
+                        current[other] = prev
+                        setattr(vox_ds, other, prev)
+                current[attr] = d
+                setattr(vox_ds, attr, d)
                 changed = True
-    for d in axes.scrub_dims():
-        size = axes.dim_sizes[d]
-        if size <= 1:
+    shown = set(current.values())
+    slices = list(getattr(vox_ds, "slices", ()) or ())
+    slices += [0] * (n - len(slices))
+    mean_dims = {int(m) for m in (getattr(vox_ds, "mean_dims", ()) or ())}
+    for d in range(n):
+        if d in shown or shape[d] <= 1:
             continue
         # mean toggle: average over this dim instead of scrubbing one slice
-        if not hasattr(axes, "mean_dims"):
-            axes.mean_dims = []
-        mean_changed, is_mean = imgui.checkbox(f"mean##mean_{d}", d in axes.mean_dims)
+        mean_changed, is_mean = imgui.checkbox(f"mean##mean_{d}", d in mean_dims)
         if mean_changed:
-            axes.mean_dims.append(d) if is_mean else axes.mean_dims.remove(d)
+            (mean_dims.add if is_mean else mean_dims.discard)(d)
+            vox_ds.mean_dims = tuple(sorted(mean_dims))
             changed = True
         imgui.same_line()
         if is_mean:
-            imgui.text(f"{axes.dim_names[d]} (averaged)")
+            imgui.text(f"{names[d]} (averaged)")
             continue
         imgui.push_item_width(160)
         scrub_changed, value = RenderFuncs.draw_int(
-            axes.slice_indices[d], name=f"{axes.dim_names[d]}##scrub_{d}", min_value=0, max_value=size - 1)
+            min(slices[d], shape[d] - 1), name=f"{names[d]}##scrub_{d}",
+            min_value=0, max_value=shape[d] - 1)
         imgui.set_item_allow_overlap()
-
         imgui.pop_item_width()
         if scrub_changed:
-            axes.slice_indices[d] = value
+            slices[d] = int(value)
+            vox_ds.slices = tuple(slices)
             changed = True
 
     # ── normalize + sort: data transforms, dim-pinned like the others ─────
-    norm_changed, axes.normalize = imgui.checkbox(
-        "normalize##norm", getattr(axes, "normalize", False))
-    changed = changed or norm_changed
+    sort_dim = int(getattr(vox_ds, "sort_dim", -1))
+    norm_changed, norm = imgui.checkbox(
+        "normalize##norm", bool(getattr(vox_ds, "normalize", False)))
+    if norm_changed:
+        vox_ds.normalize = norm
+        changed = True
     imgui.same_line()
     imgui.text("sort:")
     imgui.same_line()
-    if imgui.radio_button("off##sort_off", getattr(axes, "sort_dim", -1) == -1):
-        axes.sort_dim = -1
+    if imgui.radio_button("off##sort_off", sort_dim == -1):
+        vox_ds.sort_dim = -1
         changed = True
-    for d, dim_name in enumerate(axes.dim_names[:n_dims]):
+    for d in range(n):
         imgui.same_line()
-        if imgui.radio_button(f"{dim_name}##sort_{d}", getattr(axes, "sort_dim", -1) == d):
-            axes.sort_dim = d
+        if imgui.radio_button(f"{names[d]}##sort_{d}", sort_dim == d):
+            vox_ds.sort_dim = d
             changed = True
 
     # ── neural flow: chop one tensor dim into chunks laid along another
     # (dim-pinned: remapping x/y/z never changes which dim gets chopped;
     # only currently-displayed dims are offered, since the flow operates on
     # the sliced display volume) ─────────────────────────────────────────
-    nf_changed, axes.nf_on = imgui.checkbox("neural flow##nf", axes.nf_on)
-    changed = changed or nf_changed
-    if axes.nf_on:
-        shown = [d for d in (axes.x_dim, axes.y_dim, axes.z_dim)
-                 if 0 <= d < len(axes.dim_names)]
-        for label, attr in (("chop", "nf_chop_dim"), ("along", "nf_along_dim")):
+    nf_on = bool(getattr(vox_ds, "nf_on", False))
+    nf_changed, nf_now = imgui.checkbox("neural flow##nf", nf_on)
+    if nf_changed:
+        vox_ds.nf_on = nf_now
+        changed = True
+    if nf_now:
+        chop_d = _resolve_dim(dim_names, getattr(vox_ds, "nf_chop", None), n)
+        along_d = _resolve_dim(dim_names, getattr(vox_ds, "nf_along", None), n)
+        cur = {"nf_chop": xd if chop_d is None else chop_d,
+               "nf_along": zd if along_d is None else along_d}
+        for label, attr in (("chop", "nf_chop"), ("along", "nf_along")):
             imgui.same_line()
             imgui.text(f"{label}:")
-            for d in shown:
+            for d in sorted(shown):
                 imgui.same_line()
-                if imgui.radio_button(f"{axes.dim_names[d]}##{attr}_{d}",
-                                      getattr(axes, attr, -1) == d):
-                    setattr(axes, attr, d)
+                if imgui.radio_button(f"{names[d]}##{attr}_{d}", cur[attr] == d):
+                    setattr(vox_ds, attr, d)
                     changed = True
         imgui.same_line()
         imgui.push_item_width(110)
-        chunk_changed, chunk = RenderFuncs.draw_int(axes.nf_chunk, name="chunk##nf", step=0)
+        chunk_changed, chunk = RenderFuncs.draw_int(
+            int(getattr(vox_ds, "nf_chunk", 128)), name="chunk##nf", step=0)
         imgui.set_item_allow_overlap()
         imgui.pop_item_width()
         if chunk_changed and chunk > 0:
-            axes.nf_chunk = chunk
+            vox_ds.nf_chunk = int(chunk)
             changed = True
 
     return changed
 
 
+# Panel slider rows: (param, min, max) - UI constants, not state.
+_PANEL_FLOATS = (("tilt", -3.1416, 3.1416), ("spin", -6.3, 6.3),
+                 ("cam_zoom", 0.0, 137.6), ("pan_x", -4.0, 4.0),
+                 ("pan_y", -4.0, 4.0), ("pan_z", -4.0, 4.0),
+                 ("cam_brightness", 0.0, 4.0), ("cam_contrast", 0.1, 4.0),
+                 ("density", 0.0, 10.0), ("threshold", 0.0, 1.0))
+_PANEL_BOOLS = ("ortho", "centered", "nearest")
+
+
 @render_func(show_bg=False, use_cache=True)
-def draw_voxel_controls(input_value=None, params=None, dim_names=None, draw_state=None,
-                        hovered=None, **kwargs):
-    """Every control that drives a voxel view, in one satellite panel:
-    the VoxelParams tree, the axis remap radios + scrubbers + neural flow,
-    the editable dim names and the pipeline metadata. input_value is the
-    GLTexture (it carries the shared .axes); params is the OWNING VIEW's
-    instance, passed in so both windows edit the same object.
+def draw_voxel_controls(input_value=None, vox_ds=None, mapping=None,
+                        draw_state=None, hovered=None, **kwargs):
+    """Every control that drives a voxel view, in one satellite panel —
+    sliders/radios over the OWNING VIEW's draw_state params (auto-state:
+    edits write vox_ds.<param>, diverged values persist, untouched ones
+    keep flowing from the draw_voxels signature). input_value is the
+    uploaded buffer (it carries the tensor metadata); `mapping` is the
+    (z, y, x) dims the renderer resolved this frame.
 
-    CACHED, live only under the cursor: the body used to run every frame
-    (a Modes.WINDOW body renders from the deferred window queue), which
-    taxed every frame of a camera drag. The `hovered` event param keeps the
-    cache bypassed while the cursor is over the panel (so every widget
-    stays interactive), and draw_voxels invalidates it ONCE when a gesture
-    ends or params change externally (numpad presets), so it never refreshes
-    per drag frame."""
+    CACHED, live only under the cursor: the `hovered` event param keeps the
+    cache bypassed while the cursor is over the panel, and draw_voxels
+    invalidates it ONCE when a gesture ends, so it never refreshes per drag
+    frame."""
     tex = input_value
-    axes = getattr(tex, "axes", None)
-
-    changed, _ = draw_any(params, name="params", initial={"expanded": False
-    },
-                          show_add_delete=False, shadow=False)
+    if vox_ds is None:
+        imgui.text("no owning view")
+        return False, input_value
+    changed = False
+    for nm, lo, hi in _PANEL_FLOATS:
+        c, v = RenderFuncs.draw_float(float(getattr(vox_ds, nm, 0.0)), name=nm,
+                                      min_value=lo, max_value=hi)
+        if c:
+            setattr(vox_ds, nm, float(v))
+            changed = True
+    for i, nm in enumerate(_PANEL_BOOLS):
+        if i:
+            imgui.same_line()
+        c, v = imgui.checkbox(f"{nm}##panel", bool(getattr(vox_ds, nm, False)))
+        if c:
+            setattr(vox_ds, nm, v)
+            changed = True
 
     # ── LUT picker: one radio per list the LUT host knows about ─────────
     src = lut_host.input_value if isinstance(getattr(lut_host, "input_value", None), dict) else LUTS
@@ -1210,22 +1090,25 @@ def draw_voxel_controls(input_value=None, params=None, dim_names=None, draw_stat
     for i, lut_name in enumerate(src):
         if i % 4:
             imgui.same_line()
-        if imgui.radio_button(f"{lut_name}##lut", getattr(params, "lut", "jet") == lut_name):
-            params.lut = lut_name
+        if imgui.radio_button(f"{lut_name}##lut", getattr(vox_ds, "lut", "jet") == lut_name):
+            vox_ds.lut = lut_name
             changed = True
 
-    if axes is not None and axes.dim_names:
-        if _draw_axis_controls(axes):
-            _wake_io(axes)
+    # ── data mapping (only when tensor metadata rides the buffer) ───────
+    shape = getattr(tex, "source_shape", None)
+    if shape and mapping:
+        dim_names = tuple(getattr(vox_ds, "dim_names", ()) or ())
+        if _draw_axis_controls(vox_ds, shape, mapping, dim_names):
             changed = True
-        names_changed, new_names = draw_any(axes.dim_names, name="dim names",
+        names_changed, new_names = draw_any(list(dim_names), name="dim names",
                                             initial={"expanded": True},
                                             shadow=False)
         if names_changed and isinstance(new_names, list):
-            # Any length goes: extra names are for the labels, missing
-            # ones pad back to dimN on the next sync.
-            axes.dim_names = [str(x) for x in new_names]
-            _wake_io(axes)  # labels (axis_display) are built by the io
+            # Any length list: extra names wait for bigger tensors. Names
+            # must stay short LABELS - a DnD/paste can land an arbitrary
+            # object whose str() is a -MB code repr.
+            vox_ds.dim_names = tuple(_clean_dim_name(x, i)
+                                     for i, x in enumerate(new_names))
             changed = True
 
     # ── metadata: pipeline + lifecycle visibility (lives here, not drawn
@@ -1241,109 +1124,151 @@ def draw_voxel_controls(input_value=None, params=None, dim_names=None, draw_stat
     return changed, input_value
 
 
-@render_func(is_default_for="GLTexture", show_bg=False, use_cache=True)
+@render_func(is_default_for=("GLTexture", "Tensor"), show_bg=True, selectable=True, min_height=50, disable_scroll=True, use_cache=True)
 def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
-                params: VoxelParams = None, draw_state=None, dim_names=None,
-                x_dim=None, y_dim=None, z_dim=0,
-                nf_on=None, nf_chop=None, nf_along=None, nf_chunk=None,
+                draw_state=None,
+                # ── camera + shading: cam_* names dodge the legacy DrawState
+                # zoom/brightness/contrast fields (name-colliding params are
+                # excluded from auto-state). Gestures/panel write
+                # draw_state.<name>; diverged values persist. ──
+                tilt=0.5, spin=0.724, cam_zoom=3.4,
+                pan_x=0.0, pan_y=0.0, pan_z=0.0, ortho=False,
+                cam_brightness=1.0, cam_contrast=1.0,
+                # density = the old densityScale (haze gain over the opacity
+                # gate); threshold = the old opacityThreshold (higher → lower
+                # gate → more opaque)
+                density=3.7, threshold=0.301, centered=False,
+                nearest=True, lut="jet", step_size=0.0005, max_steps=4096,
+                # ── data mapping: dims by INDEX or NAME, None derives a
+                # default (last three → z/y/x) ──
+                dim_names=("layer", "batch", "token", "feature"),
+                x_dim=None, y_dim=None, z_dim=None, slices=(),
+                mean_dims=(), sort_dim=-1, normalize=False,
+                nf_on=False, nf_chop=None, nf_along=None, nf_chunk=128,
+                # ── volume furniture (screen px) ──
                 name_size=28.0, name_padding=30.1, name_opacity=1.1,
                 num_size=17.1, num_padding=5.5, num_opacity=0.8,
-                num_spacing=1.0, num_angle=0.0, step_size=0.0002,
+                num_spacing=1.0, num_angle=0.0,
                 middle_mouse_drag=None, right_mouse_drag=None,
                 scroll_y_changed=None, left_mouse_double_clicked=None,
                 kp_7_pressed=None, kp_1_pressed=None, kp_3_pressed=None,
                 kp_5_pressed=None, slash_pressed=None, kp_divide_pressed=None,
                 kp_decimal_pressed=None, **kwargs):
-    """The voxel renderer: input is a GLTexture, full stop — everything else
-    becomes one upstream (voxel_io / the future CUDA-interop path).
-    Label UI constants ride the render_func signature, NOT VoxelParams
-    (which serializes), one set per label type (name_* = dim names, num_* =
-    integer ticks): `*_size` is the screen-pixel height (0 hides that
-    type), `*_padding` the pixel gap between line and label, `*_opacity`
-    the alpha, and `num_spacing` the minimum gap between tick labels in
-    widest-label widths (smaller = denser ticks).
-
-    The data mapping is callable too: dim_names (any length — extras wait
-    for bigger tensors), x_dim/y_dim/z_dim and nf_chop/nf_along (dim INDEX
-    or dim NAME), nf_on/nf_chunk. Every non-None value applies to the
-    shared VoxelAxes and re-slices through the io; passed values re-apply
-    each render (caller-PINNED — the panel can't override them while they
-    keep arriving), None leaves that piece interactive."""
-    tex = input_value
+    """The voxel renderer — owner of every render and mapping decision.
+    Input is a tensor/ndarray (sliced + uploaded HERE, re-keyed by gl_state
+    deps on source identity/_version/mapping) or an already-uploaded
+    GLTexture (rendered as-is). Tensor METADATA — full shape, dim count —
+    rides the uploaded buffer; EVERYTHING else is a parameter on this
+    signature (auto draw_state params: gestures and the controls panel
+    write draw_state.<name>, only diverged values persist/serialize)."""
+    src = input_value
 
     # A 1-D texture is a LUT, not a volume - don't try to raymarch it.
-    if getattr(tex, "target", None) == int(gl.GL_TEXTURE_1D):
-        imgui.text(f"{tex!r} — a LUT, not a volume")
+    if getattr(src, "target", None) == int(gl.GL_TEXTURE_1D):
+        imgui.text(f"{src!r} — a LUT, not a volume")
         return False, None
 
-    # ── caller-pinned data mapping: non-None kwargs apply onto the shared
-    # VoxelAxes (dims by index or name, names first so name-given dims
-    # conflict to them) and wake the io to re-slice. ─────────────────
-    axes = getattr(tex, "axes", None)
-    if axes is not None:
-        ax_changed = False
-        if dim_names is not None:
-            wanted = [str(x) for x in dim_names]
-            if wanted != list(axes.dim_names):
-                axes.dim_names = wanted
-                ax_changed = True
-        for attr, val in (("x_dim", x_dim), ("y_dim", y_dim), ("z_dim", z_dim)):
-            d = _resolve_dim(axes, val)
-            if d is not None and 0 <= d < len(axes.dim_sizes) and getattr(axes, attr) != d:
-                axes.assign(attr, d)   # keeps the radio rows' conflict-swap rule
-                ax_changed = True
-        if nf_on is not None and bool(nf_on) != axes.nf_on:
-            axes.nf_on = bool(nf_on)
-            ax_changed = True
-        for attr, val in (("nf_chop_dim", nf_chop), ("nf_along_dim", nf_along)):
-            d = _resolve_dim(axes, val)
-            if d is not None and getattr(axes, attr, -1) != d:
-                setattr(axes, attr, d)
-                ax_changed = True
-        if nf_chunk is not None and int(nf_chunk) != axes.nf_chunk:
-            axes.nf_chunk = int(nf_chunk)
-            ax_changed = True
-        if ax_changed:
-            _wake_io(axes)
+    dim_names = tuple(_clean_dim_name(x, i) for i, x in enumerate(dim_names or ()))
+    slices = tuple(int(v) for v in (slices or ()))
+    mean_dims = tuple(int(v) for v in (mean_dims or ()))
+
+    # ── source → display volume → GPU, parameter-driven and stateless:
+    # slice_volume is a pure function of the params, the upload re-runs
+    # exactly when its deps change, and tensor metadata rides the buffer.
+    if isinstance(src, GLTexture):
+        tex, mapping = src, None
+        source_shape = tuple(getattr(src, "source_shape", src.shape))
+    else:
+        import torch
+        t = src if isinstance(src, torch.Tensor) else torch.from_numpy(np.asarray(src))
+        vol, mapping, source_shape = slice_volume(
+            t, dim_names, x_dim, y_dim, z_dim, slices, mean_dims,
+            sort_dim, normalize, nf_on, nf_chop, nf_along, nf_chunk)
+        version = ((id(src), getattr(src, "_version", 0)), mapping, slices,
+                   mean_dims, int(sort_dim), bool(normalize), bool(nf_on),
+                   str(nf_chop), str(nf_along), int(nf_chunk))
+        tex = None
+        if vol.is_cuda:
+            from src.lsd.gl_gui import cuda_interop
+            tex = cuda_interop.tensor_to_texture(gl_state, "volume_cuda", vol,
+                                                 version=version)
+        if tex is None:
+            tex = gl_state.texture3d("volume", vol.cpu().numpy(), version=version)
+            gl_state.drop("volume_cuda")
+        else:
+            gl_state.drop("volume")
+        tex.source_shape = source_shape       # tensor metadata on the buffer
+        tex.source_ndim = len(source_shape)
+
+    # Edge labels - the mapped dim's name (+ neural-flow decoration) and its
+    # DISPLAYED size, recomputed per frame from the params.
+    if mapping is not None:
+        zd, yd, xd = mapping
+        n = len(source_shape)
+        chop_d = _resolve_dim(dim_names, nf_chop, n)
+        along_d = _resolve_dim(dim_names, nf_along, n)
+        chop_d = xd if chop_d is None else chop_d
+        along_d = zd if along_d is None else along_d
+        display = []
+        for axis, dim in (("x", xd), ("y", yd), ("z", zd)):
+            label = dim_names[dim] if dim < len(dim_names) else f"dim{dim}"
+            if nf_on and dim == chop_d:
+                label = f"{label} % {int(nf_chunk)}"   # chopped into chunks
+            elif nf_on and dim == along_d:
+                chop_name = (dim_names[chop_d]
+                             if chop_d < len(dim_names) else f"dim{chop_d}")
+                label = f"{label} · {chop_name}"        # along the blocks
+            display.append((label, int(tex.shape[_AXIS_POS[axis]])))
+        axis_display = tuple(display)
+    else:
+        d3, h3, w3 = (int(s) for s in tex.shape)
+        axis_display = ((dim_names[2] if len(dim_names) > 2 else "x", w3),
+                        (dim_names[1] if len(dim_names) > 1 else "y", h3),
+                        (dim_names[0] if dim_names else "z", d3))
 
     # Size from the OWNING WINDOW, not this view's own draw() - a nested
     # view's height derives from what it rendered last frame (self-referential),
     # while the window's height is the user-dragged size. Reserve room for the
-    # header + params tree + status line below the image.
+    # header + a line below the image.
     win = draw_state.parent_window or draw_state
     width = max(64, int(draw_state.content_width or win.content_width or 0))
-    height = max(64, int(win.height or 320) - 40)
+    height = max(100, draw_state.height - 30)
 
-    # ── gestures → params (events are hover-routed wrapper wrappers) ──────
+    # ── gestures → draw_state params (auto-state: the caller diverges the
+    # param so it persists; events are hover-routed wrapper kwargs) ──────
     if middle_mouse_drag is not None:
         if middle_mouse_drag.shift:
             # Blender-style shift-d = pan: move the orbit target so the
             # content tracks the cursor 1:1 at the target plane (world units
-            # per pixel at distance zoom, / 1.7 - matches the old gen).
-            wpp = 2.0 * params.zoom / (1.7 * height)
-            st, ct = math.sin(params.tilt), math.cos(params.tilt)
-            cs, ss = math.cos(params.spin), math.sin(params.spin)
+            # per pixel at current cam_zoom, focal 1.7 - matches the ray gen).
+            wpp = 2.0 * cam_zoom / (1.7 * height)
+            st, ct = math.sin(tilt), math.cos(tilt)
+            cs, ss = math.cos(spin), math.sin(spin)
             dx, dy = middle_mouse_drag.dx, middle_mouse_drag.dy
-            params.pan_x += (ss * dx - cs * st * dy) * wpp
-            params.pan_y += (-cs * dx - ss * st * dy) * wpp
-            params.pan_z += ct * dy * wpp
+            pan_x += (ss * dx - cs * st * dy) * wpp
+            pan_y += (-cs * dx - ss * st * dy) * wpp
+            pan_z += ct * dy * wpp
+            draw_state.pan_x, draw_state.pan_y, draw_state.pan_z = pan_x, pan_y, pan_z
         elif middle_mouse_drag.ctrl:
             # the old viewer's ctrl-drag: vertical = dolly zoom, horizontal
             # still orbits.
-            params.zoom = min(137.6, max(0.0, params.zoom * math.exp(0.005 * middle_mouse_drag.dy)))
-            params.spin -= middle_mouse_drag.dx * 0.008
+            cam_zoom = min(137.6, max(0.0, cam_zoom * math.exp(0.005 * middle_mouse_drag.dy)))
+            spin -= middle_mouse_drag.dx * 0.008
+            draw_state.cam_zoom, draw_state.spin = cam_zoom, spin
         else:
-            params.spin -= middle_mouse_drag.dx * 0.008
-            params.tilt = min(math.pi, max(-math.pi, params.tilt + middle_mouse_drag.dy * 0.008))
+            spin -= middle_mouse_drag.dx * 0.008
+            tilt = min(math.pi, max(-math.pi, tilt + middle_mouse_drag.dy * 0.008))
+            draw_state.spin, draw_state.tilt = spin, tilt
     if right_mouse_drag is not None:
         # the old viewer's shading drag: horizontal = brightness, vertical =
         # contrast (up = increase). A real drag exceeds CLICK_MAX_DISTANCE,
         # so context-menu clicks don't fire alongside.
-        params.brightness = min(4.0, max(0.0, params.brightness + right_mouse_drag.dx * 0.01))
-        params.contrast = min(4.0, max(0.1, params.contrast - right_mouse_drag.dy * 0.008))
+        cam_brightness = min(4.0, max(0.0, cam_brightness + right_mouse_drag.dx * 0.01))
+        cam_contrast = min(4.0, max(0.1, cam_contrast - right_mouse_drag.dy * 0.008))
+        draw_state.cam_brightness, draw_state.cam_contrast = cam_brightness, cam_contrast
     if scroll_y_changed is not None:
-        params.zoom = min(135.5
-        , max(0.0, params.zoom * math.exp(-0.23 * scroll_y_changed.value)))
+        cam_zoom = min(135.5, max(0.0, cam_zoom * math.exp(-0.23 * scroll_y_changed.value)))
+        draw_state.cam_zoom = cam_zoom
 
     # ── Blender-style numpad views (hover-routed key events): 7/1/3 = top/
     # front/right, ctrl = the opposite side, 5 = ortho toggle, / (either
@@ -1353,19 +1278,24 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
     from src.lsd.gl_gui.melty import Melty
     if Melty.text_focused_ds is None:
         if kp_7_pressed is not None:
-            params.spin, params.tilt = -HALF_PI, (-HALF_PI if kp_7_pressed.ctrl else HALF_PI)
+            spin, tilt = -HALF_PI, (-HALF_PI if kp_7_pressed.ctrl else HALF_PI)
+            draw_state.spin, draw_state.tilt = spin, tilt
         if kp_1_pressed is not None:
-            params.spin, params.tilt = (HALF_PI if kp_1_pressed.ctrl else -HALF_PI), 0.0
+            spin, tilt = (HALF_PI if kp_1_pressed.ctrl else -HALF_PI), 0.0
+            draw_state.spin, draw_state.tilt = spin, tilt
         if kp_3_pressed is not None:
-            params.spin, params.tilt = (math.pi if kp_3_pressed.ctrl else 0.0), 0.0
+            spin, tilt = (math.pi if kp_3_pressed.ctrl else 0.0), 0.0
+            draw_state.spin, draw_state.tilt = spin, tilt
         if kp_5_pressed is not None:
-            params.ortho = not params.ortho
+            ortho = not ortho
+            draw_state.ortho = ortho
         if (slash_pressed is not None or kp_divide_pressed is not None
                 or kp_decimal_pressed is not None):
-            params.pan_x = params.pan_y = params.pan_z = 0.0
+            pan_x = pan_y = pan_z = 0.0
+            draw_state.pan_x = draw_state.pan_y = draw_state.pan_z = 0.0
 
     # Filtering is sampler state on the texture, view-owned, applied per frame.
-    filt = gl.GL_NEAREST if params.nearest else gl.GL_LINEAR
+    filt = gl.GL_NEAREST if nearest else gl.GL_LINEAR
     gl.glBindTexture(tex.target, tex.texture_id)
     gl.glTexParameteri(tex.target, gl.GL_TEXTURE_MIN_FILTER, filt)
     gl.glTexParameteri(tex.target, gl.GL_TEXTURE_MAG_FILTER, filt)
@@ -1386,24 +1316,22 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
 
     # ── LUT: prefer the shared 1-D texture the LUT host materialized; fall
     # back to a direct upload of the named lut until the host has time ────
-    lut_tex = _LUT_TEXTURES.get(params.lut)
+    lut_tex = _LUT_TEXTURES.get(lut)
     if lut_tex is None:
-        lut_list = LUTS.get(params.lut, LUTS["jet"])
+        lut_list = LUTS.get(lut, LUTS["jet"])
         lut_tex = gl_state.texture1d("lut_fallback", lut_list,
-                                     version=(params.lut, len(lut_list)))
+                                     version=(lut, len(lut_list)))
 
     # ── axis furniture geometry: corners + silhouette are the Python mirror
     # of the OpenGL camera, computed BEFORE the GL pass - the label
     # billboards render IN the voxel FBO with the volume's own camera ────
-    axes = getattr(tex, "axes", None)
-    axis_display = getattr(tex, "axis_display", None)
     corners = silhouette = None
     if axis_display:
-        corners = project_corners(params.tilt, params.spin, params.zoom,
+        corners = project_corners(tilt, spin, cam_zoom,
                                   width / height, width, height,
                                   scale=volume_scale,
-                                  pan=(params.pan_x, params.pan_y, params.pan_z),
-                                  ortho=params.ortho)
+                                  pan=(pan_x, pan_y, pan_z),
+                                  ortho=ortho)
         silhouette = _silhouette_edges(corners)
 
     # ── GL pass: every resource tracked + lifecycle-managed by gl_state ──
@@ -1413,12 +1341,15 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
         gl.glDisable(gl.GL_DEPTH_TEST)
         gl.glClearColor(0.0, 0.0, 0.0, 0.0)
         gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
-        # Class-default fallback: params instances created BEFORE a hotswap
-        # that added a field don't have the new attribute yet.
-        uniforms = {name: getattr(params, name, getattr(VoxelParams, name, 0.0))
-                    for name in _UNIFORM_FIELDS}
+        # int() of a UI-dragged float never matches the uniform's inferred
+        # GLSL type (the loop bound must stay an int).
         voxel_pass(gl_state, volume=tex, lut=lut_tex, aspect=width / height,
-                   volume_scale=volume_scale, step_size=step_size, **uniforms)
+                   volume_scale=volume_scale, step_size=step_size,
+                   max_steps=int(max_steps), density=density,
+                   threshold=threshold, tilt=tilt, spin=spin, zoom=cam_zoom,
+                   pan_x=pan_x, pan_y=pan_y, pan_z=pan_z, ortho=ortho,
+                   brightness=cam_brightness, contrast=cam_contrast,
+                   centered=centered)
         if silhouette and (name_size > 0 or num_size > 0):
             # Labels as in-scene textured quads. A bake/render hiccup should
             # not take down the view (or trigger the hotswap auto-revert) -
@@ -1429,9 +1360,9 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                                          volume_scale, name_size, name_padding,
                                          name_opacity, num_size, num_padding,
                                          num_opacity, num_spacing, num_angle)
-                cam = {n: uniforms[n] for n in ("tilt", "spin", "zoom", "pan_x",
-                                                "pan_y", "pan_z", "ortho")}
-                cam["aspect"] = width / height
+                cam = {"tilt": tilt, "spin": spin, "zoom": cam_zoom,
+                       "pan_x": pan_x, "pan_y": pan_y, "pan_z": pan_z,
+                       "ortho": ortho, "aspect": width / height}
                 _render_label_billboards(gl_state, specs, cam, height)
             except Exception as e:
                 if not _LABEL_WARNED:
@@ -1466,35 +1397,29 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
         draw_state.invalidate()
         request_render()
     panel_open = bool(draw_state.misc.get("params_panel", False))
-    imgui.set_cursor_screen_pos((win.abs_left + (win.width or width) + 12, win.abs_top))
+    # imgui.set_cursor_screen_pos((win.abs_left + (win.width or width) + 12, win.abs_top))
     panel_kwargs = {"closed": not panel_open} if (init or toggled) else {}
 
     if not middle_mouse_drag and not right_mouse_drag and scroll_y_changed is None:
-        changed, _, panel_ds = draw_voxel_controls(tex, params=params, name="controls",
+        changed, _, panel_ds = draw_voxel_controls(tex, vox_ds=draw_state,
+                                                   mapping=mapping, name="controls",
                                                    mode=Modes.WINDOW,
                                                    parent_window=win, auto_resize=False,
                                                    shadow=True, return_extras=True,
                                                    **panel_kwargs)
         if panel_ds is not None:
             draw_state.misc["params_panel"] = not panel_ds.closed
-            # The panel is cached and must NOT refresh per drag frame - it rides
-            # its blit as a camera gesture mutates params, then updates up
-            # ONCE at the gesture edge (or on any external param change, e.g. a
-            # numpad preset). During the gesture we no-invalidate so one
-            # trailing render lands the refresh after the last drag event.
-            dragging = (middle_mouse_drag is not None or right_mouse_drag is not None
-                        or scroll_y_changed is not None)
+            # The panel is cached and must NOT invalidate per drag frame - it
+            # rides its blit while a camera gesture writes the params, then
+            # catches up ONCE at the gesture edge.
             if not panel_ds.closed:
-                sig = (params.tilt, params.spin, params.zoom, params.pan_x,
-                       params.pan_y, params.pan_z, params.brightness,
-                       params.contrast, params.lut)
                 if (not imgui.is_mouse_down(2) and not imgui.is_mouse_down(1) and not
                         imgui.is_mouse_down(0) and scroll_y_changed is None) and changed:
                     panel_ds.invalidate_up()
 
         # ── status: error surfacing only (metadata lives in the panel) ──────
         if voxel_pass.last_error:
-            imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
+            # imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
             imgui.text_colored(voxel_pass.last_error.splitlines()[0], 1.0, 0.45, 0.40, 1.0)
 
         if changed:
@@ -1585,13 +1510,14 @@ if lut_host.input_value is not LUTS and isinstance(lut_host.input_value, dict):
 
 
 def _draw_host_volume(input_value):
-    # input_value is the host (a dict); the GLTexture it materialized lives
-    # one level down; draw_any routes it to draw_voxels by type.
-    tex = input_value.get("value") if isinstance(input_value, dict) else input_value
-    if tex is None:
+    # input_value is the host (a dict); the SOURCE tensor it resolved comes
+    # one level down. draw_voxels owns creation + upload + render - call it
+    # directly (render_funcs are called directly, chain philosophy).
+    t = input_value.get("value") if isinstance(input_value, dict) else input_value
+    if t is None:
         imgui.text("no volume yet — waiting on host")
         return
-    draw_any(tex, name="volume")
+    draw_voxels(t, name="volume")
 
 
 @window(input_value=voxel_host, tint=(0.00, 0.02, 0.12))

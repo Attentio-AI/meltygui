@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Dict, Any
 
+from src.lsd.gl_gui.notifications import notify
 from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults, Core
 
@@ -35,3 +36,7 @@ class InvalidateTracker:
 
         for key in to_delete:
             cls.invalidations.pop(key, None)
+
+
+        if Toggles.InvalidateTracker.enable:
+            notify(f"Invalidations: {len(cls.invalidations)}", tag="InvalidateTracker", tint=(1,1,0.4), urgent=False)

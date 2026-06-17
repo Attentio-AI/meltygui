@@ -6218,8 +6218,7 @@ class SymbolIndexCache:
 
     @classmethod
     def _build_once(cls):
-        notify("SymbolIndexCache: building index cache...", color=(1,1,0))
-        print("$$$$$$$$$$$$$SymbolIndexCache: building index cache...")
+        notify("SymbolIndexCache: building index cache...", tint=(1,0,0.2))
         if cls.building:
             return
         cls.building = True

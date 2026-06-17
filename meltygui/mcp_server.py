@@ -178,6 +178,39 @@ def install_log_tee():
         print(f"[mcp] could not install log tee: {e}")
 
 
+# --- MCP activity toasts ----------------------------------------------------
+# Every tool call pops a toast in the studio (tag "MCP") so Claude and
+# the live process is visible. Color-coded per tool, red on error. notify() fires
+# UNCONDITIONALLY on every call: it's thread-safe, no-op in its render wake when
+# no window exists, and an idle-time call just appends to the bounded deque
+# (maxlen 20) and shows on the next session - no studio gate.
+MCP_TOOL_TINTS = {
+    "get_logs":         (0.55, 0.70, 0.95, 1.0),
+    "status":           (0.45, 0.80, 1.00, 1.0),
+    "last_error":       (1.00, 0.65, 0.30, 1.0),
+    "launch":           (0.40, 1.00, 0.55, 1.0),
+    "restart":          (1.00, 0.80, 0.35, 1.0),
+    "restart_launcher": (1.00, 0.55, 0.40, 1.0),
+    "hotswap":          (0.55, 0.90, 1.00, 1.0),
+    "screenshot":       (0.80, 0.60, 1.00, 1.0),
+    "list_windows":     (0.70, 0.75, 0.85, 1.0),
+    "eval_python":      (0.45, 0.95, 0.80, 1.0),
+}
+MCP_DEFAULT_TINT = (0.70, 0.72, 0.82, 1.0)
+MCP_ERROR_TINT = (1.00, 0.35, 0.35, 1.0)
+
+
+def _mcp_toast_text(name, call_args):
+    """Compact one-line summary of a tool call for the notification toast:
+    the tool name plus its args, each value collapsed to a single line and
+    truncated so a big `source`/`code` payload can't blow up the toast."""
+    def short(v):
+        s = " ".join(str(v).split())
+        return s if len(s) <= 40 else s[:40] + "..."
+    detail = ", ".join(f"{k}={short(v)}" for k, v in call_args.items())
+    return f"{name}({detail})" if detail else f"{name}()"
+
+
 def start_launcher_mcp(model_server, host=HOST, port=PORT):
     """Start the launcher MCP server in a daemon thread. Idempotent."""
     global _mcp_started
@@ -213,10 +246,18 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
         """
 
         def deco(fn):
-            from src.lsd.gl_gui.view.core_views.monitor import MCPServerLog
-
             @functools.wraps(fn)
             def wrapper(*args, **kwargs):
+                # Resolve notify/MCPServerLog PER CALL, not at registration. The
+                # tool wrappers are registered once at launcher boot; a later
+                # hotswap of notifications.py / monitor.py re-imports the module and
+                # makes a NEW NotificationCenter class (with fresh deques) that the
+                # render loop reads. A registered-level `import` would keep
+                # appending to the OLD, pre-hotswap class - toasts land in an
+                # orphaned deque nothing draws (the post-hotswap silent-toast bug).
+                # Re-importing here always hits the live sys.modules entry.
+                from src.lsd.gl_gui.view.core_views.monitor import MCPServerLog
+                from src.lsd.gl_gui.notifications import notify
                 # Bind positional args to names so the log is self-describing.
                 call_args = dict(kwargs)
                 names = list(fn.__code__.co_varnames[:fn.__code__.co_argcount])
@@ -227,8 +268,13 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
                 except Exception:
                     MCPServerLog.record(fn.__name__, call_args,
                                         error=traceback.format_exc())
+                    notify(_mcp_toast_text(fn.__name__, call_args) + " (error)",
+                           tint=MCP_ERROR_TINT, tag="MCP")
                     raise
                 MCPServerLog.record(fn.__name__, call_args, result=result)
+                notify(_mcp_toast_text(fn.__name__, call_args),
+                       tint=MCP_TOOL_TINTS.get(fn.__name__, MCP_DEFAULT_TINT),
+                       tag="MCP")
                 return result
 
             return mcp.tool()(wrapper)
@@ -305,6 +351,8 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
         compiles but throws at runtime is auto-reverted by the editor's hotswap
         guard. Library/stdlib paths are refused. Returns a status line.
         """
+        from src.lsd.gl_gui.notifications import notify
+        notify(f"hotswap requested: {path}", tint=MCP_TOOL_TINTS.get("hotswap", MCP_DEFAULT_TINT), tag="MCP")
         from src.lsd.gl_gui import mcp_hotswap
         return mcp_hotswap.hotswap_file(path, source or None)
 
@@ -316,6 +364,8 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
         list_windows to see what's open. Captures a single window rather than
         the whole display, which may span an ultra-wide monitor.
         """
+        from src.lsd.gl_gui.notifications import notify
+        notify(f"screenshot requested: {window}", tint=MCP_TOOL_TINTS.get("screenshot", MCP_DEFAULT_TINT), tag="MCP")
         if not model_server._studio_running():
             return "no studio session running — call launch first"
         from src.lsd.gl_gui.screenshot import request_capture

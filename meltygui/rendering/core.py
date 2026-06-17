@@ -19,6 +19,7 @@ from src.lsd.gl_gui.background import Background, Pending
 from src.lsd.gl_gui.events.input_handler import ALL_ACTIONS
 from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.toggles import Counters, Toggles, Tint
+from src.lsd.gl_gui.mode_defaults import ModeDefaults
 from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
 from src.lsd.gl_gui.view.core_conversion.address import to_address, Address
 from src.lsd.gl_gui.view.core_conversion.path_finder import PendingState
@@ -451,7 +452,6 @@ def render_func(*args, **o_kwargs):
     _rf_save_data = o_kwargs.get('save_data', None)
 
 
-
     @wraps(func)
     def wrapper(input_value=None, **kwargs):
 
@@ -495,9 +495,12 @@ def render_func(*args, **o_kwargs):
                     Core.melty.cache.invalidate_up_by_obj(driven_value)
                 return changed, value
 
-
         mode_stacked = False
-        current_mode = None
+        # if modes is None:
+        #     default_mode = ModeDefaults.default_mode_from_type.get(type(input_value), None)
+        #     if default_mode is not None:
+        #         modes = [default_mode]
+
         if modes is not None:
             mode_config = modes[0].value.get(type(input_value), None)
             if mode_config is not None and mode_config.recursive:
@@ -512,15 +515,15 @@ def render_func(*args, **o_kwargs):
                         override_kwargs = mode_config.kwargs.copy()
                         kwargs = kwargs | override_kwargs
                         kwargs['current_mode'] = mode
-                        current_mode = mode
                         if not mode_config.recursive:
                             not_recursive.append(mode)
                         else:
                             kwargs['mode'] = mode
 
             for mode in not_recursive:
-                if kwargs['mode'] == mode:
+                if mode in kwargs and kwargs['mode'] == mode:
                     kwargs.pop('mode', None)
+
 
         # Auto-state: the keys explicitly provided for THIS call - by the
         # decorator or a Mode override - captured before any default layer merges
@@ -528,11 +531,11 @@ def render_func(*args, **o_kwargs):
         # default layer (type/attrib defaults, codec render_kwargs, decorator
         # o_kwargs, signature default).
         explicit_param_keys = set(kwargs)
+        kwargs.pop('mode', None)
 
         kwargs = Melty.default_kwargs_by_type[kwargs.get("real_type", type(input_value))] | kwargs
         as_window = kwargs.get("as_window", False)
         initial_values = kwargs.get("initial", {})
-
 
         if as_window:
             kwargs['show_bg'] = True
@@ -1702,14 +1705,15 @@ def render_func(*args, **o_kwargs):
                     draw_state.width = snap_int(available_width)
 
                     view_top = draw_state.abs_top
-                    delta_from_top = view_top - draw_state.parent_window.abs_top
-                    if draw_state.expanded:
-                        fill_height = min(kwargs.get("max_height", 1e9), draw_state.parent_window.height - delta_from_top)
+                    if draw_state.parent_window is not None:
+                        delta_from_top = view_top - draw_state.parent_window.abs_top
+                        if draw_state.expanded:
+                            fill_height = min(kwargs.get("max_height", 1e9), draw_state.parent_window.height - delta_from_top)
 
-                    else:
-                        fill_height = 20
-                    draw_state.height = fill_height
-                    parent_wrap_height = fill_height
+                        else:
+                            fill_height = 20
+                        draw_state.height = fill_height
+                        parent_wrap_height = fill_height
                     # fixed_size_draw_state = Melty.fixed_size_stack[-2]
                     # fixed_size_draw_state_p = Melty.fixed_size_stack[-1]
                     #
@@ -2561,7 +2565,7 @@ def render_func(*args, **o_kwargs):
                     left_mouse_down_press = draw_state.on_action("left_mouse_held", "press", priority_delta=-1)
                     draw_state.pressed = True if left_mouse_down_press else False
                     click = draw_state.on_action("left_mouse_click", priority_delta=0)
-                    middle_down = draw_state.on_action("middle_mouse_down", priority_delta=0)
+                    middle_down = draw_state.on_action("non_blocking_middle_mouse_down", priority_delta=0)
 
                     if middle_down:
                         Melty.selected = set()
@@ -2867,7 +2871,7 @@ def render_func(*args, **o_kwargs):
 
                 imgui.begin_group()
 
-                is_hovered = draw_state.on_action("cursor_hover", view_id="hover", priority_delta=-1) is not None
+                is_hovered = draw_state.on_action("cursor_hover", view_id="hover", priority_delta=0) is not None
                 draw_state._hovered = is_hovered
 
                 if draw_state._bounding_hovered:
@@ -2906,9 +2910,11 @@ def render_func(*args, **o_kwargs):
                 if hover_eligible:
                     if closable:
                         Melty.any_window_hovered_pending = True
-                    max_layer_depth = Melty.max_depth * Melty.max_depth + Melty.max_depth
-                    priority = max_layer_depth - draw_state.z_pos
                     event_names = copy(wanted_params)
+                    max_layer_depth = Core.melty.max_depth * Core.melty.max_depth + Core.melty.max_depth
+                    layer_and_depth = Core.melty.active_layer * Core.melty.max_depth + Core.melty.depth
+                    priority = max_layer_depth - layer_and_depth
+
 
                     # Remove event names from wanted params that aren't in kwargs
                     event_names = [e for e in event_names if e in kwargs]
@@ -3294,7 +3300,7 @@ def render_func(*args, **o_kwargs):
                 if draw_state._has_popup:
                     is_popup_open = Melty.imgui_popup_open
                     if is_popup_open != draw_state._imgui_popover_open and not is_popup_open:
-                        note = Note(name=f"popover close {draw_state.name}", tint=(0,1,1))
+                        note = Note(nadd_rect_filledame=f"popover close {draw_state.name}", tint=(0,1,1))
                         Melty.cache.invalidate_up_by_obj(input_value, max_depth=4, note=note)
                     if is_popup_open:
                         Melty.report_imgui_active()
@@ -3785,6 +3791,7 @@ def render_func(*args, **o_kwargs):
             start_cursor = imgui.get_cursor_screen_pos()
             imgui.set_cursor_screen_pos((start_cursor[0],
                                          start_cursor[1] - scroll_offset[1]))
+
 
         # If we are using the new callback header, gate rendering behind expanded
         Melty.silence_invalidate = False

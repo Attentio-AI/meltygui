@@ -62,6 +62,24 @@ def _span_fingerprint(lines):
     return h.hexdigest()
 
 
+def _source_and_newline(address, source_text=None):
+    """The file's full text + dominant newline for a codec load.
+
+    Normally reads disk. `source_text` (the EXACT text an in-process write just
+    produced, handed over by FileWatch.get_self_write_text) is used instead — a
+    self-write sync that skips the disk round trip AND the "Loading…" event. The
+    span slice + `_span_fingerprint` downstream are identical either way, since
+    the recorded text IS what codec.save wrote to the file."""
+    if source_text is not None:
+        return source_text, _detect_newline(source_text.encode("utf-8", "surrogatepass"))
+    data = address.path.read_bytes()
+    newline = _detect_newline(data)
+    try:
+        return data.decode("utf-8"), newline
+    except UnicodeDecodeError:
+        return data.decode("latin-1"), newline
+
+
 def _block_is_function(source_lines, name):
     """Does this getsourcelines block actually contain `def <name>`?
 
@@ -329,13 +347,8 @@ class TypeCodec(Codec):
 
 
     @staticmethod
-    def load(address, **kwargs):
-        data = address.path.read_bytes()
-        newline = _detect_newline(data)
-        try:
-            text = data.decode("utf-8")
-        except UnicodeDecodeError:
-            text = data.decode("latin-1")
+    def load(address, source_text=None, **kwargs):
+        text, newline = _source_and_newline(address, source_text)
         lines = text.split(newline)
         span_lines = lines[address.start:address.end]
         # Remember what the span held when it was loaded; save verifies the disk
@@ -649,17 +662,12 @@ class CallerCodec(TypeCodec):
         return address
 
     @staticmethod
-    def load(address, **kwargs):
+    def load(address, source_text=None, **kwargs):
         """Load just the call EXPRESSION (not the whole statement). Slice the bare
         call out of its line span using `_call_cols`, and stash the surrounding
         prefix/suffix on the address so save can splice an edit back between them.
         The bare call always parses; the statement around it may not."""
-        data = address.path.read_bytes()
-        newline = _detect_newline(data)
-        try:
-            text = data.decode("utf-8")
-        except UnicodeDecodeError:
-            text = data.decode("latin-1")
+        text, newline = _source_and_newline(address, source_text)
         span_lines = text.split(newline)[address.start:address.end]
         # Conflict-guard baseline (see TypeCodec.save): the FULL span as loaded -
         # save rebuilds prefix + call + suffix, so it verifies at line level.
@@ -985,6 +993,9 @@ def codec_for_path(path):
     file whose bytes don't decode as the extension promises (an empty or
     corrupt .png) falls through to the sniff instead of being routed to a
     load() that can only throw."""
+    if isinstance(path, str) and len(path) > 255:
+        return None
+
     codec = extension_to_codec.get(path.suffix.lower())
     if codec is not None and codec.claims(path):
         return codec

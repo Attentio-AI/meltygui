@@ -982,6 +982,14 @@ class TileCacheMasked:
             input_val_hash,
         )
 
+    def invalidate_parent(self, k: str, force=False, do_store=True, frame_delta=0, note=None,
+                   stop_at_filled: bool = False) -> None:
+        draw_state = self.key_to_draw_state.get(k, None)
+        if draw_state is None:
+            return
+        parent = draw_state.parent_window if draw_state.parent_window is not None else draw_state.parent
+        self.invalidate(parent._tile_id, force=force, do_store=do_store, frame_delta=frame_delta, note=note, stop_at_filled=stop_at_filled)
+
     def invalidate(self, k: str, force=False, do_store=True, frame_delta=0, note=None,
                    stop_at_filled: bool = False) -> None:
 
@@ -1650,7 +1658,8 @@ class TileCacheMasked:
 
                 imgui.dummy(size[0], size[1])
 
-                imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top + draw_state.content_height))
+                if draw_state.multi_line:
+                    imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top + draw_state.content_height + draw_state.header_height))
                 self._stack.append(
                     _Ctx(
                         draw_state=draw_state,

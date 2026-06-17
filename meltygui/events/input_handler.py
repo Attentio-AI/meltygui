@@ -294,7 +294,7 @@ class InputHandler:
             if vid == view_id:
                 # Merge subscriptions, keep lowest priority
                 merged_subs = subs | frozenset(new_subs)
-                merged_priority = min(pri, priority)
+                merged_priority = max(pri, priority)
                 self._hovered[i] = (view_id, merged_priority, merged_subs)
                 return
 
@@ -497,6 +497,7 @@ class InputHandler:
 
         def add_event(view_id: Any, key: tuple[str, str], event: InputEvent):
             cache = names_cache_get(view_id)
+            tile_id = _view_id_to_tile_id.get(view_id, None)
             if cache is None:
                 return
             event_name = cache.get(key)

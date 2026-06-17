@@ -52,7 +52,6 @@ from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.core_views.headers import draw_header, draw_header_end, draw_footer, render_search, \
     annotation_item_type
 from src.lsd.gl_gui.view.core_views.inspect_utils import set_fn_defaults
-from src.lsd.gl_gui.view.core_views.tensor_views import draw_tensor
 from src.lsd.gl_gui.view.core_views.text_editor import draw_text, _scroll_into_view
 from src.shader_library.shader_manager.texture_manager import PendingTexture
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
@@ -4485,49 +4484,65 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
 
     imgui.dummy(0,2)
 
+    # Columns stripped: render the selected tab(s) stacked at the menu's full
+    # width - one all across the menu, several fill the height. No Column calls,
+    # so nothing here triggers the window-frame edge system (the source of the
+    # pinned-popup fly-off). Each tab gets a bounded height so a tall one
+    # scrolls inside itself instead of overrunning the (non-scrolling) menu.
+    n_sel = max(1, len(tab_state.selected_tabs))
+    full_w = draw_state.content_width
+    clip = draw_state.abs_clip_rect
+    top_y = imgui.get_cursor_screen_pos()[1]
+    tab_h = max(60.0, (clip[3] - top_y) / n_sel - 6) if clip is not None else None
+
     for t_idx, static_tab in enumerate(tab_state.selected_tabs):
+        size_kw = {"width": full_w}
+        if tab_h is not None:
+            size_kw["height"] = tab_h
         if static_tab >= len(tab_names):
-            draw_func_tab(input_value, name=f"func_tab_{t_idx}##{unique}", disable_scroll=True, column=t_idx)
+            # A persisted selection that outran the current tab set: fall back
+            # to the func tab rather than indexing out of range.
+            draw_func_tab(input_value, name=f"func_tab_{t_idx}##{unique}",
+                          disable_scroll=True, **size_kw)
+            continue
         this_tab = tab_names[static_tab]
-        # Each tab is its own render_func placed at column=t_idx; the tab owns a
-        # single-column region so its inner views don't pass column themselves.
         if this_tab == tint_tab_name:
-            draw_tint_context(input_value, name=f"Context Tint##{unique}", column=t_idx)
+            draw_tint_context(input_value, name=f"Context Tint##{unique}", **size_kw)
 
         elif this_tab == info_icon_fa:
             # Resolve the effective search term (menu kwarg, else its search box).
             info_search = search_text if search_text != "" else draw_state.search_text
             draw_info_tab(input_value, search_text=info_search, unique=unique,
-                          name=f"info_tab_{t_idx}##{unique}", column=t_idx)
+                          name=f"info_tab_{t_idx}##{unique}", **size_kw)
 
         elif this_tab == config_icon_fa:
-            draw_config_tab(input_value, name=f"config_tab_{t_idx}##{unique}", column=t_idx)
+            draw_config_tab(input_value, name=f"config_tab_{t_idx}##{unique}", **size_kw)
 
         elif this_tab == func_tab:
-            draw_func_tab(input_value, name=f"func_tab_{t_idx}##{unique}", disable_scroll=False, column=t_idx)
+            draw_func_tab(input_value, name=f"func_tab_{t_idx}##{unique}",
+                          disable_scroll=False, **size_kw)
 
         elif this_tab == eval_tab_name:
             draw_eval_tab(input_value, unique=unique, enter_key_down=enter_key_down,
                           menu_draw_state=draw_state,
-                          name=f"eval_tab_{t_idx}##{unique}", column=t_idx)
+                          name=f"eval_tab_{t_idx}##{unique}", **size_kw)
 
         elif this_tab == input_tab_name:
             draw_input_tab(input_value, class_to_show=class_to_show,
                      name=f"input_tab_{t_idx}##{unique}", wrap=False,
-                      column=t_idx, disable_scroll=False)
+                      disable_scroll=False, **size_kw)
 
 
         elif this_tab == class_tab:
             draw_class_tab(input_value, class_to_show=class_to_show, class_is_parent=class_is_parent,
-                           class_name=class_name, name=f"class_tab_{t_idx}##{unique}", column=t_idx)
+                           class_name=class_name, name=f"class_tab_{t_idx}##{unique}", **size_kw)
 
         elif this_tab == mode_tab:
             draw_mode_tab(input_value, current_mode=current_mode,
-                          name=f"mode_tab_{t_idx}##{unique}", column=t_idx)
+                          name=f"mode_tab_{t_idx}##{unique}", **size_kw)
 
         elif this_tab == live_tab:
-            draw_live_tab(input_value, name=f"live_tab_{t_idx}##{unique}", column=t_idx)
-
+            draw_live_tab(input_value, name=f"live_tab_{t_idx}##{unique}", **size_kw)
 
     imgui.dummy(0, 30)
 

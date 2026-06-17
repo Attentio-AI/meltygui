@@ -166,9 +166,9 @@ def live_view_values(input_value=None, draw_state=None, **kwargs):
 def live_view_code(input_value=None, draw_state=None, **kwargs):
     # The toy source through the unified editor route. Ctrl+Enter hotswaps;
     # the publisher's next tick republishes through the new code.
-    draw_any(decay_step, mode=Mode.FILE_TREE, name="decay_step source")
-    draw_any(orbit, mode=Mode.FILE_TREE, name="orbit source")
-    draw_any(wave_field, mode=Mode.FILE_TREE, name="wave_field source")
+    draw_any(decay_step, mode=Mode.NEW_CODE, name="decay_step source")
+    draw_any(orbit, mode=Mode.NEW_CODE, name="orbit source")
+    draw_any(wave_field, mode=Mode.NEW_CODE, name="wave_field source")
 
 
 # ── Snapshot mode: NO live_view calls anywhere in this function ──────────────

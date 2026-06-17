@@ -12,6 +12,8 @@ from src.lsd.gl_gui.view.invalidation_tracker import Note
 MIN_COLUMN_WIDTH = 30
 MIN_ROW_HEIGHT = 20
 EDGE_GRAB_WIDTH = 20.0
+# Band color when the cursor is over the row (hard-coded for now).
+HIGHLIGHT_TINT = (1,1,1, 0.02)
 
 _NOTE = dict(name="draw_columns", tint=(0.5, 0.8, 1.0))
 
@@ -249,8 +251,15 @@ def window_edge_pass(window):
 
     if moved:
         for ds, _ in window._edge_views.values():
-            ds.invalidate(note=Note(reason="edge solve", **_NOTE))
-        request_render()
+            # A view whose box already disagrees with its tile (size_change)
+            # is live-rendering by blit_offscreen as-is - the image and
+            # cached masks are both refused mid-resize, and the image is
+            # rebuilt once on mouse release. Invalidating it here would only
+            # queue per-frame tile copies at the stale size. Only cells whose
+            # own size is UNCHANGED while their edges move (interior-edge
+            # drags) still need the explicit invalidate or they blit stale.
+            if not ds.size_change:
+                ds.invalidate(note=Note(reason="edge solve", **_NOTE))
 
 
 def _grab_zone(edges, k):
@@ -377,6 +386,12 @@ class ColumnLayout:
         # Grab handles for OWNED edges (foreign far edges already have the
         # container's handles on the same line).
         self.active_edge = None
+        # True when the cursor sits in one of this row's column edge grab
+        # zones - i.e. exactly when a left_mouse_drag resize would trigger.
+        # Drives the band highlight below. Recomputed per-frame: while the row
+        # is bounding-hovered core_render re-renders the tile every frame, so
+        # this needs no stored state or invalidation of its own.
+        self.edge_hovered = False
         if resizable:
             height = max(getattr(draw_state, "_edge_lines_height", 0.0),
                          MIN_ROW_HEIGHT)
@@ -387,6 +402,8 @@ class ColumnLayout:
                 lo, hi = _grab_zone(edges, k)
                 rect = (self.win_x + lo, self.top,
                         self.win_x + hi, self.top + height)
+                if draw_state.hover_eligible(rect=rect):
+                    self.edge_hovered = True
                 drag = draw_state.on_action("left_mouse_drag",
                                             view_id=f"col_edge_{k}",
                                             rect=rect, priority_delta=1)
@@ -405,8 +422,11 @@ class ColumnLayout:
                 for h in [h for h in totals if h not in seen_handles]:
                     del totals[h]
             if self.active_edge is not None:
-                draw_state.invalidate(note=Note(reason="edge drag", **_NOTE))
-                request_render()
+                # size-changing views already update live (see the re-solve
+                # gate in window_edge_pass).
+                if not draw_state.size_change:
+                    draw_state.invalidate(note=Note(reason="edge drag", **_NOTE))
+                # request_render()
 
         # The host's VISIBLE box (live clip, screen coords) - the band's
         # authority for adopted sides, so content margins / the scrollbar
@@ -421,6 +441,7 @@ class ColumnLayout:
         # container's visible box (the clip) there - a owned row's band
         # lands exactly in the panel band's middle. -----
         if self.padding > 0 and self.border_color is not None:
+
             # The band spans the VISIBLE viewport: its bottom comes from the
             # host's clip, not from measured row height - a short row
             # still frames the whole pane, and there's no settle lag.
@@ -430,6 +451,13 @@ class ColumnLayout:
                 band_bottom = self.top + max(draw_state.height or 0.0,
                                              MIN_ROW_HEIGHT)
             radius = getattr(draw_state, "_band_radius", 6.0) + self.padding
+            # Highlight the band when a divider drag is in progress
+            # (self.active_edge) or the cursor sits over a draggable edge
+            # (self.edge_hovered) - i.e. exactly where a resize drag is firing
+            # or would. Both were computed against the drag grab zones above.
+            band_color = (HIGHLIGHT_TINT
+                          if self.edge_hovered or self.active_edge is not None
+                          else self.border_color)
             draw_list = imgui.get_window_draw_list()
             draw_list.channels_set_current(Core.melty.get_channel() - 1)
             draw_list.add_rect_filled(
@@ -437,7 +465,7 @@ class ColumnLayout:
                 snap_int(self.top),
                 snap_int(self.win_x + self._band_right()),
                 snap_int(band_bottom),
-                imgui.get_color_u32_rgba(*self.border_color),
+                imgui.get_color_u32_rgba(*band_color),
                 rounding=radius)
             draw_list.channels_set_current(Core.melty.get_channel())
 
@@ -522,7 +550,11 @@ class ColumnLayout:
                            if self._cell_radius else 6.0)
         if prev_h is None or abs(new_h - prev_h) > 1.0:
             # The band stopped at last frame's height; catch up next frame.
-            ds.invalidate(note=Note(reason="row band settle", **_NOTE))
+            # When the height settle has changed the view's box, blit's
+            # size_change path live-renders it and the edge-Tile invalidate_up
+            # recaptures on settle - no extra invalidate needed.
+            if not ds.size_change:
+                ds.invalidate(note=Note(reason="row band settle", **_NOTE))
             request_render()
         imgui.set_cursor_screen_pos((self.win_x + self.edges[0]["x"],
                                      self._bottom))

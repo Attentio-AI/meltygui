@@ -822,42 +822,42 @@ class DrawState(DictConversion):
         if self.frame_count < 2:
             return 0
 
-        content_height = 0
-        f = Core.melty.frame_count
-        max_bottom = 0
-        min_top = float('inf')
-        key = (f, self.height, self._parent.abs_clip_rect, self._observed_content_height)
-        is_scroll_view = not self._kwargs.get("disable_scroll", True)
-        if self._abs_content_height_key == key:
-            return self._abs_content_height_cache
-        for child in self._view_children.values():
-            if child._kwargs.get("column", 0) != 0:
-                continue
+        # content_height = 0
+        # f = Core.melty.frame_count
+        # max_bottom = 0
+        # min_top = float('inf')
+        # key = (f, self.height, self._parent.abs_clip_rect, self._observed_content_height)
+        # is_scroll_view = not self._kwargs.get("disable_scroll", True)
+        # if self._abs_content_height_key == key:
+        #     return self._abs_content_height_cache
+        # for child in self._view_states.values():
+        #     if child._kwargs.get("column", 0) != 0:
+        #         continue
+        #
+        #     if child.closable:
+        #         continue
+        #     if is_scroll_view:
+        #         clipped_bottom = child.abs_top + child.height
+        #         clipped_top = child.abs_top
+        #     else:
+        #         clip_rect = self._parent.abs_clip_rect
+        #         clipped_bottom = min(clip_rect[3], child.abs_top + child.height)
+        #         clipped_top = max(clip_rect[1], child.abs_top)
+        #
+        #     clipped_height = clipped_bottom - clipped_top
+        #     content_height += max(0, clipped_height)
+        #
+        #     min_top = min(min_top, child.abs_top)
+        #     max_bottom = max(max_bottom, child.abs_top + child.height)
+        #
+        # content_height = max_bottom - min_top if max_bottom > min_top else 0
+        #
+        # # Special case where view wants to scroll but has no children for which to infer its height
+        # if "determines_height" in self._kwargs:
+        #     content_height = self._clip_rect[1]
 
-            if child.closable:
-                continue
-            if is_scroll_view:
-                clipped_bottom = child.abs_top + child.height
-                clipped_top = child.abs_top
-            else:
-                clip_rect = self._parent.abs_clip_rect
-                clipped_bottom = min(clip_rect[3], child.abs_top + child.height)
-                clipped_top = max(clip_rect[1], child.abs_top)
 
-            clipped_height = clipped_bottom - clipped_top
-            content_height += max(0, clipped_height)
-
-            min_top = min(min_top, child.abs_top)
-            max_bottom = max(max_bottom, child.abs_top + child.height)
-
-        content_height = max_bottom - min_top if max_bottom > min_top else 0
-
-        # Special case where view wants to scroll but has no children for which to determine content height
-        if "determines_height" in self._kwargs:
-            content_height = self._content_rect[1]
-
-
-        self._abs_content_height_cache = content_height
+        # self._abs_content_height_cache = content_height
 
         # if is_scroll_view:
         #     content_height = max(content_height, self.height)
@@ -1291,7 +1291,20 @@ class DrawState(DictConversion):
         # when the whole window moves. Shift it by however far the parent window
         # has moved since capture - zero during scroll, the drag delta during a
         # window drag - so the clamp tracks the window without a re-render. The
-        # clip region moves rigidly with the window, so a uniform shift is exact.        pw = self.parent_window        anchor = self._clip_win_anchor        if pw is not None and pw is not self and anchor is not None:            dx = pw._abs_left() - anchor[0]            dy = pw._abs_top() - anchor[1]            clip = (clip[0] + dx, clip[1] + dy, clip[2] + dx, clip[3] + dy)        # Intersect the LIVE box with the (shifted) clip rect. Both move with the        # window now, so the clamped edges stay locked to the unclamped corner.        return (int(max(abs_left, clip[0])),                int(max(abs_top, clip[1])),                int(min(box_right, clip[2])),                int(min(box_bottom, clip[3])))
+        # clip region moves rigidly with the window, so a uniform shift is exact.
+        pw = self.parent_window
+        anchor = self._clip_win_anchor
+        if pw is not None and pw is not self and anchor is not None:
+            dx = pw._abs_left() - anchor[0]
+            dy = pw._abs_top() - anchor[1]
+            clip = (clip[0] + dx, clip[1] + dy, clip[2] + dx, clip[3] + dy)
+
+        # Intersect the LIVE box with the (shifted) clip rect. Both move with the
+        # window now, so the clamped edges stay locked to the unclamped corner.
+        return (int(max(abs_left, clip[0])),
+                int(max(abs_top, clip[1])),
+                int(min(box_right, clip[2])),
+                int(min(box_bottom, clip[3])))
 
     def children_in_clip(self, clip=None, max_depth=1):
         """Descendants whose vertical span overlaps `clip` (default: this view's
@@ -1403,6 +1416,8 @@ class DrawState(DictConversion):
         #         and not imgui.is_mouse_down(1)
         #         and not imgui.is_mouse_down(2)):
         #     return True
+
+
 
         cache = Core.melty.cache
         if cache is None:

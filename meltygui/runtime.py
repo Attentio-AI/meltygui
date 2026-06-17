@@ -17,6 +17,7 @@ from rtree import index as rtree_index
 
 from src.lsd.gl_gui.notifications import draw_notifications
 from src.lsd.gl_gui.render_funcs import RenderFuncs
+from src.lsd.gl_gui.mode_defaults import register_defaults
 from src.lsd.gl_gui.utils import glfw_utils
 from src.lsd.gl_gui.view.attribute_churn import AttributeChurnMonitor
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
@@ -129,6 +130,7 @@ class FileWatch:
     _file_contents = {}
     _path_hash_cache = {}      # resolved path → (mtime, md5); avoids re-reading unchanged files
     _self_write_hashes = {}    # resolved path → md5 of the last IN-PROCESS write (any view)
+    _self_write_text = {}      # resolved path → full text of that write (in-process reload, no disk read)
     output_debug_diff = False
     _write_suppress_window = 1.0  # seconds - for truncate+write event pairs from write_text
     # Global file-event listeners: called with every event's src_path on the
@@ -302,8 +304,11 @@ class FileWatch:
         # (codec.save / _do_save call this right before writing). is_self_write
         # lets a SIBLING view of the same file tell "one of us wrote this" from
         # "an outside program wrote this" - the per-draw_state hash above only
-        # covers the writer's own view.
+        # covers the writer's own view. The TEXT is recorded alongside the hash
+        # so a sibling can reload its span IN-PROCESS (get_self_write_text) with
+        # no disk read and no "loaded from disk" event - see code_file_io.
         cls._self_write_hashes[resolved] = new_hash
+        cls._self_write_text[resolved] = content
 
         if draw_state is not None:
             cls._ds_hashes[id(draw_state)] = new_hash
@@ -330,6 +335,22 @@ class FileWatch:
         if recorded is None:
             return False
         return cls._get_hash(resolved) == recorded
+
+    @classmethod
+    def get_self_write_text(cls, path):
+        """The exact full text of the last in-process write to `path`, but ONLY
+        while the file on disk still holds it (same hash check as is_self_write).
+        Returns None when an external write has since landed — the caller then
+        falls back to a real disk load. Lets a sibling editor reload its span
+        from memory on a self-write instead of re-reading the file."""
+        try:
+            resolved = str(Path(path).resolve())
+        except OSError:
+            return None
+        recorded = cls._self_write_hashes.get(resolved)
+        if recorded is None or cls._get_hash(resolved) != recorded:
+            return None
+        return cls._self_write_text.get(resolved)
 
     @classmethod
     def shutdown(cls):
@@ -1203,7 +1224,7 @@ class Melty:
         else:
             is_window_drag = False
 
-        cls.on_drag = (is_window_drag or is_window_resize or ("left_mouse_down" in cls.events_by_type)) and (not cls.imgui_active)
+        cls.on_drag = (is_window_drag or ("left_mouse_down" in cls.events_by_type)) and (not cls.imgui_active)
 
         cls.event_handler.begin_frame()
 
@@ -2162,7 +2183,7 @@ class Melty:
 
         from src.lsd.gl_gui.modes import Modes
         from src.lsd.gl_gui.view.core_views.new_core_view import draw_with_modes
-        draw_with_modes(Counters, name="counters", modes=(Modes.CODE_UI, Modes.CODE_PLAIN_TEXT), mode=Modes.WINDOW)
+        # draw_with_modes(Counters, name="counters", modes=(Modes.CODE_UI, Modes.CODE_PLAIN_TEXT), mode=Modes.WINDOW)
 
         if Toggles.debug_z_depth:
             draw_state = list(cls.selected)[-1] if len(cls.selected) > 0 else None
@@ -3344,10 +3365,11 @@ def _register_annotated_window(cls, kwargs):
 
 set_window_registrar(_register_annotated_window)
 
-
 # The RenderFuncs accessor + CodeGenerator live in render_funcs.py (its own file
 # so the generator only ever rewrites that small module). Melty just owns the
 # render_funcs_by_name registry the @render_func decorator populates.
+
+register_defaults()
 
 
 class Action:
