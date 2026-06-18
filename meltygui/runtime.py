@@ -2952,17 +2952,27 @@ class Melty:
             # If this draw_state isn't itself registered, walk up the
             # parent_window chain to the root window and bring it to front
             # instead, so dragging/clicking a nested view raises its owner.
+            #
+            # Collect every nested (unclosable, unregistered) window on that
+            # walk - the clicked one and each intermediate sub-window up to but
+            # excluding the registered root. apply_move_to_front raises each to
+            # the front of ITS parent's nested-window list, so clicking one of
+            # several sibling sub-windows under the same parent brings just that
+            # one forward among them. Raising the root window only reorders whole
+            # top-level windows, leaving sibling sub-windows in their own order.
+            nested_chain = []
             if draw_state._tile_id not in Melty.registered_windows:
                 node = draw_state
                 while (node._tile_id not in Melty.registered_windows
                        and node.parent_window is not None
                        and node.parent_window is not node):
+                    nested_chain.append(node)
                     node = node.parent_window
                 if node._tile_id in Melty.registered_windows:
                     draw_state = node
 
             window_key = draw_state._tile_id
-            cls.pending_move_to_front = (window_key, draw_state)
+            cls.pending_move_to_front = (window_key, draw_state, nested_chain)
 
             # window_key = f"{cls.pending_move_to_front[0]}_window"
             # if window_key in Melty.registered_windows:
@@ -3004,6 +3014,20 @@ class Melty:
         if not cls.imgui_active:
 
             window_key = cls.pending_move_to_front[0]
+
+            # Raise each clicked nested window to the front (end) of its
+            # parent's nested-window list - the order there determines sibling
+            # z-stacking (later in the list draws on top). Runs independently
+            # of the root reorder below; clicking a back sub-window while its
+            # parent is already the front top-level window must still restack it
+            # among its siblings, the case the window_z_pos == layer gate misses.
+            for nested in cls.pending_move_to_front[2]:
+                parent = nested.parent_window
+                siblings = Melty.root_draw_states.get(parent.id) if parent is not None else None
+                if siblings is not None and nested in siblings:
+                    siblings.remove(nested)
+                    siblings.append(nested)
+
             window_z_pos = len(Melty.registered_windows) + Melty.top_layer_boost
             if window_z_pos != cls.pending_move_to_front[1].layer:
                 cls.pending_move_to_front[1].layer = window_z_pos
@@ -3021,7 +3045,13 @@ class Melty:
                 #     Melty.cache.invalidate_by_obj(Melty.registered_windows)
                 #     note = Note(name="", reason="move_to_front", draw_state=draw_state, tint=(0.5, 1.0, 0.5))
                 #     Melty.cache.invalidate_up(cls.pending_move_to_front[1]._tile_id, max_depth=4, force=True, note=note)
-                cls.pending_move_to_front = None
+
+            # Clear once handled (inside the not-imgui_active gate so the move
+            # still works through across frames where imgui owns the interaction). The
+            # nested restack above already ran, and a root that's already front
+            # needs no action - so don't leave the request pending anymore in
+            # that case.
+            cls.pending_move_to_front = None
 
     @classmethod
     def draw_blockers_to(cls):
