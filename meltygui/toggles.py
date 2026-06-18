@@ -188,6 +188,17 @@ class Swoosh:
     envelop_corner = 0.25       # enveloped child: only round the corner when the nearer gap is
                                 # within this fraction of the parent's shorter side (else stay flat)
 
+    # Mouse-proximity fade: scale the whole connector's opacity by how close
+    # the cursor is to the views it joins, so only the swooshes near the mouse
+    # stay bright and a busy mess of connectors declutters. Distance is
+    # measured to the NEARER of the two' rects (0 when the mouse is
+    # on either). Applies to both the line and ribbon styles.
+    mouse_falloff = True        # enable the distance-based opacity fade
+    mouse_falloff_dist = 300.0  # px: opacity reaches the floor at this distance
+    mouse_falloff_floor = 0.0   # opacity multiplier when far away (0 = invisible)
+    mouse_falloff_exp = 2.0     # falloff curve exponent (>1 = stay bright near
+                                # the rect, then drop off; 1 = linear)
+
 
 @window(tint=(0.71, 0.32, 0.13))
 class Toggles:
@@ -252,8 +263,8 @@ class Toggles:
     brightness = 0.475
     contrast = 1.812
     saturation = -0.4
-    prefered_header_width = 70
-    max_preferred_header_width = 159
+    prefered_header_width = 179
+    max_preferred_header_width = 70
     debug_z_depth = False
     filters = True
     show_excluded = True

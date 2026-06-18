@@ -185,8 +185,14 @@ def draw_live_view_marker(input_value, draw_state=None, editor_ds=None,
     # its closed flag is set, so merely not-calling it does nothing.
     if getattr(ds, "_lv_open", None) is not None and (
             getattr(ds, "_lv_open", False) or win_ds is not None):
-        label = (lv.name if lv is not None and lv.name
-                 else handle.key_path[-1])
+        # Full (per-publish) watch now the window is open so the value
+        # streams in - the first_only watch above just flips the box green.
+        # Re-uses the lv resolved at the top: no value → nothing to anchor.
+        watch(handle.store_obj, handle.key_path, ds)
+        if lv is None:
+            return False, None
+        label = lv.name if lv.name else handle.key_path[-1]
+        key = '/'.join(handle.key_path)
         # Anchor the latch from INSIDE the marker's bounds: a cursor sitting
         # outside the clip (e.g. after a dummy that overflows max_height) makes
         # the window's FIRST measure degenerate - and a closable window never
@@ -194,31 +200,17 @@ def draw_live_view_marker(input_value, draw_state=None, editor_ds=None,
         imgui.set_cursor_screen_pos((x, y))
         from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
 
-        handle = input_value
-        watch(handle.store_obj, handle.key_path, draw_state)
-        lv = live_values_for(handle.store_obj).get(handle.key_path)
-        if lv is None:
-            imgui.text_colored("no value yet — run the code", 0.65, 0.65, 0.65, 1.0)
-            return False, None
-        from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
-        key = '/'.join(handle.key_path)
-
-
+        # The value renders through its own normal view as a closable window
+        # (Mode.WINDOW) - volumes route to draw_voxels, scalars/dicts to their
+        # renderers. No dedicated draw_live_value_window wrapper needed.
         child_kwargs.pop("mode", None)
-
         _c, _v, win_ds = draw_any(
-            lv.value, name=f"{label}##lv{ds.id}{key}", mode=Modes.WINDOW, with_header=draw_header,
-            selectable=False, min_height=32, min_width=32, disable_scroll=True,
-            return_extras=True, **child_kwargs)
-
-        # _c, _v, win_ds = draw_live_value_window(
-        #     handle, name=f"{label}##lv{ds.id}", mode=Modes.WINDOW, min_height=32, min_width=32,
-        #     return_extras=True, child_kwargs=child_kwargs)
-
+            lv.value, name=f"{label}##lv{ds.id}{key}", mode=Modes.WINDOW,
+            with_header=draw_header, selectable=True, min_height=32,
+            min_width=32, disable_scroll=True, return_extras=True, **child_kwargs)
 
         if win_ds.closed:
             ds._lv_open = False
-
         ds._lv_window_ds = win_ds
 
     return False, None
@@ -470,67 +462,6 @@ def draw_function_live(input_value, draw_state=None, unique=None,
                  left_edge=cols.edges[1], right_edge=cols.edges[2])
     cols.finish()
     return False, input_value
-
-
-# auto_resize=True is REQUIRED here even though closable makes the box
-# fixed_size: the closable self-sizing branch (core_render ~1358,
-# `fixed_size and auto_resize and closable and multi_line and not is_wrapped`)
-# is what assigns the window its initial width - with auto_resize=False (or a
-# wrap-inheriting caller) the condition fails, the first measure stays 0×0,
-# and a closable window never remeasures, so it latches invisible.
-# Header ON: closable windows get their X from draw_header (headers.py ~757),
-# which flips draw_state.closed - the same flag the marker's toggle protocol
-# uses, so the X and the dot stay in sync. The window name ("loss##lv...")
-# shows its label; the ## suffix stays hidden.
-def _draw_close_x(ds):
-    """An explicit top-right close glyph drawn OVER the content — volume
-    values fill the whole window and bury the header's X, so the window
-    carries its own."""
-    size = 15.0
-    x1 = ds.abs_left + (ds.width or 0) - size - 5
-    y1 = ds.abs_top + 5
-    io = imgui.get_io()
-    hovered = x1 <= io.mouse_pos.x < x1 + size and y1 <= io.mouse_pos.y < y1 + size
-    dl = imgui.get_window_draw_list()
-    col = imgui.get_color_u32_rgba(1.0, 1.0, 1.0, 0.9 if hovered else 0.45)
-    pad = 4.0
-    dl.add_line(x1 + pad, y1 + pad, x1 + size - pad, y1 + size - pad, col, 1.6)
-    dl.add_line(x1 + size - pad, y1 + pad, x1 + pad, y1 + size - pad, col, 1.6)
-    if hovered and imgui.is_mouse_clicked(0):
-        ds.closed = True   # a USER close: the marker treats it as an X
-        ds.invalidate()
-        from src.lsd.gl_gui.utils.glfw_utils import request_render
-        request_render()
-
-
-@render_func(use_cache=True, show_bg=True, shadow=True, auto_resize=False,
-             selectable=False)
-def draw_live_value_window(input_value, draw_state=None, child_kwargs=None, **kwargs):
-    """The anchored value window: re-reads the store each render, registers as
-    a watcher so the PUBLISHING thread invalidates it per publish (throttled
-    wake — the editor tile is never touched), and routes the value through
-    draw_any so every type renders with its normal view. Volume-shaped values
-    (3-D+ tensors/ndarrays) go straight to draw_voxels, which owns slicing +
-    upload + render (CUDA tensors device-to-device, re-upload keyed on
-    identity/_version so each publish streams in) — a live, orbiting volume
-    anchored to the code that produced it."""
-    if child_kwargs is None:
-        child_kwargs = {}
-    handle = input_value
-    watch(handle.store_obj, handle.key_path, draw_state)
-    lv = live_values_for(handle.store_obj).get(handle.key_path)
-    if lv is None:
-        imgui.text_colored("no value yet — run the code", 0.65, 0.65, 0.65, 1.0)
-        return False, None
-    from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
-    key = '/'.join(handle.key_path)
-
-    draw_any(lv.value, name=f"lvv::{key}", **{"with_header":draw_header, **child_kwargs})
-
-    # Drawn LAST = on top - volume values fill the window and bury the
-    # header's X, so the window carries its own close glyph.
-    # _draw_close_x(draw_state)
-    return False, None
 
 
 def is_volume(value):

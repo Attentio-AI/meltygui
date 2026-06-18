@@ -8,8 +8,7 @@ from src.lsd.gl_gui.view.core_conversion.address import Address
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 
 
-@render_func(auto_resize=True, selectable=False)
-def draw_jump_to(input_value: Address, unique, draw_state=None, error_msg=None):
+def draw_jump_to(input_value: Address, unique, width=30, error_msg=None):
     file_name = input_value.path.name if input_value.path is not None else "Unknown file"
     line_number = input_value.start + 1 if input_value.start is not None else None
     # Unicode escape (not a literal string) for the Font Awesome folder icon - a
@@ -36,8 +35,7 @@ def draw_jump_to(input_value: Address, unique, draw_state=None, error_msg=None):
     from src.lsd.gl_gui.view.core_views.new_core_view import button
     draw_list = imgui.get_window_draw_list()
     x0, y0 = imgui.get_cursor_screen_pos()
-    width = draw_state.width if draw_state is not None else 300
-    pad_x, pad_y = 8, 5
+    pad_x, pad_y = 8, 3
     row_h = imgui.get_frame_height() + pad_y * 2
     msg = str(error_msg).split('\n', 1)[0] if error_msg else None
     msg_row_h = (imgui.get_text_line_height() + 4) if msg else 0

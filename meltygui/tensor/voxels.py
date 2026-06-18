@@ -679,6 +679,7 @@ def _silhouette_edges(corners):
 
     vis = {(k, s): face_visible(k, s) for k in range(3) for s in (-1, 1)}
     edges = set()
+    all_valid = set()
     for k in range(3):
         i, j = (k + 1) % 3, (k + 2) % 3
         for si in (-1, 1):
@@ -690,9 +691,15 @@ def _silhouette_edges(corners):
                 a, b = tuple(a), tuple(b)
                 if corners[a] is None or corners[b] is None:
                     continue
+                all_valid.add(frozenset((a, b)))
                 if vis[(i, si)] != vis[(j, sj)]:  # the edge's adjacent faces
                     edges.add(frozenset((a, b)))
-    return edges
+    # Camera INSIDE the box: every face is back-facing, so the original
+    # silhouette (exactly one front-facing face per edge) is empty and the
+    # outline + labels would vanish. Don't hide them - fall back to every edge
+    # with both corners in front of the camera, so the box stays outlined and
+    # labeled from the inside.
+    return edges or all_valid
 
 
 def project_corners(tilt, spin, zoom, aspect, width, height, scale=(1.0, 1.0, 1.0),
@@ -1146,7 +1153,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                 mean_dims=(), sort_dim=-1, normalize=False,
                 nf_on=False, nf_chop=None, nf_along=None, nf_chunk=128,
                 # ── volume furniture (screen px) ──
-                name_size=28.0, name_padding=30.1, name_opacity=1.1,
+                name_size=17.0, name_padding=30.1, name_opacity=1.1,
                 num_size=17.1, num_padding=5.5, num_opacity=0.8,
                 num_spacing=1.0, num_angle=0.0,
                 middle_mouse_drag=None, right_mouse_drag=None,
@@ -1230,7 +1237,13 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
     # view's height derives from what it rendered last frame (self-referential),
     # while the window's height is the user-dragged size. Reserve room for the
     # header + a line below the image.
-    win = draw_state.parent_window or draw_state
+    # The owning window IS this draw_state when draw_voxels is itself a window
+    # (mode=WINDOW / closable); only fall back to the enclosing window for the
+    # non-window child case. Using draw_state.parent_window for a closable voxel
+    # grabbed an ANCESTOR (e.g. live_view_forward) that doesn't move with the
+    # voxel window, so the controls panel - parented to `win` below - followed
+    # the ancestor and stayed put while the voxel window was dragged.
+    win = draw_state if draw_state.closable else (draw_state.parent_window or draw_state)
     width = max(64, int(draw_state.content_width or win.content_width or 0))
     height = max(100, draw_state.height - 30)
 
@@ -1520,16 +1533,17 @@ def _draw_host_volume(input_value):
     draw_voxels(t, name="volume")
 
 
-@window(input_value=voxel_host, tint=(0.00, 0.02, 0.12))
-@render_func(show_bg=True, use_cache=True)
-def draw_voxel_playground(input_value=None, **kwargs):
-    _draw_host_volume(input_value)
+window(cls=voxel_host.get("value"), name="draw_voxel_playground", view_func=draw_voxels, tint=(0.00, 0.02, 0.12))
+#
+# @render_func(show_bg=True, use_cache=True)
+# def draw_voxel_playground(input_value=None, **kwargs):
+#     _draw_host_volume(input_value)
 
 
 @window(input_value=voxel_host_4d, tint=(0.34, 0.05, 0.13))
 @render_func(show_bg=True, use_cache=True)
 def draw_voxel_4d(input_value=None, **kwargs):
-    _draw_host_volume(input_value)
+    draw_voxels(input_value.get("value"), name="volume_4d", mode=Modes.WINDOW)
 
 
 @window(input_value=voxel_host_5d, tint=(0.02, 0.38, 0.11))

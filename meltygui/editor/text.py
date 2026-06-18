@@ -1803,8 +1803,8 @@ def _describe_code_tree(code_tree):
     return name
 
 
-@render_func(is_default_for=(CodeLine), show_bg=True, use_cache=True, disable_scroll=False, z_offset=1,
-             with_header=draw_header, shadow=True, show_name=False, with_footer=draw_footer, determines_height=False,
+@render_func(is_default_for=(CodeLine), show_bg=True, use_cache=True, disable_scroll=False,
+             with_header=draw_header, shadow=False, show_name=False, with_footer=draw_footer, determines_height=False,
              selectable=False, searchable=True, bg_offset=-3, show_add_delete=False)
 def draw_text(input_value: str,
               left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
@@ -1813,7 +1813,7 @@ def draw_text(input_value: str,
               draw_state=None, request_focus=False, wrap=False,
               line_height=1.149, font=Font.JETBRAINS_MONO_19, jump_to=None,
               code_tree=None, code_dict=None, error=None, token_views=None,
-              syntax_highlight=True):
+              syntax_highlight=True, unique=0):
     ds = draw_state
     # Plain-text mode (codec tells "not Python source"): no Darcula colors and
     # no inline token widgets - both are artifacts of the Python tokenizer.
@@ -1821,7 +1821,7 @@ def draw_text(input_value: str,
         token_views = {}
     elif token_views is None:
         token_views = DEFAULT_TOKEN_VIEWS   # global experiment fallback (see top)
-        
+
     # Symbol-usage source: the parse arrives as `code_tree` in the
     # address_to_general_parse routes, as `code_dict` in the CODE_UI routes
     # (cst_module_to_dict - which is also where the run_jedi() pass attaches
@@ -1884,7 +1884,7 @@ def draw_text(input_value: str,
         if draw_state.height:
             float_dy = max(0.0, min(float_dy, draw_state.height - _bar_h))
         imgui.set_cursor_screen_pos((_bx, _by + float_dy))
-        draw_jump_to(jump_to)
+        draw_jump_to(jump_to, width=draw_state.content_width, unique=unique)
         bar_height = imgui.get_cursor_screen_pos()[1] - (_by + float_dy)
         draw_state._float_bar_height = bar_height
         # Resume body layout at the real (unscrolled) content position so the code
@@ -1957,7 +1957,7 @@ def draw_text(input_value: str,
     else:
         line_offset = 0
         gutter_w = 0.0
-        
+
 
     text_visible_width = draw_state.content_width - gutter_w
 

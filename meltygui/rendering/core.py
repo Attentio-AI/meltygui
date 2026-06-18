@@ -18,7 +18,7 @@ from imgui.core import _DrawList
 from src.lsd.gl_gui.background import Background, Pending
 from src.lsd.gl_gui.events.input_handler import ALL_ACTIONS
 from src.lsd.gl_gui.render_funcs import RenderFuncs
-from src.lsd.gl_gui.toggles import Counters, Toggles, Tint
+from src.lsd.gl_gui.toggles import Counters, Toggles, Tint, SwooshMode
 from src.lsd.gl_gui.mode_defaults import ModeDefaults
 from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
 from src.lsd.gl_gui.view.core_conversion.address import to_address, Address
@@ -704,7 +704,7 @@ def render_func(*args, **o_kwargs):
                 if tile_id not in Melty.registered_windows and Melty.frame_count > 2:
                     Melty.cache.invalidate_by_obj(Melty.registered_windows)
 
-            if draw_state.closed and not input_value == Melty.registered_windows:
+            if draw_state.closed and not id(input_value) == id(Melty.registered_windows):
 
                 if draw_state._is_nested:
                     draw_state.dlt_count = 0
@@ -1203,7 +1203,7 @@ def render_func(*args, **o_kwargs):
 
             ########## New event handler system ##########
             unique_events = Melty.events.get(tile_id, {})
-            kwargs = unique_events | kwargs
+            kwargs = kwargs | unique_events
             ##############################################
 
             # Auto-state pre-pass: inject each diverged value into the kwargs
@@ -2675,7 +2675,7 @@ def render_func(*args, **o_kwargs):
                                                              tint=mixed_color, show_tint=False, show_add_delete=False,
                                                              min_width=100, min_height=100, pin_to_clip=Pin.PARENT,
                                                              persistent=False, anchor=Anchor.TOP_LEFT, parent_anchor=Anchor.TOP_RIGHT,
-                                                             bg_offset=Tint.context_menu_bg_offset,
+                                                             bg_offset=Tint.context_menu_bg_offset, swoosh_mode=SwooshMode.LINE,
                                                              with_footer=None, use_cache=True,
                                                              name=f"{name}##context_menu_{unique}", auto_resize=False,
                                                              return_extras=True)
@@ -2910,11 +2910,9 @@ def render_func(*args, **o_kwargs):
                 if hover_eligible:
                     if closable:
                         Melty.any_window_hovered_pending = True
+                    max_layer_depth = Melty.max_depth * Melty.max_depth + Melty.max_depth
+                    priority = max_layer_depth - draw_state.z_pos
                     event_names = copy(wanted_params)
-                    max_layer_depth = Core.melty.max_depth * Core.melty.max_depth + Core.melty.max_depth
-                    layer_and_depth = Core.melty.active_layer * Core.melty.max_depth + Core.melty.depth
-                    priority = max_layer_depth - layer_and_depth
-
 
                     # Remove event names from wanted params that aren't in kwargs
                     event_names = [e for e in event_names if e in kwargs]
@@ -3363,9 +3361,9 @@ def render_func(*args, **o_kwargs):
             if draw_state.width > 10000:
                 draw_state.width = 10000
 
-            if draw_state.height > 30000:
-                draw_state.height = 30000
-                draw_state._source["height"] = "30000 max height"
+            if draw_state.height > 70000:
+                draw_state.height = 70000
+                draw_state._source["height"] = "70000 max height"
 
             if draw_state.expanded:
                 draw_state.min_width = kwargs.get("min_width", draw_state.min_width)

@@ -2003,6 +2003,24 @@ class Melty:
         view_func = draw_state._wrapper
         input_value = draw_state._raw_input_value
         kwargs = draw_state._kwargs
+        # draw_state._kwargs is last render's FULLY-RESOLVED kwargs, so it still
+        # carries a concrete value for every PER-FRAME param. Replaying it as-is
+        # is wrong for two reasons:
+        #   1. Auto-state params (the diverged set in auto_params) appear in the
+        #      wrapper's explicit_param_keys and freeze at the stale snapshot - a
+        #      voxel camera drag's spin/tilt/zoom never accumulate (snap back).
+        #   2. Event params still hold last frame's InputEvent; once the gesture
+        #      ends there's no new event to overwrite it, so the wrapper keeps
+        #      reapplying the same drag forever (runaway spin).
+        # Drop both so the wrapper re-resolves them: auto-state from the live
+        # auto_params, events from this frame's Melty.events (if any). Genuine
+        # static caller overrides never diverge into auto_params and are never
+        # InputEvents, so they stay put.
+        from src.lsd.gl_gui.events.input_handler import InputEvent as _InputEvent
+        _ap = draw_state.__dict__.get('auto_params')
+        for _k in list(kwargs):
+            if (_ap and _k in _ap) or isinstance(kwargs[_k], _InputEvent):
+                kwargs.pop(_k, None)
         kwargs['layer_unique'] = draw_state.unique
         imgui.set_cursor_screen_pos((int(draw_state.abs_left), int(draw_state.abs_top)))
 
@@ -2319,21 +2337,34 @@ class Melty:
                             overlay_dl.push_clip_rect(parent_clip[0], parent_clip[1],
                                                       parent_clip[2], parent_clip[3], True)
                         offset_rounding = getattr(offset_ds, 'corner_radius', 6)
-                        overlay_dl.add_rect_filled(offset_ds.abs_left, offset_ds.abs_top,
-                                                   offset_ds.abs_left + offset_ds.width,
-                                                   offset_ds.abs_top + offset_ds.height,
+                        # Read the anchor's LIVE position (_abs_left/_abs_top), not
+                        # its per-frame-cached abs_left/abs_top. When the parent
+                        # WINDOW is dragged, the window's own abs cache mutates
+                        # on new window_pos, but a sub-view INSIDE it keeps the same
+                        # cache key (its own left_offset/window_pos didn't change),
+                        # so its cached abs_left lags one frame behind the blitted
+                        # window pixels - the highlight box and swoosh would trail
+                        # the window during a drag. _abs_left re-walks the moved
+                        # window through the parent chain, so it tracks the drag
+                        # (the same reason draw_state.pin_rect reads live abs).
+                        o_l, o_t = offset_ds._abs_left(), offset_ds._abs_top()
+                        overlay_dl.add_rect_filled(o_l, o_t,
+                                                   o_l + offset_ds.width,
+                                                   o_t + offset_ds.height,
                                                    bg_col, rounding=offset_rounding)
-                        overlay_dl.add_rect(offset_ds.abs_left, offset_ds.abs_top,
-                                            offset_ds.abs_left + offset_ds.width,
-                                            offset_ds.abs_top + offset_ds.height,
+                        overlay_dl.add_rect(o_l, o_t,
+                                            o_l + offset_ds.width,
+                                            o_t + offset_ds.height,
                                             outline_col, rounding=offset_rounding,
                                             thickness=Tint.highlight_outline_thickness)
                         if parent_clip is not None:
                             overlay_dl.pop_clip_rect()
 
-                        # The child outline + swoosh depend on the child's geometry,
-                        # which only becomes current after cls.draw(draw_state) below.
-                        # Stash the params and draw them post-draw to avoid a frame of lag.
+                        # The child outline + swoosh depend on the child's SIZE,
+                        # which only becomes current after cls.draw(draw_state) below
+                        # (auto_resize windows compute their width/height as they
+                        # draw). Stash the params and draw them post-draw to avoid a
+                        # frame of lag. (Positions are read live below, not cached here.)
                         child_highlight = (overlay_dl, offset_ds,
                                            outline_col, highlight_rgb, parent_clip)
 
@@ -2346,7 +2377,7 @@ class Melty:
                 if draw_state.unique not in cls.seen_unique:
                     cls.draw(draw_state)
 
-                # Now that the child has been drawn this frame, its geometry is
+                # Now that the child has been drawn this frame, its SIZE is
                 # current: draw the child outline + swoosh of current bounds.
                 if child_highlight is not None and draw_state.width is not None and draw_state.height is not None:
                     overlay_dl, offset_ds, outline_col, highlight_rgb, parent_clip = child_highlight
@@ -2378,9 +2409,17 @@ class Melty:
 
                     overlay_dl.channels_set_current(min(draw_state.window_index, Melty.max_layer -1))
 
-                    overlay_dl.add_rect(draw_state.abs_left, draw_state.abs_top,
-                                        draw_state.abs_left + draw_state.width,
-                                        draw_state.abs_top + draw_state.height,
+                    # Live endpoint positions for both ends - see the note on the
+                    # parent highlight box above. Either end can be a child of
+                    # (or be) a window that's mid-drag; the cached abs_left/abs_top
+                    # lag a frame behind the blitted windows, so the connector and
+                    # the child outline read live to stay locked to the windows.
+                    o_l, o_t = offset_ds._abs_left(), offset_ds._abs_top()
+                    c_l, c_t = draw_state._abs_left(), draw_state._abs_top()
+
+                    overlay_dl.add_rect(c_l, c_t,
+                                        c_l + draw_state.width,
+                                        c_t + draw_state.height,
                                         child_outline_col, rounding=rounding,
                                         thickness=Tint.highlight_outline_thickness)
 
@@ -2388,9 +2427,9 @@ class Melty:
 
                     Melty._draw_swoosh(
                         overlay_dl,
-                        offset_ds.abs_left, offset_ds.abs_top,
+                        o_l, o_t,
                         offset_ds.width, offset_ds.height,
-                        draw_state.abs_left, draw_state.abs_top,
+                        c_l, c_t,
                         draw_state.width, draw_state.height,
                         highlight_rgb,
                         rgb2=child_rgb,
@@ -3356,11 +3395,14 @@ def _register_annotated_window(cls, kwargs):
     # window loop) then sees a plain function reference, resolved once, not a
     # proxy re-resolved every call. Name check avoids importing render_funcs.
     vf = kwargs.get("view_func")
-    if type(vf).__name__ == "_LazyRenderFunc":
-        real = Melty.render_funcs_by_name.get(vf.__name__)
-        if real is not None:
-            kwargs["view_func"] = real
-    Melty.annotated_window_classes[cls.__name__] = (cls, kwargs)
+    if "name" in kwargs:
+        Melty.annotated_window_classes[kwargs["name"]] = (cls, kwargs)
+    else:
+        if type(vf).__name__ == "_LazyRenderFunc":
+            real = Melty.render_funcs_by_name.get(vf.__name__)
+            if real is not None:
+                kwargs["view_func"] = real
+        Melty.annotated_window_classes[cls.__name__] = (cls, kwargs)
 
 
 set_window_registrar(_register_annotated_window)

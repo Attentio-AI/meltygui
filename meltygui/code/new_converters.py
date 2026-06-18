@@ -264,20 +264,20 @@ def _recompile_caller(call_site, stmt_str, file_path, address):
 
 
 class TestClass:
-    some_val = 102
-    some_other_val = 20
+    some_val = -2
+    some_other_val = 73
     tint=(0.52, 0.80, 0.688)
+    tint = (0.52, 0.80, 0.688)
 
     # [tint=(0.7722222, 0.5336913466453552, 0.17589502036571503)]
     def some_func(a=84, b=-153):
         imgui.set_cursor_pos()
     some_line = 87
     myflot = 5
-    tint = (0.52, 0.80, 0.688)
 
-    aomw_list= 51
+    aomw_list= 62
 
-    list_new = [1,1,1]
+    list_new = [1,-1,12]
     # [tint=(0.31290125846862793, 0.6864094, 0.7611111402511597)]
     class NestedClass:
         so = 31
@@ -1340,11 +1340,11 @@ def run_recompile(source, code_state, draw_state, start=False, name="recompile")
 # ║  editable_source - the whole round-trip, one function                        ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
-@render_func(use_cache=True, selectable=False, with_header=draw_header, searchable=False, disable_scroll=False)
+@render_func(use_cache=True, selectable=False, with_header=draw_header, searchable=False, disable_scroll=True)
 def code_file_io(input_value, code_state: CodeState, codec=None, view_func=RenderFuncs.draw_text, auto_load=True,
                  auto_load_edits=False, min_height=20, shadow=False, show_add_delete=False,
                  child_kwargs=None, draw_state=None, auto_save=True, auto_recompile_edits=False, save=False, load=False,
-                 recompile=False, run_jedi=False, save_debounce_ms=600,
+                 recompile=False, run_jedi=False, save_debounce_ms=600, 
                  ensure_import=None, s_key_pressed=None, enter_key_pressed=None, unique=None, **kwargs):
     edited = False
 
@@ -1586,6 +1586,28 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             reconvert = code_state._reconvert
             code_state._reconvert = False
             trigger = external_change or run_jedi or reconvert
+            # When this code_file_io is a NON-scrolling pane (the func/class
+            # context code tabs pass disable_scroll=True), the inner editor must
+            # be the SOLE scroll container - so pin it to the visible clip. Its
+            # height then matches the viewport: it overflows and scrolls for a
+            # source of ANY size (not only one past the 30000px height clamp),
+            # and the wrapper's scrollbar (clip_height = draw_state.height) draws
+            # the right grab ratio. Without this the editor grows to its content,
+            # "fits" itself (no scroll) yet is clipped to the clip - its bottom
+            # cuts off and unreachable. Mirrors draw_code_tabs_from_cache's pane
+            # pinning. Other code_file_io users (standalone editor windows,
+            # folder leaves, offscreen code-host str_hosts) are NOT disable_scroll
+            # and keep growing to content with the window/wrapper owning scroll.
+            # if (kwargs.get("disable_scroll") and draw_state.abs_clip_rect is not None
+            #         and "height" not in child_kwargs):
+            #     cursor_top = imgui.get_cursor_screen_pos()[1]
+            #     child_kwargs["height"] = max(50.0, draw_state.abs_clip_rect[3] - cursor_top)
+            #     # A passed height makes the editor fixed_size (auto_resize off),
+            #     # so the wrapper no longer expands its width to the available
+            #     # content area - it'd collapse to min_width. Pin the width to
+            #     # the code_file_io's available width too, exactly as the NEW_CODE
+            #     # columns path passes width alongside height.
+            #     child_kwargs.setdefault("width", draw_state.content_width)
             edited, value = view_func(input_value=code_state.text_cache,
                                       external_change=trigger, draw=trigger,
                                       **child_kwargs)
@@ -2020,7 +2042,7 @@ def draw_text_from_code_cache(input_value=None, root_input=None, error=None,
             # kwargs). Popping earlier loses a click whenever this editor
             # re-renders between the pulse frame and the host's next draw.
             dict_host.child_kwargs.pop("run_jedi", None)
-    changed, value, ds = RenderFuncs.draw_text(input_value, code_dict=code_dict,
+    changed, value, ds = RenderFuncs.draw_text(input_value, code_dict=code_dict, is_tree=False,
                                                code_tree=cache_error, error=error,
                                                return_extras=True, **kwargs)
     # Re-render this editor when the background parse lands - its external

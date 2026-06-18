@@ -1243,9 +1243,14 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
         # Copy: the stored dict is the @window decorator kwargs and persists
         # across frames. Popping view_func out of it would consume the override
         # after the first frame, so later frames fall back to draw_with_modes.
+        if hasattr(window_cls, "__name__"):
+            name = f"{window_cls.__name__}##@window"
+        else:
+            name = kwargs.get("name", f"Unnamed {window_cls.__class__.__name__}")
+
         kwargs = dict(stored_kwargs)
         kwargs.setdefault('show_bg', True)
-        kwargs.setdefault('name', f"{window_cls.__name__}##@window")
+        kwargs.setdefault('name', name)
 
         is_render_func = hasattr(window_cls, "__render_func__")
         if is_render_func:
@@ -3451,7 +3456,7 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
     return False, input_value
 
 
-@render_func(is_default_for=(int), shadow=False, use_cache=False, wrap=False, header_same_line=True,
+@render_func(is_default_for=(int), shadow=False, use_cache=False, wrap=False,
              is_tree=False, with_header=draw_header, align_header=True, temp=True)
 def draw_int(input_value: int, draw_state=None, min_width=80, wrap=False, min_value=-1000.0, max_value=1000.0, speed=0.1, unique=0):
     if not wrap:
@@ -3478,7 +3483,7 @@ def draw_debug_label(input_value: str):
 
 
 @render_func(is_default_for=Enum, is_tree=False, shadow=False, align_header=False,
-             selectable=False, header_same_line=True, show_add_delete=False,
+             selectable=False, show_add_delete=False,
              parent_show_add_delete=False, with_header=draw_header, temp=True)
 def draw_enum(input_value: Enum, draw_state=None, unique=0, style_manager=None, enum_tint=(0.3, 0.3, 0.3)):
     # Delegate to draw_tab_bar so enums get its wrapping + styling for free.
@@ -3744,6 +3749,9 @@ def draw_info_tab(input_value, search_text='', unique=None, **kwargs):
     draw_str(str(input_value._observed_content_height),
              show_bg=True, tint=(0.1, 0.01, 0.4), show_header=True, wrap=False, show_name=True,
              name=f"_observed_content_height##{unique}", editable=False)
+    draw_str(str(input_value.height),
+             show_bg=True, tint=(0.1, 0.01, 0.4), show_header=True, wrap=False, show_name=True,
+             name=f"height##{unique}", editable=False)
 
     draw_str(str(input_value.abs_content_height),
              show_bg=True, tint=(0.1, 0.01, 0.4), show_header=True, wrap=False, show_name=True,
@@ -3863,7 +3871,7 @@ def draw_live_tab(input_value, **kwargs):
     return False, input_value
 
 
-@render_func(use_cache=False, show_bg=False, is_tree=False, show_header=False, show_name=False, selectable=False)
+@render_func(use_cache=True, show_bg=False, is_tree=False, disable_scroll=True, show_header=False, show_name=False, selectable=False)
 def draw_func_tab(input_value, **kwargs):
     """Editable source of the inspected view function; hotswaps on save.
     Routes through Mode.FILE_TREE — the same cache-backed code_file_io path a
@@ -3872,7 +3880,7 @@ def draw_func_tab(input_value, **kwargs):
     view_func = input_value._view_func
     if view_func is not None:
         view_func_name = view_func.__name__ if hasattr(view_func, '__name__') else str(view_func)
-        change, new_view_func = draw_any(view_func, mode=Mode.FILE_TREE, name=view_func_name)
+        change, new_view_func = draw_any(view_func, disable_scroll=True, mode=Mode.FILE_TREE, name=view_func_name)
     else:
         draw_str("No view function specified", name="View Function", editable=False)
     return False, input_value
@@ -4487,8 +4495,6 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     # Columns stripped: render the selected tab(s) stacked at the menu's full
     # width - one all across the menu, several fill the height. No Column calls,
     # so nothing here triggers the window-frame edge system (the source of the
-    # pinned-popup fly-off). Each tab gets a bounded height so a tall one
-    # scrolls inside itself instead of overrunning the (non-scrolling) menu.
     n_sel = max(1, len(tab_state.selected_tabs))
     full_w = draw_state.content_width
     clip = draw_state.abs_clip_rect

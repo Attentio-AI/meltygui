@@ -822,47 +822,47 @@ class DrawState(DictConversion):
         if self.frame_count < 2:
             return 0
 
-        # content_height = 0
-        # f = Core.melty.frame_count
-        # max_bottom = 0
-        # min_top = float('inf')
-        # key = (f, self.height, self._parent.abs_clip_rect, self._observed_content_height)
-        # is_scroll_view = not self._kwargs.get("disable_scroll", True)
-        # if self._abs_content_height_key == key:
-        #     return self._abs_content_height_cache
-        # for child in self._view_states.values():
-        #     if child._kwargs.get("column", 0) != 0:
-        #         continue
-        #
-        #     if child.closable:
-        #         continue
-        #     if is_scroll_view:
-        #         clipped_bottom = child.abs_top + child.height
-        #         clipped_top = child.abs_top
-        #     else:
-        #         clip_rect = self._parent.abs_clip_rect
-        #         clipped_bottom = min(clip_rect[3], child.abs_top + child.height)
-        #         clipped_top = max(clip_rect[1], child.abs_top)
-        #
-        #     clipped_height = clipped_bottom - clipped_top
-        #     content_height += max(0, clipped_height)
-        #
-        #     min_top = min(min_top, child.abs_top)
-        #     max_bottom = max(max_bottom, child.abs_top + child.height)
-        #
-        # content_height = max_bottom - min_top if max_bottom > min_top else 0
-        #
-        # # Special case where view wants to scroll but has no children for which to infer its height
-        # if "determines_height" in self._kwargs:
-        #     content_height = self._clip_rect[1]
+        content_height = 0
+        f = Core.melty.frame_count
+        max_bottom = 0
+        min_top = float('inf')
+        key = (f, self.height, self._parent.abs_clip_rect, self._observed_content_height)
+        is_scroll_view = not self._kwargs.get("disable_scroll", True)
+        if self._abs_content_height_key == key:
+            return self._abs_content_height_cache
+        for child in self._view_children.values():
+            if child._kwargs.get("column", 0) != 0:
+                continue
+
+            if child.closable:
+                continue
+            if is_scroll_view:
+                clipped_bottom = child.abs_top + child.height
+                clipped_top = child.abs_top
+            else:
+                clip_rect = self._parent.abs_clip_rect
+                clipped_bottom = min(clip_rect[3], child.abs_top + child.height)
+                clipped_top = max(clip_rect[1], child.abs_top)
+
+            clipped_height = clipped_bottom - clipped_top
+            content_height += max(0, clipped_height)
+
+            min_top = min(min_top, child.abs_top)
+            max_bottom = max(max_bottom, child.abs_top + child.height)
+
+        content_height = max_bottom - min_top if max_bottom > min_top else 0
+
+        # Special case where view wants to scroll but has no children for which to infer its height
+        if "determines_height" in self._kwargs:
+            content_height = self._content_rect[1]
 
 
-        # self._abs_content_height_cache = content_height
+        self._abs_content_height_cache = content_height
 
         # if is_scroll_view:
         #     content_height = max(content_height, self.height)
 
-        return int(self._observed_content_height + self.header_height)
+        return int(content_height)
 
     @property
     def abs_layer(self):
