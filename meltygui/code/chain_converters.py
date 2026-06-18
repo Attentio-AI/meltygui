@@ -1430,7 +1430,7 @@ def address_to_call_parse(input_value, draw_state=None, changed=False, load=Fals
     except OSError:
         mtime = None
     cached = getattr(draw_state, '_call_dict_cache', None)
-    if cached is not None and cached[0] == address._hash and cached[1] == mtime:
+    if cached is not None and cached[0] == (address.start, address.end) and cached[1] == mtime:
         return False, cached[2]
     try:
         # Extract JUST the call expression from its line span using the column
@@ -1484,7 +1484,7 @@ def address_to_call_parse(input_value, draw_state=None, changed=False, load=Fals
     suffix = f" ({fn_name})" if fn_name else ""
     d["__label__"] = f"{call_name}  {address.path.name}:{line_no}{suffix}"
 
-    draw_state._call_dict_cache = (address._hash, mtime, d)
+    draw_state._call_dict_cache = ((address.start, address.end), mtime, d)
     return True, d
 
 

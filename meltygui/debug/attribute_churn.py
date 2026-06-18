@@ -11,6 +11,7 @@ class AttributeChurnMonitor:
     a top-N summary each frame the counter is non-empty.
     """
 
+
     attributes_changed: Set[Tuple[str, str]] = set()
     attribute_change_count: Dict[Tuple[str, str], int] = {}
 
@@ -31,6 +32,7 @@ class AttributeChurnMonitor:
             top = sorted(cls.attribute_change_count.items(), key=lambda kv: -kv[1])[:10]
             line = ", ".join(f"{c}.{a}={n}" for (c, a), n in top)
             print(f"[churn f{Melty.frame_count}] {line}")
+
 
         cls.attributes_changed.clear()
         cls.attribute_change_count.clear()

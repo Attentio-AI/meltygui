@@ -1,3 +1,5 @@
+import inspect
+
 import imgui
 
 from src.lsd.gl_gui.modes import Modes
@@ -54,29 +56,38 @@ class InCode:
 # Both are standalone, so draw_main calls draw() on each and renders it in its own
 # window (string_proxy first, so its source is fresh when dict_proxy reads it).
 
-string_proxy = RenderHost(io_function=code_file_io, input_value=Toggles, name="String Proxy test",
-                          settings_renderer=draw_text,
-                          child_kwargs={"auto_load_edits": True, "auto_load":True})   # auto-reload on external file change
+# string_proxy = RenderHost(io_function=code_file_io, input_value=draw_text, name="String Proxy File",
+#
+#                           child_kwargs={"auto_load_edits": False, "auto_load":True})   # auto-reload on external file change
+# #
+# dict_proxy = RenderHost(
+#     io_function=convert_in_and_out_value, input_value=string_proxy, name="Tree Proxy",
+#     child_kwargs={
+#         "chain_in": [string_to_cst_module, cst_module_to_dict],
+#         "chain_out": [dict_to_cst_module, cst_module_to_string],
+#         "route": {cst_module_to_dict: ("code_dict", "jump_to", "run_jedi", "drive")},
+#     })
 
-dict_proxy = RenderHost(
-    io_function=convert_in_and_out_value, input_value=string_proxy, name="Tree Proxy",
-    child_kwargs={
-        "chain_in": [string_to_cst_module, cst_module_to_dict],
-        "chain_out": [dict_to_cst_module, cst_module_to_string],
-        "route": {cst_module_to_dict: ("code_dict", "jump_to", "run_jedi", "drive")},
-    })
+draw_text_static_file_load = inspect.getsource(draw_text)
 
-@window
+@window(disable_scroll=False, use_cache=True)
 @render_func(tint=(0.078, 0.232, 0.439), auto_resize=True)
 def test_code_ui(_, draw_state):
     # Both proxies show themselves in their own windows (draw_main → draw()). This
     # window just inspects them AS ordinary dicts - the framework has no idea they're
     # proxies; it's rendering ordinary dicts whose single value was materialized by
     # their wrappers. Editing here bubbles back exactly the same way.
-    imgui.text("String Proxy — {value: <source>}")
-    changed, value = draw_collection(string_proxy, name="String Proxy Dict", column=0, disable_scroll=False)
+    # changed, value = draw_collection(string_proxy, name="String Proxy Dict", disable_scroll=False)
+
+    global draw_text_static_file_load
+    changed, value = draw_text(draw_text_static_file_load, show_name=True, use_cache=True, name="static baseline")
     if changed:
-        draw_state.invalidate_up_by_obj(obj=dict_proxy, frame_delta=2, note=Note(name="String Proxy Edit", tint=(1,1,1)), max_depth=10)
+        draw_text_static_file_load = value
+
+    # changed, value = draw_collection(string_proxy, name="String Proxy Dict", child_kwargs={"view_func":draw_text})
+
+    # if changed:
+    #     draw_state.invalidate_up_by_obj(obj=dict_proxy, time_delta=2, note=Note(name="String Proxy changed", tint=(1,1,1)), max_depth=10)
 
         # request_render()
     # New trick: `.deep.unwrap()` skips the redundant wrapper rungs (value / module /
@@ -84,6 +95,4 @@ def test_code_ui(_, draw_state):
     # intact - no manual ["value"][...] indexing or "if key in d" guards.
     # tree = dict_proxy.deep.unwrap()
     # if tree:
-    changed, value = draw_collection(dict_proxy, name="Tree Proxy Dict", column=1, disable_scroll=False)
-
-    myval = InCode.show_bg
+    # changed, value = draw_collection(dict_proxy, name="Tree Proxy Dict", column=1, disable_scroll=False)

@@ -161,6 +161,7 @@ def recompile_source(source, code_str, file_path, address=None):
     shape: code_str is just the `@...` block, which redefines nothing alone, so we
     recompile the WHOLE decorated object (see _recompile_decorations)."""
     result = None
+    notify(f"Recompiling {getattr(source, '__name__', str(source))}...", tag="recompile", tint=(0.5, 1.0, 0.5))
     if isinstance(source, Decorations):
         result = _recompile_decorations(source, code_str, file_path, address)
     elif isinstance(source, type):
@@ -403,7 +404,7 @@ LOADING = object()
 @render_func(use_cache=True, selectable=False, temp=True)
 def run_in_background(input_value, loading_state: LoadingState, unique,
                       draw_state, child_kwargs, start=False, timeout=20,
-                      debounce_ms=50, wait_for_drag=False, **kwargs):
+                      debounce_ms=50, wait_for_drag=False, main_thread=False, **kwargs):
     """One-shot background runner: call it every frame; `start=True` is the
     trigger edge that snapshots (input_value, child_kwargs) into the queue.
 
@@ -436,7 +437,7 @@ def run_in_background(input_value, loading_state: LoadingState, unique,
     `wait_for_drag` additionally holds the launch while a mouse button is down,
     so an O(buffer) run never fires mid-gesture; the snapshot keeps tracking the
     latest input the whole time."""
-    if Melty.frame_count < 10:
+    if Melty.frame_count < 10 or main_thread:
         debounce_ms = 0
     if start:
         loading_state._run_next = input_value, child_kwargs
@@ -506,11 +507,12 @@ def run_in_background(input_value, loading_state: LoadingState, unique,
                 finally:
                     loading_state._loading = False
                     loading_state._pending_change = True
-                    note= Note(name="Run in background complete", tint=(0.5, 1.0, 0.5), draw_state=draw_state)
-                    Melty.cache.invalidate(draw_state._tile_id, note=note)
-                    request_render()
+                    if not main_thread:
+                        note= Note(name="Run in background complete", tint=(0.5, 1.0, 0.5), draw_state=draw_state)
+                        Melty.cache.invalidate(draw_state._tile_id, note=note)
+                        request_render()
 
-            if Melty.frame_count < 3:
+            if Melty.frame_count < 3 or main_thread:
                 run(run_next_inner=loading_state._run_next)
                 loading_state._run_next = None
             else:
@@ -830,6 +832,7 @@ def _run_chain_in(input_value, chain=None, _src_gen=None, lint_path=None, **extr
     payload — bound to THIS worker's input snapshot, so the caller learns which
     generation the finished parse actually reflects (not whatever the source is by the
     time the worker returns)."""
+    notify(f"_run_chain_in: start", tag="chain_in")
     result, routed = _run_convert(chain, input_value, **extra)
     error = result if isinstance(result, Exception) else None
     # cst parsed clean - run the compiler check, to surface the syntax errors libcst
@@ -869,6 +872,8 @@ def _run_chain_out(input_value, chain=None, _out_gen=None, **extra):
     pulled out so it isn't forwarded to the nodes, then echoed back in the payload —
     bound to this worker's snapshot, so the produced source string can be tagged with the
     edit frame that made it (used to recognize and order its chain_in echo)."""
+    notify(f"_run_chain_out: start", tag="chain_out")
+
     result, _ = _run_convert(chain, input_value, **extra)
     if isinstance(result, Exception):
         return {"error": result, "_out_gen": _out_gen}
@@ -1193,6 +1198,7 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
             # instead of replaying a stale blit until some unrelated manual invalidation.
             note = Note(name="Convert in and out, chain in finished", tint=(1, 0.5, 1.0), draw_state=draw_state)
             Melty.cache.invalidate_up(draw_state._tile_id, force=True, note=note)
+            notify(f"chain_in finished", tag="chain_in")
 
     out_changed, out_value = False, input_value
 
@@ -1534,7 +1540,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             imgui.align_text_to_frame_padding()
             imgui.text_colored(str(f" Auto"), *(1.0, 1.0, 1.0, 0.2))
 
-        changed, new_text = run_in_background(load_file,
+        changed, new_text = run_in_background(load_file, main_thread=True,
                                               child_kwargs={"input_value": address, 'codec': codec},
                                               name=f"load{unique}", start=load)
         if new_text is LOADING:
@@ -1690,7 +1696,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             note = Note(name="Code_file_io save start", tint=(1, 0.5, 0))
             # Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=4, note=note)
 
-        saved, result = run_in_background(save_file,
+        saved, result = run_in_background(save_file, main_thread=True,
                                           child_kwargs={"address": address,
                                                         "codec": codec,
                                                         "code_str": code_state.text_cache,
@@ -2001,6 +2007,7 @@ def draw_text_from_code_cache(input_value=None, root_input=None, error=None,
         code_dict = dict_host._held()
         # Background auto-index: keep the held parse's symbol usages current
         # without the manual Index click (no-op when already indexed).
+
         _ensure_symbol_index(dict_host, _str_host, code_dict, kwargs.get("jump_to"))
         # The chain's parse error lives on the wrapper's injected ModesState.
         # Normalize it to the ParseError-dict shape _code_tree_errors reads
@@ -2067,16 +2074,55 @@ def draw_text_from_code_cache(input_value=None, root_input=None, error=None,
             # re-renders between the pulse frame and the host's next draw.
             dict_host.child_kwargs.pop("run_jedi", None)
 
+        if len(_str_host.values()) > 0:
+            changed, value, ds = RenderFuncs.draw_text(list(_str_host.values())[0], code_dict=code_dict,
+                                                       code_tree=cache_error, error=error,
+                                                       return_extras=True, **{**kwargs, "is_tree":False})
+            if changed:
+                _str_host[list(_str_host.keys())[0]] = value
+                dict_host.notify_on_change(ds)
+    # # Re-render this editor when a background parse lands: its cached
+    # # subtree is outside the host's own draw loop, so without registering it
+    # # the fresh cst_dict sits invisible until an unrelated invalidation.
+    # if dict_host is not None and ds is not None:
+    #     dict_host.notify_on_change(ds)
+    return False, None
 
-    changed, value, ds = RenderFuncs.draw_text(input_value, code_dict=code_dict,
-                                               code_tree=cache_error, error=error,
-                                               return_extras=True, **{**kwargs, "is_tree":False})
-    # Re-render this editor when the background parse lands - its external
-    # change is outside the host's own draw loop, so without registering it
-    # the fresh cst_dict sits invisible until an unrelated invalidation.
-    if dict_host is not None and ds is not None:
-        dict_host.notify_on_change(ds)
-    return changed, value
+
+def _host_code_tree_error(dict_host):
+    """The dict-host's parse / compile / lint error, normalized to draw_text's
+    code_tree shape ({__error__, __line__, __errors__}), or None when clean.
+
+    The same extraction draw_text_from_code_cache does, memoized on the host by
+    (exception, lint) IDENTITY: draw_text's parse-error staleness check compares
+    code_tree by identity to tell "a fresh parse landed", so a dict rebuilt every
+    frame would un-hide a stale highlight the frame after an edit. last_error /
+    last_lint are swapped per finished parse (never mutated in place), so identity
+    is a safe key."""
+    if dict_host is None:
+        return None
+    wds = getattr(dict_host, "_wrapper_draw_state", None)
+    for v in (getattr(wds, "misc", None) or {}).values():
+        if not isinstance(v, ModesState):
+            continue
+        err = v.last_error
+        lint = getattr(v, "last_lint", None) or None
+        if err is None and not lint:
+            return None
+        memo = getattr(dict_host, "_err_view_memo", None)
+        if memo is not None and memo[0] is err and memo[1] is lint:
+            return memo[2]
+        markers = []
+        if err is not None:
+            line = (getattr(err, "editor_line", None) or getattr(err, "lineno", None)
+                    or getattr(err, "raw_line", None) or 1)
+            msg = (getattr(err, "message", None) or getattr(err, "msg", None) or str(err))
+            markers.append((line, msg))
+        markers += list(lint or ())
+        cache_error = {"__error__": markers[0][1], "__line__": markers[0][0], "__errors__": markers}
+        dict_host._err_view_memo = (err, lint, cache_error)
+        return cache_error
+    return None
 
 
 @render_func(use_cache=True, show_bg=False, selectable=False, disable_scroll=True,
@@ -2133,67 +2179,82 @@ def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabS
         _ensure_symbol_index(dict_host, _str_host, dict_host._held(),
                              kwargs.get("jump_to"))
 
-    # New layout method (shared band system): the panes line up with the
-    # objects registered on the root window - the border between the
-    # structured and text panes is a black line in the same collision
-    # solve as every other column edge. Lazy import (new_core_view sits
-    # between this module and columns.py). left_edge/right_edge: when this
-    # row renders inside another row's cell, the host passes the cell's edge
-    # dicts (through code_file_io's child_kwargs) and they become this row's
-    # column edges by reference - same adoption draw_columns gives to
-    # Columns. Absent (the usual standalone window), ColumnLayout falls back
-    # to the window frame edges.
-    from src.lsd.gl_gui.view.core_views.columns import ColumnLayout, MIN_ROW_HEIGHT
-    cols = ColumnLayout(draw_state, len(tab_state.selected_tabs),
-                        column_edges=column_edges, column_widths=column_widths,
-                        left_edge=kwargs.get("left_edge"),
-                        right_edge=kwargs.get("right_edge"))
-    # Pin each pane to the visible viewport (the legacy column_max_height
-    # clamp this instead) - long sources scroll inside their pane.
-    avail_h = None
-    size_kwargs = {}
-    clip = cols.clip if cols.clip is not None else draw_state.abs_clip_rect
-    if clip is not None:
-        # Exactly to the clip bottom: the content then ends the padding
-        # above the band's bottom edge, so the black reads even all around.
-        avail_h = max(MIN_ROW_HEIGHT, clip[3] - cols.top)
-        # The pane content is inset by the column padding on every side.
-        size_kwargs = {"height": avail_h - 2 * cols.padding}
+        # New columnLayout (shared edge system): the panes line up with other
+        # objects drawn on the root window - the divider between the
+        # structured and text panes is a draggable line in the same collision
+        # region as every other window edge. Lazy import (new_core_view sits
+        # between this module and columns.py). left_edge/right_edge: when this
+        # view renders inside another row's cell, the host passes the cell's edge
+        # dicts (through code_file_io's child_kwargs) and they become this row's
+        # far edges by reference - same adoption draw_columns gives nested
+        # Columns. Absent (the usual standalone window), ColumnLayout falls back
+        # to the window frame edges.
+        from src.lsd.gl_gui.view.core_views.columns import ColumnLayout, MIN_ROW_HEIGHT
+        cols = ColumnLayout(draw_state, len(tab_state.selected_tabs),
+                            column_edges=column_edges, column_widths=column_widths,
+                            left_edge=kwargs.get("left_edge"),
+                            right_edge=kwargs.get("right_edge"))
+        # Pin each pane to the visible viewport (the legacy column_max_height
+        # path this replaces) - long sources scroll inside their pane.
+        avail_h = None
+        size_kwargs = {}
+        clip = cols.clip if cols.clip is not None else draw_state.abs_clip_rect
+        if clip is not None:
+            # Exactly match the frame band: the pane then ends one pixel
+            # above the band's bottom edge, so the black reads even all around.
+            avail_h = max(MIN_ROW_HEIGHT, clip[3] - cols.top)
+            # The pane content is inset by the fixed padding on every side.
+            size_kwargs = {"height": avail_h - 2 * cols.padding}
 
-    raw_changed, raw_value = False, input_value
-    for idx, view_func in enumerate(tab_state.selected_tabs):
-        with cols.cell(idx, height=avail_h) as col_width:
-            if getattr(view_func, "__name__", "") == "draw_text":
-                m_changed, m_out = draw_text_from_code_cache(
-                    input_value=input_value, root_input=root_input, error=error,
-                    run_jedi=run_jedi, jump_to=kwargs.get("jump_to"), draw=draw,
-                    show_header=False,
-                    width=col_width, **size_kwargs,
-                    name=f"draw_text##{unique}")
-                if m_changed:
-                    raw_changed, raw_value = True, m_out
-                    draw_state.invalidate_up(max_depth=2)
-            else:
-                gp = dict_host._held() if dict_host is not None else None
-                if not isinstance(gp, dict):
-                    imgui.text_colored("Parsing…" if dict_host is not None
-                                       else "No parse for this source", 0.6, 0.6, 0.6, 1.0)
-                    continue
-                m_changed, m_out = RenderFuncs.draw_collection(
-                    gp, excluded=["__cst__"], show_system=True, draw=draw,
+        # Grab the parse + its normalized error off the MANAGED dict_host once, before
+        # the tab loop. Both tabs read them: the structured tab renders `gp` directly,
+        # the text tab injects code_dict/code_tree/error into its draw_text leaf via
+        # child_kwargs. Computing here also drops the old order dependency (the text tab
+        # read `gp` before the structured branch defined it).
+        gp = dict_host._held() if dict_host is not None else None
+        cache_error = _host_code_tree_error(dict_host)
 
-                    disable_scroll=False, show_header=False, show_add_delete=False,
-                    width=col_width, **size_kwargs, show_parent_add_delete=False,
-                    name=f"draw_collection##{unique}", selectable=False)
-                if m_changed:
-                    # A rebuilt top-level tree (reorder / add / delete) replaces the
-                    # held value; an in-place value edit already bubbled the host
-                    # dirty. Either way the host value_outs + saves on its own draw.
-                    if m_out is not gp and isinstance(m_out, dict):
-                        dict_host[dict_host.value_key] = m_out
-                        gp = m_out
-                    live_apply_edits(root_input, gp)
-                    draw_state.invalidate_up(max_depth=2)
+        raw_changed, raw_value = False, input_value
+        for idx, view_func in enumerate(tab_state.selected_tabs):
+            with cols.cell(idx, height=avail_h) as col_width:
+                if getattr(view_func, "__name__", "") == "draw_text":
+                    # The host's parse + errors flow to the draw_text leaf through
+                    # draw_collection's child_kwargs: code_dict → token views / symbol
+                    # usages, code_tree → the syntax/lint error highlight, error → the
+                    # recompile/runtime highlight (the same trio draw_text_from_code_cache
+                    # hands draw_text, now via the parent _str_host).
+                    m_changed, m_out = RenderFuncs.draw_collection(
+                        input_value=_str_host, child_kwargs={"error": error, "view_func": RenderFuncs.draw_text,
+                                                             "code_dict": gp, "code_tree": cache_error,
+                                                             "run_jedi": run_jedi, "jump_to": kwargs.get("jump_to")},
+                        show_header=False, show_name=False,
+                        width=col_width, **size_kwargs,
+                        name=f"draw_text##{unique}")
+                    if m_changed:
+                        notify("text changed", tag="save bug", tint=(1, 1, 0.5))
+                        raw_changed, raw_value = True, m_out
+                        draw_state.invalidate_up(max_depth=2)
+                else:
+                    if not isinstance(gp, dict):
+                        imgui.text_colored("Parsing…" if dict_host is not None
+                                           else "No parse for this source", 0.6, 0.6, 0.6, 1.0)
+                        continue
+                    m_changed, m_out = RenderFuncs.draw_collection(
+                        gp, excluded=["__cst__"], show_system=True, draw=draw,
 
-    cols.finish()
-    return raw_changed, raw_value
+                        disable_scroll=False, show_header=False, show_add_delete=False,
+                        width=col_width, **size_kwargs, show_parent_add_delete=False,
+                        name=f"draw_collection##{unique}", selectable=False)
+                    if m_changed:
+                        notify("dict changed", tag="save bug", tint=(1,1,0.5))
+                        # A rebuilt top-level dict (reorder / add / delete) replaces the
+                        # host value; an in-place value edit already bubbled the host
+                        # dirty. Either way the host chain_outs + updates on its own draw.
+                        if m_out is not gp and isinstance(m_out, dict):
+                            dict_host[dict_host.value_key] = m_out
+                            gp = m_out
+                        live_apply_edits(root_input, gp)
+                        draw_state.invalidate_up(max_depth=2)
+
+        cols.finish()
+    return False, None

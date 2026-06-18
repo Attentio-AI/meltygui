@@ -2353,8 +2353,8 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
 @render_func(use_cache=True, selectable=False, disable_scroll=True, indent_size=0, show_bg=False, min_width=5,
              min_height=10, wrap=True, show_add_delete=False)
 def button(input_value="", width=5, height=14, draw_state=None, alpha=1.0, left_mouse_held=False, shadow=True, left_mouse_down=False,
-           color=(0.533, 0.068, 0.5), highlight_hovered=True, hovered=False, style_manager=None, show_button_bg=True,
-           factor=1.0, tint_value=0.32, text_value=1.023, saturation=0.8, text_saturation=0.4, text_align="center",
+           color=(0.533, 0.068, 0.5), icon=None, highlight_hovered=True, hovered=False, style_manager=None, show_button_bg=True,
+           factor=1.0, tint_value=0.16, text_value=1.023, saturation=1.2, text_saturation=0.8, text_align="center",
            search_match=False, search_current=False, tint=None, rounding=None, corner_radius=6.0, text_pad=15):
 
     if color is not None:
@@ -2381,6 +2381,9 @@ def button(input_value="", width=5, height=14, draw_state=None, alpha=1.0, left_
         mixed_color = (0, 0, 0)
 
     button_txt = str(input_value).split("##")[0]
+    if icon is not None:
+        button_txt = f"{icon} {button_txt}"
+
     min_size = imgui.calc_text_size(button_txt)
     width = max(width, min_size[0] + text_pad)
     height = max(height, min_size[1])
@@ -3345,7 +3348,8 @@ def draw_lsd_studio(input_val):
 
 @render_func(is_default_for="ImGuiStyleManager", tint=(0.8, 0.7, 0), use_cache=True, with_header=None)
 def draw_style_manager(input_val):
-    draw_text("Style Manager", wrap=False, width=138, height=400)
+    imgui.text("Style Manager")
+   
     return False, input_val
 
 
@@ -3423,10 +3427,10 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
 
             draw_state.params = param_dict
         if len(draw_state.params) > 0:
-            changed, new_val = draw_collection(draw_state.params, name="Parameters", initial={"expanded":True},
-                                               show_add_delete=False, shadow=False, z_offset=0, parent_show_add_delete=False, 
-                                               horizontal=True, wrap=wrap,
-                                               child_kwargs={"max_width": 200, "shadow":False,
+            changed, new_val = draw_collection(draw_state.params, name="Parameters", initial={"expanded":True}, use_cache=True,
+                                               show_add_delete=False, shadow=True, z_offset=1, parent_show_add_delete=False, 
+                                               horizontal=False, wrap=wrap,
+                                               child_kwargs={"max_width": 397, "shadow":False,
                                                              "show_bg": False, "use_cache": True, "z_offset": 0.0
                                                              })
             if changed:
@@ -3496,7 +3500,7 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
         draw_state.misc["_auto_run_ver"] = auto_run
         _run()
 
-    if show_run_button and button(f"{input_value.__name__}##{unique}", height=29,
+    if show_run_button and button(f"{input_value.__name__}##{unique}", icon=kwargs.get("icon", None), height=29,
                                   bg_offset=0, tint=(0.021, 0.104, 0.167, 0.0))[0]:
         _run()
 

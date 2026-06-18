@@ -480,7 +480,6 @@ class TypeCodec(Codec):
         # stale external change.
         FileWatch.set_hash_from_content(address.path, final_text, draw_state=address._watcher_ds)
         address.path.write_text(final_text, encoding="utf-8")
-        address._hash = address._compute_hash()
         # The on-disk span is now exactly what we wrote - refresh the conflict
         # guard's baseline so the next save verifies against THIS write.
         address._span_fp = _span_fingerprint(new_lines if old_start is not None else lines)

@@ -1,3 +1,4 @@
+import bisect
 import keyword
 import re
 import time
@@ -1322,6 +1323,196 @@ def tokenize(text):
     return _merge_color_tuples(_merge_unary_signs(_tokenize_raw(text)))
 
 
+# --- Viewport tokenization ---------------------------------------------------
+# Re-tokenizing the whole buffer on every keystroke is the dominant per-edit
+# cost on a long span (~40ms of tokenize+vcols for ~1600 lines). But only the
+# lines inside the clip rect are ever drawn, so we tokenize ONLY the visible
+# window each frame - O(visible) instead of O(buffer), which also makes scroll
+# and re very cheap.
+#
+# The one thing a window can't see on its own is the lexer state at its top: a
+# visible line may start inside a multi-line `"""` docstring opened far above.
+# We track that with `_line_open` - one entry per line, the string opener active
+# at that line's start (None when outside any string) - maintained incrementally
+# (only the edited lines are re-scanned). To tokenize a window whose first line
+# starts inside a string, PREPEND that opener so `_tokenize_raw` resumes
+# in-string, then strip it back off; this reuses the tokens UNMODIFIED, so the
+# window's coloring is identical to the matching portion of `list(tokenize(text))`.
+
+def _opener_quote(tok):
+    '''The string-opening quote of a string token, skipping any f/r/b/u prefix:
+    \'\"\"\"\', "\'\'\'", \'\"\' or "\'".'''
+    i, n = 0, len(tok)
+    while i < n and tok[i] in 'fFrRbBuU':
+        i += 1
+    if tok[i:i + 3] in ('"""', "'''"):
+        return tok[i:i + 3]
+    return tok[i:i + 1]
+
+
+def _line_offsets(text):
+    """Char offset of each line start; offs[i] is the start offset of line i
+    (offs[0] == 0). len(offs) == number of lines."""
+    offs = [0]
+    i = text.find('\n')
+    while i != -1:
+        offs.append(i + 1)
+        i = text.find('\n', i + 1)
+    return offs
+
+
+def _line_open_full(text):
+    """(line_offsets, line_open) computed from scratch. line_open[i] is the
+    string state active at the START of line i — None outside any string, else
+    a (closing_quote, color_kind) pair for the multi-line string spanning into
+    the line. The kind is carried because a PREFIXED triple (`r'''…`, `f\"\"\"…`)
+    colors as 'string', not 'string_doc' — only a bare triple is 'string_doc'.
+    Derived straight from `_tokenize_raw`, so it agrees with `tokenize()`
+    exactly. O(buffer); used on first render, then maintained incrementally."""
+    offs = _line_offsets(text)
+    line_open = [None] * len(offs)
+    line = 0
+    for tok, kind in _tokenize_raw(text):
+        if tok == '\n':
+            line += 1                       # bare newline → next line starts clean
+        elif '\n' in tok:
+            # Only string/string_doc tokens carry embedded newlines; each line
+            # the string continues onto starts inside it.
+            qk = (_opener_quote(tok), kind) if kind in ('string', 'string_doc') else None
+            for ch in tok:
+                if ch == '\n':
+                    line += 1
+                    if line < len(line_open):
+                        line_open[line] = qk
+    return offs, line_open
+
+
+def _diff_span(a, b):
+    """(common_prefix_len, a_suffix_start, b_suffix_start) for two strings.
+    Binary search on slice equality so the comparisons run at C speed — a
+    mid-buffer single-char edit costs O(log n) compares, not the O(n) of a
+    Python char loop (the difference between ~6ms and ~0.1ms on a big file)."""
+    n = min(len(a), len(b))
+    plo, phi = 0, n
+    while plo < phi:                      # longest common prefix
+        mid = (plo + phi + 1) // 2
+        if a[:mid] == b[:mid]:
+            plo = mid
+        else:
+            phi = mid - 1
+    lo = plo
+    slo, shi = 0, n - lo                  # longest common suffix (no prefix overlap)
+    while slo < shi:
+        mid = (slo + shi + 1) // 2
+        if a[len(a) - mid:] == b[len(b) - mid:]:
+            slo = mid
+        else:
+            shi = mid - 1
+    return lo, len(a) - slo, len(b) - slo
+
+
+def _update_line_open(prev_text, prev_offs, prev_open, text):
+    """Incrementally recompute (line_offsets, line_open) for `text`. Re-scans
+    only from the nearest clean line at/before the edit until the lexer state
+    reconverges with the unchanged tail at a clean line boundary; everything
+    before/after is reused. Output equals `_line_open_full(text)`."""
+    if prev_text is None or prev_offs is None or prev_open is None or text == prev_text:
+        return (prev_offs, prev_open) if text == prev_text and prev_offs is not None \
+            else _line_open_full(text)
+
+    olen, nlen = len(prev_text), len(text)
+    lo, _old_hi, new_hi = _diff_span(prev_text, text)
+    delta = nlen - olen
+
+    new_offs = _line_offsets(text)
+    cf = bisect.bisect_right(new_offs, lo) - 1      # first changed line (new coords)
+    # line_open is valid through line cf (depends only on unchanged preceding
+    # lines). Back up to the last clean line at/before cf to start the re-lex.
+    sl = cf
+    while sl > 0 and prev_open[sl] is not None:
+        sl -= 1
+    start_off = new_offs[sl]
+    old_clean = {prev_offs[k]: k for k in range(len(prev_offs)) if prev_open[k] is None}
+
+    tail = [None]                # line_open for line sl (clean by construction)
+    off = start_off
+    stop_old = None
+    for tok, kind in _tokenize_raw(text[start_off:]):
+        if '\n' not in tok:
+            off += len(tok)
+            continue
+        qk = (_opener_quote(tok), kind) if kind in ('string', 'string_doc') else None
+        for ch in tok:
+            off += 1
+            if ch != '\n':
+                continue
+            state = None if tok == '\n' else qk
+            if state is None and off >= new_hi:
+                oc = old_clean.get(off - delta)   # same clean line in the old tail?
+                if oc is not None:
+                    stop_old = oc                 # reconverged → reuse old suffix
+                    break
+            tail.append(state)
+        if stop_old is not None:
+            break
+
+    new_open = prev_open[:sl] + tail + (prev_open[stop_old:] if stop_old is not None else [])
+    return new_offs, new_open
+
+
+def _resume_in_string(body, opener):
+    """Tokenize `body` given that it BEGINS inside a string. `opener` is the
+    (closing_quote, color_kind) pair recorded in `line_open` (the kind matters:
+    a prefixed triple colors 'string', a bare triple 'string_doc'). Emits the
+    resumed string prefix with that kind, then tokenizes the code after it
+    closes — seeding the merge passes with a string-kind prev so that code gets
+    the same unary-sign/color-tuple context it has globally (where a closed
+    string precedes it). Matches the global coloring char-for-char."""
+    quote, skind = opener
+    if len(quote) == 3:                        # triple: next literal close
+        c = body.find(quote)
+        cut = c + 3 if c != -1 else len(body)
+    else:                                      # single/double: first unescaped quote
+        cut, esc = len(body), False
+        for p, ch in enumerate(body):
+            if esc:
+                esc = False
+            elif ch == '\\':
+                esc = True
+            elif ch == quote:
+                cut = p + 1
+                break
+    head = list(_split_icons(body[:cut], skind))
+
+    def _seeded():
+        yield ('\x00', 'string')               # sentinel prev: can't merge, dropped below
+        yield from _tokenize_raw(body[cut:])
+    rest = list(_merge_color_tuples(_merge_unary_signs(_seeded())))
+    if rest and rest[0] == ('\x00', 'string'):
+        rest.pop(0)
+    return head + rest
+
+
+def _window_tokens(text, line_offs, line_open, v0, v1, lookback=12):
+    """Merged tokens for just the line range [v0, v1] (plus `lookback` lines of
+    context above, so the merge passes have correct left-context for v0's first
+    line), and the absolute (start_line, start_offset) the first token sits at.
+    The per-character coloring matches the corresponding span of
+    `list(tokenize(text))` — including windows that open inside a docstring."""
+    nlines = len(line_offs)
+    if nlines == 0:
+        return 0, 0, []
+    v0 = max(0, min(v0, nlines - 1))
+    v1 = max(v0, min(v1, nlines - 1))
+    wl = max(0, v0 - lookback)
+    start_off = line_offs[wl]
+    end_off = line_offs[v1 + 1] if v1 + 1 < nlines else len(text)
+    opener = line_open[wl] if wl < len(line_open) else None
+    body = text[start_off:end_off]
+    toks = _resume_in_string(body, opener) if opener else list(tokenize(body))
+    return wl, start_off, toks
+
+
 def _index_to_line_col(text, index):
     line = text[:index].count('\n')
     last_nl = text.rfind('\n', 0, index)
@@ -1397,9 +1588,28 @@ def _build_vcols(text, tokens, token_views):
     return vcols
 
 
+class _WinVCols:
+    """Window-relative visual-column map. `arr[i]` is the line-relative visual
+    column (in cells) of source char `off + i`, where `arr` came from
+    `_build_vcols` over just the rendered window. `cell(idx)` returns the column
+    for an ABSOLUTE source index, or None when `idx` falls outside the window —
+    callers then use the plain character column, which is correct because
+    off-window positions are viewport-culled and never actually drawn."""
+    __slots__ = ('arr', 'off')
+
+    def __init__(self, arr, off):
+        self.arr, self.off = arr, off
+
+    def cell(self, idx):
+        i = idx - self.off
+        return self.arr[i] if 0 <= i < len(self.arr) else None
+
+
 def _char_pos_to_xy(text, index, origin_x, origin_y, line_px, vcols=None):
     line, col = _index_to_line_col(text, index)
-    vx = vcols[index] if (vcols is not None and 0 <= index < len(vcols)) else col
+    vx = vcols.cell(index) if vcols is not None else None
+    if vx is None:
+        vx = col                            # off-window / no inline widgets: plain column
     x = origin_x + vx * _mono_char_w()
     y = origin_y + line * line_px
     return x, y
@@ -1419,15 +1629,18 @@ def _xy_to_char_index(text, mx, my, origin_x, origin_y, line_px, vcols=None):
     if vcols is None:
         col = round((mx - origin_x) / char_w) if char_w else 0
     else:
-        # Pick the source col on the line whose visual position is closest to the
-        # click, so a wide inline widget reads as a single caret location.
+        # Pick the source col on this line whose visual position is closest to the
+        # click, so a wide inline widget reads as a single caret stop. Outside the
+        # window/ range (clicks are always inside it) the plain column `c` is used.
         target = (mx - origin_x) / char_w if char_w else 0.0
         best_col, best_d = 0, float('inf')
         for c in range(len(line_text) + 1):
-            d = abs(vcols[abs_start + c] - target)
+            cell = vcols.cell(abs_start + c)
+            cell = float(c) if cell is None else cell
+            d = abs(cell - target)
             if d < best_d:
                 best_d, best_col = d, c
-            elif vcols[abs_start + c] - target > 1.0:
+            elif cell - target > 1.0:
                 break
         col = best_col
     col = max(0, min(col, len(line_text)))
@@ -1803,7 +2016,8 @@ def _describe_code_tree(code_tree):
     return name
 
 
-@render_func(is_default_for=(CodeLine), show_bg=True, use_cache=True, disable_scroll=False, with_header=draw_header, shadow=False, show_name=False, with_footer=draw_footer, determines_height=False,
+@render_func(is_default_for=(CodeLine), show_bg=True, use_cache=True, disable_scroll=False, with_header=draw_header, shadow=False, 
+show_name=False, with_footer=draw_footer, determines_height=False,
              selectable=False, searchable=True, bg_offset=-3, show_add_delete=False, tint=(0.485, 0.61, 0.76))
 def draw_text(input_value: str, height=None,
               left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
@@ -1820,8 +2034,8 @@ def draw_text(input_value: str, height=None,
     if not syntax_highlight:
         token_views = {}
     elif token_views is None:
-        token_views = DEFAULT_TOKEN_VIEWS   # global experiment fallback (see top)
-
+        token_views = DEFAULT_TOKEN_VIEWS   # global experiment settings (see a
+        
     # Symbol-usage source: the parse arrives as `code_tree` in the
     # address_to_general_parse routes, as `code_dict` in the CODE_UI routes
     # (cst_module_to_dict - which is also where the run_jedi() pass attaches
@@ -1838,6 +2052,7 @@ def draw_text(input_value: str, height=None,
     if getattr(ds, '_ac_state', None) is None:
         ds._ac_state = DropDownState()
     ac_state = ds._ac_state
+    
     # Same deal for the usage-jump picker (multi-user symbol double-click).
     if getattr(ds, '_uj_state', None) is None:
         ds._uj_state = DropDownState()
@@ -1918,25 +2133,64 @@ def draw_text(input_value: str, height=None,
     io = imgui.get_io()
     line_px = imgui.get_text_line_height() * line_height
 
-    # Visual-column map for inline token view widths (None on the fast path).
-    # Wide token widgets reserve char_width cells visually but stay one source
-    # char for the caret; every c->x conversion below routes through this.
-    # Built lazily + cached by `text` (which mutates as keys are processed), so a
-    # click (pre-edit text) and the cursor render (post-edit text) each get a map
-    # matching their state, reusing the syntax token cache.
+    # Viewport tokenization: tokenize ONLY the clipped line range each frame
+    # (see the `_line_open` / `_window_tokens` machinery above), so the per-frame
+    # syntax cost is O(visible) instead of O(buffer). `_window()` returns
+    # (start_line, start_offset, tokens, vcols) for the current text + visible
+    # range, cached on the draw_state. It's lazy + keyed by (text, range), so a
+    # click (pre-edit text) and the render (post-edit text) each get a window
+    # for their state, but the render loop reuses the click's computation.
+    def _window():
+        nlines = text.count('\n') + 1
+        # Visible line band from the clip rect (Y only) - the SAME live
+        # abs_clip_rect + bar_height the draw-cull below uses, so the window
+        # always covers exactly the lines that get drawn. A few lines of margin
+        # keep caret/selection edges just past the clip correct and absorb a
+        # frame of drag-scroll.
+        _clip = draw_state.abs_clip_rect
+        if line_px:
+            v0 = int((_clip[1] + bar_height - top) / line_px) - 3
+            v1 = int((_clip[3] - top) / line_px) + 3
+        else:
+            v0, v1 = 0, nlines - 1
+        v0 = max(0, min(v0, nlines - 1))
+        v1 = max(v0, min(v1, nlines - 1))
+        key = (text, v0, v1, syntax_highlight, id(token_views) if token_views else 0)
+        if getattr(ds, '_win_key', None) == key:
+            return ds._win_data
+
+        if syntax_highlight:
+            if getattr(ds, '_lo_text', None) != text:
+                ds._lo_offs, ds._lo_open = _update_line_open(
+                    getattr(ds, '_lo_text', None), getattr(ds, '_lo_offs', None),
+                    getattr(ds, '_lo_open', None), text)
+                ds._lo_text = text
+            wl, start_off, toks = _window_tokens(text, ds._lo_offs, ds._lo_open, v0, v1)
+            win_len = sum(len(t) for t, _ in toks)
+            arr = _build_vcols(text[start_off:start_off + win_len], toks, token_views) \
+                if token_views else None
+            vcols = _WinVCols(arr, start_off) if arr is not None else None
+        else:
+            # Plain mode: the visible lines as ONE 'default' token (the segment
+            # loop below splits it at newlines). No strings → no line_open needed.
+            offs = _line_offsets(text)
+            wl, start_off = v0, offs[v0]
+            end_off = offs[v1 + 1] if v1 + 1 < len(offs) else len(text)
+            win_text = text[start_off:end_off]
+            toks = [(win_text, 'default')] if win_text else []
+            vcols = None
+        ds._win_key = key
+        ds._win_data = (wl, start_off, toks, vcols)
+        return ds._win_data
+
     def _get_vcols():
-        if not token_views:
-            return None
-        if getattr(ds, '_vcols_text', None) == text and getattr(ds, '_vcols_tv', None) is token_views:
-            return ds._vcols
-        toks = ds._tok_cache if getattr(ds, '_tok_cache_text', None) == text else list(tokenize(text))
-        ds._vcols = _build_vcols(text, toks, token_views)
-        ds._vcols_text = text
-        ds._vcols_tv = token_views
-        return ds._vcols
+        return _window()[3]
 
     left = imgui.get_cursor_screen_pos()[0]
     top = imgui.get_cursor_screen_pos()[1]
+
+
+
 
     # --- Line-number gutter ---
     # Shown only when the routed address (jump_to) supplies a starting line, so
@@ -1966,7 +2220,6 @@ def draw_text(input_value: str, height=None,
     else:
         line_offset = 0
         gutter_w = 0.0
-
 
     text_visible_width = draw_state.content_width - gutter_w
 
@@ -2528,7 +2781,8 @@ def draw_text(input_value: str, height=None,
             ds.text_selection_start = ds.text_cursor_pos
             ds.text_selection_end = ds.text_cursor_pos
             changed = True
-
+            
+            
         # Any buffer edit dismisses the usage-jump picker - its spans (and the
         # anchor it hangs off) are stale the moment the text shifts.
         if changed and getattr(ds, '_uj_open', False):
@@ -2569,10 +2823,10 @@ def draw_text(input_value: str, height=None,
                 # (vs a live module's getattr) and bare names from the scope, both
                 # with EXACT type tags. We still filter by the half-typed prefix.
                 raw = []
-                try:
-                    raw = completion_source(text, anchor, prefix, dot_trigger) or []
-                except Exception:
-                    raw = []
+                # try:
+                #     raw = completion_source(text, anchor, prefix, dot_trigger) or []
+                # except Exception:
+                #     raw = []
                 cands = _filter_completions(raw, prefix)
             elif want and dot_trigger:
                 # Member access (`imgui.`, `foo.bar`) - resolve the receiver's
@@ -2652,11 +2906,13 @@ def draw_text(input_value: str, height=None,
     # token-view widths; with no views it's just the plain character column.
     vcols = _get_vcols()
     def _colx(idx, line_start=None):
-        # Line-relative visual x (px) of source `idx`. With inline views, read the
-        # vcols map; otherwise it's just the character column - passing line_start
-        # (when the caller has it already makes the fast path O(1) instead of O(idx).
+        # Line-relative visual x (px) of source `idx`. With inline views in this
+        # window, read the window vcols; otherwise (idx off-window - those aren't
+        # drawn) it's just the character column, O(1) if line_start is known.
         if vcols is not None:
-            return (vcols[idx] if 0 <= idx < len(vcols) else 0.0) * char_w
+            cell = vcols.cell(idx)
+            if cell is not None:
+                return cell * char_w
         col = (idx - line_start) if line_start is not None else _index_to_line_col(text, idx)[1]
         return col * char_w
 
@@ -2759,10 +3015,11 @@ def draw_text(input_value: str, height=None,
             ds.text_h_scroll = cursor_logical_x - visible_width + edge_padding
     ds.text_prev_cursor_pos = ds.text_cursor_pos
 
-    # Clamp h_scroll to sensible bounds - the longest line drives the limit
-    # (visual width, so inline widgets count toward it).
-    max_line_width = (max(vcols) if vcols else
-                      max((len(l) for l in text.split('\n')), default=0)) * char_w
+    # Clamp h_scroll to content bounds - the widest line drives the limit. Uses
+    # plain character count (vcols now covers only the visible window, not the
+    # whole buffer); inline widgets widen a line by a couple of cells, so the
+    # h-scroll limit can be a hair short on widget-heavy lines - harmless.
+    max_line_width = max((len(l) for l in text.split('\n')), default=0) * char_w
     max_h_scroll = max(0.0, max_line_width - visible_width + 50.0)
     ds.text_h_scroll = max(0.0, min(ds.text_h_scroll, max_h_scroll))
     origin_x = left + gutter_w - ds.text_h_scroll
@@ -2876,28 +3133,16 @@ def draw_text(input_value: str, height=None,
                 continue
             draw_list.add_rect_filled(origin_x - 4, dy0, origin_x + visible_width, dy1, bg)
 
-    # Syntax highlighting text. Tokens are cached by text value, so unchanged
-    # content (scrolling, cursor blink, hover repaints) skip re-tokenizing and
-    # only pay a C-level str compare. Each token is drawn one line-segment at a
-    # time with a single add_text call rather than one call per glyph.
-    # The syntax flag is part of the cache key: a plain render must not reuse
-    # colored tokens (or vice versa) for the same text.
-    if (getattr(ds, '_tok_cache_text', None) == text
-            and getattr(ds, '_tok_cache_syntax', True) == syntax_highlight):
-        tokens = ds._tok_cache
-    else:
-        # Plain mode treats the whole buffer as ONE 'default'-colored token - the
-        # segment loop below already splits any token at newlines (docstrings
-        # span lines), so no per-line split is needed here.
-        tokens = (list(tokenize(text)) if syntax_highlight
-                  else ([(text, 'default')] if text else []))
-        ds._tok_cache_text = text
-        ds._tok_cache = tokens
-        ds._tok_cache_syntax = syntax_highlight
+    # Syntax-highlighted text - only the visible window is tokenized (see
+    # `_window`), so this is O(visible) not O(buffer). The loop starts at the
+    # window's first line and source offset; tokens above it (the merge-context
+    # lookback) are processed but viewport-culled. Each token is drawn one
+    # line-segment at a time with a single add_text call rather than per glyph.
+    win_line, win_off, tokens, _ = _window()
 
     x = origin_x
-    y = origin_y
-    src_i = 0          # source index at the start of the current token
+    y = origin_y + win_line * line_px   # window's first line (lookback above the clip)
+    src_i = win_off    # ABSOLUTE source index at the start of the current token
     _tv_idx = 0        # Nth inline view drawn this frame - its STABLE name. Render
                        # order stays stable frame-to-frame (so each view keeps its
                        # state), unlike source/line position which shifts on edits.

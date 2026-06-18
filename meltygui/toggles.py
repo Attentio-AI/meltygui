@@ -80,7 +80,6 @@ class Tint:
     def icon_tint():
         style_manager: ImGuiStyleManager = Core.melty.style_manager
         active_hsv = style_manager.hsv
-
         hue_delta = -0.03
         saturation_factor = 2.0
         value_factor = 1.648
@@ -89,7 +88,7 @@ class Tint:
                       min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
                       min(max(active_hsv[2] * value_factor, 0), Tint.max_value))
         return hsv_to_rgb(*active_hsv)
-
+        
     @staticmethod
     def checkbox_outline():
         style_manager: ImGuiStyleManager = Core.melty.style_manager
@@ -99,6 +98,7 @@ class Tint:
         saturation_factor = 1.2
         value_factor = -0.002
         
+  
         active_hsv = ((active_hsv[0] + hue_delta),
                       min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
                       min(max(active_hsv[2] * value_factor, -1), Tint.max_value))
@@ -112,7 +112,6 @@ class Tint:
         saturation_factor = 1.1
         value_factor = 0.068
         
-
         active_hsv = ((active_hsv[0] + hue_delta),
                       min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
                       min(max(active_hsv[2] * value_factor, -1), Tint.max_value))
@@ -307,18 +306,23 @@ class Swoosh:
                                        # the rect, then drop off; 1 = linear)
 
 
-@window(tint=(0.44, 0.459, 0.53))
+@window(tint=(0.729, 0.729, 0.911))
 class Toggles:
 
-    @defaults(tint=(0.167, 0.972, 1.00))
+    @defaults(tint=(0.839, 0.099, 0.04))
     class TextEditor:
         enable_spell_check = False
+
+    @defaults(tint=(0.30, 0.52, 0.36))
+    class Collection:
+        pre_load_items = 26
+        placeholder_height = 30.0
 
     @defaults(tint=(0.631, 0.474, 0.861))
     class InputHandlerToggles:
         show_debug = False
 
-    @defaults(tint=(0.60, 0.55, 0.077))
+    @defaults(tint=(0.91, 0.659, 0.15))
     class InvalidateTracker:
         keep_for_frames = 17
         enable = False
@@ -330,11 +334,6 @@ class Toggles:
         # Minimum LOGICAL terminal size, in tiles - independent of the window size.
         min_width = 98.634
         min_height = 480.0
-
-    @defaults(tint=(0.42, 0.78, 0.55))
-    class Collection:
-        pre_load_items = 30
-        placeholder_height = 30.0
 
     @defaults(tint=(0.878, 0.762, 0.692))
     class ScrollSettings:
@@ -379,7 +378,7 @@ class Toggles:
     layer_stack_trace = False
     show_line_breaks = False
 
-     # Shadow Settings
+    # Shadow settings
     shadow_downscale = 2
 
     shadow_edge_sharpness = 49.833

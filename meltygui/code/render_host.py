@@ -359,7 +359,7 @@ class RenderHost(_DeepAttrMixin, dict):
             # as the initial fill below).
             if self._draw_state is not None and self._draw_state._parent is not None:
                 self._draw_state._parent.invalidate_up_by_obj(
-                    obj=self, note=Note(name="file_reload", tint=(1, 0.6, 0.1)), max_depth=8)
+                    obj=self, note=Note(name="file_reload", tint=(1, 0.6, 0.1)), max_depth=3)
             request_render()
 
         # FRAME PRECEDENCE (all O(1) — no content comparison). Is there a GENUINE pending
@@ -378,7 +378,7 @@ class RenderHost(_DeepAttrMixin, dict):
                 self._materialize(input_value)
                 note = Note(name="_materialize", tint=(1, 1.0, 1.0))
                 # Needed for initial load
-                self._draw_state._parent.invalidate_up_by_obj(obj=self, note=note, max_depth=7)
+                self._draw_state._parent.invalidate_up_by_obj(obj=self, note=note, max_depth=3)
                 self._draw_state._parent.invalidate_up(note=note, max_depth=7)
 
                 request_render()
@@ -414,7 +414,6 @@ class RenderHost(_DeepAttrMixin, dict):
             self[self.value_key] = r_new
             self._draw_state._parent.invalidate_by_obj(obj=input_value)
             self._draw_state._parent.invalidate_by_obj(obj=self)
-
             request_render()
 
         # OUTBOUND only a GENUINE local edit - one MORE than 1 frame ahead of the source
@@ -425,7 +424,6 @@ class RenderHost(_DeepAttrMixin, dict):
             self._wrapper_draw_state._parent.invalidate()
             self._draw_state._parent.invalidate_by_obj(obj=input_value)
             self._draw_state._parent.invalidate_by_obj(obj=self)
-
             request_render()
 
         edited = bool((pre_dirty and local_ahead) or self._external_change or r_changed)

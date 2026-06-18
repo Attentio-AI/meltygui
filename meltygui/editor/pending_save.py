@@ -45,8 +45,6 @@ def _diff_lines_with_numbers(diff, base):
 
 @window(view_func=RenderFuncs.draw_type, disable_scroll=False)
 class PendingSave:
-
-
     pending_saves = defaultdict(Any)
     originals = defaultdict(Any)
 
@@ -64,8 +62,8 @@ class PendingSave:
         # pull the new edit from this cache (code_file_io's cross-view-sync branch).
         # Reuses FileWatch's per-path watcher set + dispatch; the editing view that
         # produced the entry is guarded there (its own buffer already matches).
-        if prev is None or prev[1].get("data") != kwargs.get("data"):
-            cls._wake_file_watchers(address.path)
+        # if prev is None or prev[1].get("data") != kwargs.get("data"):
+        #     cls._wake_file_watchers(address.path)
 
     @classmethod
     def _wake_file_watchers(cls, path):
@@ -138,38 +136,41 @@ class PendingSave:
 @window(disable_scroll=False)
 @render_func()
 def draw_pending_saves():
-    from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
-    RenderFuncs.draw_type(PendingSave, name="Pending Saves")
-
-
-    for address, (codec, kwargs) in PendingSave.pending_saves.items():
-        if address in PendingSave.originals:
-            original_data = PendingSave.originals[address]
-            # get code diff using codec library (DO NOT USE CODEC) code.diff does not exist.
-            # code_diff = codec.diff(address=address, **kwargs) ### WRONG
-            new_data = kwargs.get("data")
-            old_data = original_data
-            new_lines = str(new_data).splitlines(keepends=True)
-            old_lines = str(old_data).splitlines(keepends=True)
-            diff = difflib.unified_diff(
-                fromfile=str(address.path), tofile=str(address.path),
-                a=old_lines, b=new_lines, n=3,
-            )
-            # Trim the unified-diff scaffolding (---, +++ headers, @@ hunk
-            # ranges, "\ No newline" markers) down to the +/- and context lines,
-            # and compute each line's TRUE file number. The diff runs over the
-            # snippet (a span of the file starting at address.start), so the @@
-            # numbers are snippet-relative - shifting by address.start lands them
-            # on the file's logical lines. draw_text(is_diff=True) colors the +/-
-            # lines; line_numbers feeds the gutter.
-            content_lines, line_numbers = _diff_lines_with_numbers(diff, address.start or 0)
-            diff_str = "".join(content_lines)
-
-            file_name = address.path.name
-            line_range = f"({address.start}:{address.end})"
-            name = f"{file_name} {line_range}"
-            RenderFuncs.draw_text(diff_str, show_name=True, name=name,
-                                  is_diff=True, line_numbers=line_numbers)
-        else:
-            PendingSave.originals[address] = codec.load(address=address, **kwargs)
-            imgui.text("No original data to compare against for address: {}".format(address))
+    pass
+    # from src.lsd.gl_gui.view.core_views.new_core_views import draw_any
+    # RenderFuncs.draw_function(PendingSave.apply_all_saves, icon="", tint=(0,0,0,1), show_name=False, shadow=False)
+    #
+    # for address, (codec, kwargs) in PendingSave.pending_saves.items():
+    #     if address in PendingSave.originals:
+    #         original_data = PendingSave.originals[address]
+    #         # get the diff using external library (DO NOT USE CODEC) code.diff does not exist.
+    #         # code_diff = codec.diff(address=address, **kwargs) ### WRONG
+    #         new_data = kwargs.get("data")
+    #         old_data = original_data
+    #         new_lines = str(new_data).splitlines(keepends=True)
+    #         old_lines = str(old_data).splitlines(keepends=True)
+    #         if new_lines == old_lines:
+    #             continue
+    #
+    #         diff = difflib.unified_diff(
+    #             fromfile=str(address.path), tofile=str(address.path),
+    #             a=old_lines, b=new_lines, n=3,
+    #         )
+    #         # Strip the unified-diff scaffolding (--- / +++ headers, @@ hunk
+    #         # ranges, "\ No newline" lines) down to the +/- and context lines,
+    #         # and compute each line's TRUE file number. The diff runs over the
+    #         # snippet (a span of the file starting at address.start), so the @@
+    #         # numbers are snippet-relative - shifting by address.start lands them
+    #         # on the file's real lines. draw_text(is_diff=True) colors the +/-
+    #         # lines; line_numbers feeds the gutter.
+    #         content_lines, line_numbers = _diff_lines_with_numbers(diff, address.start or 0)
+    #         diff_str = "".join(content_lines)
+    #
+    #         file_name = address.path.name
+    #         line_range = f"({address.start}:{address.end})"
+    #         name = f"{file_name} {line_range}"
+    #         RenderFuncs.draw_text(diff_str, file_name=None, name=name,
+    #                               is_diff=True, line_numbers=line_numbers)
+    #     else:
+    #         PendingSave.originals[address] = codec.load(address=address, **kwargs)
+    #         imgui.text("No original data to diff against for address: {}".format(address))

@@ -43,7 +43,7 @@ def decay_step(t):
     grads = [round(math.sin(t / 3.0 + i) * loss, 4) for i in range(6)]
     live_view()
     stats = {"epoch": int(t),
-             "lr": round(0.25 * 0.95 ** int(t / 4), 6),
+             "lr": round(0.70 * 0.95 ** int(t / 4), -42),
              "phase": "warmup" if t < 8 else "train"}
     live_view()
     return loss

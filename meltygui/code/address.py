@@ -102,10 +102,14 @@ class FileMeta:
 
 class Address:
 
-    # Class-level default: live-view stack windows can render a `self` captured
-    # mid-__init__ (or left half-built after _compute_hash raises on an
-    # unreadable file) - __hash__/__eq__ must still work on such an instance.
-    _hash = None
+    # An Address is identified by its LOCATION - (path, start, end) - not its
+    # contents. Construction must stay cheap (it runs during resolve_address); hashing
+    # the file (a full read + md5 on every construct) was both slow and the wrong
+    # identity: two copies of the same span ARE the same address regardless of what
+    # the span currently holds. Null defaults so __hash__/__eq__ work on a `self`
+    # a live-view stack window captured pre-__init__.
+    start = None
+    end = None
 
     def __init__(self, path, start=None, end=None, source=None, watcher_ds=None):
         self.path = Path(path).resolve()
@@ -113,15 +117,6 @@ class Address:
         self.end = end
         self.source = source
         self._watcher_ds = watcher_ds
-        self._hash = self._compute_hash()
-
-    def _compute_hash(self):
-        content = self.path.read_bytes()
-        if self.start is not None:
-            lines = content.split(b'\n')
-            end = self.end if self.end is not None else len(lines)
-            content = b'\n'.join(lines[self.start:end])
-        return hashlib.md5(content).hexdigest()
 
     def get_meta(self) -> FileMeta:
         s = self.path.stat()
@@ -131,10 +126,11 @@ class Address:
         if not isinstance(other, Address):
             return NotImplemented
         return (self.path == other.path
-                and self._hash == other._hash)
+                and self.start == other.start
+                and self.end == other.end)
 
     def __hash__(self):
-        return hash((self.path, self.start, self.end, self._hash))
+        return hash((self.path, self.start, self.end))
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
