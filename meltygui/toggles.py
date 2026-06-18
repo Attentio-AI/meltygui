@@ -96,11 +96,9 @@ class Tint:
         active_hsv = style_manager.hsv
 
         hue_delta = 0.00
-        saturation_factor = 1.0
-        value_factor = 0.458
+        saturation_factor = 1.2
+        value_factor = -0.002
         
-        
-
         active_hsv = ((active_hsv[0] + hue_delta),
                       min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
                       min(max(active_hsv[2] * value_factor, -1), Tint.max_value))
@@ -119,7 +117,22 @@ class Tint:
                       min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
                       min(max(active_hsv[2] * value_factor, -1), Tint.max_value))
         return hsv_to_rgb(*active_hsv)
+           
+    @staticmethod
+    @defaults(tint=(0.0, 0.0, 0))
+    def checkbox_bg_selected():
+        style_manager: ImGuiStyleManager = Core.melty.style_manager
+        active_hsv = style_manager.hsv
+
+        hue_delta = 0.00
+        saturation_factor = 0.9
+        value_factor = 0.108
         
+
+        active_hsv = ((active_hsv[0] + hue_delta),
+                      min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
+                      min(max(active_hsv[2] * value_factor, -1), Tint.max_value))
+        return hsv_to_rgb(*active_hsv)
     
     @staticmethod
     @defaults(tint=(0.0, 0.0, 0))
@@ -128,10 +141,8 @@ class Tint:
         active_hsv = style_manager.hsv
 
         hue_delta = 0.00
-        saturation_factor = 0.9
-        value_factor = 0.218
-        
-
+        saturation_factor = 0.6
+        value_factor = 0.258
         active_hsv = ((active_hsv[0] + hue_delta),
                       min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
                       min(max(active_hsv[2] * value_factor, -1), Tint.max_value))
@@ -144,7 +155,7 @@ class Tint:
         active_hsv = style_manager.hsv
 
         hue_delta = 0.00
-        saturation_factor = 1.3
+        saturation_factor = 1.1
         value_factor = 2.125
 
         active_hsv = ((active_hsv[0] + hue_delta),
@@ -175,6 +186,21 @@ class Tint:
         hue_delta = 0.00
         saturation_factor = 0.958
         value_factor = 2.899
+
+        active_hsv = ((active_hsv[0] + hue_delta),
+                      min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
+                      min(max(active_hsv[2] * value_factor, 0), Tint.max_value))
+        return hsv_to_rgb(*active_hsv)
+        
+    @staticmethod
+    @defaults(tint=(0.9, 0.0, 0))
+    def subtle_text():
+        style_manager: ImGuiStyleManager = Core.melty.style_manager
+        active_hsv = style_manager.hsv
+
+        hue_delta = 0.00
+        saturation_factor = 0.7
+        value_factor = 0.668
 
         active_hsv = ((active_hsv[0] + hue_delta),
                       min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
@@ -281,24 +307,23 @@ class Swoosh:
                                        # the rect, then drop off; 1 = linear)
 
 
-@window(tint=(0.71, 0.32, 0.13))
+@window(tint=(0.44, 0.459, 0.53))
 class Toggles:
 
     @defaults(tint=(0.167, 0.972, 1.00))
     class TextEditor:
         enable_spell_check = False
 
-
-    @defaults(tint=(0.60, 0.55, 0.077))
-    class InvalidateTracker:
-        keep_for_frames = 122
-        draw_bvh = False
-        enable = False
-        draw_rect = False
-
     @defaults(tint=(0.631, 0.474, 0.861))
     class InputHandlerToggles:
         show_debug = False
+
+    @defaults(tint=(0.60, 0.55, 0.077))
+    class InvalidateTracker:
+        keep_for_frames = 17
+        enable = False
+        draw_bvh = False
+        draw_rect = False
 
     @defaults(tint=(0.089, 0.08, 0.069))
     class TerminalSettings:
@@ -321,7 +346,8 @@ class Toggles:
     debug_scroll = False
     show_filled_tiles = False
     gl_check_error = False
-    enable_jedi = False
+    enable_jedi = True
+
     attrib_change_stack_trace = False
     # [tint(0.9, 0.5, 0.0)]
     jedi_correctness = False

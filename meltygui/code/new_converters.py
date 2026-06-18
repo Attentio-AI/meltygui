@@ -312,71 +312,71 @@ def slow_task(**kwargs):
     return {"result": "This is the result of the slow task", "kwargs": kwargs}
 
 
-@window()
-@render_func(use_cache=True)
-def editor_window():
-    code_file_io(
-        TestClass,
-        mode=Modes.NEW_CODE
-    )
-    return False, None
+# @window()
+# @render_func(use_cache=True)
+# def editor_window():
+#     code_file_io(
+#         TestClass,
+#         mode=Modes.NEW_CODE
+#     )
+#     return False, None
+# #
+#
+# @window()
+# @render_func(use_cache=True)
+# def editor_window_2():
+#     code_file_io(
+#         TestClass,
+#         view_func=convert_in_and_out,
+#         auto_load_edits=False,
+#         auto_load=False,
+#         auto_save=False,
+#         child_kwargs={
+#             # convert_in_and_out runs the chains, draw_with_view_funcs draws the
+#             # tabs/columns. string_to_cst_module's output is named "code_tree" -
+#             # draw_text uses it to highlight parse errors (a failed parse arrives
+#             # as the exception value). cst_module_to_dict's output is "code_dict",
+#             # which draw_collection consumes. draw_text gets the raw string as its
+#             # input_value (no route entry).
+#             "view_func": draw_with_view_funcs,
+#             "chain_in": [string_to_cst_module, cst_module_to_dict],
+#             "chain_out": [dict_to_cst_module, cst_module_to_string],
+#             "route": {
+#                 string_to_cst_module: "code_tree",
+#                 cst_module_to_dict: "code_dict",
+#                 RenderFuncs.draw_collection: "code_dict",
+#             },
+#             "child_kwargs": {
+#                 "view_funcs": [RenderFuncs.draw_text, RenderFuncs.draw_collection],
+#             },
+#         },
+#     )
+#     return False, None
 
 
-@window()
-@render_func(use_cache=True)
-def editor_window_2():
-    code_file_io(
-        TestClass,
-        view_func=convert_in_and_out,
-        auto_load_edits=False,
-        auto_load=False,
-        auto_save=False,
-        child_kwargs={
-            # convert_in_and_out runs the chains; draw_with_view_funcs draws the
-            # tabs/columns. string_to_cst_module's output is named "code_tree" -
-            # draw_text reads it to highlight parse errors (a failed parse arrives
-            # as the exception value). cst_module_to_dict's output is "code_dict",
-            # which draw_collection consumes. draw_text gets the raw string as its
-            # input_value (no route key).
-            "view_func": draw_with_view_funcs,
-            "chain_in": [string_to_cst_module, cst_module_to_dict],
-            "chain_out": [dict_to_cst_module, cst_module_to_string],
-            "route": {
-                string_to_cst_module: "code_tree",
-                cst_module_to_dict: "code_dict",
-                RenderFuncs.draw_collection: "code_dict",
-            },
-            "child_kwargs": {
-                "view_funcs": [RenderFuncs.draw_text, RenderFuncs.draw_collection],
-            },
-        },
-    )
-    return False, None
+# @window()
+# @render_func(use_cache=True, disable_scroll=True)
+# def draw_collection_code():
+#     # view_func=draw_modes: text | dict tabs over one shared file-IO layer.
+#     code_file_io(
+#         RenderFuncs.draw_collection,
+#         mode=Modes.NEW_CODE
+#     )
+#     return False, None
 
 
-@window()
-@render_func(use_cache=True, disable_scroll=True)
-def draw_collection_code():
-    # view_func=draw_modes: text | dict tabs over one shared file-IO layer.
-    code_file_io(
-        RenderFuncs.draw_collection,
-        mode=Modes.NEW_CODE
-    )
-    return False, None
-
-
-@window()
-@render_func(use_cache=True)
-def editor_window_3():
-    code_file_io(slow_task, auto_load_edits=False, auto_load=False)
-    return False, None
-
-
-@window()
-@render_func(use_cache=True, selectable=False, disable_scroll=True)
-def test_toggles():
-    code_file_io(Toggles, mode=Modes.NEW_CODE)
-    return False, None
+# @window()
+# @render_func(use_cache=True)
+# def editor_window_3():
+#     code_file_io(slow_task, auto_load_edits=False, auto_load=False)
+#     return False, None
+#
+#
+# @window()
+# @render_func(use_cache=True, selectable=False, disable_scroll=True)
+# def test_toggles():
+#     code_file_io(Toggles, mode=Modes.NEW_CODE)
+#     return False, None
 
 
 class LoadingState:
@@ -1454,6 +1454,24 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             file_stale = False
             self_write = False
         conflict = file_stale and code_state._pending_save
+
+        # ── Cross-view sync via the PendingSave cache (deferred-save model) ────────
+        # A sibling view's save now only goes into PendingSave - no disk write,
+        # so file_stale (mtime) won't fire for it. queue_save wakes our tile; here
+        # we pull that edit from the shared cache if it diverges from our buffer.
+        # Gated on no local edits: the view that PRODUCED the entry matches it (no-op),
+        # and an in-flight edit (_pending_save) must not be clobbered by an older
+        # snapshot. Mirrors the verified self-write in-process sync below.
+        if (not file_stale and auto_load_edits and not code_state._pending_save
+                and not code_state._save_refused and isinstance(code_state.text_cache, str)):
+            cache_text = PendingSave.pending_text_for(address)
+            if cache_text is not None and cache_text != code_state.text_cache:
+                code_state.text_cache = cache_text
+                code_state.mark_file_current()
+                external_change = True
+                draw_state.invalidate_up(max_depth=6)
+                request_render()
+
         if file_stale and not code_state._pending_save:
             if auto_load_edits:
                 # A VERIFIED self-write (a sibling editor of the same file - the

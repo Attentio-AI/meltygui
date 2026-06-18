@@ -56,7 +56,28 @@ class PendingSave:
 
     @classmethod
     def queue_save(cls, address, codec, **kwargs):
+        prev = cls.pending_saves.get(address)
         cls.pending_saves[address] = codec, kwargs
+        # Deferred saves never write disk, so the file watcher never needs to update
+        # SIBLING views of this file (a structured/cst/dict view, another editor).
+        # When the queued text content changes, wake them so they re-render and
+        # pull the new edit from this cache (code_file_io's cross-view-sync branch).
+        # Reuses FileWatch's per-path watcher set + dispatch; the editing view that
+        # produced the entry is guarded there (its own buffer already matches).
+        if prev is None or prev[1].get("data") != kwargs.get("data"):
+            cls._wake_file_watchers(address.path)
+
+    @classmethod
+    def _wake_file_watchers(cls, path):
+        if path is None:
+            return
+        from src.lsd.gl_gui.melty import FileWatch
+        try:
+            resolved = str(path.resolve())
+        except OSError:
+            return
+        for ds in list(FileWatch.path_to_draw_states.get(resolved, ())):
+            FileWatch.dispatch_event_for(ds)
 
     @classmethod
     def pending_text_for(cls, address):

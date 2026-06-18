@@ -275,10 +275,10 @@ class FileWatch:
         # _addr_cache + code_state live on THIS draw_state, so its tile must
         # re-execute resolve_address - invalidating only the parent window can
         # leave this nested code_file_io tile served from cache (stale address).
-        if draw_state._tile_id is not None:
-            Melty.cache.invalidate_up(draw_state._tile_id, max_depth=10, force=True)
-        if draw_state.parent_window is not None and draw_state.parent_window._tile_id is not None:
-            Melty.cache.invalidate_up(draw_state.parent_window._tile_id, max_depth=10, force=True)
+        # if draw_state._tile_id is not None:
+        #     Melty.cache.invalidate_up(draw_state._tile_id, max_depth=10, force=True)
+        # if draw_state.parent_window is not None and draw_state.parent_window._tile_id is not None:
+        #     Melty.cache.invalidate_up(draw_state.parent_window._tile_id, max_depth=10, force=True)
 
         draw_state._external_change = True
         request_render()
@@ -2634,7 +2634,7 @@ class Melty:
                 color = note.tint
 
                 frames_past = Melty.frame_count - note.frame
-                alpha_from_frame_past = max(0, 1.0 - (frames_past / Toggles.InvalidateTracker.keep_for_frames))
+                alpha_from_frame_past = max(0, 1.0 - (frames_past / max(1, Toggles.InvalidateTracker.keep_for_frames)))
                 alpha_from_note = note.tint[3] if len(note.tint) > 3 else 1.0
 
                 invalidation_rect = (ds.abs_left, ds.abs_top,

@@ -2484,26 +2484,38 @@ def draw_none(input_value: NoneType):
 
 
 @render_func(is_default_for=(bool), use_cache=True, is_tree=False, wrap=True,
-             header_same_line=True, min_width=20, align_header=True, shadow=False, with_header=draw_header, temp=True)
+             header_same_line=True, min_width=10, align_header=True, shadow=False, with_header=draw_header, temp=True)
 def draw_bool(input_value: bool, draw_state, left_mouse_clicked=None,  selectable=False, left_mouse_drag=None, left_mouse_held=False,
               left_mouse_down=False):
 
+    width = min(draw_state.width - 6, draw_state.content_width + 0)
 
-    imgui.dummy(draw_state.content_width, 21)
+    imgui.dummy(width, 21)
     draw_list = imgui.get_window_draw_list()
-    if draw_state._bounding_hovered:
-        bg_color = imgui.get_color_u32_rgba(*Tint.checkbox_bg_hovered(), 1.0)
+
+        
+    bg_alpha = 1.0
+        
+    if input_value:
+        bg_color = imgui.get_color_u32_rgba(*Tint.checkbox_bg_selected(), bg_alpha)
     else:
-        bg_color = imgui.get_color_u32_rgba(*Tint.checkbox_bg(), 1.0)
+        bg_color = imgui.get_color_u32_rgba(*Tint.checkbox_bg(), bg_alpha)
     
     outline_color = imgui.get_color_u32_rgba(*Tint.checkbox_outline(), 1.0)
 
-    draw_list.add_rect_filled(imgui.get_cursor_pos_x(), draw_state.abs_top, imgui.get_cursor_pos_x() + draw_state.content_width - 8,
+    draw_list.add_rect_filled(imgui.get_cursor_pos_x() - 3, draw_state.abs_top, imgui.get_cursor_pos_x() + width - 0,
                           draw_state.abs_top + draw_state.content_height, rounding=4,
                              col=bg_color)
-    draw_list.add_rect(imgui.get_cursor_pos_x(), draw_state.abs_top, imgui.get_cursor_pos_x() + draw_state.content_width - 9,
+    draw_list.add_rect(imgui.get_cursor_pos_x() - 3, draw_state.abs_top, imgui.get_cursor_pos_x() + width - 0,
                           draw_state.abs_top + draw_state.content_height, rounding=4,
                              col=outline_color, thickness=1.5)
+                             
+    if draw_state._bounding_hovered:
+        hover_color = imgui.get_color_u32_rgba(*Tint.checkbox_bg_hovered(), 0.2)
+    
+        draw_list.add_rect_filled(imgui.get_cursor_pos_x() - 3, draw_state.abs_top, imgui.get_cursor_pos_x() + width - 0,
+                          draw_state.abs_top + draw_state.content_height, rounding=4,
+                             col=hover_color)
 
     if input_value:
         text_color = (*Tint.checkbox_text_true(), 1.0)
@@ -2514,7 +2526,7 @@ def draw_bool(input_value: bool, draw_state, left_mouse_clicked=None,  selectabl
     imgui.same_line(8)
     imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + 2)
     imgui.text_colored(f"{icon} {input_value}", *text_color)
-    if draw_state._bounding_hovered and imgui.is_mouse_clicked(0) and not left_mouse_held:
+    if draw_state._bounding_hovered and imgui.is_mouse_clicked(0):
         request_render()
         return True, not input_value
     else:
@@ -3106,8 +3118,12 @@ def draw_color_picker(input_value, wrap=True, draw_state=None, **kwargs):
     ri, gi, bi = (int(round(c * 255)) for c in (r, g, b))
     hex_str = (f"#{ri:02x}{gi:02x}{bi:02x}{int(round(a * 255)):02x}"
                if has_alpha else f"#{ri:02x}{gi:02x}{bi:02x}")
-    imgui.text(hex_str)
 
+    if button("", tint=(1,0,0, 0.5), height=21, shadow=True, use_cache=True, name=f"delete_color##")[0]:
+        request_render()
+        return True, None
+    imgui.same_line()
+    imgui.text_colored(hex_str, *Tint.subtle_text())
     if changed:
         request_render()
         return True, ((r, g, b, a) if has_alpha else (r, g, b))
@@ -3117,78 +3133,92 @@ def draw_color_picker(input_value, wrap=True, draw_state=None, **kwargs):
 @render_func(is_default_for=('tint', 'help_yellow_tint', 'context_select_tint', "text_color"), has_popup=True,
              indent_size=2, is_tree=False, align_header=False, header_same_line=True, wrap=True,
              show_name=True, selectable=False, max_width=100, min_width=33, use_cache=False, with_header=draw_header)
-def draw_tuple(input_value: tuple, name, unique, draw_state):
+def draw_tuple(input_value: tuple | types.NoneType, name, unique, draw_state):
+    is_open = False
     changed = False
-    is_color = (len(input_value) in (3, 4)
-                and all(isinstance(c, (float, int)) for c in input_value))
-    if is_color:
-        # A swatch trigger that opens our own colour-picker popover (replacing
-        # imgui's built-in popup). Same popover pattern as the dropdown: identity
-        # in Melty.popover_focused_ds is the open state; click toggles it; the
-        # picker window is anchored under the swatch and dismissed on outside
-        # click / Esc. The picker itself is stateless and returns the new colour.
-        from src.lsd.gl_gui.view.mode import Mode
-        is_open = Melty.popover_focused_ds is draw_state
-        col = list(input_value)
-        alpha = col[3] if len(col) == 4 else 1.0
-        imgui.same_line(spacing=4)
-        # ALPHA_PREVIEW_HALF makes the swatch split: one half is the colour
-        # composited over a checkerboard at its real alpha, the other fully
-        # opaque - so a len-4 tuple's transparency is visible in the chip itself
-        # (plain color_button forces opaque regardless of the alpha we pass).
-        flags = imgui.COLOR_EDIT_NO_TOOLTIP | imgui.COLOR_EDIT_ALPHA_PREVIEW_HALF
-        if imgui.color_button(f"##swatch{unique}{name}", col[0], col[1], col[2], alpha,
-                              flags=flags, width=0, height=18):
-            Melty.popover_focused_ds = None if is_open else draw_state
-            if not is_open:
-                Melty._popover_open_frame = Melty.frame_count  # grace the opening click
-            request_render()
-        is_open = Melty.popover_focused_ds is draw_state  # reflect the update this frame
 
-        # The picker popover is closable and fixed size (auto-resize is off for
-        # closable windows), and the content is raw imgui (not child render_funcs)
-        # so the framework can't measure it. Size the window to fit the SV square
-        # (180) + the N RGBA drag-float rows + the hex label, so nothing clips.
-        picker_h = 180 + 14 + len(input_value) * 26 + 26
-        # parent_window=draw_state anchors the popover under the swatch AND makes
-        # the tuple the picker's ancestor, so clear_focus (which searches the
-        # clicked view's ancestor closure) keeps the popover open when you click
-        # inside it, and dismisses it when you click anywhere else.
-        color_changed, new_color = draw_color_picker(input_value, name=f"color_picker{unique}",
-                                                closed=not is_open, window_pos=(0, 10),
-                                                parent_window=draw_state, width=216, height=picker_h, mode=Mode.POPOVER)
-        if is_open:
-            if color_changed:
-                input_value = tuple(new_color)
-                changed = True
-            # Dismiss on a click outside the swatch/popover, or on Esc.
-            # if imgui.is_mouse_clicked(0):
-            #     mx, my = imgui.get_mouse_pos()
-            #     if not any(_ds_in_subtree(d, draw_state) for d in Core.melty.bvh_query(mx, my)):
-            #         Melty.popover_focused_ds = None
-            #         request_render()
-            if any(k == glfw.KEY_ESCAPE for k, _ in Core.melty.frame_key_events):
-                Melty.popover_focused_ds = None
-                request_render()
-            # Keep re-rendering while a bar/square is being dragged so the live
-            # imgui interaction (is_item_active) updates each frame.
-            if Melty.imgui_any_item_active or imgui.is_mouse_down(0):
-                Melty.cache.invalidate_up(draw_state._tile_id, max_depth=10, force=True)
-                request_render()
-                
-    elif len(input_value) > 0 and isinstance(input_value[0], (float, int)):
-        str_value = ", ".join([str(v) for v in input_value])
-        ch, input_str = imgui.input_text("##tuple", str_value)
-        if ch:
-            try:
-                new_tuple = eval(f"({input_str},)")
-                if isinstance(new_tuple, tuple):
-                    input_value = new_tuple
-                    changed = True
-            except Exception:
-                pass
+    if input_value is None:
+        if button("", height=21, shadow=False, z_offset=0, corner_radius=4, tint=(0,0,0, 0.1
+        ), tint_value=0.14, use_cache=True, show_bg=True, text_pad=7,  name=f"add_tuple##{unique}",
+                  show_button_bg=True)[0]:
+            input_value = (0.0, 0.0, 0.0, 1.0)
+            request_render()
+            return True, input_value
+
     else:
-        changed, input_value = draw_collection(input_value=input_value)
+        is_color = input_value is not None and isinstance(input_value, tuple) and len(input_value) in (3, 4) and all(isinstance(c, (float, int)) for c in input_value)
+        if is_color:
+            # A swatch trigger that opens our own colour-picker popover (replacing
+            # imgui's built-in popup). Same popover pattern as the dropdown: identity
+            # in Melty.popover_focused_ds is the open state; click toggles it; the
+            # picker window is anchored under the swatch and dismissed on outside
+            # click / Esc. The picker itself is stateless and returns the new colour.
+            from src.lsd.gl_gui.view.mode import Mode
+            is_open = Melty.popover_focused_ds is draw_state
+            col = list(input_value)
+            alpha = col[3] if len(col) == 4 else 1.0
+            imgui.same_line(spacing=4)
+            # ALPHA_PREVIEW_HALF makes the swatch split: one half shows the colour
+            # composited over a checkerboard at its real alpha, the other fully
+            # opaque - so a length-4 tuple's transparency is visible in the chip itself
+            # (plain color_button forces opaque regardless of the alpha we pass).
+            flags = imgui.COLOR_EDIT_NO_TOOLTIP | imgui.COLOR_EDIT_ALPHA_PREVIEW_HALF
+            if imgui.color_button(f"##swatch{unique}{name}", col[0], col[1], col[2], alpha,
+                                  flags=flags, width=0, height=18):
+                Melty.popover_focused_ds = None if is_open else draw_state
+                if not is_open:
+                    Melty._popover_open_frame = Melty.frame_count  # grace the opening click
+                request_render()
+            is_open = Melty.popover_focused_ds is draw_state  # reflect the toggle this frame
+
+            # The picker window is closable -> fixed size (auto-resize is off for
+            # closable windows), and its content is raw imgui (not child render_funcs)
+            # so the framework can't measure it. Size the window to fit the SV square
+            # (180) + the N channel drag-floats and the hex line, so nothing clips.
+    picker_h = 180 + 14 + 4 * 26 + 26
+    # parent_window=draw_state anchors the popover under the swatch and makes
+    # the tuple the picker's ancestor, so clear_focus (which protects the
+    # clicked swatch window closure) leaves the popover open when you click
+    # the tuple, and dismisses it when you click anywhere else.
+    color_changed, new_color = draw_color_picker(input_value, name=f"color_picker{unique}",
+                                            closed=not is_open, window_pos=(0, 10),
+                                            parent_window=draw_state, width=216, height=picker_h, mode=Modes.POPOVER)
+    if is_open:
+        if color_changed:
+            if new_color is not None:
+                input_value = tuple(new_color)
+            else:
+                input_value = None
+                request_render()
+            changed = True
+        # Dismiss on a click outside the swatch/popover, or on Esc.
+        # if imgui.is_mouse_clicked(0):
+        #     mx, my = imgui.get_mouse_pos()
+        #     if not any(_is_in_subtree(d, draw_state) for d in Core.melty.bvh_query(mx, my)):
+        #         Melty.popover_focused_ds = None
+        #         request_render()
+        if any(k == glfw.KEY_ESCAPE for k, _ in Core.melty.frame_key_events):
+            Melty.popover_focused_ds = None
+            request_render()
+        # Keep re-rendering while a slider/square is being dragged so the live
+        # imgui interaction (is_item_active) updates the frame.
+        if Melty.imgui_any_item_active or imgui.is_mouse_down(0):
+            Melty.cache.invalidate_up(draw_state._tile_id, max_depth=10, force=True)
+            request_render()
+                
+    # elif input_value is not None and len(input_value) > 0 and isinstance(input_value[0], (float, int)):
+    #     str_value = ", ".join([str(v) for v in input_value])
+    #     ch, input_str = imgui.input_text("##tuple", str_value)
+    #     if ch:
+    #         try:
+    #             new_tuple = eval(f"({input_str},)")
+    #             if isinstance(new_tuple, tuple):
+    #                 input_value = new_tuple
+    #                 changed = True
+    #         except Exception:
+    #             pass
+    # else:
+    #     changed, input_value = draw_collection(input_value=input_value)
 
     return changed, input_value
 
@@ -5548,7 +5578,7 @@ def draw_search(input_value=None, draw_state=None, unique=0):
     width = draw_state.content_width
     search_change, new_search = draw_text(search_ds.search_text, searchable=False, width=draw_state.content_width - 41,
                                           shadow=False, name=search_icon + str(unique),
-                                          with_header_end=None, wrap=True, z_offset=-1,
+                                          with_header_end=None, wrap=True, z_offset=-1, single_line=True,
                                           with_footer=None, tint=search_ds.tint,
                                           show_name=False, show_header=False,
                                           request_focus=focus_search)

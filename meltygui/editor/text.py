@@ -1803,8 +1803,8 @@ def _describe_code_tree(code_tree):
     return name
 
 
-@render_func(is_default_for=(CodeLine), show_bg=True, use_cache=True, disable_scroll=False,             with_header=draw_header, shadow=False, show_name=False, with_footer=draw_footer, determines_height=False,
-             selectable=False, searchable=True, bg_offset=-3, show_add_delete=False)
+@render_func(is_default_for=(CodeLine), show_bg=True, use_cache=True, disable_scroll=False, with_header=draw_header, shadow=False, show_name=False, with_footer=draw_footer, determines_height=False,
+             selectable=False, searchable=True, bg_offset=-3, show_add_delete=False, tint=(0.485, 0.61, 0.76))
 def draw_text(input_value: str, height=None,
               left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
               horizontal_scroll_drag=False, search_text="", ctrl_b_down=False,
