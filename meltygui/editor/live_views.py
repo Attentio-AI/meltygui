@@ -169,7 +169,7 @@ def draw_live_view_marker(input_value, draw_state=None, editor_ds=None,
     if hovered:
         base = tuple(min(1.0, c + 0.18) for c in base)
     dl: _DrawList = imgui.get_window_draw_list()
-    dl.add_rect(x, y, x + w, y + h,
+    dl.add_rect(x, y + 2, x + w, y + h - 3,
                 imgui.get_color_u32_rgba(*base, 0.9 if open_now else 0.6), rounding=corner_radius)
     imgui.dummy(w, h)
 
@@ -206,8 +206,8 @@ def draw_live_view_marker(input_value, draw_state=None, editor_ds=None,
         child_kwargs.pop("mode", None)
         _c, _v, win_ds = draw_any(
             lv.value, name=f"{label}##lv{ds.id}{key}", mode=Modes.WINDOW,
-            with_header=draw_header, selectable=True, min_height=32,
-            min_width=32, disable_scroll=True, return_extras=True, **child_kwargs)
+            with_header=draw_header, selectable=False, min_height=32,
+            min_width=9, disable_scroll=True, return_extras=True, **child_kwargs)
 
         if win_ds.closed:
             ds._lv_open = False

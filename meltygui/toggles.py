@@ -144,6 +144,7 @@ class Swoosh:
     taper = 10.0              # slope of the end->middle thickness falloff
     aa_width = 1.5           # antialiased edge-stroke width in px (0 = none)
 
+
     # Ribbon mode: replace the thin connector line with a full band bridging the
     # two views' facing edges, s-curving between them when the views are offset
     # (see Melty._draw_ribbon). Each end is sized from ITS OWN edge length, so
@@ -190,14 +191,18 @@ class Swoosh:
 
     # Mouse-proximity fade: scale the whole connector's opacity by how close
     # the cursor is to the views it joins, so only the swooshes near the mouse
-    # stay bright and a busy mess of connectors declutters. Distance is
-    # measured to the NEARER of the two' rects (0 when the mouse is
-    # on either). Applies to both the line and ribbon styles.
-    mouse_falloff = True        # enable the distance-based opacity fade
-    mouse_falloff_dist = 300.0  # px: opacity reaches the floor at this distance
-    mouse_falloff_floor = 0.0   # opacity multiplier when far away (0 = invisible)
-    mouse_falloff_exp = 2.0     # falloff curve exponent (>1 = stay bright near
-                                # the rect, then drop off; 1 = linear)
+    # stay bright and a busy screen of connectors declutters. Each END fades on
+    # its OWN distance scale (parent vs child), and the connector is whichever
+    # side is brighter - so the parent end can dim faster than the child end.
+    # Distance is measured from each rect (0 when the mouse is inside it). Applies
+    # to both the line and ribbon mode.
+    mouse_falloff = True               # enable the mouse-based opacity fade
+    mouse_falloff_dist_parent = 25.8   # px: parent-end falloff distance (lower =
+                                       # the parent side dims sooner as you leave it)
+    mouse_falloff_dist_child = 638.1   # px: child-end falloff distance
+    mouse_falloff_floor = 0.07         # opacity multiplier when far away (0 = invisible)
+    mouse_falloff_exp = 2.2            # falloff curve exponent (>1 = stay bright near
+                                       # the rect, then drop off; 1 = linear)
 
 
 @window(tint=(0.71, 0.32, 0.13))
@@ -232,7 +237,7 @@ class Toggles:
     @defaults(tint=(0.878, 0.762, 0.692))
     class ScrollSettings:
         scroll_speed = 600
-        max_increment_fraction = 0.35
+        max_increment_fraction = 0.169
         acceleration_threshold = 0.036  # seconds
         bg_offset = 30
 

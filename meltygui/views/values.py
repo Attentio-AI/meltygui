@@ -3718,7 +3718,8 @@ def draw_info_tab(input_value, search_text='', unique=None, **kwargs):
     (the menu's resolved search term) probes an arbitrary kwarg/attr by name."""
     info_items = ["name", "searchable", "scroll_disabled", "_default_view_func", "column", "closable", "current_mode",
                   "mode",
-                  "show_add_delete", "_source", "window_pos", "left", "top", "width", "height", "content_height",
+                  "show_add_delete", "_source", "window_pos", "left", "top", "width", "height", 
+                  "content_width", "content_height",
                   "scroll_offset",
                   "final_max_column", "_column_cursor", "_content_rect", "_max_column_index", "_outside_column_height",
                   "disable_scroll"]
@@ -3880,7 +3881,7 @@ def draw_func_tab(input_value, **kwargs):
     view_func = input_value._view_func
     if view_func is not None:
         view_func_name = view_func.__name__ if hasattr(view_func, '__name__') else str(view_func)
-        change, new_view_func = draw_any(view_func, disable_scroll=True, mode=Mode.FILE_TREE, name=view_func_name)
+        change, new_view_func = draw_any(view_func, disable_scroll=True, show_name=False, is_tree=False, mode=Mode.FILE_TREE, name=view_func_name)
     else:
         draw_str("No view function specified", name="View Function", editable=False)
     return False, input_value
@@ -5294,13 +5295,134 @@ def pending_window(input_value, button_name, pending=None, draw_state=None,
     return False, input_value
 
 
-@render_func(use_cache=True, max_height=500, searchable=False)
-def draw_search(input_value=None, draw_state=None):
+@render_func(use_cache=True, max_height=500, auto_resize=False, layer_offset=1,searchable=False)
+def draw_search(input_value=None, draw_state=None, unique=0):
     """Floating find bar for searchable views that have no header. Rendered as
     a Mode.WINDOW from core_render when search is active; draws the shared
     render_search UI against the owning view's draw_state (search_owner)."""
     owner = input_value
-    render_search(owner, unique=owner._tile_id, draw_state=draw_state)
+    # draw_search(owner, unique=owner._tile_id, draw_state=draw_state)
+    search_ds = owner
+    regrab_focus = True
+
+    from src.lsd.gl_gui.view.core_views.text_editor import draw_text
+    focus_search = ((not search_ds._search_was_active)
+                    or (regrab_focus and Melty.text_focused_ds is None)
+                    or search_ds._search_focus_pending)
+    search_ds._search_focus_pending = False
+    search_ds._search_was_active = True
+    search_icon = ""
+    imgui.align_text_to_frame_padding()
+    imgui.text(search_icon)
+    imgui.same_line()
+
+    width = draw_state.content_width
+    search_change, new_search = draw_text(search_ds.search_text, searchable=False,
+                                          shadow=False, name=search_icon + str(unique),
+                                          with_header_end=None, wrap=True, z_offset=-1,
+                                          with_footer=None, tint=search_ds.tint,
+                                          show_name=False, show_header=False,
+                                          request_focus=focus_search)
+    if search_change:
+        search_ds.search_text = new_search
+        # Re-render the owner's whole subtree so every child view recomputes its
+        # matches against the new term and the combined index stays in sync.
+        Melty.cache.invalidate_up(search_ds._tile_id, force=True, max_depth=12)
+        request_render()
+    # initial use
+
+    # Match count + prev/next buttons. The count and current index are
+    # populated by the searchable view's body (e.g. the text editor); the
+    # arrows step the active match and ask the body to scroll it into view.
+
+    imgui.same_line()
+    from src.lsd.gl_gui.view.core_views.new_core_view import button
+    fa_x_icon = ""
+
+    imgui.set_cursor_screen_pos((draw_state.abs_left + width - 16, imgui.get_cursor_screen_pos()[1]))
+    # imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0], imgui.get_cursor_screen_pos()[1] + 2))
+    imgui.new_line()
+    # if button(fa_x_icon, name=f"{unique}##fa_x_icon", show_bg=False,
+    #           use_cache=True, height=23, shadow=True, z_offset=4
+    #           , max_width=40,
+    #           tile_mode=TileMode.MAX, color=(9, 1, 1, 0))[0]:
+    #     search_ds.search_active = False
+    #     search_ds._search_was_active = False
+    #     search_ds.search_text = ""
+    #     Melty.text_focused_ds = None
+
+    total = search_ds.text_search_count
+    if total > 0:
+        imgui.align_text_to_frame_padding()
+        imgui.text_colored(f"{search_ds.text_search_current + 1}/{total}",
+                           0.66, 0.74, 0.82, 1.0)
+        imgui.same_line(spacing=2)
+        nav = 0
+        if imgui.small_button(f"##search_prev{unique}"):
+            nav = -1
+        imgui.same_line(spacing=2)
+        if imgui.small_button(f"##search_next{unique}"):
+            nav = 1
+        # Enter / Down = find next, Shift+Enter / Up = find prev, Ctrl+Enter =
+        # "click" the selected result - but only if the search box (not the
+        # underlying editor) holds text focus, so Enter still inserts newlines
+        # when you click into the editor. The find box is single-line, so Up/Down
+        # don't move its cursor and are free for stepping matches. Drained from
+        # the GLFW-callback key queue (not imgui.is_key_pressed) so it isn't
+        # dropped on slow frames.
+        if Melty.focused_ds is search_ds and Melty.text_focused_ds is not search_ds:
+            if any(k == glfw.KEY_DOWN for k, _ in Melty.frame_key_events):
+                nav = 1
+            elif any(k == glfw.KEY_UP for k, _ in Melty.frame_key_events):
+                nav = -1
+            _enter = [m for k, m in Melty.frame_key_events
+                      if k in (glfw.KEY_ENTER, glfw.KEY_KP_ENTER)]
+            if _enter:
+                if _enter[-1] & glfw.MOD_CONTROL:
+                    # "Click" the selected result: hit-test the BVH at the center
+                    # of the current match's rect and send a mouse down to the
+                    # front-most view there (the actual target, e.g. a managed
+                    # window's name label) - exactly what a real click resolves
+                    # to. The view's own click handling does the rest (toggle a
+                    # window, focus an input, ...). Queued + the view invalidated so
+                    # it re-renders and reads the click next frame (the find UI
+                    # renders too late to inject for this frame).
+                    from src.lsd.gl_gui.view.core_views.new_core_view import search_activate_target
+                    from src.lsd.gl_gui.events.input_handler import InputEvent
+                    _target = search_activate_target(Melty.search_current_node)
+                    if _target is not None and _target.width and _target.height:
+                        _cx = _target.abs_left + _target.width / 2.0
+                        _cy = _target.abs_top + _target.height / 2.0
+                        _hits = [h for h in Melty.bvh_query(_cx, _cy)
+                                 if h._tile_id is not None and not h.just_shadow]
+                        _top = _hits[0] if _hits else _target
+                        Melty.search_click_pending = (
+                            _top._tile_id,
+                            InputEvent("left_mouse", "down", tile_id=_top._tile_id, x=_cx, y=_cy))
+                        # Re-render the owner's subtree next frame (same as nav) so
+                        # the top view actually re-runs and reads the injection.
+                        Melty.cache.invalidate_up(search_ds._tile_id, force=True, max_depth=12)
+                        request_render()
+                else:
+                    nav = -1 if (_enter[-1] & glfw.MOD_SHIFT) else 1
+
+        if nav != 0:
+            # total is the combined count across all views; stepping wraps over
+            # the whole result set. Flag a scroll and invalidate the owner's
+            # subtree so every child view recomputes and the one holding the new
+            # global-current match scrolls to it.
+            search_ds.text_search_current = (search_ds.text_search_current + nav) % total
+            search_ds._search_nav_pending = True
+            Melty.cache.invalidate_up(search_ds._tile_id, force=True, max_depth=12)
+            request_render()
+    elif search_ds.search_text:
+        imgui.align_text_to_frame_padding()
+        imgui.text_colored("No results", 0.74, 0.5, 0.5, 1.0)
+    else:
+        imgui.align_text_to_frame_padding()
+        imgui.text_colored("", 0.74, 0.5, 0.5, 1.0)
+
+
 
     if not input_value.search_active:
         draw_state.closed = True

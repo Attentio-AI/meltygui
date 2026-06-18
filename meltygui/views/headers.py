@@ -66,7 +66,7 @@ def render_search(search_ds, draw_state, unique=None, width=None, regrab_focus=T
     focus back whenever nothing holds text focus, or other fields on the same
     tab become untypeable once focus clears.
     """
-    search_icon = ""
+
     from src.lsd.gl_gui.view.core_views.text_editor import draw_text
     # Grab focus on first open, and re-grab whenever nothing holds text focus.
     # Window focus management (move-to-front / window activation) clears
@@ -93,12 +93,12 @@ def render_search(search_ds, draw_state, unique=None, width=None, regrab_focus=T
     imgui.same_line()
 
     if width is None:
-        width = draw_state.content_width - 50
+        width = draw_state.content_width
     search_change, new_search = draw_text(search_ds.search_text, searchable=False,
                                           is_search_box=True,
                                           shadow=False, max_height=40,
                                           name=search_icon + str(unique), with_header=None,
-                                          with_header_end=None, width=width - 50,
+                                          with_header_end=None, max_width=width - 50,
                                           with_footer=None, header_same_line=True, tint=search_ds.tint,
                                           show_name=False, show_header=False, single_line=True,
                                           request_focus=focus_search)

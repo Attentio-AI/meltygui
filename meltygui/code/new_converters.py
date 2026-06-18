@@ -117,6 +117,7 @@ from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import no_save_exclude, no_save
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.core_views.headers import draw_header
+from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
 from src.lsd.gl_gui.view.invalidation_tracker import Note
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
 
@@ -135,7 +136,19 @@ def save_file(address, code_str, codec=None, ensure_import=None, parent_ds=None,
     print(f"{current_time} Saved {address.path} from {parent_ds.name}")
     file_name = address.path.name if address.path is not None else "unknown"
     notify(f"Saved {file_name} from {parent_ds.name}", tint=(0.5, 1.0, 0.5))
-    return codec.save(address=address, data=code_str, ensure_import=ensure_import, force=force)
+    PendingSave.queue_save(address=address, codec=codec, data=code_str, ensure_import=ensure_import, force=force)
+    return True
+    # return codec.save(address=address, data=code_str, ensure_import=ensure_import, force=force)
+
+
+def load_file(input_value: Address, codec: Codec = None, **kwargs) -> str:
+    """Read the value through the resolved codec (span for code, whole file for
+    images, etc.)."""
+    file_name = input_value.path.name if input_value.path is not None else "unknown"
+    notify(f"Loading {file_name}...", tint=(0.5, 1.0, 0.5))
+    data = codec.load(input_value)
+    PendingSave.mark_load(address=input_value, codec=codec, data=data)
+    return data
 
 
 def recompile_source(source, code_str, file_path, address=None):
@@ -381,13 +394,6 @@ class LoadingState:
         # don't busy-spin request_render every frame during the quiet window.
         self._debounce_timer = None
 
-
-def load_file(input_value: Address, codec: Codec = None, **kwargs) -> str:
-    """Read the value through the resolved codec (span for code, whole file for
-    images, etc.)."""
-    file_name = input_value.path.name if input_value.path is not None else "unknown"
-    notify(f"Loading {file_name}...", tint=(0.5, 1.0, 0.5))
-    return codec.load(input_value)
 
 
 UNSET = object()
@@ -1506,9 +1512,9 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                 save = True
 
         if auto_save:
-            imgui.same_line(spacing=8)
+            imgui.same_line(spacing=16)
             imgui.align_text_to_frame_padding()
-            imgui.text_colored(f"Auto-save", *(0.6, 1.0, 0.1, 1.0))
+            imgui.text_colored(str(f" Auto"), *(1.0, 1.0, 1.0, 0.2))
 
         changed, new_text = run_in_background(load_file,
                                               child_kwargs={"input_value": address, 'codec': codec},

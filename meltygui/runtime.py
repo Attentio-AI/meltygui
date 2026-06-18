@@ -1586,8 +1586,45 @@ class Melty:
                 a[2] + (b[2] - a[2]) * t)
 
     @staticmethod
+    def _point_rect_distance(mx, my, x0, y0, x1, y1):
+        """Distance from point (mx, my) to the axis-aligned rect
+        [x0, x1] x [y0, y1]. Zero when the point is inside; otherwise the
+        Euclidean distance to the nearest edge/corner. The per-axis overshoot
+        is max(low - p, 0, p - high), which is 0 while the point straddles the
+        span and grows once it falls outside, so corners get the diagonal."""
+        dx = max(x0 - mx, 0.0, mx - x1)
+        dy = max(y0 - my, 0.0, my - y1)
+        return math.hypot(dx, dy)
+
+    @staticmethod
+    def _mouse_fade(parent_rect, child_rect):
+        """Opacity multiplier for the swoosh based on how close the mouse is to
+        the views it joins. Each END fades on its OWN distance scale
+        (Swoosh.mouse_falloff_dist_parent / _child) so the parent end can drop
+        off sooner than the child end; the connector takes whichever side is
+        brighter (max), then eases to Swoosh.mouse_falloff_floor far from both.
+        Swoosh.mouse_falloff_exp shapes the curve (>1 keeps it bright near the
+        rect then drops off). Returns 1.0 when the feature is disabled."""
+        if not Swoosh.mouse_falloff:
+            return 1.0
+        mx, my = imgui.get_mouse_pos()
+        exp = max(Swoosh.mouse_falloff_exp, 0.0)
+
+        def side_factor(rect, scale):
+            if scale <= 0.0:
+                return 0.0                          # this side never lights the connector
+            dist = Melty._point_rect_distance(mx, my, *rect)
+            t = min(max(dist / scale, 0.0), 1.0)    # 0 on the rect -> 1 past `scale`
+            return (1.0 - t) ** exp                 # 1 near -> 0 far
+
+        factor = max(side_factor(parent_rect, Swoosh.mouse_falloff_dist_parent),
+                     side_factor(child_rect, Swoosh.mouse_falloff_dist_child))
+        floor = Swoosh.mouse_falloff_floor
+        return floor + (1.0 - floor) * factor
+
+    @staticmethod
     def _draw_ribbon(overlay_dl, px0, py0, px1, py1, nx0, ny0, nx1, ny1,
-                     rgb, rgb2=None, p_round=0.0, n_round=0.0):
+                     rgb, rgb2=None, p_round=0.0, n_round=0.0, mouse_fade=1.0):
         """Thick-ribbon connector: instead of the thin tapered line, bridge
         the two views' facing edges with a full band. Each end of the band
         sits on the straight (un-rounded) portion of its view's facing edge,
@@ -1724,7 +1761,7 @@ class Melty:
             ref = fade * fade
             if area > ref:
                 fade_f = ref / area
-        alpha = Swoosh.ribbon_alpha * fade_f
+        alpha = Swoosh.ribbon_alpha * fade_f * mouse_fade
         # Gradient: `sides` runs parent (i=0) -> child (i=segments), so the
         # fill (and the boundary strokes below) lerp from the parent color to
         # the child color along the bridge. rgb2 None/equal means single color.
@@ -1768,7 +1805,7 @@ class Melty:
                                          pts[i + 1][1] - pts[i][1])
                     if ln > fade_len:
                         e_alpha = Swoosh.ribbon_edge_alpha * fade_len / ln
-                side_alpha.append(e_alpha)
+                side_alpha.append(e_alpha * mouse_fade)
             if grad:
                 # Per-segment strokes carry the same gradient as the fill (a
                 # polyline is one color; consecutive segments share their
@@ -1825,13 +1862,22 @@ class Melty:
         rpx0, rpy0, rpx1, rpy1 = px, py, px + pw, py + ph
         rnx0, rny0, rnx1, rny1 = nx, ny, nx + nw, ny + nh
 
+        # Mouse-proximity fade: fade the whole connector by how close the cursor
+        # is to each connected view, parent and child fading on their own
+        # distance scales (see _mouse_fade). When it fully fades out there is
+        # nothing to draw, so skip the geometry entirely.
+        mouse_fade = Melty._mouse_fade(
+            (rpx0, rpy0, rpx1, rpy1), (rnx0, rny0, rnx1, rny1))
+        if mouse_fade <= 0.0:
+            return
+
         # Ribbon mode: a full band between the view edges replaces the thin
         # line whenever the views have a space to bridge; overlapping views fall
         # through to the line, which knows how to route around the intersection.
         if mode is SwooshMode.RIBBON and Melty._draw_ribbon(
                 overlay_dl, rpx0, rpy0, rpx1, rpy1,
                 rnx0, rny0, rnx1, rny1, rgb, rgb2=rgb2,
-                p_round=p_round, n_round=n_round):
+                p_round=p_round, n_round=n_round, mouse_fade=mouse_fade):
             return
 
         # The overlap transition is computed on the grown rects so it begins
@@ -1898,7 +1944,8 @@ class Melty:
         grad = rgb2 is not None and tuple(rgb2[:3]) != tuple(rgb[:3])
         if rgb2 is None:
             rgb2 = rgb
-        col = imgui.get_color_u32_rgba(*rgb, Swoosh.alpha)
+        alpha = Swoosh.alpha * mouse_fade
+        col = imgui.get_color_u32_rgba(*rgb, alpha)
         segments = max(2, int(Swoosh.segments))
         end_hw = Swoosh.end_thickness
         mid_hw = Swoosh.mid_thickness
@@ -1940,7 +1987,7 @@ class Melty:
                 # blends parent color -> child color along its length.
                 col = imgui.get_color_u32_rgba(
                     *Melty._lerp_rgb(rgb, rgb2, (i + 0.5) / segments),
-                    Swoosh.alpha)
+                    alpha)
             l0, l1 = left[i], left[i + 1]
             r0, r1 = right[i], right[i + 1]
             overlay_dl.add_triangle_filled(l0[0], l0[1], r0[0], r0[1], l1[0], l1[1], col)
@@ -1956,7 +2003,7 @@ class Melty:
                 for i in range(segments):
                     seg_col = imgui.get_color_u32_rgba(
                         *Melty._lerp_rgb(rgb, rgb2, (i + 0.5) / segments),
-                        Swoosh.alpha)
+                        alpha)
                     overlay_dl.add_polyline([left[i], left[i + 1]], seg_col,
                                             flags=imgui.DRAW_NONE, thickness=Swoosh.aa_width)
                     overlay_dl.add_polyline([right[i], right[i + 1]], seg_col,
@@ -1969,9 +2016,9 @@ class Melty:
         # read as dots rather than chopped-off edges - each in its own endcap color.
         cap_r = end_hw * Swoosh.cap_scale
         overlay_dl.add_circle_filled(x0, y0, cap_r,
-                                     imgui.get_color_u32_rgba(*rgb, Swoosh.alpha))
+                                     imgui.get_color_u32_rgba(*rgb, alpha))
         overlay_dl.add_circle_filled(x1, y1, cap_r,
-                                     imgui.get_color_u32_rgba(*rgb2, Swoosh.alpha))
+                                     imgui.get_color_u32_rgba(*rgb2, alpha))
 
     @classmethod
     def is_wrapped(cls):

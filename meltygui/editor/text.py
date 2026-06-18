@@ -1809,7 +1809,7 @@ def _describe_code_tree(code_tree):
 def draw_text(input_value: str,
               left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
               horizontal_scroll_drag=False, search_text="", ctrl_b_down=False,
-              single_line=False, is_search_box=False, min_width=110,
+              single_line=False, is_search_box=False, min_width=925,
               draw_state=None, request_focus=False, wrap=False,
               line_height=1.149, font=Font.JETBRAINS_MONO_19, jump_to=None,
               code_tree=None, code_dict=None, error=None, token_views=None,
@@ -3104,6 +3104,8 @@ def draw_text(input_value: str,
     else:
         text_height = (input_value.count('\n') + 1) * line_px + 2
 
+    text_width = max(vcols) if vcols else max((len(l) for l in text.split('\n')), default=0) * char_w
+
     # --- Code-suggest popup (dropdown menu anchored to the caret) ---
     # Rendered after the body (and after the monospace font is popped, so its
     # rows use the normal UI font) so it floats above the code. We reuse the
@@ -3158,7 +3160,8 @@ def draw_text(input_value: str,
             Melty.cache.invalidate_up(_mt, force=True)
 
 
-    imgui.dummy(draw_state.content_width - 1, text_height)
+
+    imgui.dummy(text_width - 1, text_height)
 
     # draw_dd_menu is a LATCHED window: called every frame with closed=not _ac_show
     # so it persists when this (slow) body is skipped. Hover/keys wake the loop;
