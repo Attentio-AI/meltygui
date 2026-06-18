@@ -1809,11 +1809,11 @@ def _describe_code_tree(code_tree):
 def draw_text(input_value: str,
               left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
               horizontal_scroll_drag=False, search_text="", ctrl_b_down=False,
-              single_line=False, is_search_box=False, min_width=925,
+              single_line=False, is_search_box=False,
               draw_state=None, request_focus=False, wrap=False,
               line_height=1.149, font=Font.JETBRAINS_MONO_19, jump_to=None,
               code_tree=None, code_dict=None, error=None, token_views=None,
-              syntax_highlight=True, unique=0):
+              syntax_highlight=True, is_diff=False, unique=0):
     ds = draw_state
     # Plain-text mode (codec tells "not Python source"): no Darcula colors and
     # no inline token widgets - both are artifacts of the Python tokenizer.
@@ -2821,6 +2821,24 @@ def draw_text(input_value: str,
             if ey1 < rect_min_y or ey0 > rect_max_y:
                 continue
             draw_list.add_rect_filled(origin_x - 4, ey0, origin_x + visible_width, ey1, err_bg)
+
+    # Diff wash highlights: in is_diff mode each line's leading marker (the +/- left over
+    # half the unified diff, with the ---/+++/@@ headers already stripped by the
+    # caller) drives a full-width background - added lines green, deleted lines
+    # yellow - drawn under the glyphs so the code stays readable.
+    if is_diff:
+        add_bg = (90 << 24) | (40 << 16) | (160 << 8) | 40   # translucent green (ABGR)
+        del_bg = (90 << 24) | (40 << 16) | (190 << 8) | 210  # translucent yellow (ABGR)
+        for line_idx, line_text in enumerate(text.split('\n')):
+            c = line_text[:1]
+            bg = add_bg if c == '+' else del_bg if c == '-' else None
+            if bg is None:
+                continue
+            dy0 = origin_y + line_idx * line_px
+            dy1 = dy0 + line_px
+            if dy1 < rect_min_y or dy0 > rect_max_y:
+                continue
+            draw_list.add_rect_filled(origin_x - 4, dy0, origin_x + visible_width, dy1, bg)
 
     # Syntax highlighting text. Tokens are cached by text value, so unchanged
     # content (scrolling, cursor blink, hover repaints) skip re-tokenizing and

@@ -1285,10 +1285,10 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     #     drop_down_selection = selection
     #     print("Drop down change", repr(selection))
     #
-    # draw_collection(vis.root.lora_collection, name="Loras", mode=Mode.WINDOW)
-    # draw_any(vis.root.lora_collection, name="Loras Alt View", mode=Mode.WINDOW)
-    # # draw_any(vis.root.lora_collection.loras, name="Loras View Three", child_kwargs={
-    # #     'is_tree': True, 'expanded': False, 'show_add_delete': True}, mode=Mode.WINDOW)
+    draw_collection(vis.root.lora_collection, name="Loras", mode=Mode.WINDOW)
+    draw_any(vis.root.lora_collection, name="Loras Alt View", mode=Mode.WINDOW)
+    # draw_any(vis.root.lora_collection.loras, name="Loras View Three", child_kwargs={
+    #     'is_tree': True, 'expanded': False, 'show_add_delete': False}, mode=Mode.WINDOW)
 
     # normalized_sub_mask, _, _ = Melty.filter.normalize(Melty.cache._mask_tex)
     # draw_texture(normalized_sub_mask, show_bg=True, max_contrast=30, jet=True,
@@ -5317,7 +5317,7 @@ def draw_search(input_value=None, draw_state=None, unique=0):
     imgui.same_line()
 
     width = draw_state.content_width
-    search_change, new_search = draw_text(search_ds.search_text, searchable=False,
+    search_change, new_search = draw_text(search_ds.search_text, searchable=False, width=draw_state.content_width - 41,
                                           shadow=False, name=search_icon + str(unique),
                                           with_header_end=None, wrap=True, z_offset=-1,
                                           with_footer=None, tint=search_ds.tint,
@@ -5341,15 +5341,14 @@ def draw_search(input_value=None, draw_state=None, unique=0):
 
     imgui.set_cursor_screen_pos((draw_state.abs_left + width - 16, imgui.get_cursor_screen_pos()[1]))
     # imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0], imgui.get_cursor_screen_pos()[1] + 2))
-    imgui.new_line()
-    # if button(fa_x_icon, name=f"{unique}##fa_x_icon", show_bg=False,
-    #           use_cache=True, height=23, shadow=True, z_offset=4
-    #           , max_width=40,
-    #           tile_mode=TileMode.MAX, color=(9, 1, 1, 0))[0]:
-    #     search_ds.search_active = False
-    #     search_ds._search_was_active = False
-    #     search_ds.search_text = ""
-    #     Melty.text_focused_ds = None
+    if button(fa_x_icon, name=f"{unique}##fa_x_icon", show_bg=False,
+              use_cache=True, height=23, shadow=True, z_offset=4
+              , max_height=40,
+              tile_mode=TileMode.MAX, color=(9, 1, 1, 0))[0]:
+        search_ds.search_active = False
+        search_ds._search_was_active = False
+        search_ds.search_text = ""
+        Melty.text_focused_ds = None
 
     total = search_ds.text_search_count
     if total > 0:

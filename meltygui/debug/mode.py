@@ -239,7 +239,7 @@ class Mode(Enum):
     MODE_WINDOW = {
         Any: ModeOverrides(
             kwargs={"show_bg": True, "selectable": False, "use_cache": True, "melty_window": False, "closable": True,
-                    "with_header_end": draw_header_end, "disable_scroll":False, "auto_resize": False, "draggable": True, 'shadow': True,
+                    "with_header_end": draw_header_end, "auto_resize": False, "draggable": True, 'shadow': True,
                     "show_tint": True, "show_header": True, "with_footer": draw_footer, 'indent_size': 5,
                     "show_add_delete": False, "with_header": draw_header, "min_width": 200, "min_height": 60,
                     "initial": {"width": 400, "height": 320, "window_pos": (100, 500)}},

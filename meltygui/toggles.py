@@ -213,7 +213,7 @@ class Toggles:
         keep_for_frames = 122
         enable = False
         draw_bvh = False
-        draw_rect = True
+        draw_rect = False
 
     @defaults(tint=(0.167, 0.972, 1.00))
     class TextEditor:
@@ -228,6 +228,7 @@ class Toggles:
         # Minimum LOGICAL terminal size, in tiles - independent of the window size.
         min_width = 98.634
         min_height = 480.0
+
 
     @defaults(tint=(0.42, 0.78, 0.55))
     class Collection:

@@ -1738,7 +1738,7 @@ def render_func(*args, **o_kwargs):
             single_line_trigger = kwargs.get("min_width", draw_state.min_width) or 30
             header_same_line = kwargs.get("header_same_line", False)
             if "content_width" in kwargs:
-                draw_state.content_width = kwargs["content_width"]
+                # draw_state.content_width = kwargs["content_width"]
                 draw_state._source["content_width"] = "explicit content_width"
                 draw_state.multi_line = True
 
@@ -3660,7 +3660,21 @@ def render_func(*args, **o_kwargs):
         draw_state.use_cache = use_cache
         kwargs.pop("use_cache", None)
 
-        needs_scroll = draw_state.abs_content_height > draw_state.height + draw_state.footer_height + draw_state.header_height and draw_state.multi_line
+        # A view that auto-sizes to its content can never overflow ITSELF: its
+        # height tracks the content, so abs_content_height ~= height and the
+        # comparison below is a perpetual virtual-tie. During scroll that tie
+        # flutters True for a single frame, which sets scroll_visible, which
+        # makes the wrapper subtract SCROLLBAR_RESERVE from content_width that
+        # frame (source "available_width" -> "available_width - scrollbar") -
+        # the one-frame width twitch. Only a view whose height is externally
+        # bounded (a window/closable, a passed or fill height, or a clamping
+        # max_height) can actually overflow and thus needs its own scrollbar.
+        _max_h = kwargs.get("max_height", None)
+        _height_bounded = (not draw_state.auto_resize
+                           or (_max_h is not None and draw_state.abs_content_height > _max_h))
+        needs_scroll = (_height_bounded and draw_state.multi_line
+                        and draw_state.abs_content_height > draw_state.height
+                        + draw_state.footer_height + draw_state.header_height)
 
         if not kwargs.get("disable_scroll", True) and Toggles.debug_scroll:
             draw_list = imgui.get_overlay_draw_list()
