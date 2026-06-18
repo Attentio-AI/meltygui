@@ -36,6 +36,16 @@ class _LazyMode:
             self._member = Mode[self._name]
         return self._member
 
+    @property
+    def __class__(self):
+        # Return the resolved Mode's class so `mode.__class__` (and
+        # isinstance(mode, Mode)) see the real enum class, not this stand-in.
+        # This forces resolution (the view.mode import), which is fine on USE -
+        # referencing Modes.X in a decorator otherwise just hands back the
+        # unresolved handle. type(handle) is unaffected and still returns
+        # _LazyMode, so copy/pickle dispatch (which uses type()) is unchanged.
+        return type(self._resolve())
+
     def __getattr__(self, item):
         # _name/_member are slots (found normally). Forward real attributes to
         # the resolved member, but never dunders - copy/pickle probes

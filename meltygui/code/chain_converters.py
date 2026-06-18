@@ -395,70 +395,26 @@ def _ensure_import_lines(lines, module, name):
 
 @render_func(background=True)
 def _do_save(input_value, code_str, ensure_import=None):
-    """Write code_str back into the file at the Address's span.
+    """Queue the edited span into the PendingSave cache — the deferred write.
 
-    ensure_import=(module, name) also inserts a missing import in the SAME write
-    (atomic — avoids a second racing write), so e.g. a synthesized @defaults
-    decorator has its import. The import insert shifts line numbers; our own
-    Address is adjusted, siblings re-resolve via the mtime bump."""
-    full_data = input_value.path.read_bytes()
-    newline = _detect_newline(full_data)
-    try:
-        text = full_data.decode("utf-8")
-    except UnicodeDecodeError:
-        text = full_data.decode("latin-1")
-    lines = _split_lines(text)
-    new_lines = _split_lines(code_str)
+    Was a synchronous disk splice + sibling-lineno shift. Now every chain save
+    routes here and DEFERS to PendingSave exactly like code_file_io: the
+    structured editor's Save button / Ctrl+S, every code lens (class_var /
+    decoration / code_comment all end their chain in general_parse_to_address),
+    and the caller node. The splice/write/sibling-shift happen once at
+    apply_all_saves, through the codec — which also performs the ensure_import
+    insert and the span-conflict guard that this used to do inline.
 
-    old_start = input_value.start
-    old_end = input_value.end
-
-    lines[old_start:old_end] = new_lines
-
-    inserted = 0
-    insert_idx = None
-    if ensure_import is not None:
-        lines, inserted, insert_idx = _ensure_import_lines(lines, ensure_import[0], ensure_import[1])
-
-    final_text = newline.join(lines)
-    FileWatch.set_hash_from_content(input_value.path, final_text, draw_state=input_value._watcher_ds)
-
-    try:
-        input_value.path.write_text(final_text, encoding="utf-8")
-
-        if old_start is not None:
-            resolved_old_end = old_end if old_end is not None else old_start + len(new_lines)
-            new_end = old_start + len(new_lines)
-            delta = new_end - resolved_old_end
-
-            input_value.end = new_end
-            # Account for an import inserted above our span so the Address stays
-            # valid this frame (siblings heal on the next mtime-driven re-resolve).
-            if inserted:
-                input_value.start = old_start + inserted
-                input_value.end = new_end + inserted
-            input_value._hash = input_value._compute_hash()
-
-            shift_sibling_linenos(input_value.source, input_value.path,
-                                  after_lineno=resolved_old_end, delta=delta)
-            # An inserted import moved our own def down too; shift the saved
-            # source (include_saved) so its co_firstlineno doesn't go stale and
-            # send the next resolve jumping back to line 0.
-            if inserted and insert_idx is not None:
-                shift_sibling_linenos(input_value.source, input_value.path,
-                                      after_lineno=insert_idx, delta=inserted,
-                                      include_saved=True)
-        else:
-            input_value._hash = input_value._compute_hash()
-
-        if Toggles.slow_down_threads:
-            for i in range(5):
-                import time
-                time.sleep(0.1)
-                print(f"Simulating slow load... {i + 1}/5")
-    except Exception as e:
-        imgui.text_colored(f"Error saving file: {e}", 1.0, 0.0, 0.0)
-
+    The codec is the SPAN-replacement codec for the address's live source
+    (class / function / module) — never CallerCodec, since the chain hands us a
+    full-span code_str, not a bare call expression. TypeCodec (plain span splice)
+    is the fallback when the source type isn't separately registered."""
+    from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+    from src.lsd.gl_gui.view.core_conversion.new_codecs import type_to_codec, TypeCodec
+    source = input_value.source
+    codec = next((type_to_codec[k] for k in type(source).__mro__ if k in type_to_codec),
+                 TypeCodec) if source is not None else TypeCodec
+    PendingSave.queue_save(input_value, codec, data=code_str, ensure_import=ensure_import)
     return True, input_value
 
 
@@ -883,19 +839,35 @@ def general_parse_to_address(input_value: GeneralParse=None, pending=False, draw
         draw_state._lens_save_pending = True
     save_pending = getattr(draw_state, '_lens_save_pending', False)
 
+    # Ctrl+Enter fires HERE (before this frame's dict→Cst conversion while the Run
+    # button fires below (after it). They used to read different sources - the
+    # stale loaded `input_value.source` vs the freshly materialized `code_str` -
+    # so Ctrl+Enter hotswapped the on-disk version. Unify them on ONE source: the
+    # PendingSave cache. The materialized edit is written through to it below, and
+    # every trigger reads from it via `_edited_source`, falling back to the passed
+    # value only when the cache is cold (never edited / just loaded).
+    from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+    from src.lsd.gl_gui.view.core_conversion.new_codecs import type_to_codec
+    codec = next((type_to_codec[k] for k in type(source).__mro__ if k in type_to_codec), None) \
+        if source is not None else None
+
+    def _edited_source(fallback):
+        cached = PendingSave.pending_text_for(address)
+        return cached if cached is not None else fallback
+
     show_recompile = True
     show_save = not save or pending or changed or save_pending
 
     save_hotkey = s_key_pressed and s_key_pressed.ctrl
     if save_hotkey:
-        _do_save(address, code_str=input_value.source)
+        _do_save(address, code_str=_edited_source(input_value.source))
         Melty.cache.invalidate_up(draw_state.parent_window._tile_id, max_depth=10)
 
     # Ctrl+Enter: hotswap the edited code without writing to disk. Mirrors the
     # Ctrl+S save hotkey above, but routes through do_recompile instead.
     recompile_hotkey = enter_key_pressed and enter_key_pressed.ctrl
     if recompile_hotkey and source is not None:
-        do_recompile(input_value=source, code_str=input_value.source, file_path=address.path)
+        do_recompile(input_value=source, code_str=_edited_source(input_value.source), file_path=address.path)
         record_compile(address)
         Melty.cache.invalidate_up(draw_state.parent_window._tile_id, max_depth=10)
 
@@ -915,12 +887,19 @@ def general_parse_to_address(input_value: GeneralParse=None, pending=False, draw
             request_render()
         return False, back_to_cst
     code_str = back_to_cst.code
+    # Write the freshly materialized edit through to the PendingSave cache so the
+    # next Ctrl+Enter / Run / load all read THIS source instead of disk. Only while
+    # an edit is active (never from plain view), keyed by address so it refreshes the
+    # entry in place. _do_save below still writes to disk this frame, so the
+    # eventual apply_all_saves flush of this entry is an idempotent no-op.
+    if codec is not None and (changed or save_pending):
+        PendingSave.queue_save(address, codec, data=code_str, ensure_import=ensure_import)
     if show_recompile:
         if source is not None:
             from src.lsd.gl_gui.view.mode import Mode
             recompiled, _ = run_button(do_recompile, clicked=recompile and pending, name=f"do_recompile{unique}",
                         with_kwargs={"input_value": address.source,
-                                 "code_str": code_str,
+                                 "code_str": _edited_source(code_str),
                                  "file_path": address.path}, layer_offset=1, pin_to_clip=Pin.CLIP,
                                        parent_anchor=Anchor.BOTTOM_LEFT,
                                        tint=(0.3, 0.4, 0.6))
@@ -1178,6 +1157,21 @@ def caller_func_name(call_stack):
         if not _is_dispatch_frame(filename, func_name):
             return func_name
     return None
+
+
+def caller_chain(call_stack):
+    """Every real caller in a cached _call_stack, innermost-first, dispatch
+    machinery and Toggles.ignore_call_from shells filtered out — one
+    (filename, lineno, func_name) per user draw_x(...) call up the stack
+    (caller, caller's caller, ...). The N-step generalization of caller_site /
+    caller_func_name: those return the head of this list.
+
+    Operates on the already-cached _call_stack tuples, so it never re-walks the
+    live stack — a drag re-renders with parents skipped, which would shift every
+    site (see the capture note in core_render)."""
+    return [(filename, lineno, func_name)
+            for filename, lineno, func_name in (call_stack or ())
+            if not _is_dispatch_frame(filename, func_name)]
 
 
 def _first_call(module):

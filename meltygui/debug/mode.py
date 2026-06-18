@@ -198,6 +198,18 @@ class Mode(Enum):
         )
     }
 
+    WINDOW_PARAMS = {
+        Any: ModeOverrides(
+            kwargs={"show_bg": True, "selectable": False, "use_cache": True, "melty_window": False, "closable": True,
+                    "with_header_end": draw_header_end, "auto_resize": False, "draggable": True, 'shadow': True,
+                    "show_tint": True, "show_header": True, "with_footer": draw_footer, 'indent_size': 5,
+                    "disable_scroll": False, "bg_offset": -1,
+                    "with_header": draw_header, "min_width": 200, "min_height": 60,
+                    "initial": {"width": 400, "height": 700, "window_pos": (100, 500)}},
+            recursive=False
+        )
+    }
+
     # Lightweight anchored popover: a small auto-fitting, header-less, non-draggable
     # temp window (like the dropdown menu). The caller sets closed / window_pos /
     # parent_anchor to anchor it to a trigger and toggle visibility.
@@ -392,7 +404,7 @@ class Mode(Enum):
             # draw_text_from_code_cache = draw_text fed the cst node from the
             # global code-host cache (code_cache_for), so usage links and
             # syntax-error highlighting work without an inline chain.
-            kwargs={"auto_load_edits": True, "disable_scroll":True, "view_func": draw_text_from_code_cache},
+            kwargs={"auto_load_edits": True, "disable_scroll":True, "view_func": draw_text_from_code_cache, 'tint': (0.31, 0.361, 0.39)},
             recursive=True,
         ),
     }

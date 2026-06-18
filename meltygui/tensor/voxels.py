@@ -1058,7 +1058,7 @@ _PANEL_FLOATS = (("tilt", -3.1416, 3.1416), ("spin", -6.3, 6.3),
 _PANEL_BOOLS = ("ortho", "centered", "nearest")
 
 
-@render_func(show_bg=False, use_cache=True)
+@render_func(show_bg=False, use_cache=True, auto_resize=False, min_height=600)
 def draw_voxel_controls(input_value=None, vox_ds=None, mapping=None,
                         draw_state=None, hovered=None, **kwargs):
     """Every control that drives a voxel view, in one satellite panel —
@@ -1416,8 +1416,8 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
     if not middle_mouse_drag and not right_mouse_drag and scroll_y_changed is None:
         changed, _, panel_ds = draw_voxel_controls(tex, vox_ds=draw_state,
                                                    mapping=mapping, name="controls",
-                                                   mode=Modes.WINDOW,
-                                                   parent_window=win, auto_resize=False,
+                                                       mode=Modes.WINDOW_PARAMS,
+                                                   parent_window=win, auto_resize=True,
                                                    shadow=True, return_extras=True,
                                                    **panel_kwargs)
         if panel_ds is not None:
@@ -1540,7 +1540,7 @@ window(cls=voxel_host.get("value"), name="draw_voxel_playground", view_func=draw
 #     _draw_host_volume(input_value)
 
 
-@window(input_value=voxel_host_4d, tint=(0.34, 0.05, 0.13))
+@window(input_value=voxel_host_4d, tint=(0.20, 0.36, 0.59))
 @render_func(show_bg=True, use_cache=True)
 def draw_voxel_4d(input_value=None, **kwargs):
     draw_voxels(input_value.get("value"), name="volume_4d", mode=Modes.WINDOW)

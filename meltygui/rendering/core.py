@@ -1461,7 +1461,7 @@ def render_func(*args, **o_kwargs):
                 _explicit_window_pos = kwargs.get("window_pos", None) is not None
                 if not _explicit_window_pos:
                     on_held = draw_state.on_action("left_mouse_held", "window_move", priority_delta=-2)
-                    on_drag = draw_state.on_action("left_mouse_drag", "window_move")
+                    on_drag = draw_state.on_action("left_mouse_drag", "window_move", priority_delta=-2)
                     left_mouse_down = draw_state.on_action("left_mouse_down", "window_move", priority_delta=-1)
 
 
@@ -2479,7 +2479,8 @@ def render_func(*args, **o_kwargs):
                         if isinstance(decorator_value, dict) and \
                                 decorator_value.get("tint") is not None:
                             previous_tint = style_manager.get_tint()
-                            style_manager.set_imgui_tint(*decorator_value["tint"])
+                            if isinstance(decorator_value["tint"], (tuple, list)) and len(decorator_value["tint"]) >= 3:
+                                style_manager.set_imgui_tint(*decorator_value["tint"])
                 elif "tint" in kwargs and kwargs.get("tint", None) is not None:
                     previous_tint = style_manager.get_tint()
                     new_tint = kwargs.get("tint")
@@ -2562,9 +2563,10 @@ def render_func(*args, **o_kwargs):
                         max(0, min(offscreen_depth + passed_z_offset + ds_z_offset, Melty.max_depth - 1)))
 
                 if kwargs.get("selectable", True):
-                    left_mouse_down_press = draw_state.on_action("left_mouse_held", "press", priority_delta=-1)
+                    left_mouse_down_press = draw_state.on_action("left_mouse_held", "press", priority_delta=2)
                     draw_state.pressed = True if left_mouse_down_press else False
-                    click = draw_state.on_action("left_mouse_click", priority_delta=0)
+                    # click = draw_state.on_action("left_mouse_click", priority_delta=2)
+                    click=False
                     middle_down = draw_state.on_action("non_blocking_middle_mouse_down", priority_delta=0)
 
                     if middle_down:
@@ -2916,7 +2918,7 @@ def render_func(*args, **o_kwargs):
 
                     # Remove event names from wanted params that aren't in kwargs
                     event_names = [e for e in event_names if e in kwargs]
-                    Melty.event_handler.register_hovered(tile_id, event_names, priority, tile_id,
+                    Melty.event_handler.register_hovered(tile_id, event_names, priority - 3, tile_id,
                                                          selected=draw_state.selected,
                                                          blocker=closable)
 

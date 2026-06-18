@@ -348,6 +348,19 @@ class TypeCodec(Codec):
 
     @staticmethod
     def load(address, source_text=None, **kwargs):
+        # In-memory overlay: a queued-but-unflushed edit for this span (saves
+        # defer to shutdown) is the freshest text; return it as the now-stale
+        # disk content, and skip the disk read below. An explicit source_text
+        # (a verified reload copy of exact disk content) still takes the slice
+        # path below. _span_fp is deliberately left as resolve_address set it
+        # (the DISK content) so save's conflict guard only detects a genuine
+        # external write - the pending text is what we'll splice, not what we
+        # verify against. See PendingSave.pending_text_for.
+        if source_text is None:
+            from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+            pending = PendingSave.pending_text_for(address)
+            if pending is not None:
+                return pending
         text, newline = _source_and_newline(address, source_text)
         lines = text.split(newline)
         span_lines = lines[address.start:address.end]

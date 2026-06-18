@@ -365,6 +365,9 @@ class FileWatch:
         # symbol results to ~/.lsd/symbol_index.json for instant warm starts.
         shutdown_symbol_index_daemon()
 
+        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        PendingSave.apply_all_saves()
+
 
 class Melty:
 
@@ -989,6 +992,31 @@ class Melty:
             if cls.text_focused_ds is ds:
                 cls.text_focused_ds = None
             if cls.popover_focused_ds is ds:
+                try:  # XXX: dropdown-close investigation
+                    import io as _io, traceback as _tb, imgui as _ig
+                    _buf = _io.StringIO(); _tb.print_stack(file=_buf)
+                    _tail = "".join(_buf.getvalue().splitlines(keepends=True)[-9:-1])
+                    _mx, _my = _ig.get_mouse_pos()
+                    _rect = (getattr(ds, "_abs_left", lambda: None)(), getattr(ds, "_abs_top", lambda: None)(),
+                             getattr(ds, "width", None), getattr(ds, "height", None))
+                    _seed_names = [(getattr(s, "name", None), id(s)) for s in seeds]
+                    _in_rect = None
+                    try:
+                        _l, _t = ds._abs_left(), ds._abs_top()
+                        _in_rect = (_l <= _mx <= _l + (ds.width or 0)) and (_t <= _my <= _t + (ds.height or 0))
+                    except Exception:
+                        pass
+                    with open("/tmp/dd_debug.log", "a") as _fh:
+                        _fh.write(f"[DD-DBG] clear_focus NULLED popover f={cls.frame_count} "
+                                  f"ds={id(ds)}({getattr(ds,'name',None)!r}) grace={popover_grace} "
+                                  f"mouse=({_mx:.0f},{_my:.0f}) dd_rect={_rect} mouse_in_dd_rect={_in_rect}\n"
+                                  f"   seeds={_seed_names}\n{_tail}\n")
+                except Exception as _e:
+                    try:
+                        with open("/tmp/dd_debug.log", "a") as _fh:
+                            _fh.write(f"[DD-DBG] clear_focus NULLED (log err {_e}) f={cls.frame_count} ds={id(ds)}\n")
+                    except Exception:
+                        pass
                 cls.popover_focused_ds = None
 
 

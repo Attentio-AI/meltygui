@@ -1803,17 +1803,17 @@ def _describe_code_tree(code_tree):
     return name
 
 
-@render_func(is_default_for=(CodeLine), show_bg=True, use_cache=True, disable_scroll=False,
-             with_header=draw_header, shadow=False, show_name=False, with_footer=draw_footer, determines_height=False,
+@render_func(is_default_for=(CodeLine), show_bg=True, use_cache=True, disable_scroll=False,             with_header=draw_header, shadow=False, show_name=False, with_footer=draw_footer, determines_height=False,
              selectable=False, searchable=True, bg_offset=-3, show_add_delete=False)
-def draw_text(input_value: str,
+def draw_text(input_value: str, height=None,
               left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
               horizontal_scroll_drag=False, search_text="", ctrl_b_down=False,
               single_line=False, is_search_box=False,
               draw_state=None, request_focus=False, wrap=False,
               line_height=1.149, font=Font.JETBRAINS_MONO_19, jump_to=None,
               code_tree=None, code_dict=None, error=None, token_views=None,
-              syntax_highlight=True, is_diff=False, unique=0):
+              syntax_highlight=True, is_diff=False, line_numbers=None,
+              completion_source=None, unique=0):
     ds = draw_state
     # Plain-text mode (codec tells "not Python source"): no Darcula colors and
     # no inline token widgets - both are artifacts of the Python tokenizer.
@@ -1946,10 +1946,19 @@ def draw_text(input_value: str,
     # (scroll, search, cursor, mouse hit-testing) shifts with it; the numbers
     # themselves are drawn in their own clip column at the end so
     # horizontally-scrolled code never slides underneath them.
+    # Explicit per-line numbers (diff mode passes the real file line for each
+    # +/- line - they're non-contiguous, so no sequential offset can express
+    # them) take precedence over the jump_to.start sequential numbering.
     show_gutter = (not single_line and not is_search_box
-                   and jump_to is not None
-                   and getattr(jump_to, 'start', None) is not None)
-    if show_gutter:
+                   and (line_numbers is not None
+                        or (jump_to is not None
+                            and getattr(jump_to, 'start', None) is not None)))
+    if show_gutter and line_numbers is not None:
+        line_offset = 0
+        last_line_no = max((n for n in line_numbers if n is not None), default=1)
+        gutter_digits = max(len(str(last_line_no)), 2)
+        gutter_w = gutter_digits * char_w + 12.0
+    elif show_gutter:
         line_offset = jump_to.start
         last_line_no = line_offset + text.count('\n') + 1
         gutter_digits = max(len(str(last_line_no)), 2)
@@ -2186,7 +2195,11 @@ def draw_text(input_value: str,
         # --- Code-suggestion popup: navigation & accept ---
         # Real editors don't suggest in the find box or inline single-line
         # value fields, so gate that out. (ac_state was set up at the top.)
-        ac_enabled = not single_line and not is_search_box
+        # Exception: a single-line box that has its own `completion_source`
+        # (the context-aware Eval REPL) can autocomplete -- it drives candidates
+        # off the live scope cache instead of the parsed code_tree.
+        ac_enabled = (not is_search_box
+                      and (not single_line or completion_source is not None))
         if not ac_enabled:
             ds._ac_open = False
         # These run BEFORE the normal Arrow/Enter/Tab handlers and eat their
@@ -2257,6 +2270,7 @@ def draw_text(input_value: str,
         # --- Typed characters --- drained in order, using each key event's own
         # modifiers so fast shift-typing across a slow frame stays shifted.
         typed_dot_this_frame = False
+        typed_word_char_this_frame = False
         for _fk, _fmods in _frame_keys:
             if _fmods & glfw.MOD_CONTROL:
                 continue
@@ -2273,8 +2287,12 @@ def draw_text(input_value: str,
             ds.text_selection_end = ds.text_cursor_pos
             # Only a typed '.' (attribute access) opens the popup as you go;
             # plain identifier typing doesn't - Ctrl+P requests it explicitly.
+            # (The REPL REPL relaxes this below: a `completion_source` box also
+            # opens on identifier typing, so suggestions track every keystroke.)
             if ch == '.':
                 typed_dot_this_frame = True
+            elif ch.isalnum() or ch == '_':
+                typed_word_char_this_frame = True
             changed = True
 
         # --- Tab / Shift+Tab ---
@@ -2531,7 +2549,11 @@ def draw_text(input_value: str,
             # the prefix grows/shrinks - until the caret leaves the site, Esc, or
             # an accepted pick. A bare caret move (e.g. clicking right after an
             # attribute) never opens it.
-            if typed_dot_this_frame or (ctrl and pressed(glfw.KEY_P)):
+            # A `completion_source` box (the Eval REPL) is REPL-style: it also
+            # opens on plain identifier typing, so suggestions track every
+            # keystroke without a Ctrl+P. The body keeps its explicit model.
+            repl_open = completion_source is not None and typed_word_char_this_frame
+            if typed_dot_this_frame or (ctrl and pressed(glfw.KEY_P)) or repl_open:
                 ds._ac_request_anchor = anchor
                 ds._ac_suppress_anchor = sup = -1  # explicit ask overrides a prior Esc
             req = getattr(ds, '_ac_request_anchor', -1)
@@ -2540,7 +2562,19 @@ def draw_text(input_value: str,
             suppressed = sup != -1 and sup == anchor
             was_open = getattr(ds, '_ac_open', False)
             want = req != -1 and req == anchor and not suppressed
-            if want and dot_trigger:
+            if want and completion_source is not None:
+                # Eval REPL path - candidates come from the live scope cache
+                # (FuncsMetadata), not the parsed code tree/jedi. Synchronous: the
+                # source resolves member access via the recorded type's dict
+                # (vs a live module's getattr) and bare names from the scope, both
+                # with EXACT type tags. We still filter by the half-typed prefix.
+                raw = []
+                try:
+                    raw = completion_source(text, anchor, prefix, dot_trigger) or []
+                except Exception:
+                    raw = []
+                cands = _filter_completions(raw, prefix)
+            elif want and dot_trigger:
                 # Member access (`imgui.`, `foo.bar`) - resolve the receiver's
                 # REAL members with jedi (async, off-thread). Until they arrive,
                 # keep the popup closed (scoped names aren't members) and keep the
@@ -2595,8 +2629,10 @@ def draw_text(input_value: str,
         # call's parens, resolve the callee's signature (jedi, async) and show it
         # with the current argument highlighted. The active arg index is recomputed
         # locally each frame (cheap); jedi is only re-queried when the call
-        # changes. `_ac_sig_show` gates the render below.
-        if ac_enabled:
+        # changes. `_ac_sig_show` gates the hint paint. No off for the Eval REPL
+        # box (completion_source): jedi can't see its runtime-typed locals, and we
+        # don't want a subprocess signature job fired every keystroke in a one-liner.
+        if ac_enabled and completion_source is None:
             _open_paren, _arg_index = _call_context(text, ds.text_cursor_pos)
             if _open_paren is not None and _ensure_signature_help(
                     ds, text, _open_paren, ds.text_cursor_pos) is not None:
@@ -3112,7 +3148,15 @@ def draw_text(input_value: str,
             ly = origin_y + line_idx * line_px
             if ly + line_px < gutter_top or ly > rect_max_y:
                 continue
-            num_str = str(line_offset + line_idx + 1)
+            if line_numbers is not None:
+                # Trailing empty line (diff text ends in \n) has no number; so do
+                # any line whose number was explicitly None.
+                num = line_numbers[line_idx] if line_idx < len(line_numbers) else None
+                if num is None:
+                    continue
+                num_str = str(num)
+            else:
+                num_str = str(line_offset + line_idx + 1)
             nx = left + gutter_w - 6.0 - len(num_str) * char_w
             draw_list.add_text(nx, ly, cur_color if line_idx == cur_line else num_color, num_str)
         draw_list.pop_clip_rect()
@@ -3122,7 +3166,7 @@ def draw_text(input_value: str,
     else:
         text_height = (input_value.count('\n') + 1) * line_px + 2
 
-    text_width = max(vcols) if vcols else max((len(l) for l in text.split('\n')), default=0) * char_w
+    # text_width = max(vcols) if vcols else max((len(l) for l in text.split('\n')), default=0) * char_w
 
     # --- Code-suggest popup (dropdown menu anchored to the caret) ---
     # Rendered after the body (and after the monospace font is popped, so its
@@ -3177,15 +3221,13 @@ def draw_text(input_value: str,
         if _mt is not None:
             Melty.cache.invalidate_up(_mt, force=True)
 
-
-
-    imgui.dummy(text_width - 1, text_height)
+    imgui.dummy(draw_state.content_width, max(draw_state._kwargs.get("min_height", 0), text_height))
 
     # draw_dd_menu is a LATCHED window: called every frame with closed=not _ac_show
     # so it persists when this (slow) body is skipped. Hover/keys wake the loop;
     # background results wake it via the future's done-callback (_ac_on_future).
     ac_changed, ac_pick = draw_dd_menu(
-        _ac_items, name=f"{ds.name}_ac_menu", tint=draw_state.tint, view_offset=False,
+        _ac_items, name=f"{ds.name}_ac_menu", view_offset=False,
         temp=True, show_search=False, swoosh=False, closed=not _ac_show, height=300, auto_resize=False,
         window_pos=(_ac_x - draw_state.abs_left, _ac_y - draw_state.abs_top + line_px), text_align="left",
         row_tags=(getattr(ds, '_ac_kinds', None) if _ac_show else None),
@@ -3249,11 +3291,11 @@ def draw_text(input_value: str,
             Melty.cache.invalidate_up(_mt, force=True)
 
     uj_changed, uj_pick = draw_dd_menu(
-        _uj_items, name=f"{ds.name}_uj_menu", tint=(0.6380185, 0.7277778, 0.278981477022171, 1.0), view_offset=False, show_bg=True,
-        temp=True, show_search=False, swoosh=False, closed=not _uj_show, min_height=140, bg_offset=3, auto_resize=False, min_width=500,
+        _uj_items, name=f"{ds.name}_uj_menu", view_offset=False, show_bg=True,
+        temp=True, show_search=False, swoosh=False, closed=not _uj_show, min_height=140, bg_offset=0, auto_resize=False, min_width=500,
         window_pos=(_uj_x - draw_state.abs_left, _uj_y - draw_state.abs_top + line_px), text_align="left",
         row_tags=(getattr(ds, '_uj_tags', None) if _uj_show else None),
-        parent_window=draw_state, root_state=uj_state, path_prefix=())
+        parent_window=draw_state, root_state=uj_state, path_prefix=(), tint=(0.06, 0.08277813, 0.13))
     if _uj_show:
         _mt = getattr(ds, '_uj_menu_tile', None)
         if _mt is None or _mt not in Melty.cache._tiles:

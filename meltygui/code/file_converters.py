@@ -883,7 +883,11 @@ def _hotswap_class(old_cls: type, new_cls: type) -> None:
                 pass
 
     for name, new_val in vars(new_cls).items():
-        if name in ("__dict__", "__weakref__", "_instances"):
+        # __class__ is the metaclass slot, not a reconcilable member - a class
+        # that defines `__class__` as a property (transparent-proxy pattern,
+        # e.g. _LazyMode) puts it in vars(); setattr(old_cls, '__class__', prop)
+        # then raises "must be set to a class". Never patch it in place.
+        if name in ("__dict__", "__weakref__", "_instances", "__class__"):
             continue
 
         old_val = vars(old_cls).get(name)
@@ -921,7 +925,10 @@ def _hotswap_class(old_cls: type, new_cls: type) -> None:
             old_fn.__annotations__ = new_fn.__annotations__
             old_fn.__doc__ = new_fn.__doc__
         elif isinstance(new_val, property):
-            setattr(old_cls, name, new_val)
+            try:
+                setattr(old_cls, name, new_val)
+            except (AttributeError, TypeError):
+                pass
         else:
             try:
                 setattr(old_cls, name, new_val)

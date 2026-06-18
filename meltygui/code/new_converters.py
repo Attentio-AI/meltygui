@@ -2048,9 +2048,11 @@ def draw_text_from_code_cache(input_value=None, root_input=None, error=None,
             # kwargs). Popping earlier loses a click whenever this editor
             # re-renders between the pulse frame and the host's next draw.
             dict_host.child_kwargs.pop("run_jedi", None)
-    changed, value, ds = RenderFuncs.draw_text(input_value, code_dict=code_dict, is_tree=False,
+
+
+    changed, value, ds = RenderFuncs.draw_text(input_value, code_dict=code_dict,
                                                code_tree=cache_error, error=error,
-                                               return_extras=True, **kwargs)
+                                               return_extras=True, **{**kwargs, "is_tree":False})
     # Re-render this editor when the background parse lands - its external
     # change is outside the host's own draw loop, so without registering it
     # the fresh cst_dict sits invisible until an unrelated invalidation.

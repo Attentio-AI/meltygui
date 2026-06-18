@@ -11,7 +11,6 @@ class NotificationCenter:
 
 
 def notify(text, tint=(1,1,1,1), tag=None, urgent=True):
-    print(f"Notification: {text} (tag={tag}, tint={tint}) len{len(NotificationCenter.tagged_notifications['General'])}")
     formatted_time = time.strftime("%H:%M:%S", time.localtime())
     tint = tint if len(tint) == 4 else (*tint, 1)  # Ensure color has alpha
 

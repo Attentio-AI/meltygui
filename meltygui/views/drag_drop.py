@@ -36,6 +36,16 @@ How a drag flows, end to end:
     and their BVH boxes). A line is drawn on every slot in radius, nearest
     highlighted.
 
+  * The item's start position is also a drop target (the _HOME sentinel),
+    drawn as a subtle rect frame around the placeholder (draw_home) rather than
+    a slot line. It competes by distance like any slot — the cursor is "at
+    home" whenever it sits inside the placeholder rect (distance 0), so it wins
+    ties against the adjacent gap lines. Releasing on it cancels the reorder,
+    the natural target for a change of mind or an accidental short drag.
+    Because _HOME routes through the same "nothing selected → snap back" path
+    as releasing over empty space, the cancel needs no special commit logic
+    beyond skipping _commit for the sentinel.
+
   * On release the reorder is applied the same way the undo manager applies a
     restore: a CollectionMutation is registered in Melty.dnd_requests keyed
     by the collection's draw_state; core_render's wrapper tail intercepts
@@ -74,6 +84,10 @@ ARM_DISTANCE = 2.0
 _VIEW_ID = "dnd_item"
 _VIEW_ID_SUFFIX = "_" + _VIEW_ID
 _EVENTS = ["left_mouse_drag", "left_mouse_drag_released"]
+
+# Sentinel used as cls.nearest when the cursor is over the item's start
+# position. It carries no insert index - dropping on it cancels the reorder.
+_HOME = object()
 
 @window
 class DragDrop:
@@ -256,9 +270,11 @@ class DragDrop:
         mx, my = imgui.get_io().mouse_pos
         cls._compute_slots(mx, my)
         cls._draw_slots()
+        cls._draw_home()
 
         if not melty.event_handler.is_down("left_mouse"):
-            if cls.nearest is not None:
+            # _HOME (or None) means "drop back at the home" - no reorder.
+            if cls.nearest is not None and cls.nearest is not _HOME:
                 cls._commit()
             cls._reset()
             return
@@ -414,7 +430,19 @@ class DragDrop:
             cls._collection_slots(ds, mx, my, slots)
         slots.sort(key=lambda s: s[0])
         cls.slots = slots
-        cls.nearest = slots[0] if slots else None
+        nearest = slots[0] if slots else None
+        # The start position competes on distance but is drawn as a dot frame
+        # (draw_home), not a slot line. It wins ties (<=) so that while the
+        # cursor still sits inside the placeholder (distance 0) it beats the
+        # gap lines hugging the placeholder edges - otherwise a barely-moved
+        # drag snaps to one of those and reorders. _HOME routes to the
+        # same "nothing there → snap back" drop path as blank space.
+        home_dist = cls._home_distance(mx, my)
+        if (home_dist is not None and home_dist <= DROP_RADIUS
+                and (nearest is None or home_dist <= nearest[0])):
+            cls.nearest = _HOME
+        else:
+            cls.nearest = nearest
 
     @classmethod
     def _collection_slots(cls, ds, mx, my, out):
@@ -602,6 +630,52 @@ class DragDrop:
                     overlay.add_circle_filled(x1, y, 3.5, col)
 
     @classmethod
+    def _home_distance(cls, mx, my):
+        """Distance from the cursor to the start drop zone — the item's
+        pickup slot (the placeholder). 0 anywhere inside the rect, so the
+        whole original footprint reads as "drop back here". None when there's
+        no captured home rect/size to measure against."""
+        if cls.home_rect is None:
+            return None
+        w, h = cls.size
+        if not w or not h:
+            return None
+        x, y = cls.home_rect
+        dx = max(x - mx, 0.0, mx - (x + w))
+        dy = max(y - my, 0.0, my - (y + h))
+        return math.hypot(dx, dy)
+
+    @classmethod
+    def _draw_home(cls):
+        """Frame the start slot so it reads as a droppable target: a faint
+        rect while dragging anywhere, lifted (but kept subtle — this is a
+        cancel zone, not a reorder target) when the cursor is over it
+        (cls.nearest is _HOME). Rides the same top overlay channel as the slot
+        lines; the pad insets the frame just outside the floating window (same
+        size as the home rect), so it surrounds the item on a short drag."""
+        if cls.home_rect is None:
+            return
+        w, h = cls.size
+        if not w or not h:
+            return
+        melty = Core.melty
+        overlay = imgui.get_overlay_draw_list()
+        if melty._overlay_channels_active:
+            overlay.channels_set_current(melty.max_layer - 5)
+        x, y = cls.home_rect
+        src = cls.source_ds
+        rgb = melty._highlight_rgb(src.current_tint) if src is not None else (1.0, 1.0, 1.0)
+        if cls.nearest is _HOME:
+            col = imgui.get_color_u32_rgba(*rgb, 0.45)
+            thickness = 1.75
+        else:
+            col = imgui.get_color_u32_rgba(*rgb, 0.16)
+            thickness = 1.5
+        pad = 3.0
+        overlay.add_rect(x - pad, y - pad, x + w + pad, y + h + pad,
+                         col, rounding=7.0, thickness=thickness)
+
+    @classmethod
     def _commit(cls):
         """Register the reorder with Melty.dnd_requests — core_render's
         wrapper tail intercepts the target draw_state's next return and
@@ -645,6 +719,13 @@ class DragDrop:
         cls.nearest = None
         if item is not None:
             item.window_pos = (0, 0)
+            # Undo the floating-render override. dragged_item_kwargs() forced
+            # auto_resize=False + a fixed width so the item floated at its
+            # pickup size; core_render's `fixed_size = not draw_state.auto_resize`
+            # makes that False sticky, so once re-homed the item would stay
+            # frozen at the pickup width instead of scaling to fill its new
+            # container. Restore auto-resize so it re-derives its size in place.
+            item.auto_resize = True
             cls._wake(item)
         if src is not None:
             cls._wake(src)

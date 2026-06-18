@@ -91,6 +91,82 @@ class Tint:
         return hsv_to_rgb(*active_hsv)
 
     @staticmethod
+    def checkbox_outline():
+        style_manager: ImGuiStyleManager = Core.melty.style_manager
+        active_hsv = style_manager.hsv
+
+        hue_delta = 0.00
+        saturation_factor = 1.0
+        value_factor = 0.458
+        
+        
+
+        active_hsv = ((active_hsv[0] + hue_delta),
+                      min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
+                      min(max(active_hsv[2] * value_factor, -1), Tint.max_value))
+        return hsv_to_rgb(*active_hsv)
+    @staticmethod
+    def checkbox_bg():
+        style_manager: ImGuiStyleManager = Core.melty.style_manager
+        active_hsv = style_manager.hsv
+
+        hue_delta = 0.00
+        saturation_factor = 1.1
+        value_factor = 0.068
+        
+
+        active_hsv = ((active_hsv[0] + hue_delta),
+                      min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
+                      min(max(active_hsv[2] * value_factor, -1), Tint.max_value))
+        return hsv_to_rgb(*active_hsv)
+        
+    
+    @staticmethod
+    @defaults(tint=(0.0, 0.0, 0))
+    def checkbox_bg_hovered():
+        style_manager: ImGuiStyleManager = Core.melty.style_manager
+        active_hsv = style_manager.hsv
+
+        hue_delta = 0.00
+        saturation_factor = 0.9
+        value_factor = 0.218
+        
+
+        active_hsv = ((active_hsv[0] + hue_delta),
+                      min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
+                      min(max(active_hsv[2] * value_factor, -1), Tint.max_value))
+        return hsv_to_rgb(*active_hsv)
+    
+    @staticmethod
+    @defaults(tint=(0.1, 0.8, 0))
+    def checkbox_text_true():
+        style_manager: ImGuiStyleManager = Core.melty.style_manager
+        active_hsv = style_manager.hsv
+
+        hue_delta = 0.00
+        saturation_factor = 1.3
+        value_factor = 2.125
+
+        active_hsv = ((active_hsv[0] + hue_delta),
+                      min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
+                      min(max(active_hsv[2] * value_factor, 0), Tint.max_value))
+        return hsv_to_rgb(*active_hsv)
+        
+    @staticmethod
+    @defaults(tint=(0.9, 0.0, 0))
+    def checkbox_text():
+        style_manager: ImGuiStyleManager = Core.melty.style_manager
+        active_hsv = style_manager.hsv
+
+        hue_delta = 0.00
+        saturation_factor = 0.8
+        value_factor = 1.018
+
+        active_hsv = ((active_hsv[0] + hue_delta),
+                      min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
+                      min(max(active_hsv[2] * value_factor, 0), Tint.max_value))
+        return hsv_to_rgb(*active_hsv)
+    @staticmethod
     @defaults(tint=(0.54, 0.54, 0.54))
     def cursor_tint():
         style_manager: ImGuiStyleManager = Core.melty.style_manager
@@ -208,16 +284,17 @@ class Swoosh:
 @window(tint=(0.71, 0.32, 0.13))
 class Toggles:
 
-    @defaults(tint=(0.60, 0.55, 0.077))
-    class InvalidateTracker:
-        keep_for_frames = 122
-        enable = False
-        draw_bvh = False
-        draw_rect = False
-
     @defaults(tint=(0.167, 0.972, 1.00))
     class TextEditor:
         enable_spell_check = False
+
+
+    @defaults(tint=(0.60, 0.55, 0.077))
+    class InvalidateTracker:
+        keep_for_frames = 122
+        draw_bvh = False
+        enable = False
+        draw_rect = False
 
     @defaults(tint=(0.631, 0.474, 0.861))
     class InputHandlerToggles:
@@ -228,7 +305,6 @@ class Toggles:
         # Minimum LOGICAL terminal size, in tiles - independent of the window size.
         min_width = 98.634
         min_height = 480.0
-
 
     @defaults(tint=(0.42, 0.78, 0.55))
     class Collection:
@@ -245,7 +321,7 @@ class Toggles:
     debug_scroll = False
     show_filled_tiles = False
     gl_check_error = False
-    enable_jedi = True
+    enable_jedi = False
     attrib_change_stack_trace = False
     # [tint(0.9, 0.5, 0.0)]
     jedi_correctness = False
@@ -284,6 +360,9 @@ class Toggles:
     ignore_call_from = ("draw", "_run_visualization", "run", "_bootstrap",
                         "_bootstrap_inner", "convert_in_and_out", "draw_melty_windows", "end_frame", "render", "draw_inner",
                         "draw_inner_main", "draw_with_view_funcs")
+    # How many real callers up the stack the inputs tab shows as editable caller
+    # sources (caller, caller's caller, ...). 1 = the direct caller only.
+    caller_walk_steps = 7
     draw_legacy = False
 
     show_full_call_stack = False

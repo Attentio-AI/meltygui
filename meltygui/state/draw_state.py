@@ -862,7 +862,7 @@ class DrawState(DictConversion):
         # if is_scroll_view:
         #     content_height = max(content_height, self.height)
 
-        return int(content_height)
+        return int(self._observed_content_height)
 
     @property
     def abs_layer(self):
