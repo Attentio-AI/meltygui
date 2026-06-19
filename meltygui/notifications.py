@@ -8,6 +8,7 @@ class NotificationCenter:
     max_notifications = 20
     notifications = deque(maxlen=max_notifications)
     tagged_notifications = defaultdict(lambda: deque(maxlen=NotificationCenter.max_notifications))
+    ignore_tags = ["host"]
 
 
 def notify(text, tint=(1,1,1,1), tag=None, urgent=True):
@@ -54,6 +55,8 @@ def draw_notifications():
     line_height = imgui.get_text_line_height()
 
     for c_idx, (tag, notifications) in enumerate(NotificationCenter.tagged_notifications.items()):
+        if tag in NotificationCenter.ignore_tags:
+            continue
         column_left = display_size.x - (column_width * (c_idx + 1)) - 10
 
         # tag title pinned at the bottom of the screen

@@ -76,7 +76,7 @@ class Tint:
     max_value = 10.0
 
     @staticmethod
-    @defaults(tint=(0.1,0.1,0))
+    @defaults(tint=(1.00,0.90,0.7944444417953491))
     def icon_tint():
         style_manager: ImGuiStyleManager = Core.melty.style_manager
         active_hsv = style_manager.hsv
@@ -88,7 +88,7 @@ class Tint:
                       min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
                       min(max(active_hsv[2] * value_factor, 0), Tint.max_value))
         return hsv_to_rgb(*active_hsv)
-        
+
     @staticmethod
     def checkbox_outline():
         style_manager: ImGuiStyleManager = Core.melty.style_manager
@@ -97,8 +97,9 @@ class Tint:
         hue_delta = 0.00
         saturation_factor = 1.2
         value_factor = -0.002
-        
-  
+
+
+
         active_hsv = ((active_hsv[0] + hue_delta),
                       min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
                       min(max(active_hsv[2] * value_factor, -1), Tint.max_value))
@@ -111,12 +112,12 @@ class Tint:
         hue_delta = 0.00
         saturation_factor = 1.1
         value_factor = 0.068
-        
+
         active_hsv = ((active_hsv[0] + hue_delta),
                       min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
                       min(max(active_hsv[2] * value_factor, -1), Tint.max_value))
         return hsv_to_rgb(*active_hsv)
-           
+
     @staticmethod
     @defaults(tint=(0.0, 0.0, 0))
     def checkbox_bg_selected():
@@ -126,13 +127,13 @@ class Tint:
         hue_delta = 0.00
         saturation_factor = 0.9
         value_factor = 0.108
-        
+
 
         active_hsv = ((active_hsv[0] + hue_delta),
                       min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
                       min(max(active_hsv[2] * value_factor, -1), Tint.max_value))
         return hsv_to_rgb(*active_hsv)
-    
+
     @staticmethod
     @defaults(tint=(0.0, 0.0, 0))
     def checkbox_bg_hovered():
@@ -146,7 +147,7 @@ class Tint:
                       min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
                       min(max(active_hsv[2] * value_factor, -1), Tint.max_value))
         return hsv_to_rgb(*active_hsv)
-    
+
     @staticmethod
     @defaults(tint=(0.1, 0.8, 0))
     def checkbox_text_true():
@@ -161,7 +162,7 @@ class Tint:
                       min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
                       min(max(active_hsv[2] * value_factor, 0), Tint.max_value))
         return hsv_to_rgb(*active_hsv)
-        
+
     @staticmethod
     @defaults(tint=(0.9, 0.0, 0))
     def checkbox_text():
@@ -190,7 +191,7 @@ class Tint:
                       min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
                       min(max(active_hsv[2] * value_factor, 0), Tint.max_value))
         return hsv_to_rgb(*active_hsv)
-        
+
     @staticmethod
     @defaults(tint=(0.9, 0.0, 0))
     def subtle_text():
@@ -306,10 +307,10 @@ class Swoosh:
                                        # the rect, then drop off; 1 = linear)
 
 
-@window(tint=(0.729, 0.729, 0.911))
+@window(tint=(0.11, 0.12, 0.14))
 class Toggles:
 
-    @defaults(tint=(0.839, 0.099, 0.04))
+    @defaults(tint=(0.939, 0.086, 0.042))
     class TextEditor:
         enable_spell_check = False
 
@@ -324,7 +325,7 @@ class Toggles:
 
     @defaults(tint=(0.91, 0.659, 0.15))
     class InvalidateTracker:
-        keep_for_frames = 17
+        keep_for_frames = 13
         enable = False
         draw_bvh = False
         draw_rect = False
@@ -346,13 +347,25 @@ class Toggles:
     show_filled_tiles = False
     gl_check_error = False
     enable_jedi = True
-
+    
     attrib_change_stack_trace = False
     # [tint(0.9, 0.5, 0.0)]
     jedi_correctness = False
     # Attach symbol usages to every editor parse automatically (background,
     # fast index path only); the refresh button stays as a manual refresh.
     auto_index = True
+
+    # Build the parse tree node→span map from Python's `ast` (C parser, native
+    # lineno/col_offset) instead of libcst's PositionProvider (in-tree
+    # code walk, ~64% of the cst→dict cost). Spans feed find_view symbol links
+    # and shift-keyed token_view overlays; everything else is unaffected.
+    new_position_map = True
+
+    # While the user is actively typing, pause the background cst→dict parse at
+    # statement boundaries so the render thread gets the GIL uncontended (the
+    # parse is pure-Python and GIL-bound). Trades a little parse latency for
+    # smooth keystrokes. Never sleeps the render/main thread. See _yield_to_ui.
+    yield_to_ui = True
 
     # Invalidation settings
     invalidate_stack_trace = False
@@ -366,7 +379,7 @@ class Toggles:
     debug_stale_tint = False
     show_line_break = False
 
-    # Filter SettingS
+    # View Settings
     brightness = 0.475
     contrast = 1.812
     saturation = -0.4
@@ -380,7 +393,6 @@ class Toggles:
 
     # Shadow settings
     shadow_downscale = 2
-
     shadow_edge_sharpness = 49.833
     ignore_call_from = ("draw", "_run_visualization", "run", "_bootstrap",
                         "_bootstrap_inner", "convert_in_and_out", "draw_melty_windows", "end_frame", "render", "draw_inner",

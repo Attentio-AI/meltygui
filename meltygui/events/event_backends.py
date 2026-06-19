@@ -381,6 +381,9 @@ class GlfwQueueBackend:
         self._prev_char = glfw.set_char_callback(window, self._on_char)
         self._prev_button = glfw.set_mouse_button_callback(window, self._on_button)
         self._prev_scroll = glfw.set_scroll_callback(window, self._on_scroll)
+        # Mouse motion (for hover/drag) - only used to defer the background parse
+        # while the mouse is busy; chains to whatever imgui registered (if any).
+        self._prev_cursor = glfw.set_cursor_pos_callback(window, self._on_move)
 
     @staticmethod
     def _chain(prev, *args):
@@ -396,10 +399,22 @@ class GlfwQueueBackend:
             shift=bool(mods & glfw.MOD_SHIFT), ctrl=bool(mods & glfw.MOD_CONTROL),
             alt=bool(mods & glfw.MOD_ALT), meta=bool(mods & glfw.MOD_SUPER))
 
+    @staticmethod
+    def _stamp_input():
+        # Recency signal for the cst→dict parse's cooperative UI yield: ANY input
+        # - key (incl. held-key auto-repeat), mouse button, mouse move/drag, or
+        # scroll - defers the background parse so the render loop stays smooth.
+        try:
+            from src.lsd.gl_gui.melty import Melty
+            Melty._last_input_time = time.monotonic()
+        except Exception:
+            pass
+
     def _on_key(self, window, key, scancode, action, mods):
         try:
             from src.lsd.gl_gui.melty import Melty
             from src.lsd.gl_gui.utils.glfw_utils import request_render
+            self._stamp_input()   # key activity (press/repeat/release) defers the parse
             self._set_mods(self.handler, mods)
             x, y = glfw.get_cursor_pos(window)
             name = ImGuiBackend.KEY_NAMES.get(key, f"key_{key}")
@@ -425,6 +440,7 @@ class GlfwQueueBackend:
     def _on_button(self, window, button, action, mods):
         try:
             from src.lsd.gl_gui.utils.glfw_utils import request_render
+            self._stamp_input()   # mouse button press/release defers the parse
             self._set_mods(self.handler, mods)
             x, y = glfw.get_cursor_pos(window)
             name = ImGuiBackend.MOUSE_BUTTONS.get(button, f"mouse_{button}")
@@ -440,6 +456,7 @@ class GlfwQueueBackend:
     def _on_scroll(self, window, x_offset, y_offset):
         try:
             from src.lsd.gl_gui.utils.glfw_utils import request_render
+            self._stamp_input()   # scrolling defers the parse
             if y_offset:
                 self.handler.feed_change("scroll_y", y_offset)
             if x_offset:
@@ -449,17 +466,52 @@ class GlfwQueueBackend:
             pass
         self._chain(self._prev_scroll, window, x_offset, y_offset)
 
+    def _on_move(self, window, x, y):
+        # Mouse motion - hover and (with a button held) drags - defers the parse.
+        # Fires often, so keep it minimal; chain so imgui's prior cursor callback,
+        # if any, still runs.
+        self._stamp_input()
+        self._chain(getattr(self, "_prev_cursor", None), window, x, y)
+
     def pump(self):
-        """Per-frame: feed the latest cursor position (level state) and refresh
-        modifiers. Button/key/scroll edges already arrived via callbacks."""
+        """Per-frame: feed the latest cursor position (level state), refresh
+        modifiers, and refresh the cst→dict cooperative-yield recency signal
+        while any input is HELD.
+
+        The GLFW edge callbacks (PRESS/REPEAT/RELEASE) don't fire every frame —
+        GLFW REPEAT is sparse or absent (e.g. on Wayland), and the editor's
+        held-key repeat is driven by imgui's own auto-repeat — so stamping only in
+        _on_key let _last_input_time go stale mid-hold and the parse stopped
+        yielding. imgui's io.keys_down / mouse_down ARE per-frame level state, so
+        stamp from them here every frame the input is held. pump() is re-resolved
+        each frame, so this path also hotswaps without a restart."""
         io = imgui.get_io()
         mx, my = io.mouse_pos
         px, py = self._prev_mouse_pos
-        if (mx, my) != (px, py) and mx >= 0 and my >= 0:
+        moved = (mx, my) != (px, py) and mx >= 0 and my >= 0
+        if moved:
             self.handler.feed_move(mx, my, mx - px, my - py)
         self._prev_mouse_pos = (mx, my)
         self.handler.set_modifiers(
             shift=io.key_shift, ctrl=io.key_ctrl, alt=io.key_alt, meta=io.key_super)
+        if moved or self._any_input_held(io):
+            self._stamp_input()
+
+    @staticmethod
+    def _any_input_held(io):
+        """True if any key or mouse button is currently down (imgui per-frame
+        level state) — so a held key/button keeps deferring the parse each frame,
+        regardless of how often GLFW delivers REPEAT edges."""
+        if io.key_ctrl or io.key_shift or io.key_alt or io.key_super:
+            return True
+        kd = io.keys_down
+        for i in range(len(kd)):
+            if kd[i]:
+                return True
+        for i in range(5):
+            if imgui.is_mouse_down(i):
+                return True
+        return False
 
     @property
     def allow_hovering(self) -> bool:

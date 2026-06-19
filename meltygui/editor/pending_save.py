@@ -47,15 +47,27 @@ def _diff_lines_with_numbers(diff, base):
 class PendingSave:
     pending_saves = defaultdict(Any)
     originals = defaultdict(Any)
+    # Monotonic per-file edit counter, bumped on every queue_save. A cheap,
+    # content-free cache-invalidation signal (see CLAUDE.md - never hash files):
+    # readers of current_file_text key on this instead of hashing the text.
+    _pending_gen = defaultdict(int)
 
     @classmethod
     def mark_load(cls, address, data, **kwargs):
         cls.originals[address] = data
 
     @classmethod
+    def pending_gen_for(cls, path):
+        """Edit generation for `path` — bumps on every queue_save for it. Keyed by
+        the same `address.path` value queue_save writes (matches pending_text_for's
+        no-resolve convention)."""
+        return cls._pending_gen.get(path, 0)
+
+    @classmethod
     def queue_save(cls, address, codec, **kwargs):
         prev = cls.pending_saves.get(address)
         cls.pending_saves[address] = codec, kwargs
+        cls._pending_gen[address.path] += 1
         # Deferred saves never write disk, so the file watcher never needs to update
         # SIBLING views of this file (a structured/cst/dict view, another editor).
         # When the queued text content changes, wake them so they re-render and
@@ -76,6 +88,53 @@ class PendingSave:
             return
         for ds in list(FileWatch.path_to_draw_states.get(resolved, ())):
             FileWatch.dispatch_event_for(ds)
+
+    @classmethod
+    def current_file_text(cls, path):
+        """Disk text of `path` with every queued (unsaved) span edit spliced in —
+        the file as it WOULD be on disk if the deferred saves flushed right now.
+
+        Readers that re-read disk see pre-edit content (saves defer to shutdown);
+        this is the in-memory truth for whole-file consumers like the symbol-usage
+        index, which otherwise resolve references against the stale on-disk file.
+        Splices bottom-up (highest start first), matching apply_all_saves /
+        codec.save, so an applied span never shifts a not-yet-applied span above
+        it. Newline-normalized to '\\n' (callers here only need line/col, which is
+        newline-agnostic). A queued whole-file edit (start is None) IS the text.
+        Returns None if the file can't be read."""
+        from src.lsd.gl_gui.melty import Melty
+        from pathlib import Path as _P
+        disk = Melty.read_code(path)
+        if disk is None:
+            return None
+        try:
+            rp = _P(path).resolve()
+        except OSError:
+            return disk
+        edits = []
+        for addr, (codec, kwargs) in cls.pending_saves.items():
+            data = kwargs.get("data")
+            if not isinstance(data, str):
+                continue
+            try:
+                if _P(addr.path).resolve() != rp:
+                    continue
+            except Exception:
+                continue
+            edits.append((addr.start, addr.end, data))
+        if not edits:
+            return disk
+        whole = [d for (s, e, d) in edits if s is None]
+        if whole:
+            return whole[-1].replace("\r\n", "\n").replace("\r", "\n")
+        lines = disk.split("\n")
+        for start, end, data in sorted((e for e in edits if e[0] is not None),
+                                       key=lambda e: -e[0]):
+            d = data.replace("\r\n", "\n").replace("\r", "\n")
+            if d.endswith("\n"):
+                d = d[:-1]
+            lines[start:end] = d.split("\n")
+        return "\n".join(lines)
 
     @classmethod
     def pending_text_for(cls, address):
@@ -127,7 +186,6 @@ class PendingSave:
                 survivors[address] = (codec, kwargs)
                 notify(f"Save deferred: {address.path.name} changed under it",
                        tint=(1.0, 0.8, 0.3))
-                print_stack_trace()
 
         cls.pending_saves.clear()
         cls.pending_saves.update(survivors)
@@ -137,40 +195,40 @@ class PendingSave:
 @render_func()
 def draw_pending_saves():
     pass
-    # from src.lsd.gl_gui.view.core_views.new_core_views import draw_any
-    # RenderFuncs.draw_function(PendingSave.apply_all_saves, icon="", tint=(0,0,0,1), show_name=False, shadow=False)
-    #
-    # for address, (codec, kwargs) in PendingSave.pending_saves.items():
-    #     if address in PendingSave.originals:
-    #         original_data = PendingSave.originals[address]
-    #         # get the diff using external library (DO NOT USE CODEC) code.diff does not exist.
-    #         # code_diff = codec.diff(address=address, **kwargs) ### WRONG
-    #         new_data = kwargs.get("data")
-    #         old_data = original_data
-    #         new_lines = str(new_data).splitlines(keepends=True)
-    #         old_lines = str(old_data).splitlines(keepends=True)
-    #         if new_lines == old_lines:
-    #             continue
-    #
-    #         diff = difflib.unified_diff(
-    #             fromfile=str(address.path), tofile=str(address.path),
-    #             a=old_lines, b=new_lines, n=3,
-    #         )
-    #         # Strip the unified-diff scaffolding (--- / +++ headers, @@ hunk
-    #         # ranges, "\ No newline" lines) down to the +/- and context lines,
-    #         # and compute each line's TRUE file number. The diff runs over the
-    #         # snippet (a span of the file starting at address.start), so the @@
-    #         # numbers are snippet-relative - shifting by address.start lands them
-    #         # on the file's real lines. draw_text(is_diff=True) colors the +/-
-    #         # lines; line_numbers feeds the gutter.
-    #         content_lines, line_numbers = _diff_lines_with_numbers(diff, address.start or 0)
-    #         diff_str = "".join(content_lines)
-    #
-    #         file_name = address.path.name
-    #         line_range = f"({address.start}:{address.end})"
-    #         name = f"{file_name} {line_range}"
-    #         RenderFuncs.draw_text(diff_str, file_name=None, name=name,
-    #                               is_diff=True, line_numbers=line_numbers)
-    #     else:
-    #         PendingSave.originals[address] = codec.load(address=address, **kwargs)
-    #         imgui.text("No original data to diff against for address: {}".format(address))
+    from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
+    RenderFuncs.draw_function(PendingSave.apply_all_saves, icon="", tint=(0,0,0,1), show_bg=False, shadow=False)
+    
+    for address, (codec, kwargs) in PendingSave.pending_saves.items():
+        if address in PendingSave.originals:
+            original_data = PendingSave.originals[address]
+            # generate code diff using external library (DO NOT USE CODEC) code.diff does not exist.
+            # code_diff = codec.diff(address=address, **kwargs) ### WRONG
+            new_data = kwargs.get("data")
+            old_data = original_data
+            new_lines = str(new_data).splitlines(keepends=True)
+            old_lines = str(old_data).splitlines(keepends=True)
+            if new_lines == old_lines:
+                continue
+    
+            diff = difflib.unified_diff(
+                fromfile=str(address.path), tofile=str(address.path),
+                a=old_lines, b=new_lines, n=3,
+            )
+            # Strip the unified-diff scaffolding (--- / +++ headers, @@ hunk
+            # ranges, "\ No newline" markers) down to the +/- and context lines,
+            # and compute each line's TRUE file number. The diff runs over the
+            # snippet (the slice of the file starting at address.start), so the @@
+            # numbers are snippet-relative - shifting by address.start lands them
+            # on the file's real lines. draw_text(is_diff=True) colors the +/-
+            # lines; line_numbers feeds the gutter.
+            content_lines, line_numbers = _diff_lines_with_numbers(diff, address.start or 0)
+            diff_str = "".join(content_lines)
+    
+            file_name = address.path.name
+            line_range = f"({address.start}:{address.end})"
+            name = f"{file_name} {line_range}"
+            RenderFuncs.draw_text(diff_str, show_name=True, name=name,
+                                  is_diff=True, line_numbers=line_numbers)
+        else:
+            PendingSave.originals[address] = codec.load(address=address, **kwargs)
+            imgui.text("No original data to compare against for address: {}".format(address))

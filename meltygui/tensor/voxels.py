@@ -1156,7 +1156,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                 name_size=17.0, name_padding=30.1, name_opacity=1.1,
                 num_size=17.1, num_padding=5.5, num_opacity=0.8,
                 num_spacing=1.0, num_angle=0.0,
-                middle_mouse_drag=None, right_mouse_drag=None,
+                middle_mouse_drag=None, double_right_mouse_drag=None,
                 scroll_y_changed=None, left_mouse_double_clicked=None,
                 kp_7_pressed=None, kp_1_pressed=None, kp_3_pressed=None,
                 kp_5_pressed=None, slash_pressed=None, kp_divide_pressed=None,
@@ -1272,12 +1272,13 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
             spin -= middle_mouse_drag.dx * 0.008
             tilt = min(math.pi, max(-math.pi, tilt + middle_mouse_drag.dy * 0.008))
             draw_state.spin, draw_state.tilt = spin, tilt
-    if right_mouse_drag is not None:
-        # the old viewer's shading drag: horizontal = brightness, vertical =
-        # contrast (up = increase). A real drag exceeds CLICK_MAX_DISTANCE,
-        # so context-menu clicks don't fire alongside.
-        cam_brightness = min(4.0, max(0.0, cam_brightness + right_mouse_drag.dx * 0.01))
-        cam_contrast = min(4.0, max(0.1, cam_contrast - right_mouse_drag.dy * 0.008))
+    if double_right_mouse_drag is not None:
+        # the old viewer's shading drag: now on a DOUBLE right-drag (the 2nd
+        # press of a double right-click, held and dragged): horizontal =
+        # brightness, vertical = contrast (up to increase). The plain right-
+        # click stays reserved for the context menu.
+        cam_brightness = min(4.0, max(0.0, cam_brightness + double_right_mouse_drag.dx * 0.01))
+        cam_contrast = min(4.0, max(0.1, cam_contrast - double_right_mouse_drag.dy * 0.008))
         draw_state.cam_brightness, draw_state.cam_contrast = cam_brightness, cam_contrast
     if scroll_y_changed is not None:
         cam_zoom = min(135.5, max(0.0, cam_zoom * math.exp(-0.23 * scroll_y_changed.value)))
@@ -1413,7 +1414,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
     # imgui.set_cursor_screen_pos((win.abs_left + (win.width or width) + 12, win.abs_top))
     panel_kwargs = {"closed": not panel_open} if (init or toggled) else {}
 
-    if not middle_mouse_drag and not right_mouse_drag and scroll_y_changed is None:
+    if not middle_mouse_drag and not double_right_mouse_drag and scroll_y_changed is None:
         changed, _, panel_ds = draw_voxel_controls(tex, vox_ds=draw_state,
                                                    mapping=mapping, name="controls",
                                                        mode=Modes.WINDOW_PARAMS,

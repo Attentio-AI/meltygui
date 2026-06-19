@@ -399,7 +399,7 @@ def live_view_forward(input_value=None, draw_state=None, **kwargs):
 
 
 @render_func(use_cache=True, show_bg=False, shadow=False, selectable=False,
-             with_header=None, show_name=False)
+             with_header=None, show_name=False, tint=(0.485, 0.61, 0.76))
 def draw_function_live(input_value, draw_state=None, unique=None,
                        source_mode=None, column_edges=None, run_in_thread=True,
                        **kwargs):
@@ -454,7 +454,7 @@ def draw_function_live(input_value, draw_state=None, unique=None,
              else 400.0)
     inner_h = avail - 2 * cols.padding
     with cols.cell(0, height=avail) as col_w:
-        draw_function(_run_proxy(fn), height=inner_h, width=col_w,
+        draw_function(_run_proxy(fn), height=inner_h, width=col_w, temp=True,
                       name=f"{fn.__name__} runner", run_in_thread=run_in_thread)
     with cols.cell(1, height=avail) as col_w:
         draw_any(fn, mode=source_mode or Mode.FILE_TREE, height=inner_h,

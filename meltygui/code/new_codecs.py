@@ -352,14 +352,32 @@ class TypeCodec(Codec):
         # defer to shutdown) is the freshest text; return it as the now-stale
         # disk content, and skip the disk read below. An explicit source_text
         # (a verified reload copy of exact disk content) still takes the slice
-        # path below. _span_fp is deliberately left as resolve_address set it
-        # (the DISK content) so save's conflict guard only detects a genuine
-        # external write - the pending text is what we'll splice, not what we
-        # verify against. See PendingSave.pending_text_for.
+        # path below. See PendingSave.pending_text_for.
         if source_text is None:
             from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
             pending = PendingSave.pending_text_for(address)
             if pending is not None:
+                # Re-baseline the save conflict guard against the app's OWN writes.
+                # _span_fp (set at first load) means "the disk content this pending
+                # edit was derived from". When ANOTHER surface edits the same span
+                # it writes via codec.save, and this view's pending text is
+                # rebased onto the new disk by the post-write reload - but _span_fp
+                # stayed frozen, so save reads the app's own sibling write as an
+                # EXTERNAL conflict and refuses it (the multi-surface false
+                # conflict). When the new disk is an in-process write
+                # (is_self_write), it is exactly what the rebased pending sits on,
+                # so sync _span_fp to match. A genuine EXTERNAL write leaves
+                # is_self_write False, the baseline stays stale, and the guard
+                # still fires - a real conflict.
+                if FileWatch.is_self_write(address.path):
+                    try:
+                        text, newline = _source_and_newline(address)
+                        lines = text.split(newline)
+                        span = (lines if address.start is None
+                                else lines[address.start:address.end])
+                        address._span_fp = _span_fingerprint(span)
+                    except OSError:
+                        pass
                 return pending
         text, newline = _source_and_newline(address, source_text)
         lines = text.split(newline)

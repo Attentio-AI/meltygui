@@ -133,7 +133,6 @@ def save_file(address, code_str, codec=None, ensure_import=None, parent_ds=None,
     SaveConflict when the codec refused the splice because the on-disk span
     changed under us (force=True, the user's explicit Keep-mine, bypasses)."""
     current_time = datetime.now().strftime("%H:%M:%S")
-    print(f"{current_time} Saved {address.path} from {parent_ds.name}")
     file_name = address.path.name if address.path is not None else "unknown"
     notify(f"Saved {file_name} from {parent_ds.name}", tint=(0.5, 1.0, 0.5))
     PendingSave.queue_save(address=address, codec=codec, data=code_str, ensure_import=ensure_import, force=force)
@@ -404,7 +403,7 @@ LOADING = object()
 @render_func(use_cache=True, selectable=False, temp=True)
 def run_in_background(input_value, loading_state: LoadingState, unique,
                       draw_state, child_kwargs, start=False, timeout=20,
-                      debounce_ms=50, wait_for_drag=False, main_thread=False, **kwargs):
+                      debounce_ms=0, wait_for_drag=False, main_thread=False, **kwargs):
     """One-shot background runner: call it every frame; `start=True` is the
     trigger edge that snapshots (input_value, child_kwargs) into the queue.
 
@@ -1704,7 +1703,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                                                         "parent_ds": draw_state,
                                                         "force": force_save},
                                           name=f"save{draw_state.name}", start=save_start,
-                                          debounce_ms=save_debounce,
+                                          debounce_ms=0,
                                           wait_for_drag=not explicit_save)
         if result is LOADING:
             code_state.mark_file_current()
@@ -1797,7 +1796,7 @@ def code_hosts_for(ref):
     Lazy: nothing loads until the first consumer draws the host. Consumers that
     read the value outside the host's own draw loop must still register via
     host.notify_on_change(draw_state), exactly as before."""
-    key = ("callsite", ref.filename, ref.lineno) if isinstance(ref, CallSite) else ref
+    key = str(id(ref))
     try:
         pair = _code_host_cache.get(key)
     except TypeError:           # unhashable ref; fall back to uncached
@@ -1805,12 +1804,18 @@ def code_hosts_for(ref):
         key = None
     if pair is None:
         from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
-        n = len(_code_host_cache)
+        # n = len(_code_host_cache)
         label = getattr(ref, "__name__", None) or type(ref).__name__
         str_host = RenderHost(io_function=code_file_io, input_value=ref,
-                              name=f"##code_cache_{label}_{n}{key}_str",
-                              settings_renderer=RenderFuncs.draw_text,
-                              child_kwargs={"auto_load_edits": True})
+                              name=f"##code_cache_{label}{key}_str",
+                              child_kwargs={"auto_load_edits": True, "auto_save": True})
+
+        # str_proxy = RenderHost(io_function=code_file_io, input_value=draw_text, name="String Proxy test",
+        #
+        #                           child_kwargs={"auto_load_edits": False, "auto_load":True})   # auto-reload on external file change
+        #
+
+
         # MODULE/FILE refs get the static name/signature lint (code_checks): the
         # buffer is self-contained, so an unresolved name really is a NameError.
         # A span ref (function/class/CallSite) sees none of its module's imports
@@ -1822,7 +1827,7 @@ def code_hosts_for(ref):
             lint_path = getattr(ref, "__file__", None)
         dict_host = RenderHost(
             io_function=convert_in_and_out_value, input_value=str_host,
-            name=f"##code_cache_{label}_{n}{key}_dict",
+            name=f"##code_cache_{label}{key}_dict",
             child_kwargs={
                 "chain_in": [string_to_cst_module, cst_module_to_dict],
                 "chain_out": [dict_to_cst_module, cst_module_to_string],

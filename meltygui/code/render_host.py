@@ -32,6 +32,7 @@ bubbling.py) so a deep change to the held tree marks the host without a manual t
 import sys
 
 from src.lsd.gl_gui.melty import Melty
+from src.lsd.gl_gui.notifications import notify
 from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
 from src.lsd.gl_gui.view.core_conversion.bubbling import install_bubbling, _reinstall_children, _DeepAttrMixin
@@ -205,13 +206,15 @@ class RenderHost(_DeepAttrMixin, dict):
         # envelope so render_host_view re-runs and calls the wrapper, and the wrapper
         # so its blit-cached body actually re-executes to process the edit (load/save
         # or chain_out). Invalidating only the envelope leaves the wrapper replayed.
-        for ds in (self._draw_state, self._wrapper_draw_state):
+        for ds in (None, self._wrapper_draw_state):
             if ds is not None:
                 try:
+                    pass
                     # ds.invalidate(frame_delta=0)
                     # ds.invalidate(frame_delta=1)
                     note = Note(name="RenderHost _mark_changed", tint=(1, 0.5, 0), draw_state=ds)
                     ds.invalidate(note=note)
+                    notify("invalidate #1", tag="host", tint=(1,0,1))
 
                 except Exception:
                     pass
@@ -424,6 +427,8 @@ class RenderHost(_DeepAttrMixin, dict):
             self._wrapper_draw_state._parent.invalidate()
             self._draw_state._parent.invalidate_by_obj(obj=input_value)
             self._draw_state._parent.invalidate_by_obj(obj=self)
+            notify("invalidate #5", tag="host", tint=(1, 0, 1))
+
             request_render()
 
         edited = bool((pre_dirty and local_ahead) or self._external_change or r_changed)
@@ -431,11 +436,13 @@ class RenderHost(_DeepAttrMixin, dict):
         if edited:
             # Needed
             note = Note(name="Render host, nested view edited", tint=(1, 1, 1))
-            self._draw_state._parent.invalidate_by_obj(obj=input_value, note=note)
+            # self._draw_state._parent.invalidate_by_obj(obj=input_value, note=note)
+            # notify("invalidate #6", tag="host", tint=(1, 0, 1))
+
             request_render()
             note = Note(name="Render host, self", tint=(1, 1, 1))
-            self._draw_state._parent.invalidate_by_obj(obj=self, note=note)
-
+            # self._draw_state._parent.invalidate_by_obj(obj=self, note=note)
+            # notify("invalidate #7", tag="host", tint=(1, 0, 1))
             self._log_change("OUTBOUND → return (True, value)",
                              pre_dirty=pre_dirty, r_changed=r_changed, local_ahead=local_ahead)
             return True, self._outbound_value()
@@ -476,10 +483,12 @@ class RenderHost(_DeepAttrMixin, dict):
         nested cached view that won't re-run unless its parents do."""
         for cds in self._consumers:
             tid = getattr(cds, "_tile_id", None)
-            if tid is not None:
-                Melty.cache.invalidate_up(tid, force=True,
-                                          note=Note(name=name,
-                                                    tint=(0.4, 1.0, 0.6), draw_state=cds))
+            # if tid is not None:
+            #     Melty.cache.invalidate_up(tid, force=True,
+            #                               note=Note(name=name,
+            #                                         tint=(0.4, 1.0, 0.6), draw_state=cds))
+            #     notify("invalidate #8", tag="host", tint=(1, 0, 1))
+
         if self._consumers:
             request_render()
 
@@ -530,7 +539,7 @@ class RenderHost(_DeepAttrMixin, dict):
         # actually re-runs to consume the flag. Identity compare - a changed source is a
         # new string object; no content comparison needed.
 
-
+        draw=False
         if iv is not self._last_resolved:
             self._last_resolved = iv
             self._pending_external = True
@@ -540,11 +549,13 @@ class RenderHost(_DeepAttrMixin, dict):
             # so its blit-cached body actually re-executes (re-parses) - invalidating
             # only the envelope re-calls a wrapper that just replays its cache, so the
             # re-parse never happens and the change is lost (an intermittent bug).
-            for ds in (self._draw_state, self._wrapper_draw_state):
+            for ds in (None, self._wrapper_draw_state):
                 if ds is not None:
                     note = Note(name="Renderhost _last_resolved", tint=(1, 0.0, 0.0), draw_state=ds)
-                    ds.invalidate(note=note)
-                    ds.invalidate_by_obj(obj=self, note=note)
+                    # ds.invalidate(note=note)
+                    # ds.invalidate_by_obj(obj=self, note=note)
+                    notify("invalidate #9", tag="host", tint=(1, 0, 1))
+                    draw=True
 
             request_render()
 
@@ -565,7 +576,7 @@ class RenderHost(_DeepAttrMixin, dict):
             win_kwargs['tint'] = (0.3, 0, 0.7, 0.1)
             # win_kwargs['height'] = 40
 
-            result = render_host_view(iv, **win_kwargs)
+            result = render_host_view(iv, draw=draw, **win_kwargs)
         finally:
             RenderHost._active.pop()
         self._last_return = result if isinstance(result, tuple) else (False, result)
@@ -581,7 +592,7 @@ class RenderHost(_DeepAttrMixin, dict):
 
 
 @render_func(use_cache=True, selectable=False, temp=True)
-def render_host_view(input_value, external_change=False, draw_state=None, name=None, **kwargs):
+def render_host_view(input_value, external_change=False, draw=False, draw_state=None, name=None, **kwargs):
     """Window envelope + wrapper driver for a RenderHost (draw_main → host.draw()).
 
     A render_func so the host gets a Melty window (mode=Mode.WINDOW chrome here) and a
@@ -617,7 +628,8 @@ def render_host_view(input_value, external_change=False, draw_state=None, name=N
     # _pending_external AFTER the wrapper - _internal_view_func reads it (during this
     # call) to tell a genuine upstream change from the wrapper's own per-keystroke pulse.
     host.child_kwargs['temp'] = True
-    result = host.io_function(input_value=input_value, view_func=host._internal_view_func,
+    notify(f"{host.io_function.__name__}", tag="host", tint=(1, 0.5, 0.5))
+    result = host.io_function(input_value=input_value, draw=draw, view_func=host._internal_view_func,
                           external_change=ext, return_extras=True, **host.child_kwargs)
     host._pending_external = False
     if isinstance(result, tuple) and len(result) == 3:

@@ -13,11 +13,15 @@ import time
 import imgui
 
 
-class Action:
+class EventAction:
     DOWN = "down"
     UP = "up"
     DRAGGED = "dragged"
     DRAG_RELEASED = "drag_released"
+    # The drag variants refer on double-click: the SECOND press of a double-click,
+    # held and dragged. Fires continuously (like DRAGGED) then once on release.
+    DOUBLE_DRAGGED = "double_dragged"
+    DOUBLE_DRAG_RELEASED = "double_drag_released"
     CLICKED = "clicked"
     DOUBLE_CLICKED = "double_clicked"
     CHANGED = "changed"
@@ -29,38 +33,51 @@ class Action:
 
 
 ACTION_ALIASES = {
-    "pressed": Action.DOWN,
-    "released": Action.UP,
-    "drag": Action.DRAGGED,
-    "drag_release": Action.DRAG_RELEASED,
-    "click": Action.CLICKED,
-    "double_click": Action.DOUBLE_CLICKED,
+    "pressed": EventAction.DOWN,
+    "released": EventAction.UP,
+    "drag": EventAction.DRAGGED,
+    "drag_release": EventAction.DRAG_RELEASED,
+    "double_drag": EventAction.DOUBLE_DRAGGED,
+    "double_drag_release": EventAction.DOUBLE_DRAG_RELEASED,
+    "click": EventAction.CLICKED,
+    "double_click": EventAction.DOUBLE_CLICKED,
     # Continuous hover
-    "hover": Action.HOVERED,
-    "on_hover": Action.HOVERED,
+    "hover": EventAction.HOVERED,
+    "on_hover": EventAction.HOVERED,
     # Enter/exit
-    "on_hover_enter": Action.HOVER_ENTER,
-    "on_hover_exit": Action.HOVER_EXIT,
-    "unhovered": Action.HOVER_EXIT,
-    "unhover": Action.HOVER_EXIT,
+    "on_hover_enter": EventAction.HOVER_ENTER,
+    "on_hover_exit": EventAction.HOVER_EXIT,
+    "unhovered": EventAction.HOVER_EXIT,
+    "unhover": EventAction.HOVER_EXIT,
     # Held (down within drag threshold)
-    "hold": Action.HELD,
-    "holding": Action.HELD,
-    "on_hold": Action.HELD,
+    "hold": EventAction.HELD,
+    "holding": EventAction.HELD,
+    "on_hold": EventAction.HELD,
 }
 
 ALL_ACTIONS = frozenset({
-    Action.DOWN, Action.UP, Action.DRAGGED, Action.DRAG_RELEASED, Action.CLICKED,
-    Action.DOUBLE_CLICKED, Action.CHANGED, Action.MOVED,
-    Action.HOVERED, Action.HOVER_ENTER, Action.HOVER_EXIT, Action.HELD,
+    EventAction.DOWN, EventAction.UP, EventAction.DRAGGED, EventAction.DRAG_RELEASED,
+    EventAction.DOUBLE_DRAGGED, EventAction.DOUBLE_DRAG_RELEASED, EventAction.CLICKED,
+    EventAction.DOUBLE_CLICKED, EventAction.CHANGED, EventAction.MOVED,
+    EventAction.HOVERED, EventAction.HOVER_ENTER, EventAction.HOVER_EXIT, EventAction.HELD,
     *ACTION_ALIASES.keys()
 })
 _SORTED_ACTIONS = tuple(sorted(ALL_ACTIONS, key=len, reverse=True))
 
+# A "double" word anywhere in a subscription name promotes the base gesture to
+# its double-press variant, so "double_right_mouse_drag" and the suffix form
+# "right_mouse_double_drag" both canonicalise to DOUBLE_DRAGGED on right_mouse.
+# Parsed like the inverted/non_blocking flags (see parse_event_name).
+_DOUBLE_PROMOTE = {
+    EventAction.DRAGGED: EventAction.DOUBLE_DRAGGED,
+    EventAction.DRAG_RELEASED: EventAction.DOUBLE_DRAG_RELEASED,
+    EventAction.CLICKED: EventAction.DOUBLE_CLICKED,
+}
+
 # Max gap between the two clicks' RELEASES. 0.1 was below human double-click
 # speed (~150-300ms between releases; OS defaults ~500ms, imgui uses 300ms) -
 # things like left_mouse_double_clicked() never fired.
-DOUBLE_CLICK_WINDOW = 0.35
+DOUBLE_CLICK_WINDOW = 0.1
 CLICK_MAX_DISTANCE = 5.0
 DRAG_THRESHOLD = 2.0  # Minimum distance before drag activates
 
@@ -101,6 +118,9 @@ class _InputState:
     down_y: float = 0.0
     last_up_time: float = 0.0
     click_count: int = 0
+    # True when the current press is the SECOND down of a double-click (set in
+    # feed_down). Lets a drag off this press dispatch as DOUBLE_DRAGGED.
+    is_double_press: bool = False
 
 
 _parse_cache: dict[str, tuple[str, str, bool, bool]] = {}  # (input_id, action, inverted, non_blocking)
@@ -167,12 +187,15 @@ def parse_event_name(name: str) -> tuple[str, str, bool, bool]:
     name, non_blocking = _strip_flag(name, "non_blocking")
     if not non_blocking:
         name, non_blocking = _strip_flag(name, "nonblocking")
+    name, is_double = _strip_flag(name, "double")
     name, mods = _strip_mods(name)
     pfx = mod_prefix(mods)
 
     # Check if the name itself is an action (e.g., "hovered", "clicked")
     if name in ALL_ACTIONS:
         canonical = ACTION_ALIASES.get(name, name)
+        if is_double:
+            canonical = _DOUBLE_PROMOTE.get(canonical, canonical)
         result = (pfx + "cursor", canonical, inverted, non_blocking)
         _parse_cache[original] = result
         return result
@@ -184,6 +207,8 @@ def parse_event_name(name: str) -> tuple[str, str, bool, bool]:
             if input_id.endswith("_key"):
                 input_id = input_id[:-4]
             canonical = ACTION_ALIASES.get(action, action)
+            if is_double:
+                canonical = _DOUBLE_PROMOTE.get(canonical, canonical)
             result = (pfx + input_id, canonical, inverted, non_blocking)
             _parse_cache[original] = result
             return result
@@ -192,7 +217,7 @@ def parse_event_name(name: str) -> tuple[str, str, bool, bool]:
     # events always carry a concrete action, so an empty action would never match
     # and the subscription would silently never fire - a footgun. A bare key or
     # mouse name means "this went down".
-    result = (pfx + name, Action.DOWN, inverted, non_blocking)
+    result = (pfx + name, EventAction.DOWN, inverted, non_blocking)
     _parse_cache[original] = result
     return result
 
@@ -221,7 +246,7 @@ class InputHandler:
     __slots__ = (
         '_states', '_hovered', '_prev_hovered', '_pending', '_cursor_x', '_cursor_y',
         '_modifiers', '_last_dx', '_last_dy', '_drag_capture', '_drag_activated',
-        '_down_origins', '_blocker_views'
+        '_down_origins', '_blocker_views', '_pending_clicks'
     )
 
     def __init__(self):
@@ -234,10 +259,17 @@ class InputHandler:
         self._modifiers = 0
         self._last_dx = 0.0
         self._last_dy = 0.0
-        self._drag_capture: dict[str, Any] = {}  # input_id -> view_id that captured it on down
+        self._drag_capture: dict[str, Any] = {}  # input_id -> (view_id, drag_action) captured on down
         self._drag_activated: dict[str, bool] = {}  # input_id -> whether drag threshold exceeded
         self._down_origins: dict[str, set] = {}  # input_id -> set of view_ids hovered at down time
         self._blocker_views: set = set()
+        # CLICKED events held back to disambiguate single vs double, but ONLY for
+        # inputs that have a double-click/double-drag subscriber hovered (so plain
+        # clicks elsewhere keep zero latency). input_id -> (deadline, event,
+        # [(view_id, key), ...] targets resolved at defer time). Flushed when the
+        # double-click window expires with no double; cancelled when a 2nd press
+        # (is_double_press) or a DOUBLE_CLICKED for that input arrives.
+        self._pending_clicks: dict[str, tuple] = {}
 
     def _state(self, input_id: str) -> _InputState:
         s = self._states.get(input_id)
@@ -315,12 +347,23 @@ class InputHandler:
         y = self._cursor_y if y is None else y
 
         state = self._state(input_id)
+        # A "double press" is the SECOND down of a double-click: it's a
+        # recent click (click_count=1, within DOUBLE_CLICK_WINDOW of the last
+        # release) landing near the prior press. Recorded so a drag off this
+        # down dispatches as DOUBLE_DRAGGED. Distance is measured against the
+        # previous down_x, so this must run before down_x/y are reset.
+        dist = ((x - state.down_x) ** 2 + (y - state.down_y) ** 2) ** 0.5
+        state.is_double_press = (
+            state.click_count >= 1
+            and (t - state.last_up_time) <= DOUBLE_CLICK_WINDOW
+            and dist <= CLICK_MAX_DISTANCE
+        )
         state.is_down = True
         state.down_time = t
         state.down_x = x
         state.down_y = y
 
-        self._emit(input_id, Action.DOWN, x, y, t=t)
+        self._emit(input_id, EventAction.DOWN, x, y, t=t)
 
     def feed_up(self, input_id: str, x: float = None, y: float = None, t: float = None):
         t = t or time.perf_counter()
@@ -331,7 +374,7 @@ class InputHandler:
         was_down = state.is_down
         state.is_down = False
 
-        self._emit(input_id, Action.UP, x, y, t=t)
+        self._emit(input_id, EventAction.UP, x, y, t=t)
 
         if was_down:
             dist = ((x - state.down_x) ** 2 + (y - state.down_y) ** 2) ** 0.5
@@ -341,11 +384,11 @@ class InputHandler:
                 if t - state.last_up_time <= DOUBLE_CLICK_WINDOW:
                     state.click_count += 1
                     if state.click_count >= 2:
-                        self._emit(input_id, Action.DOUBLE_CLICKED, x, y, t=t)
+                        self._emit(input_id, EventAction.DOUBLE_CLICKED, x, y, t=t)
                         state.click_count = 0
                 else:
                     state.click_count = 1
-                self._emit(input_id, Action.CLICKED, x, y, t=t)
+                self._emit(input_id, EventAction.CLICKED, x, y, t=t)
             else:
                 state.click_count = 0
 
@@ -359,7 +402,7 @@ class InputHandler:
         self._last_dx = dx
         self._last_dy = dy
 
-        self._emit("cursor", Action.MOVED, x, y, dx, dy, t=t)
+        self._emit("cursor", EventAction.MOVED, x, y, dx, dy, t=t)
 
     def feed_change(self, input_id: str, value: float, t: float = None):
         # Coalesce repeated CHANGED events for the same input within a frame by
@@ -371,12 +414,12 @@ class InputHandler:
         # would be lost. Summing carries the accumulated scroll delta intact, the
         # same way Melty.frame_key_events preserves every keystroke under load.
         for e in self._pending:
-            if e.input_id == input_id and e.action == Action.CHANGED:
+            if e.input_id == input_id and e.action == EventAction.CHANGED:
                 e.value += value
                 if t is not None:
                     e.timestamp = t
                 return
-        self._emit(input_id, Action.CHANGED, self._cursor_x, self._cursor_y, value=value, t=t)
+        self._emit(input_id, EventAction.CHANGED, self._cursor_x, self._cursor_y, value=value, t=t)
 
     @staticmethod
     def _resolve_subscribers(
@@ -515,9 +558,9 @@ class InputHandler:
             tdict[view_id] = event
 
         # --- Hover events ---
-        hover_enter_key = ("cursor", Action.HOVER_ENTER)
-        hovered_key = ("cursor", Action.HOVERED)
-        hover_exit_key = ("cursor", Action.HOVER_EXIT)
+        hover_enter_key = ("cursor", EventAction.HOVER_ENTER)
+        hovered_key = ("cursor", EventAction.HOVERED)
+        hover_exit_key = ("cursor", EventAction.HOVER_EXIT)
 
         # Build index for newly-entered views (for enter events)
         prev_hovered = self._prev_hovered
@@ -554,11 +597,11 @@ class InputHandler:
 
         # Emit hover events
         for v in enter_views:
-            add_event(v, hover_enter_key, InputEvent("cursor", None, Action.HOVER_ENTER, cx, cy, 0, 0, 0, t, mods))
+            add_event(v, hover_enter_key, InputEvent("cursor", None, EventAction.HOVER_ENTER, cx, cy, 0, 0, 0, t, mods))
         for v in hovered_views:
-            add_event(v, hovered_key, InputEvent("cursor", None, Action.HOVERED, cx, cy, 0, 0, 0, t, mods))
+            add_event(v, hovered_key, InputEvent("cursor", None, EventAction.HOVERED, cx, cy, 0, 0, 0, t, mods))
         for v in exit_views:
-            add_event(v, hover_exit_key, InputEvent("cursor", None, Action.HOVER_EXIT, cx, cy, 0, 0, 0, t, mods))
+            add_event(v, hover_exit_key, InputEvent("cursor", None, EventAction.HOVER_EXIT, cx, cy, 0, 0, 0, t, mods))
 
         # Update previous hover for next frame
         self._prev_hovered = current_hovered
@@ -566,36 +609,76 @@ class InputHandler:
         # --- Regular events ---
         # Hoist import once (sys.modules lookup still has overhead in a loop)
         from src.lsd.gl_gui.melty import Melty
+        from src.lsd.gl_gui.utils.glfw_utils import request_render
         get_latest_mouse = Melty.get_latest_mouse
 
         drag_capture = self._drag_capture
         drag_activated = self._drag_activated
         down_origins = self._down_origins
         states = self._states
+        pending_clicks = self._pending_clicks
         last_dx, last_dy = self._last_dx, self._last_dy
+
+        # Inputs that completed a double-click THIS frame - their pending CLICKED
+        # (emitted alongside the DOUBLE_CLICKED on the 2nd up) is absorbed.
+        doubled_this_frame = {e.input_id for e in self._pending
+                              if e.action == EventAction.DOUBLE_CLICKED}
+
+        def _click_targets(ev):
+            """Resolve (view_id, key) pairs a CLICKED would dispatch to NOW, so a
+            deferred click replays to the same views regardless of later hover."""
+            ck = (ev.input_id, EventAction.CLICKED)
+            out = [(v, ck) for v in resolve(ck, key_index)]
+            if ev.modifiers:
+                mk = (mod_prefix(ev.modifiers) + ev.input_id, EventAction.CLICKED)
+                if mk != ck:
+                    out += [(v, mk) for v in resolve(mk, key_index)]
+            return out
 
         for event in self._pending:
             key = (event.input_id, event.action)
             action = event.action
 
-            # On DOWN, capture drag view and record origin views
-            if action == Action.DOWN:
-                drag_key = (event.input_id, Action.DRAGGED)
-                capture_views = resolve(drag_key, key_index)
+            # On DOWN, capture drag target and record origin views. A double-
+            # press (the 2nd down of a double-click) prefers DOUBLE_DRAGGED
+            # subscribers and only falls back to plain DRAGGED, so a double-drag
+            # gesture still drags normally where nothing wants the double form.
+            # The captured action is stored so the activation + release passes
+            # emit the matching DRAGGED/DOUBLE_DRAGGED variant.
+            if action == EventAction.DOWN:
+                st = states.get(event.input_id)
+                # A 2nd press (is_double_press) means a double interaction has
+                # begun - double-click or double-drag. Either way the deferred
+                # single click is irrelevant, so cancel it now.
+                if st is not None and st.is_double_press:
+                    pending_clicks.pop(event.input_id, None)
+                drag_action = EventAction.DRAGGED
+                capture_views = None
+                if st is not None and st.is_double_press:
+                    capture_views = resolve((event.input_id, EventAction.DOUBLE_DRAGGED), key_index)
+                    if capture_views:
+                        drag_action = EventAction.DOUBLE_DRAGGED
+                if not capture_views:
+                    capture_views = resolve((event.input_id, EventAction.DRAGGED), key_index)
                 if capture_views:
-                    drag_capture[event.input_id] = capture_views[0]
+                    drag_capture[event.input_id] = (capture_views[0], drag_action)
                     drag_activated[event.input_id] = False
 
                 # Record all currently hovered views as origin for this input
                 down_origins[event.input_id] = {v for v, _, _ in self._hovered}
 
-            # On UP, emit drag_released only if drag was active
-            elif action == Action.UP:
-                captured_view = drag_capture.pop(event.input_id, None)
+            # On UP, emit drag_released only if drag was activated. The release
+            # variant mirrors the captured drag variant (double-drag → double).
+            elif action == EventAction.UP:
+                cap = drag_capture.pop(event.input_id, None)
                 was_activated = drag_activated.pop(event.input_id, False)
                 down_origins.pop(event.input_id, None)
-                if captured_view is not None and was_activated:
-                    drag_released_key = (event.input_id, Action.DRAG_RELEASED)
+                if cap is not None and was_activated:
+                    captured_view, drag_action = cap
+                    rel_action = (EventAction.DOUBLE_DRAG_RELEASED
+                                  if drag_action == EventAction.DOUBLE_DRAGGED
+                                  else EventAction.DRAG_RELEASED)
+                    drag_released_key = (event.input_id, rel_action)
 
                     lx, ly = get_latest_mouse()
                     state = states.get(event.input_id)
@@ -603,7 +686,7 @@ class InputHandler:
                     total_dy = ly - state.down_y if state else 0.0
 
                     release_event = InputEvent(
-                        event.input_id, Action.DRAG_RELEASED, event.tile_id, lx, ly,
+                        event.input_id, rel_action, event.tile_id, lx, ly,
                         last_dx, last_dy, 0, t, mods, total_dx, total_dy
                     )
                     add_event(captured_view, drag_released_key, release_event)
@@ -612,6 +695,23 @@ class InputHandler:
                         state.down_x = 0.0
                         state.down_y = 0.0
                         state.down_time = 0.0
+
+            # Single/double-click disambiguation. Only kicks in when a double
+            # subscriber for this input is hovered - otherwise clicks dispatch
+            # immediately (zero latency) as before.
+            elif action == EventAction.CLICKED:
+                X = event.input_id
+                if X in doubled_this_frame:
+                    # The 2nd click of a double - absorbed by the DOUBLE click.
+                    pending_clicks.pop(X, None)
+                    continue
+                if (key_index.get((X, EventAction.DOUBLE_CLICKED))
+                        or key_index.get((X, EventAction.DOUBLE_DRAGGED))):
+                    # Hold this click until the double-click window ends; a 2nd
+                    # press (handled in DOWN) cancels it, otherwise it flushes.
+                    pending_clicks[X] = (event.timestamp + DOUBLE_CLICK_WINDOW,
+                                         event, _click_targets(event))
+                    continue
 
             for v in resolve(key, key_index):
                 add_event(v, key, event)
@@ -634,7 +734,7 @@ class InputHandler:
             origins = down_origins.get(input_id)
             if not origins:
                 continue
-            held_key = (input_id, Action.HELD)
+            held_key = (input_id, EventAction.HELD)
             held_subs = resolve(held_key, key_index)
             if held_subs:
                 lx, ly = get_latest_mouse()
@@ -645,19 +745,21 @@ class InputHandler:
                         continue
                     tile_id = tile_cache_get(v, None)
                     held_event = InputEvent(
-                        input_id, Action.HELD, tile_id, lx, ly,
+                        input_id, EventAction.HELD, tile_id, lx, ly,
                         last_dx, last_dy, 0, t, mods, total_dx, total_dy
                     )
                     add_event(v, held_key, held_event)
 
         # --- Continuous drag events (after threshold) ---
+        # Emits the action captured on DOWN (DRAGGED or its DOUBLE_DRAGGED form).
         drag_threshold_sq = DRAG_THRESHOLD * DRAG_THRESHOLD
         for input_id, state in states.items():
             if not state.is_down:
                 continue
-            captured_view = drag_capture.get(input_id)
-            if captured_view is None:
+            cap = drag_capture.get(input_id)
+            if cap is None:
                 continue
+            captured_view, drag_action = cap
 
             lx, ly = get_latest_mouse()
             total_dx = lx - state.down_x
@@ -668,13 +770,26 @@ class InputHandler:
                     continue
                 drag_activated[input_id] = True
 
-            drag_key = (input_id, Action.DRAGGED)
+            drag_key = (input_id, drag_action)
             tile_id = tile_cache_get(captured_view, None)
             drag_event = InputEvent(
-                input_id, Action.DRAGGED, tile_id, lx, ly,
+                input_id, drag_action, tile_id, lx, ly,
                 last_dx, last_dy, 0, t, mods, total_dx, total_dy
             )
             add_event(captured_view, drag_key, drag_event)
+
+        # --- Flush pending clicks whose double-click window expired with no
+        # double. Dispatch into this frame's result (melty: begin() then
+        # invalidates the target tile so a cached view re-renders + consumes it).
+        # While anything is still pending, keep the render loop alive so the
+        # deadline is actually reached even if the app would otherwise idle. ----
+        if pending_clicks:
+            for X in [k for k, v in pending_clicks.items() if t >= v[0]]:
+                _, ev, targets = pending_clicks.pop(X)
+                for v, k in targets:
+                    add_event(v, k, ev)
+            if pending_clicks:
+                request_render()
 
         return result, result_by_type
 

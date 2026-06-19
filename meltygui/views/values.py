@@ -456,7 +456,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
             return
         mk = _collection_match_keys(_iv, _keys, _excl, _se)
         session.claim(sum(1 for _, k in mk if _fuzzy_key_match(q, k)))
-
+    
     draw_state._search_matcher = _search_matcher
 
     # The owner's pre-body walk picked the global-current match and stashed its
@@ -487,7 +487,8 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
     max_items = 5000
     start_index = 0
     end_index = min(len(keys) - 1, max_items)
-
+    
+    
     scroll_offset = draw_state.scroll_offset
     true_left = draw_state.left - scroll_offset[0]
     true_top = draw_state.top - scroll_offset[1]
@@ -3499,13 +3500,25 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
             params_edited or draw_state.misc.get("_auto_run_ver") != auto_run):
         draw_state.misc["_auto_run_ver"] = auto_run
         _run()
-
-    if show_run_button and button(f"{input_value.__name__}##{unique}", icon=kwargs.get("icon", None), height=29,
-                                  bg_offset=0, tint=(0.021, 0.104, 0.167, 0.0))[0]:
+    
+    
+    imgui.new_line()
+    if show_run_button and button(f"{input_value.__name__}##{unique}", icon=kwargs.get("icon", ""), height=29,
+                                  bg_offset=0, tint=(0.238, 0.539, 0.228, 0.32))[0]:
         _run()
 
     if run_in_thread and draw_state.misc.get("_run_busy"):
-        imgui.text_colored("running...", 0.55, 0.75, 1.0, 1.0)
+        imgui.same_line(spacing=10)
+        imgui.text_colored("", 0.55, 0.75, 1.0, 1.0)
+        imgui.new_line()
+    elif draw_state.result is not None:
+        imgui.same_line(spacing=10)
+        imgui.text_colored("", 0.55, 0.75, 1.0, 1.0)
+        imgui.new_line()
+    else:
+        imgui.same_line()
+        imgui.text_colored(" ", 0.55, 0.75, 1.0, 1.0)
+        imgui.new_line()
 
     run_error = draw_state.misc.get("_run_error")
     if run_error:
@@ -4363,7 +4376,7 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, wrap=True
                *caller_dict_hosts, cm_state.mode_dict):
         if _h is not None:
             _h.notify_on_change(draw_state)
-
+            
     # common = dict(mode=Modes.NEW_CODE, min_width=100, max_height=300, fill_height=False)
     #
     # view_func = getattr(input_value, "_view_func", None)

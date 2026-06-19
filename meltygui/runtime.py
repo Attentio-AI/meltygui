@@ -32,7 +32,7 @@ from src.lsd.gl_gui.view.core_views.monitor import Monitor
 from src.lsd.gl_gui.view.view_utils.imgui_style_manager_class import ImGuiStyleManager
 from src.shader_library.shader_manager.texture_manager import TextureManager
 from src.shader_library.shader_manager.filter import Filter
-from src.lsd.gl_gui.events.input_handler import InputHandler, InputEvent
+from src.lsd.gl_gui.events.input_handler import InputHandler, InputEvent, EventAction
 from src.lsd.gl_gui.events.event_backends import ImGuiBackend, GlfwQueueBackend
 from src.lsd.gl_gui.model.core_model.core_enums import generate_id
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
@@ -604,6 +604,11 @@ class Melty:
     # instead of polling imgui.is_key_pressed, so keystrokes aren't lost on slow
     # frames. Cleared in end_frame after this frame's views have read them.
     frame_key_events = []
+
+    # time.monotonic() of the last UI input - key (incl. held-key auto-repeat),
+    # mouse button, mouse move/drag, or scroll (set in event_backends). Read by
+    # the cst→dict index's cooperative loop yield to back off when the user interacts.
+    _last_input_time = 0.0
 
     texture_manager = TextureManager()
     returned_values = {}
@@ -1266,6 +1271,19 @@ class Melty:
             for event in right_mouse_drag_events:
                 note = Note(name=event, reason="middle_mouse_drag", tint=(0, 1, 1))
                 Melty.cache.invalidate(event, note=note)
+
+        # Double-drags (the 2nd press of a double-click, held + dragged) are
+        # always deliberate content gestures - never a window move - so a view
+        # receiving one is force-refreshed each frame, the same blit bypass as
+        # right/middle camera drags get above. Without this a cached target
+        # (use_cache=True, e.g. a voxel brightness/contrast slider) would apply
+        # the first frame then ride its blit and freeze. Action-keyed so it
+        # covers double_left/right/middle_mouse_drag regardless of param name.
+        for _evts in cls.events_by_type.values():
+            for _view_id, _ev in _evts.items():
+                if _ev.action == EventAction.DOUBLE_DRAGGED:
+                    note = Note(name=_view_id, reason="double_drag", tint=(1, 0, 1))
+                    Melty.cache.invalidate(_view_id, note=note)
 
         event_keys = list(cls.events.keys())
         # To string

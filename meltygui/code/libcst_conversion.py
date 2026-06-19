@@ -14,6 +14,8 @@ import inspect
 import math
 import struct
 import sys
+import threading
+import time
 from typing import Any
 
 import libcst as cst
@@ -552,10 +554,11 @@ def _jedi_project():
     return jedi.Project(path=src, added_sys_path=[repo, src])
 
 
-def _jedi_script(file_path):
-    """jedi.Script on the src-scoped project."""
+def _jedi_script(file_path, code=None):
+    """jedi.Script on the src-scoped project. `code` (in-memory source) overrides
+    the on-disk file so unsaved edits are analyzed; path still drives resolution."""
     import jedi
-    return jedi.Script(path=str(file_path), project=_jedi_project())
+    return jedi.Script(code=code, path=str(file_path), project=_jedi_project())
 
 
 def shutdown_jedi_pool():
@@ -833,7 +836,7 @@ def _save_symbol_store():
 
 
 _symbol_store = _load_symbol_store()
-_symbol_usage_cache: dict = _symbol_store["spans"]  # (resolved_path, start, end) -> (mtime, {sym: SymbolUsage}, accurate, gen)
+_symbol_usage_cache: dict = _symbol_store["spans"]  # (resolved_path, start, end) -> (sig, {sym: SymbolUsage}); sig = (hash(source_text), accurate, generation)
 _mtime_snapshot: dict = _symbol_store["mtimes"]     # resolved_path -> mtime at time index change
 
 # File suffixes to drop from jedi search - a symbol DEFINED in one of these is
@@ -843,15 +846,18 @@ _mtime_snapshot: dict = _symbol_store["mtimes"]     # resolved_path -> mtime at 
 _JEDI_EXCLUDE_SUFFIXES: tuple = (".pyi",)
 
 
-def _symbol_refs_worker(file_path: str, start_line: int, end_line: int) -> dict:
+def _symbol_refs_worker(file_path: str, start_line: int, end_line: int, text=None) -> dict:
     """Child-process worker: for each distinct symbol occurring in
     [start_line, end_line], resolve its definition + project references.
+
+    `text` (the current file content incl. unsaved edits) is handed to jedi as
+    in-memory source so usages reflect the live buffer, not the stale disk file.
 
     Returns {symbol: {"sites": [(l,c)], "definition": (path,l,c,mod),
                       "callers": [(path,l,c,enclosing,mod), ...]}}.
     Only symbols DEFINED under src are kept (no callers of len/print/etc.)."""
     import jedi
-    script = _jedi_script(file_path)
+    script = _jedi_script(file_path, code=text)
     try:
         names = script.get_names(all_scopes=True, references=True, definitions=True)
     except Exception:
@@ -1069,25 +1075,33 @@ def _imported_name_objects(tree) -> dict:
     return out
 
 
-def _file_index_refs(path, module) -> list:
+def _file_index_refs(path, module, text=None) -> list:
     """Resolved references in one src file, cached by mtime:
       ("name", id(obj)|None, line, col, scope)         -- bare name -> object id
       ("attr", (id(base)|None, attr)|None, ...)        -- base.attr -> (base id, attr)
     Resolution is via the file's module namespace, falling back to the file's
     own import statements (incl. function-local lazy imports — see
-    _imported_name_objects). Nothing is ever triggered/imported."""
-    try:
-        mtime = path.stat().st_mtime
-    except OSError:
-        return []
-    cached = _index_refs_cache.get(path)
-    if cached is not None and cached[0] == mtime:
-        return cached[1]
+    _imported_name_objects). Nothing is ever triggered/imported.
+
+    `text` is the current content for THIS file (disk + unsaved edits); when the
+    caller scan reaches the edited file it passes it so the file's own internal
+    callers reflect the live buffer. The mtime cache is bypassed then — deferred
+    saves don't bump mtime, so a cached entry would be stale (it's one file per
+    compute, so re-parsing it is cheap)."""
+    use_text = text is not None
+    if not use_text:
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return []
+        cached = _index_refs_cache.get(path)
+        if cached is not None and cached[0] == mtime:
+            return cached[1]
     od = getattr(module, "__dict__", None)
     refs = []
     if od is not None:
         try:
-            tree = ast.parse(path.read_text())
+            tree = ast.parse(text if use_text else path.read_text())
             imports = _imported_name_objects(tree)
 
             def look(n):
@@ -1104,7 +1118,8 @@ def _file_index_refs(path, module) -> list:
                     refs.append(("attr", key, line, col, scope))
         except Exception:
             refs = []
-    _index_refs_cache[path] = (mtime, refs)
+    if not use_text:
+        _index_refs_cache[path] = (mtime, refs)
     return refs
 
 
@@ -1184,17 +1199,22 @@ def _is_src_object(base, mod_map) -> bool:
     return f is not None and _Path(f).resolve() in mod_map
 
 
-def _symbol_refs_index(file_path: str, start_line: int, end_line: int) -> dict:
+def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None) -> dict:
     """jedi-free fast path. Resolve the span's symbols (module-level + class
     members) against live objects, then find callers across loaded src files —
     bare-name refs for module-level, ClassName.member refs for members. Returns
-    the same raw shape as _symbol_refs_worker."""
+    the same raw shape as _symbol_refs_worker.
+
+    `text` is the current file content (disk + unsaved edits); when omitted it
+    falls back to the on-disk read, but callers should pass it so the span's sites
+    reflect the live buffer rather than the stale file."""
     resolved = _Path(file_path).resolve()
     mod_map = _src_mod_map()
     owning = mod_map.get(resolved)
     if owning is None:
         return {}
-    text = Melty.read_code(resolved)
+    if text is None:
+        text = Melty.read_code(resolved)
     if text is None:
         return {}
     try:
@@ -1252,7 +1272,10 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int) -> dict:
             # one ~0.2s block and the render thread stutters. 19 sleeps ≈
             # +20ms wall per compute.
             _time.sleep(0.001)
-        for (kind, key, line, col, scope) in _file_index_refs(path, mod):
+        # The edited file's own internal callers must come from the overlaid text
+        # (deferred saves keep disk stale); others read disk via the mtime cache.
+        cur = text if path == resolved else None
+        for (kind, key, line, col, scope) in _file_index_refs(path, mod, cur):
             if key is None:
                 continue
             nm = obj_targets.get(key) if kind == "name" else mem_targets.get(key)
@@ -1332,11 +1355,12 @@ def compute_symbol_usages_for_address(address) -> dict:
     unchanged file is free. Works for a module, class, or function span."""
     if DISABLE_JEDI or address is None or getattr(address, "path", None) is None:
         return {}
+    from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
     resolved = _Path(address.path).resolve()
     start = (getattr(address, "start", 0) or 0) + 1     # address.start is a 0-indexed lower bound
     end = getattr(address, "end", None)
     if end is None:                                     # whole-file span
-        text = Melty.read_code(resolved)
+        text = PendingSave.current_file_text(resolved)
         if text is None:
             return {}
         end = text.count("\n") + 1
@@ -1347,30 +1371,33 @@ def _compute_symbol_usages(resolved, start, end) -> dict:
     """Cache + A/B branch core: {symbol: SymbolUsage} for a [start, end] span.
     Toggles.jedi_correctness picks the resolver — jedi (accurate, slow:
     re-exports / dotted access / locals) vs the import index (fast, direct
-    imports of module-level symbols). Cached per (file mtime, resolver) so
-    flipping the toggle re-computes for a clean comparison."""
+    imports of module-level symbols).
+
+    Source is the CURRENT file content (disk + unsaved deferred-save edits), and
+    the cache is keyed on that content's hash — NOT the disk mtime. Deferred saves
+    never bump mtime, so an mtime key returned pre-edit usages for the whole
+    session; hashing the overlaid text recomputes the moment an edit changes it.
+    `gen` still folds in the index warmer's generation (a caller added in ANOTHER
+    file), and `accurate` re-computes when the resolver toggle flips."""
     from src.lsd.gl_gui.toggles import Toggles   # lazy to avoid import cycle
+    from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
     accurate = getattr(Toggles, "jedi_correctness", False)
+    text = PendingSave.current_file_text(resolved)   # disk + pending overlay
+    if text is None:
+        return {}
     key = (resolved, start, end)
-    try:
-        mtime = resolved.stat().st_mtime
-    except OSError:
-        mtime = None
-    # The index path goes stale when OTHER files change (a symbol imported
-    # elsewhere), so its entries also key on the warmer's generation; the jedi
-    # path reads files directly and only depends on this file's mtime.
     gen = _index_generation if not accurate else None
+    sig = (hash(text), accurate, gen)
     cached = _symbol_usage_cache.get(key)
-    if (cached is not None and cached[0] == mtime and cached[2] == accurate
-            and (len(cached) > 3 and cached[3] == gen)):
+    if cached is not None and cached[0] == sig:
         return cached[1]
     try:
-        raw = (_symbol_refs_worker(str(resolved), start, end) if accurate
-               else _symbol_refs_index(str(resolved), start, end))
+        raw = (_symbol_refs_worker(str(resolved), start, end, text) if accurate
+               else _symbol_refs_index(str(resolved), start, end, text))
         usages = _rebuild_symbol_usages(raw)
     except Exception:
         usages = {}
-    _symbol_usage_cache[key] = (mtime, usages, accurate, gen)
+    _symbol_usage_cache[key] = (sig, usages)
     return usages
 
 
@@ -1801,19 +1828,216 @@ def _active_positions():
     return getattr(_span_scope, "positions", None)
 
 
-class _position_map:
-    """Publish a PositionProvider for `module` on the thread-local for the
-    duration of a conversion, so nested extractors can stamp spans via
-    `_span_of`. Failed/absent resolution degrades to no spans (None)."""
+# ────────── UI yield ───────────────────────────────────────────────────────
+# cst_module_to_dict is pure-Python and GIL-bound; even after the ast position
+# optimization (~90ms on a big buffer) it stutters interaction when it runs in a
+# background parse worker concurrently with the render loop. While the user is
+# actively interacting - typing (incl. held keys), moving/clicking/dragging the
+# mouse, or scrolling - _yield_to_ui pauses the parse at statement boundaries:
+# time.sleep fully releases the GIL, so the render thread gets uncontended frames.
+# The parse resumes once input goes quiet. Gated on Toggles.yield_to_ui. It NEVER
+# sleeps the render/GL or main thread (that would freeze the very UI we're
+# protecting) - only the background worker the code actually runs on.
+_YIELD_QUIET_S = 0.1   # resume once keyboard input has been quiet this long
+_YIELD_SLICE_S = 0.1  # GIL-releasing sleep granularity while backing off (~1 frame)
 
-    def __init__(self, module):
+
+def _yield_to_ui():
+    from src.lsd.gl_gui.toggles import Toggles   # lazy: avoid import cycle
+    if not getattr(Toggles, "yield_to_ui", False):
+        return
+    last = getattr(Melty, "_last_input_time", 0.0)
+    if not last or time.monotonic() - last >= _YIELD_QUIET_S:
+        return  # no recent input - fast path, no back-off
+    # Recent input. Only a background worker may sleep here; sleeping the
+    # render/GL thread (or main) would freeze the very UI we mean to protect.
+    cur = threading.current_thread()
+    if cur is threading.main_thread():
+        return
+    from src.lsd.gl_gui import gl_state
+    glt = getattr(gl_state, "_gl_thread", None)   # read, don't claim (assert_gl_thread claims)
+    if glt is None or cur is glt:
+        return
+    while getattr(Toggles, "yield_to_ui", False):
+        if time.monotonic() - getattr(Melty, "_last_input_time", 0.0) >= _YIELD_QUIET_S:
+            break
+        time.sleep(_YIELD_SLICE_S)
+
+
+def _build_ast_span_map(module, source=None):
+    """`{libcst node: Span}` for the nodes `cst_module_to_dict` stamps, derived
+    from Python's `ast` (native lineno/col_offset from the C parser) instead of
+    libcst's whole-tree `PositionProvider` codegen (~64% of the cst→dict cost).
+
+    `source` is the module's already-rendered code (the caller computes it once
+    for the GeneralParse.source). Pass it in: `module.code` is itself a full
+    libcst codegen, so recomputing it here would give back much of what we saved.
+
+    Walks the libcst and ast trees in parallel: both visit statements in source
+    order, a `SimpleStatementLine` expands to its small statements 1:1, and every
+    compound statement is exactly one ast statement — so positional pairing stays
+    aligned (any unrecognized statement still consumes one ast slot, preserving
+    alignment for its siblings). Best-effort: a node we can't place simply gets
+    no span, and `_span_of`/`_record_child`/`_stamp_span` already treat a missing
+    span as 'skip'."""
+    out = {}
+    if source is None:
+        source = module.code
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return out
+
+    def sp(n):
+        el = getattr(n, "end_lineno", None) or n.lineno
+        ec = getattr(n, "end_col_offset", None)
+        return Span(n.lineno, n.col_offset, el, ec if ec is not None else n.col_offset)
+
+    def list_sp(stmts):
+        if not stmts:
+            return None
+        a, b = stmts[0], stmts[-1]
+        return Span(a.lineno, a.col_offset,
+                    getattr(b, "end_lineno", None) or b.lineno,
+                    getattr(b, "end_col_offset", 0))
+
+    def params_sp(fn):
+        a = fn.args
+        nodes = list(a.posonlyargs) + list(a.args) + list(a.kwonlyargs)
+        if a.vararg: nodes.append(a.vararg)
+        if a.kwarg: nodes.append(a.kwarg)
+        nodes += [d for d in (a.defaults + a.kw_defaults) if d is not None]
+        if not nodes:
+            return None
+        first = min(nodes, key=lambda n: (n.lineno, n.col_offset))
+        last = max(nodes, key=lambda n: (getattr(n, "end_lineno", None) or n.lineno,
+                                         getattr(n, "end_col_offset", 0)))
+        return Span(first.lineno, first.col_offset,
+                    getattr(last, "end_lineno", None) or last.lineno,
+                    getattr(last, "end_col_offset", 0))
+
+    def body_list(node):
+        body = getattr(node, "body", None)
+        if isinstance(body, (cst.IndentedBlock, cst.SimpleStatementSuite)):
+            return list(body.body), body
+        return [], body
+
+    def pair(cst_stmts, ast_stmts):
+        ai, n = 0, len(ast_stmts)
+        for cs in cst_stmts:
+            if ai >= n:
+                break
+            if isinstance(cs, (cst.SimpleStatementLine, cst.SimpleStatementSuite)):
+                spans = []
+                for small in cs.body:
+                    if ai >= n:
+                        break
+                    an = ast_stmts[ai]; ai += 1
+                    s = sp(an)
+                    out[small] = s
+                    spans.append(s)
+                    # Map the statement's RHS value node too: a dict-valued leaf
+                    # (CallParse, collection literal) is skipped by _record_child
+                    # and gets its .span stamped on the value node instead
+                    # (cst_call_to_dict → _stamp_span). Without it, live_view's
+                    # _key_pressed / token_box read child.span == None and the
+                    # box falls back to a whole-line highlight.
+                    sval = getattr(small, "value", None)
+                    aval = getattr(an, "value", None)
+                    if sval is not None and aval is not None:
+                        out[sval] = sp(aval)
+                if spans:
+                    out[cs] = Span(spans[0].start_line, spans[0].start_col,
+                                   spans[-1].end_line, spans[-1].end_col)
+            elif isinstance(cs, (cst.FunctionDef, cst.ClassDef)):
+                an = ast_stmts[ai]; ai += 1
+                out[cs] = sp(an)
+                bl, bnode = body_list(cs)
+                if isinstance(cs, cst.FunctionDef):
+                    out[cs.params] = params_sp(an) or sp(an)
+                out[bnode] = list_sp(getattr(an, "body", []))
+                pair(bl, getattr(an, "body", []))
+            elif isinstance(cs, cst.If):
+                pair_if(cs, ast_stmts[ai]); ai += 1
+            elif isinstance(cs, (cst.For, cst.While)):
+                an = ast_stmts[ai]; ai += 1
+                out[cs] = sp(an)
+                if isinstance(cs, cst.For) and getattr(an, "iter", None) is not None:
+                    out[cs.iter] = sp(an.iter)
+                bl, bnode = body_list(cs)
+                out[bnode] = list_sp(getattr(an, "body", []))
+                pair(bl, getattr(an, "body", []))
+                pair_else(cs.orelse, getattr(an, "orelse", []))
+            elif isinstance(cs, cst.Try):
+                pair_try(cs, ast_stmts[ai]); ai += 1
+            elif isinstance(cs, cst.With):
+                an = ast_stmts[ai]; ai += 1
+                out[cs] = sp(an)
+                bl, bnode = body_list(cs)
+                out[bnode] = list_sp(getattr(an, "body", []))
+                pair(bl, getattr(an, "body", []))
+            else:
+                out[cs] = sp(ast_stmts[ai]); ai += 1
+
+    def pair_if(cs_if, ast_if):
+        if not isinstance(ast_if, ast.If):
+            return
+        out[cs_if.test] = sp(ast_if.test)
+        out[cs_if.body] = list_sp(ast_if.body)
+        pair(list(cs_if.body.body), ast_if.body)
+        orelse, ao = cs_if.orelse, ast_if.orelse
+        if isinstance(orelse, cst.If):
+            if ao and isinstance(ao[0], ast.If):
+                pair_if(orelse, ao[0])
+        elif isinstance(orelse, cst.Else):
+            out[orelse] = list_sp(ao)
+            pair(list(orelse.body.body), ao)
+
+    def pair_else(cs_orelse, ast_orelse):
+        if isinstance(cs_orelse, cst.Else) and ast_orelse:
+            out[cs_orelse] = list_sp(ast_orelse)
+            pair(list(cs_orelse.body.body), ast_orelse)
+
+    def pair_try(cs_try, ast_try):
+        if not isinstance(ast_try, (ast.Try, getattr(ast, "TryStar", ast.Try))):
+            return
+        out[cs_try.body] = list_sp(ast_try.body)
+        pair(list(cs_try.body.body), ast_try.body)
+        for h_cs, h_ast in zip(cs_try.handlers, ast_try.handlers):
+            out[h_cs] = sp(h_ast)
+            hbl, _ = body_list(h_cs)
+            pair(hbl, h_ast.body)
+        pair_else(cs_try.orelse, getattr(ast_try, "orelse", []))
+        fb = getattr(cs_try, "finalbody", None)
+        if fb is not None and getattr(ast_try, "finalbody", None):
+            fbl, _ = body_list(fb)
+            pair(fbl, ast_try.finalbody)
+
+    pair(list(module.body), tree.body)
+    out[module] = Span(1, 0, source.count("\n") + 1, len(source.rsplit("\n", 1)[-1]))
+    return out
+
+
+class _position_map:
+    """Publish a node→span provider on the thread-local for the duration of a
+    conversion, so nested extractors can stamp spans via `_span_of`. Source is
+    either Python's `ast` (Toggles.new_position_map, the fast C-parser path) or
+    libcst's `PositionProvider` (whole-tree codegen). Failed/absent resolution
+    degrades to no spans (None)."""
+
+    def __init__(self, module, source=None):
         self._module = module
+        self._source = source
 
     def __enter__(self):
         self._prev = getattr(_span_scope, "positions", None)
         try:
-            wrapper = _MetadataWrapper(self._module, unsafe_skip_copy=True)
-            _span_scope.positions = wrapper.resolve(_PositionProvider)
+            from src.lsd.gl_gui.toggles import Toggles   # lazy: breaks import cycle
+            if getattr(Toggles, "new_position_map", False):
+                _span_scope.positions = _build_ast_span_map(self._module, self._source)
+            else:
+                wrapper = _MetadataWrapper(self._module, unsafe_skip_copy=True)
+                _span_scope.positions = wrapper.resolve(_PositionProvider)
         except Exception:
             _span_scope.positions = None
         return self
@@ -1831,6 +2055,10 @@ def _span_of(node):
     cr = positions.get(node)
     if cr is None:
         return None
+    # The ast-backed map (new_position_map) stores Spans directly, keyed by the
+    # libcst node; libcst's PositionProvider stores CodeRanges. Accept either.
+    if isinstance(cr, Span):
+        return cr
     return Span(cr.start.line, cr.start.column, cr.end.line, cr.end.column)
 
 
@@ -2155,7 +2383,8 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
     if not isinstance(input_value, cst.Module):
         print("Expected cst.Module, got", type(input_value).__name__, file=sys.stderr)
         return input_value
-    readable = GeneralParse(source=input_value.code)
+    source_code = input_value.code
+    readable = GeneralParse(source=source_code)
     _stamp_span(readable, input_value)
 
     # Publish the src global scope so every nested name/callable resolution
@@ -2164,7 +2393,7 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
     # funcdef conversions inherit it. The _position_map publishes a
     # PositionProvider / the node span so extractors can stamp source spans
     # (.span / _child_spans) with the line ↔ node map.
-    with _position_map(input_value), _module_scope(_build_src_scope()):
+    with _position_map(input_value, source=source_code), _module_scope(_build_src_scope()):
         # Module header comments (top-of-file, before first statement)
         for ll in input_value.header:
             if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
@@ -2181,6 +2410,7 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
         call_seen: dict[str, int] = {}
 
         for stmt in input_value.body:
+            _yield_to_ui()   # back off mid-parse while the user is typing
             if isinstance(stmt, cst.SimpleStatementLine):
                 # Leading comments (override comments routed to the field below)
                 _extract_leading_comments(stmt, readable, skip_overrides=True)
@@ -2655,6 +2885,7 @@ def cst_classdef_to_dict(value: cst.ClassDef) -> dict:
 
     # Body-level assignments, nested classes, and comments
     for stmt in value.body.body:
+        _yield_to_ui()   # back off re-parse while the user is typing
         if isinstance(stmt, cst.SimpleStatementLine):
             _extract_leading_comments(stmt, readable, skip_overrides=True)
 
@@ -3271,6 +3502,7 @@ def _extract_block_assignments(stmts):
     # scope get hidden ##N suffixes instead of colliding (see _block_key).
     block_occ: dict[str, int] = {}
     for stmt in stmts:
+        _yield_to_ui()   # back off mid-parse while the user is typing
         if isinstance(stmt, cst.SimpleStatementLine):
             # Leading comments (standalone lines above the statement);
             # override comments are routed to the field below instead.

@@ -2016,7 +2016,7 @@ def _describe_code_tree(code_tree):
     return name
 
 
-@render_func(is_default_for=(CodeLine), show_bg=True, use_cache=True, disable_scroll=False, with_header=draw_header, shadow=False, 
+@render_func(is_default_for=(CodeLine), show_bg=False, use_cache=True, disable_scroll=False, with_header=draw_header, shadow=False, 
 show_name=False, with_footer=draw_footer, determines_height=False,
              selectable=False, searchable=True, bg_offset=-3, show_add_delete=False, tint=(0.485, 0.61, 0.76))
 def draw_text(input_value: str, height=None,
@@ -2035,7 +2035,7 @@ def draw_text(input_value: str, height=None,
         token_views = {}
     elif token_views is None:
         token_views = DEFAULT_TOKEN_VIEWS   # global experiment settings (see a
-        
+
     # Symbol-usage source: the parse arrives as `code_tree` in the
     # address_to_general_parse routes, as `code_dict` in the CODE_UI routes
     # (cst_module_to_dict - which is also where the run_jedi() pass attaches
@@ -2045,19 +2045,18 @@ def draw_text(input_value: str, height=None,
     _usage_off = getattr(_usage_tree, 'line_offset', 0) or 0
     if not _usage_off and jump_to is not None:
         _usage_off = getattr(jump_to, 'start', 0) or 0
-
+   
     # Per-editor state for the code-suggestions popup. Lives here (not gated on
     # focus) because the popup's menu window is latched and must be drawn EVERY
     # frame with closed_state toggled, even when the editor is unfocused.
     if getattr(ds, '_ac_state', None) is None:
         ds._ac_state = DropDownState()
     ac_state = ds._ac_state
-    
+
     # Same deal for the usage-jump picker (multi-user symbol double-click).
     if getattr(ds, '_uj_state', None) is None:
         ds._uj_state = DropDownState()
     uj_state = ds._uj_state
-
     # Imported in-function to avoid a module-load import cycle (toggles pulls in
     # decoration/window machinery). For the spell-check button + squiggles below.
     from src.lsd.gl_gui.toggles import Toggles
@@ -2548,6 +2547,7 @@ def draw_text(input_value: str, height=None,
                 typed_word_char_this_frame = True
             changed = True
 
+        
         # --- Tab / Shift+Tab ---
         if pressed(glfw.KEY_TAB) and not ctrl:
             ds.text_cursor_blink_time = time.time()
@@ -2602,13 +2602,24 @@ def draw_text(input_value: str, height=None,
                     new_pos = _unit_left_of(text, ds.text_cursor_pos)
                     text = text[:new_pos] + text[ds.text_cursor_pos:]
                     ds.text_cursor_pos = new_pos
-                elif (ds.text_cursor_pos >= 4
-                      and text[ds.text_cursor_pos - 4:ds.text_cursor_pos] == '    '):
-                    text = text[:ds.text_cursor_pos - 4] + text[ds.text_cursor_pos:]
-                    ds.text_cursor_pos -= 4
                 else:
-                    text = text[:ds.text_cursor_pos - 1] + text[ds.text_cursor_pos:]
-                    ds.text_cursor_pos -= 1
+                    # Indent-aware backspace. When the caret is in a line's
+                    # whitespace section (everything to its left on the line is
+                    # spaces), snap back to the previous 4-col tab stop instead
+                    # of removing a fixed 4 / a single char. A misaligned indent
+                    # (e.g. 6 spaces) collapses to the nearest stop (4) rather
+                    # than deleting 4 and leaving 2 stray spaces; an aligned
+                    # full space deletes a whole tab; a lone stray space snaps
+                    # to its own. Outside the indent it's a plain char delete.
+                    line_start = _get_line_start(text, ds.text_cursor_pos)
+                    col = ds.text_cursor_pos - line_start
+                    in_indent = col > 0 and not text[line_start:ds.text_cursor_pos].strip(' ')
+                    if in_indent:
+                        new_pos = line_start + ((col - 1) // 4) * 4
+                    else:
+                        new_pos = ds.text_cursor_pos - 1
+                    text = text[:new_pos] + text[ds.text_cursor_pos:]
+                    ds.text_cursor_pos = new_pos
                 ds.text_selection_start = ds.text_cursor_pos
                 ds.text_selection_end = ds.text_cursor_pos
                 changed = True
@@ -2781,8 +2792,8 @@ def draw_text(input_value: str, height=None,
             ds.text_selection_start = ds.text_cursor_pos
             ds.text_selection_end = ds.text_cursor_pos
             changed = True
-            
-            
+
+
         # Any buffer edit dismisses the usage-jump picker - its spans (and the
         # anchor it hangs off) are stale the moment the text shifts.
         if changed and getattr(ds, '_uj_open', False):
@@ -3013,6 +3024,20 @@ def draw_text(input_value: str, height=None,
             ds.text_h_scroll = max(0.0, cursor_logical_x - edge_padding)
         elif cursor_logical_x - ds.text_h_scroll > visible_width - edge_padding:
             ds.text_h_scroll = cursor_logical_x - visible_width + edge_padding
+
+    # --- Vertical auto-scroll ---
+    # Vertical counterpart of the horizontal follow above: when the caret moves
+    # to a line off the top/bottom of the viewport (typing past the last visible
+    # line, wheeling/paging the cursor away, pasting a multi-line block), scroll
+    # the editor - or its scroll container - so the caret's line comes back into
+    # view. Same cursor-moved test so wheel/middle-drag pans that leave the caret
+    # put are not snapped back. Anchors on origin_y and hands _scroll_into_view
+    # the caret line's full vertical band exactly like the search scroll above.
+    if ds.text_cursor_pos != ds.text_prev_cursor_pos and line_px:
+        cursor_line, _ = _index_to_line_col(text, ds.text_cursor_pos)
+        cursor_top_abs = origin_y + cursor_line * line_px
+        _scroll_into_view(ds, cursor_top_abs, cursor_top_abs + line_px)
+
     ds.text_prev_cursor_pos = ds.text_cursor_pos
 
     # Clamp h_scroll to content bounds - the widest line drives the limit. Uses
@@ -3502,6 +3527,7 @@ def draw_text(input_value: str, height=None,
         ds._ac_open = False
         ds._ac_request_anchor = -1
         changed = True
+
 
     # --- Usage-jump picker (multi-use symbols) ---
     # Same latched window contract as the suggestion popup above: draw_dd_menu
