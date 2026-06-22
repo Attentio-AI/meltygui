@@ -35,11 +35,9 @@ a one-shot worker keyed by a distinct `name=` so they never clobber each other.
 Load is effectively cached (re-offered only on disk change); save auto-fires on
 edit but is debounced (`save_debounce_ms`) so a burst of keystrokes collapses
 into one write — a one-shot timer wakes the loop at the deadline instead of
-spinning `request_render`. An explicit Save / Ctrl+S bypasses the debounce. The
-auto-save also passes `wait_for_drag` so the debounce additionally holds the
-launch while a mouse button is down — a slow/paused drag (a tint slider) can
-outlast the time deadline, and we don't want the O(buffer) write firing mid-
-gesture; it lands once the button releases.
+spinning `request_render`. An explicit Save / Ctrl+S bypasses the debounce.
+Saves fire during drags too (the deferred save just queues the edit in memory —
+PendingSave — so it's cheap; the disk write happens once at flush).
 
 ASYNC NEVER LAGS THE UI — the one design rule everything above serves. The live
 buffer (text_cache / a host's held value) is ALWAYS the newest state and is what
@@ -403,7 +401,7 @@ LOADING = object()
 @render_func(use_cache=True, selectable=False, temp=True)
 def run_in_background(input_value, loading_state: LoadingState, unique,
                       draw_state, child_kwargs, start=False, timeout=20,
-                      debounce_ms=0, wait_for_drag=False, main_thread=False, **kwargs):
+                      debounce_ms=0, main_thread=False, **kwargs):
     """One-shot background runner: call it every frame; `start=True` is the
     trigger edge that snapshots (input_value, child_kwargs) into the queue.
 
@@ -432,10 +430,7 @@ def run_in_background(input_value, loading_state: LoadingState, unique,
         old-value-written-during-save bug).
 
     Debounce: `debounce_ms` defers the launch until the trigger goes quiet (a
-    one-shot timer wakes the loop at the deadline — never per-frame polling).
-    `wait_for_drag` additionally holds the launch while a mouse button is down,
-    so an O(buffer) run never fires mid-gesture; the snapshot keeps tracking the
-    latest input the whole time."""
+    one-shot timer wakes the loop at the deadline — never per-frame polling)."""
     if Melty.frame_count < 10 or main_thread:
         debounce_ms = 0
     if start:
@@ -471,19 +466,6 @@ def run_in_background(input_value, loading_state: LoadingState, unique,
             note = Note(name="new converters, Deadline", tint=(1, 0.5, 1.0), draw_state=draw_state)
 
             draw_state.invalidate(note=note)
-        elif wait_for_drag and (imgui.is_mouse_down(0) or imgui.is_mouse_dragging(1) or imgui.is_mouse_dragging(2)):
-            # Past the time deadline, but a mouse button is still held - the user
-            # is mid-drag (a tint slider, a value drag). The time debounce only
-            # collapses a BURST of edits; it can still elapse during a slow or
-            # paused drag, firing the O(n) save in the middle of the gesture.
-            # Hold the launch until the button releases. No one-shot timer can wake
-            # us on mouse-up, so re-check every frame via request_render is cheap,
-            # because an active drag is already generating frames. The _run_next
-            # snapshot keeps tracking the latest input, so the eventual single run
-            # still uses the final dragged value.
-            # note = Note(name="new converters, wait for drag", tint=(1, 0.7, 0.2), draw_state=draw_state)
-            # draw_state.invalidate(note=note)
-            request_render()
         else:
             loading_state._debounce_deadline = None
             if loading_state._debounce_timer is not None:
@@ -1703,8 +1685,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                                                         "parent_ds": draw_state,
                                                         "force": force_save},
                                           name=f"save{draw_state.name}", start=save_start,
-                                          debounce_ms=0,
-                                          wait_for_drag=not explicit_save)
+                                          debounce_ms=save_debounce)
         if result is LOADING:
             code_state.mark_file_current()
 
@@ -1861,6 +1842,20 @@ def host_code_state(host):
 # hosts simply retry on a later frame.
 _last_auto_index_time = 0.0
 _AUTO_INDEX_STAGGER_S = 0.25
+_index_retry_timer = None   # one-shot: wakes the nudge after typing settles
+
+
+def _arm_index_retry():
+    """Frames are event-driven, so a pause after typing wouldn't wake
+    _ensure_symbol_index on its own. When we skip the nudge because the user is
+    typing, arm a single (coalesced) timer to request a render once input goes
+    quiet, so the deferred symbol refresh actually fires."""
+    global _index_retry_timer
+    if _index_retry_timer is not None:
+        _index_retry_timer.cancel()
+    _index_retry_timer = threading.Timer(0.45, request_render)
+    _index_retry_timer.daemon = True
+    _index_retry_timer.start()
 
 
 def _ensure_symbol_index(dict_host, str_host, code_dict, jump_to=None):
@@ -1888,6 +1883,10 @@ def _ensure_symbol_index(dict_host, str_host, code_dict, jump_to=None):
         return          # parse already indexed against the current generation
     if not _lc._wait_for_no_drag(max_wait=0.0):
         return          # mid-gesture - don't even start; retried next frame
+    if _lc._typing_now():
+        _arm_index_retry()
+        return          # still typing - the heavy index would lag every key;
+                        # the timer wakes us to refresh once input settles
     if jump_to is None and str_host is not None:
         cs = host_code_state(str_host)
         jump_to = getattr(cs, "address", None) if cs is not None else None

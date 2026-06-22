@@ -1804,6 +1804,29 @@ def _indent_lines(text, lo, hi, dedent):
     return new_text, adjust(lo), adjust(hi)
 
 
+def _reindent_paste(clipboard, target):
+    """Re-indent a pasted block to `target` (the whitespace prefix at the paste
+    site) while keeping the block's RELATIVE indentation intact.
+
+    The block's own common leading indent (min over non-blank lines) is stripped
+    so it sits at column 0, then every line AFTER the first is re-prefixed with
+    `target`. The first line rides the indentation already present before the
+    caret, so it lands exactly at the cursor; the rest align under it. Blank
+    lines stay empty so no trailing whitespace is introduced. The result is the
+    string to splice at the caret (not the caret's existing line prefix)."""
+    lines = clipboard.split('\n')
+    indents = [len(l) - len(l.lstrip(' ')) for l in lines if l.strip()]
+    common = min(indents) if indents else 0
+    out = []
+    for i, l in enumerate(lines):
+        body = '' if not l.strip() else l[common:]
+        if i == 0:
+            out.append(body)
+        else:
+            out.append(target + body if body else '')
+    return '\n'.join(out)
+
+
 def _toggle_comment(text, lo, hi):
     """Toggle '# ' Python comments on lines covered by [lo, hi].
     Returns (new_text, new_lo, new_hi). Empty lines are skipped. If every
@@ -2018,7 +2041,7 @@ def _describe_code_tree(code_tree):
 
 @render_func(is_default_for=(CodeLine), show_bg=False, use_cache=True, disable_scroll=False, with_header=draw_header, shadow=False, 
 show_name=False, with_footer=draw_footer, determines_height=False,
-             selectable=False, searchable=True, bg_offset=-3, show_add_delete=False, tint=(0.485, 0.61, 0.76))
+             selectable=False, searchable=True, bg_offset=-3, show_add_delete=False)
 def draw_text(input_value: str, height=None,
               left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
               horizontal_scroll_drag=False, search_text="", ctrl_b_down=False,
@@ -2028,6 +2051,7 @@ def draw_text(input_value: str, height=None,
               code_tree=None, code_dict=None, error=None, token_views=None,
               syntax_highlight=True, is_diff=False, line_numbers=None,
               completion_source=None, unique=0):
+                               
     ds = draw_state
     # Plain-text mode (codec tells "not Python source"): no Darcula colors and
     # no inline token widgets - both are artifacts of the Python tokenizer.
@@ -2035,7 +2059,8 @@ def draw_text(input_value: str, height=None,
         token_views = {}
     elif token_views is None:
         token_views = DEFAULT_TOKEN_VIEWS   # global experiment settings (see a
-
+    
+    #
     # Symbol-usage source: the parse arrives as `code_tree` in the
     # address_to_general_parse routes, as `code_dict` in the CODE_UI routes
     # (cst_module_to_dict - which is also where the run_jedi() pass attaches
@@ -2045,7 +2070,7 @@ def draw_text(input_value: str, height=None,
     _usage_off = getattr(_usage_tree, 'line_offset', 0) or 0
     if not _usage_off and jump_to is not None:
         _usage_off = getattr(jump_to, 'start', 0) or 0
-   
+        
     # Per-editor state for the code-suggestions popup. Lives here (not gated on
     # focus) because the popup's menu window is latched and must be drawn EVERY
     # frame with closed_state toggled, even when the editor is unfocused.
@@ -2187,8 +2212,6 @@ def draw_text(input_value: str, height=None,
 
     left = imgui.get_cursor_screen_pos()[0]
     top = imgui.get_cursor_screen_pos()[1]
-
-
 
 
     # --- Line-number gutter ---
@@ -2518,11 +2541,11 @@ def draw_text(input_value: str, height=None,
                 ds._uj_open = False
                 _fired.discard(glfw.KEY_ENTER)
                 _fired.discard(glfw.KEY_KP_ENTER)
-
         # --- Typed characters --- drained in order, using each key event's own
         # modifiers so fast shift-typing across a slow frame stays shifted.
         typed_dot_this_frame = False
         typed_word_char_this_frame = False
+        
         for _fk, _fmods in _frame_keys:
             if _fmods & glfw.MOD_CONTROL:
                 continue
@@ -2547,7 +2570,7 @@ def draw_text(input_value: str, height=None,
                 typed_word_char_this_frame = True
             changed = True
 
-        
+
         # --- Tab / Shift+Tab ---
         if pressed(glfw.KEY_TAB) and not ctrl:
             ds.text_cursor_blink_time = time.time()
@@ -2567,6 +2590,7 @@ def draw_text(input_value: str, height=None,
                 ds.text_selection_start = ds.text_cursor_pos
                 ds.text_selection_end = ds.text_cursor_pos
             changed = True
+
 
         # --- Enter --- (skipped for single-line fields like the search box,
         # where Enter is reserved for find-next / Shift+Enter find-prev).

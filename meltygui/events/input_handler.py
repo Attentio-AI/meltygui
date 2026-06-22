@@ -74,10 +74,14 @@ _DOUBLE_PROMOTE = {
     EventAction.CLICKED: EventAction.DOUBLE_CLICKED,
 }
 
-# Max gap between the two clicks' RELEASES. 0.1 was below human double-click
-# speed (~150-300ms between releases; OS defaults ~500ms, imgui uses 300ms) -
-# things like left_mouse_double_clicked() never fired.
-DOUBLE_CLICK_WINDOW = 0.1
+# Max gap between the two clicks' RELEASES. Must clear human double-click speed
+# (~150-300ms between releases; OS defaults ~500ms, imgui uses 300ms) or doubles
+# never register - at 0.1 left_mouse_double_clicked (voxel params panel) never
+# fired and right double-clicks fell over as two sloppy singles. This value
+# ALSO sets how long a deferred single click waits before firing (only on inputs
+# with a double subscriber - see process_frame), so it's the single↔double
+# trade-off here: lower = snappier single click but flakier double detection.
+DOUBLE_CLICK_WINDOW = 0.25
 CLICK_MAX_DISTANCE = 5.0
 DRAG_THRESHOLD = 2.0  # Minimum distance before drag activates
 
@@ -647,11 +651,6 @@ class InputHandler:
             # emit the matching DRAGGED/DOUBLE_DRAGGED variant.
             if action == EventAction.DOWN:
                 st = states.get(event.input_id)
-                # A 2nd press (is_double_press) means a double interaction has
-                # begun - double-click or double-drag. Either way the deferred
-                # single click is irrelevant, so cancel it now.
-                if st is not None and st.is_double_press:
-                    pending_clicks.pop(event.input_id, None)
                 drag_action = EventAction.DRAGGED
                 capture_views = None
                 if st is not None and st.is_double_press:
@@ -702,13 +701,28 @@ class InputHandler:
             elif action == EventAction.CLICKED:
                 X = event.input_id
                 if X in doubled_this_frame:
-                    # The 2nd click of a double - absorbed by the DOUBLE click.
-                    pending_clicks.pop(X, None)
-                    continue
-                if (key_index.get((X, EventAction.DOUBLE_CLICKED))
+                    # A double-click completed THIS frame.
+                    pend = pending_clicks.pop(X, None)
+                    if key_index.get((X, EventAction.DOUBLE_CLICKED)):
+                        # A real double-click consumer (e.g. the voxel params
+                        # panel on left double-click) handles it - drop the
+                        # single click so it doesn't ALSO fire.
+                        continue
+                    # No double-click consumer (this input only has a double-DRAG
+                    # gesture, e.g. right_mouse). A double-click with no drag is
+                    # just one click - fire the ONE (the deferred first press)
+                    # and drop this second CLICKED.
+                    if pend is not None:
+                        _, ev1, targets1 = pend
+                        for v, k in targets1:
+                            add_event(v, k, ev1)
+                        continue
+                    # else fall through: emit this lone click once.
+                elif (key_index.get((X, EventAction.DOUBLE_CLICKED))
                         or key_index.get((X, EventAction.DOUBLE_DRAGGED))):
-                    # Hold this click until the double-click window ends; a 2nd
-                    # press (handled in DOWN) cancels it, otherwise it flushes.
+                    # Hold this click until the window expires. Cancelled by a
+                    # double-DRAG activating (drag pass) or a double-click
+                    # completing (above); otherwise it flushes as a single click.
                     pending_clicks[X] = (event.timestamp + DOUBLE_CLICK_WINDOW,
                                          event, _click_targets(event))
                     continue
@@ -769,6 +783,10 @@ class InputHandler:
                 if total_dx * total_dx + total_dy * total_dy < drag_threshold_sq:
                     continue
                 drag_activated[input_id] = True
+                # A drag is not a click - drop any single click deferred for this
+                # input (the 1st press of a double-drag) so the drag doesn't
+                # also open the context panel when it ends.
+                pending_clicks.pop(input_id, None)
 
             drag_key = (input_id, drag_action)
             tile_id = tile_cache_get(captured_view, None)
@@ -784,7 +802,11 @@ class InputHandler:
         # While anything is still pending, keep the render loop alive so the
         # deadline is actually reached even if the app would otherwise idle. ----
         if pending_clicks:
-            for X in [k for k, v in pending_clicks.items() if t >= v[0]]:
+            # Don't flush while the button is held again (a 2nd click in
+            # progress) - wait for its release so a double-click/drag can't
+            # claim it.
+            for X in [k for k, v in pending_clicks.items()
+                      if t >= v[0] and not (k in states and states[k].is_down)]:
                 _, ev, targets = pending_clicks.pop(X)
                 for v, k in targets:
                     add_event(v, k, ev)

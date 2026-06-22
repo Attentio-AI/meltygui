@@ -208,13 +208,16 @@ def attention_lab(heads=12, seq=48, dim=32, temp=0.35, shift=3):
     import torch
     torch.manual_seed(10)
    
-    # [tint=(0.0, 0.0, 1.0)]
+    # [tint=(0.0, 0.2, 0.5)]
     q = torch.randn(heads, seq, dim)
-    # [tint=(1.0, 0.5, 0.5)]
+    # [tint=(1.0, 0.0, 0.5)]
     k = q.roll(shifts=shift, dims=1) + 0.4 * torch.randn(heads, seq, dim)
+    # [tint=(0.07, 0.0, 0.5)]
     scores = q @ k.transpose(-2, -1) / (dim ** 0.5 * temp)
-    # [tint=(1,0,0)]
+    # [tint=(0.6,0,0)]
     attn = torch.softmax(scores, dim=-1)
+    
+    # [tint=(0,0.4,0.02)]
     focus = attn.amax(dim=-1).mean(dim=-1)    
     def some_text():
         pass

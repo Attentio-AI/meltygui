@@ -836,8 +836,8 @@ def _save_symbol_store():
 
 
 _symbol_store = _load_symbol_store()
-_symbol_usage_cache: dict = _symbol_store["spans"]  # (resolved_path, start, end) -> (sig, {sym: SymbolUsage}); sig = (hash(source_text), accurate, generation)
-_mtime_snapshot: dict = _symbol_store["mtimes"]     # resolved_path -> mtime at time index change
+_symbol_usage_cache: dict = _symbol_store["spans"]  # (resolved_path, start, end) -> (sig, {sym: SymbolUsage}); sig = (mtime, pending_gen, accurate, gen)
+_mtime_snapshot: dict = _symbol_store["mtimes"]     # resolved_path -> mtime at last counted change
 
 # File suffixes to drop from jedi search - a symbol DEFINED in one of these is
 # skipped entirely, and any callers in them are filtered out. jedi only
@@ -940,6 +940,11 @@ def _symbol_refs_local(file_path: str, start_line: int, end_line: int) -> dict:
 # locals. Toggle Toggles.jedi_correctness to A/B-test the full jedi path.
 
 _index_refs_cache: dict = {}   # resolved_path -> (mtime, [(kind, key, line, col, scope)])
+# Cross-file caller scan result, cached so a local edit doesn't re-walk ~150 src
+# files. resolved_path -> (scan_key, {name: [caller_refs]}); scan_key =
+# (mtime, _index_generation, frozenset(obj_target_keys), frozenset(mem_target_keys)).
+# Content-free key (ids + mtime + gen), per CLAUDES.md - never a content hash.
+_caller_scan_cache: dict = {}
 
 # Bumped by the background cache warmer (build_index_cache) whenever any src
 # file's mtime moved past _mtime_snapshot (a REAL content change - a mere
@@ -1263,25 +1268,50 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
     if not obj_targets and not mem_targets:
         return {}
 
-    callers = {}
-    for fi, (path, mod) in enumerate(mod_map.items()):
-        if fi % 8 == 0:
-            # GIL yield: this scan is the bulk of a span compute (~150 files ×
-            # cached ref lists, plus ~5-10ms ast re-parse per stale file) and
-            # runs on a plain thread - without these sleeps it holds the GIL in
-            # one ~0.2s block and the render thread stutters. 19 sleeps ≈
-            # +20ms wall per compute.
-            _time.sleep(0.001)
-        # The edited file's own internal callers must come from the overlaid text
-        # (deferred saves keep disk stale); others read disk via the mtime cache.
-        cur = text if path == resolved else None
-        for (kind, key, line, col, scope) in _file_index_refs(path, mod, cur):
-            if key is None:
-                continue
-            nm = obj_targets.get(key) if kind == "name" else mem_targets.get(key)
-            if nm is not None:
-                callers.setdefault(nm, []).append(
-                    (str(path), line, col, scope, getattr(mod, "__name__", "") or ""))
+    # ── Caller scan ───────────────────────────────────────────────────────────
+    # The cross-file scan (~150 files + ~20ms of GIL-yield sleeps) is the bulk of
+    # the cost and does NOT depend on edits to THIS file - callers live in OTHER
+    # files, which change only when the index warmer bumps _index_generation (or a
+    # disk mtime). So cache it on (mtime, gen, target-key set): a local edit that
+    # doesn't change the symbol set (a body / comment / whitespace edit) reuses it
+    # and skips the scan; adding/removing a reference re-runs it. The key is
+    # content-free (ids + mtime + gen) - never a file hash (see CLUDE.md). The
+    # edited file's OWN internal callers DO move with its live buffer, so they're
+    # always recomputed fresh from the overlaid text, below.
+    try:
+        _mtime = resolved.stat().st_mtime
+    except OSError:
+        _mtime = None
+    scan_key = (_mtime, _index_generation, frozenset(obj_targets), frozenset(mem_targets))
+    cached_scan = _caller_scan_cache.get(resolved)
+    if cached_scan is not None and cached_scan[0] == scan_key:
+        callers = {nm: list(v) for nm, v in cached_scan[1].items()}   # copy: self-callers append below
+    else:
+        cross = {}
+        for fi, (path, mod) in enumerate(mod_map.items()):
+            if path == resolved:
+                continue                       # edited file is in in-scan below
+            if fi % 8 == 0:
+                _time.sleep(0.001)             # GIL yield (slow; off-thread scan)
+            for (kind, key, line, col, scope) in _file_index_refs(path, mod):
+                if key is None:
+                    continue
+                nm = obj_targets.get(key) if kind == "name" else mem_targets.get(key)
+                if nm is not None:
+                    cross.setdefault(nm, []).append(
+                        (str(path), line, col, scope, getattr(mod, "__name__", "") or ""))
+        _caller_scan_cache[resolved] = (scan_key, cross)
+        callers = {nm: list(v) for nm, v in cross.items()}
+
+    # The edited file's own internal callers - from the overlaid (live) text,
+    # every call, since they change with local edits.
+    for (kind, key, line, col, scope) in _file_index_refs(resolved, owning, text):
+        if key is None:
+            continue
+        nm = obj_targets.get(key) if kind == "name" else mem_targets.get(key)
+        if nm is not None:
+            callers.setdefault(nm, []).append(
+                (str(resolved), line, col, scope, getattr(owning, "__name__", "") or ""))
 
     rp_str = str(resolved)
     mod_name = getattr(owning, "__name__", "") or ""
@@ -1348,6 +1378,41 @@ def _distribute_by_name(gp, flat: dict, _matched=None) -> None:
         gp["__symbol_usages__"] = own
 
 
+# A symbol recompute (compute_symbol_usages_for_address) is heavy and GIL-bound
+# (local names + per-symbol inspect + the caller scan) and has no yield points.
+# While the user is actively typing/interacting, DON'T recompute - we reuse the
+# last result (the editor re-records slightly-stale sites, so highlights stay)
+# and refresh once input settles. `_last_input_time` is the shared input-recency
+# stamp (event_backends) - the same signal the JSON→dict cooperative yield uses.
+_SYMBOL_QUIET_S = 0.4
+
+
+def _typing_now() -> bool:
+    last = getattr(Melty, "_last_input_time", 0.0)
+    return bool(last) and (time.monotonic() - last) < _SYMBOL_QUIET_S
+
+
+def _cached_usages(address) -> dict:
+    """Last computed usages for `address`'s span, straight from the cache — NO
+    recompute, no current_file_text build. Returned while typing so highlights
+    persist without the per-keystroke compute. {} if never computed."""
+    if address is None or getattr(address, "path", None) is None:
+        return {}
+    try:
+        resolved = _Path(address.path).resolve()
+    except Exception:
+        return {}
+    start = (getattr(address, "start", 0) or 0) + 1
+    end = getattr(address, "end", None)
+    if end is not None:
+        cached = _symbol_usage_cache.get((resolved, start, end))
+        return cached[1] if cached else {}
+    for (rp, s, _e), entry in _symbol_usage_cache.items():   # whole-file: match (path, start)
+        if rp == resolved and s == start:
+            return entry[1]
+    return {}
+
+
 def compute_symbol_usages_for_address(address) -> dict:
     """Build {symbol: SymbolUsage} (callers + definition) for an address's source
     span, via in-process jedi. The entry point for the editor's manual trigger;
@@ -1359,38 +1424,45 @@ def compute_symbol_usages_for_address(address) -> dict:
     resolved = _Path(address.path).resolve()
     start = (getattr(address, "start", 0) or 0) + 1     # address.start is a 0-indexed lower bound
     end = getattr(address, "end", None)
+    pending_gen = PendingSave.pending_gen_for(address.path)
     if end is None:                                     # whole-file span
         text = PendingSave.current_file_text(resolved)
         if text is None:
             return {}
         end = text.count("\n") + 1
-    return _compute_symbol_usages(resolved, start, end)
+    return _compute_symbol_usages(resolved, start, end, pending_gen)
 
 
-def _compute_symbol_usages(resolved, start, end) -> dict:
+def _compute_symbol_usages(resolved, start, end, pending_gen=0) -> dict:
     """Cache + A/B branch core: {symbol: SymbolUsage} for a [start, end] span.
     Toggles.jedi_correctness picks the resolver — jedi (accurate, slow:
     re-exports / dotted access / locals) vs the import index (fast, direct
     imports of module-level symbols).
 
-    Source is the CURRENT file content (disk + unsaved deferred-save edits), and
-    the cache is keyed on that content's hash — NOT the disk mtime. Deferred saves
-    never bump mtime, so an mtime key returned pre-edit usages for the whole
-    session; hashing the overlaid text recomputes the moment an edit changes it.
-    `gen` still folds in the index warmer's generation (a caller added in ANOTHER
-    file), and `accurate` re-computes when the resolver toggle flips."""
+    Cache key is (disk mtime, pending-edit generation, resolver, index gen) —
+    NEVER a hash/compare of file content (an O(file) digest on a hot path; see
+    CLAUDE.md). `mtime` catches external/disk writes; `pending_gen`
+    (PendingSave.pending_gen_for) catches deferred edits that never touch disk;
+    `gen` folds in the index warmer's generation (a caller added in ANOTHER file);
+    `accurate` re-computes when the resolver toggle flips. The CURRENT file
+    content (disk + unsaved edits) is built only on a MISS — to recompute, never
+    to detect the miss."""
     from src.lsd.gl_gui.toggles import Toggles   # lazy to avoid import cycle
     from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
     accurate = getattr(Toggles, "jedi_correctness", False)
-    text = PendingSave.current_file_text(resolved)   # disk + pending overlay
-    if text is None:
-        return {}
+    try:
+        mtime = resolved.stat().st_mtime
+    except OSError:
+        mtime = None
     key = (resolved, start, end)
     gen = _index_generation if not accurate else None
-    sig = (hash(text), accurate, gen)
+    sig = (mtime, pending_gen, accurate, gen)
     cached = _symbol_usage_cache.get(key)
     if cached is not None and cached[0] == sig:
         return cached[1]
+    text = PendingSave.current_file_text(resolved)   # disk + pending overlay (miss only)
+    if text is None:
+        return {}
     try:
         raw = (_symbol_refs_worker(str(resolved), start, end, text) if accurate
                else _symbol_refs_index(str(resolved), start, end, text))
@@ -1422,9 +1494,11 @@ def invalidate_usage_cache(path: _Path | str | None = None) -> None:
     if path is None:
         _xref_cache.clear()
         _symbol_usage_cache.clear()
+        _caller_scan_cache.clear()
     else:
         resolved = _Path(path).resolve()
         _xref_cache.pop(resolved, None)
+        _caller_scan_cache.pop(resolved, None)
         for k in [k for k in _symbol_usage_cache if k[0] == resolved]:
             _symbol_usage_cache.pop(k, None)
 
@@ -2506,11 +2580,18 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
             invalidate_usage_cache(address.path)
         if run_jedi or auto:
             try:
-                flat = compute_symbol_usages_for_address(address)
-                # Generation stamp even when flat is empty: means "indexed
-                # against the current generation" so the editor's auto-index
-                # nudge doesn't re-trigger on a span with no src symbols.
-                readable._symbol_gen = _index_generation
+                # Recompute only when NOT mid-typing (or on a manual Index). While
+                # typing, reuse the last result - the heavy work per keystroke
+                # is the editor lag, and the editor re-positions slightly-stale
+                # sites so highlights persist. The debounced nudge
+                # (ensure_symbol_index) does the real refresh once input settles.
+                fresh = run_jedi or not _typing_now()
+                flat = (compute_symbol_usages_for_address(address) if fresh
+                        else _cached_usages(address))
+                # Stamp the generation ONLY on a fresh compute - leaving it unset
+                # while typing keeps the nudge eligible to refresh after drag.
+                if fresh:
+                    readable._symbol_gen = _index_generation
                 if flat:
                     readable.symbol_usage = flat   # whole-span flat (debugging)
                     _distribute_by_name(readable, flat)
