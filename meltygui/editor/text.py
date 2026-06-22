@@ -1749,6 +1749,92 @@ def _get_indent(text, index):
     return indent
 
 
+def _unclosed_opener(text, pos):
+    """Index of the innermost (, [ or { still open just before `pos`, ignoring
+    brackets inside strings and # comments, or None.
+
+    Forward-scans a bounded window [start, pos) maintaining a stack of open
+    bracket positions while tracking ' / " strings (incl. triple-quoted, with
+    backslash escapes) and line comments — so a bracket in a `# (note)` comment
+    or a `"("` literal is NOT mistaken for real syntax (that was the bug behind
+    continuation lines indenting way out: a `(` in a comment far above was read
+    as the enclosing bracket). `start` is snapped to a line boundary; a multi-
+    line string straddling that boundary may misparse, but only ever degrades to
+    'no bracket' (the plain-indent fallback), never a spurious match."""
+    start = max(0, pos - 4000)
+    if start:
+        start = text.rfind('\n', 0, start) + 1   # snap to a line start
+    stack = []
+    quote = None          # active string delimiter ("'", '"', "'''", '"""'), or None
+    i = start
+    while i < pos:
+        c = text[i]
+        if quote is not None:
+            if c == '\\' and len(quote) == 1:    # escape, only in single-char strings
+                i += 2
+                continue
+            if text.startswith(quote, i):
+                i += len(quote)
+                quote = None
+                continue
+            i += 1
+        elif c == '#':                           # line comment → skip to EOL
+            nl = text.find('\n', i)
+            if nl == -1:
+                break
+            i = nl + 1
+        elif c == '"' or c == "'":
+            quote = c * 3 if text.startswith(c * 3, i) else c
+            i += len(quote)
+        elif c in '([{':
+            stack.append(i)
+            i += 1
+        elif c in ')]}':
+            if stack:
+                stack.pop()
+            i += 1
+        else:
+            i += 1
+    return stack[-1] if stack else None
+
+
+def _open_bracket_indent(text, pos):
+    """If `pos` sits inside an unclosed (, [ or {, the indent (space count) a
+    line opened there should take to align with that bracket's scope; else None.
+    Lets Enter inside a multi-line call/list/dict line up its continuation
+    instead of falling back to the line's own (often zero) indent.
+
+    Aligns just PAST the opener when content follows it on the same line (visual
+    style: `foo(a,` → next line under `a`); otherwise a hanging indent of the
+    opener line's own indent + one tab (`foo(` at line end → +4)."""
+    op = _unclosed_opener(text, pos)
+    if op is None:
+        return None
+    ls = _get_line_start(text, op)
+    line_end = text.find('\n', op)
+    if line_end == -1:
+        line_end = len(text)
+    if text[op + 1:line_end].strip():        # content after the opener
+        return (op - ls) + 1                 # align just past it
+    return _get_indent(text, op) + 4         # hanging indent
+
+
+def _prev_indent_stop(text, line_start, col):
+    """The indent column a backspace in leading whitespace should land on: the
+    previous meaningful stop strictly left of `col`, using the same ([{ cue as
+    Enter/Tab. Inside a bracket continuation a line DEEPER than the cue steps
+    back toward it one nesting level at a time (cue + 4k); at or below the cue —
+    including a misaligned line shallower than it — it falls to the previous
+    4-col tab stop, NOT straight out to column 0. Outside a bracket it's always
+    the previous 4-col tab stop (the prior behaviour)."""
+    opener = _unclosed_opener(text, line_start)
+    if opener is not None:
+        cue = _open_bracket_indent(text, line_start)
+        if col > cue:
+            return cue + 4 * ((col - 1 - cue) // 4)   # step back toward the cue
+    return ((col - 1) // 4) * 4                        # at/below cue → 4-col stop
+
+
 def _indent_lines(text, lo, hi, dedent):
     """Indent (or dedent) every line covered by [lo, hi] by one tab stop.
     Returns (new_text, new_lo, new_hi). For selections, new_lo snaps to the
@@ -1805,25 +1891,46 @@ def _indent_lines(text, lo, hi, dedent):
 
 
 def _reindent_paste(clipboard, target):
-    """Re-indent a pasted block to `target` (the whitespace prefix at the paste
-    site) while keeping the block's RELATIVE indentation intact.
+    """Re-indent a pasted block so its FIRST line lands exactly at the caret
+    (`target` is the whitespace prefix already before the caret) and the rest
+    keep their indentation RELATIVE to that first line. The result is the string
+    to splice at the caret (it does NOT include the caret's existing prefix).
 
-    The block's own common leading indent (min over non-blank lines) is stripped
-    so it sits at column 0, then every line AFTER the first is re-prefixed with
-    `target`. The first line rides the indentation already present before the
-    caret, so it lands exactly at the cursor; the rest align under it. Blank
-    lines stay empty so no trailing whitespace is introduced. The result is the
-    string to splice at the caret (not the caret's existing line prefix)."""
+    The first line is stripped of its own leading whitespace and dropped right
+    at the caret; every later line is re-indented by (its indent − `base`) on
+    top of `target`. `base` is normally the first line's own indent. But a first
+    line that is SHALLOWER than the block body while being a complete statement —
+    not a block opener (trailing `:`) and not an unclosed continuation (net-open
+    bracket / trailing backslash) — can only be that shallow because the
+    selection clipped its leading indent. There we anchor on the body's own base
+    instead, so the first line aligns with its sibling statements rather than the
+    body getting shoved in by the spurious gap (a `def foo():` header or a
+    `foo(arg1,` continuation still anchors on the first line, so its body nests /
+    stays aligned). Blank lines stay empty so no trailing whitespace is added."""
     lines = clipboard.split('\n')
-    indents = [len(l) - len(l.lstrip(' ')) for l in lines if l.strip()]
-    common = min(indents) if indents else 0
+    nb = [(i, len(l) - len(l.lstrip(' '))) for i, l in enumerate(lines) if l.strip()]
+    if not nb:
+        return clipboard
+    target_n = len(target)
+    first_i, base = nb[0]
+    body_indents = [ind for _, ind in nb[1:]]
+    if body_indents:
+        body_base = min(body_indents)
+        head = lines[first_i].rstrip()
+        opens_block = head.endswith(':')
+        net_open = sum((c in '([{') - (c in ')]}') for c in head)
+        continues = net_open > 0 or head.endswith('\\')
+        if base < body_base and not opens_block and not continues:
+            base = body_base
     out = []
     for i, l in enumerate(lines):
-        body = '' if not l.strip() else l[common:]
-        if i == 0:
-            out.append(body)
+        if not l.strip():
+            out.append('')
+        elif i == first_i:
+            out.append(l.lstrip(' '))
         else:
-            out.append(target + body if body else '')
+            rel = (len(l) - len(l.lstrip(' '))) - base
+            out.append(' ' * max(0, target_n + rel) + l.lstrip(' '))
     return '\n'.join(out)
 
 
@@ -2039,27 +2146,29 @@ def _describe_code_tree(code_tree):
     return name
 
 
-@render_func(is_default_for=(CodeLine), show_bg=False, use_cache=True, disable_scroll=False, with_header=draw_header, shadow=False, 
-show_name=False, with_footer=draw_footer, determines_height=False,
-             selectable=False, searchable=True, bg_offset=-3, show_add_delete=False)
+@render_func(is_default_for=(CodeLine), show_bg=False, use_cache=True, 
+             disable_scroll=False, with_header=draw_header, shadow=False, 
+             show_name=False, with_footer=draw_footer, determines_height=False,
+             selectable=False, searchable=True, bg_offset=-1, show_add_delete=False)
 def draw_text(input_value: str, height=None,
-              left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
-              horizontal_scroll_drag=False, search_text="", ctrl_b_down=False,
+              left_mouse_down=False, 
+              left_mouse_drag=False, left_mouse_held=False,
+              horizontal_scroll_drag=False, search_text="", 
+              ctrl_b_down=False,
               single_line=False, is_search_box=False,
-              draw_state=None, request_focus=False, wrap=False,
-              line_height=1.149, font=Font.JETBRAINS_MONO_19, jump_to=None,
+              draw_state=None, request_focus=False, 
+              wrap=False, line_height=1.149, font=Font.JETBRAINS_MONO_19, jump_to=None,
               code_tree=None, code_dict=None, error=None, token_views=None,
               syntax_highlight=True, is_diff=False, line_numbers=None,
               completion_source=None, unique=0):
-                               
-    ds = draw_state
+    ds = draw_state   
     # Plain-text mode (codec tells "not Python source"): no Darcula colors and
     # no inline token widgets - both are artifacts of the Python tokenizer.
     if not syntax_highlight:
         token_views = {}
+
     elif token_views is None:
         token_views = DEFAULT_TOKEN_VIEWS   # global experiment settings (see a
-    
     #
     # Symbol-usage source: the parse arrives as `code_tree` in the
     # address_to_general_parse routes, as `code_dict` in the CODE_UI routes
@@ -2142,7 +2251,6 @@ def draw_text(input_value: str, height=None,
     # character advance lets us position and measure text by character count
     # instead of calling imgui.calc_text_size per glyph/slice each frame.
     char_w = imgui.calc_text_size("0").x
-
     changed = False
     original_input = input_value
     # No line limit: the editor shows the WHOLE span. Off-screen lines are
@@ -2360,7 +2468,7 @@ def draw_text(input_value: str, height=None,
         ds.text_cursor_blink_time = time.time()
         click_pos = _xy_to_char_index(text, io.mouse_pos.x, io.mouse_pos.y,
                                       origin_x, origin_y, line_px, vcols=_get_vcols())
-
+        
         now = time.time()
         within_window = (now - ds.text_double_click_time < 0.3
                          and abs(click_pos - ds.text_last_click_pos) <= 1)
@@ -2410,6 +2518,7 @@ def draw_text(input_value: str, height=None,
                 ds.text_selection_end = click_pos
             ds.text_drag_anchor_lo = ds.text_selection_start
             ds.text_drag_anchor_hi = ds.text_selection_end
+
 
     # Extend the selection on cursor motion, and also every frame the button is
     # held (left_mouse_held) once a drag is underway - so holding the cursor
@@ -2545,7 +2654,7 @@ def draw_text(input_value: str, height=None,
         # modifiers so fast shift-typing across a slow frame stays shifted.
         typed_dot_this_frame = False
         typed_word_char_this_frame = False
-        
+
         for _fk, _fmods in _frame_keys:
             if _fmods & glfw.MOD_CONTROL:
                 continue
@@ -2574,7 +2683,23 @@ def draw_text(input_value: str, height=None,
         # --- Tab / Shift+Tab ---
         if pressed(glfw.KEY_TAB) and not ctrl:
             ds.text_cursor_blink_time = time.time()
-            if shift or _has_selection(ds):
+            # Bracket-aware align (same ([{ cue as Enter): when adjusting a single
+            # line's own indent (no selection, caret in the leading whitespace)
+            # and the line is a bracket continuation, Tab pulls an under-indented
+            # line UP to the cue and Shift+Tab pulls an over-indented line DOWN to
+            # it - e.g. a stray `show_name=False,` snaps under the `@renderable(`.
+            _ls = _get_line_start(text, ds.text_cursor_pos)
+            _cur = _get_indent(text, _ls)
+            _target = _open_bracket_indent(text, _ls)
+            _align = (_target is not None and not _has_selection(ds)
+                      and not text[_ls:ds.text_cursor_pos].strip()
+                      and ((_cur < _target) if not shift else (_cur > _target)))
+            if _align:
+                text = text[:_ls] + ' ' * _target + text[_ls + _cur:]
+                ds.text_cursor_pos = _ls + _target
+                ds.text_selection_start = ds.text_cursor_pos
+                ds.text_selection_end = ds.text_cursor_pos
+            elif shift or _has_selection(ds):
                 if _has_selection(ds):
                     lo, hi = _sel_range(ds)
                 else:
@@ -2598,15 +2723,41 @@ def draw_text(input_value: str, height=None,
         # don't insert a newline when Ctrl is held.
         if (pressed(glfw.KEY_ENTER) or pressed(glfw.KEY_KP_ENTER)) and not single_line and not ctrl:
             ds.text_cursor_blink_time = time.time()
-            indent = _get_indent(text, ds.text_cursor_pos)
             if _has_selection(ds):
                 text, ds.text_cursor_pos = _delete_selection(text, ds)
-            insert = '\n' + ' ' * indent
-            text = text[:ds.text_cursor_pos] + insert + text[ds.text_cursor_pos:]
-            ds.text_cursor_pos += len(insert)
+            pos = ds.text_cursor_pos
+            # Bracket-aware auto-indent. Inside an unclosed (, [ or { align to
+            # that bracket's scope (just past the opener, or a hanging indent
+            # when nothing follows it) so multi-line signatures / lists / dicts
+            # line up instead of snapping to the line's own indent. If the caret
+            # is instead on a continuation line continuation bracket already CLOSED on
+            # this line, dedent back to the statement's opening-line indent
+            # (e.g. after `...)` of a multi-line decorator snaps back to col 0).
+            # Otherwise keep the current line's indentation.
+            indent = _open_bracket_indent(text, pos)
+            if indent is None:
+                opener = _unclosed_opener(text, _get_line_start(text, pos))
+                indent = _get_indent(text, opener) if opener is not None \
+                    else _get_indent(text, pos)
+            # The remainder of the current line moves down to the new line. Strip
+            # ITS leading spaces (only up to this line's end - NOT the next
+            # line's indent) so they don't stack on top of the indent we insert.
+            # Without this, whitespace right of the caret compounds with every
+            # Enter: the new line ends up `indent + trailing` wide, the caret
+            # lands mid-whitespace, and the next Enter measures that larger indent
+            # - marching the caret ever rightward instead of fixing the line's
+            # indentation.
+            tail = pos
+            line_end = text.find('\n', pos)
+            stop = line_end if line_end != -1 else len(text)
+            while tail < stop and text[tail] == ' ':
+                tail += 1
+            text = text[:pos] + '\n' + ' ' * indent + text[tail:]
+            ds.text_cursor_pos = pos + 1 + indent
             ds.text_selection_start = ds.text_cursor_pos
             ds.text_selection_end = ds.text_cursor_pos
             changed = True
+
 
         # --- Backspace ---
         if pressed(glfw.KEY_BACKSPACE):
@@ -2784,8 +2935,20 @@ def draw_text(input_value: str, height=None,
             if clipboard:
                 if _has_selection(ds):
                     text, ds.text_cursor_pos = _delete_selection(text, ds)
-                text = text[:ds.text_cursor_pos] + clipboard + text[ds.text_cursor_pos:]
-                ds.text_cursor_pos += len(clipboard)
+                # Smart reindent on paste. A copied indented line block is dropped
+                # at the caret's own indentation, preserving the block's RELATIVE
+                # indentation, instead of pushing the block indent on top of the
+                # line's (double-indenting). Only when the caret is on a line's
+                # leading whitespace (the "paste onto a fresh indented line" case)
+                # and the text is multi-line or carries leading spaces; plain
+                # inline pastes (a token mid-statement) are left untouched.
+                line_start = _get_line_start(text, ds.text_cursor_pos)
+                prefix = text[line_start:ds.text_cursor_pos]
+                reindent = (not prefix.strip()
+                            and ('\n' in clipboard or clipboard[:1].isspace()))
+                insert = _reindent_paste(clipboard, prefix) if reindent else clipboard
+                text = text[:ds.text_cursor_pos] + insert + text[ds.text_cursor_pos:]
+                ds.text_cursor_pos += len(insert)
                 ds.text_selection_start = ds.text_cursor_pos
                 ds.text_selection_end = ds.text_cursor_pos
                 changed = True

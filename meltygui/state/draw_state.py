@@ -446,7 +446,7 @@ class DrawState(DictConversion):
         self.imgui_is_toggled_open = False
 
         self._previous_hash = None
-        self.tint = (0.485, 0.61, 0.76)
+        self.tint = (0.11, 0.12, 0.14)
         self.current_tint = None
 
         self.unique = None  # stable UI ID

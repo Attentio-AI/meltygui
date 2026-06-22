@@ -388,7 +388,7 @@ def run_forward_pass(use_gen_pass=True):
 
 
 @window(initial={"width": 350, "height": 540})
-@render_func(tint=(0.09, 0.03, 0.32), auto_resize=False)
+@render_func(tint=(0.026, 0.055, 0.089), auto_resize=False)
 def live_view_forward(input_value=None, draw_state=None, **kwargs):
     from src.lsd.train.lsd_train import LSD
     from src.lsd.gl_gui.view.mode import Mode
@@ -399,7 +399,7 @@ def live_view_forward(input_value=None, draw_state=None, **kwargs):
 
 
 @render_func(use_cache=True, show_bg=False, shadow=False, selectable=False,
-             with_header=None, show_name=False, tint=(0.485, 0.61, 0.76))
+             with_header=None, show_name=False)
 def draw_function_live(input_value, draw_state=None, unique=None,
                        source_mode=None, column_edges=None, run_in_thread=True,
                        **kwargs):
@@ -413,7 +413,7 @@ def draw_function_live(input_value, draw_state=None, unique=None,
 
     `run_in_thread=True` (the default) runs the twin on a worker so a long
     pass (live_view_forward's full forward pass) never blocks the render
-    loop. The live views need no special handling for this: each publish
+    loop. The live views need no special handling for this: each publis
     invalidates its watcher draw_states from the worker and wakes the loop
     (the terminal-reader pattern in live_view._notify_watchers), and all
     window rendering / voxel uploads happen on the GL thread next frame.

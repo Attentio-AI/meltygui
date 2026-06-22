@@ -64,6 +64,7 @@ class ComparisonViewMode(RelaxedEnum):
     TRAIN = 4
 
 
+
 class MaskRange(RelaxedEnum):
     SHORT_MIN_TO_ZERO = 0
     ZERO_TO_ONE = 1

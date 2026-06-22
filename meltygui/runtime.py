@@ -1908,14 +1908,20 @@ class Melty:
         rpx0, rpy0, rpx1, rpy1 = px, py, px + pw, py + ph
         rnx0, rny0, rnx1, rny1 = nx, ny, nx + nw, ny + nh
 
-        # Mouse-proximity fade: fade the whole connector by how close the cursor
-        # is to each connected view, parent and child fading on their own
-        # distance scales (see _mouse_fade). When it fully fades out there is
-        # nothing to draw, so skip the geometry entirely.
-        mouse_fade = Melty._mouse_fade(
-            (rpx0, rpy0, rpx1, rpy1), (rnx0, rny0, rnx1, rny1))
-        if mouse_fade <= 0.0:
-            return
+        # Mouse-proximity fade applies to RIBBON mode only: dim the whole band by
+        # how close the cursor is to each connected view, parent and child fading
+        # on their own distance scales (see _mouse_fade). When it fully fades out
+        # there is nothing to draw, so skip the geometry entirely. LINE mode uses a
+        # static opacity (Swoosh.alpha) anyway, so it computes no fade - this is
+        # local to the selected mode, so a ribbon that falls through to the line on
+        # overlapping views keeps the live fade.
+        if mode is SwooshMode.RIBBON:
+            mouse_fade = Melty._mouse_fade(
+                (rpx0, rpy0, rpx1, rpy1), (rnx0, rny0, rnx1, rny1))
+            if mouse_fade <= 0.0:
+                return
+        else:
+            mouse_fade = 1.0
 
         # Ribbon mode: a full band between the view edges replaces the thin
         # line whenever the views have a space to bridge; overlapping views fall

@@ -1337,10 +1337,9 @@ def run_recompile(source, code_state, draw_state, start=False, name="recompile")
 def code_file_io(input_value, code_state: CodeState, codec=None, view_func=RenderFuncs.draw_text, auto_load=True,
                  auto_load_edits=False, min_height=20, shadow=False, show_add_delete=False,
                  child_kwargs=None, draw_state=None, auto_save=True, auto_recompile_edits=False, save=False, load=False,
-                 recompile=False, run_jedi=False, save_debounce_ms=600, 
+                 recompile=False, run_jedi=False, save_debounce_ms=0,
                  ensure_import=None, s_key_pressed=None, enter_key_pressed=None, unique=None, **kwargs):
     edited = False
-
     try:
         imgui.dummy(0, 0)
 
@@ -1714,7 +1713,6 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
         recompile_start = (recompile) or recompile_hotkey
         run_recompile(input_value, code_state, draw_state, start=recompile_start)
 
-
     except Exception as e:
         imgui.text_colored(f"editable_source error: {e}", 1.0, 0.4, 0.0)
 
@@ -1842,20 +1840,27 @@ def host_code_state(host):
 # hosts simply retry on a later frame.
 _last_auto_index_time = 0.0
 _AUTO_INDEX_STAGGER_S = 0.25
-_index_retry_timer = None   # one-shot: wakes the nudge after typing settles
 
 
-def _arm_index_retry():
-    """Frames are event-driven, so a pause after typing wouldn't wake
-    _ensure_symbol_index on its own. When we skip the nudge because the user is
-    typing, arm a single (coalesced) timer to request a render once input goes
-    quiet, so the deferred symbol refresh actually fires."""
-    global _index_retry_timer
-    if _index_retry_timer is not None:
-        _index_retry_timer.cancel()
-    _index_retry_timer = threading.Timer(0.45, request_render)
-    _index_retry_timer.daemon = True
-    _index_retry_timer.start()
+def _post_symbol_attach(dict_host, gen, flat):
+    """Attach a computed {symbol: SymbolUsage} map onto the host's held gp at the
+    next frame boundary (Melty.post_to_render). Deferred-not-inline because the gp
+    is walked live every frame and inserting __symbol_usages__ keys mid-iteration
+    raises 'dictionary changed size during iteration' (see _index_host_in_place).
+    Shared by the inline fast path and the background recompute path."""
+    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _distribute_by_name
+
+    def _attach():
+        gp = dict_host._held()
+        if not isinstance(gp, dict):
+            return
+        gp._symbol_gen = gen
+        if flat:
+            gp.symbol_usage = flat
+            _distribute_by_name(gp, flat)
+        dict_host._notify_consumers(name="symbol index attached")
+
+    Melty.post_to_render(_attach)
 
 
 def _ensure_symbol_index(dict_host, str_host, code_dict, jump_to=None):
@@ -1867,7 +1872,22 @@ def _ensure_symbol_index(dict_host, str_host, code_dict, jump_to=None):
     cross-file callers may have moved. The chain itself attaches the symbols
     (cst_module_to_dict's auto pass); this only supplies `jump_to` and the
     re-run edge. One nudge per (parse identity, generation), so a span whose
-    index is legitimately empty doesn't re-trigger every frame."""
+    index is legitimately empty doesn't re-trigger every frame.
+
+    The trigger keys on the file's PENDING-edit generation, not just the parse
+    identity + index generation: a blank-line edit bumps pending_gen WITHOUT a new
+    parse or an index-gen bump, and the symbol POSITIONS must follow it. The old
+    `_symbol_gen == gen` gate (index gen only) froze the symbols at the last
+    REPARSE — so a newline's offset waited for the ~0.5s cst→dict reparse. Now the
+    inline offset fires per pending edit and tracks the live buffer.
+
+    Tiers: a position-only edit (blank-line shift) refreshes in ~sub-ms–2ms, so we
+    do it INLINE here and attach next frame — no cooperative yield, no stagger, no
+    background hop. A `_NEEDS_RECOMPUTE` (within-line / substantial edit) that the
+    chain's reparse already covers (parse indexed at the current index gen) is left
+    to that reparse — we do NOT spawn a recompute per keystroke. Only a genuinely
+    gen-stale parse (fresh parse / cross-file warmer bump) takes the deferred
+    background recompute behind the yield + stagger."""
     global _last_auto_index_time
     if dict_host is None or not isinstance(code_dict, dict):
         return
@@ -1879,14 +1899,6 @@ def _ensure_symbol_index(dict_host, str_host, code_dict, jump_to=None):
     gen = _lc._index_generation
     if gen < 1:
         return          # warmer hasn't built yet - we retry once it bumps
-    if getattr(code_dict, "_symbol_gen", None) == gen:
-        return          # parse already indexed against the current generation
-    if not _lc._wait_for_no_drag(max_wait=0.0):
-        return          # mid-gesture - don't even start; retried next frame
-    if _lc._typing_now():
-        _arm_index_retry()
-        return          # still typing - the heavy index would lag every key;
-                        # the timer wakes us to refresh once input settles
     if jump_to is None and str_host is not None:
         cs = host_code_state(str_host)
         jump_to = getattr(cs, "address", None) if cs is not None else None
@@ -1894,9 +1906,33 @@ def _ensure_symbol_index(dict_host, str_host, code_dict, jump_to=None):
         return          # host hasn't resolved a span yet
     if dict_host.child_kwargs.get("jump_to") is not jump_to:
         dict_host.child_kwargs["jump_to"] = jump_to
-    key = (id(code_dict), gen)
+    from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+    pgen = PendingSave.pending_gen_for(jump_to.path)
+    key = (id(code_dict), gen, pgen)
     if getattr(dict_host, "_auto_index_key", None) == key:
-        return          # nudge already issued for this parse / generation
+        return          # already handled this parse + index gen + pending edit
+
+    # FAST PATH (inline, render thread): exact cache hit or blank-line offset only
+    # — ~sub-ms–2ms, GIL-cheap. Attach next frame so highlights track the edit,
+    # skipping the yield/stagger/background hop. Fires per pending edit so a
+    # newline offsets eagerly instead of waiting for the reparse.
+    flat = _lc.compute_symbol_usages_for_address(jump_to, fast_only=True)
+    if flat is not _lc._NEEDS_RECOMPUTE:
+        dict_host._auto_index_key = key
+        _post_symbol_attach(dict_host, gen, flat)
+        return
+
+    # Not linearly offsettable: If this parse is already indexed at the current
+    # index gen, the symbols are correct except for THIS pending edit's positions -
+    # the chain's reparse will refresh them; don't spawn a recompute per keystroke.
+    if getattr(code_dict, "_symbol_gen", None) == gen:
+        dict_host._auto_index_key = key   # handled (mark so we don't re-probe/frame)
+        return
+
+    # SLOW PATH (gen-stale parse: fresh parse / warmer bump) - a real recompute,
+    # deferred to a background thread behind the no-drag yield + stagger.
+    if not _lc._wait_for_no_drag(max_wait=0.0):
+        return          # mid-gesture - don't even start, retried next frame
     if time.monotonic() - _last_auto_index_time < _AUTO_INDEX_STAGGER_S:
         return          # another host nudged recently - stagger a retry later
     _last_auto_index_time = time.monotonic()
@@ -1917,7 +1953,7 @@ def _index_host_in_place(str_host, dict_host, gen):
     the gp are safe here: consumers only re-read after _notify_consumers
     invalidates their subtrees (the same wake a background parse uses)."""
     from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
-        compute_symbol_usages_for_address, _distribute_by_name, _wait_for_no_drag)
+        compute_symbol_usages_for_address, _wait_for_no_drag)
     if not _wait_for_no_drag():
         # Gesture outlasted the wait - bail rather than steal GIL time from
         # it. Clearing the in-flight key lets the editor-side nudge (or
@@ -1936,25 +1972,10 @@ def _index_host_in_place(str_host, dict_host, gen):
         flat = compute_symbol_usages_for_address(address)
     except Exception:
         return
-
-    def _attach():
-        # Runs on the render thread (Melty.post_to_render): the gp is LIVE -
-        # several hosts (editor views, usage spans, draw_collection) iterate
-        # its dicts every frame, and adding __symbol_usages__ keys from a
-        # worker mid-iteration raises "dictionary changed size during
-        # iteration". Between frames there is no iterator to race. Re-fetch
-        # the held value here - a reparse may have replaced it mid-compute;
-        # sites are file-absolute, so attaching to the newer gp is correct.
-        gp = dict_host._held()
-        if not isinstance(gp, dict):
-            return
-        gp._symbol_gen = gen
-        if flat:
-            gp.symbol_usage = flat
-            _distribute_by_name(gp, flat)
-        dict_host._notify_consumers(name="symbol index attached")
-
-    Melty.post_to_render(_attach)
+    # Attach at the next frame, - the gp is walked live every frame and a
+    # mid-walk insert would raise (see _post_symbol_attach). Re-fetches the
+    # held gp there (a reparse may have replaced it; sites are file-absolute).
+    _post_symbol_attach(dict_host, gen, flat)
 
 
 def _wake_stale_code_hosts(gen):
@@ -2183,6 +2204,7 @@ def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabS
         _ensure_symbol_index(dict_host, _str_host, dict_host._held(),
                              kwargs.get("jump_to"))
 
+
         # New columnLayout (shared edge system): the panes line up with other
         # objects drawn on the root window - the divider between the
         # structured and text panes is a draggable line in the same collision
@@ -2194,6 +2216,8 @@ def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabS
         # Columns. Absent (the usual standalone window), ColumnLayout falls back
         # to the window frame edges.
         from src.lsd.gl_gui.view.core_views.columns import ColumnLayout, MIN_ROW_HEIGHT
+       
+        
         cols = ColumnLayout(draw_state, len(tab_state.selected_tabs),
                             column_edges=column_edges, column_widths=column_widths,
                             left_edge=kwargs.get("left_edge"),
@@ -2217,7 +2241,7 @@ def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabS
         # read `gp` before the structured branch defined it).
         gp = dict_host._held() if dict_host is not None else None
         cache_error = _host_code_tree_error(dict_host)
-
+        
         raw_changed, raw_value = False, input_value
         for idx, view_func in enumerate(tab_state.selected_tabs):
             with cols.cell(idx, height=avail_h) as col_width:
@@ -2228,10 +2252,10 @@ def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabS
                     # recompile/runtime highlight (the same trio draw_text_from_code_cache
                     # hands draw_text, now via the parent _str_host).
                     m_changed, m_out = RenderFuncs.draw_collection(
-                        input_value=_str_host, child_kwargs={"error": error, "view_func": RenderFuncs.draw_text,
-                                                             "code_dict": gp, "code_tree": cache_error,
-                                                             "run_jedi": run_jedi, "jump_to": kwargs.get("jump_to")},
-                        show_header=False, show_name=False,
+                        input_value = _str_host, child_kwargs={"error": error, "view_func": RenderFuncs.draw_text, "is_tree":False,
+                                                               "code_dict": gp, "code_tree": cache_error, "child_kwargs":{"is_tree":False},
+                                                               "run_jedi": run_jedi, "jump_to": kwargs.get("jump_to")},
+                                                                show_header=False, show_name=False,
                         width=col_width, **size_kwargs,
                         name=f"draw_text##{unique}")
                     if m_changed:
@@ -2245,7 +2269,6 @@ def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabS
                         continue
                     m_changed, m_out = RenderFuncs.draw_collection(
                         gp, excluded=["__cst__"], show_system=True, draw=draw,
-
                         disable_scroll=False, show_header=False, show_add_delete=False,
                         width=col_width, **size_kwargs, show_parent_add_delete=False,
                         name=f"draw_collection##{unique}", selectable=False)

@@ -13,7 +13,7 @@ MIN_COLUMN_WIDTH = 30
 MIN_ROW_HEIGHT = 20
 EDGE_GRAB_WIDTH = 20.0
 # Band color when the cursor is over the row (hard-coded for now).
-HIGHLIGHT_TINT = (1,1,1, 0.02)
+HIGHLIGHT_TINT = (1,1,1, 0.0)
 
 _NOTE = dict(name="draw_columns", tint=(0.5, 0.8, 1.0))
 

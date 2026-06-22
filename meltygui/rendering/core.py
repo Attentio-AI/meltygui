@@ -23,7 +23,7 @@ from src.lsd.gl_gui.mode_defaults import ModeDefaults
 from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
 from src.lsd.gl_gui.view.core_conversion.address import to_address, Address
 from src.lsd.gl_gui.view.core_conversion.path_finder import PendingState
-from src.lsd.gl_gui.model.core_model.draw_state import DrawState, Hotkey, DragMode, Anchor, Pin, TileMode, AttrDict
+from src.lsd.gl_gui.model.core_model.draw_state import DrawState, Hotkey, DragMode, Anchor, Pin, TileMode, AttrDict, TOP_ANCHORS
 from src.lsd.gl_gui.model.core_model.core_enums import PendingAction
 from src.lsd.gl_gui.utils.custom_views import push_style_var, pop_style_var
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace, trace_group, get_live_frames
@@ -1382,18 +1382,34 @@ def render_func(*args, **o_kwargs):
             else:
                 draw_state.window_pos = (0, 0)
 
+            # The right-drag (corner_drag) is shared by BOTH the resize block
+            # here and the window-move block further down: plain right-drag
+            # resizes, ctrl+right-drag moves. Initialised to None so the move
+            # block can always read it (auto-resize windows have no resize
+            # handle, so corner_drag stays None for them).
+            corner_drag = None
             if not auto_resize and (passed_width is None or passed_height is None):
                 corner_rect = get_resize_handle(draw_state)
                 handle_drag = draw_state.on_action("left_mouse_drag", view_id="window_resize",
                                                    rect=corner_rect, priority_delta=1)
 
                 corner_drag = draw_state.on_action("right_mouse_drag", view_id="corner_drag", priority_delta=-1)
-                if handle_drag is None:
+                # Plain right-drag resizes; with ctrl held the right-drag is a
+                # window-move instead (handled in the move block below), so don't
+                # drive resize from it. corner_drag.ctrl is reset per frame, so
+                # tapping ctrl mid-drag flips the mode live and seamlessly.
+                if handle_drag is None and corner_drag is not None and not corner_drag.ctrl:
                     handle_drag = corner_drag
 
                 if handle_drag and not auto_resize:
                     if draw_state._initial_window_size is None:
-                        draw_state._initial_window_size = (draw_state.width, draw_state.height)
+                        # Rebase the size baseline by the drag delta so far so
+                        # size = baseline + total_d is continuous if resize
+                        # (re)activates mid-drag - e.g. by releasing ctrl,
+                        # which had switched the right-drag to a window-move. At
+                        # a normal drag start total_d≈0, so this is a no-op.
+                        draw_state._initial_window_size = (draw_state.width - handle_drag.total_dx,
+                                                           draw_state.height - handle_drag.total_dy)
                     if draw_state._initial_window_pos_resize is None:
                         draw_state._initial_window_pos_resize = (draw_state.window_pos[0], draw_state.window_pos[1])
 
@@ -1442,6 +1458,46 @@ def render_func(*args, **o_kwargs):
                             draw_state.window_pos = (
                                 snap_int(draw_state._initial_window_pos_resize[0] + max(0, handle_drag.total_dx) / 2),
                                 snap_int(draw_state._initial_window_pos_resize[1] + max(0, handle_drag.total_dy) / 2))
+
+                    # Sticky resize: re-anchor the top to the drag-start
+                    # position each frame so the bottom-on-display clamp below
+                    # is the ONLY thing that displaces the window. As the window
+                    # shrinks the displacement unwinds and it returns to where
+                    # the drag began, rather than keeping whatever raised
+                    # position an earlier overflow left it at. Only needed for
+                    # anchors that don't already re-derive y from the start pos
+                    # each frame (None / TOP_*); bottom/center anchors revert on
+                    # their own. Preserves the (layout-managed) x.
+                    if (Toggles.WindowSettings.sticky_drag
+                            and (draw_state.anchor_pos is None
+                                 or draw_state.anchor_pos in TOP_ANCHORS)):
+                        draw_state.window_pos = (draw_state.window_pos[0],
+                                                 draw_state._initial_window_pos_resize[1])
+
+                    # Keep the window's bottom on the display while resizing.
+                    # When the new bottom would extend past the bottom of the
+                    # main display, pin the bottom to the display edge and let
+                    # the top rise instead. This lets a window already low on
+                    # screen be grown in one continuous right-drag (the cursor
+                    # stays mid-window with room to keep dragging) without
+                    # first dragging it up to make room. Stated in absolute
+                    # coords via _abs_top (linear in window_pos[1]) so nested
+                    # windows clamp against the display correctly too. Only
+                    # fires during real resizing, so the corner handle - whose
+                    # cursor can't pass the the edge - is unaffected.
+                    display_h = imgui.get_io().display_size[1]
+                    abs_top = draw_state._abs_top()
+                    if abs_top + draw_state.height > display_h:
+                        # Cap: never go taller than the display, and never
+                        # push the top above the display top. Once the window
+                        # fills the display height it stops enlarging - top
+                        # pinned at the display top, bottom at the display
+                        # bottom.
+                        if passed_height is None and draw_state.height > display_h:
+                            draw_state.height = snap_int(display_h)
+                        overflow = abs_top + draw_state.height - display_h
+                        draw_state.window_pos = (draw_state.window_pos[0],
+                                                 snap_int(draw_state.window_pos[1] - overflow))
                 else:
                     draw_state._initial_window_size = None
                     draw_state._initial_window_pos_resize = None
@@ -1473,14 +1529,51 @@ def render_func(*args, **o_kwargs):
                         # registered root, for a root window it's a no-op anyway.
                         Melty.move_window_to_front(draw_state)
 
-                    if on_drag and not imgui_active:
-                        if draw_state._initial_window_pos is None:
-                            draw_state._initial_window_pos = (draw_state.window_pos[0],
-                                                              draw_state.window_pos[1])
+                    # ctrl+right-drag moves a window, exactly like a left-drag.
+                    # The right-drag is captured in the resize system above as
+                    # corner_drag; here we use it as a move whenever ctrl is
+                    # held. Reading .ctrl per frame means a single right-drag can
+                    # flip between resize (ctrl up) and move (ctrl down) live.
+                    move_drag = on_drag
+                    via_ctrl_right = False
+                    if move_drag is None and corner_drag is not None and corner_drag.ctrl:
+                        move_drag = corner_drag
+                        via_ctrl_right = True
 
-                        pos_x = draw_state._initial_window_pos[0] + on_drag.total_dx
-                        pos_y = draw_state._initial_window_pos[1] + on_drag.total_dy
+                    if move_drag and not imgui_active:
+                        if draw_state._initial_window_pos is None:
+                            # First frame of a move drag. Raise on grab for
+                            # parity with the left-drag move (which raises on its
+                            # left_mouse_down). Rebase the baseline by the drag
+                            # delta so far so pos = baseline + total_d is
+                            # correct when the move (re-)activates mid-drag -
+                            # e.g. the moment ctrl is pressed during a resize.
+                            # At a normal drag start total_d=0 so it's a no-op.
+                            if via_ctrl_right:
+                                Melty.move_window_to_front(draw_state)
+                            draw_state._initial_window_pos = (draw_state.window_pos[0] - move_drag.total_dx,
+                                                              draw_state.window_pos[1] - move_drag.total_dy)
+
+                        pos_x = draw_state._initial_window_pos[0] + move_drag.total_dx
+                        pos_y = draw_state._initial_window_pos[1] + move_drag.total_dy
                         draw_state.window_pos = (pos_x, pos_y)
+                        # Don't let a window be dragged above the top of the
+                        # DISPLAY (at y < 0) - not above its parent. Use
+                        # _abs_top, the true screen-absolute top (same method the
+                        # resize clamp uses): it includes the window's layout
+                        # offset within its parent (top_offset), so for a nested
+                        # window abs_top is its real screen position. (Don't use
+                        # _abs_top_true here - its top_offset_true is never read,
+                        # so it omits the layout offset and returns ~0 at the
+                        # parent's top, which wrongly pinned nested windows there.)
+                        # It's linear in window_pos[1] (slope 1), so a single
+                        # comparison pins the top to 0. The candidate pos_y is
+                        # recomputed from _initial_window_pos every frame, so the
+                        # bounce never accumulates and releases the moment you drag
+                        # back down.
+                        abs_top = draw_state._abs_top()
+                        if abs_top < 0:
+                            draw_state.window_pos = (pos_x, pos_y - abs_top)
                     else:
                         draw_state._initial_window_pos = None
 

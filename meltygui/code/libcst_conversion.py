@@ -227,8 +227,7 @@ class Except(dict):
         return f"Except:{self.header}:{keys}"
 
 
-@defaults(disable_scroll=True,
-             bg_offset=-1.206, tint=(0.009,0.2495,0.39, 0.172))
+@defaults(disable_scroll=True, show_bg=True, shadow=False, use_cache=True, tint=(0.009,0.2495,0.39, 0.172))
 class GeneralParse(dict):
     def __init__(self, *args, source="", file_path=None, line_offset=0, **kwargs):
         super().__init__(*args, **kwargs)
@@ -839,6 +838,19 @@ _symbol_store = _load_symbol_store()
 _symbol_usage_cache: dict = _symbol_store["spans"]  # (resolved_path, start, end) -> (sig, {sym: SymbolUsage}); sig = (mtime, pending_gen, accurate, gen)
 _mtime_snapshot: dict = _symbol_store["mtimes"]     # resolved_path -> mtime at last counted change
 
+# The exact buffer text a cached span result was computed from, indexed by the
+# same span key. Drives the position-only fast path (_line_offset_map): on a
+# pending-edit miss it diffs this snapshot against the live buffer to detect a
+# blank-line-only edit and remap positions instead of recomputing. Deliberately
+# NOT in _symbol_store (not pickled - full file text would bloat the index
+# pickle, and it's cheap to re-snapshot on the next compute). sys-adopted so it
+# survives hotswap / restart-in-place alongside _symbol_usage_cache; empty on a
+# fresh process (first edit per span recomputes, then offsets thereafter).
+_span_text: dict = getattr(sys, "_symbol_span_text", None)
+if _span_text is None:
+    _span_text = {}
+    sys._symbol_span_text = _span_text
+
 # File suffixes to drop from jedi search - a symbol DEFINED in one of these is
 # skipped entirely, and any callers in them are filtered out. jedi only
 # searches .py/.pyi to begin with (no per-extension search hook), so this is how
@@ -940,11 +952,15 @@ def _symbol_refs_local(file_path: str, start_line: int, end_line: int) -> dict:
 # locals. Toggle Toggles.jedi_correctness to A/B-test the full jedi path.
 
 _index_refs_cache: dict = {}   # resolved_path -> (mtime, [(kind, key, line, col, scope)])
-# Cross-file caller scan result, cached so a local edit doesn't re-walk ~150 src
-# files. resolved_path -> (scan_key, {name: [caller_refs]}); scan_key =
-# (mtime, _index_generation, frozenset(obj_target_keys), frozenset(mem_target_keys)).
-# Content-free key (ids + mtime + gen), per CLAUDES.md - never a content hash.
-_caller_scan_cache: dict = {}
+
+# Per-class definition LINE, cached by (defining file, qualname) and invalidated
+# on the file's mtime. `inspect.getsourcelines(obj)` ast.parses the .src file it
+# lives in on every call (~10ms/class — confirmed: 1 parse per class, 0 per
+# function); the def-resolution loop calls it once per module-level symbol, and a
+# heavily-referenced span (Mode) resolves dozens of classes from stable src. The
+# cache skips the re-parse when the def file is unchanged. Key on qualname (not id),
+# so it survives object churn and mtime guards staleness.
+_def_line_cache: dict = {}     # (defining_file, qualname|id) -> (mtime, lineno)
 
 # Bumped by the background cache warmer (build_index_cache) whenever any src
 # file's mtime moved past _mtime_snapshot (a REAL content change - a mere
@@ -1024,21 +1040,35 @@ def _collect_refs(tree) -> list:
     """Reference occurrences in a module AST:
       ("name", name, line, col, scope)            -- a bare Name
       ("attr", (base_name, attr), line, col, scope) -- `base_name.attr` access
-    col is 0-indexed; scope is the nearest enclosing def/class."""
+    col is 0-indexed; scope is the nearest enclosing def/class.
+
+    Hot: this runs once per file in the cold caller scan and was the single
+    biggest primitive there (~half the cold compute), being a pure-Python walk
+    over every AST node. Optimized for that: `type() is` dispatch instead of
+    isinstance (ast nodes are never subclassed, so it's equivalent), Name tested
+    first (the most common reference node), and `out.append` / the ast types /
+    iter_child_nodes bound to locals to skip per-node global lookups."""
     out = []
+    out_append = out.append
+    iter_child = ast.iter_child_nodes
+    Name = ast.Name; Attribute = ast.Attribute
+    FunctionDef = ast.FunctionDef; AsyncFunctionDef = ast.AsyncFunctionDef
+    ClassDef = ast.ClassDef
 
     def walk(node, scope):
-        for child in ast.iter_child_nodes(node):
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                out.append(("name", child.name, child.lineno, child.col_offset, scope))
-                walk(child, child.name)
-            elif isinstance(child, ast.Attribute):
-                if isinstance(child.value, ast.Name):
-                    out.append(("attr", (child.value.id, child.attr),
+        for child in iter_child(node):
+            t = child.__class__
+            if t is Name:
+                out_append(("name", child.id, child.lineno, child.col_offset, scope))
+            elif t is Attribute:
+                v = child.value
+                if v.__class__ is Name:
+                    out_append(("attr", (v.id, child.attr),
                                 child.lineno, child.col_offset, scope))
                 walk(child, scope)          # also records the base case beneath
-            elif isinstance(child, ast.Name):
-                out.append(("name", child.id, child.lineno, child.col_offset, scope))
+            elif t is FunctionDef or t is AsyncFunctionDef or t is ClassDef:
+                out_append(("name", child.name, child.lineno, child.col_offset, scope))
+                walk(child, child.name)
             else:
                 walk(child, scope)
 
@@ -1080,7 +1110,8 @@ def _imported_name_objects(tree) -> dict:
     return out
 
 
-def _file_index_refs(path, module, text=None) -> list:
+def _file_index_refs(path, module, text=None, tree=None, imports=None,
+                     raw_refs=None) -> list:
     """Resolved references in one src file, cached by mtime:
       ("name", id(obj)|None, line, col, scope)         -- bare name -> object id
       ("attr", (id(base)|None, attr)|None, ...)        -- base.attr -> (base id, attr)
@@ -1092,7 +1123,14 @@ def _file_index_refs(path, module, text=None) -> list:
     caller scan reaches the edited file it passes it so the file's own internal
     callers reflect the live buffer. The mtime cache is bypassed then — deferred
     saves don't bump mtime, so a cached entry would be stale (it's one file per
-    compute, so re-parsing it is cheap)."""
+    compute, so re-parsing it is cheap).
+
+    `tree` / `imports` / `raw_refs` let the caller hand over an already-parsed
+    ast, its resolved imports, and its raw `_collect_refs` output for THIS file,
+    avoiding a redundant ast.parse + two full-tree walks — _symbol_refs_index
+    passes the edited file's tree/imports/refs, which it already built for target
+    resolution, so the edited file is parsed and walked once per compute, not
+    twice."""
     use_text = text is not None
     if not use_text:
         try:
@@ -1106,14 +1144,18 @@ def _file_index_refs(path, module, text=None) -> list:
     refs = []
     if od is not None:
         try:
-            tree = ast.parse(text if use_text else path.read_text())
-            imports = _imported_name_objects(tree)
+            if tree is None:
+                tree = ast.parse(text if use_text else path.read_text())
+            if imports is None:
+                imports = _imported_name_objects(tree)
 
             def look(n):
                 v = od.get(n)
                 return v if v is not None else imports.get(n)
 
-            for (kind, payload, line, col, scope) in _collect_refs(tree):
+            if raw_refs is None:
+                raw_refs = _collect_refs(tree)
+            for (kind, payload, line, col, scope) in raw_refs:
                 if kind == "name":
                     obj = look(payload)
                     refs.append(("name", id(obj) if obj is not None else None, line, col, scope))
@@ -1170,6 +1212,27 @@ def _collect_targets(file_tree, module, s: int, e: int):
     return obj_targets, mem_targets, obj_by_name, sites, def_lines
 
 
+def _cached_def_line(target, df) -> int:
+    """`inspect.getsourcelines(target)[1]` (the def's first line), cached by
+    (defining-file, qualname) and invalidated on the file's mtime. getsourcelines
+    on a class ast.parses the whole file every call — this skips that when the
+    file is unchanged (the common case in the def-resolution loop). `df` is the
+    already-resolved getsourcefile (cheap, no parse). Raises like getsourcelines
+    on a miss, so the caller's try/except still covers it."""
+    qn = getattr(target, "__qualname__", None)
+    try:
+        mt = _Path(df).stat().st_mtime if df else None
+    except OSError:
+        mt = None
+    key = (df, qn) if qn else (df, id(target))
+    ce = _def_line_cache.get(key)
+    if ce is not None and ce[0] == mt:
+        return ce[1]
+    dl = inspect.getsourcelines(target)[1]
+    _def_line_cache[key] = (mt, dl)
+    return dl
+
+
 def _member_def_site(base, attr):
     """Best-effort (file, line) where member `attr` of class/module `base` is
     DEFINED. Functions/classes resolve via inspect; plain class vars and enum
@@ -1204,7 +1267,8 @@ def _is_src_object(base, mod_map) -> bool:
     return f is not None and _Path(f).resolve() in mod_map
 
 
-def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None) -> dict:
+def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None,
+                       prev=None) -> dict:
     """jedi-free fast path. Resolve the span's symbols (module-level + class
     members) against live objects, then find callers across loaded src files —
     bare-name refs for module-level, ClassName.member refs for members. Returns
@@ -1212,7 +1276,18 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
 
     `text` is the current file content (disk + unsaved edits); when omitted it
     falls back to the on-disk read, but callers should pass it so the span's sites
-    reflect the live buffer rather than the stale file."""
+    reflect the live buffer rather than the stale file.
+
+    `prev` is the raw result of a PRIOR compute of this span whose expensive half
+    is still valid — the caller (_compute_symbol_usages) only passes it when the
+    index generation is unchanged, i.e. no other file's content and no live object
+    moved, only the local buffer did. A symbol's DEFINITION (resolved against a
+    live object via inspect — the ~65% cost) and its callers in OTHER files are
+    then invariant; only its callers in THIS file and its in-span sites can have
+    moved. So with `prev` we rescan just the edited file (always) + run the
+    cross-file scan / inspect ONLY for names not already in `prev` (freshly typed
+    symbols), reusing the rest. Cold path (prev=None): every name is "fresh", so
+    the scan is full and behaviour is identical to before."""
     resolved = _Path(file_path).resolve()
     mod_map = _src_mod_map()
     owning = mod_map.get(resolved)
@@ -1243,7 +1318,9 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
         return v if v is not None else _file_imports.get(n)
 
     member_bases = {}                       # dotted name -> base object
-    for (kind, payload, line, col, scope) in _collect_refs(file_tree):
+    file_refs = _collect_refs(file_tree)    # one full tree walk, reused for the
+                                            # edited file's caller scan below too
+    for (kind, payload, line, col, scope) in file_refs:
         if not (start_line <= line <= end_line):
             continue
         if kind == "name":
@@ -1268,55 +1345,64 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
     if not obj_targets and not mem_targets:
         return {}
 
-    # ── Caller scan ───────────────────────────────────────────────────────────
-    # The cross-file scan (~150 files + ~20ms of GIL-yield sleeps) is the bulk of
-    # the cost and does NOT depend on edits to THIS file - callers live in OTHER
-    # files, which change only when the index warmer bumps _index_generation (or a
-    # disk mtime). So cache it on (mtime, gen, target-key set): a local edit that
-    # doesn't change the symbol set (a body / comment / whitespace edit) reuses it
-    # and skips the scan; adding/removing a reference re-runs it. The key is
-    # content-free (ids + mtime + gen) - never a file hash (see CLUDE.md). The
-    # edited file's OWN internal callers DO move with its live buffer, so they're
-    # always recomputed fresh from the overlaid text, below.
-    try:
-        _mtime = resolved.stat().st_mtime
-    except OSError:
-        _mtime = None
-    scan_key = (_mtime, _index_generation, frozenset(obj_targets), frozenset(mem_targets))
-    cached_scan = _caller_scan_cache.get(resolved)
-    if cached_scan is not None and cached_scan[0] == scan_key:
-        callers = {nm: list(v) for nm, v in cached_scan[1].items()}   # copy: self-callers append below
-    else:
-        cross = {}
-        for fi, (path, mod) in enumerate(mod_map.items()):
-            if path == resolved:
-                continue                       # edited file is in in-scan below
-            if fi % 8 == 0:
-                _time.sleep(0.001)             # GIL yield (slow; off-thread scan)
-            for (kind, key, line, col, scope) in _file_index_refs(path, mod):
-                if key is None:
-                    continue
-                nm = obj_targets.get(key) if kind == "name" else mem_targets.get(key)
-                if nm is not None:
-                    cross.setdefault(nm, []).append(
-                        (str(path), line, col, scope, getattr(mod, "__name__", "") or ""))
-        _caller_scan_cache[resolved] = (scan_key, cross)
-        callers = {nm: list(v) for nm, v in cross.items()}
-
-    # The edited file's own internal callers - from the overlaid (live) text,
-    # every call, since they change with local edits.
-    for (kind, key, line, col, scope) in _file_index_refs(resolved, owning, text):
-        if key is None:
-            continue
-        nm = obj_targets.get(key) if kind == "name" else mem_targets.get(key)
-        if nm is not None:
-            callers.setdefault(nm, []).append(
-                (str(resolved), line, col, scope, getattr(owning, "__name__", "") or ""))
-
     rp_str = str(resolved)
     mod_name = getattr(owning, "__name__", "") or ""
+
+    # Incremental reuse (see docstring): names already in `prev` keep their
+    # definition + out-of-file callers; only the EDITED file is rescanned for
+    # them. Names NOT in `prev` are "fresh" and get the full cross-file scan +
+    # inspect. Cold path: prev is None → every name is fresh → full scan.
+    reuse = prev or {}
+    fresh = set(sites) - reuse.keys()
+    skip_other_files = prev is not None and not fresh  # nothing left to look up
+
+    callers = {}
+    for fi, (path, mod) in enumerate(mod_map.items()):
+        is_edited = path == resolved
+        if skip_other_files and not is_edited:
+            continue
+        if fi % 8 == 0:
+            # GIL yield: this scan is the bulk of the span compute (~150 files ×
+            # cached ref lists, plus ~5-10ms ast re-parse per stale file) and
+            # runs on a plain thread - without the sleeps it holds the GIL in
+            # one ~0.2s block and the render thread stutters. ~19 sleeps ≈
+            # +20ms delay per span.
+            _time.sleep(0.001)
+        # The edited file's own internal callers must come from the overlaid text
+        # (deferred saves keep disk stale); others read disk via the mtime cache.
+        cur = text if is_edited else None
+        # On an incremental pass the other files only need scanning for fresh
+        # names (reused names' out-of-file callers come from `prev`); the edited
+        # file is always scanned in full (its own callers move as the user types).
+        fresh_only = prev is not None and not is_edited
+        # Reuse the edited file's already-parsed tree + imports + raw refs (built
+        # above for target resolution) so it isn't parsed/walked again here.
+        scan = (_file_index_refs(path, mod, cur, tree=file_tree,
+                                 imports=_file_imports, raw_refs=file_refs)
+                if is_edited else _file_index_refs(path, mod, cur))
+        for (kind, key, line, col, scope) in scan:
+            if key is None:
+                continue
+            nm = obj_targets.get(key) if kind == "name" else mem_targets.get(key)
+            if nm is None or (fresh_only and nm not in fresh):
+                continue
+            callers.setdefault(nm, []).append(
+                (str(path), line, col, scope, getattr(mod, "__name__", "") or ""))
+
     out = {}
     for si, nm in enumerate(sites):               # every target name has sites
+        pe = reuse.get(nm)
+        if pe is not None:
+            # Reuse the expensive half: definition + callers in OTHER files
+            # (everything not in the edited file), refreshing this file's callers
+            # (rescanned above) and the in-span sites from the live buffer.
+            out[nm] = {
+                "sites": sites[nm],
+                "definition": pe["definition"],
+                "callers": [c for c in pe["callers"] if c[0] != rp_str]
+                           + callers.get(nm, []),
+            }
+            continue
         if si and si % 32 == 0:
             _time.sleep(0.001)   # GIL yield - inspect.getsourcelines per symbol adds up
         obj = obj_by_name.get(nm)
@@ -1331,7 +1417,7 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
                 # consistent. ValueError = unwrap's cycle guard.
                 target = inspect.unwrap(obj)
                 df = inspect.getsourcefile(target)
-                dl = inspect.getsourcelines(target)[1]
+                dl = _cached_def_line(target, df)   # cached; skips per-class re-parse
                 dm = getattr(target, "__module__", "") or mod_name
             except (TypeError, OSError, ValueError):
                 df, dl, dm = rp_str, def_lines.get(nm, 0), mod_name
@@ -1378,48 +1464,26 @@ def _distribute_by_name(gp, flat: dict, _matched=None) -> None:
         gp["__symbol_usages__"] = own
 
 
-# A symbol recompute (compute_symbol_usages_for_address) is heavy and GIL-bound
-# (local names + per-symbol inspect + the caller scan) and has no yield points.
-# While the user is actively typing/interacting, DON'T recompute - we reuse the
-# last result (the editor re-records slightly-stale sites, so highlights stay)
-# and refresh once input settles. `_last_input_time` is the shared input-recency
-# stamp (event_backends) - the same signal the JSON→dict cooperative yield uses.
-_SYMBOL_QUIET_S = 0.4
+# Returned by the fast_only probe when a refresh would need the full/incremental
+# recompute (i.e. it is NOT a cheap position-only offset or an exact cache hit).
+# The caller (the editor's auto-index) uses it to decide whether to refresh inline
+# on the render thread or defer to the cooperative-yielded path.
+_NEEDS_RECOMPUTE = object()
 
 
-def _typing_now() -> bool:
-    last = getattr(Melty, "_last_input_time", 0.0)
-    return bool(last) and (time.monotonic() - last) < _SYMBOL_QUIET_S
-
-
-def _cached_usages(address) -> dict:
-    """Last computed usages for `address`'s span, straight from the cache — NO
-    recompute, no current_file_text build. Returned while typing so highlights
-    persist without the per-keystroke compute. {} if never computed."""
-    if address is None or getattr(address, "path", None) is None:
-        return {}
-    try:
-        resolved = _Path(address.path).resolve()
-    except Exception:
-        return {}
-    start = (getattr(address, "start", 0) or 0) + 1
-    end = getattr(address, "end", None)
-    if end is not None:
-        cached = _symbol_usage_cache.get((resolved, start, end))
-        return cached[1] if cached else {}
-    for (rp, s, _e), entry in _symbol_usage_cache.items():   # whole-file: match (path, start)
-        if rp == resolved and s == start:
-            return entry[1]
-    return {}
-
-
-def compute_symbol_usages_for_address(address) -> dict:
+def compute_symbol_usages_for_address(address, fast_only=False):
     """Build {symbol: SymbolUsage} (callers + definition) for an address's source
     span, via in-process jedi. The entry point for the editor's manual trigger;
     run it on a background thread. Cached per file mtime, so a re-trigger on an
-    unchanged file is free. Works for a module, class, or function span."""
+    unchanged file is free. Works for a module, class, or function span.
+
+    fast_only=True returns the result ONLY when it is cheap (an exact cache hit or
+    a blank-line position offset, ~sub-ms to ~2ms) and `_NEEDS_RECOMPUTE` otherwise
+    — letting the caller run the cheap case inline (UI stays current) and defer the
+    expensive recompute behind the cooperative yield."""
+    start_time = _time.monotonic()
     if DISABLE_JEDI or address is None or getattr(address, "path", None) is None:
-        return {}
+        return _NEEDS_RECOMPUTE if fast_only else {}
     from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
     resolved = _Path(address.path).resolve()
     start = (getattr(address, "start", 0) or 0) + 1     # address.start is a 0-indexed lower bound
@@ -1428,12 +1492,17 @@ def compute_symbol_usages_for_address(address) -> dict:
     if end is None:                                     # whole-file span
         text = PendingSave.current_file_text(resolved)
         if text is None:
-            return {}
+            return _NEEDS_RECOMPUTE if fast_only else {}
         end = text.count("\n") + 1
-    return _compute_symbol_usages(resolved, start, end, pending_gen)
+    result = _compute_symbol_usages(resolved, start, end, pending_gen, fast_only=fast_only)
+    if result is _NEEDS_RECOMPUTE:
+        return result
+    end_time = _time.monotonic()
+    notify(f"Symbol usage compute for {address.path.name}:{start}-{end} took {end_time - start_time:.2f}s", tag="Compute usage")
+    return result
 
 
-def _compute_symbol_usages(resolved, start, end, pending_gen=0) -> dict:
+def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False) -> dict:
     """Cache + A/B branch core: {symbol: SymbolUsage} for a [start, end] span.
     Toggles.jedi_correctness picks the resolver — jedi (accurate, slow:
     re-exports / dotted access / locals) vs the import index (fast, direct
@@ -1446,7 +1515,25 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0) -> dict:
     `gen` folds in the index warmer's generation (a caller added in ANOTHER file);
     `accurate` re-computes when the resolver toggle flips. The CURRENT file
     content (disk + unsaved edits) is built only on a MISS — to recompute, never
-    to detect the miss."""
+    to detect the miss.
+
+    A MISS that moved only `mtime`/`pending_gen` (same resolver, same `gen`) is a
+    pure live-edit of THIS file: every other file's content and every live object
+    are unchanged, so the prior result's cross-file callers + symbol definitions
+    (~80% of the cost) still hold. We hand that prior result to the index path as
+    `prev` so it rescans only the edited file + newly-typed names. The prior result
+    is the exact-span entry when present, else the same file's best-overlapping
+    span (an edit that adds/removes lines shifts the (start,end) key, but defs +
+    callers are keyed by symbol NAME and valid across spans at one generation — so
+    a line-break edit reuses the expensive half instead of cold-recomputing it).
+    Gated by Toggles.incremental_symbol_index for A/B against the full recompute.
+
+    fast_only=True returns ONLY the cheap outcomes — an exact cache hit or a
+    blank-line position offset — and `_NEEDS_RECOMPUTE` the moment a real
+    recompute would be needed, doing none of it. The caller runs this inline on
+    the render thread (UI stays current) and falls back to the deferred path on
+    the sentinel. A within-line edit is rejected by a cheap line-count check
+    before the O(file) offset map even runs."""
     from src.lsd.gl_gui.toggles import Toggles   # lazy to avoid import cycle
     from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
     accurate = getattr(Toggles, "jedi_correctness", False)
@@ -1462,30 +1549,166 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0) -> dict:
         return cached[1]
     text = PendingSave.current_file_text(resolved)   # disk + pending overlay (miss only)
     if text is None:
-        return {}
+        return _NEEDS_RECOMPUTE if fast_only else {}
+    # Find a reusable prior result (same resolver + index generation): the exact-
+    # span entry, else the best-overlapping sibling (the span key shifts as lines
+    # are added). `src_key` is tracked so we can read its buffer-text snapshot for
+    # the position-offset fast path and evict it when the view shifts off it.
+    prev = src = src_key = None
+    if not accurate and getattr(Toggles, "incremental_symbol_index", True):
+        if cached is not None and cached[0][2] is False and cached[0][3] == gen:
+            src, src_key = cached, key
+        else:
+            src_key, src = _best_same_file_prev(resolved, start, end, gen, key)
+        if src is not None:
+            # Cheapest path: a position-only edit (blank lines added/removed, no
+            # non-blank content change) needs no recompute - remap the prior
+            # result's buffer positions by a count delta. _line_offset_map returns
+            # None on any substantial change, falling through to the full
+            # recompute below.
+            if getattr(Toggles, "offset_symbol_positions", True):
+                old_text = _span_text.get(src_key)
+                # fast_only render-thread gate: only a line-COUNT change can be a
+                # position-only offset, so a within-line edit skips the O(file)
+                # map and defers immediately (cheap path). The bg path (not
+                # fast_only) always tries the offset for line-or-zero-blank edits.
+                if not (fast_only and (old_text is None
+                                       or old_text.count("\n") == text.count("\n"))):
+                    line_map = _line_offset_map(old_text, text) if old_text is not None else None
+                    offset = _offset_usages(src[1], line_map, resolved) if line_map is not None else None
+                    if offset is not None:
+                        _store_usages(key, sig, offset, text,
+                                      evict=src_key if src_key != key else None)
+                        return offset
+            prev = _raw_from_usages(src[1])
+    if fast_only:
+        return _NEEDS_RECOMPUTE       # only exact-hit + offset are cheap; defer the rest
     try:
         raw = (_symbol_refs_worker(str(resolved), start, end, text) if accurate
-               else _symbol_refs_index(str(resolved), start, end, text))
+               else _symbol_refs_index(str(resolved), start, end, text, prev=prev))
         usages = _rebuild_symbol_usages(raw)
     except Exception:
         usages = {}
-    _symbol_usage_cache[key] = (sig, usages)
+    # The view moved to `key`; the shifted sibling we reused is now dead weight.
+    _store_usages(key, sig, usages, text,
+                  evict=src_key if (src_key is not None and src_key != key) else None)
     return usages
 
 
-def populate_symbol_usages(gp: GeneralParse) -> None:
-    """Fill gp['__symbol_usages__'] for the src symbols in this view's source,
-    via in-process jedi (run me on a background thread). Cached per file mtime."""
-    file_path = getattr(gp, "file_path", None)
-    if file_path is None or DISABLE_JEDI:
-        return
-    resolved = _Path(file_path).resolve()
-    source = getattr(gp, "source", "") or ""
-    start = (getattr(gp, "line_offset", 0) or 0) + 1   # lines are 1-indexed
-    end = start + source.count("\n")
-    usages = _compute_symbol_usages(resolved, start, end)
-    gp["__symbol_usages__"] = usages
-    gp.symbol_usage = usages
+def _best_same_file_prev(resolved, start, end, gen, exclude_key):
+    """Pick the cached entry for the SAME file at the SAME index generation whose
+    span best overlaps [start, end] — seeds an incremental refresh when the exact
+    (start, end) key shifted (the span grew/shrank as the user edited). Defs +
+    callers are keyed by symbol NAME and valid across spans at one generation, so a
+    shifted sibling reuses cleanly (names it lacks just recompute). Returns
+    (key, entry) or (None, None). The cache is small (≈one entry per open editor
+    span), so the linear scan is negligible."""
+    best = None   # (overlap, key, entry)
+    for k, entry in _symbol_usage_cache.items():
+        if k == exclude_key or k[0] != resolved:
+            continue
+        s = entry[0]
+        if s[2] is not False or s[3] != gen:      # different resolver / generation
+            continue
+        ov = min(end, k[2]) - max(start, k[1])
+        if ov > 0 and (best is None or ov > best[0]):
+            best = (ov, k, entry)
+    return (best[1], best[2]) if best else (None, None)
+
+
+def _raw_from_usages(usages: dict) -> dict:
+    """Reconstruct the index path's raw {sym: {definition, callers}} shape from a
+    cached {sym: SymbolUsage}. Lets the incremental refresh reuse a prior compute
+    WITHOUT widening the (persisted) cache entry — the SymbolUsage already carries
+    every definition + caller, so the expensive half is recovered from it rather
+    than stored twice. Only the two keys _symbol_refs_index reads are rebuilt."""
+    out = {}
+    for nm, su in usages.items():
+        d = su.definition
+        out[nm] = {
+            "definition": ((str(d.path) if d.path else None, d.line, d.column,
+                            d.module_name) if d is not None else (None, 0, 0, "")),
+            "callers": [(str(c.path) if c.path else None, c.line, c.column,
+                         c.scope, c.module_name) for c in su.callers],
+        }
+    return out
+
+
+def _line_offset_map(old_text: str, new_text: str) -> dict | None:
+    """If `old_text` and `new_text` differ ONLY in blank (whitespace-only) lines —
+    a pure newline / blank-line insert-or-delete — return {old_line: new_line}
+    (1-based) for every non-blank line. Otherwise None: any change to a non-blank
+    line (new code, edited text, even reindentation) is "substantial" and must
+    recompute. One linear lockstep walk over the two line lists builds the map and
+    detects substantiality at once. This is recompute-on-MISS work (the miss was
+    already detected cheaply via pending_gen), and it's far cheaper than the ast
+    parse + walks it avoids — so it doesn't run afoul of the no-content-hashing
+    rule, which is about DETECTING misses on the hot path."""
+    old_lines = old_text.split("\n")
+    new_lines = new_text.split("\n")
+    nO, nN = len(old_lines), len(new_lines)
+    oi = ni = 0
+    mapping = {}
+    while True:
+        while oi < nO and not old_lines[oi].strip():   # skip blanks in old
+            oi += 1
+        while ni < nN and not new_lines[ni].strip():   # skip blanks in new
+            ni += 1
+        if oi >= nO and ni >= nN:
+            return mapping                              # both done: matched
+        if oi >= nO or ni >= nN:
+            return None                                 # non-blank counts differ
+        if old_lines[oi] != new_lines[ni]:
+            return None                                 # non-blank content changed
+        mapping[oi + 1] = ni + 1                        # 1-based line numbers
+        oi += 1
+        ni += 1
+
+
+def _offset_usages(usages: dict, line_map: dict, resolved: _Path) -> dict | None:
+    """Return a NEW {sym: SymbolUsage} with this-file BUFFER positions remapped via
+    line_map (old_line -> new_line) — exactly what a recompute would produce for a
+    position-only edit, without the recompute:
+      • sites and IN-FILE callers are buffer positions → remapped (col unchanged,
+        the line's content is identical),
+      • cross-file callers are reused as-is (their files didn't move),
+      • definitions are KEPT — module-level defs resolve against the LIVE object
+        (inspect), which a buffer edit doesn't move, so a recompute leaves them
+        unchanged too. (A class-member def that fell back to a buffer line can go
+        stale by the delta until the next recompute — minor, and self-heals.)
+    Returns None if any in-file position is absent from the map (a site on a line
+    the map doesn't cover) so the caller falls back to a recompute."""
+    out = {}
+    for nm, su in usages.items():
+        new_sites = []
+        for (l, c) in su.sites:
+            nl = line_map.get(l)
+            if nl is None:
+                return None
+            new_sites.append((nl, c))
+        new_callers = []
+        for ref in su.callers:
+            if ref.path == resolved:                    # in-file caller: buffer pos
+                nl = line_map.get(ref.line)
+                if nl is None:
+                    return None
+                new_callers.append(UsageRef(path=ref.path, line=nl, column=ref.column,
+                                            scope=ref.scope, module_name=ref.module_name))
+            else:
+                new_callers.append(ref)                 # other file: unchanged, reuse
+        out[nm] = SymbolUsage(name=nm, definition=su.definition,
+                              callers=new_callers, sites=new_sites)
+    return out
+
+
+def _store_usages(key, sig, usages, text, evict=None) -> None:
+    """Write a span result + the buffer-text snapshot it was computed from, and
+    drop a superseded sibling key (and its snapshot) the view shifted off of."""
+    _symbol_usage_cache[key] = (sig, usages)
+    _span_text[key] = text
+    if evict is not None:
+        _symbol_usage_cache.pop(evict, None)
+        _span_text.pop(evict, None)
 
 
 def invalidate_usage_cache(path: _Path | str | None = None) -> None:
@@ -1494,13 +1717,14 @@ def invalidate_usage_cache(path: _Path | str | None = None) -> None:
     if path is None:
         _xref_cache.clear()
         _symbol_usage_cache.clear()
-        _caller_scan_cache.clear()
+        _span_text.clear()
     else:
         resolved = _Path(path).resolve()
         _xref_cache.pop(resolved, None)
-        _caller_scan_cache.pop(resolved, None)
         for k in [k for k in _symbol_usage_cache if k[0] == resolved]:
             _symbol_usage_cache.pop(k, None)
+        for k in [k for k in _span_text if k[0] == resolved]:
+            _span_text.pop(k, None)
 
 
 def _get_cross_file_usages(
@@ -1912,7 +2136,7 @@ def _active_positions():
 # The parse resumes once input goes quiet. Gated on Toggles.yield_to_ui. It NEVER
 # sleeps the render/GL or main thread (that would freeze the very UI we're
 # protecting) - only the background worker the code actually runs on.
-_YIELD_QUIET_S = 0.1   # resume once keyboard input has been quiet this long
+_YIELD_QUIET_S = 0.5   # resume once keyboard input has been quiet this long
 _YIELD_SLICE_S = 0.1  # GIL-releasing sleep granularity while backing off (~1 frame)
 
 
@@ -2580,18 +2804,11 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
             invalidate_usage_cache(address.path)
         if run_jedi or auto:
             try:
-                # Recompute only when NOT mid-typing (or on a manual Index). While
-                # typing, reuse the last result - the heavy work per keystroke
-                # is the editor lag, and the editor re-positions slightly-stale
-                # sites so highlights persist. The debounced nudge
-                # (ensure_symbol_index) does the real refresh once input settles.
-                fresh = run_jedi or not _typing_now()
-                flat = (compute_symbol_usages_for_address(address) if fresh
-                        else _cached_usages(address))
-                # Stamp the generation ONLY on a fresh compute - leaving it unset
-                # while typing keeps the nudge eligible to refresh after drag.
-                if fresh:
-                    readable._symbol_gen = _index_generation
+                flat = compute_symbol_usages_for_address(address)
+                # Generation stamp even when flat is empty: marks "indexed
+                # against the current generation" so the editor-side auto-index
+                # nudge doesn't re-trigger on a span with no visible symbols.
+                readable._symbol_gen = _index_generation
                 if flat:
                     readable.symbol_usage = flat   # whole-span flat (debugging)
                     _distribute_by_name(readable, flat)
@@ -6352,8 +6569,11 @@ from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window a
 def build_index_cache() -> tuple:
     """(Re)resolve every loaded src file's references into _index_refs_cache so
     the fast Index is warm before it's clicked. Only files whose mtime changed
-    are re-parsed (the rest hit the cache). Returns (n_src_files, n_reparsed).
-    Pure index work — safe on a background thread (no imgui / Melty)."""
+    are re-parsed (the rest hit the cache). Returns (n_src_files, n_reparsed,
+    n_real_changes) — `n_real_changes` counts files whose mtime moved past the
+    snapshot (an actual content change, vs a cold re-warm where every file
+    re-parses but nothing really changed). Pure index work — safe on a background
+    thread (no imgui / Melty)."""
     global _index_generation
     mod_map = _src_mod_map()
     reparsed = 0
@@ -6395,7 +6615,7 @@ def build_index_cache() -> tuple:
         # the gate open anyway.
         _index_generation = 1
         _symbol_store["gen"] = 1
-    return len(mod_map), reparsed
+    return len(mod_map), reparsed, real_changes
 
 
 def _bump_generation():
@@ -6529,21 +6749,31 @@ class SymbolIndexCache:
     builds = 0
     last_secs = 0.0
 
+    last_real_changes = 0
+
     @classmethod
     def _build_once(cls):
-        notify("SymbolIndexCache: building index cache...", tint=(1,0,0.2))
         if cls.building:
             return
         cls.building = True
+        real = 0
         t0 = _time.perf_counter()
         try:
-            cls.src_files, cls.last_reparsed = build_index_cache()
+            cls.src_files, cls.last_reparsed, real = build_index_cache()
         except Exception:
             pass
         finally:
+            cls.last_real_changes = real
             cls.last_secs = round(_time.perf_counter() - t0, 3)
             cls.builds += 1
             cls.building = False
+        # Notify ONLY when the safety reconcile caught a genuine content change -
+        # FileWatch is the primary detector now so this is rare. Steadyy no-op
+        # passes and cold re-warms (after a hotswap) reparse files but move no
+        # mtimes; they stay silent rather than reading as "building...".
+        if real:
+            notify(f"SymbolIndexCache: reconciled {real} changed file(s) "
+                   f"in {cls.last_secs:.2f}s", tint=(1, 0, 0.2))
 
     @classmethod
     def rebuild(cls):
@@ -6603,11 +6833,17 @@ if not getattr(sys, "_symbol_index_daemon_started", False):
     _threading.Thread(target=_symbol_index_daemon, args=(_stop_event,),
                       daemon=True, name="symbol-index-daemon").start()
 else:
-    # Crash-path fallback (shutdown never ran): the surviving daemon - running
-    # OLD bytecode mid-interval-sleep - still holds the loop, and this re-exec'd
-    # module's refs cache starts empty. Kick a one-off build so indexing
-    # doesn't sit dead for up to interval_s after launch.
-    try:
-        SymbolIndexCache.rebuild()
-    except Exception:
-        pass
+    # Re-exec with a daemon already started (a hotswap of THIS file, or a
+    # restart-in-place where shutdown didn't clear the guard). The exec wiped this
+    # module's _index_refs_cache, but a live daemon re-warms it on its next pass
+    # (and edits self-warm the cache lazily thereafter) - so we no longer need a
+    # full rebuild on every hotswap. Only force one when NO daemon thread is alive
+    # (a true crash), so indexing isn't left cold indefinitely. Name-check rather
+    # than a stored ref so this also sees a daemon started by older bytecode.
+    _daemon_alive = any(t.name == "symbol-index-daemon" and t.is_alive()
+                        for t in _threading.enumerate())
+    if not _daemon_alive:
+        try:
+            SymbolIndexCache.rebuild()
+        except Exception:
+            pass

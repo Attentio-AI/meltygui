@@ -314,15 +314,6 @@ class Toggles:
     class TextEditor:
         enable_spell_check = False
 
-    @defaults(tint=(0.30, 0.52, 0.36))
-    class Collection:
-        pre_load_items = 26
-        placeholder_height = 30.0
-
-    @defaults(tint=(0.631, 0.474, 0.861))
-    class InputHandlerToggles:
-        show_debug = False
-
     @defaults(tint=(0.91, 0.659, 0.15))
     class InvalidateTracker:
         keep_for_frames = 13
@@ -330,11 +321,10 @@ class Toggles:
         draw_bvh = False
         draw_rect = False
 
-    @defaults(tint=(0.089, 0.08, 0.069))
-    class TerminalSettings:
-        # Minimum LOGICAL terminal size, in tiles - independent of the window size.
-        min_width = 98.634
-        min_height = 480.0
+    @defaults(tint=(0.13, 0.62, 0.26))
+    class Collection:
+        pre_load_items = 26
+        placeholder_height = 30.0
 
     @defaults(tint=(0.878, 0.762, 0.692))
     class ScrollSettings:
@@ -343,17 +333,52 @@ class Toggles:
         acceleration_threshold = 0.036  # seconds
         bg_offset = 30
 
+    @defaults(tint=(0.631, 0.474, 0.861))
+    class InputHandlerToggles:
+        show_debug = False
+
+
+    @defaults(tint=(0.089, 0.08, 0.069))
+    class TerminalSettings:
+        # Minimum LOGICAL terminal size, in pixels - independent of the window size.
+        min_width = 98.634
+        min_height = 480.0
+
+    @defaults(tint=(0.42, 0.58, 0.83))
+    class WindowSettings:
+        # Sticky resize: while resizing a window, re-anchor its top to the
+        # drag-start position every frame so the only thing displacing the
+        # window is the bottom-on-display clamp. As the window shrinks the
+        # displacement unwinds and the window returns to where the drag began,
+        # rather than keeping whatever raised position an earlier resize left
+        # it at. The revert is active only for the duration of the drag.
+        sticky_drag = True
+
     debug_scroll = False
     show_filled_tiles = False
     gl_check_error = False
     enable_jedi = True
-    
+
     attrib_change_stack_trace = False
     # [tint(0.9, 0.5, 0.0)]
     jedi_correctness = False
     # Attach symbol usages to every editor parse automatically (background,
     # fast index path only); the refresh button stays as a manual refresh.
     auto_index = True
+
+    # Incremental symbol-usage refresh during live edits: when only the buffer
+    # changed (same resolver + same index generation), reuse the prior compute's
+    # expensive half (cross-file callers + symbol definitions, ~80% of the cost)
+    # and rescan only the changed file + newly-typed names. Flip off to A/B against
+    # full-recomputes. Fast index path only (jedi_correctness=False).
+    incremental_symbol_index = True
+
+    # Position-only fast path: when a live edit only inserted/removed blank lines
+    # (no non-blank content change), skip the recompute entirely and remap the
+    # cached result's line numbers by the line delta (~5ms vs ~42ms incremental).
+    # Anything that touches non-blank content falls through to the incremental
+    # recompute. Flip off to A/B against always recomputing.
+    offset_symbol_positions = True
 
     # Build the parse tree node→span map from Python's `ast` (C parser, native
     # lineno/col_offset) instead of libcst's PositionProvider (in-tree
@@ -383,7 +408,7 @@ class Toggles:
     brightness = 0.475
     contrast = 1.812
     saturation = -0.4
-    prefered_header_width = 179
+    prefered_header_width = 132
     max_preferred_header_width = 70
     debug_z_depth = False
     filters = True
@@ -394,9 +419,10 @@ class Toggles:
     # Shadow settings
     shadow_downscale = 2
     shadow_edge_sharpness = 49.833
-    ignore_call_from = ("draw", "_run_visualization", "run", "_bootstrap",
-                        "_bootstrap_inner", "convert_in_and_out", "draw_melty_windows", "end_frame", "render", "draw_inner",
-                        "draw_inner_main", "draw_with_view_funcs")
+    ignore_call_from = ()
+    # ignore_call_from = ("draw", "_run_visual_tests", "run", "_bootstrap",
+    #                     "_bootstrap_inner", "_convert_in_and_out", "draw_melty_windows", "end_frame", "render", "draw_inner",
+    #                     "draw_inner_main", "draw_with_viewport")
     # How many real callers up the stack the inputs tab shows as editable caller
     # sources (caller, caller's caller, ...). 1 = the direct caller only.
     caller_walk_steps = 7

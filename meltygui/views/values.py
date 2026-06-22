@@ -336,7 +336,6 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
                     included=None, horizontal=False, show_indices=False, excluded=None, annotation=None, **kwargs):
     """
     Universal collection renderer
-
     show_add_types={"Display Name": TypeA, ...} draws a second + button in the
     header that instantiates the chosen type (rendered by draw_header; the
     value just rides the kwargs through). Several entries get a chevron
@@ -2487,12 +2486,14 @@ def draw_none(input_value: NoneType):
     return False, input_value
 
 
-@render_func(is_default_for=(bool), use_cache=True, is_tree=False, wrap=True,
-             header_same_line=True, min_width=10, align_header=True, shadow=False, with_header=draw_header, temp=True)
-def draw_bool(input_value: bool, draw_state, left_mouse_clicked=None,  selectable=False, left_mouse_drag=None, left_mouse_held=False,
+@render_func(is_default_for=(bool), use_cache=True, 
+             is_tree=False, wrap=True, header_same_line=True, min_width=62, align_header=True, shadow=False, 
+             with_header=draw_header, temp=True)
+def draw_bool(input_value: bool, draw_state, left_mouse_clicked=None,  
+              selectable=False, left_mouse_drag=None, left_mouse_held=False,
               left_mouse_down=False):
 
-    width = min(draw_state.width - 6, draw_state.content_width + 0)
+    width = min(draw_state.width - 3, draw_state.content_width + 0)
 
     imgui.dummy(width, 21)
     draw_list = imgui.get_window_draw_list()
@@ -4422,33 +4423,30 @@ def draw_mode_tab(input_value, draw_state, current_mode=None, **kwargs):
 @render_func(use_cache=True, disable_scroll=True, show_header=False,
              header_same_line=False, show_tint=False, show_name=False, is_tree=False)
 def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, unique=None, search_text='',
-                      search_active=False, up_key_pressed=None,
-                      down_key_pressed=None, enter_key_down=None, tab_state: TabState = None, **kwargs):
+                      search_active=False,
+                      enter_key_down=None, tab_state: TabState = None, **kwargs):
     context_menu_offset = input_value.context_menu_offset
 
     # imgui.text(type(input_value._input_value).__name__)
     imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0] - 1, imgui.get_cursor_screen_pos()[1] - 18))
-    if up_key_pressed:
-        print("Up key pressed")
-
+    # if up_key_pressed:
+    #     print("up key pressed")
     fa_up_arrow = ""
     fa_down_arrow = ""
     if input_value._parent.id is not None:
-        if button(fa_up_arrow, height=50)[0] or up_key_pressed:
+        if button(fa_up_arrow, height=50)[0]:
             input_value.context_menu_offset += 1
             Core.melty.cache.invalidate_up(draw_state._tile_id, max_depth=5)
             Core.melty.cache.invalidate_up(input_value._tile_id, max_depth=5)
 
         imgui.same_line()
     if input_value.context_menu_offset > 0:
-        if button(fa_down_arrow, height=50)[0] or down_key_pressed:
+        if button(fa_down_arrow, height=50)[0]:
             input_value.context_menu_offset = max(0, input_value.context_menu_offset - 1)
             Core.melty.cache.invalidate_up(draw_state._tile_id, max_depth=5)
             Core.melty.cache.invalidate_up(input_value._tile_id, max_depth=5)
     else:
         imgui.dummy(30, 30)
-
-
 
     imgui.same_line()
     imgui.text_colored(f"{context_menu_offset}", 1, 1, 1, 0.3)

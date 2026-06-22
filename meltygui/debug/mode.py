@@ -65,7 +65,7 @@ class Mode(Enum):
         if Any in self.unwrapped:
             return self.unwrapped[Any]
         return None
-
+        
     def __init__(self, *args, **kwargs):
         unwrapped = {}
         if isinstance(self.value, dict):
