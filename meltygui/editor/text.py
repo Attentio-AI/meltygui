@@ -2161,12 +2161,12 @@ def draw_text(input_value: str, height=None,
               code_tree=None, code_dict=None, error=None, token_views=None,
               syntax_highlight=True, is_diff=False, line_numbers=None,
               completion_source=None, unique=0):
+   
     ds = draw_state   
     # Plain-text mode (codec tells "not Python source"): no Darcula colors and
     # no inline token widgets - both are artifacts of the Python tokenizer.
     if not syntax_highlight:
         token_views = {}
-
     elif token_views is None:
         token_views = DEFAULT_TOKEN_VIEWS   # global experiment settings (see a
     #

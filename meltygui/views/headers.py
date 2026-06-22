@@ -495,7 +495,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         # Pad to the widest header in this window (tracked per-window), with the
         # preferred width as a floor. Falls back to the floor when no window.
         parent_window = draw_state.parent_window
-        pad_target = Toggles.prefered_header_width
+        pad_target = Toggles.Collection.preferred_header_width
         if parent_window is not None:
             pad_target = max(pad_target, parent_window.max_header_width)
         if end_x - start_x < pad_target:
@@ -721,7 +721,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         # Pad to the widest header in this window (tracked per-window), with the
         # preferred width as a floor. Falls back to the floor when no window.
         parent_window = draw_state.parent_window
-        pad_target = Toggles.prefered_header_width
+        pad_target = Toggles.Collection.preferred_header_width
         if parent_window is not None:
             pad_target = max(pad_target, parent_window.max_header_width)
         if end_x - start_x < pad_target:

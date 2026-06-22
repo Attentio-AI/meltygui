@@ -401,9 +401,10 @@ class GlfwQueueBackend:
 
     @staticmethod
     def _stamp_input():
-        # Recency signal for the cst→dict parse's cooperative UI yield: ANY input
-        # - key (incl. held-key auto-repeat), mouse button, mouse move/drag, or
-        # scroll - defers the background parse so the render loop stays smooth.
+        # Recency signal for the cst→dict parse's cooperative UI yield: key (incl.
+        # held-key auto-repeat), mouse button, DRAG (held button), or scroll defers
+        # the background parse so the render thread stays smooth. Bare hover does
+        # NOT (it's cheap and would stall the parse indefinitely - see _on_move).
         try:
             from src.lsd.gl_gui.melty import Melty
             Melty._last_input_time = time.monotonic()
@@ -467,10 +468,12 @@ class GlfwQueueBackend:
         self._chain(self._prev_scroll, window, x_offset, y_offset)
 
     def _on_move(self, window, x, y):
-        # Mouse motion - hover and (with a button held) drags - defers the parse.
-        # Fires often, so keep it minimal; chain so imgui's prior cursor callback,
-        # if any, still runs.
-        self._stamp_input()
+        # Mouse motion. Bare HOVER does NOT defer the cst→dict parse; it's cheap to
+        # render, and previously stamping on every move kept the parse from ever
+        # resuming (e.g. moving the cursor over a freshly-loaded page stalled it
+        # indefinitely, the slow initial load). A DRAG still defers via its held
+        # mouse button (pump()'s _any_input_held), so no stamp is needed here.
+        # Fires often, so keep it minimal and chain imgui's own cursor callback.
         self._chain(getattr(self, "_prev_cursor", None), window, x, y)
 
     def pump(self):
@@ -494,7 +497,11 @@ class GlfwQueueBackend:
         self._prev_mouse_pos = (mx, my)
         self.handler.set_modifiers(
             shift=io.key_shift, ctrl=io.key_ctrl, alt=io.key_alt, meta=io.key_super)
-        if moved or self._any_input_held(io):
+        # Only a HELD key/button (typing or a drag) defers the parse; NOT bare
+        # hover (`moved` alone), which would stall the parse continuously while the
+        # cursor wanders (the slow initial load). Scroll/click/keypress edges still
+        # stamp via their own callbacks.
+        if self._any_input_held(io):
             self._stamp_input()
 
     @staticmethod

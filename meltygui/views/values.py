@@ -324,7 +324,8 @@ def draw_symbol_usage(input_value):
     imgui.text(str(input_value))
 
 
-@render_func(is_default_for=(dict, MutableMapping, defaultdict, tuple, list, GeneralParse, CallParse, ClassParse, EnumParse, FunctionParse, _BubblingDict, _DeepPath), use_cache=True,
+@render_func(is_default_for=(dict, MutableMapping, defaultdict, tuple, list, GeneralParse, CallParse, ClassParse, EnumParse, FunctionParse, _BubblingDict, _DeepPath), 
+             use_cache=True,
              header_same_line=False, show_bg=True, show_instance_vars=False, align_header=False,
              manual_content_height=True, shadow=True, selectable=False, bg_offset=-0.8,
              wrap=False, with_header=draw_header, indent_size=3, searchable=True)
@@ -802,8 +803,8 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
         # the header height so the tail reaches BELOW the header, giving an
         # empty collection a real droppable body. Multi-line collections
         # already stack the body under the header, so a bare tail is fine.
-        # if not draw_state.multi_line:
-        #     tail_h += int(draw_state.header_height or 0)
+        if not draw_state.multi_line:
+            tail_h += int(draw_state.header_height or 0)
         imgui.dummy(1, tail_h)
 
     end_pos = imgui.get_cursor_pos()[1]
@@ -4129,6 +4130,11 @@ class ContextMenuState:
         # Tuple of (filename, lineno) the caller hosts above were built for.
         self.call_site_keys = None
         self.mode_key = None
+        # (file, lineno) of class_to_show's definition - for the class-var /
+        # class-default jump buttons. Cached because inspect.getsourcelines()
+        # AST-parses the WHOLE module file (see the host_key block below), so it
+        # must not run per frame. Invariant for a given host_key.
+        self.class_loc = None
 
 
 @render_func(use_cache=True, show_bg=False, show_header=False, show_name=False, selectable=False, disable_scroll=False,
@@ -4168,6 +4174,19 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, wrap=True
         # may not be captured yet — see the lazy capture in draw_context_menu).
         cm_state.call_site_hosts = []
         cm_state.call_site_keys = None
+        # The class's source location feeds the class-var/class-default jump
+        # buttons. inspect.getsourcelines() on a CLASS AST-parses the ENTIRE
+        # module file (CPython 3.9+ _ClassFinder) - ~34ms on a 7k-line file like
+        # libcst_conversion.py (IntParse, the parent of a parsed int field) -
+        # so it CANNOT run per frame. class_to_show is part of host_key, so the
+        # location only changes on a rebuild: read it once, here.
+        cm_state.class_loc = None
+        if isinstance(class_to_show, type):
+            try:
+                cm_state.class_loc = (inspect.getsourcefile(class_to_show),
+                                      inspect.getsourcelines(class_to_show)[1])
+            except (TypeError, OSError):
+                cm_state.class_loc = None
 
     # The caller CHAIN - the direct caller, its caller, ... up to
     # Toggles.caller_walk_steps real (non-dispatch) frames, innermost-first.
@@ -4280,14 +4299,13 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, wrap=True
     fn_loc = (fn_file, getattr(getattr(view_fn, "__code__", None),
                                "co_firstlineno", None))
 
-    cls_name, cls_loc = "None", None
-    if isinstance(class_to_show, type):
-        cls_name = class_to_show.__name__
-        try:
-            cls_loc = (inspect.getsourcefile(class_to_show),
-                       inspect.getsourcelines(class_to_show)[1])
-        except (TypeError, OSError):
-            cls_loc = None
+    # cls_name is cheap (__name__); cls_loc is cached on host key change above
+    # (inspect.getsourcelines AST-parses the whole module file - never per frame).
+    cls_name = class_to_show.__name__ if isinstance(class_to_show, type) else "None"
+    # getattr: a cm_state created before this field existed (hotswap of an
+    # already-open inputs tab) lacks the field - None just degrades the jump
+    # location until the menu retargets and the host_key block recomputes it.
+    cls_loc = getattr(cm_state, "class_loc", None)
 
     # One caller source per real frame walked (caller, caller's caller, ...),
     # innermost-first; each its own editable CallSite host parsed above. The

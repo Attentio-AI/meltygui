@@ -9,6 +9,9 @@ class NotificationCenter:
     notifications = deque(maxlen=max_notifications)
     tagged_notifications = defaultdict(lambda: deque(maxlen=NotificationCenter.max_notifications))
     ignore_tags = ["host"]
+    # Single live value per tag (overwritten on each display() call), shown in
+    # the dedicated "Live" column. Insertion order = row order.
+    live_values = {}
 
 
 def notify(text, tint=(1,1,1,1), tag=None, urgent=True):
@@ -19,6 +22,37 @@ def notify(text, tint=(1,1,1,1), tag=None, urgent=True):
         NotificationCenter.tagged_notifications["General"].appendleft((text, tint, formatted_time))
     else:
         NotificationCenter.tagged_notifications[tag].appendleft((text, tint, formatted_time))
+
+    if urgent:
+        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        request_render()
+
+
+def _format_value(value):
+    """Render a variety of value types into a compact display string."""
+    # scalar tensors / numpy scalars into a plain python number
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            value = value.item()
+        except Exception:
+            return str(value)
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, float):
+        return f"{value:.4g}"
+    return str(value)
+
+
+def display(value, tint=(1, 1, 1, 1), tag=None, urgent=True):
+    """Show a single live value in the "Live" column, keyed by `tag`.
+
+    Unlike notify(), which keeps a running list per tag, display() overwrites the
+    value for a tag each call so it updates in place over time."""
+    formatted_time = time.strftime("%H:%M:%S", time.localtime())
+    tint = tint if len(tint) == 4 else (*tint, 1)  # Ensure color has alpha
+    key = tag if tag is not None else "value"
+    NotificationCenter.live_values[key] = (_format_value(value), tint, formatted_time)
 
     if urgent:
         from src.lsd.gl_gui.utils.glfw_utils import request_render
@@ -45,6 +79,31 @@ def _wrap_text(text, max_width):
     return lines
 
 
+def _draw_column_entry(draw_list, column_left, content_width, line_height, padding,
+                       bg_bottom, label, label_color, content, content_color):
+    """Draw one stacked entry: a left-aligned `label` (time / tag name) followed
+    by the wrapped, tinted `content`. Returns the next bg_bottom (above this one)."""
+    label_size = imgui.calc_text_size(label)
+    content_x = column_left + label_size.x + padding
+
+    lines = _wrap_text(content, content_width - (label_size.x + padding))
+    block_height = max(1, len(lines)) * line_height
+    bg_top = bg_bottom - (block_height + padding * 2)
+    content_top = bg_top + padding
+
+    # background rectangle with some transparency
+    draw_list.add_rect_filled(column_left - padding, bg_top,
+                              column_left + content_width + padding, bg_bottom,
+                              imgui.get_color_u32_rgba(0, 0, 0, 1.0), rounding=2)
+
+    # label on the first line, then the wrapped, left-aligned content
+    draw_list.add_text(column_left, content_top, label_color, label)
+    for li, line in enumerate(lines):
+        draw_list.add_text(content_x, content_top + li * line_height, content_color, line)
+
+    return bg_top - padding
+
+
 def draw_notifications():
     display_size = imgui.get_io().display_size
     draw_list = imgui.get_overlay_draw_list()
@@ -53,6 +112,7 @@ def draw_notifications():
     column_width = 300                          # also the toast max width
     content_width = column_width - padding * 2  # left-aligned content box
     line_height = imgui.get_text_line_height()
+    title_color = imgui.get_color_u32_rgba(1, 1, 0, 1)
 
     for c_idx, (tag, notifications) in enumerate(NotificationCenter.tagged_notifications.items()):
         if tag in NotificationCenter.ignore_tags:
@@ -60,30 +120,29 @@ def draw_notifications():
         column_left = display_size.x - (column_width * (c_idx + 1)) - 10
 
         # tag title pinned at the bottom of the screen
-        draw_list.add_text(column_left, display_size.y - 30,
-                           imgui.get_color_u32_rgba(1, 1, 0, 1), tag)
+        draw_list.add_text(column_left, display_size.y - 30, title_color, tag)
 
         # stack toasts upward from just above the tag title (newest at bottom)
         bg_bottom = display_size.y - 30 - padding
         for text, color, time_label in notifications:
             imgui_color = imgui.get_color_u32_rgba(*color)
-            time_size = imgui.calc_text_size(time_label)
-            text_x = column_left + time_size.x + padding
+            bg_bottom = _draw_column_entry(draw_list, column_left, content_width,
+                                           line_height, padding, bg_bottom,
+                                           time_label, imgui_color, text, imgui_color)
 
-            lines = _wrap_text(text, content_width - (time_size.x + padding))
-            block_height = max(1, len(lines)) * line_height
-            bg_top = bg_bottom - (block_height + padding * 2)
-            content_top = bg_top + padding
+    # dedicated "Live" column to the left of the tagged notification columns;
+    # each row is one tag's current value, tinted, updated in place over time.
+    if NotificationCenter.live_values:
+        c_idx = len(NotificationCenter.tagged_notifications)
+        column_left = display_size.x - (column_width * (c_idx + 1)) - 10
+        label_color = imgui.get_color_u32_rgba(0.6, 0.6, 0.6, 1)
 
-            # background rectangle with some padding
-            draw_list.add_rect_filled(column_left - padding, bg_top,
-                                      column_left + content_width + padding, bg_bottom,
-                                      imgui.get_color_u32_rgba(0, 0, 0, 1.0), rounding=2)
+        draw_list.add_text(column_left, display_size.y - 30, title_color, "Live")
 
-            # time label on the first line, then the wrapped, left-aligned text
-            draw_list.add_text(column_left, content_top, imgui_color, time_label)
-            for li, line in enumerate(lines):
-                draw_list.add_text(text_x, content_top + li * line_height, imgui_color, line)
-
-            bg_bottom = bg_top - padding
+        bg_bottom = display_size.y - 30 - padding
+        for tag, (value_str, color, _time_label) in NotificationCenter.live_values.items():
+            value_color = imgui.get_color_u32_rgba(*color)
+            bg_bottom = _draw_column_entry(draw_list, column_left, content_width,
+                                           line_height, padding, bg_bottom,
+                                           tag + " ", label_color, value_str, value_color)
 

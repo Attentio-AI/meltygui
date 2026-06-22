@@ -84,6 +84,23 @@ class LiveHandle:
         return f"LiveHandle({'/'.join(self.key_path)})"
 
 
+def _right_of_window_pos(parent_win, marker_x, gap=10.0):
+    """Parent-relative window_pos that opens a spawned live-value window just
+    to the RIGHT of the editor's enclosing window, vertically level with the
+    marker — instead of on top of the code the marker sits in.
+
+    window_pos is relative to the spawned window's parent (the same editor
+    window), and a marker renders at the cursor (abs_left == marker_x when
+    window_pos is 0), so the parent-origin x offset is exactly marker_x:
+    subtract it from the window's absolute right edge to land there. Keeping
+    window_pos parent-relative means the value window then tracks the editor
+    window as it moves. Returns None when there's no enclosing window to
+    anchor to (caller falls back to the default on-cursor placement)."""
+    if parent_win is None:
+        return None
+    return (parent_win.abs_left + parent_win.width + gap - marker_x, 0)
+
+
 def draw_live_view_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
                            line_px=20.0, node=None, span=None, root=None,
                            line_offset=0, jump_to=None, **kwargs):
@@ -177,6 +194,12 @@ def draw_live_view_marker(input_value, draw_state=None, editor_ds=None,
         ds._lv_open = not open_now
         if win_ds is not None:
             win_ds.closed = not ds._lv_open
+            if ds._lv_open:
+                # Reopening a latched window: snap it back to the right of the
+                # editor window (it may have been dragged onto the code).
+                pos = _right_of_window_pos(ds.parent_window, x)
+                if pos is not None:
+                    win_ds.window_pos = pos
         ds.invalidate()
 
     # Latched-window visibility pattern (the color-picker pattern,
@@ -204,6 +227,15 @@ def draw_live_view_marker(input_value, draw_state=None, editor_ds=None,
         # (Mode.WINDOW) - volumes route to draw_voxels, scalars/dicts to their
         # renderers. No dedicated draw_live_value_window wrapper needed.
         child_kwargs.pop("mode", None)
+        # First creation: open the value window to the RIGHT of the editor's
+        # window rather than on top of the code. window_pos persists on the
+        # spawned window's draw_state (and stays parent-relative, so it tracks
+        # the editor window), so this is set once - later frames and user drags
+        # of the value window are preserved.
+        if win_ds is None and "window_pos" not in child_kwargs:
+            pos = _right_of_window_pos(ds.parent_window, x)
+            if pos is not None:
+                child_kwargs["window_pos"] = pos
         _c, _v, win_ds = draw_any(
             lv.value, name=f"{label}##lv{ds.id}{key}", mode=Modes.WINDOW,
             with_header=draw_header, selectable=False, min_height=32,

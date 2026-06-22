@@ -2868,7 +2868,7 @@ def render_func(*args, **o_kwargs):
                     # Fold this header's natural width into the parent window's
                     # running max so sibling headers align to the widest one.
                     if draw_state.parent_window is not None and not draw_state.multi_line:
-                        draw_state.parent_window.max_header_width = min(Toggles.max_preferred_header_width, max(
+                        draw_state.parent_window.max_header_width = min(Toggles.Collection.max_preferred_header_width, max(
                             draw_state.parent_window.max_header_width,
                             draw_state.header_natural_width))
 

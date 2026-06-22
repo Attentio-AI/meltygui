@@ -127,7 +127,7 @@ class CodeLine(str):
 
 
 @defaults(tint=(0.7, 0.406749, 0.0264792, 0.09), shadow=True, child_kwargs={"editable":False}, 
-          z_offset=0, name_color=(1.0, 0.479, 0.0), font=Font.JETBRAINS_MONO_19,
+          z_offset=0, name_color=(1.0, 0.479, 0.0), font=Font.JETBRAINS_MONO_19, drop_tail_height=0.0,
           is_tree=False, bg_offset=1, header_same_line=True)
 class Conditional(dict):
     """An if/elif/else block's contents, as a dict subclass.
@@ -228,7 +228,7 @@ class Except(dict):
         return f"Except:{self.header}:{keys}"
 
 
-@defaults(disable_scroll=True, shadow=True, show_bg=True, z_offset=0, use_cache=True, tint=(0.009,0.2495,0.39, 0.172))
+@defaults(disable_scroll=True, shadow=True, show_bg=True, z_offset=1, use_cache=True)
 class GeneralParse(dict):
     def __init__(self, *args, source="", file_path=None, line_offset=0, **kwargs):
         super().__init__(*args, **kwargs)
@@ -296,7 +296,7 @@ class EnumParse(ClassParse):
     """
 
 
-@defaults(disable_scroll=True, show_bg=True, shadow=False, use_cache=True, tint=(0.009, 0.2495, 0.39, 0.172))
+@defaults(disable_scroll=True, show_bg=True, shadow=True, use_cache=True, tint=(0.009, 0.2495, 0.39, 0.172))
 class FunctionParse(GeneralParse):
     """A function / method definition's parse, as a GeneralParse subclass.
 
@@ -859,8 +859,9 @@ _SYMBOL_INDEX_PICKLE_VERSION = 1
 def _load_symbol_store() -> dict:
     store = getattr(sys, "_symbol_index_store", None)
     if isinstance(store, dict):
+        store.setdefault("hashes", {})    # bump; backfill the hash dict if older
         return store                      # restart-in-place: adopt live dicts
-    spans, gen, mtimes = {}, 0, {}
+    spans, gen, mtimes, hashes = {}, 0, {}, {}
     try:                                  # fresh process: warm-start from pick
         import pickle
         with open(_SYMBOL_INDEX_PICKLE, "rb") as f:
@@ -869,9 +870,10 @@ def _load_symbol_store() -> dict:
             spans = payload["spans"]
             gen = payload["gen"]
             mtimes = payload["mtimes"]
+            hashes = payload.get("hashes", {})   # absent in pre-hash pickles
     except Exception:
         pass                              # missing/corrupt/stale-format → fresh
-    store = {"spans": spans, "gen": gen, "mtimes": mtimes}
+    store = {"spans": spans, "gen": gen, "mtimes": mtimes, "hashes": hashes}
     sys._symbol_index_store = store
     return store
 
@@ -890,7 +892,8 @@ def _save_symbol_store():
             pickle.dump({"version": _SYMBOL_INDEX_PICKLE_VERSION,
                          "spans": dict(_symbol_usage_cache),
                          "gen": _index_generation,
-                         "mtimes": dict(_mtime_snapshot)}, f)
+                         "mtimes": dict(_mtime_snapshot),
+                         "hashes": dict(_span_hashes)}, f)
         os.replace(tmp, _SYMBOL_INDEX_PICKLE)
     except Exception:
         pass
@@ -899,6 +902,28 @@ def _save_symbol_store():
 _symbol_store = _load_symbol_store()
 _symbol_usage_cache: dict = _symbol_store["spans"]  # (resolved_path, start, end) -> (sig, {sym: SymbolUsage}); sig = (mtime, pending_gen, accurate, gen)
 _mtime_snapshot: dict = _symbol_store["mtimes"]     # resolved_path -> mtime at last counted change
+
+# Content hash (whole current file text) each cached span was computed from, keyed
+# by the same span key. PERSISTED alongside the spans (a parallel dict, so the
+# span tuple index is unchanged → old/new pickles interop, no version bump). The
+# longevity lever: a span's sig embeds the GLOBAL index generation, so ANY src file
+# changing bumps gen and lapses EVERY span - an unchanged file recomputes just
+# because something else moved (worst across sessions). The hash rescue
+# (_compute_symbol_usages) lets a sig miss serve the cached result when the file's
+# CONTENT is bit-identical, re-stamping the sig instead of recomputing. Tradeoff:
+# cross-file callers can go (acceptably) stale in an unchanged file until it's
+# edited and re-indexed. Content hashing for invalidation is normally banned
+# here - Lukas allowed it for THIS cache given the recompute cost; it's only on
+# a MISS, never to detect a hit.
+_span_hashes: dict = _symbol_store["hashes"]        # (resolved_path, start, end) -> 16-byte content hash
+
+
+def _content_hash(text: str) -> bytes:
+    """Stable 128-bit hash of a file's current text (disk + pending overlay) for
+    the usage cache's content-validity check. blake2b is collision-free for this
+    use and stable across sessions (builtin hash() is per-process-salted)."""
+    import hashlib
+    return hashlib.blake2b(text.encode("utf-8"), digest_size=16).digest()
 
 # The exact buffer text a cached span result was computed from, indexed by the
 # same span key. Drives the position-only fast path (_line_offset_map): on a
@@ -1612,6 +1637,18 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
     text = PendingSave.current_file_text(resolved)   # disk + pending overlay (miss only)
     if text is None:
         return _NEEDS_RECOMPUTE if fast_only else {}
+    chash = _content_hash(text)
+    # LONGEVITY RESCUE: the sig missed (the GLOBAL index gen bumped because SOME
+    # other file changed, an mtime touch, or a cross-session restore) but THIS
+    # file's content is bit-identical to when the result was computed - sites +
+    # definitions are valid and cross-file callers are (acceptably) reused. Serve
+    # the cached result and re-stamp the sig instead of recomputing. Only the
+    # exact-key entry with a matching resolver qualifies (a span-shift / content
+    # edit changes the hash anyway). [content edit not allowed for this cache.]
+    if (cached is not None and cached[0][2] == accurate
+            and _span_hashes.get(key) == chash):
+        _store_usages(key, sig, cached[1], text, chash=chash)
+        return cached[1]
     # Find a reusable prior result (same resolver + index generation): the exact-
     # span entry, else the best-overlapping sibling (the span key shifts as lines
     # are added). `src_key` is tracked so we can read its buffer-text snapshot for
@@ -1639,7 +1676,7 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
                     line_map = _line_offset_map(old_text, text) if old_text is not None else None
                     offset = _offset_usages(src[1], line_map, resolved) if line_map is not None else None
                     if offset is not None:
-                        _store_usages(key, sig, offset, text,
+                        _store_usages(key, sig, offset, text, chash=chash,
                                       evict=src_key if src_key != key else None)
                         return offset
             prev = _raw_from_usages(src[1])
@@ -1652,7 +1689,7 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
     except Exception:
         usages = {}
     # The view moved to `key`; the shifted sibling we reused is now dead weight.
-    _store_usages(key, sig, usages, text,
+    _store_usages(key, sig, usages, text, chash=chash,
                   evict=src_key if (src_key is not None and src_key != key) else None)
     return usages
 
@@ -1763,14 +1800,18 @@ def _offset_usages(usages: dict, line_map: dict, resolved: _Path) -> dict | None
     return out
 
 
-def _store_usages(key, sig, usages, text, evict=None) -> None:
-    """Write a span result + the buffer-text snapshot it was computed from, and
-    drop a superseded sibling key (and its snapshot) the view shifted off of."""
+def _store_usages(key, sig, usages, text, chash=None, evict=None) -> None:
+    """Write a span result + the buffer-text snapshot it was computed from + the
+    content hash (for the longevity rescue), and drop a superseded sibling key
+    (and its snapshot/hash) the view shifted off of."""
     _symbol_usage_cache[key] = (sig, usages)
     _span_text[key] = text
+    if chash is not None:
+        _span_hashes[key] = chash
     if evict is not None:
         _symbol_usage_cache.pop(evict, None)
         _span_text.pop(evict, None)
+        _span_hashes.pop(evict, None)
 
 
 def invalidate_usage_cache(path: _Path | str | None = None) -> None:
@@ -1780,6 +1821,7 @@ def invalidate_usage_cache(path: _Path | str | None = None) -> None:
         _xref_cache.clear()
         _symbol_usage_cache.clear()
         _span_text.clear()
+        _span_hashes.clear()
     else:
         resolved = _Path(path).resolve()
         _xref_cache.pop(resolved, None)
@@ -1787,6 +1829,8 @@ def invalidate_usage_cache(path: _Path | str | None = None) -> None:
             _symbol_usage_cache.pop(k, None)
         for k in [k for k in _span_text if k[0] == resolved]:
             _span_text.pop(k, None)
+        for k in [k for k in _span_hashes if k[0] == resolved]:
+            _span_hashes.pop(k, None)
 
 
 def _get_cross_file_usages(
@@ -2192,8 +2236,10 @@ def _active_positions():
 # cst_module_to_dict is pure-Python and GIL-bound; even after the ast position
 # optimization (~90ms on a big buffer) it stutters interaction when it runs in a
 # background parse worker concurrently with the render loop. While the user is
-# actively interacting - typing (incl. held keys), moving/clicking/dragging the
-# mouse, or scrolling - _yield_to_ui pauses the parse at statement boundaries:
+# actively interacting - typing (incl. arrow keys), clicking/dragging the mouse, or
+# scrolling (NOT bare hover - that doesn't defer, else the parse stalls while the
+# mouse merely wanders, the slow initial load) - _yield_to_ui pauses the parse at
+# statement boundaries:
 # time.sleep fully releases the GIL, so the render thread gets uncontended frames.
 # The parse resumes once input goes quiet. Gated on Toggles.yield_to_ui. It NEVER
 # sleeps the render/GL or main thread (that would freeze the very UI we're

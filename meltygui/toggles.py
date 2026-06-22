@@ -310,9 +310,24 @@ class Swoosh:
 @window(tint=(0.11, 0.12, 0.14))
 class Toggles:
 
+    def clear_hosts(value=7):
+        pass
+
     @defaults(tint=(0.939, 0.086, 0.042))
     class TextEditor:
         enable_spell_check = False
+
+    @defaults(tint=(0.42, 0.58, 0.83))
+    class WindowSettings:
+        # Sticky resize: while resizing a window, re-anchor its top to the
+        # drag-start position every frame so the only thing displacing the
+        # window is the bottom-on-display clamp. 
+        sticky_drag = True
+
+    @defaults(tint=(0.631, 0.474, 0.861))
+    class InputHandlerToggles:
+        show_debug = False
+
 
     @defaults(tint=(0.378, 0.286, 0.201))
     class Collection:
@@ -322,7 +337,10 @@ class Toggles:
         # collection: separates a nested collection's "append at end" drop slot
         # from the parent's "after this folder" slot, and gives an empty
         # collection a droppable bottom. See draw_collection() drop tail.
-        drop_tail_height = 5
+        drop_tail_height = 8
+
+        max_preferred_header_width = 70
+        preferred_header_width = 132
 
     @defaults(tint=(0.878, 0.762, 0.692))
     class ScrollSettings:
@@ -331,29 +349,18 @@ class Toggles:
         acceleration_threshold = 0.036  # seconds
         bg_offset = 30
 
-    @defaults(tint=(0.631, 0.474, 0.861))
-    class InputHandlerToggles:
-        show_debug = False
-
-    @defaults(tint=(0.652, 0.672, 0.733))
-    class TerminalSettings:
-        # Minimum LOGICAL terminal size, in pixels - independent of the window size.
-        min_width = 98.634
-        min_height = 480.0
-
-    @defaults(tint=(0.42, 0.58, 0.83))
-    class WindowSettings:
-        # Sticky resize: while resizing a window, re-anchor its top to the
-        # drag-start position every frame so the only thing displacing the
-        # window is the bottom-on-screen clamp. 
-        sticky_drag = True
-
     @defaults(tint=(0.91, 0.659, 0.15))
     class InvalidateTracker:
         keep_for_frames = 26
         enable = False
         draw_bvh = False
         draw_rect = False
+
+    @defaults(tint=(0.652, 0.672, 0.733))
+    class TerminalSettings:
+        # Minimum LOGICAL terminal size, in pixels - independent of the window size.
+        min_width = 98.634
+        min_height = 480.0
 
     debug_scroll = False
     show_filled_tiles = False
@@ -379,8 +386,6 @@ class Toggles:
     # Anything that touches non-blank content falls through to the incremental
     # recompute. Flip off to A/B against always recomputing.
     offset_symbol_positions = True
-
-
 
 
     # Build the parse tree node→span map from Python's `ast` (C parser, native
@@ -411,17 +416,16 @@ class Toggles:
     brightness = 0.475
     contrast = 1.812
     saturation = -0.4
-    prefered_header_width = 132
-    max_preferred_header_width = 70
+
     debug_z_depth = False
     filters = True
     show_excluded = True
     layer_stack_trace = False
     show_line_breaks = False
+    ignore_call_from = ()
 
     # Shadow settings
     shadow_downscale = 2
-    ignore_call_from = ()
     shadow_edge_sharpness = 49.833
 
     caller_walk_steps = 7

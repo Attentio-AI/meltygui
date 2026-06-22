@@ -418,6 +418,16 @@ class DragDrop:
         slots = []
         r = DROP_RADIUS
         seen = set()
+        # Drop slots are chosen by proximity to the TOP EDGE of the floating
+        # dragged view, not the cursor: the insertion line always tracks where
+        # the view's own top will go, which reads far more naturally than
+        # snapping to whichever gap happens to sit under the cursor (usually
+        # mid-header, a grab-offset below the top). The view floats with its
+        # top-left at (mx - grab_offset[0], my - grab_offset[1]); we keep the
+        # probe x at the cursor (still a point on the top edge), so horizontal
+        # collection-selection and the slot-inclusion test are unchanged - only
+        # the vertical probe moves up to the view's top.
+        my = my - cls.grab_offset[1]
         for rid in melty._bvh.intersection((mx - r, my - r, mx + r, my + r)):
             if rid in seen:
                 continue
@@ -433,7 +443,7 @@ class DragDrop:
         nearest = slots[0] if slots else None
         # The start position competes on distance but is drawn as a dot frame
         # (draw_home), not a slot line. It wins ties (<=) so that while the
-        # cursor still sits inside the placeholder (distance 0) it beats the
+        # view's top still sits inside the placeholder (distance 0) it beats the
         # gap lines hugging the placeholder edges - otherwise a barely-moved
         # drag snaps to one of those and reorders. _HOME routes to the
         # same "nothing there → snap back" drop path as blank space.
@@ -557,6 +567,8 @@ class DragDrop:
 
     @classmethod
     def _add_slot(cls, out, ds, insert_idx, x0, x1, y, y_min, y_max, mx, my):
+        # (mx, my) is the test point: mx the cursor x, my the dragged window's
+        # TOP edge (not the cursor y) - see _compute_slots.
         if y < y_min or y > y_max:
             return
         dx = max(x0 - mx, 0.0, mx - x1)
@@ -648,10 +660,11 @@ class DragDrop:
 
     @classmethod
     def _home_distance(cls, mx, my):
-        """Distance from the cursor to the start drop zone — the item's
-        pickup slot (the placeholder). 0 anywhere inside the rect, so the
-        whole original footprint reads as "drop back here". None when there's
-        no captured home rect/size to measure against."""
+        """Distance from the probe point (mx, my) — the dragged view's top
+        edge, see _compute_slots — to the start drop zone, the item's pickup
+        slot (the placeholder). 0 anywhere inside the rect, so the whole
+        original footprint reads as "drop back here". None when there's no
+        captured home rect/size to measure against."""
         if cls.home_rect is None:
             return None
         w, h = cls.size
