@@ -483,10 +483,10 @@ class RenderHost(_DeepAttrMixin, dict):
         nested cached view that won't re-run unless its parents do."""
         for cds in self._consumers:
             tid = getattr(cds, "_tile_id", None)
-            # if tid is not None:
-            #     Melty.cache.invalidate_up(tid, force=True,
-            #                               note=Note(name=name,
-            #                                         tint=(0.4, 1.0, 0.6), draw_state=cds))
+            if tid is not None:
+                Melty.cache.invalidate_up(tid, force=True,
+                                          note=Note(name=name,
+                                                    tint=(0.4, 1.0, 0.6), draw_state=cds))
             #     notify("invalidate #8", tag="host", tint=(1, 0, 1))
 
         if self._consumers:

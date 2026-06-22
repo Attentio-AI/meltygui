@@ -227,7 +227,7 @@ class Except(dict):
         return f"Except:{self.header}:{keys}"
 
 
-@defaults(disable_scroll=True, show_bg=True, shadow=False, use_cache=True, tint=(0.009,0.2495,0.39, 0.172))
+@defaults(disable_scroll=True, shadow=False, show_bg=False, z_offset=0, use_cache=True, tint=(0.009,0.2495,0.39, 0.172))
 class GeneralParse(dict):
     def __init__(self, *args, source="", file_path=None, line_offset=0, **kwargs):
         super().__init__(*args, **kwargs)
@@ -246,6 +246,67 @@ class GeneralParse(dict):
     #         # hash() on a str uses a fast SipHash - O(n) once, then O(1)
     #         self._bg_hash_cache = str(hash(self.source))
     #     return self._bg_hash_cache
+
+
+# NOTE: the @defaults below DUPLICATE GeneralParse's on purpose. They are NOT
+# inherited: default_kwargs_by_type (core_render.py) is an EXACT-type lookup, so
+# a subclass with no @defaults of its own would render with none of GeneralParse's
+# tint/bg/shadow. Declaring them here keeps the visual treatment identical to a
+# plain GeneralParse today, while giving these types their own slot to diverge
+# later (the whole point of splitting them out). Same pattern as CallParse below.
+@defaults(disable_scroll=True, show_bg=True, shadow=True, excluded=("decorators"),
+          use_cache=True, tint=(0.009, 0.2495, 0.39, 0.172))
+class ClassParse(GeneralParse):
+    """A class definition's parsed body, as a GeneralParse subclass.
+
+    isinstance(c, dict)         → True, so iteration/access works normally.
+    isinstance(c, GeneralParse) → True, so it renders through draw_collection and
+        flows through every Mode/converter that handles a GeneralParse with no
+        extra wiring (type routing walks the MRO).
+    isinstance(c, ClassParse)   → True, so code can recognise a class parse BY
+        TYPE instead of sniffing `__cst__` for a cst.ClassDef (the old
+        _is_classdef_parse heuristic).
+
+    Produced by cst_classdef_to_dict. Carries the same dict shape as a plain
+    GeneralParse (body-level vars, nested classes/methods, __init__ self.X,
+    decorators) — the distinct type is purely for differentiation, exactly like
+    DecorationParse vs CallParse.
+    """
+
+
+@defaults(disable_scroll=True, show_bg=True, shadow=True, z_offset=2, excluded=("decorators"),
+          use_cache=True, tint=(0.009, 0.2495, 0.39, 0.172))
+class EnumParse(ClassParse):
+    """An enum class definition's parse — a ClassParse specialisation.
+
+    isinstance(e, ClassParse)   → True, so every class-handling path still applies
+        unchanged: _is_classdef_parse, the live-apply class-var preview, and
+        recompile-as-class all key off ClassParse, so an enum keeps getting them.
+    isinstance(e, EnumParse)    → True, so an enum is now distinguishable BY TYPE
+        from a plain class (route it to its own renderer / Mode, give its members a
+        bespoke widget, etc.).
+
+    Produced by cst_classdef_to_dict when the ClassDef is (syntactically) an enum —
+    a base or metaclass whose name ends in 'Enum'/'Flag' (Enum, IntEnum, StrEnum,
+    IntFlag, the project's RelaxedEnum, …); see _classdef_is_enum. The @defaults
+    mirror ClassParse's so enums look like classes by default (they ARE classes),
+    while owning their own exact-type slot to diverge later — same reason ClassParse
+    duplicates GeneralParse's (default_kwargs_by_type is an exact-type lookup).
+    """
+
+
+@defaults(disable_scroll=True, show_bg=True, shadow=False, use_cache=True, tint=(0.009, 0.2495, 0.39, 0.172))
+class FunctionParse(GeneralParse):
+    """A function / method definition's parse, as a GeneralParse subclass.
+
+    Same contract as ClassParse: still a dict and a GeneralParse (so routing and
+    rendering are unchanged), but recognisable BY TYPE rather than by the presence
+    of 'parameters'/'locals' keys — the old _is_funcdef_parse heuristic, which a
+    member literally named `parameters` would trip.
+
+    Produced by cst_funcdef_to_dict. The "parameters" / "locals" sub-dicts inside
+    it stay plain GeneralParse (they are not themselves funcdefs).
+    """
 
 
 @defaults(tint=(0.04, 0.17, 0.25, 0.016), bg_offset=2, font=Font.FONTAWESOME_MONO_19, is_tree=False, shadow=False, z_offset=1, child_kwargs={"font":Font.JETBRAINS_MONO_19})
@@ -3152,6 +3213,36 @@ def tuple_to_cst_tuple(value: tuple) -> cst.Tuple:
 # ║  cst.ClassDef ↔ dict (self.X assignments from __init__)                    ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
+def _base_last_name(node) -> str:
+    """The trailing identifier of a base/metaclass expression: `Enum` for both a
+    bare `Enum` Name and a dotted `enum.Enum` Attribute. "" for anything else."""
+    while isinstance(node, cst.Attribute):
+        node = node.attr
+    return node.value if isinstance(node, cst.Name) else ""
+
+
+def _classdef_is_enum(value: cst.ClassDef) -> bool:
+    """True if a ClassDef is (syntactically) an enum.
+
+    Purely name-based — at parse time we only have the source, no live MRO — so a
+    base or metaclass whose trailing name ends in 'Enum'/'Flag' (Enum, IntEnum,
+    StrEnum, IntFlag, Flag, the project's RelaxedEnum, …) counts, plus the
+    EnumMeta/EnumType metaclasses. A mixed-in base (`class C(str, Enum)`) still
+    matches on its Enum base. Good enough for routing/styling — false positives are
+    only cosmetic, and the codebase's enums all subclass Enum/RelaxedEnum."""
+    def _enumish(name: str) -> bool:
+        return name.endswith("Enum") or name.endswith("Flag")
+    for base in value.bases:
+        if _enumish(_base_last_name(base.value)):
+            return True
+    for kw in value.keywords:
+        if isinstance(kw.keyword, cst.Name) and kw.keyword.value == "metaclass":
+            n = _base_last_name(kw.value)
+            if _enumish(n) or n in ("EnumMeta", "EnumType"):
+                return True
+    return False
+
+
 @register
 def cst_classdef_to_dict(value: cst.ClassDef) -> dict:
     """Extract readable fields from a class definition.
@@ -3163,8 +3254,12 @@ def cst_classdef_to_dict(value: cst.ClassDef) -> dict:
 
     Comments are extracted via Comment keys.
     Decorators go in a "decorators" sub-dict.
+
+    An enum ClassDef produces an EnumParse (a ClassParse subclass) so enums are
+    distinguishable by type; everything else produces a ClassParse.
     """
-    readable = GeneralParse(source=_cst_node_to_code(value))
+    parse_type = EnumParse if _classdef_is_enum(value) else ClassParse
+    readable = parse_type(source=_cst_node_to_code(value))
     _stamp_span(readable, value)
 
     decorators = _extract_decorators(value.decorators)
@@ -3690,7 +3785,7 @@ def cst_funcdef_to_dict(value: cst.FunctionDef) -> dict:
         "__cst__": <FunctionDef>
       }
     """
-    readable = GeneralParse(source=_cst_node_to_code(value))
+    readable = FunctionParse(source=_cst_node_to_code(value))
     _stamp_span(readable, value)
 
     decorators = _extract_decorators(value.decorators)

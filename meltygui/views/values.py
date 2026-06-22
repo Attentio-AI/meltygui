@@ -32,7 +32,7 @@ from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace, request_render
 from src.lsd.gl_gui.view.core_conversion.bubbling import _BubblingDict, _DeepPath
 from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment, GeneralParse, UsageRef, CallParse, \
-    SymbolUsage, cst_module_to_dict, dict_to_cst_module
+    ClassParse, EnumParse, FunctionParse, SymbolUsage, cst_module_to_dict, dict_to_cst_module
 from src.lsd.gl_gui.view.core_conversion.new_codecs import CallSite
 from src.lsd.gl_gui.view.core_conversion.new_converters import code_file_io, convert_in_and_out_value, \
     cst_module_to_string, string_to_cst_module, code_hosts_for, host_code_state, \
@@ -324,16 +324,17 @@ def draw_symbol_usage(input_value):
     imgui.text(str(input_value))
 
 
-@render_func(is_default_for=(dict, MutableMapping, defaultdict, tuple, list, GeneralParse, CallParse, _BubblingDict, _DeepPath), use_cache=True,
+@render_func(is_default_for=(dict, MutableMapping, defaultdict, tuple, list, GeneralParse, CallParse, ClassParse, EnumParse, FunctionParse, _BubblingDict, _DeepPath), use_cache=True,
              header_same_line=False, show_bg=True, show_instance_vars=False, align_header=False,
-             manual_content_height=True, shadow=True, selectable=False, bg_offset=-1,
-             wrap=False, with_header=draw_header, indent_size=2, searchable=True)
+             manual_content_height=True, shadow=True, selectable=False, bg_offset=-0.5,
+             wrap=False, with_header=draw_header, indent_size=5, searchable=True)
 def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=None,
                     mode=None, keys=None, get_attr=None, set_attr=None, show_excluded=False,
                     child_kwargs=None, show_bg=False, show_search=True, align_header=False, wrap=False,
                     on_collapse=False, search_text="", return_item=False, close_triggers_delete=False,
                     on_expand=False, show_add_delete=False, show_add_types=None, item_spacing_y=3, show_system=False,
-                    included=None, horizontal=False, show_indices=False, excluded=None, annotation=None, **kwargs):
+                    included=None, horizontal=False, show_indices=False, excluded=None, annotation=None,
+                    drop_tail_height=16, **kwargs):
     """
     Universal collection renderer
     show_add_types={"Display Name": TypeA, ...} draws a second + button in the
@@ -778,6 +779,29 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
                            if isinstance(i, int) and i > end_index]:
             del draw_state._children[_stale_idx]
 
+    # Static drop tail for drag-and-drop collections: a fixed strip of empty
+    # space below the last row. Its height counts towards the collection's
+    # measured height, which pushes the PARENT's "append to folder" slot down
+    # - without it a folder ends right at its last child, so that slot and the
+    # nested collection's own "append at end" slot (last child bottom + 3) land
+    # nearly on top of each other. Also gives an empty collection a droppable
+    # body. Always present (NOT drag-conditional, per Lukas) so layout never
+    # shifts when a drag begins. Gated to dict/list here - exactly what
+    # the DnD system treats as a drop target (see drag_drop._is_target_collection).
+    if (drop_tail_height and not horizontal
+            and isinstance(draw_state._raw_input_value, (dict, list))):
+        tail_h = int(drop_tail_height)
+        # Single-line collections (the wrapper same-line's the body BESIDE the
+        # header when not multi_line - e.g. a small dict) need the tail to
+        # also span the header height, or a bare vertical dummy sits to the
+        # right of the header and never grows the box past header height. Add
+        # the header height so the tail reaches BELOW the header, giving an
+        # empty collection a real droppable body. Multi-line collections
+        # already stack the body under the header, so a bare tail is fine.
+        if not draw_state.multi_line:
+            tail_h += int(draw_state.header_height or 0)
+        imgui.dummy(1, tail_h)
+
     end_pos = imgui.get_cursor_pos()[1]
     content_height = (end_pos - start_cursor)
     imgui.dummy(1, 0)
@@ -1142,6 +1166,8 @@ def draw_hosts():
     for host in list(Core.melty.render_hosts.values()):
         host.draw()
 
+    Core.melty.render_hosts.clear()
+
 
 @render_func(use_cache=False, show_bg=True, selectable=False,
              show_tint=True, bg_offset=-1, with_header=draw_header)
@@ -1263,11 +1289,6 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
             window_func = kwargs.pop("view_func", code_file_io)
             window_func(window_cls, **kwargs)
 
-    # Self-registering RenderHost objects (view/core_conversion/render_host.py): each
-    # drives a stateful wrapper and draws into its own window. Snapshot the values — a
-    # host may register/remove during render (re-entrant mutation).
-    for h_idx, host in enumerate(list(Core.melty.render_hosts.values())):
-        host.draw()
 
     from src.lsd.gl_gui.model.app_model import TensorView
     draw_any(TensorView, name="Tensorview", mode=(Mode.WINDOW))
@@ -1304,6 +1325,12 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     ds_names = [ds.name for ds in ds_under_mouse]
     draw_any(ds_names, name="Draw State under mouse", show_bg=True, wrap=True, use_cache=True, mode=Mode.WINDOW,
              live=True)
+
+    # Self-registering RenderHost objects (view/core_conversion/render_host.py): each
+    # is a stateful wrapper that draws into its own window. Snapshot the values - a
+    # host may register/remove during render (re-entrant mutation).
+    for h_idx, host in enumerate(list(Core.melty.render_hosts.values())):
+        host.draw()
 
 
 @render_func
@@ -2999,8 +3026,8 @@ def draw_usage(input_value: UsageRef):
     return False, input_value
 
 
-@render_func(is_default_for=(Comment), shadow=False, indent_size=4, selectable=False, use_cache=True,
-             show_bg=False, with_header=None, is_tree=True, temp=True)
+@render_func(is_default_for=(Comment), shadow=False, indent_size=4, selectable=False, use_cache=False,
+             show_bg=False, with_header=None, is_tree=False, temp=True)
 def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=False):
     changed, value = False, input_value
 
@@ -3014,7 +3041,7 @@ def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=F
     }
     depth_intensity = float(depth) * depth_scale
     name_style['value'] = depth_intensity * name_style['depth_factor'] + name_style['value']
-    alpha = 0.4
+    alpha = 0.1
     sat_depth_factor = 0.0
     sat_depth_offset = 0.188
     sat_shift = float(depth + sat_depth_offset) * sat_depth_factor

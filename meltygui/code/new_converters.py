@@ -1775,18 +1775,30 @@ def code_hosts_for(ref):
     Lazy: nothing loads until the first consumer draws the host. Consumers that
     read the value outside the host's own draw loop must still register via
     host.notify_on_change(draw_state), exactly as before."""
-    key = str(id(ref))
+    # Key by the ref ITSELF, not int(id(ref)). Functions/classes/modules hash by
+    # identity - stable for the session, one entry each (both before and now).
+    # But CallSite/Decorations are frozen dataclasses and Path is a new type: a
+    # FRESH object is built per request (draw_input_tab does `CallSite(f, ln)` on
+    # every menu-open), so an identity key MISSED every single time: a new host
+    # pair created, registered in Melty.render_hosts, and never removed. Worse, the
+    # transient key was then GC'd and its address recycled, so later id()s collided
+    # and silently overwrote (or mis-returned) cache entries. Value-equality keying
+    # collapses all those to one entry per distinct source.
     try:
-        pair = _code_host_cache.get(key)
-    except TypeError:           # unhashable ref; fall back to uncached
-        pair = None
-        key = None
+        pair = _code_host_cache.get(ref)
+        cacheable = True
+    except TypeError:           # genuinely unhashable ref - skip the cache
+        pair, cacheable = None, False
     if pair is None:
         from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
-        # n = len(_code_host_cache)
         label = getattr(ref, "__name__", None) or type(ref).__name__
+        # Unique disambiguator: resolve_host_view resolves a host BY NAME, so two live
+        # hosts must not collide. Every cached ref is held alive as a dict key, so
+        # their id()s are all distinct - unique per concurrent host, and stable for
+        # the entry's life (the value-key keeps THIS ref's id from being recycled).
+        tag = id(ref)
         str_host = RenderHost(io_function=code_file_io, input_value=ref,
-                              name=f"##code_cache_{label}{key}_str",
+                              name=f"##code_cache_{label}{tag}_str",
                               child_kwargs={"auto_load_edits": True, "auto_save": True})
 
         # str_proxy = RenderHost(io_function=code_file_io, input_value=draw_text, name="String Proxy test",
@@ -1806,7 +1818,7 @@ def code_hosts_for(ref):
             lint_path = getattr(ref, "__file__", None)
         dict_host = RenderHost(
             io_function=convert_in_and_out_value, input_value=str_host,
-            name=f"##code_cache_{label}{key}_dict",
+            name=f"##code_cache_{label}{tag}_dict",
             child_kwargs={
                 "chain_in": [string_to_cst_module, cst_module_to_dict],
                 "chain_out": [dict_to_cst_module, cst_module_to_string],
@@ -1814,8 +1826,8 @@ def code_hosts_for(ref):
                 **({"run_chain_kwargs": {"lint_path": lint_path}} if lint_path else {}),
             })
         pair = (str_host, dict_host)
-        if key is not None:
-            _code_host_cache[key] = pair
+        if cacheable:
+            _code_host_cache[ref] = pair
     return pair
 
 
@@ -2268,7 +2280,7 @@ def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabS
                                            else "No parse for this source", 0.6, 0.6, 0.6, 1.0)
                         continue
                     m_changed, m_out = RenderFuncs.draw_collection(
-                        gp, excluded=["__cst__"], show_system=True, draw=draw,
+                        gp, excluded=["__cst__"], child_kwargs={"show_bg":True, "shadow":False, "use_cache":True, "z_offset":0}, show_system=True, draw=draw,
                         disable_scroll=False, show_header=False, show_add_delete=False,
                         width=col_width, **size_kwargs, show_parent_add_delete=False,
                         name=f"draw_collection##{unique}", selectable=False)

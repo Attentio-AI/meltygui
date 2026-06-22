@@ -202,7 +202,7 @@ class DragDrop:
             if melty.channels_split:
                 draw_list = imgui.get_window_draw_list()
                 draw_list.channels_set_current(
-                    max(0, min(melty.get_channel() + 10, melty.max_depth - 1)))
+                    max(0, min(melty.get_channel() - 3, melty.max_depth - 1)))
 
             imgui.get_window_draw_list().add_rect_filled(
                 x, y, x + w, y + h, imgui.get_color_u32_rgba(1.0, 1.0, 1.0, 0.05),
@@ -651,8 +651,16 @@ class DragDrop:
         rect while dragging anywhere, lifted (but kept subtle — this is a
         cancel zone, not a reorder target) when the cursor is over it
         (cls.nearest is _HOME). Rides the same top overlay channel as the slot
-        lines; the pad insets the frame just outside the floating window (same
-        size as the home rect), so it surrounds the item on a short drag."""
+        lines — which is ABOVE the floating dragged window (it's on the top
+        layer), so the frame would paint over the dragged view on a short
+        drag. The frame is aligned to the home socket's own background rect
+        (see draw_placeholder / draw_home_blank — left=x, top=y, width=w,
+        height=h-2, rounding=5.0). To keep it off the dragged view without
+        losing the rounded corners, draw the SAME rounded rect clipped to the
+        strips around the window's live rect (top & bottom full-width, left &
+        right middle-band only) — the corners live in the full-width top/bottom
+        strips, so they survive; the strips don't overlap, so the
+        semi-transparent outline never double-draws at a seam."""
         if cls.home_rect is None:
             return
         w, h = cls.size
@@ -671,9 +679,42 @@ class DragDrop:
         else:
             col = imgui.get_color_u32_rgba(*rgb, 0.16)
             thickness = 1.5
-        pad = 3.0
-        overlay.add_rect(x - pad, y - pad, x + w + pad, y + h + pad,
-                         col, rounding=7.0, thickness=thickness)
+        rounding = 5.0
+        # Inset 1px on every side so the highlight sits ever so slightly
+        # inside the socket background rect (x, y, w, h-2).
+        fx0, fy0, fx1, fy1 = x + 1, y + 1, x + w - 1, y + h - 3
+
+        # The floating item window's live rect - same source as _draw_slots
+        # (the mouse, where the glue puts the window this frame, a frame ahead
+        # of the draw_state during fast motion).
+        mx, my = imgui.get_io().mouse_pos
+        ix0, iy0 = mx - cls.grab_offset[0], my - cls.grab_offset[1]
+        ix1, iy1 = ix0 + w, iy0 + h
+
+        if fx1 <= ix0 or fx0 >= ix1 or fy1 <= iy0 or fy0 >= iy1:
+            # No overlap with the dragged view: draw the rounded frame whole.
+            overlay.add_rect(fx0, fy0, fx1, fy1, col, rounding=rounding,
+                             thickness=thickness)
+            return
+
+        # Overlap: clip the rounded frame to the non-overlapping strips that
+        # make the frame minus the live rect, redrawing the whole rounded
+        # rect on each so its corners stay round wherever they're not over the
+        # dragged view.
+        band_t, band_b = max(fy0, iy0), min(fy1, iy1)
+        strips = (
+            (fx0, fy0, fx1, iy0),       # top (full width - holds top corners)
+            (fx0, iy1, fx1, fy1),       # bottom (full width - holds bottom corners)
+            (fx0, band_t, ix0, band_b), # left middle band
+            (ix1, band_t, fx1, band_b), # right middle band
+        )
+        for cx0, cy0, cx1, cy1 in strips:
+            if cx1 <= cx0 or cy1 <= cy0:
+                continue
+            overlay.push_clip_rect(cx0, cy0, cx1, cy1, True)
+            overlay.add_rect(fx0, fy0, fx1, fy1, col, rounding=rounding,
+                             thickness=thickness)
+            overlay.pop_clip_rect()
 
     @classmethod
     def _commit(cls):

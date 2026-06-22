@@ -36,7 +36,7 @@ from src.lsd.gl_gui.view.core_conversion.file_converters import (
 )
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
     cst_module_to_dict, dict_to_cst_module, GeneralParse, CallParse, CodeLine,
-    NO_DEFAULT,
+    ClassParse, FunctionParse, NO_DEFAULT,
 )
 from src.lsd.gl_gui.view.core_views.headers import draw_header
 from src.lsd.gl_gui.view.core_views.text_editor import draw_text
@@ -456,19 +456,26 @@ def _differs(cur, v):
 
 
 def _is_funcdef_parse(v):
-    """A nested funcdef parse (method / function child dict) — CallParse holds
-    call KWARGS under the same dict shape, so it's explicitly excluded."""
-    return (isinstance(v, GeneralParse) and not isinstance(v, CallParse)
-            and ("parameters" in v or "locals" in v))
+    """A nested funcdef parse (method / function child dict).
+
+    Now a FunctionParse by TYPE (cst_funcdef_to_dict emits one). The 'parameters'/
+    'locals' key heuristic is kept as a fallback for any GeneralParse not produced
+    by that converter — CallParse holds call KWARGS under the same dict shape, so
+    it stays explicitly excluded from the heuristic branch."""
+    return isinstance(v, FunctionParse) or (
+        isinstance(v, GeneralParse) and not isinstance(v, CallParse)
+        and ("parameters" in v or "locals" in v))
 
 
 def _is_classdef_parse(v):
-    """A nested classdef parse (a class child dict, e.g. Toggles.InvalidateTracker)
-    — distinguished from a method parse, a CallParse, and a plain dict literal by
-    the cst.ClassDef it carries under __cst__ (set by cst_classdef_to_dict). The
-    __cst__ marker is precise where the funcdef heuristic ('parameters'/'locals'
-    keys) is not, so this is checked FIRST."""
-    return isinstance(v, GeneralParse) and isinstance(v.get("__cst__"), cst.ClassDef)
+    """A nested classdef parse (a class child dict, e.g. Toggles.InvalidateTracker).
+
+    Now a ClassParse by TYPE (cst_classdef_to_dict emits one). The __cst__ ClassDef
+    check is kept as a fallback for any GeneralParse not produced by that converter.
+    Either way this is precise where the funcdef key heuristic is not, so it's
+    checked FIRST by callers."""
+    return isinstance(v, ClassParse) or (
+        isinstance(v, GeneralParse) and isinstance(v.get("__cst__"), cst.ClassDef))
 
 
 def _raw_function(obj):

@@ -3251,7 +3251,7 @@ def draw_text(input_value: str, height=None,
 
     # Selection
     if _has_selection(ds):
-        sel_color = (102 << 24) | (204 << 16) | (102 << 8) | 51  # rgba(51, 102, 204, 0.4)
+        sel_color = (0.2, 0.4, 0.8, 0.4)  # rgba(51, 102, 204, 0.4)
         lo, hi = _sel_range(ds)
         lines = text.split('\n')
         line_abs_start = 0
@@ -3267,7 +3267,7 @@ def draw_text(input_value: str, height=None,
                 if hi > line_abs_end and line_abs_end >= lo:
                     # selection runs past the newline → extend one cell past EOL
                     ex = origin_x + _colx(line_abs_end, line_start=line_abs_start) + char_w
-                draw_list.add_rect_filled(sx, sy, ex, sy + line_px, sel_color)
+                draw_list.add_rect_filled(sx, sy, ex, sy + line_px, imgui.get_color_u32_rgba(*sel_color))
             line_abs_start = line_abs_end + 1
 
     # Symbol-usage washes: a slight background behind every occurrence of a
@@ -3297,9 +3297,9 @@ def draw_text(input_value: str, height=None,
     # Search match highlights (drawn behind the text so glyphs stay readable).
     # The active match gets a stronger fill plus an outline; the others are faint.
     if search_matches:
-        match_bg = (89 << 24) | (80 << 16) | (200 << 8) | 230  # faint yellow
-        cur_bg = (150 << 24) | (60 << 16) | (170 << 8) | 240  # active fill
-        cur_border = (255 << 24) | (90 << 16) | (200 << 8) | 255  # active outline
+        match_bg = (0.902, 0.784, 0.314, 0.349)  # faint yellow
+        cur_bg = (0.941, 0.667, 0.235, 0.588)  # active fill
+        cur_border = (1.0, 0.784, 0.353, 1.0)  # active outline
         for m_idx, (ms, me) in enumerate(search_matches):
             m_line, _ = _index_to_line_col(text, ms)
             sx = origin_x + _colx(ms)
@@ -3309,31 +3309,31 @@ def draw_text(input_value: str, height=None,
             if ey < rect_min_y or sy > rect_max_y:
                 continue
             if m_idx == current_local:
-                draw_list.add_rect_filled(sx, sy, ex, ey, cur_bg)
-                draw_list.add_rect(sx, sy, ex, ey, cur_border)
+                draw_list.add_rect_filled(sx, sy, ex, ey, imgui.get_color_u32_rgba(*cur_bg))
+                draw_list.add_rect(sx, sy, ex, ey, imgui.get_color_u32_rgba(*cur_border))
             else:
-                draw_list.add_rect_filled(sx, sy, ex, ey, match_bg)
+                draw_list.add_rect_filled(sx, sy, ex, ey, imgui.get_color_u32_rgba(*match_bg))
 
     # Parse/compile-error line highlight from the routed code_tree or a routed
     # exception: a translucent red band spanning the offending line, drawn under
     # the glyphs so the code stays readable. The message itself rides in the file
     # header (see draw_jump_to_bar), not painted over the code.
     if _err_markers:
-        err_bg = (110 << 24) | (40 << 16) | (40 << 8) | 210  # translucent red (ABGR)
+        err_bg = (0.824, 0.157, 0.157, 0.431)  # translucent red
         for err_line, _msg in _err_markers:
             ey0 = origin_y + (err_line - 1) * line_px
             ey1 = ey0 + line_px
             if ey1 < rect_min_y or ey0 > rect_max_y:
                 continue
-            draw_list.add_rect_filled(origin_x - 4, ey0, origin_x + visible_width, ey1, err_bg)
+            draw_list.add_rect_filled(origin_x - 4, ey0, origin_x + visible_width, ey1, imgui.get_color_u32_rgba(*err_bg))
 
     # Diff wash highlights: in is_diff mode each line's leading marker (the +/- left over
     # half the unified diff, with the ---/+++/@@ headers already stripped by the
     # caller) drives a full-width background - added lines green, deleted lines
     # yellow - drawn under the glyphs so the code stays readable.
     if is_diff:
-        add_bg = (90 << 24) | (40 << 16) | (160 << 8) | 40   # translucent green (ABGR)
-        del_bg = (90 << 24) | (40 << 16) | (190 << 8) | 210  # translucent yellow (ABGR)
+        add_bg = (0.157, 0.627, 0.157, 0.353)  # translucent green
+        del_bg = (0.824, 0.745, 0.157, 0.353)  # translucent yellow
         for line_idx, line_text in enumerate(text.split('\n')):
             c = line_text[:1]
             bg = add_bg if c == '+' else del_bg if c == '-' else None
@@ -3343,7 +3343,7 @@ def draw_text(input_value: str, height=None,
             dy1 = dy0 + line_px
             if dy1 < rect_min_y or dy0 > rect_max_y:
                 continue
-            draw_list.add_rect_filled(origin_x - 4, dy0, origin_x + visible_width, dy1, bg)
+            draw_list.add_rect_filled(origin_x - 4, dy0, origin_x + visible_width, dy1, imgui.get_color_u32_rgba(*bg))
 
     # Syntax-highlighted text - only the visible window is tokenized (see
     # `_window`), so this is O(visible) not O(buffer). The loop starts at the
@@ -3590,7 +3590,7 @@ def draw_text(input_value: str, height=None,
     # ride origin_y, so they scroll vertically in lockstep with their lines. The
     # cursor's line is brightened for emphasis.
     if show_gutter and gutter_w > 0:
-        gutter_bg = (255 << 24) | (38 << 16) | (33 << 8) | 28  # faint black gray (ABGR)
+        gutter_bg = (0.11, 0.129, 0.149, 1.0)  # faint gray column
         num_color = COLORS['comment']
         cur_color = COLORS['default']
         cur_line = _index_to_line_col(text, ds.text_cursor_pos)[0] if is_focused else -1
@@ -3599,7 +3599,7 @@ def draw_text(input_value: str, height=None,
         # body has scrolled up past the clip top.
         gutter_top = max(rect_min_y, origin_y)
         draw_list.push_clip_rect(left, gutter_top, left + gutter_w, rect_max_y, True)
-        draw_list.add_rect_filled(left, gutter_top, left + gutter_w, rect_max_y, gutter_bg)
+        draw_list.add_rect_filled(left, gutter_top, left + gutter_w, rect_max_y, imgui.get_color_u32_rgba(*gutter_bg))
         total_lines = text.count('\n') + 1
         for line_idx in range(total_lines):
             ly = origin_y + line_idx * line_px
@@ -3791,13 +3791,12 @@ def draw_text(input_value: str, height=None,
         bx1 = clip_r - margin
         by1 = clip_b - margin
         by0 = by1 - box_h
-        # Same red-tinted fill + outline as the (hidden) header error row. Packed
-        # ABGR per the codebase idiom.
-        fill_col = (235 << 24) | (40 << 16) | (30 << 8) | 70
-        line_col = (255 << 24) | (70 << 16) | (60 << 8) | 150
+        # Same red-tinted fill and outline as the (former) header error row.
+        fill_col = (0.275, 0.118, 0.157, 0.922)
+        line_col = (0.588, 0.235, 0.275, 1.0)
         err_draw_list = imgui.get_window_draw_list()
-        err_draw_list.add_rect_filled(bx0, by0, bx1, by1, fill_col, 4.0)
-        err_draw_list.add_rect(bx0, by0, bx1, by1, line_col, 4.0)
+        err_draw_list.add_rect_filled(bx0, by0, bx1, by1, imgui.get_color_u32_rgba(*fill_col), 4.0)
+        err_draw_list.add_rect(bx0, by0, bx1, by1, imgui.get_color_u32_rgba(*line_col), 4.0)
         # Truncate to the box width so a long message doesn't overflow. The box
         # shows the FIRST marker (every marker still gets its red line wash);
         # with more than one, say so rather than silently hiding the rest.
