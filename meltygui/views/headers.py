@@ -212,14 +212,14 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
                 **kwargs):
     # Constants
     _font_pushed = False
-
     
+
     if font is not None and Melty.font_mgr is not None:
         _font_handle = Melty.font_mgr.get(font)
         if _font_handle is not None:
             imgui.push_font(_font_handle)
             _font_pushed = True
-            
+
 
     # Depth drives name brightness
     depth_scale       = 0.06
@@ -247,7 +247,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     name_rounding       = 2.696
     max_name_chars      = 40
     min_name_text_width = 62
-    
+
     # Type / unique label colors
     type_label_tint   = (3.672, 1.944, 2.861, 1.0)
     unique_label_tint = (-1.535, 0.0, 0.9, 1.0)
@@ -268,7 +268,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     arrow_style['value'] = depth_intensity * arrow_style['depth_factor'] + arrow_style['value']
     arrow_style['saturation'] = arrow_style['saturation'] + sat_shift
     arrow_color = style_manager.make_color_style_value(input=arrow_style)
-    
+
     # ── Tree arrow ─────────────────────────────────────────────
     imgui.dummy(5, 0)
     start_x = imgui.get_cursor_screen_pos()[0]
@@ -347,7 +347,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
             on_change = True
             return_val = input_value
         same_line()
-        
+
 
     # ── Add button ─────────────────────────────────────────────
     if show_add_delete and (isinstance(input_value, (list, dict, _BubblingDict)) or hasattr(input_value, "__dict__")):
@@ -423,7 +423,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
             text_width = imgui.calc_text_size(clipped_name)[0] - 4
         else:
             text_width = imgui.calc_text_size(clipped_name)[0]
-            
+
         if icon is not None:
             imgui.align_text_to_frame_padding()
             imgui.text_colored(icon, *Tint.icon_tint())
@@ -540,7 +540,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     arrow_style['value'] = depth_intensity * arrow_style['depth_factor'] + arrow_style['value']
     arrow_style['saturation'] = arrow_style['saturation'] + sat_shift
     arrow_color = style_manager.make_color_style_value(input=arrow_style)
-      
+
 
     # ── Tree arrow ─────────────────────────────────────────────
     imgui.dummy(5, 0)
@@ -589,9 +589,9 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         imgui.set_item_allow_overlap()
 
     from src.lsd.gl_gui.view.core_views.new_core_view import draw_tuple
-    
-    
-    
+
+
+
     # ── Tint widget ────────────────────────────────────────────
     # A dict can carry its tint in __overrides__ (parsed from a `# [tint=(...)]`
     # comment); edit that store directly so the change round-trips to source.
@@ -649,7 +649,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
             text_width = imgui.calc_text_size(clipped_name)[0] - 4
         else:
             text_width = imgui.calc_text_size(clipped_name)[0]
-            
+
         if icon is not None:
             imgui.align_text_to_frame_padding()
             imgui.text_colored(icon, *Tint.icon_tint())
