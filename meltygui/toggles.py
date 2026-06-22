@@ -310,16 +310,26 @@ class Swoosh:
 @window(tint=(0.11, 0.12, 0.14))
 class Toggles:
 
+    @defaults(tint=(0.939, 0.086, 0.042))
+    class TextEditor:
+        enable_spell_check = False
+
+    @defaults(tint=(0.378, 0.286, 0.201))
+    class Collection:
+        pre_load_items = 26
+        placeholder_height = 30.0
+        # Static strip of empty item at the end of every drag-and-drop
+        # collection: separates a nested collection's "append at end" drop slot
+        # from the parent's "after this folder" slot, and gives an empty
+        # collection a droppable bottom. See draw_collection() drop tail.
+        drop_tail_height = 5
+
     @defaults(tint=(0.878, 0.762, 0.692))
     class ScrollSettings:
         scroll_speed = 600
         max_increment_fraction = 0.169
         acceleration_threshold = 0.036  # seconds
         bg_offset = 30
-
-    @defaults(tint=(0.939, 0.086, 0.042))
-    class TextEditor:
-        enable_spell_check = False
 
     @defaults(tint=(0.631, 0.474, 0.861))
     class InputHandlerToggles:
@@ -345,11 +355,6 @@ class Toggles:
         draw_bvh = False
         draw_rect = False
 
-    @defaults(tint=(0.13, 0.62, 0.26))
-    class Collection:
-        pre_load_items = 26
-        placeholder_height = 30.0
-
     debug_scroll = False
     show_filled_tiles = False
     gl_check_error = False
@@ -374,6 +379,9 @@ class Toggles:
     # Anything that touches non-blank content falls through to the incremental
     # recompute. Flip off to A/B against always recomputing.
     offset_symbol_positions = True
+
+
+
 
     # Build the parse tree node→span map from Python's `ast` (C parser, native
     # lineno/col_offset) instead of libcst's PositionProvider (in-tree

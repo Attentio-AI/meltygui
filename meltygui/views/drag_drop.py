@@ -514,16 +514,28 @@ class DragDrop:
             visible_h = child.height or 0
             if not child.expanded:
                 visible_h = min(visible_h, child.header_height or visible_h)
-            rows.append((idx, top, top + visible_h))
+            rows.append((idx, top, top + visible_h, child.abs_left))
         rows.sort(key=lambda r: (r[1], r[0]))
 
-        x0 = max(cl, ds.abs_left + 4)
+        # Indent each slot line to where this collection's rows actually sit so
+        # the line's left edge tracks the content indent - a nested collection's
+        # lines read as visibly deeper at a glance, instead of every collection
+        # drawing its lines flush at the same static collection offset. A row's
+        # abs_left always carries the accumulated indent_size of every enclosing
+        # collection; `content_left` (the collection's own indent_size off its
+        # left) is the fallback for a missing row left or the collapsed collection.
+        indent = ds._kwargs.get("indent_size", 0) or 0
+        content_left = ds.abs_left + indent
         x1 = min(cr, ds.abs_left + (ds.width or 0) - 4)
-        if x1 <= x0:
-            return
         y_min, y_max = ct - 6, cb + 6
 
+        def _slot_x0(row_left):
+            return max(cl, row_left if row_left is not None else content_left)
+
         if not rows:
+            x0 = _slot_x0(None)
+            if x1 <= x0:
+                return
             y = ds.abs_top + (ds.header_height or 0) + 4
             cls._add_slot(out, ds, len(coll), x0, x1, y, y_min, y_max, mx, my)
             return
@@ -532,11 +544,16 @@ class DragDrop:
         # abs_top - an exact screen coordinate regardless of how tall (or
         # collapsed) the rows above it are. Heights only ever matter to
         # the single append-at-end slot under the last row.
-        for idx, top, _bottom in rows:
+        for idx, top, _bottom, left in rows:
+            x0 = _slot_x0(left)
+            if x1 <= x0:
+                continue
             cls._add_slot(out, ds, idx, x0, x1, top - 2, y_min, y_max, mx, my)
-        last_idx, _top, last_bottom = rows[-1]
-        cls._add_slot(out, ds, last_idx + 1, x0, x1, last_bottom + 3,
-                      y_min, y_max, mx, my)
+        last_idx, _top, last_bottom, last_left = rows[-1]
+        x0 = _slot_x0(last_left)
+        if x1 > x0:
+            cls._add_slot(out, ds, last_idx + 1, x0, x1, last_bottom + 3,
+                          y_min, y_max, mx, my)
 
     @classmethod
     def _add_slot(cls, out, ds, insert_idx, x0, x1, y, y_min, y_max, mx, my):

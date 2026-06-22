@@ -326,15 +326,15 @@ def draw_symbol_usage(input_value):
 
 @render_func(is_default_for=(dict, MutableMapping, defaultdict, tuple, list, GeneralParse, CallParse, ClassParse, EnumParse, FunctionParse, _BubblingDict, _DeepPath), use_cache=True,
              header_same_line=False, show_bg=True, show_instance_vars=False, align_header=False,
-             manual_content_height=True, shadow=True, selectable=False, bg_offset=-0.5,
-             wrap=False, with_header=draw_header, indent_size=5, searchable=True)
+             manual_content_height=True, shadow=True, selectable=False, bg_offset=-0.8,
+             wrap=False, with_header=draw_header, indent_size=3, searchable=True)
 def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=None,
                     mode=None, keys=None, get_attr=None, set_attr=None, show_excluded=False,
                     child_kwargs=None, show_bg=False, show_search=True, align_header=False, wrap=False,
                     on_collapse=False, search_text="", return_item=False, close_triggers_delete=False,
                     on_expand=False, show_add_delete=False, show_add_types=None, item_spacing_y=3, show_system=False,
                     included=None, horizontal=False, show_indices=False, excluded=None, annotation=None,
-                    drop_tail_height=16, **kwargs):
+                    drop_tail_height=None, **kwargs):
     """
     Universal collection renderer
     show_add_types={"Display Name": TypeA, ...} draws a second + button in the
@@ -788,9 +788,13 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
     # body. Always present (NOT drag-conditional, per Lukas) so layout never
     # shifts when a drag begins. Gated to dict/list here - exactly what
     # the DnD system treats as a drop target (see drag_drop._is_target_collection).
-    if (drop_tail_height and not horizontal
+    # Height comes live from Toggles.Collection.drop_tail_height (so the Toggles
+    # UI edits it globally); a per-call drop_tail_height= kwarg overrides it.
+    _drop_tail = (drop_tail_height if drop_tail_height is not None
+                  else Toggles.Collection.drop_tail_height)
+    if (_drop_tail and not horizontal
             and isinstance(draw_state._raw_input_value, (dict, list))):
-        tail_h = int(drop_tail_height)
+        tail_h = int(_drop_tail)
         # Single-line collections (the wrapper same-line's the body BESIDE the
         # header when not multi_line - e.g. a small dict) need the tail to
         # also span the header height, or a bare vertical dummy sits to the
@@ -798,8 +802,8 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
         # the header height so the tail reaches BELOW the header, giving an
         # empty collection a real droppable body. Multi-line collections
         # already stack the body under the header, so a bare tail is fine.
-        if not draw_state.multi_line:
-            tail_h += int(draw_state.header_height or 0)
+        # if not draw_state.multi_line:
+        #     tail_h += int(draw_state.header_height or 0)
         imgui.dummy(1, tail_h)
 
     end_pos = imgui.get_cursor_pos()[1]

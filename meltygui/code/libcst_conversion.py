@@ -126,8 +126,9 @@ class CodeLine(str):
     """
 
 
-@defaults(tint=(0.7, 0.406749, 0.0264792, 0.09), shadow=True, child_kwargs={"editable":False}, z_offset=0, name_color=(1.0, 0.479, 0.0), font=Font.JETBRAINS_MONO_19,
- is_tree=False, bg_offset=1, header_same_line=True)
+@defaults(tint=(0.7, 0.406749, 0.0264792, 0.09), shadow=True, child_kwargs={"editable":False}, 
+          z_offset=0, name_color=(1.0, 0.479, 0.0), font=Font.JETBRAINS_MONO_19,
+          is_tree=False, bg_offset=1, header_same_line=True)
 class Conditional(dict):
     """An if/elif/else block's contents, as a dict subclass.
 
@@ -227,7 +228,7 @@ class Except(dict):
         return f"Except:{self.header}:{keys}"
 
 
-@defaults(disable_scroll=True, shadow=False, show_bg=False, z_offset=0, use_cache=True, tint=(0.009,0.2495,0.39, 0.172))
+@defaults(disable_scroll=True, shadow=True, show_bg=True, z_offset=0, use_cache=True, tint=(0.009,0.2495,0.39, 0.172))
 class GeneralParse(dict):
     def __init__(self, *args, source="", file_path=None, line_offset=0, **kwargs):
         super().__init__(*args, **kwargs)
