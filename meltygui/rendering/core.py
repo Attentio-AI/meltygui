@@ -2073,7 +2073,7 @@ def render_func(*args, **o_kwargs):
                         draw_state.search_active = False
                         draw_state.search_text = ""
                         draw_state._search_was_active = False
-                        if Toggles.text_focus_stack_trace:
+                        if Toggles.TextEditor.text_focus_stack_trace:
                             print_stack_trace()
                         request_render()
 
@@ -3771,7 +3771,7 @@ def render_func(*args, **o_kwargs):
                         and draw_state.abs_content_height > draw_state.height
                         + draw_state.footer_height + draw_state.header_height)
 
-        if not kwargs.get("disable_scroll", True) and Toggles.debug_scroll:
+        if not kwargs.get("disable_scroll", True) and Toggles.ScrollSettings.debug_scroll:
             draw_list = imgui.get_overlay_draw_list()
             draw_list.channels_set_current(Melty.max_layer - 1)
 

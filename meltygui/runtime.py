@@ -984,7 +984,7 @@ class Melty:
                 continue
             if ds is cls.text_focused_ds and text_grace:
                 continue
-            if Toggles.text_focus_stack_trace:
+            if Toggles.TextEditor.text_focus_stack_trace:
                 print_stack_trace(size=5)
 
             ds.search_active = False
@@ -1119,7 +1119,7 @@ class Melty:
         want_text = imgui.get_io().want_text_input
         if want_text and not cls._prev_imgui_want_text and cls.text_focused_ds is not None:
             cls.text_focused_ds = None
-            if Toggles.text_focus_stack_trace:
+            if Toggles.TextEditor.text_focus_stack_trace:
                 print_stack_trace()
         cls._prev_imgui_want_text = want_text
 
@@ -1146,7 +1146,7 @@ class Melty:
 
             cls.clear_focus()
 
-            if Toggles.text_focus_stack_trace:
+            if Toggles.TextEditor.text_focus_stack_trace:
                 print_stack_trace()
             request_render()
         else:

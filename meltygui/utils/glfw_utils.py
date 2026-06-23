@@ -982,7 +982,7 @@ def request_render(for_frames:int | None=None):
         frames_left = for_frames
 
 
-    if Toggles.invalidate_stack_trace:
+    if Toggles.InvalidateTracker.invalidate_stack_trace:
         if Core.melty.frame_count > 100 and (Core.melty.frame_count % 500 == 0):
             print_stack_trace(size=3, section="REQUEST RENDER")
 

@@ -199,7 +199,7 @@ class Background:
                         on_frame=latest["on_frame"],
                         debounce=None, frames=frames,
                     )
-                    if Toggles.invalidate_stack_trace:
+                    if Toggles.InvalidateTracker.invalidate_stack_trace:
                         print_stack_trace(frames=frames)
 
             timer = threading.Timer(debounce / 1000.0, _fire)

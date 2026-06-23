@@ -309,47 +309,32 @@ class Swoosh:
 
 @window(tint=(0.11, 0.12, 0.14))
 class Toggles:
-
-    def clear_hosts(value=51):
-        pass
-
-    # Debug: toggle-on while investigating dropdown-close. A real property rather
-    # than a getattr(Toggles, "dd_debug", True) default, so it's indexed/visible.
-    dd_debug = True
-
-    @defaults(tint=(0.939, 0.086, 0.042))
-    class TextEditor:
-        enable_spell_check = False
-        # Double-clicking a symbol with usages opens the multi-jump picker
-        # dropdown even when there's only ONE target (instead of jumping straight
-        # to it in IntelliJ). True → single target jumps straight, several opens the
-        # picker. Only affects double-click; Ctrl+B always jumps straight.
-        double_click_opens_dropdown = True
-
-    @defaults(tint=(0.42, 0.58, 0.83))
-    class WindowSettings:
-        # Sticky resize: while resizing a window, re-anchor its top to the
-        # drag-start position every frame so the only thing displacing the
-        # window is the bottom-on-display clamp. 
-        sticky_drag = True
-
-    @defaults(tint=(0.631, 0.474, 0.861))
-    class InputHandlerToggles:
-        show_debug = False
-
-
+    
+    # Global App Toggles
     @defaults(tint=(0.378, 0.286, 0.201))
     class Collection:
         pre_load_items = 26
         placeholder_height = 30.0
-        # Static strip of empty item at the end of every drag-and-drop
-        # collection: separates a nested collection's "append at end" drop slot
-        # from the parent's "after this folder" slot, and gives an empty
-        # collection a droppable bottom. See draw_collection() drop tail.
         drop_tail_height = 8
 
         max_preferred_header_width = 70
         preferred_header_width = 132
+
+    @defaults(tint=(0.922, 0.476, 0.031))
+    class TextEditor:
+        enable_spell_check = False
+        double_click_opens_dropdown = True
+        text_focus_stack_trace = False
+
+    @defaults(tint=(0.42, 0.58, 0.83))
+    class WindowSettings:
+        # Sticky resize: re-anchor the window top to the drag start position each
+        # frame so only the bottom-on-display clamp displaces it.
+        sticky_drag = False
+
+    @defaults(tint=(0.631, 0.474, 0.861))
+    class InputHandlerToggles:
+        show_debug = False
 
     @defaults(tint=(0.91, 0.659, 0.15))
     class InvalidateTracker:
@@ -357,6 +342,8 @@ class Toggles:
         enable = False
         draw_bvh = False
         draw_rect = False
+        invalidate_stack_trace = False
+        attrib_change_stack_trace = False
 
     @defaults(tint=(0.652, 0.672, 0.733))
     class TerminalSettings:
@@ -370,73 +357,54 @@ class Toggles:
         max_increment_fraction = 0.169
         acceleration_threshold = 0.036  # ms
         bg_offset = 30
+        debug_scroll = False
 
     @defaults(tint=(0.27, 0.7, 0.52))
     class HostLifecycle:
-        # Deregister a RenderHost from Melty.render_hosts (so draw_main stops
-        # drawing/parsing it every frame) once none of its consumer windows are
-        # active. The host + its parse stay in the code-host cache; reopening the
-        # view re-registers it (notify_on_change → register). Reclaims the
-        # per-frame cost of hosts sitting behind closed windows.
+        # Deregister a RenderHost from Melty.render_host (stops per-frame
+        # draw/parse) once none of its consumer windows are active. Host's parse
+        # stay cached; reopening re-registers (notify_on_change → register).
         deregister_idle = True
-        # A consumer is gone when its window is abs_closed, OR it hasn't
-        # re-registered as a user within this many frames - the safety net for
-        # closes abs_closed doesn't catch (orphaned hosts from draw_states). Also the
-        # birth grace a freshly-created host gets before it's be swept.
+        # A host is gone when its window is abs_closed, or it hasn't
+        # re-appeared within this many frames (safety net for closes abs_closed
+        # misses). Also the birth grace before a new host can be swept.
         idle_frames = 120
 
-    debug_scroll = False
     show_filled_tiles = False
     gl_check_error = False
     enable_jedi = True
-    attrib_change_stack_trace = False
 
     jedi_correctness = False
-    # Attach symbol usages to every editor parse automatically (background,
-    # fast index path only); the refresh button stays as a manual refresh.
+    # Auto-compute symbol usages after every editor parse (recommended, fast path
+    # only); the Index button stays as a force refresh.
     auto_index = True
 
-    # Incremental symbol-usage refresh during live edits: when only the buffer
-    # changed (same resolver + same index generation), reuse the prior compute's
-    # expensive half (cross-file callers + symbol definitions, ~80% of the cost)
-    # and rescan only the changed file + newly-typed names. Flip off to A/B against
-    # full-recomputes. Fast index path only (jedi_correctness=False).
+    # Incremental symbol-usage refresh on live edits: cache the prior compute's
+    # expensive half (cross-file callers/ces, ~80% of cost) and rescan only the
+    # edited file + new names. Off = full recompute. Fast path only.
     incremental_symbol_index = True
 
-    # Position-only fast path: when a live edit only inserted/removed blank lines
-    # (no non-blank content change), skip the recompute entirely and remap the
-    # cached result's line numbers by the line delta (~5ms vs ~42ms incremental).
-    # Anything that touches non-blank content falls through to the incremental
-    # recompute. Flip off to A/B against always recomputing.
+    # Position-only fast path: when an edit only added/removed blank lines, remap
+    # the cached line numbers by the delta (~5ms vs ~42ms) instead of recomputing.
     offset_symbol_positions = True
 
-
-    # Build the parse tree node→span map from Python's `ast` (C parser, native
-    # lineno/col_offset) instead of libcst's PositionProvider (in-tree
-    # code walk, ~64% of the cst→dict cost). Spans feed find_view symbol links
-    # and shift-keyed token_view overlays; everything else is unaffected.
+    # Build the node→span map from Python's `ast` (C code) instead of libcst's
+    # PositionProvider (whole-tree codegen, ~64% of cst→dict cost).
     new_position_map = True
 
-    # While the user is actively typing, pause the background cst→dict parse at
-    # statement boundaries so the render thread gets the GIL uncontended (the
-    # parse is pure-Python and GIL-bound). Trades a little parse latency for
-    # smooth keystrokes. Never sleeps the render/main thread. See _yield_to_ui.
+    # While typing, pause the background cst→dict parse on statement boundaries so
+    # the render thread gets the GIL uncontended. Never sleeps render.
     yield_to_ui = True
 
-    # Invalidation settings
-    invalidate_stack_trace = False
-    text_focus_stack_trace = False
     attrib_churn_log = False
     debug_threads = False
     slow_down_threads = False
     profile_mode = ProfileMode.LIGHT
     debug_stale_tint = False
-    show_line_break = False
 
     # View Settings
     brightness = 0.475
     contrast = 1.812
-    saturation = -0.4
 
     debug_z_depth = False
     filters = True
@@ -451,9 +419,9 @@ class Toggles:
 
     caller_walk_steps = 7
     draw_legacy = False
-
     show_full_call_stack = False
-    # Screenshot output directory (used by screenshot.py / context menu capture)
+
+    # Screenshot output dir (screenshot.py / context menu capture)
     screenshots = "/home/lukas/melty/screenshots"
 
 @window

@@ -477,7 +477,7 @@ def draw_function_live(input_value, draw_state=None, unique=None,
     # call (left_edge/right_edge, by reference - code_file_io forwards them
     # like jump_to), so the nested row's far edges ARE this row's divider and
     # right edge and can never drift apart from them.
-    top_y = draw_state.abs_top + 32
+    top_y = draw_state.abs_top + 0
     imgui.set_cursor_screen_pos((draw_state.abs_left, top_y))
     cols = ColumnLayout(draw_state, 2, column_edges=column_edges,
                         column_widths=[244])

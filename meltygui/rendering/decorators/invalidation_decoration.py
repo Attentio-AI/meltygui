@@ -96,7 +96,7 @@ def live(cls):
                         Core.melty.cache.invalidate_by_obj(self, name, note=note)
 
                     from src.lsd.gl_gui.toggles import Toggles
-                    if Toggles.attrib_change_stack_trace:
+                    if Toggles.InvalidateTracker.attrib_change_stack_trace:
                         print_stack_trace()
 
 

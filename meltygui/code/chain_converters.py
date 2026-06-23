@@ -1648,15 +1648,19 @@ def str_to_general_parse(input_value, reference=None, changed=False, draw_state=
     # Debounce the parse: while the text is still changing (or hasn't been
     # stable for _PARSE_DEBOUNCE_S), keep showing the prior parse and don't
     # touch the UI. request_render keeps frames coming until the timer elapses.
-    if input_str != getattr(draw_state, '_parse_pending_str', None):
-        draw_state._parse_pending_str = input_str
-        draw_state._parse_pending_at = time.monotonic()
-        request_render()
-        return False, reference if has_ref else None
-    if (input_str != getattr(draw_state, '_last_propagated_str', None)
-            and time.monotonic() - getattr(draw_state, '_parse_pending_at', 0.0) < _PARSE_DEBOUNCE_S):
-        request_render()
-        return False, reference if has_ref else None
+    # Skipped during app startup (global frame_count) AND while the view itself
+    # is loading (its own draw_state.frame_count) so a freshly opened text view
+    # parses immediately instead of waiting out the debounce window.
+    if Melty.frame_count >= 3 and draw_state.frame_count >= 3:
+        if input_str != getattr(draw_state, '_parse_pending_str', None):
+            draw_state._parse_pending_str = input_str
+            draw_state._parse_pending_at = time.monotonic()
+            request_render()
+            return False, reference if has_ref else None
+        if (input_str != getattr(draw_state, '_last_propagated_str', None)
+                and time.monotonic() - getattr(draw_state, '_parse_pending_at', 0.0) < _PARSE_DEBOUNCE_S):
+            request_render()
+            return False, reference if has_ref else None
 
     # Parse the edited text back to a parse tree off the main thread.
     # `reference` is the chain's cached prior parse for this position; we keep

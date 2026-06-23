@@ -2220,7 +2220,6 @@ def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabS
         _ensure_symbol_index(dict_host, _str_host, dict_host._held(),
                              kwargs.get("jump_to"))
 
-
         # New columnLayout (shared edge system): the panes line up with other
         # objects drawn on the root window - the divider between the
         # structured and text panes is a draggable line in the same collision

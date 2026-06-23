@@ -1192,7 +1192,7 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
             Core.melty.summon_window(gs, mx, my - 65)
         GlobalSearch._focus_requested = True
         request_render()
-
+        
     # Ctrl+F root fallback: the per-view Ctrl+F (core_render's searchable
     # block) only registers while the view actually RENDERS - a fully
     # cache-blitted window (an idle code/index pane) never registers, so the
@@ -2525,10 +2525,9 @@ def draw_bool(input_value: bool, draw_state, left_mouse_clicked=None,
 
     imgui.dummy(width, 21)
     draw_list = imgui.get_window_draw_list()
-
-        
     bg_alpha = 1.0
         
+    left_margin = 5
     if input_value:
         bg_color = imgui.get_color_u32_rgba(*Tint.checkbox_bg_selected(), bg_alpha)
     else:
@@ -2536,19 +2535,29 @@ def draw_bool(input_value: bool, draw_state, left_mouse_clicked=None,
     
     outline_color = imgui.get_color_u32_rgba(*Tint.checkbox_outline(), 1.0)
 
-    draw_list.add_rect_filled(imgui.get_cursor_pos_x() - 3, draw_state.abs_top, imgui.get_cursor_pos_x() + width - 0,
-                          draw_state.abs_top + draw_state.content_height, rounding=4,
-                             col=bg_color)
-    draw_list.add_rect(imgui.get_cursor_pos_x() - 3, draw_state.abs_top, imgui.get_cursor_pos_x() + width - 0,
-                          draw_state.abs_top + draw_state.content_height, rounding=4,
-                             col=outline_color, thickness=1.5)
+    draw_list.add_rect_filled(imgui.get_cursor_pos_x() + left_margin, 
+                              draw_state.abs_top, 
+                              imgui.get_cursor_pos_x() + width - 0,
+                              draw_state.abs_top + draw_state.content_height, 
+                              rounding=4,
+                              col=bg_color)
+    draw_list.add_rect(imgui.get_cursor_pos_x() + left_margin, 
+                       draw_state.abs_top, 
+                       imgui.get_cursor_pos_x() + width - 0,
+                       draw_state.abs_top + draw_state.content_height, 
+                       rounding=4,
+                       col=outline_color, 
+                       thickness=1.5)
                              
     if draw_state._bounding_hovered:
         hover_color = imgui.get_color_u32_rgba(*Tint.checkbox_bg_hovered(), 0.2)
     
-        draw_list.add_rect_filled(imgui.get_cursor_pos_x() - 3, draw_state.abs_top, imgui.get_cursor_pos_x() + width - 0,
-                          draw_state.abs_top + draw_state.content_height, rounding=4,
-                             col=hover_color)
+        draw_list.add_rect_filled(imgui.get_cursor_pos_x() + left_margin, 
+                                  draw_state.abs_top, 
+                                  imgui.get_cursor_pos_x() + width - 0,
+                                  draw_state.abs_top + draw_state.content_height, 
+                                  rounding=4,
+                                  col=hover_color)
 
     if input_value:
         text_color = (*Tint.checkbox_text_true(), 1.0)
@@ -2556,7 +2565,7 @@ def draw_bool(input_value: bool, draw_state, left_mouse_clicked=None,
     else:
         text_color = (*Tint.checkbox_text(), 0.2)
         icon = f""
-    imgui.same_line(8)
+    imgui.same_line(8 + left_margin)
     imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + 2)
     imgui.text_colored(f"{icon} {input_value}", *text_color)
     if draw_state._bounding_hovered and imgui.is_mouse_clicked(0):
@@ -4814,7 +4823,7 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
     # Is THIS dropdown the one whose popover is showing?
     is_open = Melty.popover_focused_ds is draw_state
 
-    _DD_DBG = Toggles.dd_debug  # TEMP: default-on for dropdown state investigation
+    _DD_DBG = False  # TEMP: default False for dropdown-close investigation
     if _DD_DBG:
         _pf = Melty.popover_focused_ds
         if is_open or _pf is not None:
@@ -5433,7 +5442,8 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
         # return_item; the no-op set_attr keeps draw_collection from writing that
         # value back into `rows`.
         changed, picked = draw_collection(
-            rows, name=f"dd_rows_{unique}", show_search=False, show_bg=False,
+            rows, name=f"dd_rows_{unique}", show_search=False, show_bg=True
+            ,
             with_header=None, mode=None, return_item=True, set_attr=_dd_noop_set,
             item_spacing_y=0, use_cache=True,
             child_kwargs={"view_func": dd_menu_row, **row_kwargs})

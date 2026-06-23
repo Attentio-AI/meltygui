@@ -856,12 +856,28 @@ _SYMBOL_INDEX_PICKLE = _Path.home() / ".lsd" / "symbol_index.pkl"
 _SYMBOL_INDEX_PICKLE_VERSION = 1
 
 
+def _disk_cache_enabled() -> bool:
+    """Gate for the symbol-index DISK cache (the ~/.lsd pickle read+write).
+    Defaults to enabled if Toggles can't be reached — this runs at module-load
+    time (see _load_symbol_store below) where the import can still be mid-cycle,
+    so a failure must not silently disable warm-start."""
+    try:
+        from src.lsd.gl_gui.toggles import Toggles   # lazy: avoid import cycle
+        return Toggles.symbol_index_disk_cache
+    except Exception:
+        return True
+
+
 def _load_symbol_store() -> dict:
     store = getattr(sys, "_symbol_index_store", None)
     if isinstance(store, dict):
         store.setdefault("hashes", {})    # bump; backfill the hash dict if older
         return store                      # restart-in-place: adopt live dicts
     spans, gen, mtimes, hashes = {}, 0, {}, {}
+    if not _disk_cache_enabled():         # cache off: no warm-start, stay cold
+        store = {"spans": spans, "gen": gen, "mtimes": mtimes, "hashes": hashes}
+        sys._symbol_index_store = store
+        return store
     try:                                  # fresh process: warm-start from pick
         import pickle
         with open(_SYMBOL_INDEX_PICKLE, "rb") as f:
@@ -884,6 +900,8 @@ def _save_symbol_store():
     object ids, meaningless outside this exact process state. Shallow-copies
     the dicts first so a concurrent cache write can't fail the dump (values
     are immutable tuples)."""
+    if not _disk_cache_enabled():         # cache off: keep the pickle untouched
+        return
     try:
         import pickle, os
         _SYMBOL_INDEX_PICKLE.parent.mkdir(parents=True, exist_ok=True)
@@ -1481,6 +1499,45 @@ def _member_def_site(base, attr):
     return None, 0
 
 
+_NO_CONST = object()
+
+
+def _const_def_site(name, obj, modules):
+    """(file, line) of the module-level `name = ...` / `name: ...` assignment that
+    DEFINES a plain constant (int/str/tuple/… — no inspect source of its own).
+    Scans only modules that actually bind `name` to `obj` (a cheap __dict__
+    identity check, so usually 1-3 files), at column-0 lines beginning with `name`
+    immediately followed by `=`/`:`. That skips `from x import name` re-exports
+    (col-0 line starts with `from`) and indented usages — so it lands on the real
+    definer even when the name is imported into the viewed file. (None, 0) if not
+    found. Without this, a constant's def fell back to def_lines.get(name), which
+    for a name only REFERENCED in the span is its first USAGE line — making the
+    definition look like a usage so every usage listed all the other usages."""
+    for mod in modules:
+        try:
+            d = getattr(mod, "__dict__", None)
+            if d is None or d.get(name, _NO_CONST) is not obj:
+                continue
+        except Exception:
+            continue
+        f = getattr(mod, "__file__", None)
+        if not f:
+            continue
+        try:
+            text = Melty.read_code(_Path(f).resolve())
+        except Exception:
+            text = None
+        if not text:
+            continue
+        for i, ln in enumerate(text.splitlines(), 1):
+            if not ln or ln[0].isspace() or not ln.startswith(name):
+                continue                       # only column-0 (module-level) lines
+            rest = ln[len(name):].lstrip()
+            if rest[:1] in ('=', ':'):         # assignment / annotation, not `import`
+                return f, i
+    return None, 0
+
+
 def _is_src_object(base, mod_map) -> bool:
     """True when `base` (a module, or a class/object) is defined in one of the
     loaded src files the index covers — keeps reverse attr-targets scoped to
@@ -1679,13 +1736,19 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
                 dl = _cached_def_line(target, df)   # cached; skips per-class re-parse
                 dm = getattr(target, "__module__", "") or mod_name
             except Exception:
-                # Best-effort definition lookup over ARBITRARY live objects: any
-                # one of them can have a pathological __getattr__/__class__ that
-                # makes inspect.unwrap raise something exotic (a _LazyMode probed
-                # for __wrapped__ raised KeyError here, and an uncaught KeyError
-                # silently zeroes the WHOLE span's index - see index.py). A failed
-                # symbol must fall back to its in-file def, never kill the span.
-                df, dl, dm = rp_str, def_lines.get(nm, 0), mod_name
+                # No inspect source: either a plain CONSTANT (int/str/tuple) or a
+                # wrapper object whose __getattr__/__class__ raised (a
+                # _LazyConstant probed for __wrapped__ raised KeyError here once; an
+                # uncaught error would silently zero the WHOLE span - see modes.py).
+                # For a constant, resolve its real module-level assignment line so a
+                # usage links to the DEFINITION and the definition lists the usages.
+                # The previous def_lines.get(nm) fallback held the first USAGE line
+                # for a referenced-only name, so def_here misfired and every usage
+                # listed all the other usages. Only fall back to it on a true miss.
+                df, dl = _const_def_site(nm, obj, (owning, *mod_map.values()))
+                dm = mod_name
+                if df is None:
+                    df, dl = rp_str, def_lines.get(nm, 0)
         elif base is not None:                    # reverse ref: member on an
             df, dl = _member_def_site(base, nm.rsplit('.', 1)[-1])   # external base (an attr)
             dm = (getattr(base, '__module__', None)
@@ -1754,7 +1817,6 @@ def compute_symbol_usages_for_address(address, fast_only=False):
     a blank-line position offset, ~sub-ms to ~2ms) and `_NEEDS_RECOMPUTE` otherwise
     — letting the caller run the cheap case inline (UI stays current) and defer the
     expensive recompute behind the cooperative yield."""
-    start_time = _time.monotonic()
     if DISABLE_JEDI or address is None or getattr(address, "path", None) is None:
         return _NEEDS_RECOMPUTE if fast_only else {}
     from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
@@ -1767,12 +1829,10 @@ def compute_symbol_usages_for_address(address, fast_only=False):
         if text is None:
             return _NEEDS_RECOMPUTE if fast_only else {}
         end = text.count("\n") + 1
-    result = _compute_symbol_usages(resolved, start, end, pending_gen, fast_only=fast_only)
-    if result is _NEEDS_RECOMPUTE:
-        return result
-    end_time = _time.monotonic()
-    notify(f"Symbol usage compute for {address.path.name}:{start}-{end} took {end_time - start_time:.2f}s", tag="Compute usage")
-    return result
+    # The "Compute usage" message fires inside _compute_symbol_usages, on the
+    # recompute path only - the cheap fast paths (exact cache hit, content-hash
+    # rescue, position offset) stay silent.
+    return _compute_symbol_usages(resolved, start, end, pending_gen, fast_only=fast_only)
 
 
 def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False) -> dict:
@@ -1868,12 +1928,17 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
             prev = _raw_from_usages(src[1])
     if fast_only:
         return _NEEDS_RECOMPUTE       # only exact-hit + offset are cheap; defer the rest
+    # Past every fast path, this is a real incremental/full recompute. Time and
+    # notify only here, so cache hits / offsets stay silent.
+    recompute_start = _time.monotonic()
     try:
         raw = (_symbol_refs_worker(str(resolved), start, end, text) if accurate
                else _symbol_refs_index(str(resolved), start, end, text, prev=prev))
         usages = _rebuild_symbol_usages(raw)
     except Exception:
         usages = {}
+    notify(f"Symbol usage compute for {resolved.name}:{start}-{end} took "
+           f"{_time.monotonic() - recompute_start:.2f}s", tag="Compute usage")
     # The view moved to `key`; the shifted sibling we reused is now dead weight.
     _store_usages(key, sig, usages, text, chash=chash,
                   evict=src_key if (src_key is not None and src_key != key) else None)
@@ -2438,6 +2503,8 @@ def _yield_to_ui():
     from src.lsd.gl_gui.toggles import Toggles   # lazy: avoid import cycle
     if not Toggles.yield_to_ui:
         return
+    if Melty.frame_count < 3:
+        return  # app startup: never back off the initial parse, just run it
     last = getattr(Melty, "_last_input_time", 0.0)
     if not last or time.monotonic() - last >= _YIELD_QUIET_S:
         return  # no recent input - fast path, no back-off

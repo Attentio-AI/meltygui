@@ -2411,14 +2411,14 @@ def draw_text(input_value: str, height=None,
     # rebind focus by tile id so a cache hit doesn't silently drop it.
     if (not is_focused and Melty.text_focused_ds is not None
             and getattr(Melty.text_focused_ds, '_tile_id', None) == ds._tile_id):
-        if Toggles.text_focus_stack_trace:
+        if Toggles.TextEditor.text_focus_stack_trace:
             print(f"[focus-grant] rebind -> {ds.name} ({ds._tile_id}) "
                   f"from ds {id(Melty.text_focused_ds)}")
         Melty.text_focused_ds = ds
         Melty._text_focus_grant_frame = Melty.frame_count
         is_focused = True
     if request_focus:
-        if Toggles.text_focus_stack_trace and Melty.text_focused_ds is not ds:
+        if Toggles.TextEditor.text_focus_stack_trace and Melty.text_focused_ds is not ds:
             print(f"[focus-grant] request_focus -> {ds.name} ({ds._tile_id})")
         Melty.text_focused_ds = ds
         # Stamp the grant frame so the same-frame request_focus grace (see
@@ -2459,7 +2459,7 @@ def draw_text(input_value: str, height=None,
         return False
 
     if left_mouse_down:
-        if Toggles.text_focus_stack_trace and Melty.text_focused_ds is not ds:
+        if Toggles.TextEditor.text_focus_stack_trace and Melty.text_focused_ds is not ds:
             print(f"[focus-grant] click -> {ds.name} ({ds._tile_id})")
         Melty.text_focused_ds = ds
         Melty._text_focus_grant_frame = Melty.frame_count
